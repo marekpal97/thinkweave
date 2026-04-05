@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# pytest
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment
+.env
+
+# uv
+.python-version
+
+# Claude Code local state
+.claude/
+
+# MCP config (may contain local paths)
+.mcp.json
+
+# Vault data (user-specific)
+vault/

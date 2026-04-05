@@ -1,0 +1,28 @@
+[project]
+name = "personal-mem"
+version = "0.1.0"
+description = "Obsidian-native universal memory layer for agentic systems"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+embeddings = ["httpx"]
+all = ["personal-mem[mcp,embeddings]"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+mem = "personal_mem.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/personal_mem"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,401 @@
+"""Tests for vault operations — CRUD, frontmatter parsing, wikilinks."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from personal_mem.config import Config
+from personal_mem.schemas import DecisionStatus, NoteType
+from personal_mem.vault import (
+    VaultManager,
+    content_hash,
+    extract_wikilinks,
+    parse_frontmatter,
+    render_frontmatter,
+    strip_section,
+)
+
+
+@pytest.fixture
+def vault_dir(tmp_path: Path) -> Path:
+    return tmp_path / "vault"
+
+
+@pytest.fixture
+def vault(vault_dir: Path) -> VaultManager:
+    cfg = Config(vault_root=vault_dir)
+    vm = VaultManager(config=cfg)
+    vm.ensure_dirs()
+    return vm
+
+
+# --- Frontmatter parsing ---
+
+
+class TestParseFrontmatter:
+    def test_basic_kv(self):
+        text = "---\ntype: note\nid: n-abc123\ndate: 2026-03-30\n---\n\n# Hello"
+        fm, body = parse_frontmatter(text)
+        assert fm["type"] == "note"
+        assert fm["id"] == "n-abc123"
+        assert fm["date"] == "2026-03-30"
+        assert "# Hello" in body
+
+    def test_inline_list(self):
+        text = "---\ntags: [python, sqlite, gotcha]\n---\n\nBody"
+        fm, body = parse_frontmatter(text)
+        assert fm["tags"] == ["python", "sqlite", "gotcha"]
+
+    def test_block_list(self):
+        text = "---\nfiles_touched:\n  - foo/bar.py\n  - baz/qux.py\n---\n\nBody"
+        fm, body = parse_frontmatter(text)
+        assert fm["files_touched"] == ["foo/bar.py", "baz/qux.py"]
+
+    def test_empty_list(self):
+        text = "---\ntags: []\n---\n\nBody"
+        fm, body = parse_frontmatter(text)
+        assert fm["tags"] == []
+
+    def test_boolean(self):
+        text = "---\nactive: true\narchived: false\n---\n\nBody"
+        fm, body = parse_frontmatter(text)
+        assert fm["active"] is True
+        assert fm["archived"] is False
+
+    def test_numeric(self):
+        text = "---\nconfidence: 0.85\ncount: 42\n---\n\nBody"
+        fm, body = parse_frontmatter(text)
+        assert fm["confidence"] == 0.85
+        assert fm["count"] == 42
+
+    def test_no_frontmatter(self):
+        text = "# Just a heading\n\nSome text."
+        fm, body = parse_frontmatter(text)
+        assert fm == {}
+        assert "Just a heading" in body
+
+    def test_quoted_string(self):
+        text = '---\ntitle: "Lex Fridman #432"\n---\n\nBody'
+        fm, body = parse_frontmatter(text)
+        assert fm["title"] == "Lex Fridman #432"
+
+
+class TestRenderFrontmatter:
+    def test_roundtrip(self):
+        data = {
+            "type": "note",
+            "id": "n-abc123",
+            "tags": ["python", "sqlite"],
+            "date": "2026-03-30",
+        }
+        rendered = render_frontmatter(data)
+        assert rendered.startswith("---")
+        assert rendered.endswith("---")
+        # Parse it back
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["type"] == "note"
+        assert fm["tags"] == ["python", "sqlite"]
+
+    def test_skips_none_and_empty(self):
+        data = {"type": "note", "empty": "", "none_val": None, "tags": ["a"]}
+        rendered = render_frontmatter(data)
+        assert "empty" not in rendered
+        assert "none_val" not in rendered
+
+    def test_dict_values(self):
+        data = {"context": {"prompt": "do something", "plan": "dec-123"}}
+        rendered = render_frontmatter(data)
+        assert "prompt: do something" in rendered
+        assert "plan: dec-123" in rendered
+
+
+# --- Wikilinks ---
+
+
+class TestWikilinks:
+    def test_extract_basic(self):
+        text = "See [[hive-swarm]] and [[sqlite-wal]] for details."
+        links = extract_wikilinks(text)
+        assert links == ["hive-swarm", "sqlite-wal"]
+
+    def test_extract_with_alias(self):
+        text = "Check [[hive-swarm|Hive Swarm Project]] docs."
+        links = extract_wikilinks(text)
+        assert links == ["hive-swarm"]
+
+    def test_no_links(self):
+        assert extract_wikilinks("No links here.") == []
+
+
+class TestContentHash:
+    def test_deterministic(self):
+        assert content_hash("hello") == content_hash("hello")
+
+    def test_different_content(self):
+        assert content_hash("hello") != content_hash("world")
+
+
+# --- VaultManager ---
+
+
+class TestVaultManager:
+    def test_ensure_dirs(self, vault: VaultManager):
+        assert (vault.root / ".mem").is_dir()
+        assert (vault.root / "projects").is_dir()
+        assert (vault.root / "daily").is_dir()
+        assert (vault.root / "sources" / "podcasts").is_dir()
+        assert (vault.root / "templates").is_dir()
+
+    def test_generate_id(self, vault: VaultManager):
+        nid = vault.generate_id(NoteType.NOTE)
+        assert nid.startswith("n-")
+        assert len(nid) == 10  # "n-" + 8 hex chars
+
+        sid = vault.generate_id(NoteType.SESSION)
+        assert sid.startswith("ses-")
+
+        did = vault.generate_id(NoteType.DECISION)
+        assert did.startswith("dec-")
+
+        src_id = vault.generate_id(NoteType.SOURCE)
+        assert src_id.startswith("src-")
+
+    def test_create_note(self, vault: VaultManager):
+        path = vault.create_note(
+            NoteType.NOTE,
+            "SQLite WAL Gotcha",
+            body="WAL mode requires exclusive lock for checkpointing.",
+            tags=["gotcha", "sqlite"],
+            project="personal-mem",
+        )
+        assert path.exists()
+        assert path.suffix == ".md"
+
+        # Read it back
+        note = vault.read_note(path)
+        assert note.type == NoteType.NOTE
+        assert note.title == "SQLite WAL Gotcha"
+        assert "gotcha" in note.tags
+        assert "sqlite" in note.tags
+        assert note.project == "personal-mem"
+        assert "exclusive lock" in note.body
+
+    def test_create_session(self, vault: VaultManager):
+        path = vault.create_note(
+            NoteType.SESSION,
+            "DAG refactor",
+            project="hive-swarm",
+            extra_frontmatter={"source_session": "abc-123"},
+        )
+        assert path.exists()
+        note = vault.read_note(path)
+        assert note.type == NoteType.SESSION
+        assert note.frontmatter.get("source_session") == "abc-123"
+        assert note.frontmatter.get("files_touched") == []
+
+    def test_create_decision(self, vault: VaultManager):
+        path = vault.create_note(
+            NoteType.DECISION,
+            "Use markdown-first storage",
+            body="## Context\nNeed portable storage.\n\n## Decision\nMarkdown + SQLite.",
+            project="personal-mem",
+            tags=["architecture"],
+        )
+        note = vault.read_note(path)
+        assert note.type == NoteType.DECISION
+        assert note.frontmatter.get("status") == "proposed"
+
+    def test_create_source(self, vault: VaultManager):
+        path = vault.create_note(
+            NoteType.SOURCE,
+            "Lex Fridman #432",
+            body="## Key takeaways\n- Value alignment matters",
+            extra_frontmatter={
+                "source_type": "podcast",
+                "url": "https://example.com",
+                "authors": ["Lex Fridman"],
+            },
+        )
+        note = vault.read_note(path)
+        assert note.type == NoteType.SOURCE
+        assert note.frontmatter.get("source_type") == "podcast"
+
+    def test_update_note_frontmatter(self, vault: VaultManager):
+        path = vault.create_note(NoteType.NOTE, "Test Note", tags=["a"])
+        vault.update_note(path, frontmatter_updates={"tags": ["b", "c"]})
+        note = vault.read_note(path)
+        assert "a" in note.tags
+        assert "b" in note.tags
+        assert "c" in note.tags
+
+    def test_update_note_body_append(self, vault: VaultManager):
+        path = vault.create_note(NoteType.NOTE, "Test Note", body="Line 1.")
+        vault.update_note(path, body_append="Line 2.")
+        note = vault.read_note(path)
+        assert "Line 1." in note.body
+        assert "Line 2." in note.body
+
+    def test_list_notes(self, vault: VaultManager):
+        vault.create_note(NoteType.NOTE, "Note A", project="proj1", tags=["x"])
+        vault.create_note(NoteType.NOTE, "Note B", project="proj2", tags=["y"])
+        vault.create_note(NoteType.SESSION, "Session", project="proj1")
+
+        all_notes = vault.list_notes()
+        assert len(all_notes) == 3
+
+        proj1_notes = vault.list_notes(project="proj1")
+        assert len(proj1_notes) == 2
+
+        sessions = vault.list_notes(note_type=NoteType.SESSION)
+        assert len(sessions) == 1
+
+        tagged = vault.list_notes(tags=["x"])
+        assert len(tagged) == 1
+
+    def test_filename_collision(self, vault: VaultManager):
+        p1 = vault.create_note(NoteType.NOTE, "Same Title", project="test")
+        p2 = vault.create_note(NoteType.NOTE, "Same Title", project="test")
+        assert p1 != p2
+        assert p1.exists()
+        assert p2.exists()
+
+    def test_sanitize_filename(self, vault: VaultManager):
+        assert vault._sanitize_filename("Hello World!") == "hello-world"
+        assert vault._sanitize_filename("foo/bar:baz") == "foobarbaz"
+        assert vault._sanitize_filename("") == "untitled"
+
+    def test_source_global_default(self, vault: VaultManager):
+        """Sources without project go to vault/sources/."""
+        path = vault.create_note(NoteType.SOURCE, "Global Article")
+        assert "sources" in str(path)
+        assert "projects" not in str(path)
+
+    def test_source_project_scoped(self, vault: VaultManager):
+        """Sources with project go to vault/projects/{project}/sources/."""
+        path = vault.create_note(
+            NoteType.SOURCE, "ML Paper",
+            project="ml-study",
+            extra_frontmatter={"source_type": "paper", "url": "https://arxiv.org/123"},
+        )
+        assert "projects/ml-study/sources" in str(path)
+        assert path.exists()
+
+
+class TestStripSection:
+    def test_strip_events_section(self):
+        body = "# Title\n\n## Events\n- 12:00 Edit foo.py\n- 12:01 Bash cmd\n\n## Summary\nDone.\n"
+        result = strip_section(body, "## Events")
+        assert "## Events" not in result
+        assert "12:00 Edit" not in result
+        assert "## Summary" in result
+        assert "Done." in result
+
+    def test_strip_last_section(self):
+        body = "# Title\n\n## Summary\nDone.\n\n## Events\n- 12:00 Edit foo.py\n"
+        result = strip_section(body, "## Events")
+        assert "## Events" not in result
+        assert "## Summary" in result
+
+    def test_strip_missing_section(self):
+        body = "# Title\n\nSome content.\n"
+        result = strip_section(body, "## Events")
+        assert result.strip() == body.strip()
+
+    def test_strip_multiple_sections(self):
+        body = "# T\n\n## A\nContent A\n\n## B\nContent B\n\n## C\nContent C\n"
+        result = strip_section(body, "## B")
+        assert "## A" in result
+        assert "Content A" in result
+        assert "## B" not in result
+        assert "Content B" not in result
+        assert "## C" in result
+        assert "Content C" in result
+
+
+class TestDirectoryStructure:
+    @pytest.fixture
+    def vault(self, tmp_path):
+        cfg = Config(vault_root=tmp_path, default_project="proj")
+        v = VaultManager(config=cfg)
+        v.ensure_dirs()
+        return v
+
+    def test_session_gets_subdirectory(self, vault: VaultManager):
+        path = vault.create_note(NoteType.SESSION, "My Session", project="proj")
+        assert "sessions" in str(path)
+        assert path.name == "session.md"
+        assert path.parent.name.startswith("ses-")
+
+    def test_note_goes_to_misc_session(self, vault: VaultManager):
+        path = vault.create_note(NoteType.NOTE, "My Note", project="proj")
+        assert "/sessions/misc/" in str(path)
+
+    def test_decision_goes_to_misc_session(self, vault: VaultManager):
+        path = vault.create_note(NoteType.DECISION, "My Decision", project="proj")
+        assert "/sessions/misc/" in str(path)
+
+    def test_output_dir_override(self, vault: VaultManager):
+        session_path = vault.create_note(NoteType.SESSION, "Sess", project="proj")
+        derived = vault.create_note(
+            NoteType.NOTE, "Derived", project="proj",
+            output_dir=session_path.parent,
+        )
+        assert derived.parent == session_path.parent
+        assert derived.name == "derived.md"
+
+    def test_session_id_routes_to_session_folder(self, vault: VaultManager):
+        session_path = vault.create_note(
+            NoteType.SESSION, "Target Session", project="proj",
+        )
+        session_note = vault.read_note(session_path)
+        sid = session_note.id
+
+        note_path = vault.create_note(
+            NoteType.NOTE, "Attached Note", project="proj",
+            session_id=sid,
+        )
+        assert note_path.parent == session_path.parent
+
+    def test_eager_session_dir_reused_by_session_note(self, vault: VaultManager):
+        """A todo created mid-session should share the folder with the later session note."""
+        source_uuid = "abc12345-fake-uuid"
+
+        # Mid-session: create a todo with session_id (eagerly creates folder)
+        todo_path = vault.create_note(
+            NoteType.NOTE, "Fix the widget", project="proj",
+            tags=["todo"], session_id=source_uuid,
+        )
+        eager_dir = todo_path.parent
+        assert source_uuid in eager_dir.name
+        assert not (eager_dir / "session.md").exists()
+
+        # Later: hook creates the session note with source_session matching the UUID
+        session_path = vault.create_note(
+            NoteType.SESSION, "Session 2026-04-05", project="proj",
+            extra_frontmatter={"source_session": source_uuid},
+        )
+        # Session note should land in the same folder
+        assert session_path.parent == eager_dir
+        assert session_path.name == "session.md"
+
+    def test_session_id_finds_by_source_session(self, vault: VaultManager):
+        """session_id lookup should find folders via source_session in frontmatter."""
+        session_path = vault.create_note(
+            NoteType.SESSION, "Existing Session", project="proj",
+            extra_frontmatter={"source_session": "real-uuid-here"},
+        )
+        # Now create a note using the source_session UUID, not the ses-xxx ID
+        note_path = vault.create_note(
+            NoteType.NOTE, "Late Note", project="proj",
+            session_id="real-uuid-here",
+        )
+        assert note_path.parent == session_path.parent
+
+    def test_misc_dir_created_on_demand(self, vault: VaultManager):
+        misc_dir = vault.root / "projects" / "proj" / "sessions" / "misc"
+        assert not misc_dir.exists()
+        vault.create_note(NoteType.NOTE, "First Standalone", project="proj")
+        assert misc_dir.is_dir()

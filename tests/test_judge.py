@@ -1,0 +1,311 @@
+"""Tests for structural decision judgment."""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+
+from personal_mem.judge import (
+    _check_blame_survival,
+    _check_re_edited,
+    _check_tested,
+    evaluate_decision,
+)
+from personal_mem.schemas import NoteMeta, NoteType
+
+
+def _make_decision(
+    id: str = "dec-test1",
+    date: str = "2026-04-01",
+    file_paths: list | None = None,
+    committed: bool = False,
+    **extra_fm,
+) -> NoteMeta:
+    fm = {
+        "id": id,
+        "type": "decision",
+        "status": "proposed",
+        "committed": committed,
+        "file_paths": file_paths or [],
+        **extra_fm,
+    }
+    return NoteMeta(
+        id=id,
+        type=NoteType.DECISION,
+        title=f"Decision {id}",
+        path=f"projects/test/decisions/{id}.md",
+        date=date,
+        project="test",
+        frontmatter=fm,
+    )
+
+
+def _make_session(
+    id: str = "ses-test1",
+    test_runs: list | None = None,
+) -> NoteMeta:
+    fm = {
+        "id": id,
+        "type": "session",
+        "test_runs": test_runs or [],
+    }
+    return NoteMeta(
+        id=id,
+        type=NoteType.SESSION,
+        title="Test Session",
+        path=f"projects/test/sessions/{id}.md",
+        date="2026-04-01",
+        project="test",
+        frontmatter=fm,
+    )
+
+
+class TestCheckReEdited:
+    def test_no_overlap(self):
+        dec1 = _make_decision("dec-1", date="2026-04-01", file_paths=["a.py"])
+        dec2 = _make_decision("dec-2", date="2026-04-02", file_paths=["b.py"])
+        assert _check_re_edited(dec1, ["a.py"], [dec1, dec2]) is None
+
+    def test_overlap_later(self):
+        dec1 = _make_decision("dec-1", date="2026-04-01", file_paths=["a.py"])
+        dec2 = _make_decision("dec-2", date="2026-04-02", file_paths=["a.py"])
+        assert _check_re_edited(dec1, ["a.py"], [dec1, dec2]) == "dec-2"
+
+    def test_overlap_earlier_not_counted(self):
+        dec1 = _make_decision("dec-1", date="2026-04-02", file_paths=["a.py"])
+        dec2 = _make_decision("dec-2", date="2026-04-01", file_paths=["a.py"])
+        assert _check_re_edited(dec1, ["a.py"], [dec1, dec2]) is None
+
+    def test_empty_files(self):
+        dec1 = _make_decision("dec-1", date="2026-04-01")
+        dec2 = _make_decision("dec-2", date="2026-04-02", file_paths=["a.py"])
+        assert _check_re_edited(dec1, [], [dec1, dec2]) is None
+
+
+class TestCheckTested:
+    def test_passing_tests(self):
+        session = _make_session(test_runs=[{"passed": 12, "failed": 0}])
+        assert _check_tested(session, ["a.py"]) is True
+
+    def test_failing_tests(self):
+        session = _make_session(test_runs=[{"passed": 10, "failed": 2}])
+        assert _check_tested(session, ["a.py"]) is False
+
+    def test_no_tests(self):
+        session = _make_session(test_runs=[])
+        assert _check_tested(session, ["a.py"]) is False
+
+    def test_no_session(self):
+        assert _check_tested(None, ["a.py"]) is False
+
+
+class TestEvaluateDecision:
+    def test_committed_and_tested(self, tmp_path):
+        existing_file = tmp_path / "a.py"
+        existing_file.write_text("pass")
+        dec = _make_decision(committed=True, file_paths=[str(existing_file)])
+        session = _make_session(test_runs=[{"passed": 5, "failed": 0}])
+        result = evaluate_decision(dec, [dec], session_meta=session)
+        assert result["verdict"] == "kept"
+        assert result["confidence"] == 0.9
+
+    def test_committed_not_tested(self, tmp_path):
+        # File must exist on disk or judge thinks it was reverted
+        existing_file = tmp_path / "a.py"
+        existing_file.write_text("pass")
+        dec = _make_decision(committed=True, file_paths=[str(existing_file)])
+        session = _make_session(test_runs=[])
+        result = evaluate_decision(dec, [dec], session_meta=session)
+        assert result["verdict"] == "kept"
+        assert result["confidence"] == 0.6
+
+    def test_not_committed(self):
+        dec = _make_decision(committed=False, file_paths=[])
+        result = evaluate_decision(dec, [dec])
+        assert result["verdict"] == "unknown"
+        assert result["confidence"] == 0.0
+
+    def test_superseded(self, tmp_path):
+        existing_file = tmp_path / "a.py"
+        existing_file.write_text("pass")
+        fp = str(existing_file)
+        dec1 = _make_decision("dec-1", date="2026-04-01", committed=True, file_paths=[fp])
+        dec2 = _make_decision("dec-2", date="2026-04-02", committed=True, file_paths=[fp])
+        result = evaluate_decision(dec1, [dec1, dec2])
+        assert result["verdict"] == "superseded"
+        assert result["confidence"] == 0.7
+
+    @patch("personal_mem.judge._check_committed_via_git", return_value=["abc1234"])
+    def test_git_reconciliation(self, mock_git, tmp_path):
+        """Decision starts as uncommitted but git shows it was committed later."""
+        existing_file = tmp_path / "a.py"
+        existing_file.write_text("pass")
+        dec = _make_decision(committed=False, file_paths=[str(existing_file)])
+        result = evaluate_decision(dec, [dec])
+        assert result["verdict"] == "kept"
+        assert result["confidence"] == 0.6
+        assert "abc1234" in result["commit_refs"]
+        mock_git.assert_called_once()
+
+    def test_committed_file_removed(self, tmp_path):
+        """Decision's file was committed but later deleted."""
+        dec = _make_decision(
+            committed=True,
+            file_paths=[str(tmp_path / "nonexistent.py")],
+        )
+        result = evaluate_decision(dec, [dec])
+        assert result["verdict"] == "reverted"
+        assert result["confidence"] == 0.6
+
+    def test_all_verdicts_include_commit_refs(self, tmp_path):
+        """Every verdict path must include commit_refs in the result."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        fp = str(existing)
+
+        # kept (committed + tested)
+        dec = _make_decision(committed=True, file_paths=[fp])
+        session = _make_session(test_runs=[{"passed": 5, "failed": 0}])
+        assert "commit_refs" in evaluate_decision(dec, [dec], session)
+
+        # kept (committed, not tested)
+        assert "commit_refs" in evaluate_decision(dec, [dec])
+
+        # unknown (not committed, no file_paths)
+        dec2 = _make_decision(committed=False, file_paths=[])
+        assert "commit_refs" in evaluate_decision(dec2, [dec2])
+
+        # superseded
+        dec_old = _make_decision("d1", date="2026-04-01", committed=True, file_paths=[fp])
+        dec_new = _make_decision("d2", date="2026-04-02", committed=True, file_paths=[fp])
+        assert "commit_refs" in evaluate_decision(dec_old, [dec_old, dec_new])
+
+    @patch("personal_mem.judge._check_committed_via_git", return_value=["aaa1111", "bbb2222"])
+    def test_git_reconciliation_stores_multiple_refs(self, mock_git, tmp_path):
+        """Judge stores all discovered commit hashes."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        dec = _make_decision(committed=False, file_paths=[str(existing)])
+        result = evaluate_decision(dec, [dec])
+        assert result["commit_refs"] == ["aaa1111", "bbb2222"]
+
+    @patch("personal_mem.judge._check_committed_via_git", return_value=["new1234"])
+    def test_existing_commit_refs_merged(self, mock_git, tmp_path):
+        """Existing commit_refs from frontmatter are merged with discovered refs."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        dec = _make_decision(
+            committed=True, file_paths=[str(existing)], commit_refs=["old5678"],
+        )
+        result = evaluate_decision(dec, [dec])
+        assert "old5678" in result["commit_refs"]
+        assert "new1234" in result["commit_refs"]
+
+    @patch("personal_mem.judge._check_committed_via_git", return_value=["dup1234"])
+    def test_commit_refs_deduped(self, mock_git, tmp_path):
+        """Duplicate refs from frontmatter and git discovery are deduplicated."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        dec = _make_decision(
+            committed=True, file_paths=[str(existing)], commit_refs=["dup1234"],
+        )
+        result = evaluate_decision(dec, [dec])
+        assert result["commit_refs"].count("dup1234") == 1
+
+    def test_judged_at_present_in_all_verdicts(self, tmp_path):
+        """Every verdict includes a judged_at ISO timestamp."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        # kept path
+        dec = _make_decision(committed=True, file_paths=[str(existing)])
+        result = evaluate_decision(dec, [dec])
+        assert "judged_at" in result
+        assert "T" in result["judged_at"]  # ISO format has T separator
+        # unknown path
+        dec2 = _make_decision(committed=False, file_paths=[])
+        assert "judged_at" in evaluate_decision(dec2, [dec2])
+
+    def test_blame_lines_present_in_result(self, tmp_path):
+        """Verdict includes blame_lines count."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        dec = _make_decision(committed=True, file_paths=[str(existing)])
+        result = evaluate_decision(dec, [dec])
+        assert "blame_lines" in result
+        assert isinstance(result["blame_lines"], int)
+
+    @patch("personal_mem.judge._check_blame_survival", return_value=15)
+    @patch("personal_mem.judge._check_committed_via_git", return_value=[])
+    def test_superseded_with_surviving_lines_becomes_kept(self, mock_git, mock_blame, tmp_path):
+        """Decision with surviving blame lines is co-contributor, not superseded."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        fp = str(existing)
+        dec_old = _make_decision("d1", date="2026-04-01", committed=True, file_paths=[fp])
+        dec_new = _make_decision("d2", date="2026-04-02", committed=True, file_paths=[fp])
+        result = evaluate_decision(dec_old, [dec_old, dec_new])
+        assert result["verdict"] == "kept"
+        assert result["confidence"] == 0.5
+        assert "15 lines survive" in result["evidence"]
+        assert result["blame_lines"] == 15
+
+    @patch("personal_mem.judge._check_blame_survival", return_value=0)
+    @patch("personal_mem.judge._check_committed_via_git", return_value=[])
+    def test_superseded_with_zero_lines_stays_superseded(self, mock_git, mock_blame, tmp_path):
+        """Decision with zero surviving lines is truly superseded."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        fp = str(existing)
+        dec_old = _make_decision("d1", date="2026-04-01", committed=True, file_paths=[fp])
+        dec_new = _make_decision("d2", date="2026-04-02", committed=True, file_paths=[fp])
+        result = evaluate_decision(dec_old, [dec_old, dec_new])
+        assert result["verdict"] == "superseded"
+        assert result["confidence"] == 0.7
+
+
+class TestCheckBlameSurvival:
+    @patch("personal_mem.judge.subprocess.run")
+    def test_counts_matching_lines(self, mock_run, tmp_path):
+        existing = tmp_path / "a.py"
+        existing.write_text("x = 1\ny = 2\n")
+        # Porcelain format: hash lines, then \t-prefixed content
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = (
+            "abc1234def5678901234567890123456789012 1 1 1\n"
+            "author Test\n"
+            "\tx = 1\n"
+            "abc1234def5678901234567890123456789012 2 2 1\n"
+            "author Test\n"
+            "\ty = 2\n"
+        )
+        result = _check_blame_survival([str(existing)], ["abc1234"])
+        assert result == 2
+
+    @patch("personal_mem.judge.subprocess.run")
+    def test_no_matching_lines(self, mock_run, tmp_path):
+        existing = tmp_path / "a.py"
+        existing.write_text("z = 3\n")
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = (
+            "fff9999aaa1111222233334444555566667777 1 1 1\n"
+            "\tz = 3\n"
+        )
+        result = _check_blame_survival([str(existing)], ["abc1234"])
+        assert result == 0
+
+    def test_returns_negative_for_missing_file(self):
+        result = _check_blame_survival(["/nonexistent/path.py"], ["abc1234"])
+        assert result == -1
+
+    def test_returns_negative_for_empty_inputs(self):
+        assert _check_blame_survival([], ["abc1234"]) == -1
+        assert _check_blame_survival(["/some/file.py"], []) == -1
+
+    @patch("personal_mem.judge.subprocess.run")
+    def test_handles_subprocess_error(self, mock_run, tmp_path):
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        mock_run.side_effect = FileNotFoundError("git not found")
+        result = _check_blame_survival([str(existing)], ["abc1234"])
+        assert result == -1
