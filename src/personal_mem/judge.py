@@ -147,6 +147,9 @@ def _check_committed_via_git(file_paths: list[str], since_date: str) -> list[str
     """
     if not since_date:
         return []
+    # Bare dates like "2026-04-05" need explicit time for reliable git --since
+    if "T" not in since_date:
+        since_date = f"{since_date}T00:00:00"
     seen: set[str] = set()
     hashes: list[str] = []
     for fp in file_paths:
