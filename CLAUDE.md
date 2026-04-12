@@ -70,6 +70,8 @@ Do not duplicate between them — a term belongs in one or the other.
 
 **Concept assignment is mandatory** — every note and decision created via `mem_extract` MUST include a `concepts` array with minimum 2 concepts. Notes with <2 concepts cannot auto-link and will cluster as isolated islands in Obsidian. Before assigning concepts, call `mem_concepts` to load existing labels. Prefer specific domain terms over generic ones; use domain-qualified paths when they exist (`ml/deep-learning` not `deep-learning`).
 
+The shipped `src/personal_mem/ontology.yaml` is a minimal seed — it grows as you use the vault via `/mem-resolve-concepts`. For a fuller reference showing how the ontology looks after months of use across ML, AI tooling, finance, and SWE, see `src/personal_mem/ontology.example.yaml`.
+
 **Session lifecycle**: hooks accumulate events (with diff context) + `★ Insight` blocks + git commits/test results into session notes → Stop hook auto-extracts (thin summary, archive events) → `/mem-wrap` enriches with LLM insights and decisions via `mem_extract` → session folder contains clean summary + derived artifacts. For non-code conversations (no hooks fired), `mem_extract` auto-creates a session note.
 
 **Decision lifecycle**: `proposed` → `accepted` → `deprecated`/`superseded`. Decisions capture both successful and abandoned approaches. `mem_judge` evaluates decisions against evidence (committed? tested? re-edited?) and assigns verdicts (kept/superseded/reverted/unknown).
