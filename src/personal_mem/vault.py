@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from personal_mem.config import Config, load_config
@@ -182,9 +182,7 @@ class VaultManager:
             self.root / ".mem",
             self.root / "projects",
             self.root / "daily",
-            self.root / "sources" / "podcasts",
-            self.root / "sources" / "papers",
-            self.root / "sources" / "articles",
+            self.root / "sources",
             self.root / "templates",
         ]
         for d in dirs:
@@ -296,7 +294,7 @@ class VaultManager:
                 folder instead of the default misc/ catch-all.
         """
         note_id = self.generate_id(note_type)
-        today = date.today().isoformat()
+        today = datetime.now(timezone.utc).isoformat()
         project = project or self.config.default_project
 
         # Resolve session_id to output_dir if provided
@@ -349,6 +347,16 @@ class VaultManager:
                 session_subdir = target_dir / f"{note_id}-{today}"
             session_subdir.mkdir(parents=True, exist_ok=True)
             filepath = session_subdir / "session.md"
+        elif note_type == NoteType.SOURCE:
+            # Sources get their own subdirectory: sources/{slug}/source.md
+            # Raw content (PDFs, snapshots) lives alongside in the same folder.
+            source_subdir = target_dir / slug
+            counter = 1
+            while source_subdir.exists():
+                source_subdir = target_dir / f"{slug}-{counter}"
+                counter += 1
+            source_subdir.mkdir(parents=True, exist_ok=True)
+            filepath = source_subdir / "source.md"
         else:
             filename = f"{slug}.md"
             filepath = target_dir / filename

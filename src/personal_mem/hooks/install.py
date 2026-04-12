@@ -37,6 +37,10 @@ def install_hooks(project_dir: str = "") -> None:
     hooks = settings.setdefault("hooks", {})
     hook_cmd = _get_hook_command()
 
+    # SessionStart hook — injects project context before the first user turn
+    session_start_hooks = hooks.setdefault("SessionStart", [])
+    _ensure_hook(session_start_hooks, "", f"{hook_cmd} session_start")
+
     # PreToolUse hook
     pre_hooks = hooks.setdefault("PreToolUse", [])
     _ensure_hook(pre_hooks, "Write|Edit", f"{hook_cmd} pre_tool_use")
@@ -50,7 +54,11 @@ def install_hooks(project_dir: str = "") -> None:
     _ensure_hook(stop_hooks, "", f"{hook_cmd} stop")
 
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    print(f"Hooks installed at {settings_path}")
+    print(
+        f"Hooks installed at {settings_path}\n"
+        "  SessionStart hook will inject ~7–10k tokens of project context "
+        "on the next Claude Code session."
+    )
 
 
 def uninstall_hooks(project_dir: str = "") -> None:
@@ -64,7 +72,7 @@ def uninstall_hooks(project_dir: str = "") -> None:
     hooks = settings.get("hooks", {})
     hook_cmd = _get_hook_command()
 
-    for hook_type in ("PreToolUse", "PostToolUse", "Stop"):
+    for hook_type in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
         entries = hooks.get(hook_type, [])
         hooks[hook_type] = [
             entry

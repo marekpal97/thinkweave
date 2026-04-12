@@ -136,12 +136,14 @@ class TestEvaluateDecision:
         assert result["verdict"] == "superseded"
         assert result["confidence"] == 0.7
 
-    @patch("personal_mem.judge._check_committed_via_git", return_value=["abc1234"])
+    @patch("personal_mem.judge._check_committed_via_git")
     def test_git_reconciliation(self, mock_git, tmp_path):
         """Decision starts as uncommitted but git shows it was committed later."""
         existing_file = tmp_path / "a.py"
         existing_file.write_text("pass")
-        dec = _make_decision(committed=False, file_paths=[str(existing_file)])
+        fp = str(existing_file)
+        mock_git.return_value = {"abc1234": [fp]}
+        dec = _make_decision(committed=False, file_paths=[fp])
         result = evaluate_decision(dec, [dec])
         assert result["verdict"] == "kept"
         assert result["confidence"] == 0.6
@@ -181,34 +183,40 @@ class TestEvaluateDecision:
         dec_new = _make_decision("d2", date="2026-04-02", committed=True, file_paths=[fp])
         assert "commit_refs" in evaluate_decision(dec_old, [dec_old, dec_new])
 
-    @patch("personal_mem.judge._check_committed_via_git", return_value=["aaa1111", "bbb2222"])
+    @patch("personal_mem.judge._check_committed_via_git")
     def test_git_reconciliation_stores_multiple_refs(self, mock_git, tmp_path):
         """Judge stores all discovered commit hashes."""
         existing = tmp_path / "a.py"
         existing.write_text("pass")
-        dec = _make_decision(committed=False, file_paths=[str(existing)])
+        fp = str(existing)
+        mock_git.return_value = {"aaa1111": [fp], "bbb2222": [fp]}
+        dec = _make_decision(committed=False, file_paths=[fp])
         result = evaluate_decision(dec, [dec])
         assert result["commit_refs"] == ["aaa1111", "bbb2222"]
 
-    @patch("personal_mem.judge._check_committed_via_git", return_value=["new1234"])
+    @patch("personal_mem.judge._check_committed_via_git")
     def test_existing_commit_refs_merged(self, mock_git, tmp_path):
         """Existing commit_refs from frontmatter are merged with discovered refs."""
         existing = tmp_path / "a.py"
         existing.write_text("pass")
+        fp = str(existing)
+        mock_git.return_value = {"new1234": [fp]}
         dec = _make_decision(
-            committed=True, file_paths=[str(existing)], commit_refs=["old5678"],
+            committed=True, file_paths=[fp], commit_refs=["old5678"],
         )
         result = evaluate_decision(dec, [dec])
         assert "old5678" in result["commit_refs"]
         assert "new1234" in result["commit_refs"]
 
-    @patch("personal_mem.judge._check_committed_via_git", return_value=["dup1234"])
+    @patch("personal_mem.judge._check_committed_via_git")
     def test_commit_refs_deduped(self, mock_git, tmp_path):
         """Duplicate refs from frontmatter and git discovery are deduplicated."""
         existing = tmp_path / "a.py"
         existing.write_text("pass")
+        fp = str(existing)
+        mock_git.return_value = {"dup1234": [fp]}
         dec = _make_decision(
-            committed=True, file_paths=[str(existing)], commit_refs=["dup1234"],
+            committed=True, file_paths=[fp], commit_refs=["dup1234"],
         )
         result = evaluate_decision(dec, [dec])
         assert result["commit_refs"].count("dup1234") == 1
@@ -236,7 +244,7 @@ class TestEvaluateDecision:
         assert isinstance(result["blame_lines"], int)
 
     @patch("personal_mem.judge._check_blame_survival", return_value=15)
-    @patch("personal_mem.judge._check_committed_via_git", return_value=[])
+    @patch("personal_mem.judge._check_committed_via_git", return_value={})
     def test_superseded_with_surviving_lines_becomes_kept(self, mock_git, mock_blame, tmp_path):
         """Decision with surviving blame lines is co-contributor, not superseded."""
         existing = tmp_path / "a.py"
@@ -251,7 +259,7 @@ class TestEvaluateDecision:
         assert result["blame_lines"] == 15
 
     @patch("personal_mem.judge._check_blame_survival", return_value=0)
-    @patch("personal_mem.judge._check_committed_via_git", return_value=[])
+    @patch("personal_mem.judge._check_committed_via_git", return_value={})
     def test_superseded_with_zero_lines_stays_superseded(self, mock_git, mock_blame, tmp_path):
         """Decision with zero surviving lines is truly superseded."""
         existing = tmp_path / "a.py"
@@ -309,3 +317,53 @@ class TestCheckBlameSurvival:
         mock_run.side_effect = FileNotFoundError("git not found")
         result = _check_blame_survival([str(existing)], ["abc1234"])
         assert result == -1
+
+    @patch("personal_mem.judge.subprocess.run")
+    def test_narrows_blame_to_relevant_files(self, mock_run, tmp_path):
+        """With hash_to_files, blame only checks files that the commit touched."""
+        a = tmp_path / "a.py"
+        b = tmp_path / "b.py"
+        a.write_text("x = 1\n")
+        b.write_text("y = 2\n")
+
+        # abc only touched a.py, def only touched b.py
+        hash_to_files = {"abc1234": [str(a)], "def5678": [str(b)]}
+
+        def fake_blame(args, **kwargs):
+            fp = args[-1]
+            m = type("R", (), {"returncode": 0, "stdout": ""})()
+            if fp == str(a):
+                m.stdout = "abc1234aaa1111222233334444555566667777 1 1 1\n\tx = 1\n"
+            elif fp == str(b):
+                m.stdout = "def5678bbb1111222233334444555566667777 1 1 1\n\ty = 2\n"
+            return m
+
+        mock_run.side_effect = fake_blame
+        # Both files, both refs, but narrowed by hash_to_files
+        result = _check_blame_survival(
+            [str(a), str(b)], ["abc1234", "def5678"], hash_to_files,
+        )
+        assert result == 2  # 1 line from a (abc) + 1 line from b (def)
+
+    @patch("personal_mem.judge.subprocess.run")
+    def test_narrowing_skips_unrelated_file(self, mock_run, tmp_path):
+        """Commit that didn't touch a file shouldn't count blame lines in it."""
+        a = tmp_path / "a.py"
+        b = tmp_path / "b.py"
+        a.write_text("x = 1\n")
+        b.write_text("y = 2\n")
+
+        # abc only touched a.py — b.py blame should be skipped entirely
+        hash_to_files = {"abc1234": [str(a)]}
+
+        def fake_blame(args, **kwargs):
+            m = type("R", (), {"returncode": 0, "stdout": ""})()
+            m.stdout = "abc1234aaa1111222233334444555566667777 1 1 1\n\tx = 1\n"
+            return m
+
+        mock_run.side_effect = fake_blame
+        result = _check_blame_survival(
+            [str(a), str(b)], ["abc1234"], hash_to_files,
+        )
+        # Only a.py counted, b.py skipped because abc1234 didn't touch it
+        assert result == 1

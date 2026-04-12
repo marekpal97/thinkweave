@@ -34,11 +34,41 @@ def main(argv: list[str] | None = None) -> None:
     # --- mem search ---
     p_search = sub.add_parser("search", help="Search the vault")
     p_search.add_argument("query", nargs="?", default="")
-    p_search.add_argument("--type", "-t", default="")
+    p_search.add_argument("--type", "-t", default="", help="Note type (or comma-separated list)")
     p_search.add_argument("--project", "-p", default="")
     p_search.add_argument("--tags", default="", help="Comma-separated tags")
     p_search.add_argument("--limit", "-n", type=int, default=10)
-    p_search.add_argument("--semantic", action="store_true", help="Use semantic search")
+    p_search.add_argument("--concept", "-c", default="", help="Search by concept (comma-separated for multi)")
+    p_search.add_argument(
+        "--match-mode", default="any", choices=["any", "all"],
+        help="With --concept: 'any' (union) or 'all' (intersection)",
+    )
+    p_search.add_argument(
+        "--mode", default="fts", choices=["fts", "similar", "hybrid"],
+        help="Search mode: fts (default), similar (semantic), hybrid (RRF fusion)",
+    )
+    p_search.add_argument("--semantic", action="store_true", help="Alias for --mode similar")
+
+    # --- mem decisions --file ---
+    p_decisions = sub.add_parser(
+        "decisions", help="Query decisions — e.g. every decision that touched a file"
+    )
+    p_decisions.add_argument("--file", "-f", dest="file_path", default="", help="File path to filter by")
+    p_decisions.add_argument("--project", "-p", default="")
+    p_decisions.add_argument("--status", default="", help="Filter by status (accepted/proposed/deprecated/superseded)")
+    p_decisions.add_argument("--limit", "-n", type=int, default=50)
+
+    # --- mem project ---
+    p_project = sub.add_parser(
+        "project", help="Print a structured project snapshot (same payload as SessionStart hook)"
+    )
+    p_project.add_argument("name", help="Project slug")
+    p_project.add_argument(
+        "--sections", default="",
+        help="Comma-separated section keys (default: all). "
+             "Options: header,tools,sessions,state,backlog,decisions,probes,concepts,sources,footer",
+    )
+    p_project.add_argument("--budget", type=int, default=8000, help="Token budget (default 8000)")
 
     # --- mem show ---
     p_show = sub.add_parser("show", help="Display a note by ID")
@@ -65,16 +95,23 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- mem import ---
     p_import = sub.add_parser("import", help="Import from external sources")
-    p_import.add_argument("source", choices=["claude-mem", "hive", "file"])
-    p_import.add_argument("path", nargs="?", default="", help="File path (for 'file' source)")
+    p_import.add_argument("source", choices=["claude-mem", "hive", "file", "chatgpt", "messenger"])
+    p_import.add_argument("path", nargs="?", default="", help="File path (for 'file'/'chatgpt' source)")
     p_import.add_argument("--source-type", default="article", help="Source type for file import")
     p_import.add_argument("--project", "-p", default="")
+    p_import.add_argument("--dry-run", action="store_true", help="Show what would be imported")
+    p_import.add_argument("--db-path", default="", help="Path to claude-mem database")
+    p_import.add_argument("--limit", type=int, default=0, help="Max conversations to import (chatgpt)")
+    p_import.add_argument("--since", default="", help="Import conversations from this date (YYYY-MM-DD)")
+    p_import.add_argument("--until", default="", help="Import conversations until this date (YYYY-MM-DD)")
+    p_import.add_argument("--no-resolve", action="store_true", help="Skip Facebook URL resolution (messenger)")
 
     # --- mem context ---
     p_context = sub.add_parser("context", help="Get relevant notes for current context")
     p_context.add_argument("--project", "-p", default="")
     p_context.add_argument("--tags", default="", help="Comma-separated tags")
     p_context.add_argument("--query", "-q", default="")
+    p_context.add_argument("--concepts", default="", help="Comma-separated concepts for concept-based retrieval")
     p_context.add_argument("--limit", "-n", type=int, default=5)
 
     # --- mem stats ---
@@ -86,6 +123,8 @@ def main(argv: list[str] | None = None) -> None:
     p_install = hooks_sub.add_parser("install", help="Install hooks")
     p_install.add_argument("--project", "-p", default="")
     hooks_sub.add_parser("uninstall", help="Uninstall hooks")
+    p_hooks_status = hooks_sub.add_parser("status", help="Show recent hook errors")
+    p_hooks_status.add_argument("--limit", "-n", type=int, default=20, help="Number of lines to show")
 
     # --- mem backlog ---
     p_backlog = sub.add_parser("backlog", help="List notes tagged 'todo'")
@@ -102,6 +141,19 @@ def main(argv: list[str] | None = None) -> None:
     p_merge = concepts_sub.add_parser("merge", help="Merge one concept into another")
     p_merge.add_argument("from_concept", help="Concept to rename/remove")
     p_merge.add_argument("to_concept", help="Canonical concept to merge into")
+    p_prune = concepts_sub.add_parser("prune", help="Remove low-count concepts from notes")
+    p_prune.add_argument("--dry-run", action="store_true", help="Show what would be pruned")
+    concepts_sub.add_parser("hubs", help="Generate Obsidian hub pages from ontology")
+    p_drift = concepts_sub.add_parser(
+        "drift",
+        help="Advisory drift report (near-dupes, new ontology candidates, stale hubs)",
+    )
+    p_drift.add_argument("--project", "-p", default="", help="Optional project scope")
+    p_drift.add_argument("--threshold", type=int, default=5, help="Min count for candidates")
+    p_drift.add_argument("--max-items", type=int, default=5, help="Max per category")
+    p_notes = concepts_sub.add_parser("notes", help="List notes for a specific concept")
+    p_notes.add_argument("concept", help="Concept to search for")
+    p_notes.add_argument("--project", "-p", default="", help="Filter by project")
 
     # --- mem landing ---
     p_landing = sub.add_parser("landing", help="Generate project landing documents")
@@ -120,6 +172,60 @@ def main(argv: list[str] | None = None) -> None:
         "restructure", help="Move flat vault files into sessions/notes/decisions subdirectories"
     )
     p_restructure.add_argument("--dry-run", action="store_true", help="Show what would move")
+
+    # --- mem prune-orphans ---
+    p_prune_orphans = sub.add_parser(
+        "prune-orphans",
+        help="Delete empty/abandoned session folders (no derived notes, no events, no commits)",
+    )
+    p_prune_orphans.add_argument("--project", "-p", default="", help="Scope to one project")
+    p_prune_orphans.add_argument(
+        "--dry-run", action="store_true", help="Report what would be deleted without deleting"
+    )
+    p_prune_orphans.add_argument(
+        "--yes", "-y", action="store_true", help="Commit the deletion (default: dry-run)"
+    )
+    p_prune_orphans.add_argument(
+        "--min-age",
+        type=int,
+        default=3600,
+        help="Minimum session age in seconds to be eligible (default: 3600)",
+    )
+
+    # --- mem enrich ---
+    p_enrich = sub.add_parser(
+        "enrich",
+        help="LLM-assisted concept assignment for notes missing concepts (uses claude-haiku)",
+    )
+    p_enrich.add_argument("--project", "-p", default="", help="Scope to one project")
+    p_enrich.add_argument(
+        "--type", "-t", dest="note_types", default="",
+        help="Comma-separated types to enrich (default: session,note,decision,source)",
+    )
+    p_enrich.add_argument("--limit", "-n", type=int, default=0, help="Max notes to process (0=all)")
+    p_enrich.add_argument(
+        "--force", action="store_true",
+        help="Re-enrich notes that already have concepts",
+    )
+    p_enrich.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    p_enrich.add_argument(
+        "--reindex", action="store_true", default=True,
+        help="Rebuild index after enrichment (default: true)",
+    )
+    p_enrich.add_argument("--no-reindex", dest="reindex", action="store_false")
+    p_enrich.add_argument(
+        "--connect", action="store_true", default=True,
+        help="Re-run mem connect after reindex (default: true)",
+    )
+    p_enrich.add_argument("--no-connect", dest="connect", action="store_false")
+
+    # --- mem connect ---
+    p_connect = sub.add_parser(
+        "connect",
+        help="Materialize SQLite edges as wikilinks (## See Also) for Obsidian graph",
+    )
+    p_connect.add_argument("--max-links", type=int, default=5, help="Max links per note (default: 5)")
+    p_connect.add_argument("--dry-run", action="store_true", help="Show stats without writing files")
 
     # --- mem migrate ---
     p_migrate = sub.add_parser(
@@ -147,9 +253,14 @@ def main(argv: list[str] | None = None) -> None:
         "add": cmd_add,
         "backlog": cmd_backlog,
         "concepts": cmd_concepts,
+        "decisions": cmd_decisions,
         "landing": cmd_landing,
         "migrate": cmd_migrate,
+        "project": cmd_project,
+        "prune-orphans": cmd_prune_orphans,
         "restructure": cmd_restructure,
+        "enrich": cmd_enrich,
+        "connect": cmd_connect,
         "search": cmd_search,
         "show": cmd_show,
         "link": cmd_link,
@@ -294,6 +405,107 @@ def cmd_concepts(args: argparse.Namespace) -> None:
 
         print(f"Merged '{from_c}' → '{to_c}': {changed} notes updated. Alias saved. Index rebuilt.")
 
+    elif action == "prune":
+        from personal_mem.concepts import build_keep_set, load_ontology, prune_concepts
+
+        ontology = load_ontology()
+        if not ontology:
+            print("No ontology.yaml found.")
+            return
+
+        keep_set = build_keep_set(ontology)
+        print(f"Ontology defines {len(keep_set)} concepts across {len(ontology)} domains.")
+
+        if args.dry_run:
+            # Count what would be pruned
+            from personal_mem.vault import VaultManager, parse_frontmatter
+            vm = VaultManager(config=cfg)
+            would_remove = 0
+            would_modify = 0
+            for md_file in vm.root.rglob("*.md"):
+                text = md_file.read_text(encoding="utf-8")
+                fm, _ = parse_frontmatter(text)
+                if not fm:
+                    continue
+                concepts = fm.get("concepts", [])
+                if isinstance(concepts, str):
+                    concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+                removed = sum(1 for c in concepts if c.lower() not in keep_set)
+                if removed:
+                    would_modify += 1
+                    would_remove += removed
+            print(f"Would modify {would_modify} files, removing {would_remove} concepts.")
+            return
+
+        stats = prune_concepts(cfg.vault_root, keep_set)
+        print(f"Pruned {stats['concepts_removed']} concepts from {stats['files_modified']} files.")
+
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+        print("Index rebuilt.")
+
+    elif action == "notes":
+        from personal_mem.search import Search
+
+        s = Search(config=cfg)
+        concept = args.concept.lower()
+        project = args.project if hasattr(args, "project") else ""
+        results = s.search_by_concept(concept, project=project, limit=50)
+        s.close()
+
+        if not results:
+            print(f"No notes with concept '{concept}'.")
+            return
+
+        print(f"Notes with concept '{concept}' ({len(results)}):\n")
+        for r in results:
+            tag_str = f" [{', '.join(r.tags)}]" if r.tags else ""
+            proj_str = f" | {r.project}" if r.project else ""
+            print(f"  [{r.type}] {r.title} ({r.id}){tag_str}{proj_str}")
+
+    elif action == "hubs":
+        from personal_mem.concepts import (
+            add_hub_wikilinks,
+            generate_hub_pages,
+            hubs_marker_path,
+            load_ontology,
+        )
+
+        ontology = load_ontology()
+        if not ontology:
+            print("No ontology.yaml found.")
+            return
+
+        generated = generate_hub_pages(cfg, ontology)
+        print(f"Generated {len(generated)} hub pages in vault/concepts/:")
+        for domain, path in sorted(generated.items()):
+            print(f"  {domain} → {path.name}")
+
+        modified = add_hub_wikilinks(cfg, ontology)
+        print(f"Added domain wikilinks to {modified} notes.")
+
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+        print("Index rebuilt.")
+
+        # Touch the marker so drift_report knows hubs are fresh
+        marker = hubs_marker_path(cfg)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+
+    elif action == "drift":
+        from personal_mem.concepts import drift_report, format_drift_report
+
+        report = drift_report(
+            cfg,
+            project=args.project,
+            threshold=args.threshold,
+            max_items=args.max_items,
+        )
+        print(format_drift_report(report))
+
 
 def cmd_init(args: argparse.Namespace) -> None:
     from personal_mem.vault import VaultManager
@@ -344,20 +556,73 @@ def cmd_search(args: argparse.Namespace) -> None:
 
     cfg = load_config()
 
-    if args.semantic:
-        _cmd_search_semantic(args, cfg)
-        return
+    # --semantic is an alias for --mode similar (back-compat)
+    mode = args.mode
+    if args.semantic and mode == "fts":
+        mode = "similar"
 
     s = Search(config=cfg)
+
+    # Normalize type filter: accept comma-separated for list support
+    type_arg: str | list[str] = args.type
+    if args.type and "," in args.type:
+        type_arg = [t.strip() for t in args.type.split(",") if t.strip()]
+
+    # Concept-based search (overrides text search)
+    if args.concept:
+        concept_list = [c.strip() for c in args.concept.split(",") if c.strip()]
+        results = s.search_by_concept(
+            concept=concept_list if len(concept_list) > 1 else concept_list[0],
+            project=args.project,
+            note_type=type_arg,
+            limit=args.limit,
+            match_mode=args.match_mode,
+        )
+        s.close()
+
+        label = (
+            concept_list[0]
+            if len(concept_list) == 1
+            else f"{len(concept_list)} concepts ({args.match_mode})"
+        )
+        if not results:
+            print(f"No notes with {label}.")
+            return
+
+        print(f"Notes with {label} ({len(results)}):\n")
+        for r in results:
+            tag_str = f" [{', '.join(r.tags)}]" if r.tags else ""
+            print(f"  [{r.type}] {r.title} ({r.id}){tag_str}")
+            if r.project:
+                print(f"    project: {r.project}")
+            print()
+        return
+
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
 
-    results = s.search(
-        query=args.query,
-        note_type=args.type,
-        project=args.project,
-        tags=tags,
-        limit=args.limit,
-    )
+    if mode == "similar":
+        results = s.similar(
+            args.query, project=args.project, note_type=type_arg, limit=args.limit
+        )
+        if not results:
+            s.close()
+            print(
+                "No semantic results. If embeddings aren't set up yet, run "
+                "`mem index --embed` with OPENAI_API_KEY set."
+            )
+            return
+    elif mode == "hybrid":
+        results = s.hybrid_search(
+            args.query, project=args.project, note_type=type_arg, limit=args.limit
+        )
+    else:
+        results = s.search(
+            query=args.query,
+            note_type=type_arg,
+            project=args.project,
+            tags=tags,
+            limit=args.limit,
+        )
     s.close()
 
     if not results:
@@ -471,6 +736,89 @@ def cmd_graph(args: argparse.Namespace) -> None:
     s.close()
 
 
+def cmd_enrich(args: argparse.Namespace) -> None:
+    """LLM-assisted concept enrichment for notes missing concepts."""
+    from personal_mem.enrich import enrich
+    from personal_mem.indexer import Indexer
+
+    cfg = load_config()
+
+    note_types = (
+        [t.strip() for t in args.note_types.split(",") if t.strip()]
+        if args.note_types
+        else ["session", "note", "decision", "source"]
+    )
+
+    prefix = "[dry run] " if args.dry_run else ""
+    type_str = ",".join(note_types)
+    print(f"{prefix}Enriching {type_str} notes"
+          + (f" in project '{args.project}'" if args.project else " (all projects)")
+          + (f" (limit {args.limit})" if args.limit else "")
+          + "...")
+
+    def progress(current, total, title):
+        pct = current * 100 // max(total, 1)
+        print(f"  [{pct:3d}%] batch at note {current}/{total}: {title[:50]}")
+
+    stats = enrich(
+        cfg,
+        project=args.project,
+        note_types=note_types,
+        limit=args.limit,
+        force=args.force,
+        dry_run=args.dry_run,
+        progress_cb=progress,
+    )
+
+    print(
+        f"\n{prefix}Done — enriched: {stats['enriched']}, "
+        f"skipped: {stats['skipped']}, "
+        f"errors: {stats['errors']}, "
+        f"concepts assigned: {stats['new_concepts']}"
+    )
+
+    if not args.dry_run and stats["enriched"] > 0:
+        if args.reindex:
+            print("\nRebuilding index...")
+            idx = Indexer(config=cfg)
+            istats = idx.rebuild(full=True)
+            print(f"  Indexed: {istats['indexed']}, Edges: {istats['edges']}")
+            idx.close()
+
+        if args.connect:
+            print("\nMaterializing links for Obsidian...")
+            from personal_mem.indexer import Indexer as Idx2
+            idx2 = Idx2(config=cfg)
+            cstats = idx2.materialize_links(max_links=5)
+            print(f"  Updated: {cstats['notes_updated']}, Links: {cstats['links_written']}")
+            idx2.close()
+
+            print("\nFinal reindex to pick up new wikilinks...")
+            idx3 = Indexer(config=cfg)
+            fstats = idx3.rebuild(full=False)
+            print(f"  Edges: {fstats['edges']}")
+            idx3.close()
+
+
+def cmd_connect(args: argparse.Namespace) -> None:
+    """Materialize SQLite edges as wikilinks in markdown for Obsidian."""
+    from personal_mem.indexer import Indexer
+
+    cfg = load_config()
+    idx = Indexer(config=cfg)
+
+    stats = idx.materialize_links(max_links=args.max_links, dry_run=args.dry_run)
+    prefix = "[dry run] " if args.dry_run else ""
+    print(
+        f"{prefix}Updated: {stats['notes_updated']}, "
+        f"Skipped: {stats['notes_skipped']}, "
+        f"Links written: {stats['links_written']}"
+    )
+    if not args.dry_run:
+        print("Re-run `mem index` to update the index with new wikilinks.")
+    idx.close()
+
+
 def cmd_index(args: argparse.Namespace) -> None:
     from personal_mem.indexer import Indexer
 
@@ -501,16 +849,68 @@ def cmd_import(args: argparse.Namespace) -> None:
     cfg = load_config()
 
     if args.source == "claude-mem":
+        from pathlib import Path as _Path
+
         from personal_mem.importers.claude_mem import import_claude_mem
 
-        stats = import_claude_mem(cfg)
-        print(f"Imported {stats['imported']} notes from claude-mem, {stats['skipped']} skipped")
+        db_path = _Path(args.db_path) if args.db_path else None
+        stats = import_claude_mem(
+            cfg,
+            db_path=db_path,
+            project_filter=args.project,
+            dry_run=args.dry_run,
+        )
+        if "error" in stats:
+            print(f"Error: {stats['error']}")
+            sys.exit(1)
+        if not args.dry_run:
+            print(
+                f"Imported: {stats['sessions']} sessions, "
+                f"{stats['notes']} notes, {stats['decisions']} decisions"
+            )
+            if stats.get("deduped"):
+                print(f"  Deduped: {stats['deduped']}")
+            if stats.get("skipped"):
+                print(f"  Skipped (already imported): {stats['skipped']}")
+            if stats.get("errors"):
+                print(f"  Errors: {stats['errors']}")
 
     elif args.source == "hive":
         from personal_mem.importers.hive_insights import import_hive_insights
 
         stats = import_hive_insights(cfg, project=args.project)
         print(f"Imported {stats['imported']} notes from hive, {stats['skipped']} skipped")
+
+    elif args.source == "chatgpt":
+        if not args.path:
+            print("File path required. Usage: mem import chatgpt <path-to-conversations.json>")
+            sys.exit(1)
+
+        # Load .env if python-dotenv is available
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
+
+        from personal_mem.importers.chatgpt import import_chatgpt
+
+        stats = import_chatgpt(
+            cfg,
+            conversations_path=Path(args.path),
+            dry_run=args.dry_run,
+            limit=args.limit,
+            since=args.since,
+            until=args.until,
+        )
+        if "error" in stats:
+            print(f"Error: {stats['error']}")
+            sys.exit(1)
+        if not args.dry_run:
+            print(
+                f"\nDone: {stats['imported']} imported, "
+                f"{stats['skipped']} skipped, {stats['errors']} errors"
+            )
 
     elif args.source == "file":
         if not args.path:
@@ -526,6 +926,25 @@ def cmd_import(args: argparse.Namespace) -> None:
         )
         print(f"Imported source note at {path}")
 
+    elif args.source == "messenger":
+        if not args.path:
+            print("File path required. Usage: mem import messenger <path-to-export.json>")
+            sys.exit(1)
+
+        from personal_mem.importers.messenger import import_messenger
+
+        stats = import_messenger(
+            cfg,
+            json_path=Path(args.path),
+            dry_run=args.dry_run,
+            resolve=not args.no_resolve,
+            since=args.since,
+            until=args.until,
+        )
+        if "error" in stats:
+            print(f"Error: {stats['error']}")
+            sys.exit(1)
+
 
 def cmd_context(args: argparse.Namespace) -> None:
     from personal_mem.search import Search
@@ -533,11 +952,13 @@ def cmd_context(args: argparse.Namespace) -> None:
     cfg = load_config()
     s = Search(config=cfg)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+    concepts = [c.strip() for c in args.concepts.split(",") if c.strip()] if args.concepts else None
 
     results = s.get_context(
         project=args.project,
         tags=tags,
         query=args.query,
+        concepts=concepts,
         limit=args.limit,
     )
     s.close()
@@ -581,6 +1002,154 @@ def cmd_hooks(args: argparse.Namespace) -> None:
         from personal_mem.hooks.install import uninstall_hooks
 
         uninstall_hooks()
+    elif args.hooks_action == "status":
+        cfg = load_config()
+        log_path = cfg.mem_dir / "hooks.log"
+        if not log_path.exists():
+            print("No hook errors recorded.")
+            return
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        limit = args.limit if hasattr(args, "limit") else 20
+        recent = lines[-limit:] if len(lines) > limit else lines
+        if not recent:
+            print("Hook log is empty.")
+        else:
+            print(f"Last {len(recent)} lines from {log_path}:\n")
+            for line in recent:
+                print(line)
+
+
+def cmd_decisions(args: argparse.Namespace) -> None:
+    """Query decisions — primary use: ``mem decisions --file <path>``."""
+    from personal_mem.search import Search
+
+    if not args.file_path:
+        print("Usage: mem decisions --file <path> [--project X] [--status accepted]")
+        return
+
+    cfg = load_config()
+    s = Search(config=cfg)
+    results = s.search_decisions_by_file(
+        args.file_path,
+        project=args.project,
+        status=args.status,
+        limit=args.limit,
+    )
+    s.close()
+
+    if not results:
+        print(f"No decisions found touching {args.file_path}.")
+        print("(Path must match exactly as stored in decision frontmatter.)")
+        return
+
+    print(f"Decisions touching {args.file_path} ({len(results)}):\n")
+    for r in results:
+        print(f"  [{r.id}] {r.title}")
+        if r.project:
+            print(f"    project: {r.project}  date: {r.date}")
+        print()
+
+
+def cmd_project(args: argparse.Namespace) -> None:
+    """Print a structured project snapshot — same payload as the SessionStart hook."""
+    from personal_mem.context import build_project_context
+
+    cfg = load_config()
+    sections = None
+    if args.sections:
+        sections = [s.strip() for s in args.sections.split(",") if s.strip()]
+    payload = build_project_context(
+        cfg,
+        args.name,
+        sections=sections,
+        budget_tokens=args.budget,
+    )
+    print(payload)
+
+
+def cmd_prune_orphans(args: argparse.Namespace) -> None:
+    """Delete orphan session folders under the vault.
+
+    Safety: defaults to dry-run unless ``--yes`` is passed. An orphan is a
+    session folder with no derived notes/decisions, no real events.jsonl
+    (< 500 bytes), empty ``files_touched``, empty ``commits``, older than
+    ``--min-age`` seconds, and NOT the currently running session.
+    """
+    from personal_mem.prune import find_orphans, prune_orphans
+
+    cfg = load_config()
+    project = args.project or cfg.default_project or ""
+    dry_run = not args.yes  # default dry-run; explicit --yes to commit
+
+    orphans = find_orphans(
+        cfg,
+        project=project,
+        min_age_seconds=args.min_age,
+    )
+
+    if not orphans:
+        print("No orphan sessions found.")
+        return
+
+    label = "Would delete" if dry_run else "Deleting"
+    scope = f" in project '{project}'" if project else ""
+    print(f"{label} {len(orphans)} orphan session folder(s){scope}:\n")
+    for p in orphans[:30]:
+        print(f"  {p.relative_to(cfg.vault_root)}")
+    if len(orphans) > 30:
+        print(f"  ... and {len(orphans) - 30} more")
+
+    result = prune_orphans(orphans, dry_run=dry_run)
+    mb = result.freed_bytes / (1024 * 1024)
+    print(
+        f"\n{'Would free' if dry_run else 'Freed'}: {mb:.1f} MB across "
+        f"{len(orphans)} folders."
+    )
+
+    if dry_run:
+        print("\n(Dry run — re-run with --yes to actually delete.)")
+        return
+
+    # After real delete, drop the stale rows from the index so searches /
+    # landing docs / SessionStart don't keep surfacing deleted sessions.
+    try:
+        from personal_mem.indexer import Indexer
+
+        idx = Indexer(config=cfg)
+        removed = 0
+        for session_dir in orphans:
+            prefix = str(session_dir.relative_to(cfg.vault_root))
+            removed += _remove_notes_by_path_prefix(idx, prefix)
+        idx.db.commit()
+        idx.close()
+        print(f"Removed {removed} index row(s).")
+    except Exception as e:
+        print(f"Warning: index cleanup failed — run `mem index --full` to rebuild. ({e})")
+
+
+def _remove_notes_by_path_prefix(idx, prefix: str) -> int:
+    """Drop notes whose path starts with ``prefix`` from every index table."""
+    rows = idx.db.execute(
+        "SELECT id FROM notes WHERE path LIKE ?", (prefix + "%",)
+    ).fetchall()
+    note_ids = [r["id"] for r in rows]
+    if not note_ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in note_ids)
+    idx.db.execute(
+        f"DELETE FROM notes_fts WHERE id IN ({placeholders})", note_ids
+    )
+    idx.db.execute(
+        f"DELETE FROM note_concepts WHERE note_id IN ({placeholders})", note_ids
+    )
+    idx.db.execute(
+        f"DELETE FROM edges WHERE source IN ({placeholders}) "
+        f"OR target IN ({placeholders})",
+        note_ids + note_ids,
+    )
+    idx.db.execute(f"DELETE FROM notes WHERE id IN ({placeholders})", note_ids)
+    return len(note_ids)
 
 
 def cmd_restructure(args: argparse.Namespace) -> None:

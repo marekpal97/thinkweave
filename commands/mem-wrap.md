@@ -2,6 +2,8 @@
 
 You are performing end-of-session memory extraction for the personal_mem vault. This runs inside the existing conversation at zero extra API cost.
 
+**Note on context**: The SessionStart hook already fed you ~7–10k tokens of structured project context at the start of this session (recent wrapped sessions, STATE.md, BACKLOG, decisions, concept histogram, MCP tool manifest). You don't need to re-fetch that context here — extraction builds *new* knowledge from the current conversation, not a re-render of existing state. If you need to look something up mid-wrap, use `mem_project_snapshot(project=<name>)` for an on-demand refresh.
+
 ## Steps
 
 ### 1. Find or Identify the Current Session
@@ -19,6 +21,10 @@ mem search --type session --project <project> --limit 1
 ### 2. Finalize the Session Note (if it exists)
 Add a `## Summary` section with 2-3 sentences describing what was accomplished in this session. Update the session note using the vault file directly.
 
+### 2.5. Build concept vocabulary
+
+Before writing any insights or decisions, call `mem_concepts(min_count=2)` to load the existing concept vocabulary. You MUST reuse existing labels — do not invent new concepts when an existing one fits. Keep this list in working memory for steps 3-5.
+
 ### 3. Extract via mem_extract
 Call `mem_extract` with:
 - `session_id`: the session note ID (if found) or `CLAUDE_SESSION_ID` (if no session note)
@@ -30,7 +36,15 @@ Call `mem_extract` with:
 
 For non-code conversations (discussions, brainstorming, design reviews), focus insights on ideas and conclusions that emerged from the discussion. `mem_extract` auto-creates a session note when one doesn't exist.
 
-Before assigning concepts to decisions, call `mem_concepts` to reuse existing labels.
+**CRITICAL — Concept assignment is mandatory on every insight and every decision.**
+Every insight and decision MUST include a `concepts` array with **minimum 2 concepts**. Notes with <2 concepts cannot auto-link in the knowledge graph and will cluster as isolated islands in Obsidian. This is non-negotiable.
+
+When assigning concepts:
+- Draw from the vocabulary loaded in step 2.5 — reuse existing labels
+- Pick concepts that connect this note to OTHER notes (thematic, not descriptive)
+- Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`)
+- Use domain-qualified paths when they exist (`ml/deep-learning` not `deep-learning`)
+- A good concept test: "would another note about this topic share this concept?"
 
 ### Writing Good Insights
 
@@ -96,10 +110,39 @@ DECISIONS.md and BACKLOG.md are cheap to regenerate — always refresh them.
 
 **STATE.md**: Only update if this session genuinely changed the project's big picture — new major decisions, architectural shifts, new areas opened up. Routine work in existing areas doesn't warrant an update. If updating, use `mem_landing(project=<project>, doc="state", state_context=true)` to get raw data, then write a narrative STATE.md that tells the human what matters most.
 
-### 8. Report
+### 7.5. Ontology drift check (advisory)
+Call `mem_concepts_drift(project=<project>)` (or shell out to
+`mem concepts drift --project <project>`). This is **read-only and advisory**
+— it surfaces three kinds of drift:
+
+1. **Near-duplicate concepts** (e.g. `neural-network` ≈ `neural-networks`) —
+   suggests a merge command.
+2. **New concept candidates** — concepts that crossed count ≥ 5 but are
+   NOT listed in `ontology.yaml`. Worth considering as new domain members.
+3. **Ontology staleness** — `ontology.yaml` was edited after the last
+   `mem concepts hubs` run. Hub pages may be stale.
+
+**Do NOT auto-merge or auto-regenerate.** Surface the findings in the final
+report. If the user wants to act, they'll ask. This step should take under a
+second — it's a small read-only query.
+
+### 8. Prune orphan session folders
+Run `mem prune-orphans --project <project> --yes`. This deletes stub session
+folders that accumulated no derived content — no notes/decisions, tiny
+`events.jsonl` (< 500 bytes), no `files_touched`, no `commits`, older than
+1 hour, and NOT the session currently being wrapped. The 7-condition orphan
+definition is intentionally conservative; cleanup is safe to auto-run.
+
+After a real delete (not dry-run), the index is cleaned in-place so searches
+and landing docs stop surfacing the deleted sessions.
+
+Include the pruned count in the step 9 report.
+
+### 9. Report
 Print a summary of what was extracted:
 - Session note path and summary
 - Notes created (with IDs), including probes
 - Decisions created (if any)
 - Landing documents refreshed
+- Orphan folders pruned (count + freed bytes)
 - Total vault stats via `mem stats`

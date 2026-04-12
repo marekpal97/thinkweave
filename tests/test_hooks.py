@@ -22,6 +22,7 @@ from personal_mem.hooks.handler import (
     _is_internal,
     _is_significant_command,
     _is_test_command,
+    _log_error,
     _parse_commit_from_output,
     _parse_push_branch,
     _parse_test_result,
@@ -155,6 +156,20 @@ class TestHookInstaller:
         stop = settings["hooks"]["Stop"][0]
         assert "stop" in stop["hooks"][0]["command"]
 
+    def test_install_includes_session_start_hook(self, tmp_path: Path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert "SessionStart" in settings["hooks"]
+        ss = settings["hooks"]["SessionStart"][0]
+        assert "session_start" in ss["hooks"][0]["command"]
+        # No matcher is used for SessionStart
+        assert ss["matcher"] == ""
+
     def test_uninstall(self, tmp_path: Path):
         project_dir = tmp_path / "project"
         project_dir.mkdir()
@@ -165,6 +180,25 @@ class TestHookInstaller:
             (project_dir / ".claude" / "settings.local.json").read_text()
         )
         assert "hooks" not in settings
+
+    def test_uninstall_removes_session_start(self, tmp_path: Path):
+        """SessionStart must be round-trippable like every other hook type."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+
+        # Sanity — installed
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert "SessionStart" in settings["hooks"]
+
+        uninstall_hooks(project_dir=str(project_dir))
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        # Either the whole hooks dict is gone or SessionStart specifically is empty/missing
+        assert "hooks" not in settings or "SessionStart" not in settings.get("hooks", {})
 
 
 class TestBuildEventEnrichment:
@@ -318,6 +352,14 @@ class TestTestDetection:
         assert _is_test_command("python -m pytest")
         assert not _is_test_command("python script.py")
         assert not _is_test_command("echo pytest")
+
+    def test_is_test_command_chained(self):
+        """Chained commands like 'cd foo && uv run pytest' should be detected."""
+        assert _is_test_command("cd src && uv run pytest -x")
+        assert _is_test_command("export FOO=1 && pytest tests/")
+        assert _is_test_command("cd /tmp; pytest")
+        assert _is_test_command("echo setup || uv run pytest --tb=short")
+        assert not _is_test_command("cd src && echo pytest")
 
     def test_parse_test_result_passed(self):
         output = "====== 12 passed in 1.5s ======"
@@ -495,6 +537,35 @@ class TestSummarizeEvents:
         assert meta["insights"] == []
 
 
+class TestHookErrorLogging:
+    def test_log_error_creates_file(self, tmp_path):
+        cfg = Config(vault_root=tmp_path / "vault")
+        with patch("personal_mem.config.load_config", return_value=cfg):
+            _log_error("test_hook", ValueError("test error"))
+
+        log_path = cfg.mem_dir / "hooks.log"
+        assert log_path.exists()
+        content = log_path.read_text()
+        assert "test_hook" in content
+        assert "test error" in content
+
+    def test_log_error_appends(self, tmp_path):
+        cfg = Config(vault_root=tmp_path / "vault")
+        with patch("personal_mem.config.load_config", return_value=cfg):
+            _log_error("hook1", ValueError("error1"))
+            _log_error("hook2", RuntimeError("error2"))
+
+        content = (cfg.mem_dir / "hooks.log").read_text()
+        assert "error1" in content
+        assert "error2" in content
+
+    def test_log_error_never_raises(self):
+        # Even if everything fails inside, _log_error should not raise
+        # Force a failure by making the import path invalid
+        with patch.dict("sys.modules", {"personal_mem.config": None}):
+            _log_error("test", ValueError("err"))  # Should not raise
+
+
 class TestBuildAutoSummary:
     def test_with_files(self):
         s = _build_auto_summary(["a.py", "b.py"], [], [], 5)
@@ -519,3 +590,105 @@ class TestBuildAutoSummary:
         files = [f"file{i}.py" for i in range(10)]
         s = _build_auto_summary(files, [], [], 10)
         assert "+5 more" in s
+
+
+class TestSessionStartHandler:
+    """End-to-end: run _handle_session_start with a fresh vault and inspect stdout."""
+
+    def _run(self, vault_dir: Path, project: str, monkeypatch) -> dict:
+        """Invoke _handle_session_start with a stubbed config + project, capture stdout."""
+        import io
+
+        from personal_mem.config import Config
+        from personal_mem.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=vault_dir)
+        # Force our config through load_config so the handler uses the tmp vault
+        monkeypatch.setattr(
+            "personal_mem.config.load_config", lambda: cfg
+        )
+        monkeypatch.setattr(
+            "personal_mem.hooks.handler._detect_project",
+            lambda hook_input: project,
+        )
+
+        buf = io.StringIO()
+        monkeypatch.setattr("sys.stdout", buf)
+        handler_mod._handle_session_start({"session_id": "cc-test", "cwd": str(vault_dir)})
+        return json.loads(buf.getvalue() or "{}")
+
+    def test_empty_vault_emits_valid_response(self, tmp_path: Path, monkeypatch):
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        (vault_dir / ".mem").mkdir()
+
+        result = self._run(vault_dir, "ghost", monkeypatch)
+        # Either empty (no payload) or contains hookSpecificOutput
+        if result:
+            assert "hookSpecificOutput" in result
+            assert result["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+            assert "additionalContext" in result["hookSpecificOutput"]
+
+    def test_populated_vault_emits_additional_context(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from personal_mem.indexer import Indexer
+        from personal_mem.schemas import NoteType
+        from personal_mem.vault import VaultManager
+        from personal_mem.config import Config
+
+        vault_dir = tmp_path / "vault"
+        cfg = Config(vault_root=vault_dir)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+
+        vm.create_note(
+            NoteType.SESSION,
+            "Populated session",
+            body=(
+                "## Summary\n"
+                "We built SessionStart.\n"
+                "\n## Candidate Insights\n"
+                "\n- **An insight title** body\n"
+            ),
+            project="alpha",
+            extra_frontmatter={
+                "processed": True,
+                "processed_at": "2026-04-07",
+                "source_session": "cc-alpha",
+            },
+        )
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+
+        result = self._run(vault_dir, "alpha", monkeypatch)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "Populated session" in ctx
+        assert "An insight title" in ctx
+        assert "## Header" in ctx
+        assert "## Available MCP Tools" in ctx
+
+    def test_failure_in_payload_does_not_block(self, tmp_path: Path, monkeypatch):
+        """Hook must always exit cleanly, even if the payload builder raises."""
+        import io
+
+        from personal_mem.hooks import handler as handler_mod
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("synthetic failure")
+
+        monkeypatch.setattr(
+            "personal_mem.context.build_project_context", boom
+        )
+        buf = io.StringIO()
+        monkeypatch.setattr("sys.stdout", buf)
+
+        # Should not raise
+        handler_mod._handle_session_start(
+            {"session_id": "cc-test", "cwd": str(tmp_path)}
+        )
+        # Stdout should still be valid JSON (empty dict)
+        result = json.loads(buf.getvalue() or "{}")
+        assert isinstance(result, dict)

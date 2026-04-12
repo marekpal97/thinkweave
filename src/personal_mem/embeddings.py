@@ -123,15 +123,66 @@ class EmbeddingSearch:
 
         return stats
 
-    def search(self, query: str, limit: int = 5) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        project: str = "",
+        note_type: str | list[str] = "",
+    ) -> list[tuple[str, float]]:
         """Semantic search: embed query, then cosine similarity over cached embeddings.
 
+        Args:
+            query: Natural-language query to embed.
+            limit: Max results.
+            project: Optional project filter — only notes from this project.
+            note_type: Optional type filter — string or list of types.
+
         Returns list of (note_id, similarity_score) sorted by score descending.
+        Filtered by joining against the main index; requires ``index.db`` to exist.
         """
         query_emb = self._call_api([query])[0]
 
+        # Build the set of allowed note_ids if filters are requested
+        allowed: set[str] | None = None
+        if project or note_type:
+            import sqlite3
+
+            type_list: list[str]
+            if isinstance(note_type, str):
+                type_list = [note_type] if note_type else []
+            else:
+                type_list = [t for t in note_type if t]
+
+            conds: list[str] = []
+            params: list = []
+            if project:
+                conds.append("project = ?")
+                params.append(project)
+            if type_list:
+                placeholders = ",".join("?" for _ in type_list)
+                conds.append(f"type IN ({placeholders})")
+                params.extend(type_list)
+            where = " AND ".join(conds)
+
+            try:
+                idx_db = sqlite3.connect(str(self.config.index_db))
+                allowed = {
+                    row[0]
+                    for row in idx_db.execute(f"SELECT id FROM notes WHERE {where}", params)
+                }
+                idx_db.close()
+            except sqlite3.Error:
+                allowed = set()  # filter couldn't be applied — return empty
+
+            if not allowed:
+                return []
+
         results: list[tuple[str, float]] = []
         for row in self.db.execute("SELECT note_id, embedding FROM embeddings"):
+            if allowed is not None and row["note_id"] not in allowed:
+                continue
             cached_emb = _unpack_embedding(row["embedding"])
             score = cosine_similarity(query_emb, cached_emb)
             results.append((row["note_id"], score))

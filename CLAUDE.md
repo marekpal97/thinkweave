@@ -4,7 +4,7 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 
 ## Commands
 
-- `uv run pytest` — run tests (190 tests)
+- `uv run pytest` — run tests (394 tests)
 - `uv run mem init` — initialize a new vault
 - `uv run mem add --type note --project X --tags "a,b" "Title"` — create a note
 - `uv run mem index [--full] [--embed]` — rebuild SQLite index
@@ -19,13 +19,24 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 - `uv run mem landing [--project X] [--doc decisions|backlog|state|all]` — generate project landing documents
 - `uv run mem restructure [--dry-run]` — consolidate notes/decisions into session folders
 
-## Session Extraction
+## Session Context & Extraction
+
+**Session start (auto)**: The SessionStart hook injects ~7–10k tokens of structured project context at the start of every Claude Code session — recent wrapped sessions, STATE.md, BACKLOG, recent decisions, concept histogram, and the MCP tool manifest. No action needed — if the hook is installed (`mem hooks install`), Claude wakes up already oriented. To re-fetch mid-session, call `mem_project_snapshot(project=<name>)`.
+
+**Retrieval protocol** — when asked about prior sessions, recent work, vault contents, or "what happened last time":
+
+1. **SessionStart context first** (cost: zero). The hook output already in your context contains recent sessions, decisions, backlog, STATE.md, and concepts. READ IT before doing anything else.
+2. **One MCP call** if you need a specific note or search: `mem_read(id)`, `mem_search(query)`, `mem_timeline()`, `mem_context()`. These query the SQLite index — fast and precise.
+3. **One file Read** for codebase files you know the path to (e.g. `commands/research.md`).
+4. **NEVER** spawn Explore agents to crawl the vault filesystem with `find`/`ls`/`grep` on `/mnt/c/Users/marek/vault/`. The entire memory system exists to make this unnecessary. If you catch yourself reaching for filesystem exploration of the vault, stop — the answer is in steps 1-3.
 
 **Before `/clear` or `/exit`, always run `/mem-wrap`** to extract session knowledge. Three extraction paths:
 
 1. **Auto (Stop hook)**: Fires at exit/Ctrl+C. Performs thin extraction — builds summary from metadata (files, commits, tests), strips event logs, archives buffer as `events.jsonl`, marks `processed: true` + `auto_extracted: true`. No LLM insights.
 2. **Manual (`/mem-wrap`)**: Full LLM extraction — curated insights, decisions with rationale, rich summaries. Can enrich auto-extracted sessions (`force=true`).
 3. **Pre-clear (CLAUDE.md rule)**: Before `/clear`, always run `/mem-wrap` first. There is no clear hook — this is the only way to preserve context before clearing.
+
+After upgrading personal_mem, re-run `mem hooks install` to pick up newly-added hooks (e.g. SessionStart).
 
 ## Architecture
 
@@ -57,6 +68,8 @@ All notes and decisions live in session folders. Derived content goes in its par
 
 Do not duplicate between them — a term belongs in one or the other.
 
+**Concept assignment is mandatory** — every note and decision created via `mem_extract` MUST include a `concepts` array with minimum 2 concepts. Notes with <2 concepts cannot auto-link and will cluster as isolated islands in Obsidian. Before assigning concepts, call `mem_concepts` to load existing labels. Prefer specific domain terms over generic ones; use domain-qualified paths when they exist (`ml/deep-learning` not `deep-learning`).
+
 **Session lifecycle**: hooks accumulate events (with diff context) + `★ Insight` blocks + git commits/test results into session notes → Stop hook auto-extracts (thin summary, archive events) → `/mem-wrap` enriches with LLM insights and decisions via `mem_extract` → session folder contains clean summary + derived artifacts. For non-code conversations (no hooks fired), `mem_extract` auto-creates a session note.
 
 **Decision lifecycle**: `proposed` → `accepted` → `deprecated`/`superseded`. Decisions capture both successful and abandoned approaches. `mem_judge` evaluates decisions against evidence (committed? tested? re-edited?) and assigns verdicts (kept/superseded/reverted/unknown).
@@ -72,14 +85,33 @@ Do not duplicate between them — a term belongs in one or the other.
 
 Generate via `mem landing` (CLI) or `mem_landing` (MCP). `/mem-wrap` refreshes DECISIONS + BACKLOG automatically; STATE at agent discretion.
 
-**Sources** can be project-scoped (`vault/projects/{name}/sources/`) or global (`vault/sources/`).
+**Sources** live in subdirectories under `vault/sources/` (global) or `vault/projects/{name}/sources/` (project-scoped). Each source gets its own folder containing `source.md` (indexed summary) and optional raw content (PDF, snapshot, raw text) alongside:
+```
+vault/sources/
+  scaling-laws-neural-lms/
+    source.md              # indexed by personal_mem — summary + concepts + metadata
+    paper.pdf              # raw PDF, opened on demand via [[slug/paper.pdf]]
+  some-github-repo/
+    source.md
+    snapshot.md            # key repo files concatenated
+  some-blog-post/
+    source.md
+    raw.md                 # full article text
+```
+
+**Research ingestion** (`/research`): Processes URLs (arxiv, GitHub, web) into source notes. Fetches content via WebFetch/WebSearch, maps concepts to `ontology.yaml`, saves raw content alongside. Queue items are `todo`+`research` tagged notes, visible via `mem backlog`. Can process ad-hoc URLs or drain the queue with `--queue`.
+
+**Research discovery** (`/discover`): Cross-project gap analysis. Reads `vault/sources/RESEARCH_FOCUS.md` for priorities, analyzes concept coverage, searches for new papers/repos/articles, creates queue items. Designed for periodic use (`/loop 6h /discover`).
+
+**RESEARCH_FOCUS.md** (`vault/sources/RESEARCH_FOCUS.md`): User-maintained priority list for discovery. Contains active focus areas, authors to follow, concept gaps (auto-populated by `/discover`), and exclusion filters.
 
 ## Key Files
 
 - `src/personal_mem/vault.py` — VaultManager (note CRUD, inline YAML parser, wikilinks, `strip_section`)
 - `src/personal_mem/indexer.py` — SQLite index builder (FTS5, edges, concept edges, SHA-256 dedup)
 - `src/personal_mem/search.py` — FTS search, graph traversal (recursive CTEs)
-- `src/personal_mem/hooks/handler.py` — Claude Code Pre/Post/Stop hooks (enriched events, git/test detection, auto-extract at Stop)
+- `src/personal_mem/context.py` — Structured project-context payload builder (used by SessionStart hook and `mem_project_snapshot`)
+- `src/personal_mem/hooks/handler.py` — Claude Code SessionStart/Pre/Post/Stop hooks (context injection at startup, enriched events, git/test detection, auto-extract at Stop)
 - `src/personal_mem/judge.py` — Structural decision judgment (no LLM, evidence-based)
 - `src/personal_mem/cli.py` — CLI entry point
 - `src/personal_mem/concepts.py` — Concept tightening (aliases, near-duplicate detection, merge)
@@ -87,6 +119,9 @@ Generate via `mem landing` (CLI) or `mem_landing` (MCP). `/mem-wrap` refreshes D
 - `src/personal_mem/mcp/server.py` — MCP server (15 tools: search, create, read, update, extract, link, context, graph, judge, unlink, concepts, concepts_tighten, concepts_merge, landing, timeline)
 - `src/personal_mem/embeddings.py` — API-based embeddings with SQLite cache
 - `commands/mem-wrap.md` — `/mem-wrap` skill for full LLM extraction
+- `commands/research.md` — `/research` skill for source ingestion (arxiv, GitHub, web)
+- `commands/discover.md` — `/discover` skill for research gap analysis and queue generation
+- `commands/mem-resolve-concepts.md` — `/mem-resolve-concepts` skill for periodic concept hygiene (merge dupes, update ontology)
 
 ## Environment
 

@@ -22,6 +22,13 @@ class Config:
     embedding_api_key_env: str = "OPENAI_API_KEY"  # env var name holding the key
     embedding_api_url: str = "https://api.openai.com/v1/embeddings"
 
+    # Edge generation thresholds
+    concept_edge_threshold: int = 1  # min shared concepts for relates_to edge
+    concept_edge_max_freq_pct: float = 0.05  # skip concepts in >5% of notes
+    tag_edge_threshold: int = 2  # min shared tags for relates_to edge
+    tag_edge_max_freq_pct: float = 0.10  # skip tags in >10% of notes
+    tag_edge_exclude: tuple[str, ...] = ("todo", "probe", "parked", "til")
+
     @property
     def mem_dir(self) -> Path:
         return self.vault_root / ".mem"
@@ -68,6 +75,19 @@ def load_config() -> Config:
             cfg.embedding_api_key_env = embed["api_key_env"]
         if "api_url" in embed:
             cfg.embedding_api_url = embed["api_url"]
+
+        # Edge generation config
+        edges = data.get("edges", {})
+        if "concept_threshold" in edges:
+            cfg.concept_edge_threshold = int(edges["concept_threshold"])
+        if "concept_max_freq_pct" in edges:
+            cfg.concept_edge_max_freq_pct = float(edges["concept_max_freq_pct"])
+        if "tag_threshold" in edges:
+            cfg.tag_edge_threshold = int(edges["tag_threshold"])
+        if "tag_max_freq_pct" in edges:
+            cfg.tag_edge_max_freq_pct = float(edges["tag_max_freq_pct"])
+        if "tag_exclude" in edges:
+            cfg.tag_edge_exclude = tuple(edges["tag_exclude"])
 
     # Per-field env overrides
     if os.environ.get("PERSONAL_MEM_PROJECT"):

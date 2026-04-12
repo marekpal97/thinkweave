@@ -51,6 +51,48 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);
+
+CREATE TABLE IF NOT EXISTS note_concepts (
+    note_id  TEXT NOT NULL,
+    concept  TEXT NOT NULL,
+    domain   TEXT,
+    PRIMARY KEY (note_id, concept)
+);
+
+CREATE INDEX IF NOT EXISTS idx_nc_concept ON note_concepts(concept);
+CREATE INDEX IF NOT EXISTS idx_nc_note ON note_concepts(note_id);
+CREATE INDEX IF NOT EXISTS idx_nc_domain ON note_concepts(domain);
+
+-- Decision → file paths mapping (populated from decision frontmatter
+-- file_paths field). Enables one-JOIN answering of "every decision that
+-- touched this file", which otherwise requires scanning every decision's
+-- frontmatter.
+CREATE TABLE IF NOT EXISTS decision_files (
+    decision_id TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    PRIMARY KEY (decision_id, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_df_path ON decision_files(file_path);
+CREATE INDEX IF NOT EXISTS idx_df_decision ON decision_files(decision_id);
+
+CREATE TABLE IF NOT EXISTS note_tags (
+    note_id  TEXT NOT NULL,
+    tag      TEXT NOT NULL,
+    PRIMARY KEY (note_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_nt_tag ON note_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_nt_note ON note_tags(note_id);
+
+CREATE TABLE IF NOT EXISTS concept_hierarchy (
+    concept   TEXT NOT NULL,
+    ancestor  TEXT NOT NULL,
+    depth     INTEGER NOT NULL,
+    PRIMARY KEY (concept, ancestor)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ch_ancestor ON concept_hierarchy(ancestor);
 """
 
 FTS_SCHEMA_SQL = """
@@ -119,6 +161,10 @@ class Indexer:
 
         if full:
             self.db.execute("DELETE FROM edges")
+            self.db.execute("DELETE FROM note_concepts")
+            self.db.execute("DELETE FROM note_tags")
+            self.db.execute("DELETE FROM decision_files")
+            self.db.execute("DELETE FROM concept_hierarchy")
             self.db.execute("DELETE FROM notes")
             self._rebuild_fts()
 
@@ -156,11 +202,10 @@ class Indexer:
                 self._remove_by_path(old_path)
                 stats["removed"] += 1
 
-        # Rebuild edges from all notes
-        stats["edges"] = self._rebuild_edges()
-
-        # Rebuild FTS
-        self._rebuild_fts()
+        # Rebuild edges and FTS only when content changed
+        if full or stats["indexed"] > 0 or stats["removed"] > 0:
+            stats["edges"] = self._rebuild_edges()
+            self._rebuild_fts()
 
         self.db.commit()
         return stats
@@ -228,29 +273,111 @@ class Indexer:
             ),
         )
 
+        self._sync_concepts(note_id, fm)
+        self._sync_tags(note_id, tags)
+        self._sync_decision_files(note_id, note_type, fm)
+
+    def _sync_decision_files(self, note_id: str, note_type: str, fm: dict) -> None:
+        """Sync decision_files rows from a decision note's ``file_paths`` frontmatter.
+
+        No-ops for non-decision notes. Overwrites existing rows on re-index
+        so edits to ``file_paths`` are reflected.
+        """
+        self.db.execute("DELETE FROM decision_files WHERE decision_id = ?", (note_id,))
+        if note_type != "decision":
+            return
+
+        raw = fm.get("file_paths") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        for fp in raw:
+            fp = str(fp).strip()
+            if not fp:
+                continue
+            self.db.execute(
+                "INSERT OR IGNORE INTO decision_files (decision_id, file_path) VALUES (?, ?)",
+                (note_id, fp),
+            )
+
+    def _sync_concepts(self, note_id: str, fm: dict) -> None:
+        """Sync note_concepts rows for a note.
+
+        Resolves aliases to canonical forms and looks up ontology domain.
+        """
+        self.db.execute("DELETE FROM note_concepts WHERE note_id = ?", (note_id,))
+        concepts = fm.get("concepts", [])
+        if isinstance(concepts, str):
+            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+        if not concepts:
+            return
+
+        # Lazy-load alias reverse map and concept-to-domain map
+        if not hasattr(self, "_reverse_map"):
+            try:
+                from personal_mem.concepts import (
+                    build_reverse_map,
+                    concept_to_domains,
+                    load_aliases,
+                    load_ontology,
+                )
+                self._reverse_map = build_reverse_map(load_aliases(self.config))
+                self._concept_domains = concept_to_domains(load_ontology())
+            except Exception:
+                self._reverse_map = {}
+                self._concept_domains = {}
+
+        for c in concepts:
+            canonical = self._reverse_map.get(c.lower(), c.lower())
+            domains = self._concept_domains.get(canonical, [])
+            domain = domains[0] if domains else None
+            self.db.execute(
+                "INSERT OR IGNORE INTO note_concepts (note_id, concept, domain) VALUES (?, ?, ?)",
+                (note_id, canonical, domain),
+            )
+
+    def _sync_tags(self, note_id: str, tags: list[str]) -> None:
+        """Sync note_tags rows for a note."""
+        self.db.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+        for tag in tags:
+            tag = tag.strip().lower()
+            if tag:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)",
+                    (note_id, tag),
+                )
+
     def _remove_by_path(self, rel_path: str) -> None:
-        """Remove a note and its edges from the index."""
+        """Remove a note, its edges, its concepts, tags, and decision-file links."""
         row = self.db.execute("SELECT id FROM notes WHERE path = ?", (rel_path,)).fetchone()
         if row:
             note_id = row["id"]
             self.db.execute(
                 "DELETE FROM edges WHERE source = ? OR target = ?", (note_id, note_id)
             )
+            self.db.execute("DELETE FROM note_concepts WHERE note_id = ?", (note_id,))
+            self.db.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+            self.db.execute("DELETE FROM decision_files WHERE decision_id = ?", (note_id,))
         self.db.execute("DELETE FROM notes WHERE path = ?", (rel_path,))
 
     def _rebuild_edges(self) -> int:
-        """Rebuild all edges from frontmatter fields and wikilinks."""
+        """Rebuild all edges from frontmatter, wikilinks, concepts, tags, and session structure."""
         self.db.execute("DELETE FROM edges")
         now = datetime.now(timezone.utc).isoformat()
         edge_count = 0
+        total_notes = self.db.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
 
-        # Build ID-to-path and slug-to-id maps for wikilink resolution
+        # ── Lookup maps ──────────────────────────────────────────────
         slug_to_id: dict[str, str] = {}
-        for row in self.db.execute("SELECT id, path, title FROM notes"):
+        id_to_type: dict[str, str] = {}
+        id_to_path: dict[str, str] = {}
+        for row in self.db.execute("SELECT id, path, title, type FROM notes"):
             stem = Path(row["path"]).stem
             slug_to_id[stem] = row["id"]
             slug_to_id[row["title"].lower()] = row["id"]
+            id_to_type[row["id"]] = row["type"]
+            id_to_path[row["id"]] = row["path"]
 
+        # ── 1. Frontmatter edges ─────────────────────────────────────
         for row in self.db.execute("SELECT id, frontmatter, body_text FROM notes"):
             note_id = row["id"]
             try:
@@ -258,7 +385,6 @@ class Indexer:
             except json.JSONDecodeError:
                 continue
 
-            # Edges from frontmatter fields
             for fm_field, edge_type in EDGE_FIELD_MAP.items():
                 targets = fm.get(fm_field, [])
                 if isinstance(targets, str):
@@ -267,7 +393,6 @@ class Indexer:
                     target = str(target).strip()
                     if not target:
                         continue
-                    # Resolve target — could be an ID or a wikilink name
                     resolved = target if target in slug_to_id.values() else slug_to_id.get(
                         target.lower(), slug_to_id.get(target, "")
                     )
@@ -275,41 +400,92 @@ class Indexer:
                         self._insert_edge(note_id, resolved, edge_type, now)
                         edge_count += 1
 
-            # Edges from wikilinks in body
+            # ── 2. Wikilink edges (with type inference) ──────────────
             body = row["body_text"] or ""
             for link in extract_wikilinks(body):
                 link_lower = link.lower().strip()
                 resolved = slug_to_id.get(link_lower, slug_to_id.get(link, ""))
                 if resolved and resolved != note_id:
-                    self._insert_edge(note_id, resolved, "relates_to", now)
+                    # Infer edge type from target note type
+                    target_type = id_to_type.get(resolved, "note")
+                    if target_type == "source":
+                        wl_edge_type = "cites"
+                    elif target_type == "session":
+                        wl_edge_type = "derived_from"
+                    else:
+                        wl_edge_type = "relates_to"
+                    self._insert_edge(note_id, resolved, wl_edge_type, now)
                     edge_count += 1
 
-        # Concept-based edges: notes sharing 2+ concepts get relates_to edges
-        # Resolve aliases to canonical forms for better matching
-        try:
-            from personal_mem.concepts import build_reverse_map, load_aliases
-            reverse_map = build_reverse_map(load_aliases(self.config))
-        except Exception:
-            reverse_map = {}
+        # ── 3. Session directory inference ────────────────────────────
+        # Notes living in a session directory get derived_from edges
+        # to the session.md in that directory.
+        session_dir_to_id: dict[str, str] = {}
+        for nid, path in id_to_path.items():
+            if path.endswith("/session.md") or path.endswith("\\session.md"):
+                session_dir = str(Path(path).parent)
+                session_dir_to_id[session_dir] = nid
+
+        for nid, path in id_to_path.items():
+            parent = str(Path(path).parent)
+            session_id = session_dir_to_id.get(parent)
+            if session_id and nid != session_id:
+                meta = json.dumps({"via": "session_dir"})
+                self.db.execute(
+                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (nid, session_id, "derived_from", meta, now),
+                )
+                edge_count += 1
+
+        # ── 4. Concept-based edges (configurable threshold + freq cap) ─
+        cfg = self.config
+        concept_freq_cap = int(total_notes * cfg.concept_edge_max_freq_pct) if total_notes else 0
 
         concept_to_notes: dict[str, list[str]] = defaultdict(list)
-        for row in self.db.execute("SELECT id, frontmatter FROM notes"):
-            fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
-            concepts = fm.get("concepts", [])
-            if isinstance(concepts, str):
-                concepts = [c.strip() for c in concepts.split(",") if c.strip()]
-            for concept in concepts:
-                canonical = reverse_map.get(concept.lower(), concept.lower())
-                concept_to_notes[canonical].append(row["id"])
+        for row in self.db.execute("SELECT note_id, concept FROM note_concepts"):
+            concept_to_notes[row["concept"]].append(row["note_id"])
 
         pair_shared: dict[tuple, list[str]] = defaultdict(list)
         for concept, note_ids in concept_to_notes.items():
-            for a, b in combinations(sorted(set(note_ids)), 2):
+            unique_ids = sorted(set(note_ids))
+            # Skip overly broad concepts that would create noisy edges
+            if len(unique_ids) > concept_freq_cap > 0:
+                continue
+            for a, b in combinations(unique_ids, 2):
                 pair_shared[(a, b)].append(concept)
 
         for (a, b), shared in pair_shared.items():
-            if len(shared) >= 2:
+            if len(shared) >= cfg.concept_edge_threshold:
                 metadata = json.dumps({"via": "concept", "shared": shared})
+                self.db.execute(
+                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now),
+                )
+                edge_count += 1
+
+        # ── 5. Tag-based edges ────────────────────────────────────────
+        tag_freq_cap = int(total_notes * cfg.tag_edge_max_freq_pct) if total_notes else 0
+        excluded_tags = set(cfg.tag_edge_exclude)
+
+        tag_to_notes: dict[str, list[str]] = defaultdict(list)
+        for row in self.db.execute("SELECT note_id, tag FROM note_tags"):
+            tag_to_notes[row["tag"]].append(row["note_id"])
+
+        tag_pair_shared: dict[tuple, list[str]] = defaultdict(list)
+        for tag, note_ids in tag_to_notes.items():
+            if tag in excluded_tags:
+                continue
+            unique_ids = sorted(set(note_ids))
+            if len(unique_ids) > tag_freq_cap > 0:
+                continue
+            for a, b in combinations(unique_ids, 2):
+                tag_pair_shared[(a, b)].append(tag)
+
+        for (a, b), shared in tag_pair_shared.items():
+            if len(shared) >= cfg.tag_edge_threshold:
+                metadata = json.dumps({"via": "tag", "shared": shared})
                 self.db.execute(
                     "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
                     "VALUES (?, ?, ?, ?, ?)",
@@ -329,6 +505,147 @@ class Indexer:
         """Rebuild the FTS index from the notes table."""
         self.db.execute("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')")
 
+    def materialize_links(self, max_links: int = 7, dry_run: bool = False) -> dict:
+        """Write a managed ``## See Also`` section into each note with its top connections.
+
+        This makes SQLite-computed edges visible to Obsidian's graph view.
+        The section is stripped and rewritten each time — safe to re-run.
+
+        Link selection uses diversity-aware ordering to prevent archipelagos:
+        1. Structural edges first (derived_from, cites, etc.) — always included.
+        2. Concept edges round-robin across shared-concept groups so each
+           topic cluster gets at least one bridge edge.
+
+        Args:
+            max_links: Maximum wikilinks per note.
+            dry_run: If True, compute but don't write files.
+
+        Returns:
+            Stats: notes_updated, notes_skipped, links_written.
+        """
+        from personal_mem.vault import strip_section
+
+        stats = {"notes_updated": 0, "notes_skipped": 0, "links_written": 0}
+        SEE_ALSO = "## See Also"
+
+        STRUCTURAL_TYPES = {"derived_from", "cites", "builds_on", "supersedes", "implements"}
+
+        all_notes = {
+            row["id"]: row
+            for row in self.db.execute("SELECT id, path, title FROM notes")
+        }
+
+        for note_id, note_row in all_notes.items():
+            edges = self.db.execute(
+                "SELECT source, target, edge_type, metadata FROM edges "
+                "WHERE source = ? OR target = ?",
+                (note_id, note_id),
+            ).fetchall()
+
+            if not edges:
+                stats["notes_skipped"] += 1
+                continue
+
+            # Separate structural edges from concept/tag edges
+            structural: list[tuple[str, str]] = []
+            concept_edges: list[tuple[str, str, str]] = []  # (target, edge_type, first_concept)
+            seen: set[str] = set()
+
+            for edge in edges:
+                other = edge["target"] if edge["source"] == note_id else edge["source"]
+                if other in seen or other not in all_notes:
+                    continue
+                seen.add(other)
+
+                if edge["edge_type"] in STRUCTURAL_TYPES:
+                    structural.append((other, edge["edge_type"]))
+                else:
+                    # Extract the first shared concept for grouping
+                    meta = edge["metadata"] or "{}"
+                    try:
+                        shared = json.loads(meta).get("shared", [])
+                    except (json.JSONDecodeError, AttributeError):
+                        shared = []
+                    group_key = shared[0] if shared else "_tag"
+                    concept_edges.append((other, edge["edge_type"], group_key))
+
+            # Build final link list with diversity
+            linked: list[tuple[str, str]] = []
+
+            # 1. Always include structural edges (up to half the budget)
+            structural_budget = max(2, max_links // 2)
+            for target, etype in structural[:structural_budget]:
+                linked.append((target, etype))
+
+            # 2. Round-robin across concept groups for remaining slots
+            remaining = max_links - len(linked)
+            if remaining > 0 and concept_edges:
+                # Group by first shared concept
+                groups: dict[str, list[tuple[str, str]]] = {}
+                for target, etype, group in concept_edges:
+                    if target not in {t for t, _ in linked}:
+                        groups.setdefault(group, []).append((target, etype))
+
+                # Round-robin: take 1 from each group, repeat until full
+                added = set(t for t, _ in linked)
+                group_keys = list(groups.keys())
+                idx = 0
+                while len(linked) < max_links and group_keys:
+                    key = group_keys[idx % len(group_keys)]
+                    candidates = groups[key]
+                    found = False
+                    while candidates:
+                        target, etype = candidates.pop(0)
+                        if target not in added:
+                            linked.append((target, etype))
+                            added.add(target)
+                            found = True
+                            break
+                    if not candidates:
+                        group_keys.remove(key)
+                        if not group_keys:
+                            break
+                        idx = idx % len(group_keys) if group_keys else 0
+                    else:
+                        idx += 1
+
+            if not linked:
+                stats["notes_skipped"] += 1
+                continue
+
+            # Build the See Also section
+            lines = [SEE_ALSO, ""]
+            for target_id, edge_type in linked:
+                target = all_notes[target_id]
+                stem = Path(target["path"]).stem
+                label = edge_type.replace("_", " ") if edge_type != "relates_to" else ""
+                if label:
+                    lines.append(f"- [[{stem}]] _{label}_")
+                else:
+                    lines.append(f"- [[{stem}]]")
+            see_also_text = "\n".join(lines) + "\n"
+
+            if dry_run:
+                stats["notes_updated"] += 1
+                stats["links_written"] += len(linked)
+                continue
+
+            # Read file, strip old See Also, append new one
+            file_path = self.vault.root / note_row["path"]
+            if not file_path.exists():
+                stats["notes_skipped"] += 1
+                continue
+
+            text = file_path.read_text(encoding="utf-8")
+            text = strip_section(text, SEE_ALSO)
+            text = text.rstrip() + "\n\n" + see_also_text
+            file_path.write_text(text, encoding="utf-8")
+
+            stats["notes_updated"] += 1
+            stats["links_written"] += len(linked)
+
+        return stats
+
     def get_stats(self) -> dict:
         """Return index statistics."""
         stats = {}
@@ -338,4 +655,6 @@ class Indexer:
         stats["notes_total"] = row["cnt"]
         row = self.db.execute("SELECT COUNT(*) as cnt FROM edges").fetchone()
         stats["edges_total"] = row["cnt"]
+        row = self.db.execute("SELECT COUNT(DISTINCT concept) as cnt FROM note_concepts").fetchone()
+        stats["concepts_total"] = row["cnt"]
         return stats

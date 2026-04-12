@@ -146,7 +146,7 @@ class TestVaultManager:
         assert (vault.root / ".mem").is_dir()
         assert (vault.root / "projects").is_dir()
         assert (vault.root / "daily").is_dir()
-        assert (vault.root / "sources" / "podcasts").is_dir()
+        assert (vault.root / "sources").is_dir()
         assert (vault.root / "templates").is_dir()
 
     def test_generate_id(self, vault: VaultManager):
@@ -222,6 +222,9 @@ class TestVaultManager:
         note = vault.read_note(path)
         assert note.type == NoteType.SOURCE
         assert note.frontmatter.get("source_type") == "podcast"
+        # Source notes live in a subdirectory as source.md
+        assert path.name == "source.md"
+        assert path.parent.name == "lex-fridman-432"
 
     def test_update_note_frontmatter(self, vault: VaultManager):
         path = vault.create_note(NoteType.NOTE, "Test Note", tags=["a"])
@@ -268,20 +271,33 @@ class TestVaultManager:
         assert vault._sanitize_filename("") == "untitled"
 
     def test_source_global_default(self, vault: VaultManager):
-        """Sources without project go to vault/sources/."""
+        """Sources without project go to vault/sources/{slug}/source.md."""
         path = vault.create_note(NoteType.SOURCE, "Global Article")
         assert "sources" in str(path)
         assert "projects" not in str(path)
+        assert path.name == "source.md"
+        assert path.parent.name == "global-article"
 
     def test_source_project_scoped(self, vault: VaultManager):
-        """Sources with project go to vault/projects/{project}/sources/."""
+        """Sources with project go to vault/projects/{project}/sources/{slug}/source.md."""
         path = vault.create_note(
             NoteType.SOURCE, "ML Paper",
             project="ml-study",
             extra_frontmatter={"source_type": "paper", "url": "https://arxiv.org/123"},
         )
         assert "projects/ml-study/sources" in str(path)
+        assert path.name == "source.md"
+        assert path.parent.name == "ml-paper"
         assert path.exists()
+
+    def test_source_collision(self, vault: VaultManager):
+        """Duplicate source titles get incrementing subdirectory names."""
+        p1 = vault.create_note(NoteType.SOURCE, "Same Source")
+        p2 = vault.create_note(NoteType.SOURCE, "Same Source")
+        assert p1 != p2
+        assert p1.exists() and p2.exists()
+        assert p1.parent.name == "same-source"
+        assert p2.parent.name == "same-source-1"
 
 
 class TestStripSection:

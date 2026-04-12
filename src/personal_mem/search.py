@@ -68,12 +68,21 @@ class Search:
     def search(
         self,
         query: str,
-        note_type: str = "",
+        note_type: str | list[str] = "",
         project: str = "",
         tags: list[str] | None = None,
         limit: int = 10,
     ) -> list[SearchResult]:
-        """Full-text search with optional filters."""
+        """Full-text search with optional filters.
+
+        When ``query`` is empty, returns the most recent notes matching the
+        filters (date desc) — enables "give me everything for project X"
+        queries without needing an FTS term.
+        """
+        # Normalize note_type to a list for consistent filter handling
+        type_list = [note_type] if isinstance(note_type, str) else list(note_type)
+        type_list = [t for t in type_list if t]
+
         conditions = []
         params: list = []
 
@@ -96,12 +105,23 @@ class Search:
                 FROM notes WHERE 1=1
             """
 
-        if note_type:
-            conditions.append("n.type = ?" if query else "type = ?")
-            params.append(note_type)
+        col_prefix = "n." if query else ""
+
+        if type_list:
+            if len(type_list) == 1:
+                conditions.append(f"{col_prefix}type = ?")
+                params.append(type_list[0])
+            else:
+                placeholders = ",".join("?" for _ in type_list)
+                conditions.append(f"{col_prefix}type IN ({placeholders})")
+                params.extend(type_list)
         if project:
-            conditions.append("n.project = ?" if query else "project = ?")
+            conditions.append(f"{col_prefix}project = ?")
             params.append(project)
+        if tags:
+            for tag in tags:
+                conditions.append(f'{col_prefix}tags LIKE ?')
+                params.append(f'%"{tag}"%')
 
         if conditions:
             sql += " AND " + " AND ".join(conditions)
@@ -117,8 +137,6 @@ class Search:
         results = []
         for row in self.db.execute(sql, params):
             tags_list = json.loads(row["tags"]) if row["tags"] else []
-            if tags and not set(tags).issubset(set(tags_list)):
-                continue
             results.append(
                 SearchResult(
                     id=row["id"],
@@ -200,39 +218,126 @@ class Search:
         project: str = "",
         tags: list[str] | None = None,
         query: str = "",
+        concepts: list[str] | None = None,
         limit: int = 5,
+        note_type: str | list[str] = "",
     ) -> list[SearchResult]:
         """Get the most relevant notes for a given context.
 
-        Progressive recall: tries FTS first, falls back to recent notes.
+        Three-layer retrieval:
+        1. FTS search (if query provided)
+        2. Concept expansion — pull related notes sharing concepts
+           from FTS hits or from explicitly provided concepts
+        3. Recency supplement
+
+        ``note_type`` filters all three layers — pass e.g. ``["source","session"]``
+        to restrict the context to specific kinds of notes.
         """
+        # Normalize type filter to a list
+        type_list = [note_type] if isinstance(note_type, str) else list(note_type)
+        type_list = [t for t in type_list if t]
+
         results = []
+        seen_ids: set[str] = set()
 
-        # Try FTS search if query provided
+        # Layer 1: FTS search if query provided
         if query:
-            results = self.search(query, project=project, tags=tags, limit=limit)
-
-        # If not enough results, supplement with recent notes
-        if len(results) < limit:
-            remaining = limit - len(results)
+            results = self.search(
+                query,
+                project=project,
+                tags=tags,
+                limit=limit,
+                note_type=type_list if type_list else "",
+            )
             seen_ids = {r.id for r in results}
 
-            conditions = []
-            params: list = []
-            if project:
-                conditions.append("project = ?")
-                params.append(project)
+        # Layer 2: Concept expansion
+        if len(results) < limit:
+            # Determine concepts to expand on
+            expand_concepts = list(concepts) if concepts else []
+            if not expand_concepts and results:
+                # Extract concepts from FTS hits
+                for r in results:
+                    for row in self.db.execute(
+                        "SELECT concept FROM note_concepts WHERE note_id = ?", (r.id,)
+                    ):
+                        if row["concept"] not in expand_concepts:
+                            expand_concepts.append(row["concept"])
 
-            where = " AND ".join(conditions) if conditions else "1=1"
+            if expand_concepts:
+                remaining = limit - len(results)
+                placeholders = ",".join("?" for _ in expand_concepts)
+                conditions = [f"nc.concept IN ({placeholders})"]
+                params: list = list(expand_concepts)
+
+                if project:
+                    conditions.append("n.project = ?")
+                    params.append(project)
+
+                if type_list:
+                    type_placeholders = ",".join("?" for _ in type_list)
+                    conditions.append(f"n.type IN ({type_placeholders})")
+                    params.extend(type_list)
+
+                if seen_ids:
+                    id_placeholders = ",".join("?" for _ in seen_ids)
+                    conditions.append(f"n.id NOT IN ({id_placeholders})")
+                    params.extend(seen_ids)
+
+                where = " AND ".join(conditions)
+                sql = f"""
+                    SELECT n.id, n.type, n.title, n.path, n.project, n.date, n.tags,
+                           COUNT(DISTINCT nc.concept) as shared_count
+                    FROM note_concepts nc
+                    JOIN notes n ON n.id = nc.note_id
+                    WHERE {where}
+                    GROUP BY n.id
+                    ORDER BY shared_count DESC, n.date DESC
+                    LIMIT ?
+                """
+                params.append(remaining)
+
+                for row in self.db.execute(sql, params):
+                    tags_list = json.loads(row["tags"]) if row["tags"] else []
+                    if tags and not set(tags).issubset(set(tags_list)):
+                        continue
+                    results.append(
+                        SearchResult(
+                            id=row["id"],
+                            type=row["type"],
+                            title=row["title"],
+                            path=row["path"],
+                            project=row["project"] or "",
+                            date=row["date"] or "",
+                            tags=tags_list,
+                        )
+                    )
+                    seen_ids.add(row["id"])
+
+        # Layer 3: Recency supplement
+        if len(results) < limit:
+            remaining = limit - len(results)
+
+            conditions_r = []
+            params_r: list = []
+            if project:
+                conditions_r.append("project = ?")
+                params_r.append(project)
+            if type_list:
+                type_placeholders = ",".join("?" for _ in type_list)
+                conditions_r.append(f"type IN ({type_placeholders})")
+                params_r.extend(type_list)
+
+            where_r = " AND ".join(conditions_r) if conditions_r else "1=1"
             sql = f"""
                 SELECT id, type, title, path, project, date, tags
-                FROM notes WHERE {where}
+                FROM notes WHERE {where_r}
                 ORDER BY date DESC
                 LIMIT ?
             """
-            params.append(remaining + len(seen_ids))  # overfetch to account for dedup
+            params_r.append(remaining + len(seen_ids))  # overfetch to account for dedup
 
-            for row in self.db.execute(sql, params):
+            for row in self.db.execute(sql, params_r):
                 if row["id"] in seen_ids:
                     continue
                 tags_list = json.loads(row["tags"]) if row["tags"] else []
@@ -249,10 +354,138 @@ class Search:
                         tags=tags_list,
                     )
                 )
+                seen_ids.add(row["id"])
                 if len(results) >= limit:
                     break
 
         return results
+
+    def search_by_concept(
+        self,
+        concept: str | list[str],
+        project: str = "",
+        note_type: str | list[str] = "",
+        limit: int = 20,
+        *,
+        match_mode: str = "any",
+        min_matches: int = 0,
+    ) -> list[SearchResult]:
+        """Find notes by concept(s). Supports single concept or list with
+        ``any`` (union) or ``all`` (intersection) semantics.
+
+        Args:
+            concept: Single concept string or list. Strings are lowercased.
+            project: Optional project filter. Empty = cross-project.
+            note_type: Optional type filter. Accepts a string or a list.
+            limit: Max results.
+            match_mode: ``"any"`` → return notes matching *any* concept (default,
+                preserves old single-concept behavior). ``"all"`` → return notes
+                matching *all* concepts (intersection).
+            min_matches: When ``match_mode="all"``, require at least this many
+                distinct concept matches. 0 means "require all concepts".
+
+        Returns results sorted by shared-concept count (when multi-concept) or
+        date desc otherwise.
+        """
+        # Normalize inputs
+        concepts = [concept] if isinstance(concept, str) else list(concept)
+        concepts = [c.lower() for c in concepts if c]
+        if not concepts:
+            return []
+
+        type_list = [note_type] if isinstance(note_type, str) else list(note_type)
+        type_list = [t for t in type_list if t]
+
+        # Build concept placeholders for IN (?, ?, ...)
+        concept_placeholders = ",".join("?" for _ in concepts)
+
+        conditions = [f"nc.concept IN ({concept_placeholders})"]
+        params: list = list(concepts)
+
+        if project:
+            conditions.append("n.project = ?")
+            params.append(project)
+
+        if type_list:
+            type_placeholders = ",".join("?" for _ in type_list)
+            conditions.append(f"n.type IN ({type_placeholders})")
+            params.extend(type_list)
+
+        where = " AND ".join(conditions)
+
+        # Intersection mode — HAVING on distinct concept count. Default
+        # threshold is len(concepts) (all concepts must match); caller may
+        # override with min_matches to allow partial intersection.
+        if match_mode == "all" and len(concepts) > 1:
+            threshold = min_matches if min_matches > 0 else len(concepts)
+            sql = f"""
+                SELECT n.id, n.type, n.title, n.path, n.project, n.date, n.tags,
+                       COUNT(DISTINCT nc.concept) AS match_count
+                FROM note_concepts nc
+                JOIN notes n ON n.id = nc.note_id
+                WHERE {where}
+                GROUP BY n.id
+                HAVING COUNT(DISTINCT nc.concept) >= ?
+                ORDER BY match_count DESC, n.date DESC
+                LIMIT ?
+            """
+            params.append(threshold)
+        else:
+            sql = f"""
+                SELECT DISTINCT n.id, n.type, n.title, n.path, n.project, n.date, n.tags
+                FROM note_concepts nc
+                JOIN notes n ON n.id = nc.note_id
+                WHERE {where}
+                ORDER BY n.date DESC
+                LIMIT ?
+            """
+        params.append(limit)
+
+        results = []
+        for row in self.db.execute(sql, params):
+            tags_list = json.loads(row["tags"]) if row["tags"] else []
+            results.append(
+                SearchResult(
+                    id=row["id"],
+                    type=row["type"],
+                    title=row["title"],
+                    path=row["path"],
+                    project=row["project"] or "",
+                    date=row["date"] or "",
+                    tags=tags_list,
+                )
+            )
+        return results
+
+    def get_project_concepts(self, project: str) -> dict[str, int]:
+        """Get concept frequency for a specific project."""
+        sql = """
+            SELECT nc.concept, COUNT(*) as cnt
+            FROM note_concepts nc
+            JOIN notes n ON n.id = nc.note_id
+            WHERE n.project = ?
+            GROUP BY nc.concept
+            ORDER BY cnt DESC
+        """
+        return {row["concept"]: row["cnt"] for row in self.db.execute(sql, (project,))}
+
+    def get_concept_cooccurrence(
+        self, concept: str, limit: int = 10
+    ) -> list[tuple[str, int]]:
+        """Find concepts that frequently co-occur with the given concept."""
+        sql = """
+            SELECT nc2.concept, COUNT(*) as cnt
+            FROM note_concepts nc1
+            JOIN note_concepts nc2 ON nc1.note_id = nc2.note_id
+            WHERE nc1.concept = ? AND nc2.concept != ?
+            GROUP BY nc2.concept
+            ORDER BY cnt DESC
+            LIMIT ?
+        """
+        return [
+            (row["concept"], row["cnt"])
+            for row in self.db.execute(sql, (concept.lower(), concept.lower(), limit))
+        ]
 
     def get_note_by_id(self, note_id: str) -> dict | None:
         """Get a single note by ID."""
@@ -262,6 +495,278 @@ class Search:
         if row:
             return dict(row)
         return None
+
+    def get_source_lens(
+        self,
+        source_id: str,
+        *,
+        limit: int = 50,
+    ) -> dict:
+        """Walk outward from a source note — everything citing, linking to,
+        or sharing concepts with it.
+
+        Returns a dict with:
+            - ``source``: the source note itself (id, title, project, concepts) or None
+            - ``inbound``: notes with any edge pointing at the source (wikilinks, cites, etc.)
+            - ``decisions``: decisions that cite the source (subset of inbound, type=decision)
+            - ``sessions``: sessions derived from or touching the source (subset of inbound)
+            - ``shared_concepts``: [(concept, cooccurring_note_count), ...] — "what
+              concepts does this source contribute to across the vault"
+
+        One call returns everything needed to answer "what did this source
+        feed into?". Inbound detection uses the existing ``edges`` table,
+        which is populated from both frontmatter fields (cites, derived_from,
+        etc.) and wikilinks — no new indexer work needed.
+        """
+        result: dict = {
+            "source": None,
+            "inbound": [],
+            "decisions": [],
+            "sessions": [],
+            "shared_concepts": [],
+        }
+
+        src = self.get_note_by_id(source_id)
+        if not src:
+            return result
+
+        # Source concepts for shared-concept analysis
+        src_concepts = [
+            row["concept"]
+            for row in self.db.execute(
+                "SELECT concept FROM note_concepts WHERE note_id = ?", (source_id,)
+            )
+        ]
+
+        result["source"] = {
+            "id": src["id"],
+            "type": src["type"],
+            "title": src["title"],
+            "project": src["project"] or "",
+            "date": src["date"] or "",
+            "concepts": src_concepts,
+        }
+
+        # Inbound edges — any note that points at this source
+        inbound_sql = """
+            SELECT DISTINCT n.id, n.type, n.title, n.path, n.project, n.date, n.tags,
+                            e.edge_type
+            FROM edges e
+            JOIN notes n ON n.id = e.source
+            WHERE e.target = ?
+            ORDER BY n.date DESC
+            LIMIT ?
+        """
+        for row in self.db.execute(inbound_sql, (source_id, limit)):
+            tags_list = json.loads(row["tags"]) if row["tags"] else []
+            entry = {
+                "id": row["id"],
+                "type": row["type"],
+                "title": row["title"],
+                "project": row["project"] or "",
+                "date": row["date"] or "",
+                "edge_type": row["edge_type"],
+                "tags": tags_list,
+            }
+            result["inbound"].append(entry)
+            if row["type"] == "decision":
+                result["decisions"].append(entry)
+            elif row["type"] == "session":
+                result["sessions"].append(entry)
+
+        # Shared concepts — for each of the source's concepts, count how many
+        # *other* notes also use it (a rough "reach" signal).
+        if src_concepts:
+            concept_placeholders = ",".join("?" for _ in src_concepts)
+            reach_sql = f"""
+                SELECT nc.concept, COUNT(DISTINCT nc.note_id) AS cnt
+                FROM note_concepts nc
+                WHERE nc.concept IN ({concept_placeholders})
+                  AND nc.note_id != ?
+                GROUP BY nc.concept
+                ORDER BY cnt DESC
+            """
+            reach_params = list(src_concepts) + [source_id]
+            result["shared_concepts"] = [
+                (row["concept"], row["cnt"])
+                for row in self.db.execute(reach_sql, reach_params)
+            ]
+
+        return result
+
+    def search_decisions_by_file(
+        self,
+        file_path: str,
+        *,
+        project: str = "",
+        status: str = "",
+        limit: int = 50,
+    ) -> list[SearchResult]:
+        """Return every decision that touched a given file path.
+
+        Uses the ``decision_files`` indexer table (populated from the
+        ``file_paths`` frontmatter field of type=decision notes). One indexed
+        JOIN replaces scanning every decision's frontmatter.
+        """
+        conditions = ["df.file_path = ?", "n.type = 'decision'"]
+        params: list = [file_path]
+
+        if project:
+            conditions.append("n.project = ?")
+            params.append(project)
+
+        where = " AND ".join(conditions)
+        sql = f"""
+            SELECT n.id, n.type, n.title, n.path, n.project, n.date, n.tags,
+                   n.frontmatter
+            FROM decision_files df
+            JOIN notes n ON n.id = df.decision_id
+            WHERE {where}
+            ORDER BY n.date DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        results = []
+        for row in self.db.execute(sql, params):
+            tags_list = json.loads(row["tags"]) if row["tags"] else []
+
+            # Filter by status if requested — cheap post-filter on small result sets.
+            if status:
+                try:
+                    fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
+                except json.JSONDecodeError:
+                    fm = {}
+                if fm.get("status") != status:
+                    continue
+
+            results.append(
+                SearchResult(
+                    id=row["id"],
+                    type=row["type"],
+                    title=row["title"],
+                    path=row["path"],
+                    project=row["project"] or "",
+                    date=row["date"] or "",
+                    tags=tags_list,
+                )
+            )
+        return results
+
+    def similar(
+        self,
+        query: str,
+        *,
+        project: str = "",
+        note_type: str | list[str] = "",
+        limit: int = 10,
+    ) -> list[SearchResult]:
+        """Semantic search via cached embeddings. Soft-fails if embeddings
+        aren't configured (missing API key, missing embeddings db).
+
+        Returns SearchResult rows enriched from the main notes table so the
+        caller gets titles/paths/etc., not just IDs.
+        """
+        try:
+            from personal_mem.embeddings import EmbeddingSearch
+        except ImportError:
+            return []
+
+        try:
+            es = EmbeddingSearch(config=self.config)
+            if not self.config.embeddings_db.exists():
+                return []
+            hits = es.search(
+                query, limit=limit, project=project, note_type=note_type
+            )
+            es.close()
+        except (FileNotFoundError, ValueError, ImportError):
+            return []
+
+        if not hits:
+            return []
+
+        # Join against the main index to hydrate titles etc.
+        id_to_score = {nid: score for nid, score in hits}
+        placeholders = ",".join("?" for _ in id_to_score)
+        rows = self.db.execute(
+            f"SELECT id, type, title, path, project, date, tags "
+            f"FROM notes WHERE id IN ({placeholders})",
+            list(id_to_score.keys()),
+        ).fetchall()
+
+        results = []
+        for row in rows:
+            tags_list = json.loads(row["tags"]) if row["tags"] else []
+            results.append(
+                SearchResult(
+                    id=row["id"],
+                    type=row["type"],
+                    title=row["title"],
+                    path=row["path"],
+                    project=row["project"] or "",
+                    date=row["date"] or "",
+                    tags=tags_list,
+                    rank=id_to_score[row["id"]],
+                )
+            )
+        # Preserve semantic ranking order
+        results.sort(key=lambda r: r.rank, reverse=True)
+        return results
+
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        project: str = "",
+        note_type: str | list[str] = "",
+        limit: int = 10,
+        rrf_k: int = 60,
+    ) -> list[SearchResult]:
+        """Hybrid retrieval: run FTS + semantic, fuse with reciprocal rank fusion.
+
+        RRF score: ``Σ 1/(k + rank_i)`` across retrievers. k=60 is the
+        standard constant from the original RRF paper; it needs no tuning.
+
+        Falls back gracefully: if embeddings are unavailable, returns
+        FTS-only results. If FTS returns nothing (e.g. empty query), returns
+        semantic-only.
+        """
+        # Run both retrievers independently
+        fts_results = self.search(
+            query, project=project, note_type=note_type, limit=max(limit * 2, 20)
+        )
+        sem_results = self.similar(
+            query, project=project, note_type=note_type, limit=max(limit * 2, 20)
+        )
+
+        # Edge cases — one retriever empty
+        if not sem_results:
+            return fts_results[:limit]
+        if not fts_results:
+            return sem_results[:limit]
+
+        # RRF fusion: score[id] = Σ 1/(k + rank_in_retriever_i)
+        # Rank is 1-indexed to match the standard formulation.
+        scores: dict[str, float] = {}
+        rows_by_id: dict[str, SearchResult] = {}
+
+        for rank, r in enumerate(fts_results, start=1):
+            scores[r.id] = scores.get(r.id, 0.0) + 1.0 / (rrf_k + rank)
+            rows_by_id[r.id] = r
+
+        for rank, r in enumerate(sem_results, start=1):
+            scores[r.id] = scores.get(r.id, 0.0) + 1.0 / (rrf_k + rank)
+            rows_by_id.setdefault(r.id, r)
+
+        # Sort by fused score, return top N with the fused score on .rank
+        ranked_ids = sorted(scores.keys(), key=lambda i: scores[i], reverse=True)
+        merged: list[SearchResult] = []
+        for nid in ranked_ids[:limit]:
+            r = rows_by_id[nid]
+            r.rank = scores[nid]
+            merged.append(r)
+        return merged
 
     def render_graph_text(self, note_id: str, depth: int = 2) -> str:
         """Render a text representation of the local graph."""

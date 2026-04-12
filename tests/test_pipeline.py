@@ -299,9 +299,10 @@ class TestConceptAutoLinking:
         stats = indexer.rebuild(full=True)
         assert stats["edges"] >= 1
 
-    def test_one_shared_no_edge(
+    def test_one_shared_creates_edge_at_default_threshold(
         self, vault: VaultManager, indexer: Indexer,
     ):
+        """Default concept_edge_threshold=1: one shared concept creates an edge."""
         vault.create_note(
             NoteType.NOTE, "A", body=".", project="t",
             extra_frontmatter={"concepts": ["x", "unique1"]},
@@ -312,9 +313,9 @@ class TestConceptAutoLinking:
         )
         stats = indexer.rebuild(full=True)
         concept_edges = indexer.db.execute(
-            "SELECT * FROM edges WHERE metadata IS NOT NULL"
+            "SELECT * FROM edges WHERE metadata LIKE '%concept%'"
         ).fetchall()
-        assert len(concept_edges) == 0
+        assert len(concept_edges) >= 1
 
     def test_three_notes_pairwise_linking(
         self, vault: VaultManager, indexer: Indexer,

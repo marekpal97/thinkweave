@@ -46,17 +46,20 @@ def evaluate_decision(
     superseder = _check_re_edited(decision, file_paths, all_decisions)
 
     # Check if committed via git (catches post-session commits)
+    # hash_to_files maps each discovered hash to the files it touched,
+    # enabling narrower blame checks downstream.
+    hash_to_files: dict[str, list[str]] = {}
     if file_paths:
-        discovered = _check_committed_via_git(file_paths, decision.date)
-        if discovered:
+        hash_to_files = _check_committed_via_git(file_paths, decision.date)
+        if hash_to_files:
             committed = True
-            for h in discovered:
+            for h in hash_to_files:
                 if h not in seen_refs:
                     seen_refs.add(h)
                     commit_refs.append(h)
 
     # Check blame survival — how many lines this decision still owns
-    blame_lines = _check_blame_survival(file_paths, commit_refs)
+    blame_lines = _check_blame_survival(file_paths, commit_refs, hash_to_files)
 
     # Check if files still exist (not reverted/deleted)
     files_exist = all(Path(fp).exists() for fp in file_paths) if file_paths else True
@@ -139,19 +142,21 @@ def _check_re_edited(
     return None
 
 
-def _check_committed_via_git(file_paths: list[str], since_date: str) -> list[str]:
+def _check_committed_via_git(
+    file_paths: list[str], since_date: str,
+) -> dict[str, list[str]]:
     """Find commit hashes touching these files after the decision date.
 
-    Returns a deduplicated list of short hashes discovered via git log.
-    This catches post-session commits that the hooks didn't capture.
+    Returns a dict mapping each short hash to the file_paths it touched.
+    This enables narrower blame checks (only blame files a commit actually
+    changed) and catches post-session commits that the hooks didn't capture.
     """
     if not since_date:
-        return []
+        return {}
     # Bare dates like "2026-04-05" need explicit time for reliable git --since
     if "T" not in since_date:
         since_date = f"{since_date}T00:00:00"
-    seen: set[str] = set()
-    hashes: list[str] = []
+    hash_to_files: dict[str, list[str]] = {}
     for fp in file_paths:
         try:
             result = subprocess.run(
@@ -165,12 +170,12 @@ def _check_committed_via_git(file_paths: list[str], since_date: str) -> list[str
                     parts = line.split(None, 1)
                     if parts:
                         h = parts[0]
-                        if h not in seen:
-                            seen.add(h)
-                            hashes.append(h)
+                        hash_to_files.setdefault(h, [])
+                        if fp not in hash_to_files[h]:
+                            hash_to_files[h].append(fp)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             continue
-    return hashes
+    return hash_to_files
 
 
 def _check_tested(session_meta: NoteMeta | None, file_paths: list[str]) -> bool:
@@ -191,8 +196,17 @@ def _check_tested(session_meta: NoteMeta | None, file_paths: list[str]) -> bool:
     return False
 
 
-def _check_blame_survival(file_paths: list[str], commit_refs: list[str]) -> int:
+def _check_blame_survival(
+    file_paths: list[str],
+    commit_refs: list[str],
+    hash_to_files: dict[str, list[str]] | None = None,
+) -> int:
     """Count lines in files still attributed to these commits via git blame.
+
+    When *hash_to_files* is provided (mapping hash → files it touched),
+    blame for each file only counts lines from commits that actually changed
+    that file. This prevents cross-contamination from large commits that
+    touch many files but are only relevant to one decision's file_paths.
 
     Returns total surviving line count across all files, or -1 if blame
     cannot be determined (e.g., file deleted, git unavailable).
@@ -203,6 +217,13 @@ def _check_blame_survival(file_paths: list[str], commit_refs: list[str]) -> int:
     checked = False
     for fp in file_paths:
         if not Path(fp).exists():
+            continue
+        # Narrow refs to those that actually touched this file
+        if hash_to_files:
+            relevant_refs = [r for r in commit_refs if fp in hash_to_files.get(r, [])]
+        else:
+            relevant_refs = commit_refs
+        if not relevant_refs:
             continue
         try:
             result = subprocess.run(
@@ -218,7 +239,7 @@ def _check_blame_survival(file_paths: list[str], commit_refs: list[str]) -> int:
                 if not line or line[0] == "\t":
                     continue
                 full_hash = line.split()[0]
-                for ref in commit_refs:
+                for ref in relevant_refs:
                     if full_hash.startswith(ref):
                         total += 1
                         break

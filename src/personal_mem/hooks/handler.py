@@ -1,4 +1,4 @@
-"""Claude Code Pre/PostToolUse hook handler.
+"""Claude Code Pre/PostToolUse/Stop/SessionStart hook handler.
 
 Called via run_hook.sh which sets PYTHONPATH.
 
@@ -6,7 +6,10 @@ Input: JSON via stdin (tool_name, tool_input, session_id, etc.)
 Output: JSON to stdout following Claude Code hook protocol.
 Exit 0 = success.
 
-PreToolUse (Write|Edit): Injects context from vault FTS index.
+SessionStart: Injects ~7–10k tokens of structured project context
+  (recent sessions, STATE, backlog, decisions, tool manifest) so Claude
+  wakes up oriented. Never blocks — always exits 0.
+PreToolUse (Write|Edit): Injects relevant vault context as a system message.
 PostToolUse (Write|Edit|Bash): Buffers events to JSONL. Session note
   materialization is deferred to Stop hook.
 Stop: Reconstructs session from buffer, writes summary, indexes once.
@@ -25,6 +28,25 @@ from pathlib import Path
 # Lazy imports to keep hook startup fast
 
 
+def _log_error(hook_type: str, error: Exception) -> None:
+    """Log hook errors to file. Never blocks Claude Code."""
+    try:
+        import traceback
+
+        from personal_mem.config import load_config
+
+        cfg = load_config()
+        log_path = cfg.mem_dir / "hooks.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).isoformat()
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{now}] {hook_type}: {error}\n")
+            traceback.print_exc(file=f)
+            f.write("\n")
+    except Exception:
+        pass  # Last resort: silent failure on logging itself
+
+
 def main() -> None:
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
@@ -37,10 +59,12 @@ def main() -> None:
             _handle_post(tool_name, hook_input)
         elif hook_type == "stop":
             _handle_stop(hook_input)
+        elif hook_type == "session_start":
+            _handle_session_start(hook_input)
         else:
             _output()
-    except Exception:
-        # Hooks must never block Claude Code — fail silently
+    except Exception as e:
+        _log_error(hook_type, e)
         _output()
 
 
@@ -90,7 +114,8 @@ def _handle_pre(tool_name: str, hook_input: dict) -> None:
         msg = "\n".join(lines)
 
         _output(system_message=msg)
-    except Exception:
+    except Exception as e:
+        _log_error("pre_tool_use", e)
         _output()
 
 
@@ -130,7 +155,8 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         _ensure_session(cfg, session_id, hook_input)
 
         _output()
-    except Exception:
+    except Exception as e:
+        _log_error("post_tool_use", e)
         _output()
 
 
@@ -464,12 +490,15 @@ def _get_commit_files(commit_hash: str) -> list[str]:
 
 
 def _is_test_command(command: str) -> bool:
-    """Check if a bash command runs tests."""
-    cmd = command.strip().lower()
-    return any(
-        cmd.startswith(p)
-        for p in ("pytest", "python -m pytest", "uv run pytest", "uv run python -m pytest")
-    )
+    """Check if a bash command runs tests.
+
+    Handles chained commands like ``cd foo && uv run pytest -x``
+    by splitting on shell operators and checking each segment.
+    """
+    _TEST_PREFIXES = ("pytest", "python -m pytest", "uv run pytest", "uv run python -m pytest")
+    # Split on shell chain operators (&&, ||, ;) and check each segment
+    segments = re.split(r"\s*(?:&&|\|\||;)\s*", command.strip().lower())
+    return any(seg.startswith(p) for seg in segments for p in _TEST_PREFIXES)
 
 
 def _parse_test_result(command: str, output: str) -> dict | None:
@@ -576,10 +605,9 @@ def _handle_stop(hook_input: dict) -> None:
             _output()
             return
 
-        meta = _summarize_events(events)
-        auto_summary = _build_auto_summary(
-            meta["files_touched"], meta["commits"], meta["test_runs"], len(events),
-        )
+        from personal_mem.extract import extract_deterministic
+
+        result = extract_deterministic(events)
 
         # Build final frontmatter
         fm = note.frontmatter
@@ -587,20 +615,36 @@ def _handle_stop(hook_input: dict) -> None:
         fm["processed"] = True
         fm["processed_at"] = today
         fm["auto_extracted"] = True
-        if meta["files_touched"]:
-            fm["files_touched"] = meta["files_touched"]
-        if meta["commits"]:
-            fm["commits"] = meta["commits"]
-        if meta["test_runs"]:
-            fm["test_runs"] = meta["test_runs"]
-        if meta["git_branch"]:
-            fm["git_branch"] = meta["git_branch"]
+        if result.files_touched:
+            fm["files_touched"] = result.files_touched
+        if result.commits:
+            fm["commits"] = result.commits
+        if result.test_runs:
+            fm["test_runs"] = result.test_runs
+        if result.git_branch:
+            fm["git_branch"] = result.git_branch
+        if result.concepts:
+            fm["concepts"] = result.concepts
+        if result.decision_skeletons:
+            fm["candidate_decisions"] = len(result.decision_skeletons)
+        if result.failure_signals:
+            fm["has_failures"] = True
 
-        # Build body — summary + candidate insights for /mem-wrap enrichment
-        body_parts = [f"## Summary\n{auto_summary}"]
-        if meta["insights"]:
-            insight_lines = "\n".join(f"\n{ins}" for ins in meta["insights"])
+        # Build body — summary + candidate insights + decision skeletons
+        body_parts = [f"## Summary\n{result.summary}"]
+        if result.insights:
+            insight_lines = "\n".join(f"\n{ins}" for ins in result.insights)
             body_parts.append(f"## Candidate Insights{insight_lines}")
+        if result.decision_skeletons:
+            dec_lines = []
+            for sk in result.decision_skeletons:
+                files = ", ".join(sk.file_paths[:5])
+                concepts = f" [{', '.join(sk.concepts)}]" if sk.concepts else ""
+                dec_lines.append(f"- **{sk.title}** ({files}){concepts}")
+            body_parts.append(f"## Candidate Decisions\n" + "\n".join(dec_lines))
+        if result.failure_signals:
+            fail_lines = [f"- {fs.title}" for fs in result.failure_signals]
+            body_parts.append(f"## Failure Signals\n" + "\n".join(fail_lines))
 
         session_path.write_text(
             render_frontmatter(fm) + "\n\n"
@@ -616,11 +660,45 @@ def _handle_stop(hook_input: dict) -> None:
             idx = Indexer(config=cfg)
             idx.index_file(session_path)
             idx.close()
-        except Exception:
-            pass
+        except Exception as e:
+            _log_error("stop/index", e)
 
         _output()
-    except Exception:
+    except Exception as e:
+        _log_error("stop", e)
+        _output()
+
+
+def _handle_session_start(hook_input: dict) -> None:
+    """SessionStart: inject structured project context before the first user turn.
+
+    Emits a ``hookSpecificOutput.additionalContext`` payload (~7–10k tokens)
+    built by ``personal_mem.context.build_project_context``. Never blocks;
+    all exceptions fall through to an empty response.
+    """
+    # Check if hive_swarm is active — defer to its own context management.
+    if os.environ.get("HIVE_STATE_DIR"):
+        _output()
+        return
+
+    try:
+        from personal_mem.config import load_config
+        from personal_mem.context import build_project_context
+
+        cfg = load_config()
+        project = _detect_project(hook_input)
+        payload = build_project_context(cfg, project, budget_tokens=10000)
+
+        if not payload.strip():
+            _output()
+            return
+
+        _output(
+            additional_context=payload,
+            hook_event_name="SessionStart",
+        )
+    except Exception as e:
+        _log_error("session_start", e)
         _output()
 
 
@@ -632,11 +710,28 @@ def _read_stdin() -> dict:
         return {}
 
 
-def _output(system_message: str = "") -> None:
-    """Write hook response to stdout."""
+def _output(
+    system_message: str = "",
+    additional_context: str = "",
+    hook_event_name: str = "",
+) -> None:
+    """Write hook response to stdout.
+
+    Args:
+        system_message: Legacy ``systemMessage`` channel used by PreToolUse.
+        additional_context: Payload for ``hookSpecificOutput.additionalContext``
+            (SessionStart). Injected as a system message before the first turn.
+        hook_event_name: The Claude Code hook event name (e.g. ``SessionStart``).
+            Required when ``additional_context`` is set.
+    """
     result: dict = {}
     if system_message:
         result["systemMessage"] = system_message
+    if additional_context and hook_event_name:
+        result["hookSpecificOutput"] = {
+            "hookEventName": hook_event_name,
+            "additionalContext": additional_context,
+        }
     json.dump(result, sys.stdout)
     sys.stdout.flush()
 
