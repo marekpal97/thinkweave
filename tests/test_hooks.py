@@ -128,8 +128,60 @@ class TestHookInstaller:
         assert "Bash(ls)" in settings["permissions"]["allow"]
         # Existing hook preserved
         assert len(settings["hooks"]["PreToolUse"]) == 2
-        # Our hook added
-        assert any("personal_mem" in str(entry) for entry in settings["hooks"]["PreToolUse"])
+        # Our hook added — entry-point command is `mem-hook pre_tool_use`
+        assert any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
+
+    def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
+        """Stale run_hook.sh entries from pre-entry-point installs get rewritten."""
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+
+        legacy = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Write|Edit",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/abs/path/to/run_hook.sh pre_tool_use",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ],
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python3 -m personal_mem.hooks.handler stop",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+        (claude_dir / "settings.local.json").write_text(json.dumps(legacy))
+
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (claude_dir / "settings.local.json").read_text()
+        )
+        # Both legacy entries rewritten in place — no duplicates.
+        assert len(settings["hooks"]["PreToolUse"]) == 1
+        assert len(settings["hooks"]["Stop"]) == 1
+        pre_cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        assert pre_cmd == "mem-hook pre_tool_use"
+        assert stop_cmd == "mem-hook stop"
+        # Legacy fragments fully replaced
+        assert "run_hook.sh" not in pre_cmd
+        assert "python3" not in stop_cmd
 
     def test_install_idempotent(self, tmp_path: Path):
         project_dir = tmp_path / "project"

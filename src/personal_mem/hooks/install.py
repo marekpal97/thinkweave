@@ -9,11 +9,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+# Console-script entry point declared in pyproject.toml as
+# `mem-hook = personal_mem.hooks.handler:main`. pip/uv materialize this
+# as `mem-hook` on Unix and `mem-hook.exe` on Windows, so writing the
+# bare name into settings.local.json makes hook dispatch cross-platform
+# without any shell wrapper.
+HOOK_CMD = "mem-hook"
 
-def _get_hook_command() -> str:
-    """Get the absolute path to the run_hook.sh script."""
-    hook_sh = Path(__file__).parent / "run_hook.sh"
-    return str(hook_sh.resolve())
+# Legacy hook command fragments that earlier installs may have written
+# into settings.local.json. On reinstall we rewrite any entry whose
+# command contains one of these to the modern `mem-hook` form.
+LEGACY_HOOK_MARKERS = ("run_hook.sh", "personal_mem.hooks.handler")
 
 
 def _settings_path(project_dir: str = "") -> Path:
@@ -35,23 +41,22 @@ def install_hooks(project_dir: str = "") -> None:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
 
     hooks = settings.setdefault("hooks", {})
-    hook_cmd = _get_hook_command()
 
     # SessionStart hook — injects project context before the first user turn
     session_start_hooks = hooks.setdefault("SessionStart", [])
-    _ensure_hook(session_start_hooks, "", f"{hook_cmd} session_start")
+    _ensure_hook(session_start_hooks, "", f"{HOOK_CMD} session_start")
 
     # PreToolUse hook
     pre_hooks = hooks.setdefault("PreToolUse", [])
-    _ensure_hook(pre_hooks, "Write|Edit", f"{hook_cmd} pre_tool_use")
+    _ensure_hook(pre_hooks, "Write|Edit", f"{HOOK_CMD} pre_tool_use")
 
     # PostToolUse hook
     post_hooks = hooks.setdefault("PostToolUse", [])
-    _ensure_hook(post_hooks, "Write|Edit|Bash", f"{hook_cmd} post_tool_use")
+    _ensure_hook(post_hooks, "Write|Edit|Bash", f"{HOOK_CMD} post_tool_use")
 
     # Stop hook — gates session exit for knowledge extraction
     stop_hooks = hooks.setdefault("Stop", [])
-    _ensure_hook(stop_hooks, "", f"{hook_cmd} stop")
+    _ensure_hook(stop_hooks, "", f"{HOOK_CMD} stop")
 
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     print(
@@ -70,7 +75,6 @@ def uninstall_hooks(project_dir: str = "") -> None:
 
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     hooks = settings.get("hooks", {})
-    hook_cmd = _get_hook_command()
 
     for hook_type in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
         entries = hooks.get(hook_type, [])
@@ -78,7 +82,7 @@ def uninstall_hooks(project_dir: str = "") -> None:
             entry
             for entry in entries
             if not any(
-                h.get("command", "").startswith(hook_cmd)
+                _is_personal_mem_hook(h.get("command", ""))
                 for h in entry.get("hooks", [])
             )
         ]
@@ -93,17 +97,29 @@ def uninstall_hooks(project_dir: str = "") -> None:
     print(f"Hooks removed from {settings_path}")
 
 
+def _is_personal_mem_hook(command: str) -> bool:
+    """True if `command` is a personal_mem hook — current or legacy form."""
+    if not command:
+        return False
+    if command.startswith(HOOK_CMD):
+        return True
+    return any(marker in command for marker in LEGACY_HOOK_MARKERS)
+
+
 def _ensure_hook(entries: list, matcher: str, command: str) -> None:
-    """Add a hook entry if it doesn't already exist."""
-    # Check if our hook is already installed
+    """Add a hook entry, or rewrite any existing personal_mem hook in place.
+
+    Matches on both the modern `mem-hook` command and any legacy
+    `run_hook.sh`/`-m personal_mem.hooks.handler` entries from earlier
+    installs, so reinstalling after an upgrade migrates stale commands
+    to the new entry-point form rather than appending duplicates.
+    """
     for entry in entries:
         for hook in entry.get("hooks", []):
-            if hook.get("command", "").startswith(command.split()[0]):
-                # Already installed — update command
+            if _is_personal_mem_hook(hook.get("command", "")):
                 hook["command"] = command
                 return
 
-    # Add new entry
     entries.append(
         {
             "matcher": matcher,

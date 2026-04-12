@@ -1,6 +1,8 @@
 """Claude Code Pre/PostToolUse/Stop/SessionStart hook handler.
 
-Called via run_hook.sh which sets PYTHONPATH.
+Invoked as the `mem-hook` console script (declared in pyproject.toml).
+pip/uv materialize this as a cross-platform executable, so Claude Code
+calls it directly from settings.local.json with no shell wrapper.
 
 Input: JSON via stdin (tool_name, tool_input, session_id, etc.)
 Output: JSON to stdout following Claude Code hook protocol.

@@ -13,6 +13,7 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
 mem = "personal_mem.cli:main"
+mem-hook = "personal_mem.hooks.handler:main"
 
 [build-system]
 requires = ["hatchling"]
