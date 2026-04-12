@@ -132,7 +132,8 @@ class TestHookInstaller:
         assert any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
-        """Stale run_hook.sh entries from pre-entry-point installs get rewritten."""
+        """Every historical hook form (run_hook.sh, `python -m`, bare
+        mem-hook) gets rewritten to the current absolute-path form."""
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
         claude_dir.mkdir(parents=True)
@@ -146,6 +147,20 @@ class TestHookInstaller:
                             {
                                 "type": "command",
                                 "command": "/abs/path/to/run_hook.sh pre_tool_use",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ],
+                "PostToolUse": [
+                    {
+                        "matcher": "Write|Edit|Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                # Bare `mem-hook` form from the brief pre-
+                                # absolute-path iteration of install.py.
+                                "command": "mem-hook post_tool_use",
                                 "timeout": 5,
                             }
                         ],
@@ -172,16 +187,54 @@ class TestHookInstaller:
         settings = json.loads(
             (claude_dir / "settings.local.json").read_text()
         )
-        # Both legacy entries rewritten in place — no duplicates.
+        # All three legacy entries rewritten in place — no duplicates.
         assert len(settings["hooks"]["PreToolUse"]) == 1
+        assert len(settings["hooks"]["PostToolUse"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
+
         pre_cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        post_cmd = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-        assert pre_cmd == "mem-hook pre_tool_use"
-        assert stop_cmd == "mem-hook stop"
-        # Legacy fragments fully replaced
+
+        # New form: absolute path ending in `mem-hook[.exe] <phase>`.
+        for cmd, phase in [
+            (pre_cmd, "pre_tool_use"),
+            (post_cmd, "post_tool_use"),
+            (stop_cmd, "stop"),
+        ]:
+            assert cmd.endswith(f" {phase}")
+            assert "mem-hook" in cmd
+            # Absolute path, not bare name (Unix: starts with /;
+            # Windows: drive letter like C:\). Accept either.
+            head = cmd.rsplit(" ", 1)[0]
+            assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
+                f"expected absolute path, got {head!r}"
+            )
+
+        # Legacy fragments fully replaced.
         assert "run_hook.sh" not in pre_cmd
         assert "python3" not in stop_cmd
+
+    def test_install_writes_absolute_path(self, tmp_path: Path):
+        """Fresh install writes an absolute path so /bin/sh can exec
+        the hook without depending on PATH at hook-fire time."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        for hook_type in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
+            cmd = settings["hooks"][hook_type][0]["hooks"][0]["command"]
+            head = cmd.rsplit(" ", 1)[0]
+            assert "mem-hook" in head
+            assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
+                f"{hook_type}: expected absolute path, got {head!r}"
+            )
+            # The resolved path should actually exist (we just installed
+            # the package in the dev environment running these tests).
+            assert Path(head).exists(), f"{hook_type}: {head} does not exist"
 
     def test_install_idempotent(self, tmp_path: Path):
         project_dir = tmp_path / "project"
