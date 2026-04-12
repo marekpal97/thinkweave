@@ -85,23 +85,41 @@ Do not duplicate between them — a term belongs in one or the other.
 
 Generate via `mem landing` (CLI) or `mem_landing` (MCP). `/mem-wrap` refreshes DECISIONS + BACKLOG automatically; STATE at agent discretion.
 
-**Sources** live in subdirectories under `vault/sources/` (global) or `vault/projects/{name}/sources/` (project-scoped). Each source gets its own folder containing `source.md` (indexed summary) and optional raw content (PDF, snapshot, raw text) alongside:
+**Sources** live under `vault/sources/` (global) or `vault/projects/{name}/sources/` (project-scoped), bucketed by `source_type`. Each source type owns a dedicated subfolder and is paired with its own ingestion/search scaffold (e.g. `papers` + `repos` + `articles` are served by `/research` and `/discover`). Adding a new source type — YouTube, podcasts, Messenger — means adding a bucket and its own skill, not extending the research skill.
+
 ```
 vault/sources/
-  scaling-laws-neural-lms/
-    source.md              # indexed by personal_mem — summary + concepts + metadata
-    paper.pdf              # raw PDF, opened on demand via [[slug/paper.pdf]]
-  some-github-repo/
-    source.md
-    snapshot.md            # key repo files concatenated
-  some-blog-post/
-    source.md
-    raw.md                 # full article text
+  RESEARCH_FOCUS.md                  # user-maintained priority list (stays at root)
+  papers/                            # source_type: paper — /research, /discover
+    scaling-laws-neural-lms/
+      source.md                      # indexed summary + concepts + metadata
+      paper.pdf                      # raw PDF, opened on demand via [[slug/paper.pdf]]
+  repos/                             # source_type: repo — /research, /discover
+    some-github-repo/
+      source.md
+      snapshot.md                    # key repo files concatenated
+  articles/                          # source_type: article — /research, /discover
+    some-blog-post/
+      source.md
+      raw.md                         # full article text
+  conversations/                     # source_type: conversation — chatgpt importer
+    1rm-estimate-calculation.md      # flat file, single-summary (no raw companion)
+  substack/                          # source_type: substack — /substack (inbox drain)
+    citrini-research/                # author-level nesting
+      curious-case-of-disappearing-liquidity/
+        source.md
+        raw.md                       # clipped markdown with image refs rewritten
+        assets/                      # figures copied from inbox bundle
+          chart-1.png
 ```
+
+Routing is centralised in `VaultManager._note_dir` / `create_note` via `_SOURCE_BUCKETS`. Legacy `source_type: github` is normalised to `repo` on write. Sources with an unknown or empty `source_type` fall back to the flat `sources/` directory.
 
 **Research ingestion** (`/research`): Processes URLs (arxiv, GitHub, web) into source notes. Fetches content via WebFetch/WebSearch, maps concepts to `ontology.yaml`, saves raw content alongside. Queue items are `todo`+`research` tagged notes, visible via `mem backlog`. Can process ad-hoc URLs or drain the queue with `--queue`.
 
 **Research discovery** (`/discover`): Cross-project gap analysis. Reads `vault/sources/RESEARCH_FOCUS.md` for priorities, analyzes concept coverage, searches for new papers/repos/articles, creates queue items. Designed for periodic use (`/loop 6h /discover`).
+
+**Substack ingestion** (`/substack`): Drains a disk inbox (`$SUBSTACK_INBOX`, default `~/substack_inbox/`) of browser-clipped posts. Capture happens in the user's authenticated browser via Obsidian Web Clipper or MarkDownload — that's how paid content gets through without auth plumbing. Accepts flat `.md` files or folder bundles with companion images. Images are copied into `assets/`, image paths rewritten, and each figure is interpreted via multimodal Read so chart content becomes FTS-searchable. Processed entries archive to `~/substack_inbox/_processed/<date>/` — never deleted.
 
 **RESEARCH_FOCUS.md** (`vault/sources/RESEARCH_FOCUS.md`): User-maintained priority list for discovery. Contains active focus areas, authors to follow, concept gaps (auto-populated by `/discover`), and exclusion filters.
 
@@ -122,6 +140,7 @@ vault/sources/
 - `commands/research.md` — `/research` skill for source ingestion (arxiv, GitHub, web)
 - `commands/discover.md` — `/discover` skill for research gap analysis and queue generation
 - `commands/mem-resolve-concepts.md` — `/mem-resolve-concepts` skill for periodic concept hygiene (merge dupes, update ontology)
+- `commands/substack.md` — `/substack` skill for Substack newsletter ingestion (disk-inbox drain, figure-aware via multimodal Read)
 
 ## Environment
 

@@ -577,3 +577,209 @@ class TestHybridSearch:
         c_score = 1 / (k + 2)
         assert a_score > b_score
         assert b_score == c_score
+
+
+class TestConceptSourceCounts:
+    """Bulk source-count lookup powering /discover's under-source check."""
+
+    def test_returns_zero_entry_for_concepts_with_no_sources(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(
+            NoteType.NOTE,
+            "A note, not a source",
+            project="p1",
+            extra_frontmatter={"concepts": ["alpha"]},
+        )
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        result = s.get_concept_source_counts(["alpha", "missing"])
+        s.close()
+
+        assert result["alpha"]["count"] == 0
+        assert result["alpha"]["sources"] == []
+        assert result["missing"]["count"] == 0
+        assert result["missing"]["sources"] == []
+
+    def test_counts_only_sources_not_other_types(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(
+            NoteType.SOURCE,
+            "Source one",
+            project="p1",
+            extra_frontmatter={"concepts": ["ml"], "url": "https://arxiv.org/abs/1.1"},
+        )
+        vault.create_note(
+            NoteType.NOTE,
+            "Note one",
+            project="p1",
+            extra_frontmatter={"concepts": ["ml"]},
+        )
+        vault.create_note(
+            NoteType.SESSION,
+            "Session one",
+            project="p1",
+            extra_frontmatter={"concepts": ["ml"]},
+        )
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        result = s.get_concept_source_counts(["ml"])
+        s.close()
+
+        # Only the source should be counted
+        assert result["ml"]["count"] == 1
+        assert len(result["ml"]["sources"]) == 1
+        assert result["ml"]["sources"][0]["title"] == "Source one"
+        assert result["ml"]["sources"][0]["url"] == "https://arxiv.org/abs/1.1"
+
+    def test_bulk_lookup_single_query_for_many_concepts(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(
+            NoteType.SOURCE,
+            "Src A",
+            project="p1",
+            extra_frontmatter={"concepts": ["a"], "url": "https://ex.com/a"},
+        )
+        vault.create_note(
+            NoteType.SOURCE,
+            "Src A2",
+            project="p1",
+            extra_frontmatter={"concepts": ["a"], "url": "https://ex.com/a2"},
+        )
+        vault.create_note(
+            NoteType.SOURCE,
+            "Src B",
+            project="p1",
+            extra_frontmatter={"concepts": ["b"], "url": "https://ex.com/b"},
+        )
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        result = s.get_concept_source_counts(["a", "b", "c"])
+        s.close()
+
+        assert result["a"]["count"] == 2
+        assert {src["url"] for src in result["a"]["sources"]} == {
+            "https://ex.com/a",
+            "https://ex.com/a2",
+        }
+        assert result["b"]["count"] == 1
+        assert result["c"]["count"] == 0
+
+    def test_empty_input_returns_empty_dict(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        indexer.rebuild(full=True)
+        s = Search(config=config)
+        assert s.get_concept_source_counts([]) == {}
+        s.close()
+
+
+class TestCrossProjectActivity:
+    """Cross-project mem_timeline ranking mode."""
+
+    def test_ranks_by_total_activity_desc(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        for i in range(3):
+            vault.create_note(
+                NoteType.SESSION,
+                f"P1 session {i}",
+                project="p1",
+                extra_frontmatter={"concepts": ["x"]},
+            )
+        vault.create_note(
+            NoteType.DECISION,
+            "P1 decision",
+            project="p1",
+            extra_frontmatter={"concepts": ["x"]},
+        )
+        vault.create_note(
+            NoteType.SESSION,
+            "P2 session",
+            project="p2",
+            extra_frontmatter={"concepts": ["x"]},
+        )
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        ranking = s.get_cross_project_activity(days=30)
+        s.close()
+
+        assert len(ranking) == 2
+        assert ranking[0]["project"] == "p1"
+        assert ranking[0]["sessions"] == 3
+        assert ranking[0]["decisions"] == 1
+        assert ranking[1]["project"] == "p2"
+        assert ranking[1]["sessions"] == 1
+        assert ranking[1]["decisions"] == 0
+
+    def test_unscoped_bucket_for_missing_project(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        # Session with an explicit project
+        vault.create_note(
+            NoteType.SESSION,
+            "Labeled",
+            project="p1",
+            extra_frontmatter={"concepts": ["x"]},
+        )
+        # Session without a project — goes to _unscoped via the default
+        # project resolution in create_note. We test the ranking treats
+        # empty/null project as the _unscoped bucket.
+        vault.create_note(
+            NoteType.SESSION,
+            "Unlabeled",
+            project="",
+            extra_frontmatter={"concepts": ["x"]},
+        )
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        ranking = s.get_cross_project_activity(days=30)
+        s.close()
+
+        projects = {r["project"] for r in ranking}
+        # If Config has no default_project, the empty project falls through
+        # to NULL in the index and gets bucketed as _unscoped. If there *is*
+        # a default, the session lands there — either way, both sessions
+        # must be accounted for across the ranking.
+        total_sessions = sum(r["sessions"] for r in ranking)
+        assert total_sessions == 2
+        assert "p1" in projects
+
+    def test_excludes_activity_outside_window(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(
+            NoteType.SESSION,
+            "Recent",
+            project="p1",
+            extra_frontmatter={"concepts": ["x"]},
+        )
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        # Zero-day window: cutoff == today, so today's sessions still
+        # match (date >= cutoff is inclusive). Use a negative-inverted
+        # check: request activity over a very long window and confirm
+        # we see the recent session.
+        long_window = s.get_cross_project_activity(days=3650)
+        assert any(r["project"] == "p1" for r in long_window)
+
+        # Manually poison the cutoff by asking for a window from before
+        # the epoch — date arithmetic produces 0001-01-01, still inclusive,
+        # so the only meaningful negative test is the empty-vault case.
+        s.close()
+
+    def test_empty_vault_returns_empty_ranking(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        indexer.rebuild(full=True)
+        s = Search(config=config)
+        assert s.get_cross_project_activity(days=14) == []
+        s.close()

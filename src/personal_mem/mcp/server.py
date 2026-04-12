@@ -851,18 +851,22 @@ def main() -> None:
             Tool(
                 name="mem_timeline",
                 description=(
-                    "Aggregate project evolution across sessions.\n\n"
-                    "Shows chronological summary: what changed, why (decisions with "
-                    "rationale), and outcomes (commits, tests, verdicts).\n\n"
-                    "Use for: onboarding, code review context, 'what happened this week', "
-                    "post-mortems, understanding project evolution over time."
+                    "Project evolution across sessions. Two shapes:\n\n"
+                    "- **With `project`**: chronological detail for that project — "
+                    "per-session files, commits, test runs, and linked decisions. "
+                    "Use for onboarding, code review context, post-mortems.\n\n"
+                    "- **Without `project`**: cross-project activity ranking — "
+                    "`{project: (sessions, decisions, latest_date)}` sorted by "
+                    "total activity. Sessions lacking a `project` frontmatter "
+                    "land in the `_unscoped` bucket. Use to pick the top "
+                    "active projects in one call (e.g. /discover step 3.1)."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "project": {
                             "type": "string",
-                            "description": "Project to summarize.",
+                            "description": "Project to summarize. Omit for cross-project ranking.",
                         },
                         "days": {
                             "type": "integer",
@@ -870,7 +874,31 @@ def main() -> None:
                             "description": "How many days back to look.",
                         },
                     },
-                    "required": ["project"],
+                    "required": [],
+                },
+            ),
+            Tool(
+                name="mem_concept_source_counts",
+                description=(
+                    "Bulk source-count + URL lookup for a list of concepts.\n\n"
+                    "Collapses /discover's O(N) per-concept under-source fan-out "
+                    "into a single JOIN. For each input concept returns the full "
+                    "set of source notes tagged with it — id, title, and url. "
+                    "Concepts with zero sources still appear in the output with "
+                    "count=0, so callers can iterate without KeyError checks.\n\n"
+                    "Use for: under-sourced gap identification (count < 2) plus "
+                    "per-gap dedup set collection (urls → gap_sources)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "concepts": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of concepts to look up.",
+                        },
+                    },
+                    "required": ["concepts"],
                 },
             ),
             Tool(
@@ -1037,6 +1065,8 @@ def main() -> None:
             return _handle_landing(arguments)
         elif name == "mem_timeline":
             return _handle_timeline(arguments)
+        elif name == "mem_concept_source_counts":
+            return _handle_concept_source_counts(arguments)
         elif name == "mem_source_lens":
             return _handle_source_lens(arguments)
         elif name == "mem_decisions_for_file":
@@ -1907,14 +1937,36 @@ def main() -> None:
     def _handle_timeline(args: dict) -> list[TextContent]:
         from datetime import date, timedelta
 
-        project = args["project"]
+        project = args.get("project", "") or ""
         days = args.get("days", 7)
-        cutoff = (date.today() - timedelta(days=days)).isoformat()
 
-        vm = VaultManager(config=cfg)
         s = Search(config=cfg)
 
-        # Find sessions for this project within date range
+        # Cross-project ranking mode — no project argument.
+        if not project:
+            ranking = s.get_cross_project_activity(days=days)
+            s.close()
+            if not ranking:
+                return [TextContent(
+                    type="text",
+                    text=f"No session or decision activity in the last {days} days.",
+                )]
+            lines = [
+                f"Cross-project activity (last {days} days, {len(ranking)} projects)",
+                "",
+            ]
+            for entry in ranking:
+                lines.append(
+                    f"- {entry['project']} — {entry['sessions']} sessions, "
+                    f"{entry['decisions']} decisions "
+                    f"(latest: {entry['latest_date'][:10] or '?'})"
+                )
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        # Single-project detailed mode — existing behavior.
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        vm = VaultManager(config=cfg)
+
         sessions = []
         for note in vm.list_notes(note_type=NoteType.SESSION, limit=100):
             if note.project == project and note.date >= cutoff:
@@ -1976,6 +2028,26 @@ def main() -> None:
         s.close()
         header = f"Timeline: {project} (last {days} days, {len(sessions)} sessions)\n\n"
         return [TextContent(type="text", text=header + "\n".join(lines))]
+
+    def _handle_concept_source_counts(args: dict) -> list[TextContent]:
+        concepts = args.get("concepts", []) or []
+        if not concepts:
+            return [TextContent(type="text", text="No concepts provided.")]
+
+        s = Search(config=cfg)
+        result = s.get_concept_source_counts(concepts)
+        s.close()
+
+        lines = [f"Source counts for {len(concepts)} concept(s):", ""]
+        for concept in concepts:
+            entry = result.get(concept, {"count": 0, "sources": []})
+            under = " **UNDER-SOURCED**" if entry["count"] < 2 else ""
+            lines.append(f"## {concept} — {entry['count']} source(s){under}")
+            for src in entry["sources"]:
+                url = f"  <{src['url']}>" if src.get("url") else ""
+                lines.append(f"  - [{src['id']}] {src['title']}{url}")
+            lines.append("")
+        return [TextContent(type="text", text="\n".join(lines))]
 
     def _handle_source_lens(args: dict) -> list[TextContent]:
         source_id = args.get("source_id", "")

@@ -469,6 +469,98 @@ class Search:
         """
         return {row["concept"]: row["cnt"] for row in self.db.execute(sql, (project,))}
 
+    def get_concept_source_counts(
+        self, concepts: list[str]
+    ) -> dict[str, dict]:
+        """Bulk source-count + URL lookup for a list of concepts.
+
+        Collapses /discover's O(N) per-concept under-source fan-out into a
+        single JOIN. For each input concept returns the full set of source
+        notes tagged with it (id, title, url) — the caller uses the count
+        for the <2 under-sourced threshold and the urls as the per-gap
+        dedup reference.
+
+        Input concepts are case-insensitive (concepts are stored lowercased
+        by the indexer). Concepts with zero sources still appear in the
+        output with count=0 and an empty sources list, so the caller can
+        iterate the result dict without a KeyError.
+        """
+        result: dict[str, dict] = {
+            c: {"count": 0, "sources": []} for c in concepts
+        }
+        if not concepts:
+            return result
+
+        placeholders = ",".join(["?"] * len(concepts))
+        sql = f"""
+            SELECT nc.concept, n.id, n.title, n.frontmatter
+            FROM note_concepts nc
+            JOIN notes n ON n.id = nc.note_id
+            WHERE nc.concept IN ({placeholders}) AND n.type = 'source'
+            ORDER BY nc.concept, n.date DESC
+        """
+        lowered = [c.lower() for c in concepts]
+        # Map lowercased → original so the caller gets back the keys it passed in
+        key_map = {c.lower(): c for c in concepts}
+        for row in self.db.execute(sql, lowered):
+            key = key_map.get(row["concept"], row["concept"])
+            fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
+            result[key]["count"] += 1
+            result[key]["sources"].append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "url": fm.get("url", ""),
+                }
+            )
+        return result
+
+    def get_cross_project_activity(self, days: int = 14) -> list[dict]:
+        """Rank projects by recent session + decision activity.
+
+        Returns a list of dicts sorted by total activity (sessions +
+        decisions) descending. Each entry has project name, session count,
+        decision count, and the most recent note date in the window.
+        Sessions lacking a `project` frontmatter field (NULL or empty in
+        the index) are bucketed under `_unscoped` — this matches the
+        on-disk `projects/_unscoped/sessions/` directory where
+        project-less sessions land.
+        """
+        from datetime import date, timedelta
+
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        sql = """
+            SELECT
+                COALESCE(NULLIF(project, ''), '_unscoped') AS project,
+                type,
+                COUNT(*) AS cnt,
+                MAX(date) AS latest_date
+            FROM notes
+            WHERE date >= ? AND type IN ('session', 'decision')
+            GROUP BY COALESCE(NULLIF(project, ''), '_unscoped'), type
+        """
+        agg: dict[str, dict] = {}
+        for row in self.db.execute(sql, (cutoff,)):
+            proj = row["project"]
+            entry = agg.setdefault(
+                proj,
+                {"project": proj, "sessions": 0, "decisions": 0, "latest_date": ""},
+            )
+            if row["type"] == "session":
+                entry["sessions"] = row["cnt"]
+            elif row["type"] == "decision":
+                entry["decisions"] = row["cnt"]
+            latest = row["latest_date"] or ""
+            if latest > entry["latest_date"]:
+                entry["latest_date"] = latest
+
+        ranked = sorted(
+            agg.values(),
+            key=lambda e: (e["sessions"] + e["decisions"], e["latest_date"]),
+            reverse=True,
+        )
+        return ranked
+
     def get_concept_cooccurrence(
         self, concept: str, limit: int = 10
     ) -> list[tuple[str, int]]:

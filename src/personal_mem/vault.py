@@ -183,6 +183,10 @@ class VaultManager:
             self.root / "projects",
             self.root / "daily",
             self.root / "sources",
+            self.root / "sources" / "papers",
+            self.root / "sources" / "repos",
+            self.root / "sources" / "articles",
+            self.root / "sources" / "conversations",
             self.root / "templates",
         ]
         for d in dirs:
@@ -233,6 +237,30 @@ class VaultManager:
             d.mkdir(parents=True, exist_ok=True)
             return d
         return self.root / "projects"
+
+    # Source-type → bucket map. Every source type we ingest gets its own
+    # subfolder under vault/sources/ with its own dedicated skill/scaffold
+    # (research, discover, future YT/messenger importers, etc.). Sources
+    # without a recognised type fall back to the flat sources/ directory.
+    _SOURCE_BUCKETS = {
+        "paper": "papers",
+        "repo": "repos",
+        "article": "articles",
+        "conversation": "conversations",
+        "substack": "substack",
+    }
+
+    @classmethod
+    def _normalize_source_type(cls, source_type: str) -> str:
+        """Fold legacy aliases into the canonical source_type vocabulary."""
+        if source_type == "github":
+            return "repo"
+        return source_type
+
+    @classmethod
+    def _source_bucket(cls, source_type: str) -> str:
+        """Return the bucket subfolder for a given source_type, or ''."""
+        return cls._SOURCE_BUCKETS.get(cls._normalize_source_type(source_type), "")
 
     def _sanitize_filename(self, title: str) -> str:
         """Convert a title to a safe filename slug."""
@@ -348,15 +376,49 @@ class VaultManager:
             session_subdir.mkdir(parents=True, exist_ok=True)
             filepath = session_subdir / "session.md"
         elif note_type == NoteType.SOURCE:
-            # Sources get their own subdirectory: sources/{slug}/source.md
-            # Raw content (PDFs, snapshots) lives alongside in the same folder.
-            source_subdir = target_dir / slug
-            counter = 1
-            while source_subdir.exists():
-                source_subdir = target_dir / f"{slug}-{counter}"
-                counter += 1
-            source_subdir.mkdir(parents=True, exist_ok=True)
-            filepath = source_subdir / "source.md"
+            # Normalise source_type (github → repo) on write so the on-disk
+            # vocabulary stays consistent with the bucket routing below.
+            raw_source_type = fm.get("source_type", "") or ""
+            source_type = self._normalize_source_type(raw_source_type)
+            if source_type != raw_source_type:
+                fm["source_type"] = source_type
+
+            # Route into a type-specific bucket (papers/repos/articles/
+            # conversations). output_dir overrides bucketing — callers that
+            # pass it explicitly already know where they want the file.
+            bucket = self._source_bucket(source_type)
+            if bucket and output_dir is None:
+                target_dir = target_dir / bucket
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+            if source_type == "conversation":
+                # Conversations are single-file summaries (no raw companion
+                # content), so they live flat inside sources/conversations/.
+                filepath = target_dir / f"{slug}.md"
+                counter = 1
+                while filepath.exists():
+                    filepath = target_dir / f"{slug}-{counter}.md"
+                    counter += 1
+            else:
+                # Other source types get their own slug subdirectory so raw
+                # content (PDFs, snapshots, raw.md) can live alongside
+                # source.md in the same folder.
+                #
+                # Substack gets an extra author-level parent so each
+                # newsletter's corpus is browsable as a folder.
+                if source_type == "substack":
+                    author = fm.get("author", "") or ""
+                    if author:
+                        author_slug = self._sanitize_filename(author)
+                        target_dir = target_dir / author_slug
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                source_subdir = target_dir / slug
+                counter = 1
+                while source_subdir.exists():
+                    source_subdir = target_dir / f"{slug}-{counter}"
+                    counter += 1
+                source_subdir.mkdir(parents=True, exist_ok=True)
+                filepath = source_subdir / "source.md"
         else:
             filename = f"{slug}.md"
             filepath = target_dir / filename

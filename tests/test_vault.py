@@ -415,3 +415,59 @@ class TestDirectoryStructure:
         assert not misc_dir.exists()
         vault.create_note(NoteType.NOTE, "First Standalone", project="proj")
         assert misc_dir.is_dir()
+
+    def test_substack_nests_by_author(self, vault: VaultManager):
+        """Substack sources land at sources/substack/<author-slug>/<post-slug>/source.md."""
+        path = vault.create_note(
+            NoteType.SOURCE,
+            "The Curious Case of Disappearing Liquidity",
+            extra_frontmatter={
+                "source_type": "substack",
+                "url": "https://citrini.substack.com/p/curious-case",
+                "author": "Citrini Research",
+                "publication": "Citrini",
+            },
+        )
+        assert path.name == "source.md"
+        assert path.parent.name == "the-curious-case-of-disappearing-liquidity"
+        assert path.parent.parent.name == "citrini-research"
+        assert path.parent.parent.parent.name == "substack"
+        assert "sources/substack/citrini-research" in str(path)
+
+    def test_substack_missing_author_falls_back_flat(self, vault: VaultManager):
+        """Substack source without author still works — flat under substack/."""
+        path = vault.create_note(
+            NoteType.SOURCE,
+            "Orphan Post",
+            extra_frontmatter={"source_type": "substack", "url": "https://x.substack.com/p/y"},
+        )
+        assert path.name == "source.md"
+        assert path.parent.name == "orphan-post"
+        assert path.parent.parent.name == "substack"
+
+    def test_substack_author_slug_sanitized(self, vault: VaultManager):
+        """Author names with punctuation/case get sanitized into a safe slug."""
+        path = vault.create_note(
+            NoteType.SOURCE,
+            "Macro Monthly #4",
+            extra_frontmatter={
+                "source_type": "substack",
+                "author": "Alexander Campbell, CFA",
+            },
+        )
+        assert path.parent.parent.name == "alexander-campbell-cfa"
+
+    def test_substack_two_posts_same_author_share_folder(self, vault: VaultManager):
+        """Two posts from the same author should cluster under the same author folder."""
+        p1 = vault.create_note(
+            NoteType.SOURCE,
+            "First Citrini Post",
+            extra_frontmatter={"source_type": "substack", "author": "Citrini"},
+        )
+        p2 = vault.create_note(
+            NoteType.SOURCE,
+            "Second Citrini Post",
+            extra_frontmatter={"source_type": "substack", "author": "Citrini"},
+        )
+        assert p1.parent.parent == p2.parent.parent
+        assert p1.parent.parent.name == "citrini"

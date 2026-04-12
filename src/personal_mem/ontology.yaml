@@ -144,7 +144,6 @@ ml/deep-learning:
   - lstm
   - model-architecture
   - neural-networks
-  - novelty-detection
   - pooling
   - pytorch
   - receptive-field
@@ -193,6 +192,20 @@ ml/embeddings:
   - vector-store
   - chromadb
 
+ml/novelty:
+  - novelty-detection
+  - anomaly-detection
+  - novelty-scoring
+  - out-of-distribution-detection
+  - distribution-shift
+  - concept-drift
+  - density-estimation
+  - reconstruction-error
+  - parameterless-projection
+  - frequent-directions
+  - fd-sketch
+  - projection-error
+
 ai/llms:
   - llm
   - openai-api
@@ -216,6 +229,8 @@ ai/agents:
   - orchestration
   - human-in-the-loop
   - crewai
+  - hive-swarm
+  - agent-lens
 
 ai/tools:
   - claude-code
@@ -224,6 +239,41 @@ ai/tools:
   - neo4j
   - obsidian
   - memory-system
+  - hooks
+  - statusline
+  - custom-commands
+
+ai/harness:
+  - agent-harness
+  - sub-agent
+  - tool-use-loop
+  - claude-code
+  - claude-code-skills
+  - custom-commands
+  - hooks
+  - statusline
+  - session-management
+  - agent-lens
+  - hive-swarm
+
+ai/memory:
+  - memory-system
+  - knowledge-graph
+  - graph-memory
+  - hierarchical-memory
+  - episodic-memory
+  - differentiable-memory
+  - rl-memory
+  - memory-consolidation
+  - context-compression
+  - hybrid-retrieval
+  - reciprocal-rank-fusion
+  - retrieval-augmented-generation
+  - rag
+  - vector-store
+  - semantic-search
+  - chunking
+  - ranking
 
 ai/infra:
   - api
@@ -239,6 +289,8 @@ thinkmesh:
   - parameterless-projection
   - frequent-directions
   - reconstruction-error
+  - fd-sketch
+  - projection-error
 
 finance/options:
   - options-strategy
@@ -277,6 +329,14 @@ finance/markets:
   - hedge-funds
   - proprietary-trading
   - alternative-data
+
+finance/research:
+  - equity-research
+  - fundamental-analysis
+  - research-agent
+  - deep-research
+  - earnings-analysis
+  - sec-filings
 
 swe/python:
   - python

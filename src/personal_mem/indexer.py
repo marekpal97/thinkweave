@@ -20,6 +20,12 @@ from personal_mem.vault import VaultManager, content_hash, extract_wikilinks, pa
 
 log = logging.getLogger(__name__)
 
+# Companion files written alongside source notes (raw content, snapshots).
+# These are not vault notes — they're archival artifacts referenced from
+# the canonical source.md. Indexing them as untyped phantom notes pollutes
+# the graph and FTS results.
+SOURCE_COMPANION_FILENAMES = {"raw.md", "raw.txt", "snapshot.md"}
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS notes (
     id           TEXT PRIMARY KEY,
@@ -182,6 +188,10 @@ class Indexer:
             # Skip landing documents (materialized views, not source material)
             if md_file.name in LANDING_FILENAMES:
                 continue
+            # Skip source companion files (raw.md, snapshot.md, etc.) — these
+            # are archival artifacts of source notes, not standalone notes.
+            if md_file.name in SOURCE_COMPANION_FILENAMES:
+                continue
             rel_path = str(md_file.relative_to(self.vault.root))
             indexed_paths.add(rel_path)
 
@@ -214,6 +224,8 @@ class Indexer:
         """Index or re-index a single file. Used by hooks for incremental updates."""
         if path.name in LANDING_FILENAMES:
             return  # Landing docs are excluded from the index
+        if path.name in SOURCE_COMPANION_FILENAMES:
+            return  # Source companion artifacts (raw.md, snapshot.md, etc.)
         if not path.exists():
             rel = str(path.relative_to(self.vault.root))
             self._remove_by_path(rel)

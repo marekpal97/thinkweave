@@ -397,8 +397,11 @@ class TestImportChatgpt:
         assert stats["imported"] == 2
         assert stats["errors"] == 0
 
-        # Check files were created (source notes now live in subdirectories)
-        sources = list((vault_config.vault_root / "sources").glob("*/source.md"))
+        # Chatgpt imports land flat inside sources/conversations/ — they're
+        # single-file summaries with no raw companion content alongside.
+        sources = sorted(
+            (vault_config.vault_root / "sources" / "conversations").glob("*.md")
+        )
         assert len(sources) == 2
 
         # Check content of first note
@@ -423,6 +426,8 @@ class TestImportChatgpt:
             assert stats2["imported"] == 0
             assert stats2["skipped"] == 2
 
-        # Still only 2 source directories
-        sources = list((vault_config.vault_root / "sources").glob("*/source.md"))
+        # Still only 2 conversation files
+        sources = list(
+            (vault_config.vault_root / "sources" / "conversations").glob("*.md")
+        )
         assert len(sources) == 2

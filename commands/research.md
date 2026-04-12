@@ -1,6 +1,14 @@
 # /research — Ingest Sources into the Knowledge Vault
 
-You are processing one or more URLs (arxiv papers, GitHub repos, web articles) into structured source notes in the personal_mem vault. Each source gets a subdirectory under `vault/sources/` with a `source.md` (indexed, searchable) and raw content alongside.
+You are processing one or more URLs (arxiv papers, GitHub repos, web articles) into structured source notes in the personal_mem vault. Sources are bucketed by `source_type` under `vault/sources/`:
+
+- `paper` → `vault/sources/papers/<slug>/source.md` + `paper.pdf` (or `raw.txt`)
+- `repo` → `vault/sources/repos/<slug>/source.md` + `snapshot.md`
+- `article` → `vault/sources/articles/<slug>/source.md` + `raw.md`
+
+Routing is handled automatically by `VaultManager.create_note` — set `source_type` in frontmatter and the file lands in the right bucket. Only use `repo` (never `github`) as the source type for GitHub repositories; the legacy alias is normalised but shouldn't be written fresh.
+
+Each source type is expected to pair with a dedicated ingestion/search scaffold. `/research` and `/discover` handle papers, repos, and articles. New source types (YouTube, podcasts, Messenger imports) should get their own bucket *and* their own skill — do not stretch `/research` to cover them.
 
 **Arguments**: One or more URLs, or flags:
 - `--queue` — process pending queue items instead of explicit URLs
