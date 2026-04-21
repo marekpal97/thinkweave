@@ -31,9 +31,14 @@ This skill processes the unprocessed. Cross-type (sources, sessions, decisions, 
 
 Run `mem hubs status` to see per-concept processed state. Look at the `todo` column.
 
-If `todo` is large across many concepts (>50 notes total across all concepts), this is a backfill-scale job. Stop here and tell the user to run `mem hubs plan` + `mem hubs run` instead — that's the SDK+Batches path, designed for scale.
+If `todo` is small (roughly 1–20 notes across a handful of concepts, a normal daily delta), continue with this skill.
 
-If `todo` is small (roughly 1–20 notes, a normal daily delta), continue.
+If `todo` is large (>50 notes total), this is a backfill-scale job. Tell the user they have two alternatives and let them pick:
+
+- **`/backfill-hubs`** — same inline extraction as this skill, but iterates a full plan file with a per-invocation cap. Good when you want to watch it happen and intervene on hard calls.
+- **`mem hubs run --plan .mem/hubs_plan.json`** — submits the plan to the Anthropic Messages Batches API (50% discount, async, per-concept prompt caching). Good when cost efficiency matters more than interactive review.
+
+Don't force the choice — offer both and stop here unless the user confirms continuing with the incremental path.
 
 ### 2. Pick concepts to process
 
@@ -110,4 +115,4 @@ That's it. No lists of individual entries, no diffs — the user can read the hu
 - **Never delete log entries** — the log is append-only by design. If an entry is wrong, the user can hand-edit.
 - **Never mutate source-note frontmatter** to mark it "processed." The hub page is the ledger.
 - **Don't spawn Explore agents** to crawl the vault for related context — the plan file already has the list of notes to process, and the hub page already has its current state. Everything you need is in step 1–3 reads.
-- **If the plan shows more than ~20 unprocessed notes total**, stop and recommend `mem hubs run` instead. That's the bulk path.
+- **If the plan shows more than ~20 unprocessed notes total**, stop and let the user pick between `/backfill-hubs` (interactive bulk) and `mem hubs run` (Batches API bulk). Both are bulk paths; don't force either.

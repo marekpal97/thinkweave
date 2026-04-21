@@ -97,6 +97,24 @@ def _tool_schemas() -> dict[str, dict]:
                 "required": ["file_path"],
             },
         },
+        "Edit": {
+            "name": "Edit",
+            "description": (
+                "Replace a substring in a file. old_string must match exactly once "
+                "unless replace_all is true. Writes are refused outside the vault "
+                "and repo roots."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                    "replace_all": {"type": "boolean", "default": False},
+                },
+                "required": ["file_path", "old_string", "new_string"],
+            },
+        },
         "Bash": {
             "name": "Bash",
             "description": (
@@ -146,6 +164,21 @@ def _tool_schemas() -> dict[str, dict]:
             "input_schema": {
                 "type": "object",
                 "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+        "mem_graph": {
+            "name": "mem_graph",
+            "description": (
+                "Walk the typed-edge graph outward from a note. Returns the "
+                "adjacency list with edge types for the requested depth."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "depth": {"type": "integer", "default": 1},
+                },
                 "required": ["id"],
             },
         },
@@ -258,6 +291,55 @@ def _handle_read(args: dict, ctx: _Context) -> Any:
     return {"content": path.read_text(encoding="utf-8")}
 
 
+def _handle_edit(args: dict, ctx: _Context) -> Any:
+    path = Path(args["file_path"]).expanduser()
+    if not path.is_absolute():
+        path = ctx.cfg.vault_root / path
+    path = path.resolve()
+
+    # Safety rail: refuse writes outside the vault and repo roots.
+    vault_root = ctx.cfg.vault_root.resolve()
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    allowed = False
+    for root in (vault_root, repo_root):
+        try:
+            path.relative_to(root)
+            allowed = True
+            break
+        except ValueError:
+            continue
+    if not allowed:
+        return {
+            "error": (
+                f"Edit refused: {path} is outside the vault ({vault_root}) "
+                f"and repo ({repo_root}) roots."
+            )
+        }
+
+    if not path.exists():
+        return {"error": f"File not found: {path}"}
+
+    old = args["old_string"]
+    new = args["new_string"]
+    replace_all = bool(args.get("replace_all", False))
+
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count == 0:
+        return {"error": f"old_string not found in {path}"}
+    if count > 1 and not replace_all:
+        return {
+            "error": (
+                f"old_string appears {count} times in {path}; "
+                "pass replace_all=true or provide a longer unique match."
+            )
+        }
+
+    new_text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+    path.write_text(new_text, encoding="utf-8")
+    return {"replacements": count if replace_all else 1, "path": str(path)}
+
+
 def _handle_bash(args: dict, ctx: _Context) -> Any:
     cmd = args["command"]
     ok, reason = _bash_is_safe(cmd)
@@ -336,6 +418,13 @@ def _handle_mem_read(args: dict, ctx: _Context) -> Any:
         "body": note.body,
         "path": str(path),
     }
+
+
+def _handle_mem_graph(args: dict, ctx: _Context) -> Any:
+    note_id = args["id"]
+    depth = int(args.get("depth", 1))
+    text = ctx.search.render_graph_text(note_id, depth=depth)
+    return {"id": note_id, "depth": depth, "graph": text}
 
 
 def _handle_mem_create(args: dict, ctx: _Context) -> Any:
@@ -423,10 +512,12 @@ def _handle_mem_concept_source_counts(args: dict, ctx: _Context) -> Any:
 
 _HANDLERS: dict[str, Callable[[dict, _Context], Any]] = {
     "Read": _handle_read,
+    "Edit": _handle_edit,
     "Bash": _handle_bash,
     "WebFetch": _handle_webfetch,
     "mem_search": _handle_mem_search,
     "mem_read": _handle_mem_read,
+    "mem_graph": _handle_mem_graph,
     "mem_create": _handle_mem_create,
     "mem_concepts": _handle_mem_concepts,
     "mem_concept_source_counts": _handle_mem_concept_source_counts,
