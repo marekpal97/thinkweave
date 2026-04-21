@@ -273,90 +273,45 @@ def prune_concepts(
     return stats
 
 
-def generate_hub_pages(
+def generate_domain_hubs(
     config: Config,
     ontology: dict[str, list[str]] | None = None,
 ) -> dict[str, Path]:
-    """Generate Obsidian hub pages in vault/concepts/ for each domain.
+    """Generate navigation-only domain hub pages in ``vault/concepts/``.
 
-    Each hub page wikilinks to all notes that have concepts in that domain.
-    Returns {domain: path} for generated files.
+    Each domain hub is a thin directory page listing its child concepts,
+    each linking to its concept hub at ``concepts/topics/{concept}.md``.
+    Domain hubs carry no synthesis content — that lives on concept hubs.
+    They are fully regenerable; hand-edits to the body are not preserved.
+
+    Returns ``{domain: path}`` for generated files.
     """
-    from personal_mem.vault import VaultManager, parse_frontmatter
-
     ontology = ontology or load_ontology()
     if not ontology:
         return {}
 
-    vm = VaultManager(config=config)
-    c2d = concept_to_domains(ontology)
-
-    # Scan all notes and group by domain
-    domain_notes: dict[str, list[dict]] = defaultdict(list)
-
-    for md_file in vm.root.rglob("*.md"):
-        # Skip concept hub pages themselves
-        if "concepts" in md_file.parts and md_file.parent.name == "concepts":
-            continue
-        # Skip landing pages
-        if md_file.name in ("DECISIONS.md", "BACKLOG.md", "STATE.md"):
-            continue
-
-        text = md_file.read_text(encoding="utf-8")
-        fm, _ = parse_frontmatter(text)
-        if not fm or not fm.get("id"):
-            continue
-
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
-
-        # Find which domains this note belongs to
-        note_domains: set[str] = set()
-        for c in concepts:
-            for domain in c2d.get(c.lower(), []):
-                note_domains.add(domain)
-
-        note_info = {
-            "title": fm.get("title", md_file.stem),
-            "id": fm.get("id", ""),
-            "type": fm.get("type", "note"),
-            "date": fm.get("date", ""),
-            "path": md_file,
-            "filename": md_file.stem,
-        }
-
-        for domain in note_domains:
-            domain_notes[domain].append(note_info)
-
-    # Generate hub pages
-    concepts_dir = vm.root / "concepts"
+    concepts_dir = config.vault_root / "concepts"
     concepts_dir.mkdir(parents=True, exist_ok=True)
 
     generated: dict[str, Path] = {}
     now = datetime.now(timezone.utc).isoformat()
 
+    category_display = {
+        "math": "Mathematics",
+        "ml": "Machine Learning",
+        "ai": "AI & LLMs",
+        "finance": "Finance",
+        "swe": "Software Engineering",
+    }
+
     for domain, domain_concepts in sorted(ontology.items()):
-        notes = domain_notes.get(domain, [])
-        # Sort notes by date descending
-        notes.sort(key=lambda n: n.get("date", ""), reverse=True)
-
-        # Domain display name: "math/linear-algebra" → "Linear Algebra"
         display_name = domain.split("/")[-1].replace("-", " ").title()
-        # Category prefix: "math/linear-algebra" → "Mathematics"
         category = domain.split("/")[0] if "/" in domain else ""
-        category_display = {
-            "math": "Mathematics",
-            "ml": "Machine Learning",
-            "ai": "AI & LLMs",
-            "finance": "Finance",
-            "swe": "Software Engineering",
-        }.get(category, category.title())
+        category_label = category_display.get(category, category.title())
 
-        # Build page content
         lines = [
             "---",
-            "type: concept-hub",
+            "type: domain-hub",
             f"domain: {domain}",
             f"concepts: [{', '.join(domain_concepts)}]",
             "auto_generated: true",
@@ -367,32 +322,73 @@ def generate_hub_pages(
             "",
         ]
 
-        if category_display:
-            lines.append(f"*{category_display}*")
+        if category_label:
+            lines.append(f"*{category_label}*")
             lines.append("")
 
-        lines.append(f"**Concepts**: {', '.join(domain_concepts)}")
+        lines.append(
+            "Navigation for concepts in this domain. Each concept has its "
+            "own hub page with an essence (working mental model) and a "
+            "learning log (append-only artifacts extracted from vault notes)."
+        )
         lines.append("")
-
-        if notes:
-            lines.append(f"## Notes ({len(notes)})")
-            lines.append("")
-            for note in notes:
-                type_badge = f"[{note['type']}]" if note["type"] != "note" else ""
-                date_str = note["date"][:10] if note["date"] else ""
-                lines.append(f"- [[{note['filename']}]] {type_badge} {date_str}".rstrip())
+        lines.append(f"## Concepts ({len(domain_concepts)})")
+        lines.append("")
+        if domain_concepts:
+            for concept in domain_concepts:
+                lines.append(f"- [[concepts/topics/{concept}|{concept}]]")
         else:
-            lines.append("*No notes yet.*")
-
+            lines.append("*No concepts listed.*")
         lines.append("")
 
-        # Write file — use domain path as filename (math/linear-algebra → math--linear-algebra.md)
         safe_name = domain.replace("/", "--") + ".md"
         hub_path = concepts_dir / safe_name
         hub_path.write_text("\n".join(lines), encoding="utf-8")
         generated[domain] = hub_path
 
     return generated
+
+
+def generate_concept_hub_skeletons(
+    config: Config,
+    ontology: dict[str, list[str]] | None = None,
+) -> dict[str, Path]:
+    """Create empty concept-hub stubs at ``vault/concepts/topics/{concept}.md``.
+
+    Never overwrites existing files — ``ensure_concept_hub_skeleton`` is
+    a no-op when the hub already exists. This means running it repeatedly
+    is safe, and concept hubs with LLM-written content are preserved.
+
+    Returns ``{concept: path}`` for every concept referenced by the
+    ontology, whether it was newly created or already existed.
+    """
+    from personal_mem.hubs import ensure_concept_hub_skeleton
+
+    ontology = ontology or load_ontology()
+    if not ontology:
+        return {}
+
+    c2d = concept_to_domains(ontology)
+    created: dict[str, Path] = {}
+    for concept, domains in c2d.items():
+        path = ensure_concept_hub_skeleton(config, concept, domains=domains)
+        created[concept] = path
+    return created
+
+
+def generate_hub_pages(
+    config: Config,
+    ontology: dict[str, list[str]] | None = None,
+) -> dict[str, Path]:
+    """Back-compat wrapper: generate both domain hubs and concept skeletons.
+
+    Returns the union of domain paths (keyed by domain) and concept hub
+    paths (keyed by concept). Used by ``mem concepts hubs``.
+    """
+    result: dict[str, Path] = {}
+    result.update(generate_domain_hubs(config, ontology))
+    result.update(generate_concept_hub_skeletons(config, ontology))
+    return result
 
 
 def add_hub_wikilinks(

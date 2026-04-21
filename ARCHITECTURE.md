@@ -1,0 +1,271 @@
+# personal_mem — Architecture
+
+This document describes the shape of the codebase for contributors: the two layers the framework is split into, what a **source** is, how the three source capabilities (import / acquire / discover) fit together, and how everything ties through the ontology. If you're reading this before adding a new source type or writing a new skill, start here.
+
+## Two layers
+
+personal_mem splits cleanly into two layers with a one-way dependency.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ Claude Code layer                                                      │
+│                                                                        │
+│   commands/*.md          src/personal_mem/hooks/                       │
+│   (procedural skills)    (SessionStart, Pre, Post, Stop)               │
+│                                                                        │
+│   src/personal_mem/skill_runner.py                                     │
+│   (headless runner for commands/*.md via the Anthropic API)            │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │  (imports only)
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ Knowledge layer                                                        │
+│                                                                        │
+│   vault.py       — note CRUD, frontmatter, wikilinks, layout routing   │
+│   indexer.py     — SQLite FTS5 index, concept edges, hash dedup        │
+│   search.py      — FTS, graph traversal, hybrid search                 │
+│   concepts.py    — ontology loader, concept merging/tightening         │
+│   hubs.py        — concept hub parse/diff/write                        │
+│   landing.py     — DECISIONS / BACKLOG / STATE generators              │
+│   sources/       — source-type registry + canonical frontmatter        │
+│   mcp/server.py  — MCP tool surface (the `mem_*` tools)                │
+│   cli.py         — `mem` CLI bridging skills and knowledge layer       │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+The knowledge layer modules (`vault`, `indexer`, `search`, `concepts`, `hubs`, `landing`, `sources`) import **only** from each other and from `config` / `schemas`. None of them import from `hooks/`, `cli.py`, or `skill_runner.py`. This is checked by reading; no linter enforces it. If you're adding to the knowledge layer and find yourself wanting to `import ... from personal_mem.hooks`, that's a signal you're mixing concerns — stop and rethink.
+
+The Claude Code layer sits on top: hooks feed session events into the knowledge layer via the CLI; skills drive the knowledge layer via MCP tools or the skill runner. Both are clients of the knowledge API; neither is a peer.
+
+## The source primitive
+
+A **source** is a note of `type: source` representing external content — a paper, a repo, an article, a newsletter post, a conversation export. It's one of the four note types (`note`, `session`, `decision`, `source`) and enjoys the same first-class treatment in the index, graph, and retrieval paths.
+
+What makes a source distinct is **routing**: sources live under `vault/sources/` (global) or `vault/projects/{project}/sources/` (project-scoped), bucketed by their `source_type`. Every source type is declared in a single place — `src/personal_mem/sources/registry.py` — as a `SourceTypeSpec`:
+
+```python
+SourceTypeSpec(
+    slug="paper",               # canonical source_type value
+    bucket="papers",            # subfolder under sources/
+    layout="folder",            # flat | folder | author_folder
+    aliases=("arxiv",),         # legacy names folded into slug on write
+    skills=("research", "discover"),
+    description="Research papers (arXiv, PDFs).",
+)
+```
+
+`VaultManager.create_note` reads the registry, normalises the incoming `source_type`, and dispatches on `spec.layout`. Three layouts exist:
+
+- **`flat`** — single file at `bucket/<slug>.md`. Used by `conversation` (ChatGPT exports). No companion content.
+- **`folder`** — `bucket/<slug>/source.md` with companion raw content (`raw.md`, `snapshot.md`, `paper.pdf`, …) alongside. The default for most types.
+- **`author_folder`** — `bucket/<author>/<slug>/source.md`. Used by substack so each publication's corpus clusters under one folder. Falls back to `folder` layout when `author` is missing.
+
+**The registry is open-world.** A source written with an unregistered `source_type` isn't an error — it falls through to the `folder` layout with an empty bucket (e.g. `sources/<slug>/source.md`). This keeps experimentation cheap: you can ingest a one-off before you've added a registry entry, then promote it later.
+
+### Canonical source frontmatter
+
+Every source note carries a canonical set of fields. The `build_source_frontmatter` helper in `src/personal_mem/sources/frontmatter.py` builds the dict with consistent ordering and names:
+
+```python
+from personal_mem.sources import build_source_frontmatter
+
+fm = build_source_frontmatter(
+    source_type="paper",
+    title="Attention Is All You Need",
+    url="https://arxiv.org/abs/1706.03762",
+    authors=["Vaswani", "Shazeer", "Parmar"],
+    arxiv_id="1706.03762",
+    publication="NeurIPS 2017",
+)
+```
+
+| Field               | Purpose                                                       |
+|---------------------|---------------------------------------------------------------|
+| `source_type`       | Canonical slug. Drives routing.                               |
+| `title`             | Human-readable title. Also the filename slug source.          |
+| `url`               | Canonical URL/URI. Empty string is legal for local content.   |
+| `authors`           | List of strings. Use `[]` when unknown.                       |
+| `concepts`          | Ontology terms (≥2). Feeds the knowledge graph.               |
+| `proposed_concepts` | New vocabulary not yet in `ontology.yaml`. Reviewed later.    |
+| `raw_path`          | Relative path to the raw companion file (`raw.md`, …).        |
+| *…source-specific*  | Whatever your importer needs (`arxiv_id`, `publication`, …).  |
+
+The helper doesn't enforce a schema — it's a convention, not a validator. Source-specific fields are merged via `**extra`.
+
+## The three capabilities
+
+A source type can expose up to three capabilities. Each is optional; most source types implement one or two.
+
+```
+┌────────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│   IMPORT       │     │   ACQUIRE       │     │   DISCOVER       │
+│                │     │                 │     │                  │
+│ one-shot:      │     │ batch drain:    │     │ gap analysis:    │
+│ user gives you │     │ queue or disk   │     │ find what's      │
+│ a URL/file,    │     │ inbox → many    │     │ missing → queue  │
+│ you produce    │     │ source notes    │     │ new import work  │
+│ one source     │     │                 │     │                  │
+└────────────────┘     └─────────────────┘     └──────────────────┘
+```
+
+Each capability maps to a **skill file** under `commands/`. Skills are procedural markdown prompts — they're read by Claude Code (or the headless runner) and executed as plain natural-language instructions with tool access. There is no shared "skill framework" in code because the fetch/parse/interpret logic is genuinely different per source type; abstracting it would be premature.
+
+Current mapping:
+
+| Source type    | Import      | Acquire       | Discover      |
+|----------------|-------------|---------------|---------------|
+| `paper`        | `/research` | `/research --queue` | `/discover` |
+| `repo`         | `/research` | `/research --queue` | `/discover` |
+| `article`      | `/research` | `/research --queue` | `/discover` |
+| `substack`     | —           | `/substack`   | —             |
+| `conversation` | `mem import chatgpt` (CLI) | — | — |
+
+Two distinct acquisition patterns coexist — on purpose, because the inputs differ:
+
+- **Semantic queue** — `/research --queue` drains notes tagged `todo+research` from the vault itself. Claim-before-fetch via a `processing` tag; items that fail mid-run stay stuck in `processing` and are recoverable.
+- **Disk inbox** — `/substack` drains files from `~/substack_inbox/` (outside the vault) and moves them to `_processed/<date>/` on success. Nothing mutates vault state until `mem_create` lands a source note.
+
+Both patterns are correct; they're serving different input flows (knowledge-layer artifacts vs browser-clipped files). A new source type should pick whichever matches its input.
+
+Skills declare their capabilities in their YAML frontmatter:
+
+```yaml
+---
+name: research
+source_type: [paper, repo, article]
+capabilities: [import, acquire]
+tools:
+  - Read
+  - WebFetch
+  - Bash
+  - mem_search
+  - mem_create
+  # ...
+description: Ingest arxiv papers, GitHub repos, and web articles as source notes.
+---
+```
+
+`mem skill list` reads these headers and shows every skill's type, capabilities, and description at a glance. `mem skill run` reads the `tools` list to decide what tool surface to expose to the model.
+
+## Ontology as the joint vocabulary
+
+The ontology is what glues the knowledge layer together. Every note — regardless of type or project — can carry a `concepts` frontmatter list. Notes that share ≥2 concepts auto-link in the graph. Concept hubs (`vault/concepts/topics/{concept}.md`) aggregate learning artifacts across the whole vault. And every source-ingestion skill starts with the same two lines:
+
+```
+Read src/personal_mem/ontology.yaml
+mem_concepts(min_count=2)
+```
+
+Loading is centralised in `src/personal_mem/concepts.py:load_ontology` — a minimal YAML parser with no external dependencies. Skills read the file directly (no MCP round-trip) because it's small and changes rarely. `mem_concepts` then returns the live distribution from the index, so skills know both the canonical vocabulary (from `ontology.yaml`) and the in-use vocabulary (from the vault).
+
+New terms a skill encounters go into `proposed_concepts`, not `concepts`, so `/mem-resolve-concepts` can canonicalise them in a later pass. This is the one place where drift is resolved: the ontology is the final authority on canonical terms, and promotion from `proposed` to canonical requires explicit review.
+
+The ontology ties everything together because it's the only vocabulary shared across:
+
+- Sources (what a paper is about)
+- Decisions (what architectural area a decision touches)
+- Sessions (what the session worked on)
+- Notes (what a user note covers)
+- Concept hubs (the synthesis layer per concept)
+
+A concept named in any of these places is the same concept. That's how a paper's finding can inform a decision on an unrelated project — they share a concept, so the graph connects them. Nothing else in the system has this property.
+
+## Adding a new source type
+
+Five steps. Nothing else should need to change.
+
+### 1. Add a `SourceTypeSpec` entry
+
+Edit `src/personal_mem/sources/registry.py`:
+
+```python
+"podcast": SourceTypeSpec(
+    slug="podcast",
+    bucket="podcasts",
+    layout="folder",
+    skills=("podcast",),
+    description="Podcast episode transcripts. Ingested via /podcast.",
+),
+```
+
+Pick the layout: `flat` (single-file summary, no raw companion), `folder` (slug subdir with raw alongside — the usual choice), or `author_folder` (show-level nesting for serial content).
+
+### 2. Copy `_source_template.md` to `commands/{your-skill-name}.md`
+
+The template is the universal skill scaffold with YAML frontmatter (`source_type`, `capabilities`, `tools`, `description`) plus three clearly marked capability sections (import / acquire / discover) and three always-on sections (ontology tie-in, frontmatter shape, reporting).
+
+### 3. Fill in frontmatter + delete unused capability sections
+
+Declare what your skill actually does. A skill can ship with just one capability — `/substack` is acquire-only. Delete the Import or Discover sections if your skill doesn't implement them.
+
+### 4. Write the bespoke fetch/parse/interpret logic
+
+Per capability section. This is where per-source variation lives and where the template explicitly warns against abstraction. Pattern-match from:
+
+- `commands/research.md` — import + acquire via URL classification + WebFetch/git-clone/curl
+- `commands/substack.md` — acquire via disk-inbox drain + multimodal figure interpretation
+- `commands/discover.md` — discover via concept-coverage analysis + queue generation
+
+### 5. Verify
+
+```bash
+mem sources show podcast        # registry entry visible
+mem skill show podcast          # frontmatter parses
+mem skill run podcast --dry-run # runner builds a valid Messages request
+```
+
+End-to-end smoke test: run the skill in Claude Code (via the Skill tool) on a real input and check `mem_search(type="source", query="...")` finds the new note.
+
+## Running skills
+
+Skills live in `commands/*.md` as plain markdown. Two execution paths share the same file:
+
+```
+            same skill file
+                 │
+                 ▼
+┌────────────────────────────────────┐
+│  Claude Code  (interactive)        │
+│   Skill tool reads commands/*.md   │
+│   Full tool surface                │
+│   Default for daily use            │
+└────────────────────────────────────┘
+
+┌────────────────────────────────────┐
+│  mem skill run  (headless)         │
+│   src/personal_mem/skill_runner.py │
+│   Reads same commands/*.md         │
+│   Bridges subset of mem_* tools    │
+│   Optional `anthropic` dep         │
+│   Good for cron / CI / API-only    │
+└────────────────────────────────────┘
+```
+
+### Inside Claude Code
+
+Default path. The Skill tool reads the markdown, Claude Code provides the full tool surface (`Read`, `Bash`, `WebFetch`, `WebSearch`, every `mem_*` tool via the personal_mem MCP server), and the model executes the procedure interactively. This is what you want for daily use.
+
+### Via `mem skill run`
+
+```bash
+pip install 'personal-mem[skill-runner]'   # anthropic + httpx
+export ANTHROPIC_API_KEY=sk-ant-...
+
+mem skill run research --dry-run -- https://arxiv.org/abs/1706.03762
+mem skill run research -- https://arxiv.org/abs/1706.03762
+```
+
+The runner reads the skill's frontmatter `tools` list, builds an Anthropic Messages request with tool-use schemas, and loops until the model stops issuing tool calls. It bridges a **curated subset** of the tool surface in-process:
+
+- `Read` → `Path.read_text`
+- `Bash` → `subprocess.run` with a deny-list (`rm -rf`, `sudo`, force-push, `--no-verify`, …)
+- `WebFetch` → `httpx.get` with 30s timeout
+- `mem_search`, `mem_read`, `mem_create`, `mem_concepts`, `mem_concept_source_counts` → direct calls into `Search` / `VaultManager` / `Indexer`
+
+Tools declared by the skill but not bridged by the runner are listed as warnings at startup. Those skills still run — the model simply doesn't have access to the missing tools. For the full surface, use Claude Code.
+
+`--dry-run` prints the Messages request shape (model, tool count, system/user prompt sizes, first 400 chars of the user message) without hitting the API. Use it to verify a new skill is well-formed before paying for real inference.
+
+## A note on the importers under `src/personal_mem/importers/`
+
+These are **one-shot CLI importers**, not skills. They're called via `mem import <source> <path>` and handle bulk migration from external formats: ChatGPT conversation exports, claude-mem databases, Messenger self-exports, Hive Swarm session logs, plain text files. They live next to the knowledge layer because they speak directly to `VaultManager`, but they're not part of the capability model — a contributor adding a new source type should usually write a skill (procedural markdown) rather than a CLI importer (Python module). The importers exist because some source formats predate the skill model; new work should go through skills.

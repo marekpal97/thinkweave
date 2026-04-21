@@ -15,6 +15,7 @@ from pathlib import Path
 
 from personal_mem.config import Config, load_config
 from personal_mem.schemas import NOTE_ID_PREFIXES, DecisionStatus, NoteMeta, NoteType
+from personal_mem.sources import registry as source_registry
 
 # --- YAML frontmatter parsing (inline, no PyYAML dependency) ---
 
@@ -238,29 +239,20 @@ class VaultManager:
             return d
         return self.root / "projects"
 
-    # Source-type → bucket map. Every source type we ingest gets its own
-    # subfolder under vault/sources/ with its own dedicated skill/scaffold
-    # (research, discover, future YT/messenger importers, etc.). Sources
-    # without a recognised type fall back to the flat sources/ directory.
-    _SOURCE_BUCKETS = {
-        "paper": "papers",
-        "repo": "repos",
-        "article": "articles",
-        "conversation": "conversations",
-        "substack": "substack",
-    }
+    # Source-type routing is declared in ``personal_mem.sources.registry``.
+    # Adding a new source type means adding a SourceTypeSpec entry there and
+    # writing a skill under commands/; no edits in this file are required.
 
-    @classmethod
-    def _normalize_source_type(cls, source_type: str) -> str:
+    @staticmethod
+    def _normalize_source_type(source_type: str) -> str:
         """Fold legacy aliases into the canonical source_type vocabulary."""
-        if source_type == "github":
-            return "repo"
-        return source_type
+        return source_registry.normalize(source_type)
 
-    @classmethod
-    def _source_bucket(cls, source_type: str) -> str:
+    @staticmethod
+    def _source_bucket(source_type: str) -> str:
         """Return the bucket subfolder for a given source_type, or ''."""
-        return cls._SOURCE_BUCKETS.get(cls._normalize_source_type(source_type), "")
+        spec = source_registry.get_spec(source_type)
+        return spec.bucket if spec else ""
 
     def _sanitize_filename(self, title: str) -> str:
         """Convert a title to a safe filename slug."""
@@ -300,6 +292,53 @@ class VaultManager:
         session_dir = sessions_dir / f"{session_id}-{today}"
         session_dir.mkdir(parents=True, exist_ok=True)
         return session_dir
+
+    def _write_source_flat(self, target_dir: Path, slug: str) -> Path:
+        """Flat layout — single file ``<slug>.md`` with file-level collision loop.
+
+        Used by source types like ``conversation`` whose notes are
+        self-contained summaries without raw companion content.
+        """
+        filepath = target_dir / f"{slug}.md"
+        counter = 1
+        while filepath.exists():
+            filepath = target_dir / f"{slug}-{counter}.md"
+            counter += 1
+        return filepath
+
+    def _write_source_folder(self, target_dir: Path, slug: str) -> Path:
+        """Folder layout — ``<slug>/source.md`` with directory-level collision loop.
+
+        The default layout for most source types. The slug subdirectory
+        holds ``source.md`` plus any raw companion content (``raw.md``,
+        ``paper.pdf``, ``snapshot.md``, ``assets/``) the skill writes
+        alongside it.
+        """
+        source_subdir = target_dir / slug
+        counter = 1
+        while source_subdir.exists():
+            source_subdir = target_dir / f"{slug}-{counter}"
+            counter += 1
+        source_subdir.mkdir(parents=True, exist_ok=True)
+        return source_subdir / "source.md"
+
+    def _write_source_author_folder(
+        self, target_dir: Path, slug: str, fm: dict
+    ) -> Path:
+        """Author-nested folder layout — ``<author>/<slug>/source.md``.
+
+        Used by substack (and similar newsletter sources) so each
+        publication's corpus clusters under one folder. When ``author`` is
+        missing or empty, falls back to the plain folder layout without the
+        author level — tested by ``test_substack_missing_author_falls_back_flat``.
+        """
+        author = fm.get("author", "") or ""
+        if not author:
+            return self._write_source_folder(target_dir, slug)
+        author_slug = self._sanitize_filename(author)
+        author_dir = target_dir / author_slug
+        author_dir.mkdir(parents=True, exist_ok=True)
+        return self._write_source_folder(author_dir, slug)
 
     def create_note(
         self,
@@ -376,49 +415,33 @@ class VaultManager:
             session_subdir.mkdir(parents=True, exist_ok=True)
             filepath = session_subdir / "session.md"
         elif note_type == NoteType.SOURCE:
-            # Normalise source_type (github → repo) on write so the on-disk
-            # vocabulary stays consistent with the bucket routing below.
+            # Normalise source_type (legacy aliases like github → repo) on
+            # write so the on-disk vocabulary stays consistent.
             raw_source_type = fm.get("source_type", "") or ""
-            source_type = self._normalize_source_type(raw_source_type)
+            source_type = source_registry.normalize(raw_source_type)
             if source_type != raw_source_type:
                 fm["source_type"] = source_type
 
-            # Route into a type-specific bucket (papers/repos/articles/
-            # conversations). output_dir overrides bucketing — callers that
-            # pass it explicitly already know where they want the file.
-            bucket = self._source_bucket(source_type)
-            if bucket and output_dir is None:
-                target_dir = target_dir / bucket
-                target_dir.mkdir(parents=True, exist_ok=True)
+            spec = source_registry.get_spec(source_type)
 
-            if source_type == "conversation":
-                # Conversations are single-file summaries (no raw companion
-                # content), so they live flat inside sources/conversations/.
-                filepath = target_dir / f"{slug}.md"
-                counter = 1
-                while filepath.exists():
-                    filepath = target_dir / f"{slug}-{counter}.md"
-                    counter += 1
-            else:
-                # Other source types get their own slug subdirectory so raw
-                # content (PDFs, snapshots, raw.md) can live alongside
-                # source.md in the same folder.
-                #
-                # Substack gets an extra author-level parent so each
-                # newsletter's corpus is browsable as a folder.
-                if source_type == "substack":
-                    author = fm.get("author", "") or ""
-                    if author:
-                        author_slug = self._sanitize_filename(author)
-                        target_dir = target_dir / author_slug
-                        target_dir.mkdir(parents=True, exist_ok=True)
-                source_subdir = target_dir / slug
-                counter = 1
-                while source_subdir.exists():
-                    source_subdir = target_dir / f"{slug}-{counter}"
-                    counter += 1
-                source_subdir.mkdir(parents=True, exist_ok=True)
-                filepath = source_subdir / "source.md"
+            # output_dir is the extraction escape hatch — extracted sources
+            # target a session folder directly and must bypass bucketing.
+            if output_dir is None:
+                bucket = spec.bucket if spec else ""
+                if bucket:
+                    target_dir = target_dir / bucket
+                    target_dir.mkdir(parents=True, exist_ok=True)
+
+            # Dispatch on declared layout. Unregistered types fall back to
+            # the folder layout with whatever target_dir the caller already
+            # selected (empty bucket or output_dir override).
+            layout = spec.layout if spec else "folder"
+            if layout == "flat":
+                filepath = self._write_source_flat(target_dir, slug)
+            elif layout == "author_folder":
+                filepath = self._write_source_author_folder(target_dir, slug, fm)
+            else:  # "folder"
+                filepath = self._write_source_folder(target_dir, slug)
         else:
             filename = f"{slug}.md"
             filepath = target_dir / filename

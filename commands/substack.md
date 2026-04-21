@@ -1,3 +1,19 @@
+---
+name: substack
+source_type: substack
+capabilities: [acquire]
+tools:
+  - Read
+  - Bash
+  - mem_search
+  - mem_concepts
+  - mem_concept_search
+  - mem_create
+  - mem_update
+  - mem_link
+description: Drain the Substack disk inbox (browser-clipped posts) into the vault. Figure-aware via multimodal Read; archives processed bundles.
+---
+
 # /substack — Drain the Substack Inbox into the Vault
 
 You are processing one or more browser-clipped Substack posts sitting in a disk inbox, turning each into a structured source note in the vault. Substack posts are captured **outside** of Claude Code — the user clips them in an authenticated browser at read time, and `/substack` drains whatever has accumulated.
@@ -90,7 +106,7 @@ Note which existing sources/notes/decisions relate. These feed the **Vault Conne
 Images need to land inside the source note's directory so `raw.md` can reference them relatively. But the source directory doesn't exist yet — `mem_create` creates it. So:
 
 1. Do steps 6–8 first (write the source note via `mem_create`, which returns the source directory path).
-2. Then handle images in step 9: create `assets/`, copy local refs from a folder bundle (if any), curl-backfill remote refs from the body, rewrite paths, interpret each one, and enrich the brief.
+2. Then handle images in step 9: create `assets/`, copy local refs from a folder bundle (if any), curl-backfill remote refs from the body, and rewrite paths.
 
 Hold the list of local image paths (from step 2's bundle discovery) and the list of remote image URLs (extracted from the body during step 6) in memory until you reach step 9.
 
@@ -105,7 +121,7 @@ Use the body template at the bottom of this file. Key sections:
 - **Risks & Counterarguments** — what could invalidate the thesis
 - **Vault Connections** — prior notes/decisions this relates to
 
-**First-pass brief** (before image interpretation): write whatever you can from the text body. You'll enrich it with figure descriptions in step 9 after images are staged.
+Write the brief from the text body. Images are archived in `assets/` for later inspection but not interpreted at ingest time.
 
 ### 7. Concept mapping
 
@@ -120,7 +136,7 @@ Use the body template at the bottom of this file. Key sections:
 mem_create(
   type="source",
   title="<post title>",
-  body="<structured brief from step 6 — enriched later with figure descriptions>",
+  body="<structured brief from step 6>",
   tags=["investment-research"],
   concepts=["<mapped concepts from finance/ branches>"],
   frontmatter={
@@ -138,14 +154,14 @@ mem_create(
 
 The response contains the source directory path. Parse it out — it's the target for `raw.md` and `assets/`.
 
-### 9. Stage images, rewrite paths, and enrich the brief
+### 9. Stage images and rewrite paths
 
 Two kinds of image refs need to land in `<source_dir>/assets/`:
 
 - **Local refs** from a folder bundle (`![alt](img1.png)`) — copy from the inbox folder.
 - **Remote refs** from the typical Web Clipper output (`![alt](https://substackcdn.com/...)`) — Web Clipper does **not** download images locally, so we backfill them via curl during ingestion. This is the common path; expect most clips to have remote refs.
 
-Both paths converge on the same `assets/` directory, the same path-rewriting logic, and the same multimodal interpretation step.
+Both paths converge on the same `assets/` directory and path-rewriting logic. Images are archived for later retrieval — no interpretation at ingest time.
 
 **9a. Create the assets directory**:
 
@@ -174,7 +190,7 @@ Notes on the curl call:
 - `--max-time 30` = bound the request so a hung CDN doesn't stall the whole drain.
 - Quote the URL — Substack CDN URLs contain `,` and `:` which some shells interpret.
 - Check the exit code via `$?` or by inspecting whether the file exists and has nonzero size after the call. On failure, **leave the URL remote in raw.md** and log: "Failed to backfill image N: <url>". Don't abort the item — the text brief is still worth keeping.
-- Filename uses `.png` regardless of the actual format. Multimodal Read tolerates common formats; if interpretation fails for a specific image, it'll surface during step 9e and you can either skip that figure or re-clip the post.
+- Filename uses `.png` regardless of the actual format — browsers and Obsidian handle common formats fine.
 - Build a mapping from remote URL → local filename so step 9d can rewrite paths correctly.
 
 **9d. Rewrite image paths in the body** for `raw.md`:
@@ -184,27 +200,16 @@ Notes on the curl call:
 
 Write the rewritten body to `<source_dir>/raw.md` via `Write`.
 
-**9e. Interpret each image for the brief** — this is the value-add step:
-
-For each image now in `<source_dir>/assets/` (regardless of whether it came from a local bundle or a curl backfill):
-```
-Read <source_dir>/assets/<filename>
-```
-Your multimodal capability opens the image visually. Produce 1–3 sentences describing what the figure actually shows: chart type, axes, time range, labeled entities, key trends, magnitudes, inflection points. Be concrete — "line chart of gold/SPX ratio 2020–2026, grind from 0.35 to 0.78 with acceleration after Q2 2024" beats "chart about gold."
-
-If `Read` errors on an image (corrupted file, unsupported format), skip that figure with a note in the report. Don't block the rest of the item.
-
-**9f. Update the source note** with figure descriptions folded into the **Claims & Evidence** and/or **Investable Implications** sections, plus set `raw_path`:
+**9e. Update the source note** with `raw_path` and figure list:
 
 ```
 mem_update(
   note_id="<src-id>",
-  frontmatter_updates={"raw_path": "raw.md", "figures": ["assets/img1.png", "assets/img2.png"]},
-  body_append="\n\n## Figures\n\n**Fig. 1** (`assets/img1.png`): <interpretation>\n\n**Fig. 2** (`assets/img2.png`): <interpretation>\n"
+  frontmatter_updates={"raw_path": "raw.md", "figures": ["assets/img-1.png", "assets/img-2.png"]}
 )
 ```
 
-(Alternatively, regenerate the full body with figures woven into Claims & Evidence and call `mem_update` with a replacement body — use whichever produces the cleanest final note. `body_append` is simpler; inline integration reads better.)
+Images are archived but not interpreted — the user can `Read` them later if needed for deeper analysis.
 
 ### 10. Link to related vault content
 
@@ -237,7 +242,6 @@ For each processed item:
 - Author / publication
 - Concepts assigned (existing) + proposed (new)
 - Images backfilled (`X downloaded, Y failed` — list failed URLs so the user can spot CDN issues)
-- Figures interpreted (count)
 - Vault connections created
 - Any errors/skips
 
@@ -249,8 +253,7 @@ Batch summary: N processed, M skipped, K errors, inbox remaining count. Suggeste
 
 - **Parse error / missing URL** → log, skip the item (leave in inbox), continue.
 - **`mem_create` failure** → log, skip, continue. Don't move the inbox entry until you have a confirmed `src-` ID.
-- **Curl image backfill failure** (timeout, 403, network error) → log the URL and image index, leave that ref remote in `raw.md`, continue with the rest of the item. Other figures and the text brief are still worth keeping.
-- **Multimodal Read failure on a downloaded image** → log, skip that figure's interpretation, continue.
+- **Curl image backfill failure** (timeout, 403, network error) → log the URL and image index, leave that ref remote in `raw.md`, continue with the rest of the item. The text brief is still worth keeping.
 - **No queue state to manage** — failures just mean "still in the inbox," which is the correct fallback.
 
 ---
@@ -259,6 +262,7 @@ Batch summary: N processed, M skipped, K errors, inbox remaining count. Suggeste
 
 - **No URL-based ingestion path.** Free Substack posts still need to be clipped to the inbox — the skill doesn't fetch URLs directly. This is deliberate; it keeps the design to a single path.
 - **No discovery integration.** `/substack` is ingest-only; it doesn't suggest posts to read or find authors to follow.
+- **Images archived, not interpreted.** Figures are downloaded to `assets/` and paths rewritten, but no multimodal interpretation happens at ingest. Use `Read <source_dir>/assets/<file>` later for on-demand analysis.
 - **Curl backfill assumes public CDN URLs.** Substack image CDN URLs are typically public even for paid posts (only the post HTML is paywalled), so plain `curl` works without auth headers. If a particular publication serves images behind auth, the backfill will 403 and those refs stay remote — surfaces in the per-item report so you can spot it.
 
 ---
@@ -273,7 +277,7 @@ Batch summary: N processed, M skipped, K errors, inbox remaining count. Suggeste
 - [specific claim + evidence: "argues X because Y", "cites Z data from source"]
 - [distinguish data-backed claims from opinion/framework/anecdote]
 - [quantitative findings: prices, rates, multiples, flows]
-- [**figure-backed claims**: describe what each chart/table shows and which claim it supports, e.g. "Fig. 1 (`assets/gold-ratio.png`) — line chart of gold/SPX ratio 2020–2026, inflection at Q2 2024"]
+- [note which claims reference figures — images are in `assets/` for later inspection]
 
 ## Investable Implications
 - [tickers, sectors, asset classes, themes mentioned by name]

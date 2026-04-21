@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_mem.config import load_config
@@ -155,6 +156,65 @@ def main(argv: list[str] | None = None) -> None:
     p_notes.add_argument("concept", help="Concept to search for")
     p_notes.add_argument("--project", "-p", default="", help="Filter by project")
 
+    # --- mem hubs ---
+    p_hubs = sub.add_parser(
+        "hubs",
+        help="Concept hub pages — plan, run (backfill), and status",
+    )
+    hubs_sub = p_hubs.add_subparsers(dest="hubs_action")
+
+    p_hubs_plan = hubs_sub.add_parser(
+        "plan", help="Walk the vault and write a JSON plan for hub backfill"
+    )
+    p_hubs_plan.add_argument(
+        "--out", default="", help="Plan output path (default: .mem/hubs_plan.json)"
+    )
+    p_hubs_plan.add_argument("--concept", default="", help="Restrict to one concept")
+    p_hubs_plan.add_argument("--project", default="", help="Restrict to one project")
+    p_hubs_plan.add_argument("--note-type", default="", help="Restrict to one note type")
+    p_hubs_plan.add_argument(
+        "--limit-notes",
+        type=int,
+        default=0,
+        help="Cap unprocessed notes per concept (0 = no cap)",
+    )
+    p_hubs_plan.add_argument(
+        "--limit-concepts",
+        type=int,
+        default=0,
+        help="Cap total concepts in the plan (0 = no cap)",
+    )
+
+    p_hubs_run = hubs_sub.add_parser(
+        "run",
+        help="Execute a backfill plan via Anthropic SDK + Messages Batches API",
+    )
+    p_hubs_run.add_argument(
+        "--plan", default="", help="Path to plan JSON (default: .mem/hubs_plan.json)"
+    )
+    p_hubs_run.add_argument(
+        "--model",
+        default="claude-sonnet-4-5",
+        help="Anthropic model to use (default: claude-sonnet-4-5)",
+    )
+    p_hubs_run.add_argument(
+        "--max-tokens",
+        type=int,
+        default=1024,
+        help="Max output tokens per request (default: 1024)",
+    )
+    p_hubs_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build requests and print the first one, but don't submit to the API",
+    )
+
+    p_hubs_status = hubs_sub.add_parser(
+        "status",
+        help="Show processed state per concept (cited vs total)",
+    )
+    p_hubs_status.add_argument("--concept", default="", help="Restrict to one concept")
+
     # --- mem landing ---
     p_landing = sub.add_parser("landing", help="Generate project landing documents")
     p_landing.add_argument("--project", "-p", default="", help="Project name")
@@ -242,6 +302,54 @@ def main(argv: list[str] | None = None) -> None:
                            help="Rename a note type across all matching notes")
     p_migrate.add_argument("--dry-run", action="store_true", help="Show what would change")
 
+    # --- mem sources ---
+    p_sources = sub.add_parser(
+        "sources",
+        help="List and inspect registered source types",
+    )
+    sources_sub = p_sources.add_subparsers(dest="sources_action")
+    sources_sub.add_parser("list", help="List all registered source types")
+    p_sources_show = sources_sub.add_parser(
+        "show", help="Show full spec for a source type"
+    )
+    p_sources_show.add_argument("slug", help="Source type slug (e.g. paper, substack)")
+
+    # --- mem skill ---
+    p_skill = sub.add_parser(
+        "skill",
+        help="List, inspect, and run skills from commands/",
+    )
+    skill_sub = p_skill.add_subparsers(dest="skill_action")
+    skill_sub.add_parser("list", help="List all skills with their frontmatter")
+    p_skill_show = skill_sub.add_parser("show", help="Show a skill's frontmatter + head")
+    p_skill_show.add_argument("name", help="Skill name (without .md)")
+    p_skill_run = skill_sub.add_parser(
+        "run",
+        help="Run a skill via the Anthropic API (requires personal-mem[skill-runner])",
+    )
+    p_skill_run.add_argument("name", help="Skill name (without .md)")
+    p_skill_run.add_argument(
+        "skill_args",
+        nargs="*",
+        help="Arguments passed to the skill as user prompt context",
+    )
+    p_skill_run.add_argument(
+        "--model",
+        default="claude-opus-4-5",
+        help="Anthropic model to use (default: claude-opus-4-5)",
+    )
+    p_skill_run.add_argument(
+        "--max-turns",
+        type=int,
+        default=40,
+        help="Cap the tool-call loop (default: 40)",
+    )
+    p_skill_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the Messages call shape without hitting the API",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -254,6 +362,7 @@ def main(argv: list[str] | None = None) -> None:
         "backlog": cmd_backlog,
         "concepts": cmd_concepts,
         "decisions": cmd_decisions,
+        "hubs": cmd_hubs,
         "landing": cmd_landing,
         "migrate": cmd_migrate,
         "project": cmd_project,
@@ -271,6 +380,8 @@ def main(argv: list[str] | None = None) -> None:
         "stats": cmd_stats,
         "hooks": cmd_hooks,
         "init": cmd_init,
+        "sources": cmd_sources,
+        "skill": cmd_skill,
     }
     commands[args.command](args)
 
@@ -319,6 +430,268 @@ def cmd_landing(args: argparse.Namespace) -> None:
     for filename, path in written.items():
         print(f"  {filename} → {path.relative_to(cfg.vault_root)}")
     print(f"Generated {len(written)} landing document(s).")
+
+
+def cmd_hubs(args: argparse.Namespace) -> None:
+    """Concept hub page management — plan, run, status."""
+    cfg = load_config()
+    action = args.hubs_action or "status"
+
+    if action == "plan":
+        _hubs_plan(cfg, args)
+    elif action == "run":
+        _hubs_run(cfg, args)
+    elif action == "status":
+        _hubs_status(cfg, args)
+    else:
+        print(f"Unknown hubs action: {action}")
+        sys.exit(1)
+
+
+def _hubs_plan(cfg, args: argparse.Namespace) -> None:
+    from personal_mem.hubs import build_plan, plan_to_dict
+
+    plans = build_plan(
+        cfg,
+        project=args.project,
+        note_type=args.note_type,
+        concept_filter=args.concept,
+        limit_notes_per_concept=args.limit_notes,
+        limit_concepts=args.limit_concepts,
+    )
+
+    payload = plan_to_dict(plans)
+    out_path = Path(args.out) if args.out else (cfg.mem_dir / "hubs_plan.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    print(f"Plan: {out_path}")
+    print(f"  concepts: {payload['total_concepts']}")
+    print(f"  unprocessed notes: {payload['total_notes']}")
+    print(f"  est input tokens: {payload['est_input_tokens']:,}")
+    if not plans:
+        print("  (nothing to process — all hubs are caught up)")
+        return
+    print("\n  Top concepts by unprocessed note count:")
+    for p in plans[:10]:
+        dom = f" [{', '.join(p.domains)}]" if p.domains else ""
+        print(f"    {len(p.unprocessed_notes):4d}  {p.concept}{dom}")
+
+
+def _hubs_run(cfg, args: argparse.Namespace) -> None:
+    from personal_mem.hubs import (
+        LogEntry,
+        append_log_entries,
+        build_extraction_user_prompt,
+        concept_hub_path,
+        parse_concept_hub,
+        parse_llm_response,
+        HUB_EXTRACTION_SYSTEM,
+    )
+    from personal_mem.indexer import Indexer
+
+    plan_path = Path(args.plan) if args.plan else (cfg.mem_dir / "hubs_plan.json")
+    if not plan_path.exists():
+        print(f"Plan file not found: {plan_path}")
+        print("Run `mem hubs plan` first.")
+        sys.exit(1)
+
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    concept_plans = payload.get("concepts", [])
+    if not concept_plans:
+        print("Plan is empty.")
+        return
+
+    # Build requests per concept — one LLM call per (concept, note) pair.
+    # Within a concept, the system prompt is stable (current essence + recent
+    # entries), so we mark it cacheable.
+    from personal_mem.vault import VaultManager
+
+    vm = VaultManager(config=cfg)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Build requests list first so we can preview / dry-run
+    requests_to_send = []  # [(concept, note_id, system_prompt, user_prompt)]
+
+    for cp in concept_plans:
+        concept = cp["concept"]
+        hub_path = concept_hub_path(cfg, concept)
+        hub = parse_concept_hub(hub_path, concept=concept)
+
+        for note_entry in cp["unprocessed_notes"]:
+            note_path = vm.root / note_entry["path"]
+            if not note_path.exists():
+                continue
+            note_text = note_path.read_text(encoding="utf-8")
+            # Strip frontmatter for the body input
+            from personal_mem.vault import parse_frontmatter
+            _, body = parse_frontmatter(note_text)
+
+            user_prompt = build_extraction_user_prompt(
+                concept=concept,
+                essence=hub.essence,
+                recent_entries=hub.log_entries,
+                note_id=note_entry["id"],
+                note_type=note_entry.get("type", "note"),
+                project=note_entry.get("project", ""),
+                date=note_entry.get("date", ""),
+                title=note_entry.get("title", ""),
+                body=body,
+            )
+            requests_to_send.append(
+                {
+                    "concept": concept,
+                    "note_id": note_entry["id"],
+                    "system": HUB_EXTRACTION_SYSTEM,
+                    "user": user_prompt,
+                    "cache_key": concept,
+                }
+            )
+
+    print(f"Built {len(requests_to_send)} request(s) across {len(concept_plans)} concept(s).")
+
+    if args.dry_run:
+        print("\n--- DRY RUN: first request preview ---")
+        if requests_to_send:
+            r = requests_to_send[0]
+            print(f"concept: {r['concept']}")
+            print(f"note_id: {r['note_id']}")
+            print(f"system: {len(r['system'])} chars")
+            print(f"user: {len(r['user'])} chars")
+            print("\n--- user prompt (first 800 chars) ---")
+            print(r["user"][:800])
+        return
+
+    # Import Anthropic SDK lazily so the optional dependency is only
+    # required when actually running.
+    try:
+        from anthropic import Anthropic
+        from anthropic.types.messages.batch_create_params import Request
+        from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    except ImportError:
+        print(
+            "mem hubs run requires the Anthropic SDK.\n"
+            "Install with: uv add --optional hubs anthropic  "
+            "(or `pip install anthropic`)"
+        )
+        sys.exit(1)
+
+    client = Anthropic()
+
+    # Group requests into a single Messages Batch. Each request gets a
+    # custom_id so we can map results back to (concept, note_id). The
+    # system prompt is marked cacheable — grouping by concept means
+    # requests for the same concept share a prefix.
+    batch_requests = []
+    id_to_key: dict[str, tuple[str, str]] = {}
+    for i, r in enumerate(requests_to_send):
+        custom_id = f"req-{i:05d}"
+        id_to_key[custom_id] = (r["concept"], r["note_id"])
+        batch_requests.append(
+            Request(
+                custom_id=custom_id,
+                params=MessageCreateParamsNonStreaming(
+                    model=args.model,
+                    max_tokens=args.max_tokens,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": r["system"],
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    messages=[{"role": "user", "content": r["user"]}],
+                ),
+            )
+        )
+
+    print(f"Submitting batch of {len(batch_requests)} request(s) to {args.model}...")
+    batch = client.messages.batches.create(requests=batch_requests)
+    print(f"Batch ID: {batch.id}")
+    print("Polling for completion (Batches API typically finishes in minutes)...")
+
+    import time as _time
+    while True:
+        info = client.messages.batches.retrieve(batch.id)
+        status = info.processing_status
+        counts = info.request_counts
+        print(
+            f"  status={status} "
+            f"succeeded={counts.succeeded} "
+            f"errored={counts.errored} "
+            f"processing={counts.processing}"
+        )
+        if status == "ended":
+            break
+        _time.sleep(15)
+
+    # Fetch and apply results
+    applied = 0
+    essence_flagged: set[str] = set()
+    for result in client.messages.batches.results(batch.id):
+        if result.result.type != "succeeded":
+            continue
+        concept, note_id = id_to_key.get(result.custom_id, ("", ""))
+        if not concept:
+            continue
+        content_blocks = result.result.message.content
+        text_parts = [b.text for b in content_blocks if getattr(b, "type", "") == "text"]
+        if not text_parts:
+            continue
+        raw = "\n".join(text_parts)
+        entries, needs_essence = parse_llm_response(
+            raw, note_id=note_id, run_date=today
+        )
+        if entries:
+            append_log_entries(cfg, concept, entries)
+            applied += len(entries)
+        if needs_essence:
+            essence_flagged.add(concept)
+
+    print(f"\nApplied {applied} new log entries.")
+    if essence_flagged:
+        print(f"Essence revision flagged for {len(essence_flagged)} concept(s):")
+        for c in sorted(essence_flagged):
+            print(f"  {c}")
+        print("Run /mem-resolve-concepts to review flagged essences.")
+
+    # Reindex touched hub pages incrementally
+    idx = Indexer(config=cfg)
+    touched_concepts = {c for c, _ in id_to_key.values()}
+    for concept in touched_concepts:
+        path = concept_hub_path(cfg, concept)
+        if path.exists():
+            idx.index_file(path)
+    idx.close()
+    print(f"Reindexed {len(touched_concepts)} hub page(s).")
+
+
+def _hubs_status(cfg, args: argparse.Namespace) -> None:
+    from personal_mem.hubs import (
+        all_concepts_in_vault,
+        concept_hub_path,
+        parse_concept_hub,
+    )
+
+    counts = all_concepts_in_vault(cfg)
+    if args.concept:
+        counts = {c: n for c, n in counts.items() if c == args.concept.lower()}
+    if not counts:
+        print("No concepts found in the vault index.")
+        return
+
+    rows: list[tuple[str, int, int, int]] = []
+    for concept, total in sorted(counts.items(), key=lambda x: -x[1]):
+        hub = parse_concept_hub(concept_hub_path(cfg, concept), concept=concept)
+        cited = len(hub.cited_ids)
+        unprocessed = total - cited
+        rows.append((concept, total, cited, unprocessed))
+
+    print(f"{'concept':<40} {'total':>6} {'cited':>6} {'todo':>6}")
+    print("-" * 62)
+    for concept, total, cited, todo in rows:
+        print(f"{concept:<40} {total:>6} {cited:>6} {todo:>6}")
+    print(f"\n{len(rows)} concept(s), {sum(r[3] for r in rows)} unprocessed note-citations total.")
 
 
 def cmd_concepts(args: argparse.Namespace) -> None:
@@ -467,7 +840,8 @@ def cmd_concepts(args: argparse.Namespace) -> None:
     elif action == "hubs":
         from personal_mem.concepts import (
             add_hub_wikilinks,
-            generate_hub_pages,
+            generate_concept_hub_skeletons,
+            generate_domain_hubs,
             hubs_marker_path,
             load_ontology,
         )
@@ -477,13 +851,19 @@ def cmd_concepts(args: argparse.Namespace) -> None:
             print("No ontology.yaml found.")
             return
 
-        generated = generate_hub_pages(cfg, ontology)
-        print(f"Generated {len(generated)} hub pages in vault/concepts/:")
-        for domain, path in sorted(generated.items()):
+        domain_hubs = generate_domain_hubs(cfg, ontology)
+        print(f"Generated {len(domain_hubs)} domain hub(s) in vault/concepts/:")
+        for domain, path in sorted(domain_hubs.items()):
             print(f"  {domain} → {path.name}")
 
+        concept_hubs = generate_concept_hub_skeletons(cfg, ontology)
+        print(
+            f"\nEnsured {len(concept_hubs)} concept hub skeleton(s) in "
+            "vault/concepts/topics/ (existing files preserved)."
+        )
+
         modified = add_hub_wikilinks(cfg, ontology)
-        print(f"Added domain wikilinks to {modified} notes.")
+        print(f"\nAdded domain wikilinks to {modified} notes.")
 
         idx = Indexer(config=cfg)
         idx.rebuild(full=True)
@@ -1426,3 +1806,179 @@ def cmd_migrate(args: argparse.Namespace) -> None:
 
     action = "Would update" if args.dry_run else "Updated"
     print(f"{action} {changed} notes, skipped {skipped}")
+
+
+# ---------------------------------------------------------------------------
+# mem sources — inspect the source-type registry
+# ---------------------------------------------------------------------------
+
+
+def cmd_sources(args: argparse.Namespace) -> None:
+    from personal_mem.sources import all_specs, get_spec
+
+    action = getattr(args, "sources_action", None) or "list"
+
+    if action == "list":
+        specs = all_specs()
+        if not specs:
+            print("No source types registered.")
+            return
+        print(f"{'SLUG':<14} {'BUCKET':<14} {'LAYOUT':<15} {'SKILLS':<24} DESCRIPTION")
+        print("-" * 100)
+        for spec in specs:
+            skills = ", ".join(spec.skills) if spec.skills else "—"
+            print(
+                f"{spec.slug:<14} {spec.bucket:<14} {spec.layout:<15} "
+                f"{skills:<24} {spec.description}"
+            )
+        print()
+        print(
+            "To add a new source type: edit src/personal_mem/sources/registry.py "
+            "and copy commands/_source_template.md."
+        )
+        return
+
+    if action == "show":
+        slug = args.slug
+        spec = get_spec(slug)
+        if spec is None:
+            print(f"No registered source type for '{slug}'.")
+            print("Unregistered types still work — they land in sources/<slug>/source.md.")
+            sys.exit(1)
+        print(f"# {spec.slug}")
+        print(f"bucket:       {spec.bucket}")
+        print(f"layout:       {spec.layout}")
+        print(f"aliases:      {', '.join(spec.aliases) if spec.aliases else '—'}")
+        print(f"skills:       {', '.join(spec.skills) if spec.skills else '—'}")
+        print(f"description:  {spec.description}")
+        # Cross-reference: walk commands/ and list skills whose frontmatter
+        # claims this source_type.
+        skills_found = _skills_for_source_type(spec.slug)
+        if skills_found:
+            print()
+            print("skill files handling this type:")
+            for name, desc in skills_found:
+                print(f"  /{name:<20} {desc}")
+        return
+
+    # No action given → default to list
+    cmd_sources(argparse.Namespace(sources_action="list"))
+
+
+# ---------------------------------------------------------------------------
+# mem skill — inspect and run skills from commands/
+# ---------------------------------------------------------------------------
+
+
+def cmd_skill(args: argparse.Namespace) -> None:
+    action = getattr(args, "skill_action", None) or "list"
+
+    if action == "list":
+        skills = _load_all_skills()
+        if not skills:
+            print("No skills found in commands/.")
+            return
+        print(f"{'NAME':<22} {'SOURCE_TYPE':<24} {'CAPABILITIES':<22} DESCRIPTION")
+        print("-" * 110)
+        for skill in skills:
+            st = _format_list_field(skill["fm"].get("source_type"))
+            caps = _format_list_field(skill["fm"].get("capabilities"))
+            desc = skill["fm"].get("description", "").strip().replace("\n", " ")
+            print(f"{skill['name']:<22} {st:<24} {caps:<22} {desc}")
+        return
+
+    if action == "show":
+        skill = _load_skill(args.name)
+        if skill is None:
+            print(f"No skill found at commands/{args.name}.md")
+            sys.exit(1)
+        fm = skill["fm"]
+        print(f"# /{skill['name']}")
+        for key in ("source_type", "capabilities", "tools", "description"):
+            if key in fm:
+                val = fm[key]
+                if isinstance(val, list):
+                    print(f"{key}:")
+                    for item in val:
+                        print(f"  - {item}")
+                else:
+                    print(f"{key}: {val}")
+        print()
+        print("--- head (first 30 lines of body) ---")
+        body_lines = skill["body"].splitlines()
+        for line in body_lines[:30]:
+            print(line)
+        if len(body_lines) > 30:
+            print(f"... ({len(body_lines) - 30} more lines)")
+        return
+
+    if action == "run":
+        from personal_mem.skill_runner import run_skill
+
+        run_skill(
+            name=args.name,
+            skill_args=args.skill_args,
+            model=args.model,
+            max_turns=args.max_turns,
+            dry_run=args.dry_run,
+        )
+        return
+
+    # No action given → default to list
+    cmd_skill(argparse.Namespace(skill_action="list"))
+
+
+def _commands_dir() -> Path:
+    """Return the commands/ directory shipped with the package."""
+    # cli.py lives at src/personal_mem/cli.py; commands/ is at the repo root.
+    return Path(__file__).resolve().parent.parent.parent / "commands"
+
+
+def _load_skill(name: str) -> dict | None:
+    """Load a single skill file by name. Returns None if not found."""
+    from personal_mem.vault import parse_frontmatter
+
+    path = _commands_dir() / f"{name}.md"
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+    return {"name": name, "path": path, "fm": fm, "body": body}
+
+
+def _load_all_skills() -> list[dict]:
+    """Return every skill in commands/ (excluding files starting with _)."""
+    cmd_dir = _commands_dir()
+    if not cmd_dir.exists():
+        return []
+    out = []
+    for path in sorted(cmd_dir.glob("*.md")):
+        if path.name.startswith("_"):
+            continue
+        skill = _load_skill(path.stem)
+        if skill is not None:
+            out.append(skill)
+    return out
+
+
+def _skills_for_source_type(slug: str) -> list[tuple[str, str]]:
+    """Return (name, description) for each skill whose frontmatter claims this source_type."""
+    out = []
+    for skill in _load_all_skills():
+        st = skill["fm"].get("source_type")
+        types = st if isinstance(st, list) else [st] if st else []
+        if slug in types:
+            desc = skill["fm"].get("description", "").strip().replace("\n", " ")
+            out.append((skill["name"], desc))
+    return out
+
+
+def _format_list_field(value) -> str:
+    """Render a list-or-scalar frontmatter field for the CLI table."""
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, list):
+        if not value:
+            return "—"
+        return ",".join(str(v) for v in value)
+    return str(value)

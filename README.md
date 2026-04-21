@@ -100,43 +100,55 @@ Run `uv run python -m personal_mem.mcp.server` to start the server stdio, or reg
 
 ## Adding a new source type
 
-personal_mem is designed so new kinds of reference material plug in without touching the framework. The canonical pattern: **1 dict entry + 1 skill file**.
+personal_mem is designed so new kinds of reference material plug in without touching the framework. The canonical pattern: **1 registry entry + 1 skill file**.
 
 Say you want to ingest emails (e.g. from a local mbox drain or a forwarded-to-folder setup).
 
-### 1. Register the bucket
+### 1. Register the source type
 
-Add one line to `src/personal_mem/vault.py` in the `_SOURCE_BUCKETS` class attribute on `VaultManager`:
+Add a `SourceTypeSpec` entry to `src/personal_mem/sources/registry.py`:
 
 ```python
-_SOURCE_BUCKETS = {
-    "paper": "papers",
-    "repo": "repos",
-    "article": "articles",
-    "conversation": "conversations",
-    "substack": "substack",
-    "email": "emails",          # ← new
-}
+"email": SourceTypeSpec(
+    slug="email",
+    bucket="emails",
+    layout="folder",          # flat | folder | author_folder
+    skills=("email",),
+    description="Forwarded / imported emails. Ingested via /email.",
+),
 ```
 
-That is the entire framework change. `VaultManager.create_note` will now route any note with `source_type: email` into `vault/sources/emails/{slug}/source.md`. The indexer, search, MCP server, concept graph, and frontmatter schema all treat it uniformly — no special-casing anywhere.
+That is the entire framework change. `VaultManager.create_note` reads the registry when it writes a source note, so any note with `source_type: email` will now route to `vault/sources/emails/{slug}/source.md`. The indexer, search, MCP server, concept graph, and frontmatter schema all treat it uniformly — no special-casing anywhere.
+
+Verify with:
+
+```bash
+uv run mem sources show email
+```
 
 ### 2. Write the ingestion skill
 
-Copy `commands/_source_template.md` to `commands/email.md` and fill in the placeholders. The skill file is a procedural spec that Claude Code reads when the user invokes `/email`; it documents what to fetch, how to parse it, which concepts to map, and what frontmatter fields are specific to your source type.
+Copy `commands/_source_template.md` to `commands/email.md` and fill in the YAML frontmatter (`source_type`, `capabilities`, `tools`, `description`) plus the body. The template is a *universal skill template* with clearly marked sections for the three capabilities (import / acquire / discover). Delete the sections you don't implement and fill in the bespoke fetch/parse/interpret logic for the ones you do.
 
-For inspiration, look at the three real skill files already in `commands/`:
-- `commands/research.md` — papers, repos, articles (URL → PDF/git clone/HTML fetch)
-- `commands/substack.md` — disk-inbox drain with multimodal figure interpretation
-- `commands/discover.md` — the gap-analysis companion that proposes new queue items
+For worked examples, look at the real skill files already in `commands/`:
+- `commands/research.md` — import + acquire for papers, repos, articles (URL → PDF/git clone/HTML fetch)
+- `commands/substack.md` — acquire only, disk-inbox drain with multimodal figure interpretation
+- `commands/discover.md` — discover only, gap analysis that produces queue items
 
 Each is deliberately bespoke because each source has genuinely different ingestion logic. There is no shared skill framework, and that is on purpose — collapsing them into a base class would destroy the per-source variation that makes each useful.
+
+Verify with:
+
+```bash
+uv run mem skill show email
+uv run mem skill run email --dry-run
+```
 
 ### 3. (Optional) Propose domain concepts
 
 If your new source type introduces vocabulary that isn't in `ontology.yaml` yet, don't add it eagerly. Instead, have the ingestion skill put new terms in the `proposed_concepts` frontmatter field. They will be picked up by `/mem-resolve-concepts` for review and canonicalized into `ontology.yaml` once they earn their place (count ≥ 5 across the vault).
 
-### 4. Verify
+### 4. Verify end-to-end
 
 ```bash
 # Unit — the bucket routes correctly
@@ -154,7 +166,22 @@ print(path)
 # Expect: .../vault/sources/emails/test-email/source.md
 ```
 
-Then use the skill end-to-end from Claude Code and check `mem_search(query='...', type='source')` returns your new entry.
+Then use the skill end-to-end from Claude Code (or `mem skill run email`) and check `mem_search(query='...', type='source')` returns your new entry.
+
+## Running skills headless
+
+Every skill under `commands/` can run either interactively inside Claude Code (via the Skill tool) or headless via the Anthropic API:
+
+```bash
+pip install 'personal-mem[skill-runner]'   # adds anthropic + httpx
+export ANTHROPIC_API_KEY=sk-ant-...
+
+mem skill list                              # see every skill + its capabilities
+mem skill run research --dry-run            # preview the Messages request
+mem skill run research -- https://arxiv.org/abs/1706.03762
+```
+
+The runner reads the same skill markdown, bridges a subset of `mem_*` tools in-process (`mem_search`, `mem_create`, `mem_read`, `mem_concepts`, `mem_concept_source_counts`), and local tools (`Read`, `Bash`, `WebFetch`) via stdlib and `httpx`. Tools the runner hasn't bridged yet are listed as warnings at startup — for full tool coverage, run the skill inside Claude Code. `Bash` is protected by a deny-list (`rm -rf`, `sudo`, force-push, `--no-verify`, …).
 
 ## Configuration
 
@@ -171,7 +198,7 @@ Project detection walks up from the current directory looking for `.git` (file o
 - **Markdown is the source of truth.** The SQLite index is derived and disposable; your notes live in plain files you can open in Obsidian, edit with any editor, version in git, and read without any tooling.
 - **Capture is automatic, enrichment is explicit.** Claude Code hooks accumulate tool events, git commits, test results, and `★ Insight` blocks into a session buffer. The Stop hook archives and summarizes thinly; full LLM enrichment happens only when you run `/mem-wrap` before clearing.
 - **The knowledge graph is typed.** Edges come from wikilinks, shared concepts (≥2 overlaps auto-link), and explicit `mem_link` calls with edge types (`supersedes`, `derived_from`, `touches_file`, etc.). Concepts are the load-bearing vocabulary — tags are for filtering.
-- **Extension means addition, not surgery.** New source types, new landing doc types, new importers — all of them plug in at well-defined seams (`_SOURCE_BUCKETS`, `landing.py`, `importers/`) without touching the rest.
+- **Extension means addition, not surgery.** New source types, new landing doc types, new importers — all of them plug in at well-defined seams (`sources/registry.py`, `landing.py`, `importers/`) without touching the rest.
 
 ## Development
 

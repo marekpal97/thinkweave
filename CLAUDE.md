@@ -15,6 +15,9 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 - `uv run mem concepts list [--prefix X] [--min-count N]` — list concepts with counts
 - `uv run mem concepts tighten` — find near-duplicate concepts
 - `uv run mem concepts merge <from> <to>` — rename concept across all notes + update aliases
+- `uv run mem hubs status [--concept X]` — per-concept processed state (cited vs unprocessed)
+- `uv run mem hubs plan [--concept X] [--project Y] [--limit-notes N] [--limit-concepts N]` — walk vault, write JSON backfill plan
+- `uv run mem hubs run --plan <path> [--dry-run]` — execute backfill via Anthropic SDK + Messages Batches API
 - `uv run mem hooks install` — install Claude Code hooks (Pre/Post/Stop)
 - `uv run mem landing [--project X] [--doc decisions|backlog|state|all]` — generate project landing documents
 - `uv run mem restructure [--dry-run]` — consolidate notes/decisions into session folders
@@ -115,7 +118,7 @@ vault/sources/
           chart-1.png
 ```
 
-Routing is centralised in `VaultManager._note_dir` / `create_note` via `_SOURCE_BUCKETS`. Legacy `source_type: github` is normalised to `repo` on write. Sources with an unknown or empty `source_type` fall back to the flat `sources/` directory.
+Routing is declared in `src/personal_mem/sources/registry.py` — one `SourceTypeSpec` per source type, specifying `slug`, `bucket`, `layout` (`flat` | `folder` | `author_folder`), `aliases`, and the skills that handle it. `VaultManager.create_note` reads the registry and dispatches on `spec.layout`. Legacy `source_type: github` is normalised to `repo` via the `aliases` field. Unregistered source types fall back to the `folder` layout with an empty bucket (e.g. `sources/<slug>/source.md`). Adding a new source type means adding one registry entry plus a skill under `commands/` — no `vault.py` edits required. See `ARCHITECTURE.md` for the full source-primitive model.
 
 **Research ingestion** (`/research`): Processes URLs (arxiv, GitHub, web) into source notes. Fetches content via WebFetch/WebSearch, maps concepts to `ontology.yaml`, saves raw content alongside. Queue items are `todo`+`research` tagged notes, visible via `mem backlog`. Can process ad-hoc URLs or drain the queue with `--queue`.
 
@@ -125,24 +128,54 @@ Routing is centralised in `VaultManager._note_dir` / `create_note` via `_SOURCE_
 
 **RESEARCH_FOCUS.md** (`vault/sources/RESEARCH_FOCUS.md`): User-maintained priority list for discovery. Contains active focus areas, authors to follow, concept gaps (auto-populated by `/discover`), and exclusion filters.
 
+## Concept hubs — synthesis layer
+
+Each concept in the ontology gets two pages in `vault/concepts/`:
+
+- **Domain hub** at `vault/concepts/{domain}.md` (e.g. `swe--python.md`) — thin navigation page. Lists child concepts with wikilinks to their concept hubs. Fully regenerable; hand-edits to the body are not preserved.
+- **Concept hub** at `vault/concepts/topics/{concept}.md` — synthesis layer. Two sections:
+  - `## Essence` — ≤500w working mental model, slow-moving, revised rarely
+  - `## Learning log` — append-only learning artifacts extracted from vault notes, each citing its source via `[[note-id]]`. Each entry carries an observational flag (`new` / `agrees` / `contradicts` / `extends`).
+
+**The hub page IS the processed ledger.** No `hub_processed` frontmatter marker on source notes. To find what's unprocessed for a concept, query SQLite for `note_concepts` where `concept = X`, diff against the `[[note-id]]` citations already on that concept's hub. Dropping and rebuilding a hub page is a legal operation — the next run picks up everything again.
+
+**Cross-vault, cross-type scope.** Learning artifacts can come from any note type (sources, sessions, decisions, notes) across any project. A technique picked up in a coding session cites that session's note; a claim from a paper cites the source note. Both feed the same concept hub.
+
+**Two execution paths**, sharing the same `hubs.py` diff and parse/write logic:
+
+1. **Backfill** via `mem hubs plan` + `mem hubs run` — Anthropic SDK + Messages Batches API + Sonnet + prompt caching on per-concept hub state. Use this for fresh vaults with many unprocessed notes across many concepts. Requires `pip install personal-mem[hubs]` for the optional `anthropic` dependency. Plan file lives at `.mem/hubs_plan.json`.
+2. **Daily incremental** via `/update-hubs` skill — small deltas (1–20 notes total), runs inline via Claude Code. Use `mem hubs plan` + manual processing to append entries.
+
+**Coherence hygiene** lives in `/mem-resolve-concepts`: split/merge/stale-essence suggestions, LLM judgment not thresholds, human accepts. Essence rewrites happen there too — `/update-hubs` flags but never rewrites the essence.
+
+**What hub pages are NOT**:
+- Not indexed for the concept→notes query (they're `type: concept-hub` / `type: domain-hub`, excluded from `notes_for_concept`)
+- Not sources — they're synthesis artifacts
+- Not auto-updated on `/research` or `/substack` ingest — those skills stay fast and cheap; hub updates are a separate explicit pass
+
 ## Key Files
 
-- `src/personal_mem/vault.py` — VaultManager (note CRUD, inline YAML parser, wikilinks, `strip_section`)
+- `src/personal_mem/vault.py` — VaultManager (note CRUD, inline YAML parser, wikilinks, `strip_section`; source routing delegates to `sources/registry.py`)
+- `src/personal_mem/sources/registry.py` — Declarative source-type registry (`SourceTypeSpec` entries drive vault routing)
+- `src/personal_mem/sources/frontmatter.py` — Canonical source-note frontmatter builder used by importers and skills
+- `src/personal_mem/skill_runner.py` — `mem skill run` Anthropic-API runner (optional `anthropic` dep; bridges `mem_*` / `Read` / `Bash` / `WebFetch` in-process)
 - `src/personal_mem/indexer.py` — SQLite index builder (FTS5, edges, concept edges, SHA-256 dedup)
 - `src/personal_mem/search.py` — FTS search, graph traversal (recursive CTEs)
 - `src/personal_mem/context.py` — Structured project-context payload builder (used by SessionStart hook and `mem_project_snapshot`)
 - `src/personal_mem/hooks/handler.py` — Claude Code SessionStart/Pre/Post/Stop hooks (context injection at startup, enriched events, git/test detection, auto-extract at Stop)
 - `src/personal_mem/judge.py` — Structural decision judgment (no LLM, evidence-based)
 - `src/personal_mem/cli.py` — CLI entry point
-- `src/personal_mem/concepts.py` — Concept tightening (aliases, near-duplicate detection, merge)
+- `src/personal_mem/concepts.py` — Concept tightening (aliases, near-duplicate detection, merge, domain + concept hub skeleton generators)
+- `src/personal_mem/hubs.py` — Concept hub synthesis layer (parse/diff/write/render/LLM prompt contract, shared by `mem hubs` CLI and `/update-hubs` skill)
 - `src/personal_mem/landing.py` — Landing document generators (DECISIONS.md, BACKLOG.md, STATE.md)
 - `src/personal_mem/mcp/server.py` — MCP server (15 tools: search, create, read, update, extract, link, context, graph, judge, unlink, concepts, concepts_tighten, concepts_merge, landing, timeline)
 - `src/personal_mem/embeddings.py` — API-based embeddings with SQLite cache
 - `commands/mem-wrap.md` — `/mem-wrap` skill for full LLM extraction
 - `commands/research.md` — `/research` skill for source ingestion (arxiv, GitHub, web)
 - `commands/discover.md` — `/discover` skill for research gap analysis and queue generation
-- `commands/mem-resolve-concepts.md` — `/mem-resolve-concepts` skill for periodic concept hygiene (merge dupes, update ontology)
+- `commands/mem-resolve-concepts.md` — `/mem-resolve-concepts` skill for periodic concept hygiene (merge dupes, update ontology, hub coherence review)
 - `commands/substack.md` — `/substack` skill for Substack newsletter ingestion (disk-inbox drain, figure-aware via multimodal Read)
+- `commands/update-hubs.md` — `/update-hubs` skill for daily incremental concept hub sync (small deltas, inline LLM)
 
 ## Environment
 
@@ -152,4 +185,4 @@ Routing is centralised in `VaultManager._note_dir` / `create_note` via `_SOURCE_
 
 ## Dependencies
 
-Zero required. Optional: `mcp` (MCP server), `httpx` (embeddings API).
+Zero required. Optional: `mcp` (MCP server), `httpx` (embeddings API), `anthropic` (hubs backfill — `pip install personal-mem[hubs]`).

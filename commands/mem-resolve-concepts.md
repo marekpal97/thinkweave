@@ -1,3 +1,16 @@
+---
+name: mem-resolve-concepts
+tools:
+  - Read
+  - Edit
+  - Bash
+  - mem_concepts
+  - mem_concepts_drift
+  - mem_concepts_tighten
+  - mem_concepts_merge
+description: Periodic concept and ontology hygiene. Merge near-duplicates, prune noise, update `ontology.yaml`, regenerate concept hubs. Designed to run under 2 min.
+---
+
 # /mem-resolve-concepts — Concept & Ontology Hygiene
 
 Periodic concept maintenance. Merge duplicates, prune noise, update ontology, regenerate hubs. Designed to run in under 2 minutes.
@@ -64,11 +77,18 @@ save_aliases(cfg, aliases)
 **Hub regeneration + index rebuild** (always, after merges and/or ontology edits):
 
 ```python
-from personal_mem.concepts import generate_hub_pages, add_hub_wikilinks, hubs_marker_path, load_ontology
+from personal_mem.concepts import (
+    add_hub_wikilinks,
+    generate_domain_hubs,
+    generate_concept_hub_skeletons,
+    hubs_marker_path,
+    load_ontology,
+)
 from personal_mem.indexer import Indexer
 
 ontology = load_ontology()
-generate_hub_pages(cfg, ontology)
+generate_domain_hubs(cfg, ontology)              # thin navigation pages
+generate_concept_hub_skeletons(cfg, ontology)    # no-op if concept hub exists
 add_hub_wikilinks(cfg, ontology)
 
 idx = Indexer(config=cfg)
@@ -79,12 +99,39 @@ idx.close()
 hubs_marker_path(cfg).touch()
 ```
 
-This ensures `ontology.yaml` changes propagate to hub pages, wikilinks, and the index in one pass. No manual `mem concepts hubs` step needed.
+`generate_concept_hub_skeletons` NEVER overwrites existing concept hubs — it only creates empty stubs for concepts that don't have a hub yet. LLM-written essence and learning-log content is preserved across regenerations. This ensures `ontology.yaml` changes propagate to hub pages, wikilinks, and the index in one pass. No manual `mem concepts hubs` step needed.
 
-### 5. Report (3 lines)
+### 5. Hub coherence review
+
+After merges, ontology edits, and regeneration, do one sweep over the concept hubs at `vault/concepts/topics/*.md` to check their health. This step is LLM judgment, not rule-based — no numeric thresholds.
+
+For each concept hub (or a sample of 10–15 per run if the vault is large), read it and check three things:
+
+**Split candidate**: Has the learning log drifted into multiple distinct sub-concepts? If the entries tagged `agentic-harness` are really about three separate things (memory, planning, tool use), propose splitting. Output: `split: <concept> → [<child-1>, <child-2>, ...]` with one-line reasoning.
+
+**Merge candidate**: Does another hub cover materially the same ground? If `knowledge-graph` and `concept-graph` have log entries that are essentially about the same thing, propose merge. Output: `merge: <concept-a> + <concept-b>` with one-line reasoning. Cross-reference with step 2's near-duplicate list — many merge candidates will already be there.
+
+**Stale essence**: Has the essence been overtaken by recent log entries? If the essence says "X works like Y" but half the recent log entries contradict that, flag for revision. Output: `rewrite essence: <concept>` with one-line reasoning. If `mem hubs run` flagged it during backfill, it'll be obvious here.
+
+Present as a compact section in the action plan:
 
 ```
-Done. Merged N pairs (X notes). Added M to ontology. Hubs regenerated. Concepts: before → after.
+### Hub hygiene (N candidates)
+| Action | Concept(s) | Reason |
+|--------|------------|--------|
+| split | agentic-harness → memory, planning, tool-use | log drifted across distinct areas |
+| merge | knowledge-graph + concept-graph | same idea |
+| rewrite essence | transformer | 5 contradicts entries since last revision |
+```
+
+**Do not autofix these.** Present suggestions, the user approves selectively. Splits and merges happen via `mem concepts merge` (for merges) or manual editing of the ontology + hub page splits (for splits). Essence rewrites happen inline via Edit on the hub page — read the last ~15 log entries, rewrite the essence to reflect current understanding, keep it ≤500 words.
+
+Skip this step entirely if there are no concept hubs yet (fresh vault).
+
+### 6. Report (3 lines)
+
+```
+Done. Merged N pairs (X notes). Added M to ontology. Hubs regenerated. H hub hygiene suggestions (approved S). Concepts: before → after.
 ```
 
 No verification drift check needed — if the merges ran without error, they worked.

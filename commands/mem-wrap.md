@@ -1,3 +1,16 @@
+---
+name: mem-wrap
+tools:
+  - Read
+  - mem_project_snapshot
+  - mem_extract
+  - mem_judge
+  - mem_landing
+  - mem_concepts
+  - mem_concepts_drift
+description: End-of-session memory extraction. Enriches the session with insights, decisions, and concept proposals; refreshes DECISIONS and BACKLOG landing docs.
+---
+
 # /mem-wrap — Session-End Memory Extraction
 
 You are performing end-of-session memory extraction for the personal_mem vault. This runs inside the existing conversation at zero extra API cost.

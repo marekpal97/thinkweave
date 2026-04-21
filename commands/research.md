@@ -1,3 +1,22 @@
+---
+name: research
+source_type: [paper, repo, article]
+capabilities: [import, acquire]
+tools:
+  - Read
+  - WebFetch
+  - WebSearch
+  - Bash
+  - mem_search
+  - mem_concept_search
+  - mem_concepts
+  - mem_create
+  - mem_update
+  - mem_read
+  - mem_link
+description: Ingest arxiv papers, GitHub repos, and web articles as source notes. Handles direct URL import, queue drain (`--queue`), and URL resolution (`--resolve`).
+---
+
 # /research — Ingest Sources into the Knowledge Vault
 
 You are processing one or more URLs (arxiv papers, GitHub repos, web articles) into structured source notes in the personal_mem vault. Sources are bucketed by `source_type` under `vault/sources/`:

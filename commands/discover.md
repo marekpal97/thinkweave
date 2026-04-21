@@ -1,3 +1,20 @@
+---
+name: discover
+source_type: [paper, repo, article]
+capabilities: [discover]
+tools:
+  - Read
+  - WebSearch
+  - mem_concepts
+  - mem_concept_search
+  - mem_concept_source_counts
+  - mem_search
+  - mem_read
+  - mem_timeline
+  - mem_create
+description: Cross-project research gap analysis. Reads RESEARCH_FOCUS.md, finds under-covered concepts, and queues new leads as `todo+research` notes.
+---
+
 # /discover — Research Discovery & Gap Analysis
 
 You are running a discovery pass across the knowledge vault to find new research leads. This skill analyzes what's in the vault, identifies gaps, and searches for papers/repos/articles to fill them. Results are added as queue items (`todo`+`research` tagged notes) for later processing by `/research --queue`.
