@@ -3,6 +3,33 @@
 # Only concepts with vault-wide count >= 5 should be listed here.
 # Edit this file to reshape the ontology, then run: mem concepts hubs
 
+
+# Tag vocabulary — the canonical set of tags. Tags are broad categories on
+# notes (state, source class, kind of work), distinct from concepts which
+# form the typed-edge graph. A term should live in one or the other — never
+# both. The linter (`mem doctor`) reports tags outside this set as drift.
+# Categories live in comments alongside each entry.
+
+tag_vocabulary:
+  - todo            # workflow
+  - parked          # workflow
+  - probe           # workflow
+  - theme           # workflow
+  - trade           # workflow
+  - til             # workflow
+  - research        # source
+  - awesome-list    # source
+  - refactor        # meta
+  - debugging       # meta
+  - performance     # meta
+  - security        # meta
+  - finance         # domain
+  - ai              # domain
+  - ml              # domain
+  - swe             # domain
+  - fitness         # domain
+
+
 math/linear-algebra:
   - eigenvalues
   - eigenvectors

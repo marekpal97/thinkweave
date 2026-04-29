@@ -198,16 +198,25 @@ def _ontology_path() -> Path:
     return Path(__file__).parent / "ontology.yaml"
 
 
-def load_ontology(path: Path | None = None) -> dict[str, list[str]]:
-    """Load domain → [concepts] from the ontology YAML file.
+# Top-level ontology keys reserved for non-concept data. Filtered out of
+# load_ontology() so callers iterating "domains → concepts" don't trip
+# over them, but accessible via load_tag_vocabulary() and similar.
+_RESERVED_ONTOLOGY_KEYS = frozenset({"tag_vocabulary"})
 
-    Uses the same minimal YAML parser as load_aliases.
+
+def _parse_ontology_file(path: Path | None = None) -> dict[str, list[str]]:
+    """Parse the ontology YAML file into top-level key → [list].
+
+    Returns ALL top-level keys, including reserved ones (tag_vocabulary).
+    Callers wanting just the concept ontology should use ``load_ontology``;
+    callers wanting just the tag vocabulary should use
+    ``load_tag_vocabulary``.
     """
     path = path or _ontology_path()
     if not path.exists():
         return {}
 
-    ontology: dict[str, list[str]] = {}
+    parsed: dict[str, list[str]] = {}
     current_key = ""
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -219,14 +228,41 @@ def load_ontology(path: Path | None = None) -> dict[str, list[str]]:
             rest = rest.strip()
             if rest.startswith("[") and rest.endswith("]"):
                 items = [v.strip().strip("\"'") for v in rest[1:-1].split(",") if v.strip()]
-                ontology[current_key] = [i.lower() for i in items]
+                parsed[current_key] = [i.lower() for i in items]
             else:
-                ontology.setdefault(current_key, [])
+                parsed.setdefault(current_key, [])
         elif line.startswith(" ") and stripped.startswith("- "):
-            item = stripped[2:].strip().strip("\"'").lower()
-            if current_key:
-                ontology.setdefault(current_key, []).append(item)
-    return ontology
+            # Strip trailing "# comment" before further processing.
+            item_raw = stripped[2:]
+            hash_pos = item_raw.find("#")
+            if hash_pos >= 0:
+                item_raw = item_raw[:hash_pos]
+            item = item_raw.strip().strip("\"'").lower()
+            if current_key and item:
+                parsed.setdefault(current_key, []).append(item)
+    return parsed
+
+
+def load_ontology(path: Path | None = None) -> dict[str, list[str]]:
+    """Load domain → [concepts] from the ontology YAML file.
+
+    Excludes reserved keys (e.g. ``tag_vocabulary``) so the result is
+    purely the concept ontology — safe to iterate when generating hub
+    pages, building keep sets, or computing concept→domain reverse maps.
+    """
+    raw = _parse_ontology_file(path)
+    return {k: v for k, v in raw.items() if k not in _RESERVED_ONTOLOGY_KEYS}
+
+
+def load_tag_vocabulary(path: Path | None = None) -> set[str]:
+    """Load the canonical tag vocabulary from ontology.yaml's
+    ``tag_vocabulary`` key.
+
+    Returns an empty set if the key is absent. Tags in vault notes that
+    fall outside this set are surfaced as drift by ``mem doctor``.
+    """
+    raw = _parse_ontology_file(path)
+    return set(raw.get("tag_vocabulary", []))
 
 
 def build_keep_set(ontology: dict[str, list[str]]) -> set[str]:
@@ -672,3 +708,174 @@ def format_drift_report(report: dict) -> str:
     if not lines:
         return "No drift detected."
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Doctor — broader vault coherence linter (`mem doctor`)
+# ---------------------------------------------------------------------------
+
+# Concepts in the ontology assigned to fewer than this many notes are flagged
+# as dead vocabulary. The threshold matches DRIFT_COUNT_THRESHOLD's posture
+# (advisory, not enforcing) but uses a lower bar — once a concept clears 5
+# notes it's a candidate for the ontology; below 2 it's a dead entry.
+DEAD_VOCAB_THRESHOLD = 2
+
+
+def find_tag_concept_overlap(db) -> list[tuple[str, int, int]]:
+    """Find strings used as both a tag and a concept somewhere in the vault.
+
+    Returns ``[(term, tag_count, concept_count), ...]`` sorted by combined
+    count descending. Empty list if no overlap.
+    """
+    tag_counts: dict[str, int] = {}
+    for row in db.execute(
+        "SELECT tag, COUNT(*) AS cnt FROM note_tags GROUP BY tag"
+    ):
+        tag_counts[row["tag"].lower()] = row["cnt"]
+
+    concept_counts: dict[str, int] = {}
+    for row in db.execute(
+        "SELECT concept, COUNT(*) AS cnt FROM note_concepts GROUP BY concept"
+    ):
+        concept_counts[row["concept"].lower()] = row["cnt"]
+
+    overlap = sorted(set(tag_counts) & set(concept_counts))
+    rows = [(term, tag_counts[term], concept_counts[term]) for term in overlap]
+    rows.sort(key=lambda r: r[1] + r[2], reverse=True)
+    return rows
+
+
+def find_unknown_tags(db, vocabulary: set[str]) -> list[tuple[str, int]]:
+    """Find tags in use that aren't in the canonical vocabulary.
+
+    Returns ``[(tag, count), ...]`` sorted by count descending. Empty list
+    if every used tag is in vocabulary or vocabulary is empty (in which
+    case linting is disabled).
+    """
+    if not vocabulary:
+        return []
+
+    rows: list[tuple[str, int]] = []
+    for row in db.execute(
+        "SELECT tag, COUNT(*) AS cnt FROM note_tags GROUP BY tag ORDER BY cnt DESC"
+    ):
+        tag = row["tag"].lower()
+        if tag not in vocabulary:
+            rows.append((tag, row["cnt"]))
+    return rows
+
+
+def find_dead_vocabulary(
+    db,
+    ontology: dict[str, list[str]],
+    *,
+    min_count: int = DEAD_VOCAB_THRESHOLD,
+) -> list[tuple[str, int]]:
+    """Find ontology concepts assigned to fewer than ``min_count`` notes.
+
+    Returns ``[(concept, count), ...]`` sorted by count ascending (deadest
+    first). Concepts in the ontology with zero vault assignments are
+    included with count=0.
+    """
+    keep = build_keep_set(ontology)
+    if not keep:
+        return []
+
+    counts: dict[str, int] = {}
+    for row in db.execute(
+        "SELECT concept, COUNT(*) AS cnt FROM note_concepts GROUP BY concept"
+    ):
+        counts[row["concept"].lower()] = row["cnt"]
+
+    dead: list[tuple[str, int]] = []
+    for concept in sorted(keep):
+        cnt = counts.get(concept, 0)
+        if cnt < min_count:
+            dead.append((concept, cnt))
+    dead.sort(key=lambda r: r[1])
+    return dead
+
+
+def doctor_report(config: Config) -> dict:
+    """Run all coherence checks and return a structured report.
+
+    Read-only. Never modifies anything. Returns a dict with keys:
+
+    - ``tag_concept_overlap``: list of (term, tag_count, concept_count)
+    - ``unknown_tags``: list of (tag, count) — tags outside the canonical
+      vocabulary
+    - ``dead_vocabulary``: list of (concept, count) — ontology concepts
+      with fewer than DEAD_VOCAB_THRESHOLD vault assignments
+    - ``vocabulary_size``: int — size of the canonical tag vocabulary
+      (0 = linting disabled because no vocabulary is declared)
+    """
+    import sqlite3
+
+    result: dict = {
+        "tag_concept_overlap": [],
+        "unknown_tags": [],
+        "dead_vocabulary": [],
+        "vocabulary_size": 0,
+    }
+
+    if not config.index_db.exists():
+        return result
+
+    vocabulary = load_tag_vocabulary()
+    ontology = load_ontology()
+    result["vocabulary_size"] = len(vocabulary)
+
+    db = sqlite3.connect(str(config.index_db))
+    db.row_factory = sqlite3.Row
+    try:
+        result["tag_concept_overlap"] = find_tag_concept_overlap(db)
+        result["unknown_tags"] = find_unknown_tags(db, vocabulary)
+        result["dead_vocabulary"] = find_dead_vocabulary(db, ontology)
+    finally:
+        db.close()
+
+    return result
+
+
+def format_doctor_report(report: dict) -> str:
+    """Human-readable rendering of doctor_report()."""
+    lines: list[str] = []
+
+    overlap = report.get("tag_concept_overlap", [])
+    if overlap:
+        lines.append("Tag/concept overlap (a term should live in one field, never both):")
+        for term, tag_cnt, concept_cnt in overlap:
+            lines.append(
+                f"  '{term}' — used as tag on {tag_cnt} note(s), "
+                f"as concept on {concept_cnt} note(s)"
+            )
+        lines.append("")
+
+    unknown = report.get("unknown_tags", [])
+    if unknown:
+        lines.append(
+            "Unknown tags (not in tag_vocabulary; add to ontology.yaml or rename):"
+        )
+        for tag, cnt in unknown:
+            lines.append(f"  '{tag}' — used on {cnt} note(s)")
+        lines.append("")
+    elif report.get("vocabulary_size", 0) == 0:
+        lines.append(
+            "Tag vocabulary is empty — add a `tag_vocabulary:` block to "
+            "ontology.yaml to enable unknown-tag detection."
+        )
+        lines.append("")
+
+    dead = report.get("dead_vocabulary", [])
+    if dead:
+        lines.append(
+            f"Dead vocabulary (ontology concepts with < {DEAD_VOCAB_THRESHOLD} notes):"
+        )
+        for concept, cnt in dead:
+            suffix = "0 notes — never used" if cnt == 0 else f"{cnt} note(s)"
+            lines.append(f"  '{concept}' — {suffix}")
+        lines.append("")
+
+    if not lines:
+        return "No coherence issues detected."
+    return "\n".join(lines).rstrip()

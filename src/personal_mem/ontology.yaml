@@ -20,6 +20,28 @@
 #     rarer should live as a `proposed_concepts` frontmatter field until it
 #     earns its place here.
 
+
+# Tag vocabulary — the canonical set of tags. Tags are broad categories on
+# notes (state, source class, kind of work). They are distinct from
+# concepts, which are domain-specific vocabulary forming the typed-edge
+# graph. A term should live in one or the other — never both. The linter
+# (`mem doctor`) treats this list as canonical and reports tags outside it
+# as drift. Categories live in comments alongside each entry.
+
+tag_vocabulary:
+  - todo            # workflow: open work item
+  - parked          # workflow: deliberately deferred (body explains why)
+  - probe           # workflow: user question + discovery — learning artifact
+  - theme           # workflow: narrative aggregator (e.g. trade themes)
+  - trade           # workflow: trading position decision
+  - til             # workflow: today-i-learned
+  - research        # source: research backlog item
+  - awesome-list    # source: curated-index repo
+  - refactor        # meta: structural code change
+  - debugging       # meta: investigation / fix
+  - performance     # meta: speed / resource concern
+
+
 swe/python:
   - python
   - pytest

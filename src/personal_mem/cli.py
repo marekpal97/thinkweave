@@ -120,6 +120,15 @@ def main(argv: list[str] | None = None) -> None:
     # --- mem stats ---
     sub.add_parser("stats", help="Show vault statistics")
 
+    # --- mem doctor ---
+    sub.add_parser(
+        "doctor",
+        help=(
+            "Coherence linter: tag/concept overlap, unknown tags, "
+            "dead vocabulary. Advisory — never modifies the vault."
+        ),
+    )
+
     # --- mem hooks ---
     p_hooks = sub.add_parser("hooks", help="Manage Claude Code hooks")
     hooks_sub = p_hooks.add_subparsers(dest="hooks_action")
@@ -427,6 +436,7 @@ def main(argv: list[str] | None = None) -> None:
         "import": cmd_import,
         "context": cmd_context,
         "stats": cmd_stats,
+        "doctor": cmd_doctor,
         "hooks": cmd_hooks,
         "init": cmd_init,
         "sources": cmd_sources,
@@ -1924,6 +1934,19 @@ def cmd_stats(args: argparse.Namespace) -> None:
     for key, value in sorted(stats.items()):
         label = key.replace("_", " ").title()
         print(f"  {label}: {value}")
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Run vault coherence checks (read-only)."""
+    from personal_mem.concepts import doctor_report, format_doctor_report
+
+    cfg = load_config()
+    if not cfg.index_db.exists():
+        print(f"Index not found at {cfg.index_db}. Run `mem index` first.")
+        sys.exit(1)
+
+    report = doctor_report(cfg)
+    print(format_doctor_report(report))
 
 
 def cmd_hooks(args: argparse.Namespace) -> None:

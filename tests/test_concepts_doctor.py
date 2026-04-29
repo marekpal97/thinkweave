@@ -1,0 +1,301 @@
+"""Tests for `mem doctor` — the vault coherence linter."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from personal_mem.concepts import (
+    DEAD_VOCAB_THRESHOLD,
+    _RESERVED_ONTOLOGY_KEYS,
+    doctor_report,
+    find_dead_vocabulary,
+    find_tag_concept_overlap,
+    find_unknown_tags,
+    format_doctor_report,
+    load_ontology,
+    load_tag_vocabulary,
+)
+from personal_mem.config import Config
+from personal_mem.indexer import Indexer
+from personal_mem.schemas import NoteType
+from personal_mem.vault import VaultManager
+
+
+@pytest.fixture
+def vault_dir(tmp_path: Path) -> Path:
+    return tmp_path / "vault"
+
+
+@pytest.fixture
+def config(vault_dir: Path) -> Config:
+    return Config(vault_root=vault_dir)
+
+
+@pytest.fixture
+def vault(config: Config) -> VaultManager:
+    vm = VaultManager(config=config)
+    vm.ensure_dirs()
+    return vm
+
+
+@pytest.fixture
+def indexer(config: Config):
+    idx = Indexer(config=config)
+    yield idx
+    idx.close()
+
+
+def _write_ontology(monkeypatch, content: str) -> Path:
+    """Redirect the ontology loader to a temp file with the given YAML body."""
+    path = Path(tempfile.mkdtemp()) / "ontology.yaml"
+    path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr("personal_mem.concepts._ontology_path", lambda: path)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Reserved-key filter on load_ontology
+# ---------------------------------------------------------------------------
+
+
+class TestReservedKeys:
+    def test_tag_vocabulary_excluded_from_load_ontology(self, monkeypatch):
+        _write_ontology(
+            monkeypatch,
+            "tag_vocabulary:\n  - todo\n  - parked\n\nswe/python:\n  - python\n",
+        )
+        ontology = load_ontology()
+        assert "tag_vocabulary" not in ontology
+        assert "swe/python" in ontology
+        assert ontology["swe/python"] == ["python"]
+
+    def test_load_tag_vocabulary_returns_canonical_set(self, monkeypatch):
+        _write_ontology(
+            monkeypatch,
+            "tag_vocabulary:\n  - todo\n  - parked\n  - probe\n\nswe/python:\n  - python\n",
+        )
+        vocab = load_tag_vocabulary()
+        assert vocab == {"todo", "parked", "probe"}
+
+    def test_load_tag_vocabulary_strips_inline_comments(self, monkeypatch):
+        _write_ontology(
+            monkeypatch,
+            "tag_vocabulary:\n"
+            "  - todo            # workflow: open work\n"
+            "  - probe           # workflow: question\n",
+        )
+        vocab = load_tag_vocabulary()
+        assert vocab == {"todo", "probe"}
+
+    def test_load_tag_vocabulary_empty_when_missing(self, monkeypatch):
+        _write_ontology(monkeypatch, "swe/python:\n  - python\n")
+        assert load_tag_vocabulary() == set()
+
+    def test_reserved_keys_constant(self):
+        assert "tag_vocabulary" in _RESERVED_ONTOLOGY_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Tag/concept overlap
+# ---------------------------------------------------------------------------
+
+
+class TestTagConceptOverlap:
+    def test_no_overlap_returns_empty(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            tags=["todo"],
+            extra_frontmatter={"concepts": ["fts5"]},
+        )
+        indexer.rebuild()
+
+        import sqlite3
+
+        db = sqlite3.connect(str(config.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            assert find_tag_concept_overlap(db) == []
+        finally:
+            db.close()
+
+    def test_detects_overlap(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        # 'finance' used as both a tag and a concept on different notes.
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            tags=["finance"],
+            extra_frontmatter={"concepts": ["options-strategy"]},
+        )
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="B",
+            tags=["til"],
+            extra_frontmatter={"concepts": ["finance"]},
+        )
+        indexer.rebuild()
+
+        import sqlite3
+
+        db = sqlite3.connect(str(config.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            overlap = find_tag_concept_overlap(db)
+        finally:
+            db.close()
+
+        assert len(overlap) == 1
+        term, tag_cnt, concept_cnt = overlap[0]
+        assert term == "finance"
+        assert tag_cnt == 1
+        assert concept_cnt == 1
+
+
+# ---------------------------------------------------------------------------
+# Unknown tags
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownTags:
+    def test_returns_empty_when_no_vocabulary(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(note_type=NoteType.NOTE, title="A", tags=["todo"])
+        indexer.rebuild()
+
+        import sqlite3
+
+        db = sqlite3.connect(str(config.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            assert find_unknown_tags(db, set()) == []
+        finally:
+            db.close()
+
+    def test_flags_tags_outside_vocabulary(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(note_type=NoteType.NOTE, title="A", tags=["todo"])
+        vault.create_note(note_type=NoteType.NOTE, title="B", tags=["randomtag"])
+        vault.create_note(note_type=NoteType.NOTE, title="C", tags=["randomtag"])
+        indexer.rebuild()
+
+        import sqlite3
+
+        db = sqlite3.connect(str(config.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            unknown = find_unknown_tags(db, {"todo", "parked"})
+        finally:
+            db.close()
+
+        assert unknown == [("randomtag", 2)]
+
+
+# ---------------------------------------------------------------------------
+# Dead vocabulary
+# ---------------------------------------------------------------------------
+
+
+class TestDeadVocabulary:
+    def test_flags_ontology_concepts_with_zero_notes(
+        self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
+    ):
+        _write_ontology(
+            monkeypatch,
+            "swe/python:\n  - python\n  - never-used\n",
+        )
+        # Only `python` is referenced in a note.
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            extra_frontmatter={"concepts": ["python", "pytest"]},
+        )
+        indexer.rebuild()
+
+        import sqlite3
+
+        db = sqlite3.connect(str(config.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            dead = find_dead_vocabulary(db, load_ontology())
+        finally:
+            db.close()
+
+        # `python` has 1 note (< threshold 2), `never-used` has 0.
+        names = [d[0] for d in dead]
+        assert "never-used" in names
+        assert "python" in names
+        # Dead-first sort: zero counts before non-zero.
+        assert dead[0][1] == 0
+
+
+# ---------------------------------------------------------------------------
+# doctor_report integration + formatting
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorReport:
+    def test_clean_vault_reports_no_issues(
+        self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
+    ):
+        _write_ontology(
+            monkeypatch,
+            "tag_vocabulary:\n  - todo\n\nswe/python:\n  - python\n",
+        )
+        # Two notes citing `python` so it clears the dead-vocab threshold.
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            tags=["todo"],
+            extra_frontmatter={"concepts": ["python"]},
+        )
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="B",
+            tags=["todo"],
+            extra_frontmatter={"concepts": ["python"]},
+        )
+        indexer.rebuild()
+
+        report = doctor_report(config)
+        assert report["tag_concept_overlap"] == []
+        assert report["unknown_tags"] == []
+        assert report["dead_vocabulary"] == []
+        assert report["vocabulary_size"] == 1
+        assert "No coherence issues detected" in format_doctor_report(report)
+
+    def test_dirty_vault_surfaces_all_issues(
+        self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
+    ):
+        _write_ontology(
+            monkeypatch,
+            "tag_vocabulary:\n  - todo\n\nswe/python:\n  - python\n  - dead\n",
+        )
+        # Tag/concept overlap on `finance`.
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            tags=["finance"],
+            extra_frontmatter={"concepts": ["finance"]},
+        )
+        # Unknown tag `randomtag`.
+        vault.create_note(note_type=NoteType.NOTE, title="B", tags=["randomtag"])
+        indexer.rebuild()
+
+        report = doctor_report(config)
+        assert any(t == "finance" for t, _, _ in report["tag_concept_overlap"])
+        assert any(t == "randomtag" for t, _ in report["unknown_tags"])
+        assert any(c == "dead" for c, _ in report["dead_vocabulary"])
+
+        text = format_doctor_report(report)
+        assert "finance" in text
+        assert "randomtag" in text
+        assert "dead" in text
