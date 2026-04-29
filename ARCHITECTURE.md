@@ -218,10 +218,24 @@ Skills live in `commands/*.md` as plain markdown and run inside Claude Code via 
 
 For bulk, non-interactive work there are two targeted paths — neither requires a generic skill runner:
 
-- **Concept hub backfill** — `mem hubs run --plan <path>` ships its own OpenAI Batches API path (see the *Running skills* footprint below). It doesn't route through a skill file; it reads the plan JSON and calls the Batches API directly.
-- **Autopilot** — `claude -p --model sonnet --dangerously-skip-permissions` invoked from cron gives you headless skill execution with the full Claude Code tool surface. Used by the `/research` + `/discover` cron entries.
+- **Concept hub backfill** — `mem hubs run --plan <path>` ships its own OpenAI Batches API path. It doesn't route through a skill file; it reads the plan JSON and calls the Batches API directly. `mem hubs link` is the analogous one-shot pass that rewrites flat `new` flags into `agrees`/`contradicts`/`extends` relationships across existing hub log entries (also via OpenAI Batches).
+- **Autopilot** — `claude -p --model sonnet --dangerously-skip-permissions` invoked from cron gives headless skill execution with the full Claude Code tool surface.
 
 If you need a new headless path that isn't either of these, add a CLI subcommand next to `mem hubs run` rather than reintroducing a generic runner.
+
+## Themes — global narrative aggregators
+
+A theme is a NoteType (`type: theme`, prefix `thm-`) that captures a temporal narrative — the kind of story external sources, news, and decisions cite in concert. Themes live at `vault/themes/`, **globally**, regardless of project. The `project:` frontmatter field is informational (primary stake), never a filing rule.
+
+The shape mirrors a concept hub: an `## Essence` (slow-moving thesis), a `## Catalyst log` (append-only dated events using the same grammar as hub learning logs), and `## Open questions`. Decisions express themes via `implements: [thm-XXXX]` plus optional `implements_catalyst: YYYY-MM-DD`. The global `vault/THEMES.md` landing doc renders an Active table plus per-theme Mermaid temporal DAG (catalysts + decisions hung off the catalyst they implement). `/themes-resolve` is the periodic dedup/hygiene skill — same posture as `/mem-resolve-concepts`.
+
+The temporal DAG is shared infrastructure (`src/personal_mem/temporal.py`): both concept hubs and themes parse the same `flag[ ref]` log grammar, build a `TemporalGraph`, and render Mermaid via the same primitive. Concept hubs gain an auto `## Evolution` section when the log has any non-`new` ref; themes inline a per-theme DAG inside `THEMES.md`.
+
+## Workflow stager
+
+`mem flow` is a thin declarative layer over the existing skill+cron pattern. Flows live in `vault/.mem/flows.yaml` as named sequences of `claude -p` invocations; cron entries become one-liners that invoke `mem flow run <name>` instead of re-encoding the order and flags.
+
+The shipped templates (`scripts/example-flows.yaml`, `scripts/example-crontab`) document the dialect: `description`, optional `log` path, `on_error` (continue / abort), and a list of `stages` each with `run` (the literal `claude -p` argument) and optional `sleep` (seconds after the stage). No templating, no conditionals, no parallel branches — when those are needed, prefer a separate primitive over expanding `FlowSpec`.
 
 ## A note on the importers under `src/personal_mem/importers/`
 

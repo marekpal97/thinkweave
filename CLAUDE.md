@@ -4,22 +4,28 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 
 ## Commands
 
-- `uv run pytest` — run tests (394 tests)
+- `uv run pytest` — run tests (591 tests)
 - `uv run mem init` — initialize a new vault
-- `uv run mem add --type note --project X --tags "a,b" "Title"` — create a note
+- `uv run mem add --type {note|theme|...} --project X --tags "a,b" "Title"` — create a note
 - `uv run mem index [--full] [--embed]` — rebuild SQLite index
-- `uv run mem search "query"` — FTS search
+- `uv run mem search "query" [--type theme] [--concept X] [--since/--until ISO-DATE]` — FTS / similarity / hybrid search
 - `uv run mem graph <id>` — show local graph
 - `uv run mem stats` — vault health
+- `uv run mem doctor` — coherence linter: tag/concept overlap, unknown tags, dead vocabulary
 - `uv run mem backlog [--project X]` — list notes tagged `todo`, grouped by project
 - `uv run mem concepts list [--prefix X] [--min-count N]` — list concepts with counts
 - `uv run mem concepts tighten` — find near-duplicate concepts
-- `uv run mem concepts merge <from> <to>` — rename concept across all notes + update aliases
+- `uv run mem concepts merge <from> <to>` — rename concept across all notes + delete stale hub
+- `uv run mem concepts hubs [--prune] [--apply]` — generate hub pages, or list/delete orphan hubs
+- `uv run mem concepts drift [--hubs] [--hub-jaccard 0.4]` — advisory drift report; `--hubs` adds redundant-hub candidates
 - `uv run mem hubs status [--concept X]` — per-concept processed state (cited vs unprocessed)
 - `uv run mem hubs plan [--concept X] [--project Y] [--limit-notes N] [--limit-concepts N]` — walk vault, write JSON backfill plan
 - `uv run mem hubs run --plan <path> [--dry-run]` — execute backfill via OpenAI SDK + Batches API (gpt-5-mini)
+- `uv run mem hubs link [--concept X]` — temporal-DAG linkage pass (rewrites `new` flags into agrees/contradicts/extends via Batches API)
+- `uv run mem hubs repair` — heal existing hub log entries (date hygiene, citation dedupe)
 - `uv run mem hooks install` — install Claude Code hooks (Pre/Post/Stop)
-- `uv run mem landing [--project X] [--doc decisions|backlog|state|all]` — generate project landing documents
+- `uv run mem landing [--project X] [--doc decisions|backlog|state|themes|all]` — generate landing documents (themes is global)
+- `uv run mem flow {list, show <name>, run <name> [--dry-run]}` — named workflow pipelines from `vault/.mem/flows.yaml`
 - `uv run mem restructure [--dry-run]` — consolidate notes/decisions into session folders
 
 ## Session Context & Extraction
@@ -63,29 +69,37 @@ After upgrading personal_mem, re-run `mem hooks install` to pick up newly-added 
 
 **Vault directory structure**:
 ```
-vault/projects/{project}/
-  DECISIONS.md                     # landing: decision ledger + DAG (auto-generated)
-  BACKLOG.md                       # landing: open items + stalled proposals (auto-generated)
-  STATE.md                         # landing: state of play for humans (LLM-assisted)
-  sessions/
-    {session-id}-{date}/           # each session gets its own folder
-      session.md                   # clean summary (events stripped post-extraction)
-      events.jsonl                 # archived raw event log
-      derived-note.md              # notes extracted from this session
-      derived-decision.md          # decisions extracted from this session
-    misc/                          # catch-all for standalone notes/decisions
-      standalone-note.md
-      standalone-decision.md
-  sources/                         # external sources
+vault/
+  THEMES.md                        # landing: global theme ledger + per-theme temporal DAG (auto-generated)
+  themes/                          # global narrative aggregators
+    thm-XXXXXXXX-slug.md
+  concepts/                        # synthesis layer
+    {domain}.md                    # thin navigation page per ontology domain
+    topics/{concept}.md            # essence + learning log + auto Evolution DAG
+  sources/                         # global sources (papers/, repos/, articles/, ...)
+  projects/{project}/
+    DECISIONS.md                   # landing: decision ledger + Mermaid DAG (auto-generated)
+    BACKLOG.md                     # landing: open items + stalled proposals (auto-generated)
+    STATE.md                       # landing: state of play for humans (LLM-assisted)
+    sessions/
+      {session-id}-{date}/         # each session gets its own folder
+        session.md                 # clean summary (events stripped post-extraction)
+        events.jsonl               # archived raw event log
+        derived-note.md            # notes extracted from this session
+        derived-decision.md        # decisions extracted from this session
+      misc/                        # catch-all for standalone notes/decisions
+        standalone-note.md
+        standalone-decision.md
+    sources/                       # project-scoped sources
 ```
 
 All notes and decisions live in session folders. Derived content goes in its parent session's folder; standalone content (created via `mem add` or `mem_create` without session context) goes to `sessions/misc/`. Pass `--session <id>` (CLI) or `session_id` (MCP) to target a specific session.
 
 **Tags vs concepts** — two distinct fields with different roles:
-- `tags`: broad categories for filtering and organization (e.g. `debugging`, `performance`, `todo`, `til`, `refactor`). Searchable via FTS and `--tags` filter.
+- `tags`: broad categories for filtering and organization (e.g. `debugging`, `performance`, `todo`, `til`, `refactor`). The canonical tag set lives under `tag_vocabulary:` in `ontology.yaml`. Searchable via FTS and `--tags` filter.
 - `concepts`: domain-specific technical vocabulary for knowledge graph edges (e.g. `write-ahead-log`, `fts5`, `recursive-cte`). Notes sharing 2+ concepts auto-link. Managed via `mem concepts` CLI and aliases file (`vault/.mem/concept_aliases.yaml`).
 
-Do not duplicate between them — a term belongs in one or the other.
+Do not duplicate between them — a term belongs in one or the other. Run `uv run mem doctor` to surface tags-as-concepts overlap, unknown tags (outside `tag_vocabulary`), and dead vocabulary (ontology concepts with <2 notes).
 
 **Concept assignment is mandatory** — every note and decision created via `mem_extract` MUST include a `concepts` array with minimum 2 concepts. Notes with <2 concepts cannot auto-link and will cluster as isolated islands in Obsidian. Before assigning concepts, call `mem_concepts` to load existing labels. Prefer specific domain terms over generic ones; use domain-qualified paths when they exist (`ml/deep-learning` not `deep-learning`).
 
@@ -99,7 +113,11 @@ The shipped `src/personal_mem/ontology.yaml` is a minimal seed — it grows as y
 
 **Tag conventions**: `todo` (open work item), `parked` (deliberately deferred, body explains why), `probe` (user question + discovery — learning artifact). These are regular tags on type=note, not separate note types.
 
-**Trading themes** (project `trade_ideas`): narratives like "middle-east tail hedge 2026" or "AI capex unwind" are temporal stories, not invariants. They live as `type: note` + `tag: theme` in the `trade_ideas` project — body carries the living essence plus a dated catalyst log. Actual positions are `type: decision` + `tag: trade` in the same project, linking back to the theme note(s) they express. Theme notes cite concepts from the `finance/*` domains (`finance/regime`, `finance/geopolitics`, `finance/structure`, etc.) — they never introduce named-event concepts into the ontology. The cross-cycle pattern library emerges in the concept hubs (`reflation`, `middle-east-conflict`, `tail-hedge`); the timed narratives stay in theme notes.
+**Themes** are first-class — `type: theme`, prefix `thm-`, lifecycle `active`/`dormant`/`resolved`/`merged-into:thm-X`. Themes are **global** narratives that live at `vault/themes/{thm-XXXX}-{slug}.md` regardless of project, so external sources, news, and research from any project can cite them via `[[thm-XXXX]]` or `relates_to: [thm-XXXX]`. The `project:` frontmatter field on a theme is informational (primary stake), never a filing rule.
+
+A theme has three sections: `## Essence` (slow-moving thesis, ≤500w), `## Catalyst log` (append-only dated events using the same grammar as concept-hub learning logs — `- YYYY-MM-DD · *flag[ ref]* — text — [[src-XXXX]]`), and `## Open questions`. Theme notes cite invariant concepts from the relevant ontology domains (`finance/regime`, `finance/geopolitics`, etc.) — never named events, which would pollute the ontology. The cross-cycle pattern library emerges in concept hubs; timed narratives stay in theme notes.
+
+**Decisions implementing themes** carry `implements: [thm-XXXX]` and optionally `implements_catalyst: YYYY-MM-DD` to pin to a specific catalyst. The `THEMES.md` global landing doc renders an Active table plus per-theme Mermaid temporal DAG (catalysts + decisions hung off the catalyst they implement). `/themes-resolve` is the periodic dedup/hygiene skill, mirroring `/mem-resolve-concepts`.
 
 **Landing documents**: Each project has 3 auto-generated landing docs (excluded from vault index):
 - `DECISIONS.md` — decision table + Mermaid DAG. Agent-oriented. Refreshed every wrap.
@@ -173,26 +191,30 @@ Each concept in the ontology gets two pages in `vault/concepts/`:
 
 ## Key Files
 
-- `src/personal_mem/vault.py` — VaultManager (note CRUD, inline YAML parser, wikilinks, `strip_section`; source routing delegates to `sources/registry.py`)
+- `src/personal_mem/vault.py` — VaultManager (note CRUD, inline YAML parser, wikilinks; source routing delegates to `sources/registry.py`; theme routing to global `vault/themes/`)
 - `src/personal_mem/sources/registry.py` — Declarative source-type registry (`SourceTypeSpec` entries drive vault routing)
-- `src/personal_mem/sources/frontmatter.py` — Canonical source-note frontmatter builder used by importers and skills
+- `src/personal_mem/sources/frontmatter.py` — Canonical source-note frontmatter builder
+- `src/personal_mem/themes.py` — Theme frontmatter builder, body skeleton, catalyst-log parser (reuses `hubs.LogEntry`)
+- `src/personal_mem/temporal.py` — Shared temporal-DAG renderer (`TemporalNode`/`TemporalEdge` + Mermaid output) consumed by both concept hubs and themes
 - `src/personal_mem/indexer.py` — SQLite index builder (FTS5, edges, concept edges, SHA-256 dedup)
-- `src/personal_mem/search.py` — FTS search, graph traversal (recursive CTEs)
-- `src/personal_mem/context.py` — Structured project-context payload builder (used by SessionStart hook and `mem_project_snapshot`)
-- `src/personal_mem/hooks/handler.py` — Claude Code SessionStart/Pre/Post/Stop hooks (context injection at startup, enriched events, git/test detection, auto-extract at Stop)
+- `src/personal_mem/search.py` — FTS / similarity / graph retrieval; filter parity for `concepts`, `since`/`until`, projection on `mem_graph`
+- `src/personal_mem/context.py` — Structured project-context payload builder; includes `themes` section + retrieval contract footer
+- `src/personal_mem/hooks/handler.py` — Claude Code SessionStart/Pre/Post/Stop hooks
 - `src/personal_mem/judge.py` — Structural decision judgment (no LLM, evidence-based)
 - `src/personal_mem/cli.py` — CLI entry point
-- `src/personal_mem/concepts.py` — Concept tightening (aliases, near-duplicate detection, merge, domain + concept hub skeleton generators)
-- `src/personal_mem/hubs.py` — Concept hub synthesis layer (parse/diff/write/render/LLM prompt contract, shared by `mem hubs` CLI and `/update-hubs` skill)
-- `src/personal_mem/landing.py` — Landing document generators (DECISIONS.md, BACKLOG.md, STATE.md)
-- `src/personal_mem/mcp/server.py` — MCP server (15 tools: search, create, read, update, extract, link, context, graph, judge, unlink, concepts, concepts_tighten, concepts_merge, landing, timeline)
+- `src/personal_mem/concepts.py` — Concept tightening + hub coherence (`delete_concept_hub`, `find_orphan_hubs`, `find_redundant_hub_candidates`, `doctor_report`, `tag_vocabulary` parsing)
+- `src/personal_mem/hubs.py` — Concept hub synthesis layer (parse/diff/write/render; auto-renders `## Evolution` section from log linkage)
+- `src/personal_mem/landing.py` — Landing document generators (DECISIONS, BACKLOG, STATE per-project; THEMES global)
+- `src/personal_mem/flows.py` — Workflow stager (`FlowSpec`/`FlowStage` + `vault/.mem/flows.yaml` parser + subprocess runner)
+- `src/personal_mem/mcp/server.py` — MCP server (search, create, read, update, extract, link, context, graph, judge, unlink, concepts, concepts_tighten, concepts_merge, landing, timeline, …)
 - `src/personal_mem/embeddings.py` — API-based embeddings with SQLite cache
 - `commands/mem-wrap.md` — `/mem-wrap` skill for full LLM extraction
 - `commands/research.md` — `/research` skill for source ingestion (arxiv, GitHub, web)
 - `commands/discover.md` — `/discover` skill for research gap analysis and queue generation
-- `commands/mem-resolve-concepts.md` — `/mem-resolve-concepts` skill for periodic concept hygiene (merge dupes, update ontology, hub coherence review)
-- `commands/substack.md` — `/substack` skill for Substack newsletter ingestion (disk-inbox drain, figure-aware via multimodal Read)
-- `commands/update-hubs.md` — `/update-hubs` skill for daily incremental concept hub sync (small deltas, inline LLM)
+- `commands/mem-resolve-concepts.md` — `/mem-resolve-concepts` three-phase skill (concepts → hubs → ontology)
+- `commands/themes-resolve.md` — `/themes-resolve` skill for theme hygiene (dedup, status changes, essence rewrites)
+- `commands/substack.md` — `/substack` skill for Substack newsletter ingestion
+- `commands/update-hubs.md` — `/update-hubs` skill for daily incremental concept hub sync
 
 ## Environment
 
