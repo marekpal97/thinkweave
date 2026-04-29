@@ -16,8 +16,9 @@ from pathlib import Path
 from personal_mem.config import Config, load_config
 from personal_mem.schemas import NoteType
 
-# Landing doc filenames — excluded from indexer
-LANDING_FILENAMES = {"DECISIONS.md", "BACKLOG.md", "STATE.md"}
+# Landing doc filenames — excluded from indexer.
+# DECISIONS / BACKLOG / STATE are per-project; THEMES is global (vault root).
+LANDING_FILENAMES = {"DECISIONS.md", "BACKLOG.md", "STATE.md", "THEMES.md"}
 
 
 def _get_db(config: Config):
@@ -660,15 +661,187 @@ def generate_all(config: Config, project: str) -> dict[str, str]:
     }
 
 
+def _query_themes(db) -> list[dict]:
+    """Query all themes (global). Themes live at vault/themes/, not per-project.
+
+    Returns themes ordered by status priority (active first) then by date.
+    Each entry includes the count of decisions that implement it via the
+    ``implements`` edge.
+    """
+    rows = db.execute(
+        "SELECT id, title, date, project, frontmatter, body_text "
+        "FROM notes WHERE type = 'theme' ORDER BY date DESC"
+    ).fetchall()
+
+    themes: list[dict] = []
+    for row in rows:
+        fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
+        # Count decisions implementing this theme.
+        impl_row = db.execute(
+            "SELECT COUNT(*) AS cnt FROM edges e "
+            "JOIN notes s ON s.id = e.source AND s.type = 'decision' "
+            "WHERE e.target = ? AND e.edge_type = 'implements'",
+            (row["id"],),
+        ).fetchone()
+        impl_count = impl_row["cnt"] if impl_row else 0
+
+        # Last catalyst date — best-effort first-line scan of the catalyst log.
+        last_catalyst = _last_catalyst_date(row["body_text"] or "")
+
+        themes.append({
+            "id": row["id"],
+            "title": row["title"] or fm.get("title", ""),
+            "date": row["date"] or "",
+            "project": row["project"] or fm.get("project", ""),
+            "status": fm.get("status", "active"),
+            "concepts": fm.get("concepts", []),
+            "relates_to": fm.get("relates_to", []),
+            "implements_count": impl_count,
+            "last_catalyst": last_catalyst,
+            "frontmatter": fm,
+        })
+    return themes
+
+
+def _last_catalyst_date(body: str) -> str:
+    """Return the most recent date that appears at the start of a line in
+    the ``## Catalyst log`` section, or empty string if none found.
+
+    Best-effort, schema-tolerant: just looks for an ISO-ish date prefix on
+    each line within the section. The full temporal-DAG parser lives in
+    ``temporal.py`` (Workstream C).
+    """
+    in_log = False
+    dates: list[str] = []
+    date_re = re.compile(r"^\s*[-*]?\s*(\d{4}-\d{2}-\d{2})\b")
+    for line in body.split("\n"):
+        if line.strip().startswith("## "):
+            in_log = "catalyst" in line.lower()
+            continue
+        if not in_log:
+            continue
+        m = date_re.match(line)
+        if m:
+            dates.append(m.group(1))
+    return max(dates) if dates else ""
+
+
+def themes_ledger(config: Config) -> str:
+    """Generate THEMES.md — global theme ledger.
+
+    Lists active themes (table), dormant themes (collapsed), resolved
+    themes (collapsed). Each theme row links to its full page where the
+    Essence and Catalyst log live. The per-theme temporal DAG (Workstream
+    C) renders on the theme page itself, not here.
+    """
+    db = _get_db(config)
+    themes = _query_themes(db)
+    db.close()
+
+    today = date.today().isoformat()
+    lines = [
+        "# Themes",
+        f"*Auto-generated. Last updated: {today}*",
+        "",
+        "Themes are global narratives — temporal stories cited by sources, "
+        "decisions, and notes from any project. Concepts they cite are "
+        "invariants (e.g. `finance/regime`); the timed catalysts live "
+        "inside each theme's `## Catalyst log` section.",
+        "",
+    ]
+
+    if not themes:
+        lines.append("No themes recorded yet.")
+        return "\n".join(lines) + "\n"
+
+    active = [t for t in themes if t["status"] == "active"]
+    dormant = [t for t in themes if t["status"] == "dormant"]
+    resolved = [t for t in themes if t["status"] == "resolved"]
+    merged = [t for t in themes if str(t["status"]).startswith("merged-into")]
+    other = [
+        t for t in themes
+        if t["status"] not in ("active", "dormant", "resolved")
+        and not str(t["status"]).startswith("merged-into")
+    ]
+
+    def _row(t: dict) -> str:
+        link = f"[[themes/{t['id']}-{_slug_for_link(t['title'])}|{t['title']}]]"
+        proj = t["project"] or "—"
+        # Catalyst log dates are bare YYYY-MM-DD; the index `date` column
+        # carries an ISO timestamp — trim the time portion for display.
+        raw_last = t["last_catalyst"] or t["date"] or ""
+        last = raw_last.split("T", 1)[0] if raw_last else "—"
+        impls = t["implements_count"]
+        return f"| {link} | {proj} | {last} | {impls} |"
+
+    if active:
+        lines.append(f"## Active ({len(active)})")
+        lines.append("")
+        lines.append("| Theme | Project | Last catalyst | # decisions |")
+        lines.append("|---|---|---|---|")
+        for t in active:
+            lines.append(_row(t))
+        lines.append("")
+
+    for label, group in (("Dormant", dormant), ("Resolved", resolved)):
+        if group:
+            lines.append(f"<details><summary>{label} ({len(group)})</summary>")
+            lines.append("")
+            lines.append("| Theme | Project | Last catalyst | # decisions |")
+            lines.append("|---|---|---|---|")
+            for t in group:
+                lines.append(_row(t))
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+
+    if merged:
+        lines.append(f"<details><summary>Merged ({len(merged)})</summary>")
+        lines.append("")
+        for t in merged:
+            target = str(t["status"]).split(":", 1)[-1] if ":" in str(t["status"]) else "?"
+            lines.append(f"- {t['title']} → `{target}`")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    if other:
+        lines.append(f"<details><summary>Other status ({len(other)})</summary>")
+        lines.append("")
+        for t in other:
+            lines.append(f"- {t['title']} — `{t['status']}`")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _slug_for_link(title: str) -> str:
+    """Mirror VaultManager._sanitize_filename for wikilink generation."""
+    slug = title.lower().strip()
+    slug = re.sub(r"[^\w\s-]", "", slug)
+    slug = re.sub(r"[\s_]+", "-", slug)
+    slug = slug.strip("-")
+    return slug[:80] if slug else "untitled"
+
+
 def write_landing_docs(
     config: Config,
     project: str,
     docs: str = "all",
 ) -> dict[str, Path]:
-    """Generate and write landing documents to the project directory.
+    """Generate and write landing documents.
+
+    Project-scoped docs (decisions, backlog, state) land in
+    ``projects/{project}/``. The global ``themes`` doc lands at vault
+    root (``vault/THEMES.md``) — passing ``docs="themes"`` ignores the
+    ``project`` argument since themes are global. ``docs="all"`` writes
+    every doc, project-scoped + global.
 
     Args:
-        docs: Which docs to generate — "all", "decisions", "backlog", "state"
+        docs: Which docs to generate — ``all``, ``decisions``, ``backlog``,
+            ``state``, ``themes``.
 
     Returns:
         Dict of {filename: written_path}.
@@ -676,24 +849,41 @@ def write_landing_docs(
     project_dir = config.vault_root / "projects" / project
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    generators = {
+    project_generators = {
         "decisions": ("DECISIONS.md", decisions_ledger),
         "backlog": ("BACKLOG.md", backlog_summary),
         "state": ("STATE.md", state_of_play),
     }
+    global_generators = {
+        "themes": ("THEMES.md", themes_ledger),
+    }
+
+    valid = set(project_generators) | set(global_generators) | {"all"}
+    if docs not in valid:
+        raise ValueError(
+            f"Unknown doc type: {docs}. Use: all, decisions, backlog, state, themes"
+        )
 
     if docs == "all":
-        to_generate = list(generators.keys())
-    elif docs in generators:
-        to_generate = [docs]
+        project_keys = list(project_generators)
+        global_keys = list(global_generators)
+    elif docs in project_generators:
+        project_keys, global_keys = [docs], []
     else:
-        raise ValueError(f"Unknown doc type: {docs}. Use: all, decisions, backlog, state")
+        project_keys, global_keys = [], [docs]
 
     written: dict[str, Path] = {}
-    for key in to_generate:
-        filename, gen_fn = generators[key]
+    for key in project_keys:
+        filename, gen_fn = project_generators[key]
         content = gen_fn(config, project)
         path = project_dir / filename
+        path.write_text(content, encoding="utf-8")
+        written[filename] = path
+
+    for key in global_keys:
+        filename, gen_fn = global_generators[key]
+        content = gen_fn(config)  # global generators take no project arg
+        path = config.vault_root / filename
         path.write_text(content, encoding="utf-8")
         written[filename] = path
 

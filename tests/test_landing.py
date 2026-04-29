@@ -341,11 +341,14 @@ class TestGenerateAll:
     def test_write_landing_docs(self, vault: VaultManager, indexer: Indexer, config: Config):
         _index_all(vault, indexer)
 
+        # docs="all" now writes 3 project docs + the global THEMES.md.
         written = write_landing_docs(config, "test-proj", docs="all")
-        assert len(written) == 3
+        assert len(written) == 4
         for filename, path in written.items():
             assert path.exists()
             assert filename in LANDING_FILENAMES
+        # THEMES.md is global (vault root), the others are project-scoped.
+        assert written["THEMES.md"] == config.vault_root / "THEMES.md"
 
     def test_write_single_doc(self, vault: VaultManager, indexer: Indexer, config: Config):
         _index_all(vault, indexer)

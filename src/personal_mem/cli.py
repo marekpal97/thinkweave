@@ -300,11 +300,14 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # --- mem landing ---
-    p_landing = sub.add_parser("landing", help="Generate project landing documents")
-    p_landing.add_argument("--project", "-p", default="", help="Project name")
+    p_landing = sub.add_parser("landing", help="Generate landing documents")
+    p_landing.add_argument(
+        "--project", "-p", default="",
+        help="Project name (ignored for global docs like 'themes')",
+    )
     p_landing.add_argument(
         "--doc", "-d", default="all",
-        choices=["all", "decisions", "backlog", "state"],
+        choices=["all", "decisions", "backlog", "state", "themes"],
         help="Which document(s) to generate (default: all)",
     )
 
@@ -481,7 +484,9 @@ def cmd_landing(args: argparse.Namespace) -> None:
 
     cfg = load_config()
     project = args.project or cfg.default_project
-    if not project:
+
+    # Themes is global — doesn't need a project. Other docs do.
+    if args.doc != "themes" and not project:
         print("Project name required. Use --project or set PERSONAL_MEM_PROJECT.")
         sys.exit(1)
 

@@ -223,6 +223,15 @@ class VaultManager:
                 return d
             return self.root / "sources"
 
+        if note_type == NoteType.THEME:
+            # Themes are global narratives addressable from any project;
+            # they never live under projects/{project}/. The `project:`
+            # frontmatter field on a theme is informational (primary
+            # stake), not a filing rule.
+            d = self.root / "themes"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
         if project:
             if note_type == NoteType.SESSION:
                 d = self.root / "projects" / project / "sessions"

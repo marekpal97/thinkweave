@@ -11,6 +11,7 @@ class NoteType(str, Enum):
     SESSION = "session"
     DECISION = "decision"
     SOURCE = "source"
+    THEME = "theme"
 
 
 class EdgeType(str, Enum):
@@ -61,4 +62,5 @@ NOTE_ID_PREFIXES: dict[NoteType, str] = {
     NoteType.SESSION: "ses",
     NoteType.DECISION: "dec",
     NoteType.SOURCE: "src",
+    NoteType.THEME: "thm",
 }

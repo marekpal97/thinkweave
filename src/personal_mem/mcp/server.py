@@ -795,13 +795,16 @@ def main() -> None:
             Tool(
                 name="mem_landing",
                 description=(
-                    "Generate project landing documents (DECISIONS.md, BACKLOG.md, STATE.md).\n\n"
-                    "DECISIONS.md: Decision ledger with table + Mermaid DAG. Auto-generated.\n"
-                    "BACKLOG.md: Open items (todo), stalled proposals, parked items. Auto-generated.\n"
-                    "STATE.md: Data-driven skeleton — for best results, read the generated "
-                    "STATE.md and enhance it with your own judgment about what matters most "
-                    "for the human to understand. Use state_context=true to get raw data "
-                    "for writing a richer narrative.\n\n"
+                    "Generate landing documents.\n\n"
+                    "DECISIONS.md (per-project): Decision ledger with table + Mermaid DAG.\n"
+                    "BACKLOG.md (per-project): Open items (todo), stalled proposals, parked.\n"
+                    "STATE.md (per-project): Data-driven skeleton — for best results, read "
+                    "the generated STATE.md and enhance with your own judgment. Use "
+                    "state_context=true to get raw data for a richer narrative.\n"
+                    "THEMES.md (global, vault root): Global theme ledger — active, dormant, "
+                    "resolved themes with project / last-catalyst / # decisions columns. "
+                    "Themes are global so this doc is too — pass doc='themes' and the "
+                    "project argument is ignored.\n\n"
                     "Documents are excluded from the vault index (they're views, not source).\n"
                     "Run after extraction to refresh DECISIONS and BACKLOG. Only update STATE "
                     "if the session genuinely changed the project's big picture."
@@ -811,11 +814,14 @@ def main() -> None:
                     "properties": {
                         "project": {
                             "type": "string",
-                            "description": "Project name.",
+                            "description": (
+                                "Project name. Required for project-scoped docs "
+                                "(decisions, backlog, state). Ignored for 'themes'."
+                            ),
                         },
                         "doc": {
                             "type": "string",
-                            "enum": ["all", "decisions", "backlog", "state"],
+                            "enum": ["all", "decisions", "backlog", "state", "themes"],
                             "default": "all",
                             "description": "Which document(s) to generate.",
                         },
@@ -829,7 +835,7 @@ def main() -> None:
                             ),
                         },
                     },
-                    "required": ["project"],
+                    "required": [],
                 },
             ),
             Tool(
@@ -1909,17 +1915,33 @@ def main() -> None:
             write_landing_docs,
         )
 
-        project = args["project"]
+        project = args.get("project", "")
         doc = args.get("doc", "all")
         state_context = args.get("state_context", False)
 
-        # If state_context requested, return raw data instead of writing
+        # State context is project-scoped; require it.
         if state_context:
+            if not project:
+                return [TextContent(
+                    type="text",
+                    text="state_context=true requires a project argument.",
+                )]
             context_text = state_of_play_context(cfg, project)
             return [TextContent(type="text", text=context_text)]
 
+        # 'themes' is global; everything else is project-scoped.
+        if doc != "themes" and not project:
+            return [TextContent(
+                type="text",
+                text=(
+                    "Project argument required for doc="
+                    f"{doc!r} (only doc='themes' is global)."
+                ),
+            )]
+
         written = write_landing_docs(cfg, project, docs=doc)
-        lines = [f"Generated landing documents for {project}:"]
+        scope = "global vault" if doc == "themes" else project
+        lines = [f"Generated landing documents for {scope}:"]
         for filename, path in written.items():
             lines.append(f"  {filename} → {path.relative_to(cfg.vault_root)}")
         return [TextContent(type="text", text="\n".join(lines))]
