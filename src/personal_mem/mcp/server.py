@@ -140,44 +140,43 @@ def main() -> None:
             Tool(
                 name="mem_search",
                 description=(
-                    "Search the knowledge vault. Supports three modes:\n\n"
-                    "- **fts** (default): SQLite FTS5 full-text search. Fast, exact. "
-                    "Best when you know keywords.\n"
-                    "- **similar**: Semantic search via cached embeddings (requires "
-                    "`mem index --embed` + OPENAI_API_KEY). Best when you don't know "
-                    "exact keywords — finds ideas by meaning.\n"
-                    "- **hybrid**: Fuses FTS + semantic via reciprocal rank fusion "
-                    "(k=60). Best default for exploration — gracefully falls back to "
-                    "FTS if embeddings aren't configured.\n\n"
-                    "Use this FIRST before creating notes to check if similar knowledge "
-                    "already exists. Deduplication is critical — search before you create.\n\n"
+                    "**Modality: FTS / similarity / fused (composition).**\n\n"
+                    "Retrieval over note bodies. Three modes:\n\n"
+                    "- **fts** (default): SQLite FTS5 full-text. Best when you know keywords.\n"
+                    "- **similar**: cosine over OpenAI embeddings (requires "
+                    "`mem index --embed` + OPENAI_API_KEY). Best when you don't know exact keywords.\n"
+                    "- **hybrid**: FTS + similarity fused via reciprocal rank fusion "
+                    "(k=60). Safe default when uncertain — falls back gracefully.\n\n"
+                    "List mode: empty `query` returns date-sorted recent notes honouring "
+                    "all filters. Useful for 'all notes in project X this week'.\n\n"
+                    "Always search FIRST before creating notes (deduplication).\n\n"
                     "Filters:\n"
-                    "- `type`: single note type string OR a list (e.g. `['source','session']`). "
-                    'Valid types: "note", "session", "decision", "source".\n'
+                    "- `type`: single string OR list (e.g. `['source','session','theme']`). "
+                    'Valid types: "note", "session", "decision", "source", "theme".\n'
                     "- `project`: project name (empty = cross-project).\n"
-                    "- `tags`: broad categories (debugging, performance, todo, til).\n\n"
-                    "Empty `query` + filters returns date-sorted recent notes."
+                    "- `tags`: broad categories (todo, parked, probe, theme, trade, til, ...).\n"
+                    "- `concepts`: domain-specific concepts; result must include ≥1.\n"
+                    "- `since` / `until`: ISO date strings (YYYY-MM-DD); date-window filter."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query. Empty string returns date-sorted recent notes.",
+                            "description": "Search query. Empty = date-sorted list mode.",
                         },
                         "mode": {
                             "type": "string",
                             "enum": ["fts", "similar", "hybrid"],
                             "default": "fts",
                             "description": (
-                                "Search mode. 'fts' = keyword (default, back-compat), "
-                                "'similar' = semantic only, 'hybrid' = RRF fusion of both."
+                                "fts = keyword, similar = semantic, hybrid = RRF fusion."
                             ),
                         },
                         "type": {
                             "description": (
-                                "Note type filter. String or list of strings: 'note' (reusable knowledge), "
-                                "'session' (work logs), 'decision' (architectural choices), 'source' (external references)."
+                                "Note type filter. String or list. Valid: note, session, "
+                                "decision, source, theme."
                             ),
                         },
                         "project": {
@@ -188,6 +187,22 @@ def main() -> None:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Filter to notes containing ALL of these tags.",
+                        },
+                        "concepts": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Filter to notes that include ≥1 of these concepts. "
+                                "Combine with `query` for text+concept queries."
+                            ),
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "Earliest ISO date (YYYY-MM-DD). Optional.",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "Latest ISO date (YYYY-MM-DD). Optional.",
                         },
                         "limit": {"type": "integer", "default": 10},
                     },
@@ -334,14 +349,13 @@ def main() -> None:
             Tool(
                 name="mem_context",
                 description=(
-                    "Get the most relevant knowledge notes for a given task context.\n"
-                    "Uses three-layer retrieval: FTS search, concept expansion, then "
-                    "recency supplement.\n\n"
+                    "**Modality: composition (FTS → similarity-via-concept → recency).**\n\n"
+                    "Three-layer retrieval, deduplicated. Use when you want a budgeted "
+                    "blob of relevant notes for a topic, not raw hits.\n\n"
                     "Call at session start or before major decisions to ground work in "
-                    "existing knowledge. Helps avoid re-discovering known patterns or "
-                    "contradicting past decisions.\n\n"
-                    "When concepts are provided, skips FTS and retrieves directly by "
-                    "concept — useful when you know the domain you're working in."
+                    "existing knowledge. When `concepts` is provided, layer 2 expands "
+                    "from those instead of FTS hits — useful when you know the domain.\n\n"
+                    "`since` / `until` apply uniformly across all three layers."
                 ),
                 inputSchema={
                     "type": "object",
@@ -360,16 +374,23 @@ def main() -> None:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "Concepts to retrieve by (e.g. ['pytorch', 'neural-networks']). "
-                                "When provided, uses concept-based retrieval instead of FTS."
+                                "Concepts to retrieve by. When provided, drives layer 2 "
+                                "directly instead of expanding from FTS hits."
                             ),
                         },
                         "type": {
                             "description": (
-                                "Filter to specific note types. String or list of strings "
-                                "(e.g. 'source' or ['source','session']). Applies across "
-                                "all 3 retrieval layers."
+                                "Filter across all three layers. String or list — e.g. "
+                                "['note','decision','theme']."
                             ),
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "Earliest ISO date (YYYY-MM-DD).",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "Latest ISO date (YYYY-MM-DD).",
                         },
                         "limit": {"type": "integer", "default": 5},
                     },
@@ -378,10 +399,14 @@ def main() -> None:
             Tool(
                 name="mem_graph",
                 description=(
-                    "Traverse the knowledge graph outward from a note, showing connected "
-                    "notes and their edge types.\n\n"
-                    "Use to understand how a note relates to the broader knowledge base. "
-                    "Useful before creating links to see what connections already exist."
+                    "**Modality: graph (recursive CTE over typed edges).**\n\n"
+                    "Walk outward from a note id along typed edges, bidirectional. Use "
+                    "to understand how a note relates to the broader knowledge base.\n\n"
+                    "Optional `note_type` and `project` filter the *projected* nodes "
+                    "(what's returned), not the traversal itself — the walk still "
+                    "reaches through nodes of any type, but only matching nodes "
+                    "appear in the result. Lets you ask 'show me only the source "
+                    "nodes connected to this decision'."
                 ),
                 inputSchema={
                     "type": "object",
@@ -392,6 +417,16 @@ def main() -> None:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Filter to only these edge types (e.g. [\"derived_from\", \"builds_on\"]).",
+                        },
+                        "note_type": {
+                            "description": (
+                                "Restrict returned nodes to this type. String or list "
+                                "(e.g. 'source' or ['source','decision'])."
+                            ),
+                        },
+                        "project": {
+                            "type": "string",
+                            "description": "Restrict returned nodes to this project.",
                         },
                     },
                     "required": ["id"],
@@ -789,6 +824,14 @@ def main() -> None:
                             "default": False,
                             "description": "If true, return concepts that co-occur with the given concept.",
                         },
+                        "since": {
+                            "type": "string",
+                            "description": "Earliest ISO date (YYYY-MM-DD).",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "Latest ISO date (YYYY-MM-DD).",
+                        },
                     },
                 },
             ),
@@ -1144,6 +1187,9 @@ def main() -> None:
                 note_type=type_arg,
                 project=project,
                 tags=args.get("tags"),
+                concepts=args.get("concepts"),
+                since=args.get("since", ""),
+                until=args.get("until", ""),
                 limit=limit,
             )
         s.close()
@@ -1250,6 +1296,8 @@ def main() -> None:
             concepts=args.get("concepts"),
             limit=args.get("limit", 5),
             note_type=args.get("type") or "",
+            since=args.get("since", ""),
+            until=args.get("until", ""),
         )
         s.close()
 
@@ -1305,6 +1353,8 @@ def main() -> None:
             limit=args.get("limit", 20),
             match_mode=args.get("match_mode", "any"),
             min_matches=args.get("min_matches", 0),
+            since=args.get("since", ""),
+            until=args.get("until", ""),
         )
         s.close()
 
@@ -1320,9 +1370,38 @@ def main() -> None:
 
     def _handle_graph(args: dict) -> list[TextContent]:
         s = Search(config=cfg)
-        text = s.render_graph_text(args["id"], depth=args.get("depth", 2))
+        note_type = args.get("note_type") or ""
+        project = args.get("project", "")
+
+        # Without filters, use the existing text renderer for back-compat
+        # output. With filters, fall through to a filtered node listing
+        # since render_graph_text doesn't take projection filters.
+        if not note_type and not project:
+            text = s.render_graph_text(args["id"], depth=args.get("depth", 2))
+            s.close()
+            return [TextContent(type="text", text=text)]
+
+        nodes = s.get_related(
+            args["id"],
+            depth=args.get("depth", 2),
+            edge_types=args.get("edge_types"),
+            note_type=note_type,
+            project=project,
+        )
         s.close()
-        return [TextContent(type="text", text=text)]
+
+        if not nodes:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"No connected nodes match the filters for {args['id']}.",
+                )
+            ]
+
+        lines = [f"Graph from {args['id']} (filtered):"]
+        for n in nodes:
+            lines.append(f"  [{n.type}] {n.title} ({n.id})")
+        return [TextContent(type="text", text="\n".join(lines))]
 
     def _handle_update(args: dict) -> list[TextContent]:
         note_id = args["id"]

@@ -71,13 +71,24 @@ class Search:
         note_type: str | list[str] = "",
         project: str = "",
         tags: list[str] | None = None,
+        concepts: list[str] | None = None,
+        since: str = "",
+        until: str = "",
         limit: int = 10,
     ) -> list[SearchResult]:
         """Full-text search with optional filters.
 
-        When ``query`` is empty, returns the most recent notes matching the
-        filters (date desc) — enables "give me everything for project X"
-        queries without needing an FTS term.
+        Filters:
+            note_type: str or list — restrict to one or more types.
+            project: project name.
+            tags: list of tags; AND-joined.
+            concepts: list of concepts; result must include at least one
+                (post-filter via the ``note_concepts`` join table).
+            since / until: ISO date strings (YYYY-MM-DD); date window.
+
+        When ``query`` is empty, returns the most recent notes matching
+        the filters (date desc) — list mode for "give me everything for
+        project X this week" without needing an FTS term.
         """
         # Normalize note_type to a list for consistent filter handling
         type_list = [note_type] if isinstance(note_type, str) else list(note_type)
@@ -122,6 +133,24 @@ class Search:
             for tag in tags:
                 conditions.append(f'{col_prefix}tags LIKE ?')
                 params.append(f'%"{tag}"%')
+        if since:
+            conditions.append(f"{col_prefix}date >= ?")
+            params.append(since)
+        if until:
+            conditions.append(f"{col_prefix}date <= ?")
+            params.append(until)
+        if concepts:
+            # Restrict to notes that include at least one of the listed
+            # concepts via the note_concepts table. EXISTS keeps the
+            # primary query simple regardless of FTS vs list mode.
+            placeholders = ",".join("?" for _ in concepts)
+            id_col = f"{col_prefix}id"
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM note_concepts nc "
+                f"WHERE nc.note_id = {id_col} "
+                f"AND nc.concept IN ({placeholders}))"
+            )
+            params.extend([c.lower() for c in concepts])
 
         if conditions:
             sql += " AND " + " AND ".join(conditions)
@@ -157,14 +186,39 @@ class Search:
         note_id: str,
         depth: int = 2,
         edge_types: list[str] | None = None,
+        note_type: str | list[str] = "",
+        project: str = "",
     ) -> list[GraphNode]:
-        """Graph traversal from a note using recursive CTE."""
+        """Graph traversal from a note using recursive CTE.
+
+        ``note_type`` and ``project`` filter the *projected* nodes (the
+        outer SELECT after the recursive walk). They do not prune the
+        traversal itself — the walk still reaches through nodes of any
+        type — but only matching nodes are returned. This keeps "show
+        me the source notes connected to this decision" simple without
+        rewriting the recursive CTE.
+        """
         edge_filter = ""
         params: list = [note_id, depth]
         if edge_types:
             placeholders = ",".join("?" for _ in edge_types)
             edge_filter = f"AND e.edge_type IN ({placeholders})"
             params = [note_id] + edge_types + [depth]
+
+        type_list = [note_type] if isinstance(note_type, str) else list(note_type)
+        type_list = [t for t in type_list if t]
+
+        outer_filters = ["n.id != ?"]
+        outer_params: list = [note_id]
+        if type_list:
+            placeholders = ",".join("?" for _ in type_list)
+            outer_filters.append(f"n.type IN ({placeholders})")
+            outer_params.extend(type_list)
+        if project:
+            outer_filters.append("n.project = ?")
+            outer_params.append(project)
+
+        outer_where = " AND ".join(outer_filters)
 
         sql = f"""
             WITH RECURSIVE reachable(id, depth) AS (
@@ -182,9 +236,9 @@ class Search:
             SELECT DISTINCT n.id, n.type, n.title
             FROM reachable r
             JOIN notes n ON n.id = r.id
-            WHERE n.id != ?
+            WHERE {outer_where}
         """
-        params.append(note_id)
+        params.extend(outer_params)
 
         nodes: dict[str, GraphNode] = {}
         for row in self.db.execute(sql, params):
@@ -221,6 +275,8 @@ class Search:
         concepts: list[str] | None = None,
         limit: int = 5,
         note_type: str | list[str] = "",
+        since: str = "",
+        until: str = "",
     ) -> list[SearchResult]:
         """Get the most relevant notes for a given context.
 
@@ -231,7 +287,9 @@ class Search:
         3. Recency supplement
 
         ``note_type`` filters all three layers — pass e.g. ``["source","session"]``
-        to restrict the context to specific kinds of notes.
+        to restrict the context to specific kinds of notes. ``since`` /
+        ``until`` are ISO date strings (YYYY-MM-DD) and likewise apply
+        across all three layers.
         """
         # Normalize type filter to a list
         type_list = [note_type] if isinstance(note_type, str) else list(note_type)
@@ -248,6 +306,8 @@ class Search:
                 tags=tags,
                 limit=limit,
                 note_type=type_list if type_list else "",
+                since=since,
+                until=until,
             )
             seen_ids = {r.id for r in results}
 
@@ -278,6 +338,13 @@ class Search:
                     type_placeholders = ",".join("?" for _ in type_list)
                     conditions.append(f"n.type IN ({type_placeholders})")
                     params.extend(type_list)
+
+                if since:
+                    conditions.append("n.date >= ?")
+                    params.append(since)
+                if until:
+                    conditions.append("n.date <= ?")
+                    params.append(until)
 
                 if seen_ids:
                     id_placeholders = ",".join("?" for _ in seen_ids)
@@ -327,6 +394,12 @@ class Search:
                 type_placeholders = ",".join("?" for _ in type_list)
                 conditions_r.append(f"type IN ({type_placeholders})")
                 params_r.extend(type_list)
+            if since:
+                conditions_r.append("date >= ?")
+                params_r.append(since)
+            if until:
+                conditions_r.append("date <= ?")
+                params_r.append(until)
 
             where_r = " AND ".join(conditions_r) if conditions_r else "1=1"
             sql = f"""
@@ -369,6 +442,8 @@ class Search:
         *,
         match_mode: str = "any",
         min_matches: int = 0,
+        since: str = "",
+        until: str = "",
     ) -> list[SearchResult]:
         """Find notes by concept(s). Supports single concept or list with
         ``any`` (union) or ``all`` (intersection) semantics.
@@ -410,6 +485,13 @@ class Search:
             type_placeholders = ",".join("?" for _ in type_list)
             conditions.append(f"n.type IN ({type_placeholders})")
             params.extend(type_list)
+
+        if since:
+            conditions.append("n.date >= ?")
+            params.append(since)
+        if until:
+            conditions.append("n.date <= ?")
+            params.append(until)
 
         where = " AND ".join(conditions)
 

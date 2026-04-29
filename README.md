@@ -74,27 +74,39 @@ vault/
 
 The SQLite index is derived — delete it and run `uv run mem index --full` to rebuild from markdown.
 
+## Retrieval — three modalities
+
+Retrieval is three modalities. Pick by what you have:
+
+- **FTS** — keyword/text. `mem_search(query, mode='fts')`. Empty `query` is list mode (recency-sorted, all filters honoured).
+- **Similarity** — semantic via embeddings. `mem_search(query, mode='similar')`; `mode='hybrid'` fuses FTS + similarity (RRF, k=60) when uncertain.
+- **Graph** — structural over typed edges. `mem_graph(id, depth)`. Specialisations with built-in filters: `mem_source_lens`, `mem_decisions_for_file`, `mem_concept_search`.
+
+`mem_context` composes FTS → similarity-via-concept → recency, deduped, when you want a budgeted blob rather than raw hits. `mem_project_snapshot` returns the SessionStart payload on demand.
+
+All filtering primitives accept `since` / `until` (ISO date strings). `mem_search` accepts `concepts=[…]` to combine text + concept filters. `mem_graph` accepts optional `note_type` / `project` to project the result set.
+
 ## MCP tools
 
-When the MCP server is registered, Claude gets a set of memory primitives. The most important ones:
+When the MCP server is registered, Claude gets a set of memory primitives:
 
-| Tool | Purpose |
-|---|---|
-| `mem_search(query, mode, project, type, tags, limit)` | FTS / semantic / hybrid (RRF) search |
-| `mem_concept_search(concepts, match_mode, project, min_matches)` | Find notes by concept intersection/union |
-| `mem_context(query, project, type, concepts)` | 3-layer retrieval (FTS → concept expansion → recency) |
-| `mem_timeline(project, days)` | Chronological sessions + decisions (omit project for cross-project ranking) |
-| `mem_read(id)` / `mem_graph(id, depth)` | Fetch a note or walk its typed-edge graph |
-| `mem_source_lens(source_id)` | Walk out from a source to its downstream decisions/sessions |
-| `mem_decisions_for_file(file_path, project)` | Every decision touching a file |
-| `mem_project_snapshot(project)` | On-demand project overview (same payload the SessionStart hook injects) |
-| `mem_create(note_type, title, body, tags, concepts, project, session_id)` | Create a note |
-| `mem_update(note_id, frontmatter_updates, body_append)` | Update a note |
-| `mem_link(source_id, target_id, edge_type)` | Add a typed edge |
-| `mem_extract(session_id, ...)` | Enrich a session with LLM insights + decisions |
-| `mem_judge(session_id)` | Evaluate decisions against git evidence |
-| `mem_concept_source_counts(concepts)` | Bulk under-source check for gap analysis |
-| `mem_landing(project, doc, sections)` | Regenerate landing documents (DECISIONS/BACKLOG/STATE) |
+| Tool | Modality | Purpose |
+|---|---|---|
+| `mem_search(query, mode, type, project, tags, concepts, since, until, limit)` | FTS / similarity / fused | Primary text retrieval. Empty query = list mode. |
+| `mem_concept_search(concepts, match_mode, type, project, since, until, …)` | Graph (concept edges) | Set ops over concept membership. |
+| `mem_context(query, type, project, concepts, since, until)` | Composition | Three-layer retrieval, deduped. |
+| `mem_timeline(project, days)` | Graph (specialisation) | Chronological sessions + decisions. |
+| `mem_read(id)` / `mem_graph(id, depth, note_type, project)` | Fetch / Graph | Single note read; recursive-CTE graph walk. |
+| `mem_source_lens(source_id)` | Graph (specialisation) | Walk out from a source to inbound decisions/sessions/concepts. |
+| `mem_decisions_for_file(file_path, project)` | Graph (specialisation) | Every decision touching a file. |
+| `mem_project_snapshot(project)` | Composition | Same payload the SessionStart hook injects. |
+| `mem_create(note_type, title, body, …)` | — | Create a note (note / session / decision / source / theme). |
+| `mem_update(note_id, …)` | — | Update a note. |
+| `mem_link(source_id, target_id, edge_type)` | — | Add a typed edge. |
+| `mem_extract(session_id, ...)` | — | Enrich a session with LLM insights + decisions. |
+| `mem_judge(session_id)` | — | Evaluate decisions against git evidence. |
+| `mem_concept_source_counts(concepts)` | — | Bulk under-source check for gap analysis. |
+| `mem_landing(project, doc)` | — | Regenerate landing documents (DECISIONS / BACKLOG / STATE / THEMES). |
 
 Run `uv run python -m personal_mem.mcp.server` to start the server stdio, or register it in your Claude Code MCP config.
 

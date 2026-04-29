@@ -298,5 +298,6 @@ class TestBuildProjectContext:
         """Sanity — the SECTIONS tuple enumerates the payload keys."""
         assert "header" in SECTIONS
         assert "tools" in SECTIONS
+        assert "themes" in SECTIONS
         assert "footer" in SECTIONS
-        assert len(SECTIONS) == 10
+        assert len(SECTIONS) == 11

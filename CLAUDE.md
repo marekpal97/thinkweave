@@ -26,10 +26,26 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 
 **Session start (auto)**: The SessionStart hook injects ~7–10k tokens of structured project context at the start of every Claude Code session — recent wrapped sessions, STATE.md, BACKLOG, recent decisions, concept histogram, and the MCP tool manifest. No action needed — if the hook is installed (`mem hooks install`), Claude wakes up already oriented. To re-fetch mid-session, call `mem_project_snapshot(project=<name>)`.
 
+**Retrieval contract — three modalities**
+
+Retrieval over the vault is three modalities. Pick by what you have:
+
+- **FTS** — keyword/text. `mem_search(query, mode='fts')`. Empty `query` returns the most recent matches honouring all filters (list mode).
+- **Similarity** — semantic via embeddings. `mem_search(query, mode='similar')`. `mode='hybrid'` fuses FTS + similarity (RRF, k=60) when uncertain.
+- **Graph** — structural over typed edges. `mem_graph(id, depth)`. Specialisations with built-in filters: `mem_source_lens` (walk out from a source), `mem_decisions_for_file` (file → decisions), `mem_concept_search` (set ops over concept edges).
+
+Compositions:
+
+- `mem_context(query, type=['note','decision','theme'])` — FTS → similarity-via-concept → recency, deduped. Use when you want a budgeted blob of relevant notes for a topic, not raw hits.
+- `mem_project_snapshot(project)` — re-fetch the SessionStart payload on demand.
+- `mem_timeline(project, days)` — chronological sessions + decisions for a window.
+
+All filtering primitives accept `since` / `until` (ISO date strings). `mem_search` accepts `concepts=[…]` so you can combine text + concept filters. `mem_graph` accepts optional `note_type` / `project` to project the result set.
+
 **Retrieval protocol** — when asked about prior sessions, recent work, vault contents, or "what happened last time":
 
-1. **SessionStart context first** (cost: zero). The hook output already in your context contains recent sessions, decisions, backlog, STATE.md, and concepts. READ IT before doing anything else.
-2. **One MCP call** if you need a specific note or search: `mem_read(id)`, `mem_search(query)`, `mem_timeline()`, `mem_context()`. These query the SQLite index — fast and precise.
+1. **SessionStart context first** (cost: zero). The hook output already in your context contains recent sessions, decisions, backlog, STATE.md, themes, and concepts. READ IT before doing anything else.
+2. **One MCP call** if you need a specific note or search — pick the modality from the contract above.
 3. **One file Read** for codebase files you know the path to (e.g. `commands/research.md`).
 4. **NEVER** spawn Explore agents to crawl the vault filesystem with `find`/`ls`/`grep` on `/mnt/c/Users/marek/vault/`. The entire memory system exists to make this unnecessary. If you catch yourself reaching for filesystem exploration of the vault, stop — the answer is in steps 1-3.
 
@@ -43,7 +59,7 @@ After upgrading personal_mem, re-run `mem hooks install` to pick up newly-added 
 
 ## Architecture
 
-4 note types: `note` (default), `session` (auto from hooks), `decision` (lifecycle), `source` (external).
+5 note types: `note` (default), `session` (auto from hooks), `decision` (lifecycle), `source` (external), `theme` (global narrative aggregator).
 
 **Vault directory structure**:
 ```

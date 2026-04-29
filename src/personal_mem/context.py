@@ -34,6 +34,7 @@ SECTIONS = (
     "backlog",
     "decisions",
     "probes",
+    "themes",
     "concepts",
     "sources",
     "footer",
@@ -41,7 +42,7 @@ SECTIONS = (
 
 # Drop order when over budget. Header/tools/state/sessions are load-bearing
 # and dropped last; decorative sections go first.
-_DROP_ORDER = ("sources", "concepts", "probes", "decisions", "backlog")
+_DROP_ORDER = ("sources", "themes", "concepts", "probes", "decisions", "backlog")
 
 
 @dataclass
@@ -133,6 +134,8 @@ def _build_section(key: str, cfg: Config, project: str) -> Section | None:
         return _build_concept_histogram(cfg, project, n=20)
     if key == "sources":
         return _build_recent_sources(cfg, project, n=5)
+    if key == "themes":
+        return _build_active_themes(cfg, project, n=10)
     if key == "footer":
         return _build_footer()
     return None
@@ -147,6 +150,7 @@ def _default_title(key: str) -> str:
         "backlog": "Backlog (Open Items)",
         "decisions": "Recent Decisions",
         "probes": "Open Probes",
+        "themes": "Active Themes",
         "concepts": "Concept Histogram",
         "sources": "Recent Sources",
         "footer": "Retrieval Hints",
@@ -643,12 +647,21 @@ def _build_recent_sources(cfg: Config, project: str, n: int = 5) -> Section:
 
 def _build_footer() -> Section:
     body = (
-        "To pull more context mid-session, reach for:\n"
-        "- `mem_project_snapshot(project='<name>')` — re-fetch this payload on demand\n"
-        "- `mem_search(query, mode='hybrid')` — when you don't know the exact keywords\n"
-        "- `mem_concept_search(concepts=[...], match_mode='all')` — when you know the concepts\n"
-        "- `mem_source_lens(source_id)` — to walk out from a specific source\n"
-        "- `mem_decisions_for_file(path)` — to see every decision that touched a file\n"
+        "Retrieval is three modalities. Pick by what you have:\n"
+        "- **FTS** — keyword/text. `mem_search(query, mode='fts')`. Empty query = list mode.\n"
+        "- **Similarity** — semantic. `mem_search(query, mode='similar')`. "
+        "`mode='hybrid'` fuses FTS + similarity (RRF) when uncertain.\n"
+        "- **Graph** — structural. `mem_graph(id, depth)`. Specialisations: "
+        "`mem_source_lens` (walk out from a source), `mem_decisions_for_file` "
+        "(file → decisions), `mem_concept_search` (set ops over concept edges).\n"
+        "\n"
+        "Compositions:\n"
+        "- `mem_context(query, type=['note','decision','theme'])` — FTS → similarity-via-"
+        "concept → recency, deduped. Use when you want a budgeted blob.\n"
+        "- `mem_project_snapshot(project)` — re-fetch this payload on demand.\n"
+        "\n"
+        "All filtering primitives accept `since` / `until` (ISO dates), and "
+        "`mem_search` accepts `concepts=[...]` for combined text+concept queries.\n"
         "\n"
         "Run `/mem-wrap` before `/clear` or `/exit` to preserve this session's insights."
     )
@@ -656,7 +669,64 @@ def _build_footer() -> Section:
         key="footer",
         title=_default_title("footer"),
         body=body,
-        soft_budget_chars=800,
+        soft_budget_chars=1200,
+    )
+
+
+def _build_active_themes(cfg: Config, project: str, n: int = 10) -> Section:
+    """Active themes — global, optionally filtered by primary stake project.
+
+    Themes live at vault/themes/ regardless of project, so the section is
+    cross-project by design but biases toward the current project's
+    stake when known.
+    """
+    if not cfg.index_db.exists():
+        return Section(
+            key="themes",
+            title=_default_title("themes"),
+            body="_Index not built._",
+            soft_budget_chars=600,
+        )
+
+    import sqlite3
+
+    db = sqlite3.connect(str(cfg.index_db))
+    db.row_factory = sqlite3.Row
+    try:
+        # Project-stake themes first, then any other active themes.
+        rows = db.execute(
+            "SELECT id, title, project, frontmatter FROM notes "
+            "WHERE type = 'theme' "
+            "ORDER BY (project = ?) DESC, date DESC LIMIT ?",
+            (project, n),
+        ).fetchall()
+    finally:
+        db.close()
+
+    if not rows:
+        return Section(
+            key="themes",
+            title=_default_title("themes"),
+            body="_No themes recorded yet._",
+            soft_budget_chars=600,
+        )
+
+    import json as _json
+
+    lines: list[str] = []
+    for r in rows:
+        fm = _json.loads(r["frontmatter"]) if r["frontmatter"] else {}
+        if str(fm.get("status", "active")) != "active":
+            continue
+        proj = r["project"] or fm.get("project", "—")
+        lines.append(f"- `{r['id']}` **{r['title']}** ({proj})")
+
+    body = "\n".join(lines) if lines else "_No active themes._"
+    return Section(
+        key="themes",
+        title=_default_title("themes"),
+        body=body,
+        soft_budget_chars=1200,
     )
 
 
