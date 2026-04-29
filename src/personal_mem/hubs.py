@@ -239,6 +239,17 @@ def _split_citation(text: str) -> tuple[str, str]:
     return stripped, citation
 
 
+def parse_log_section_entries(body: str, heading: str) -> list[LogEntry]:
+    """Public helper: extract a `## ...` section and parse it as log entries.
+
+    Used by themes.py to read a theme's `## Catalyst log` with the same
+    grammar as concept hubs' Learning log. Empty list if the heading is
+    absent or the section has no valid entries.
+    """
+    section = _extract_section(body, heading)
+    return _parse_log_entries(section)
+
+
 # ---------------------------------------------------------------------------
 # Writers
 # ---------------------------------------------------------------------------
@@ -285,6 +296,18 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
     else:
         lines.append("*No entries yet.*")
     lines.append("")
+
+    # Auto-managed Evolution section — derived view of the linkage graph
+    # built into the log entries. Empty when no entry has a non-`new` ref,
+    # so we omit the section entirely rather than leave a placeholder.
+    from personal_mem.temporal import entries_to_graph, render_evolution_section
+
+    graph = entries_to_graph(hub.log_entries, kind="log_entry")
+    has_links = any(e for e in graph.edges)
+    if has_links:
+        section = render_evolution_section(graph)
+        if section:
+            lines.append(section)
 
     return "\n".join(lines)
 

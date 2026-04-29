@@ -238,3 +238,158 @@ class TestThemesLanding:
     ):
         with pytest.raises(ValueError):
             write_landing_docs(config, project="x", docs="bogus")
+
+
+# ---------------------------------------------------------------------------
+# Catalyst log parsing + temporal DAG integration
+# ---------------------------------------------------------------------------
+
+
+class TestCatalystLogParsing:
+    def test_parse_empty_body(self):
+        from personal_mem.themes import parse_theme_catalyst_log
+
+        assert parse_theme_catalyst_log("# Title\n\n## Catalyst log\n\n") == []
+
+    def test_parse_entries_with_linkage(self):
+        from personal_mem.themes import parse_theme_catalyst_log
+
+        body = (
+            "# Theme\n\n"
+            "## Catalyst log\n\n"
+            "- 2026-04-15 · *new* — Hyperscaler capex cut — [[src-x]]\n"
+            "- 2026-04-22 · *contradicts 2026-04-15* — MSFT pulls forward — [[src-y]]\n"
+        )
+        entries = parse_theme_catalyst_log(body)
+        assert len(entries) == 2
+        assert entries[0].flag == "new"
+        assert entries[1].flag == "contradicts"
+        assert entries[1].ref == "2026-04-15"
+
+
+class TestThemeTemporalDAGInLanding:
+    def test_themes_md_includes_per_theme_dag(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        from personal_mem.themes import render_theme_body_skeleton
+
+        # Build a theme body with a populated catalyst log + linkage.
+        body = (
+            render_theme_body_skeleton("Test theme")
+            + "\n\n"
+            + "## Catalyst log\n\n"
+            + "- 2026-04-15 · *new* — Catalyst A — [[src-aaa]]\n"
+            + "- 2026-04-22 · *contradicts 2026-04-15* — Catalyst B — [[src-bbb]]\n"
+        )
+        # Note: skeleton already contains a `## Catalyst log` header — having
+        # two is fine; _extract_section returns from the first match, so the
+        # second (with content) might not be picked up. Reproduce realistic
+        # content by replacing the placeholder, not appending.
+        skeleton = render_theme_body_skeleton("Test theme")
+        before, _, after = skeleton.partition("## Catalyst log")
+        body = (
+            before
+            + "## Catalyst log\n\n"
+            + "- 2026-04-15 · *new* — Catalyst A — [[src-aaa]]\n"
+            + "- 2026-04-22 · *contradicts 2026-04-15* — Catalyst B — [[src-bbb]]\n\n"
+            + "## Open questions\n"
+        )
+
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="Test theme",
+            body=body,
+            extra_frontmatter=build_theme_frontmatter("Test theme"),
+        )
+        indexer.rebuild()
+
+        content = themes_ledger(config)
+        # Per-theme DAG appears as a sub-section under the active table.
+        assert "### Test theme" in content
+        assert "```mermaid" in content
+        # contradicts edge is rendered with the dotted arrow.
+        assert "-.->" in content
+
+    def test_themes_md_omits_dag_when_no_links(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        from personal_mem.themes import render_theme_body_skeleton
+
+        # A theme with one catalyst, no refs, no decisions → no DAG.
+        skeleton = render_theme_body_skeleton("Lonely theme")
+        before, _, _ = skeleton.partition("## Catalyst log")
+        body = (
+            before
+            + "## Catalyst log\n\n"
+            + "- 2026-04-15 · *new* — Lonely catalyst — [[src-aaa]]\n\n"
+            + "## Open questions\n"
+        )
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="Lonely theme",
+            body=body,
+            extra_frontmatter=build_theme_frontmatter("Lonely theme"),
+        )
+        indexer.rebuild()
+
+        content = themes_ledger(config)
+        # Theme appears in table but no per-theme DAG section.
+        assert "Lonely theme" in content
+        assert "### Lonely theme" not in content
+
+
+class TestConceptHubEvolutionSection:
+    def test_evolution_section_rendered_when_links_present(
+        self, vault: VaultManager, config: Config, tmp_path
+    ):
+        # Direct test of render_concept_hub: build a hub with linked entries,
+        # render, assert ## Evolution appears.
+        from personal_mem.hubs import (
+            ConceptHub,
+            LogEntry,
+            render_concept_hub,
+        )
+
+        hub = ConceptHub(
+            concept="testconcept",
+            path=tmp_path / "testconcept.md",
+            essence="The seed mental model.",
+            log_entries=[
+                LogEntry(
+                    date="2026-01-01",
+                    flag="new",
+                    text="seed",
+                    citation="n-aaa",
+                ),
+                LogEntry(
+                    date="2026-02-01",
+                    flag="extends",
+                    ref="2026-01-01",
+                    text="extends seed",
+                    citation="n-bbb",
+                ),
+            ],
+        )
+        rendered = render_concept_hub(hub)
+        assert "## Evolution" in rendered
+        assert "```mermaid" in rendered
+
+    def test_evolution_section_skipped_when_only_new(
+        self, vault: VaultManager, config: Config, tmp_path
+    ):
+        from personal_mem.hubs import (
+            ConceptHub,
+            LogEntry,
+            render_concept_hub,
+        )
+
+        hub = ConceptHub(
+            concept="testconcept2",
+            path=tmp_path / "testconcept2.md",
+            log_entries=[
+                LogEntry(date="2026-01-01", flag="new", text="A", citation="n-1"),
+                LogEntry(date="2026-02-01", flag="new", text="B", citation="n-2"),
+            ],
+        )
+        rendered = render_concept_hub(hub)
+        assert "## Evolution" not in rendered

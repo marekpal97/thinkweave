@@ -664,10 +664,17 @@ def generate_all(config: Config, project: str) -> dict[str, str]:
 def _query_themes(db) -> list[dict]:
     """Query all themes (global). Themes live at vault/themes/, not per-project.
 
-    Returns themes ordered by status priority (active first) then by date.
-    Each entry includes the count of decisions that implement it via the
-    ``implements`` edge.
+    Returns themes ordered by date desc. Each entry includes:
+
+    - ``implements_count``: how many decisions cite the theme via an
+      ``implements`` edge.
+    - ``decisions``: list of {id, title, implements_catalyst} dicts for
+      those decisions. Used by the inline temporal DAG renderer.
+    - ``catalyst_entries``: parsed catalyst-log entries.
+    - ``last_catalyst``: the most recent catalyst date.
     """
+    from personal_mem.themes import parse_theme_catalyst_log
+
     rows = db.execute(
         "SELECT id, title, date, project, frontmatter, body_text "
         "FROM notes WHERE type = 'theme' ORDER BY date DESC"
@@ -676,17 +683,31 @@ def _query_themes(db) -> list[dict]:
     themes: list[dict] = []
     for row in rows:
         fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
-        # Count decisions implementing this theme.
-        impl_row = db.execute(
-            "SELECT COUNT(*) AS cnt FROM edges e "
+
+        # Decisions implementing this theme. Pull title + frontmatter so
+        # we can read implements_catalyst (if set) without a second pass.
+        decision_rows = db.execute(
+            "SELECT s.id, s.title, s.frontmatter "
+            "FROM edges e "
             "JOIN notes s ON s.id = e.source AND s.type = 'decision' "
             "WHERE e.target = ? AND e.edge_type = 'implements'",
             (row["id"],),
-        ).fetchone()
-        impl_count = impl_row["cnt"] if impl_row else 0
+        ).fetchall()
 
-        # Last catalyst date — best-effort first-line scan of the catalyst log.
-        last_catalyst = _last_catalyst_date(row["body_text"] or "")
+        decisions: list[dict] = []
+        for d in decision_rows:
+            d_fm = json.loads(d["frontmatter"]) if d["frontmatter"] else {}
+            decisions.append({
+                "id": d["id"],
+                "title": d["title"] or d_fm.get("title", ""),
+                "implements_catalyst": str(
+                    d_fm.get("implements_catalyst", "")
+                ),
+            })
+
+        body_text = row["body_text"] or ""
+        catalyst_entries = parse_theme_catalyst_log(body_text)
+        last_catalyst = _last_catalyst_date(body_text)
 
         themes.append({
             "id": row["id"],
@@ -696,7 +717,9 @@ def _query_themes(db) -> list[dict]:
             "status": fm.get("status", "active"),
             "concepts": fm.get("concepts", []),
             "relates_to": fm.get("relates_to", []),
-            "implements_count": impl_count,
+            "implements_count": len(decisions),
+            "decisions": decisions,
+            "catalyst_entries": catalyst_entries,
             "last_catalyst": last_catalyst,
             "frontmatter": fm,
         })
@@ -782,6 +805,30 @@ def themes_ledger(config: Config) -> str:
         for t in active:
             lines.append(_row(t))
         lines.append("")
+
+        # Per-theme temporal DAG — inlined Mermaid diagram for any theme
+        # that has either catalyst-log linkage or pinned decisions to
+        # render. Themes with only `new` flags and no decisions get no
+        # diagram.
+        from personal_mem.temporal import (
+            entries_to_graph,
+            render_evolution_section,
+        )
+
+        for t in active:
+            graph = entries_to_graph(
+                t["catalyst_entries"],
+                decisions=t["decisions"] or None,
+                kind="catalyst",
+            )
+            if graph.is_empty() or (not graph.edges and not t["decisions"]):
+                continue
+            section = render_evolution_section(
+                graph, heading=f"### {t['title']}"
+            )
+            if section:
+                lines.append(section)
+                lines.append("")
 
     for label, group in (("Dormant", dormant), ("Resolved", resolved)):
         if group:

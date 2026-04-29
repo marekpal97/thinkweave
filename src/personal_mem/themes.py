@@ -11,11 +11,15 @@ stake) — it never controls filing. Theme dedup, listing, and DAG rendering
 all operate over the global set.
 
 This module owns the canonical frontmatter builder, the body skeleton, and
-parser helpers shared with the temporal-DAG renderer (see ``temporal.py``,
-Workstream C).
+the parser for the ``## Catalyst log`` section. The catalyst log uses the
+**same grammar** as concept hubs' learning log (one parser, ``hubs.parse_
+log_section_entries``), and the temporal-DAG renderer (``temporal.py``)
+consumes both surfaces interchangeably.
 """
 
 from __future__ import annotations
+
+from personal_mem.hubs import LogEntry, parse_log_section_entries
 
 
 # Canonical lifecycle states for themes. ``merged-into:thm-XXXXXXXX`` is a
@@ -73,12 +77,17 @@ def build_theme_frontmatter(
     return fm
 
 
+CATALYST_LOG_HEADING = "## Catalyst log"
+
+
 def render_theme_body_skeleton(title: str) -> str:
     """Initial body for a new theme.
 
     Three sections — ``## Essence`` (slow-moving thesis), ``## Catalyst
-    log`` (dated event log; format upgraded for temporal DAG in Workstream
-    C), and ``## Open questions`` (probe-style follow-ups).
+    log`` (dated event log; same grammar as concept hubs so the temporal-
+    DAG renderer consumes both), and ``## Open questions`` (probe follow-
+    ups). The Evolution view is a derived render in THEMES.md, not stored
+    on the theme page.
     """
     return (
         f"# {title}\n\n"
@@ -86,9 +95,20 @@ def render_theme_body_skeleton(title: str) -> str:
         "_Replace with the working thesis (≤500w). Slow-moving; revised "
         "rarely. Cite finance/* concepts (or analogous invariants for "
         "non-finance themes); never named events._\n\n"
-        "## Catalyst log\n\n"
-        "_Append-only dated events. Each entry: a date, a one-liner, a "
-        "source citation (`[[src-XXXX]]`), a flag (`new` / `confirms` / "
-        "`contradicts`), and an optional reference to a prior catalyst._\n\n"
+        f"{CATALYST_LOG_HEADING}\n\n"
+        "_Append-only. One entry per line, same format as concept hubs:_\n"
+        "_`- YYYY-MM-DD · *flag* — one-liner — [[src-XXXX]]`_\n"
+        "_Flags: `new`, `agrees`, `contradicts`, `extends`. For the latter "
+        "three, append a date pointing to an earlier catalyst:_\n"
+        "_`- YYYY-MM-DD · *contradicts YYYY-MM-DD* — text — [[src-XXXX]]`_\n\n"
         "## Open questions\n\n"
     )
+
+
+def parse_theme_catalyst_log(body: str) -> list[LogEntry]:
+    """Parse the ``## Catalyst log`` section of a theme body.
+
+    Returns a list of ``LogEntry`` records (the same dataclass concept hubs
+    use). Empty list if the section is absent or empty.
+    """
+    return parse_log_section_entries(body, CATALYST_LOG_HEADING)
