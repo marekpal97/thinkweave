@@ -142,6 +142,14 @@ class Indexer:
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA foreign_keys=ON")
+            # Wait up to 30s for a busy lock before raising. Without this,
+            # concurrent writers (e.g. `mem hubs run` applying entries while
+            # a live MCP server indexer is writing) fail immediately with
+            # `sqlite3.OperationalError: database is locked`. With the
+            # timeout set, SQLite's default behaviour is to block and retry
+            # internally, which is exactly what we want for these short
+            # contended windows.
+            self._db.execute("PRAGMA busy_timeout = 30000")
             self._init_schema()
         return self._db
 

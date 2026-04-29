@@ -263,6 +263,29 @@ mem_update(note_id="<queue-note-id>", frontmatter_updates={"tags": ["done", "res
 ```
 This transitions `processing` → `done`. The item disappears from `mem backlog`.
 
+**Close duplicate queue items**: Other `todo+research` notes may point at the URL or title you just ingested (added via a different entry path — ad-hoc, `/discover` under a different concept, `/substack`, manual `mem_create`). Close them now so the next batch doesn't re-ingest the same source.
+
+```
+# URL match (primary). Quote the URL to keep FTS tokenization tight.
+url_dups = mem_search(query="\"<full url from queue note body>\"", tags=["todo", "research"], type="note", limit=5)
+
+# Title backstop: only run if URL match returned nothing and the source title is specific
+# enough (≥4 words, not generic). Skips titles like "arxiv 2510.25741" which collide across concepts.
+title_dups = mem_search(query="<source title>", tags=["todo", "research"], type="note", limit=3)
+```
+
+For every match (excluding the queue note you just processed):
+```
+mem_update(
+  id="<dup-id>",
+  remove_tags=["todo"],
+  frontmatter={"tags": ["done", "research", "duplicate"]},
+  body_append="\n\n---\nClosed as duplicate, already ingested as <new-src-id>."
+)
+```
+
+Log each close — they roll up into step 10's report under a `Duplicates closed: N` line. Skip `processing`-tagged items (another worker claimed them; let their own step 9 handle cleanup, or accept the rare race).
+
 **Then loop back to step 1b** for the next item in the batch. Stop when:
 - Batch limit reached (N items processed)
 - Queue is empty
@@ -283,6 +306,7 @@ After all items in the batch are processed (or queue is empty), report:
 
 **Batch summary:**
 - Items processed / skipped / failed
+- Duplicates closed (unprocessed queue items closed via step 9's dedup scan — zero is fine and expected once the queue is clean)
 - Queue remaining (how many `todo+research` items are left)
 - Suggested next action: "Run `/research --queue --batch N` again to continue" or "Queue empty."
 

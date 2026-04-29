@@ -12,9 +12,6 @@ personal_mem splits cleanly into two layers with a one-way dependency.
 │                                                                        │
 │   commands/*.md          src/personal_mem/hooks/                       │
 │   (procedural skills)    (SessionStart, Pre, Post, Stop)               │
-│                                                                        │
-│   src/personal_mem/skill_runner.py                                     │
-│   (headless runner for commands/*.md via the Anthropic API)            │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │  (imports only)
                                    ▼
@@ -33,9 +30,9 @@ personal_mem splits cleanly into two layers with a one-way dependency.
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-The knowledge layer modules (`vault`, `indexer`, `search`, `concepts`, `hubs`, `landing`, `sources`) import **only** from each other and from `config` / `schemas`. None of them import from `hooks/`, `cli.py`, or `skill_runner.py`. This is checked by reading; no linter enforces it. If you're adding to the knowledge layer and find yourself wanting to `import ... from personal_mem.hooks`, that's a signal you're mixing concerns — stop and rethink.
+The knowledge layer modules (`vault`, `indexer`, `search`, `concepts`, `hubs`, `landing`, `sources`) import **only** from each other and from `config` / `schemas`. None of them import from `hooks/` or `cli.py`. This is checked by reading; no linter enforces it. If you're adding to the knowledge layer and find yourself wanting to `import ... from personal_mem.hooks`, that's a signal you're mixing concerns — stop and rethink.
 
-The Claude Code layer sits on top: hooks feed session events into the knowledge layer via the CLI; skills drive the knowledge layer via MCP tools or the skill runner. Both are clients of the knowledge API; neither is a peer.
+The Claude Code layer sits on top: hooks feed session events into the knowledge layer via the CLI; skills drive the knowledge layer via MCP tools. Both are clients of the knowledge API; neither is a peer.
 
 ## The source primitive
 
@@ -145,7 +142,7 @@ description: Ingest arxiv papers, GitHub repos, and web articles as source notes
 ---
 ```
 
-`mem skill list` reads these headers and shows every skill's type, capabilities, and description at a glance. `mem skill run` reads the `tools` list to decide what tool surface to expose to the model.
+`mem skill list` reads these headers and shows every skill's type, capabilities, and description at a glance.
 
 ## Ontology as the joint vocabulary
 
@@ -211,60 +208,20 @@ Per capability section. This is where per-source variation lives and where the t
 ```bash
 mem sources show podcast        # registry entry visible
 mem skill show podcast          # frontmatter parses
-mem skill run podcast --dry-run # runner builds a valid Messages request
 ```
 
 End-to-end smoke test: run the skill in Claude Code (via the Skill tool) on a real input and check `mem_search(type="source", query="...")` finds the new note.
 
 ## Running skills
 
-Skills live in `commands/*.md` as plain markdown. Two execution paths share the same file:
+Skills live in `commands/*.md` as plain markdown and run inside Claude Code via the Skill tool. Claude Code provides the full tool surface (`Read`, `Bash`, `WebFetch`, `WebSearch`, every `mem_*` tool via the personal_mem MCP server) and executes the procedure interactively.
 
-```
-            same skill file
-                 │
-                 ▼
-┌────────────────────────────────────┐
-│  Claude Code  (interactive)        │
-│   Skill tool reads commands/*.md   │
-│   Full tool surface                │
-│   Default for daily use            │
-└────────────────────────────────────┘
+For bulk, non-interactive work there are two targeted paths — neither requires a generic skill runner:
 
-┌────────────────────────────────────┐
-│  mem skill run  (headless)         │
-│   src/personal_mem/skill_runner.py │
-│   Reads same commands/*.md         │
-│   Bridges subset of mem_* tools    │
-│   Optional `anthropic` dep         │
-│   Good for cron / CI / API-only    │
-└────────────────────────────────────┘
-```
+- **Concept hub backfill** — `mem hubs run --plan <path>` ships its own OpenAI Batches API path (see the *Running skills* footprint below). It doesn't route through a skill file; it reads the plan JSON and calls the Batches API directly.
+- **Autopilot** — `claude -p --model sonnet --dangerously-skip-permissions` invoked from cron gives you headless skill execution with the full Claude Code tool surface. Used by the `/research` + `/discover` cron entries.
 
-### Inside Claude Code
-
-Default path. The Skill tool reads the markdown, Claude Code provides the full tool surface (`Read`, `Bash`, `WebFetch`, `WebSearch`, every `mem_*` tool via the personal_mem MCP server), and the model executes the procedure interactively. This is what you want for daily use.
-
-### Via `mem skill run`
-
-```bash
-pip install 'personal-mem[skill-runner]'   # anthropic + httpx
-export ANTHROPIC_API_KEY=sk-ant-...
-
-mem skill run research --dry-run -- https://arxiv.org/abs/1706.03762
-mem skill run research -- https://arxiv.org/abs/1706.03762
-```
-
-The runner reads the skill's frontmatter `tools` list, builds an Anthropic Messages request with tool-use schemas, and loops until the model stops issuing tool calls. It bridges a **curated subset** of the tool surface in-process:
-
-- `Read` → `Path.read_text`
-- `Bash` → `subprocess.run` with a deny-list (`rm -rf`, `sudo`, force-push, `--no-verify`, …)
-- `WebFetch` → `httpx.get` with 30s timeout
-- `mem_search`, `mem_read`, `mem_create`, `mem_concepts`, `mem_concept_source_counts` → direct calls into `Search` / `VaultManager` / `Indexer`
-
-Tools declared by the skill but not bridged by the runner are listed as warnings at startup. Those skills still run — the model simply doesn't have access to the missing tools. For the full surface, use Claude Code.
-
-`--dry-run` prints the Messages request shape (model, tool count, system/user prompt sizes, first 400 chars of the user message) without hitting the API. Use it to verify a new skill is well-formed before paying for real inference.
+If you need a new headless path that isn't either of these, add a CLI subcommand next to `mem hubs run` rather than reintroducing a generic runner.
 
 ## A note on the importers under `src/personal_mem/importers/`
 

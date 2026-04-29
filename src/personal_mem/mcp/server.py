@@ -86,6 +86,33 @@ def _strip_section(body: str, heading: str) -> str:
     return strip_section(body, heading)
 
 
+def _build_decision_body(rationale: str, title: str, outcome: str) -> str:
+    """Wrap a rationale in ``## Context`` / ``## Decision`` / ``## Consequences``.
+
+    Dedups existing headers the caller may have included so the rendered
+    decision note never carries duplicated section markers.
+    """
+    rationale = (rationale or "").lstrip()
+    rationale = re.sub(
+        r"^##\s+Context\s*\n+", "", rationale, count=1, flags=re.IGNORECASE
+    )
+    has_decision_hdr = bool(
+        re.search(r"^##\s+Decision\b", rationale, flags=re.MULTILINE | re.IGNORECASE)
+    )
+    has_consequences_hdr = bool(
+        re.search(
+            r"^##\s+Consequences\b", rationale, flags=re.MULTILINE | re.IGNORECASE
+        )
+    )
+    if has_decision_hdr:
+        body = f"## Context\n\n{rationale}"
+    else:
+        body = f"## Context\n\n{rationale}\n\n## Decision\n\n{title}"
+    if outcome == "abandoned" and not has_consequences_hdr:
+        body += "\n\n## Consequences\n\nApproach was abandoned."
+    return body
+
+
 def main() -> None:
     try:
         import mcp.server.stdio
@@ -809,13 +836,13 @@ def main() -> None:
                 name="mem_enrich",
                 description=(
                     "LLM-assisted concept assignment for vault notes missing concepts.\n\n"
-                    "Sends batches of notes to claude-haiku with the full ontology as context. "
+                    "Sends batches of notes to gpt-5-mini with the full ontology as context. "
                     "Writes assigned concepts to markdown frontmatter (permanent, Obsidian-visible). "
                     "After enrichment, automatically rebuilds the index and re-runs mem_connect "
                     "to materialize new edges as wikilinks.\n\n"
                     "Run this to fix sessions (0% concept coverage), decisions (60% missing), "
                     "and any imported notes (claude-mem, ChatGPT) that lack concepts.\n\n"
-                    "Requires ANTHROPIC_API_KEY in environment."
+                    "Requires OPENAI_API_KEY in environment."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1479,11 +1506,9 @@ def main() -> None:
             if dec.get("summary"):
                 extra_fm["summary"] = dec["summary"]
 
-            # Build body from rationale
-            rationale = dec.get("rationale", "")
-            dec_body = f"## Context\n\n{rationale}\n\n## Decision\n\n{dec['title']}"
-            if outcome == "abandoned":
-                dec_body += "\n\n## Consequences\n\nApproach was abandoned."
+            dec_body = _build_decision_body(
+                dec.get("rationale", ""), dec["title"], outcome
+            )
 
             path = vm.create_note(
                 note_type=NoteType.DECISION,
@@ -1639,12 +1664,12 @@ def main() -> None:
     def _handle_judge(args: dict) -> list[TextContent]:
         from collections import defaultdict
 
-        from personal_mem.judge import evaluate_decision
+        from personal_mem.judge import evaluate_decision, find_decisions
 
         vm = VaultManager(config=cfg)
         s = Search(config=cfg)
+        idx = Indexer(config=cfg)
 
-        # Collect target decisions
         target_decisions: list[NoteMeta] = []
 
         if args.get("decision_id"):
@@ -1653,21 +1678,22 @@ def main() -> None:
                 note = vm.read_note(vm.root / row["path"])
                 target_decisions.append(note)
         elif args.get("session_id"):
-            # Find decisions with source_session matching this session
-            for note in vm.list_notes(note_type=NoteType.DECISION, limit=100):
-                if note.frontmatter.get("source_session") == args["session_id"]:
-                    target_decisions.append(note)
+            target_decisions = find_decisions(
+                idx.db, vm, session_id=args["session_id"]
+            )
         elif args.get("project"):
-            for note in vm.list_notes(note_type=NoteType.DECISION, limit=100):
-                if note.project == args["project"]:
-                    target_decisions.append(note)
+            target_decisions = find_decisions(
+                idx.db, vm, project=args["project"]
+            )
 
         if not target_decisions:
+            idx.close()
             s.close()
             return [TextContent(type="text", text="No decisions found to evaluate.")]
 
-        # Get all decisions for supersession checks
-        all_decisions = list(vm.list_notes(note_type=NoteType.DECISION, limit=500))
+        # Get all decisions for supersession checks — no limit, indexed lookup
+        all_decisions = find_decisions(idx.db, vm)
+        idx.close()
 
         # Evaluate each decision
         results = []

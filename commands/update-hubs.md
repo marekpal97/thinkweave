@@ -12,7 +12,7 @@ description: Daily incremental sync for concept hub pages. Appends learning arti
 
 # /update-hubs — Daily Concept Hub Sync
 
-Daily incremental sync for concept hub pages. Walks unprocessed vault notes and appends learning artifacts to their concept hubs. Designed for small daily deltas (0–10 new notes × a few concepts each). For bulk backfill on a fresh vault, use `mem hubs run` instead (Anthropic SDK + Messages Batches API, see CLAUDE.md).
+Daily incremental sync for concept hub pages. Walks unprocessed vault notes and appends learning artifacts to their concept hubs. Designed for small daily deltas (0–10 new notes × a few concepts each). For bulk backfill on a fresh vault, use `mem hubs run` instead (OpenAI SDK + Batches API with gpt-5-mini, see CLAUDE.md).
 
 ## What this is
 
@@ -36,7 +36,7 @@ If `todo` is small (roughly 1–20 notes across a handful of concepts, a normal 
 If `todo` is large (>50 notes total), this is a backfill-scale job. Tell the user they have two alternatives and let them pick:
 
 - **`/backfill-hubs`** — same inline extraction as this skill, but iterates a full plan file with a per-invocation cap. Good when you want to watch it happen and intervene on hard calls.
-- **`mem hubs run --plan .mem/hubs_plan.json`** — submits the plan to the Anthropic Messages Batches API (50% discount, async, per-concept prompt caching). Good when cost efficiency matters more than interactive review.
+- **`mem hubs run --plan .mem/hubs_plan.json`** — submits the plan to the OpenAI Batches API with gpt-5-mini (50% discount, async, automatic prompt caching for the shared hub state). Good when cost efficiency matters more than interactive review.
 
 Don't force the choice — offer both and stop here unless the user confirms continuing with the incremental path.
 
@@ -48,7 +48,7 @@ For each concept, run `mem hubs plan --concept <concept>` to get the list of unp
 
 ### 3. Process notes inline
 
-For each `(concept, note)` pair in the plan, do the extraction inline via your own LLM capacity (not via the Anthropic SDK — that's only for the bulk backfill path):
+For each `(concept, note)` pair in the plan, do the extraction inline via your own LLM capacity (not via the OpenAI SDK — that's only for the bulk backfill path):
 
 1. Read the concept hub page: `Read vault/concepts/topics/{concept}.md`. Note the current essence and the last ~10 learning-log entries.
 2. Read the originating note: `Read <note_path>` where `note_path` comes from the plan.

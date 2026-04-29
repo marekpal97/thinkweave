@@ -26,7 +26,7 @@ from personal_mem.vault import VaultManager
 _MANIFEST_NAME = "chatgpt_import.json"
 
 # Cap transcript length sent to the LLM to avoid outlier costs.
-# ~100k chars ≈ 25k tokens ≈ $0.004 per conversation with gpt-4o-mini.
+# ~100k chars ≈ 25k tokens per conversation with gpt-5-mini.
 MAX_TRANSCRIPT_CHARS = 100_000
 
 SUMMARIZE_PROMPT = """\
@@ -173,7 +173,7 @@ def parse_conversations(path: Path) -> list[Thread]:
 # ── Summarizer ─────────────────────────────────────────────────────
 
 
-def summarize_thread(thread: Thread, api_key: str, model: str = "gpt-4o-mini") -> dict:
+def summarize_thread(thread: Thread, api_key: str, model: str = "gpt-5-mini") -> dict:
     """Call OpenAI API to produce a structured summary.
 
     Returns dict with keys: summary, key_questions, key_insights, concepts.
@@ -434,7 +434,7 @@ def _dry_run_report(threads: list[Thread]) -> dict:
     print(f"  Conversations: {len(threads)}")
     print(f"  Total messages: {total_messages} ({total_user} user)")
     print(f"  Total text: {total_chars:,} chars (~{total_chars // 4:,} tokens)")
-    print(f"  Est. cost (gpt-4o-mini): ~${total_chars / 4 * 0.00000015 + len(threads) * 500 * 0.0000006:.2f}")
+    print(f"  Tokens: ~{total_chars // 4:,} in · ~{len(threads) * 500:,} out (model: gpt-5-mini — multiply by OpenAI $/token for cost)")
 
     if threads:
         oldest = threads[0]

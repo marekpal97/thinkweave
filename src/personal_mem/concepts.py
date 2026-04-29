@@ -181,7 +181,20 @@ def suggest_similar(new_concept: str, existing: list[str], max_suggestions: int 
 
 
 def _ontology_path() -> Path:
-    """Path to the ontology YAML file (shipped with the package)."""
+    """Resolve the ontology YAML path.
+
+    Prefers a vault-local override at `{vault}/.mem/ontology.yaml` so personal
+    vocabularies can grow independently of the minimal seed shipped with the
+    package. Falls back to the packaged seed if no override exists.
+    """
+    try:
+        from personal_mem.config import load_config
+
+        override = load_config().mem_dir / "ontology.yaml"
+        if override.exists():
+            return override
+    except Exception:
+        pass
     return Path(__file__).parent / "ontology.yaml"
 
 

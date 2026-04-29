@@ -166,22 +166,14 @@ print(path)
 # Expect: .../vault/sources/emails/test-email/source.md
 ```
 
-Then use the skill end-to-end from Claude Code (or `mem skill run email`) and check `mem_search(query='...', type='source')` returns your new entry.
+Then use the skill end-to-end from Claude Code and check `mem_search(query='...', type='source')` returns your new entry.
 
 ## Running skills headless
 
-Every skill under `commands/` can run either interactively inside Claude Code (via the Skill tool) or headless via the Anthropic API:
+Skills run interactively inside Claude Code via the Skill tool — that's the default and primary path. For headless, non-interactive workflows there are two targeted options:
 
-```bash
-pip install 'personal-mem[skill-runner]'   # adds anthropic + httpx
-export ANTHROPIC_API_KEY=sk-ant-...
-
-mem skill list                              # see every skill + its capabilities
-mem skill run research --dry-run            # preview the Messages request
-mem skill run research -- https://arxiv.org/abs/1706.03762
-```
-
-The runner reads the same skill markdown, bridges a subset of `mem_*` tools in-process (`mem_search`, `mem_create`, `mem_read`, `mem_concepts`, `mem_concept_source_counts`), and local tools (`Read`, `Bash`, `WebFetch`) via stdlib and `httpx`. Tools the runner hasn't bridged yet are listed as warnings at startup — for full tool coverage, run the skill inside Claude Code. `Bash` is protected by a deny-list (`rm -rf`, `sudo`, force-push, `--no-verify`, …).
+- **Concept hub backfill** — `mem hubs run --plan .mem/hubs_plan.json` ships its own OpenAI Batches API path (gpt-5-mini). Install with `pip install 'personal-mem[hubs]'` and export `OPENAI_API_KEY`.
+- **Autopilot** — `claude -p --model sonnet --dangerously-skip-permissions` from cron gives you headless skill execution with the full Claude Code tool surface. Used by the `/research` + `/discover` cron entries.
 
 ## Configuration
 
@@ -189,7 +181,7 @@ The runner reads the same skill markdown, bridges a subset of `mem_*` tools in-p
 |---|---|---|
 | `PERSONAL_MEM_VAULT` | `~/vault` | Vault root directory |
 | `PERSONAL_MEM_PROJECT` | auto (git) | Default project name |
-| `OPENAI_API_KEY` | — | Enables embeddings for semantic search |
+| `OPENAI_API_KEY` | — | Required by `mem enrich`, the ChatGPT importer, embeddings, and `mem hubs run` |
 
 Project detection walks up from the current directory looking for `.git` (file or directory — worktrees supported). Override with `PERSONAL_MEM_PROJECT` per worktree if you need explicit control.
 

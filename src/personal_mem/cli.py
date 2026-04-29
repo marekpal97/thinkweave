@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,21 +189,37 @@ def main(argv: list[str] | None = None) -> None:
 
     p_hubs_run = hubs_sub.add_parser(
         "run",
-        help="Execute a backfill plan via Anthropic SDK + Messages Batches API",
+        help="Execute a backfill plan via the OpenAI SDK + Batches API",
     )
     p_hubs_run.add_argument(
         "--plan", default="", help="Path to plan JSON (default: .mem/hubs_plan.json)"
     )
     p_hubs_run.add_argument(
         "--model",
-        default="claude-sonnet-4-5",
-        help="Anthropic model to use (default: claude-sonnet-4-5)",
+        default="gpt-5-mini",
+        help="OpenAI model to use (default: gpt-5-mini)",
     )
     p_hubs_run.add_argument(
         "--max-tokens",
         type=int,
         default=1024,
         help="Max output tokens per request (default: 1024)",
+    )
+    p_hubs_run.add_argument(
+        "--poll-interval",
+        type=int,
+        default=30,
+        help="Seconds between batch status polls (default: 30)",
+    )
+    p_hubs_run.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=4_500_000,
+        help=(
+            "Cap enqueued input tokens per batch (default: 4,500,000, safely "
+            "under OpenAI's 5M gpt-5-mini org limit). 0 = no cap. Requests "
+            "past the cap are deferred to a subsequent run."
+        ),
     )
     p_hubs_run.add_argument(
         "--dry-run",
@@ -214,6 +232,63 @@ def main(argv: list[str] | None = None) -> None:
         help="Show processed state per concept (cited vs total)",
     )
     p_hubs_status.add_argument("--concept", default="", help="Restrict to one concept")
+
+    p_hubs_repair = hubs_sub.add_parser(
+        "repair",
+        help=(
+            "Retroactively fix hub log entries: swap backfill dates for the "
+            "cited note's real date, strip duplicated inline wikilink citations."
+        ),
+    )
+    p_hubs_repair.add_argument("--concept", default="", help="Restrict to one concept")
+    p_hubs_repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report changes per hub without writing",
+    )
+
+    p_hubs_link = hubs_sub.add_parser(
+        "link",
+        help=(
+            "Temporal-DAG linkage pass: rewrite flat `new` flags into "
+            "agrees/contradicts/extends relationships via gpt-5-mini Batches API."
+        ),
+    )
+    p_hubs_link.add_argument("--concept", default="", help="Restrict to one concept")
+    p_hubs_link.add_argument(
+        "--model",
+        default="gpt-5-mini",
+        help="OpenAI model to use (default: gpt-5-mini)",
+    )
+    p_hubs_link.add_argument(
+        "--max-tokens",
+        type=int,
+        default=2048,
+        help="Max output tokens per request (default: 2048; linkage responses are longer than per-note extractions)",
+    )
+    p_hubs_link.add_argument(
+        "--poll-interval",
+        type=int,
+        default=30,
+        help="Seconds between batch status polls (default: 30)",
+    )
+    p_hubs_link.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=4_500_000,
+        help="Cap enqueued input tokens per batch (default: 4,500,000, under OpenAI's 5M org limit). 0 = no cap.",
+    )
+    p_hubs_link.add_argument(
+        "--min-entries",
+        type=int,
+        default=2,
+        help="Skip hubs with fewer than N entries (default: 2)",
+    )
+    p_hubs_link.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build requests and print the first one, but don't submit to the API",
+    )
 
     # --- mem landing ---
     p_landing = sub.add_parser("landing", help="Generate project landing documents")
@@ -255,7 +330,7 @@ def main(argv: list[str] | None = None) -> None:
     # --- mem enrich ---
     p_enrich = sub.add_parser(
         "enrich",
-        help="LLM-assisted concept assignment for notes missing concepts (uses claude-haiku)",
+        help="LLM-assisted concept assignment for notes missing concepts (uses gpt-5-mini)",
     )
     p_enrich.add_argument("--project", "-p", default="", help="Scope to one project")
     p_enrich.add_argument(
@@ -323,32 +398,6 @@ def main(argv: list[str] | None = None) -> None:
     skill_sub.add_parser("list", help="List all skills with their frontmatter")
     p_skill_show = skill_sub.add_parser("show", help="Show a skill's frontmatter + head")
     p_skill_show.add_argument("name", help="Skill name (without .md)")
-    p_skill_run = skill_sub.add_parser(
-        "run",
-        help="Run a skill via the Anthropic API (requires personal-mem[skill-runner])",
-    )
-    p_skill_run.add_argument("name", help="Skill name (without .md)")
-    p_skill_run.add_argument(
-        "skill_args",
-        nargs="*",
-        help="Arguments passed to the skill as user prompt context",
-    )
-    p_skill_run.add_argument(
-        "--model",
-        default="claude-opus-4-5",
-        help="Anthropic model to use (default: claude-opus-4-5)",
-    )
-    p_skill_run.add_argument(
-        "--max-turns",
-        type=int,
-        default=40,
-        help="Cap the tool-call loop (default: 40)",
-    )
-    p_skill_run.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print the Messages call shape without hitting the API",
-    )
 
     args = parser.parse_args(argv)
 
@@ -443,6 +492,10 @@ def cmd_hubs(args: argparse.Namespace) -> None:
         _hubs_run(cfg, args)
     elif action == "status":
         _hubs_status(cfg, args)
+    elif action == "repair":
+        _hubs_repair(cfg, args)
+    elif action == "link":
+        _hubs_link(cfg, args)
     else:
         print(f"Unknown hubs action: {action}")
         sys.exit(1)
@@ -538,10 +591,16 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
                 title=note_entry.get("title", ""),
                 body=body,
             )
+            # Use the source note's own date so the learning log carries
+            # real temporal structure (when the artifact was learned, not
+            # when this backfill ran). Fall back to today only if the plan
+            # entry is missing a date.
+            note_date = (note_entry.get("date") or today)[:10]
             requests_to_send.append(
                 {
                     "concept": concept,
                     "note_id": note_entry["id"],
+                    "note_date": note_date,
                     "system": HUB_EXTRACTION_SYSTEM,
                     "user": user_prompt,
                     "cache_key": concept,
@@ -562,85 +621,168 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
             print(r["user"][:800])
         return
 
-    # Import Anthropic SDK lazily so the optional dependency is only
+    # Import OpenAI SDK lazily so the optional dependency is only
     # required when actually running.
     try:
-        from anthropic import Anthropic
-        from anthropic.types.messages.batch_create_params import Request
-        from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+        from openai import OpenAI
     except ImportError:
         print(
-            "mem hubs run requires the Anthropic SDK.\n"
-            "Install with: uv add --optional hubs anthropic  "
-            "(or `pip install anthropic`)"
+            "mem hubs run requires the OpenAI SDK.\n"
+            "Install with: uv add --optional hubs openai  "
+            "(or `pip install openai`)"
         )
         sys.exit(1)
 
-    client = Anthropic()
+    from personal_mem.enrich import load_openai_api_key
 
-    # Group requests into a single Messages Batch. Each request gets a
-    # custom_id so we can map results back to (concept, note_id). The
-    # system prompt is marked cacheable — grouping by concept means
-    # requests for the same concept share a prefix.
-    batch_requests = []
-    id_to_key: dict[str, tuple[str, str]] = {}
-    for i, r in enumerate(requests_to_send):
-        custom_id = f"req-{i:05d}"
-        id_to_key[custom_id] = (r["concept"], r["note_id"])
-        batch_requests.append(
-            Request(
-                custom_id=custom_id,
-                params=MessageCreateParamsNonStreaming(
-                    model=args.model,
-                    max_tokens=args.max_tokens,
-                    system=[
-                        {
-                            "type": "text",
-                            "text": r["system"],
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
-                    messages=[{"role": "user", "content": r["user"]}],
-                ),
+    api_key = load_openai_api_key()
+    if not api_key:
+        print(
+            "OPENAI_API_KEY is not set (neither in env nor in the project .env)."
+            " Export it or add OPENAI_API_KEY=sk-... to the repo .env."
+        )
+        sys.exit(1)
+    os.environ["OPENAI_API_KEY"] = api_key
+
+    client = OpenAI()
+
+    # Sort requests by concept so batch rows for the same concept are
+    # contiguous — maximises OpenAI's automatic prompt-cache hits on the
+    # shared system prompt + hub state (cached for 5-10 min once seen).
+    sorted_requests = sorted(
+        requests_to_send,
+        key=lambda r: (r["cache_key"], r["note_id"]),
+    )
+
+    # Cap total enqueued tokens to stay under the OpenAI org limit. Tokens
+    # estimated as chars / 4 — matches the heuristic used in build_plan.
+    if args.max_input_tokens > 0:
+        budget = args.max_input_tokens
+        capped: list[dict] = []
+        total_tokens = 0
+        for r in sorted_requests:
+            est = (len(r["system"]) + len(r["user"])) // 4
+            if total_tokens + est > budget:
+                break
+            capped.append(r)
+            total_tokens += est
+        deferred = len(sorted_requests) - len(capped)
+        if deferred > 0:
+            print(
+                f"Capping at {len(capped)} request(s) (~{total_tokens:,} input "
+                f"tokens) to stay under --max-input-tokens={budget:,}. "
+                f"{deferred} request(s) deferred — rerun `mem hubs plan` + "
+                f"`mem hubs run` after this batch completes."
             )
+        sorted_requests = capped
+
+    # Build the JSONL batch file. One line per request; OpenAI Batches
+    # expects the raw /v1/chat/completions body under the `body` key.
+    # custom_id → (concept, note_id, note_date) — note_date is threaded
+    # through so parse_llm_response stamps each entry with the source
+    # note's date instead of a uniform backfill date.
+    id_to_key: dict[str, tuple[str, str, str]] = {}
+    jsonl_lines: list[str] = []
+    for i, r in enumerate(sorted_requests):
+        custom_id = f"req-{i:05d}"
+        id_to_key[custom_id] = (r["concept"], r["note_id"], r["note_date"])
+        body = {
+            "model": args.model,
+            "max_completion_tokens": args.max_tokens,
+            "messages": [
+                {"role": "system", "content": r["system"]},
+                {"role": "user", "content": r["user"]},
+            ],
+        }
+        jsonl_lines.append(
+            json.dumps({
+                "custom_id": custom_id,
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": body,
+            })
         )
 
-    print(f"Submitting batch of {len(batch_requests)} request(s) to {args.model}...")
-    batch = client.messages.batches.create(requests=batch_requests)
+    batch_input_path = cfg.mem_dir / "hubs_batch_input.jsonl"
+    batch_input_path.parent.mkdir(parents=True, exist_ok=True)
+    batch_input_path.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
+    print(f"Wrote batch input: {batch_input_path} ({len(jsonl_lines)} line(s))")
+
+    print(f"Uploading batch input to OpenAI Files API...")
+    with batch_input_path.open("rb") as f:
+        input_file = client.files.create(file=f, purpose="batch")
+    print(f"Input file ID: {input_file.id}")
+
+    print(f"Submitting batch of {len(jsonl_lines)} request(s) to {args.model}...")
+    batch = client.batches.create(
+        input_file_id=input_file.id,
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+        metadata={"source": "personal-mem.hubs"},
+    )
     print(f"Batch ID: {batch.id}")
-    print("Polling for completion (Batches API typically finishes in minutes)...")
+    (cfg.mem_dir / "hubs_last_run").write_text(
+        json.dumps({"batch_id": batch.id, "input_file_id": input_file.id}, indent=2),
+        encoding="utf-8",
+    )
+    print("Polling for completion (typically minutes for small batches, up to 24h for large)...")
 
     import time as _time
+    terminal_statuses = {"completed", "failed", "expired", "cancelled"}
     while True:
-        info = client.messages.batches.retrieve(batch.id)
-        status = info.processing_status
-        counts = info.request_counts
+        batch = client.batches.retrieve(batch.id)
+        counts = batch.request_counts
         print(
-            f"  status={status} "
-            f"succeeded={counts.succeeded} "
-            f"errored={counts.errored} "
-            f"processing={counts.processing}"
+            f"  status={batch.status} "
+            f"completed={counts.completed if counts else 0} "
+            f"failed={counts.failed if counts else 0} "
+            f"total={counts.total if counts else 0}"
         )
-        if status == "ended":
+        if batch.status in terminal_statuses:
             break
-        _time.sleep(15)
+        _time.sleep(args.poll_interval)
 
-    # Fetch and apply results
+    if batch.status != "completed":
+        print(f"Batch did not complete cleanly: status={batch.status}")
+        if batch.errors:
+            print(f"Errors: {batch.errors}")
+        sys.exit(1)
+
+    if not batch.output_file_id:
+        print("Batch completed but has no output_file_id.")
+        sys.exit(1)
+
+    print(f"Downloading results from output file {batch.output_file_id}...")
+    output_content = client.files.content(batch.output_file_id).text
+
+    # Parse results and apply entries
     applied = 0
     essence_flagged: set[str] = set()
-    for result in client.messages.batches.results(batch.id):
-        if result.result.type != "succeeded":
+    for line in output_content.splitlines():
+        if not line.strip():
             continue
-        concept, note_id = id_to_key.get(result.custom_id, ("", ""))
+        try:
+            result = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        custom_id = result.get("custom_id", "")
+        concept, note_id, note_date = id_to_key.get(custom_id, ("", "", ""))
         if not concept:
             continue
-        content_blocks = result.result.message.content
-        text_parts = [b.text for b in content_blocks if getattr(b, "type", "") == "text"]
-        if not text_parts:
+        if result.get("error"):
             continue
-        raw = "\n".join(text_parts)
+        response = result.get("response", {})
+        if response.get("status_code") != 200:
+            continue
+        body = response.get("body", {})
+        choices = body.get("choices", [])
+        if not choices:
+            continue
+        raw = choices[0].get("message", {}).get("content", "")
+        if not raw:
+            continue
         entries, needs_essence = parse_llm_response(
-            raw, note_id=note_id, run_date=today
+            raw, note_id=note_id, run_date=note_date or today
         )
         if entries:
             append_log_entries(cfg, concept, entries)
@@ -655,15 +797,31 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
             print(f"  {c}")
         print("Run /mem-resolve-concepts to review flagged essences.")
 
-    # Reindex touched hub pages incrementally
+    # Reindex touched hub pages incrementally — best-effort against SQLite
+    # lock contention from a live MCP server.
+    import sqlite3 as _sqlite3
+
     idx = Indexer(config=cfg)
-    touched_concepts = {c for c, _ in id_to_key.values()}
+    touched_concepts = {c for c, _, _ in id_to_key.values()}
+    reindex_failures = 0
     for concept in touched_concepts:
         path = concept_hub_path(cfg, concept)
-        if path.exists():
+        if not path.exists():
+            continue
+        try:
             idx.index_file(path)
+        except _sqlite3.OperationalError as e:
+            reindex_failures += 1
+            if reindex_failures == 1:
+                print(f"  warning: reindex hit SQLite contention ({e}); continuing")
     idx.close()
-    print(f"Reindexed {len(touched_concepts)} hub page(s).")
+    print(f"Reindexed {len(touched_concepts) - reindex_failures} of {len(touched_concepts)} hub page(s).")
+    if reindex_failures:
+        print(
+            f"  {reindex_failures} hub(s) couldn't be reindexed due to DB "
+            f"contention. Run `uv run mem index` once the contending process "
+            f"releases the lock."
+        )
 
 
 def _hubs_status(cfg, args: argparse.Namespace) -> None:
@@ -692,6 +850,406 @@ def _hubs_status(cfg, args: argparse.Namespace) -> None:
     for concept, total, cited, todo in rows:
         print(f"{concept:<40} {total:>6} {cited:>6} {todo:>6}")
     print(f"\n{len(rows)} concept(s), {sum(r[3] for r in rows)} unprocessed note-citations total.")
+
+
+def _hubs_repair(cfg, args: argparse.Namespace) -> None:
+    """Retroactive fix: swap backfill dates for source-note dates, strip
+    duplicated inline wikilink citations. No LLM calls.
+    """
+    from personal_mem.hubs import (
+        parse_concept_hub,
+        topics_dir,
+        write_concept_hub,
+        _strip_inline_wikilinks,
+    )
+    from personal_mem.indexer import Indexer
+
+    topics = topics_dir(cfg)
+    if not topics.exists():
+        print(f"No concept-hub topics directory at {topics}.")
+        return
+
+    # Build id → YYYY-MM-DD map from the SQLite index in one pass.
+    idx = Indexer(config=cfg)
+    id_to_date: dict[str, str] = {}
+    for row in idx.db.execute("SELECT id, date FROM notes WHERE date IS NOT NULL AND date != ''"):
+        id_to_date[row["id"]] = str(row["date"])[:10]
+    idx.close()
+
+    hub_files = sorted(topics.glob("*.md"))
+    if args.concept:
+        target = args.concept.lower()
+        hub_files = [p for p in hub_files if p.stem == target]
+
+    changed_hubs = 0
+    changed_entries = 0
+    citation_cleanups = 0
+    date_updates = 0
+
+    for hub_path in hub_files:
+        hub = parse_concept_hub(hub_path)
+        if not hub.log_entries:
+            continue
+        dirty = False
+        for entry in hub.log_entries:
+            new_date = id_to_date.get(entry.citation, entry.date)
+            new_text = _strip_inline_wikilinks(entry.text) if entry.text else entry.text
+            if new_date != entry.date:
+                entry.date = new_date
+                date_updates += 1
+                dirty = True
+            if new_text != entry.text:
+                entry.text = new_text
+                citation_cleanups += 1
+                dirty = True
+        if dirty:
+            changed_hubs += 1
+            changed_entries += sum(
+                1 for e in hub.log_entries
+                if id_to_date.get(e.citation, e.date) == e.date
+            )
+            if args.dry_run:
+                print(f"[dry-run] would rewrite {hub_path.name}")
+            else:
+                write_concept_hub(hub)
+
+    print(
+        f"Repaired {changed_hubs} hub(s) — "
+        f"{date_updates} date swap(s), {citation_cleanups} citation cleanup(s)."
+    )
+    if args.dry_run:
+        print("(dry-run: no files written)")
+        return
+
+    # Reindex touched hub files so the FTS body reflects the new lines.
+    # Best-effort: a live MCP server can hold a conflicting SQLite writer
+    # lock. If that happens we log and move on — the vault file content is
+    # already correct; the user can rerun `mem index` after the contending
+    # process releases its lock.
+    import sqlite3 as _sqlite3
+
+    idx = Indexer(config=cfg)
+    reindex_failures = 0
+    for hub_path in hub_files:
+        if not hub_path.exists():
+            continue
+        try:
+            idx.index_file(hub_path)
+        except _sqlite3.OperationalError as e:
+            reindex_failures += 1
+            if reindex_failures == 1:
+                print(f"  warning: reindex hit SQLite contention ({e}); continuing")
+    idx.close()
+    if reindex_failures:
+        print(
+            f"  {reindex_failures} hub(s) couldn't be reindexed due to DB "
+            f"contention. Run `uv run mem index` once the contending process "
+            f"releases the lock."
+        )
+
+
+def _hubs_link(cfg, args: argparse.Namespace) -> None:
+    """Temporal-DAG linkage: rewrite flat `new` flags based on chronological
+    relationships between entries on the same hub. One LLM request per hub
+    via the OpenAI Batches API.
+    """
+    from personal_mem.hubs import (
+        ALLOWED_FLAGS,
+        LogEntry,
+        concept_hub_path,
+        parse_concept_hub,
+        topics_dir,
+        write_concept_hub,
+    )
+    from personal_mem.indexer import Indexer
+
+    topics = topics_dir(cfg)
+    hub_files = sorted(topics.glob("*.md"))
+    if args.concept:
+        target = args.concept.lower()
+        hub_files = [p for p in hub_files if p.stem == target]
+
+    # Collect hubs that have enough entries to bother with.
+    work: list[tuple[str, list[LogEntry], str]] = []  # (concept, entries_chrono, essence)
+    for hub_path in hub_files:
+        hub = parse_concept_hub(hub_path)
+        if len(hub.log_entries) < args.min_entries:
+            continue
+        entries_sorted = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
+        work.append((hub.concept, entries_sorted, hub.essence))
+
+    if not work:
+        print(f"No hubs with ≥{args.min_entries} entries found.")
+        return
+
+    print(f"Building linkage requests for {len(work)} hub(s)...")
+
+    system_prompt = _HUB_LINKAGE_SYSTEM
+    requests_to_send: list[dict] = []
+    for concept, entries, essence in work:
+        user_prompt = _build_linkage_user_prompt(concept, essence, entries)
+        requests_to_send.append({
+            "concept": concept,
+            "system": system_prompt,
+            "user": user_prompt,
+            "entry_count": len(entries),
+        })
+
+    print(f"Built {len(requests_to_send)} request(s).")
+
+    if args.dry_run:
+        print("\n--- DRY RUN: first request preview ---")
+        r = requests_to_send[0]
+        print(f"concept: {r['concept']}  entries: {r['entry_count']}")
+        print(f"system: {len(r['system'])} chars  user: {len(r['user'])} chars")
+        print("\n--- user prompt (first 1200 chars) ---")
+        print(r["user"][:1200])
+        return
+
+    # Cap input tokens against OpenAI's org limit.
+    if args.max_input_tokens > 0:
+        budget = args.max_input_tokens
+        capped: list[dict] = []
+        total_tokens = 0
+        for r in requests_to_send:
+            est = (len(r["system"]) + len(r["user"])) // 4
+            if total_tokens + est > budget:
+                break
+            capped.append(r)
+            total_tokens += est
+        if len(capped) < len(requests_to_send):
+            deferred = len(requests_to_send) - len(capped)
+            print(
+                f"Capping at {len(capped)} hub(s) (~{total_tokens:,} input tokens); "
+                f"{deferred} deferred to a subsequent run."
+            )
+        requests_to_send = capped
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print(
+            "mem hubs link requires the OpenAI SDK.\n"
+            "Install with: uv add --optional hubs openai"
+        )
+        sys.exit(1)
+
+    from personal_mem.enrich import load_openai_api_key
+
+    api_key = load_openai_api_key()
+    if not api_key:
+        print("OPENAI_API_KEY is not set.")
+        sys.exit(1)
+    os.environ["OPENAI_API_KEY"] = api_key
+    client = OpenAI()
+
+    # custom_id → concept; we re-read the hub at apply time to avoid
+    # stale entry lists if another process edited the file in between.
+    id_to_concept: dict[str, str] = {}
+    jsonl_lines: list[str] = []
+    for i, r in enumerate(requests_to_send):
+        custom_id = f"link-{i:05d}"
+        id_to_concept[custom_id] = r["concept"]
+        body = {
+            "model": args.model,
+            "max_completion_tokens": args.max_tokens,
+            "messages": [
+                {"role": "system", "content": r["system"]},
+                {"role": "user", "content": r["user"]},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        jsonl_lines.append(json.dumps({
+            "custom_id": custom_id,
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": body,
+        }))
+
+    batch_input_path = cfg.mem_dir / "hubs_link_input.jsonl"
+    batch_input_path.parent.mkdir(parents=True, exist_ok=True)
+    batch_input_path.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
+    print(f"Wrote batch input: {batch_input_path} ({len(jsonl_lines)} line(s))")
+
+    with batch_input_path.open("rb") as f:
+        input_file = client.files.create(file=f, purpose="batch")
+    print(f"Input file ID: {input_file.id}")
+
+    batch = client.batches.create(
+        input_file_id=input_file.id,
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+        metadata={"source": "personal-mem.hubs-link"},
+    )
+    print(f"Batch ID: {batch.id}")
+    (cfg.mem_dir / "hubs_last_link_run").write_text(
+        json.dumps({"batch_id": batch.id, "input_file_id": input_file.id}, indent=2),
+        encoding="utf-8",
+    )
+
+    import time as _time
+    terminal_statuses = {"completed", "failed", "expired", "cancelled"}
+    while True:
+        batch = client.batches.retrieve(batch.id)
+        counts = batch.request_counts
+        print(
+            f"  status={batch.status} "
+            f"completed={counts.completed if counts else 0} "
+            f"failed={counts.failed if counts else 0} "
+            f"total={counts.total if counts else 0}"
+        )
+        if batch.status in terminal_statuses:
+            break
+        _time.sleep(args.poll_interval)
+
+    if batch.status != "completed" or not batch.output_file_id:
+        print(f"Batch did not complete cleanly: status={batch.status}")
+        if batch.errors:
+            print(f"Errors: {batch.errors}")
+        sys.exit(1)
+
+    output_content = client.files.content(batch.output_file_id).text
+
+    applied_hubs = 0
+    applied_entries = 0
+    for line in output_content.splitlines():
+        if not line.strip():
+            continue
+        try:
+            result = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        custom_id = result.get("custom_id", "")
+        concept = id_to_concept.get(custom_id, "")
+        if not concept or result.get("error"):
+            continue
+        response = result.get("response", {})
+        if response.get("status_code") != 200:
+            continue
+        raw = (
+            response.get("body", {})
+            .get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        if not raw:
+            continue
+        revisions = _parse_linkage_response(raw)
+        if not revisions:
+            continue
+
+        hub_path = concept_hub_path(cfg, concept)
+        hub = parse_concept_hub(hub_path, concept=concept)
+        entries_sorted = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
+        if len(revisions) != len(entries_sorted):
+            # Length mismatch — skip rather than misalign.
+            continue
+
+        any_change = False
+        for entry, rev in zip(entries_sorted, revisions):
+            new_flag = rev.get("flag", "new").lower()
+            if new_flag not in ALLOWED_FLAGS:
+                continue
+            new_ref = str(rev.get("ref") or "").strip()
+            # Validate ref: must be YYYY-MM-DD and belong to an earlier entry.
+            if new_flag == "new":
+                new_ref = ""
+            if new_ref and not re.match(r"^\d{4}-\d{2}-\d{2}$", new_ref):
+                new_ref = ""
+            if new_flag != entry.flag or new_ref != entry.ref:
+                entry.flag = new_flag
+                entry.ref = new_ref
+                any_change = True
+                applied_entries += 1
+
+        if any_change:
+            # Preserve existing order on disk — write_concept_hub renders
+            # hub.log_entries as-is, so we only commit changed metadata.
+            hub.log_entries = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
+            write_concept_hub(hub)
+            applied_hubs += 1
+
+    print(f"\nApplied linkage revisions to {applied_hubs} hub(s), {applied_entries} entries updated.")
+
+    # Best-effort reindex — see _hubs_repair for the SQLite contention
+    # rationale.
+    import sqlite3 as _sqlite3
+
+    idx = Indexer(config=cfg)
+    reindex_failures = 0
+    for concept in set(id_to_concept.values()):
+        p = concept_hub_path(cfg, concept)
+        if not p.exists():
+            continue
+        try:
+            idx.index_file(p)
+        except _sqlite3.OperationalError as e:
+            reindex_failures += 1
+            if reindex_failures == 1:
+                print(f"  warning: reindex hit SQLite contention ({e}); continuing")
+    idx.close()
+    if reindex_failures:
+        print(
+            f"  {reindex_failures} hub(s) couldn't be reindexed. "
+            f"Run `uv run mem index` to catch up."
+        )
+
+
+_HUB_LINKAGE_SYSTEM = """You are revising a learning log for one concept in a personal knowledge vault. Each entry is a distilled learning artifact the user captured from a note. Entries are listed in chronological order (oldest first).
+
+For each entry, decide its relationship to entries that appear EARLIER in the list:
+- "new" — introduces something not covered by any earlier entry
+- "agrees" — reinforces or confirms an earlier entry
+- "contradicts" — directly conflicts with an earlier entry
+- "extends" — elaborates on or refines an earlier entry
+
+Rules for the ref field:
+- flag "new" → ref MUST be empty.
+- flag "agrees" → ref is optional (empty if no single earlier entry to cite).
+- flag "contradicts" → ref is REQUIRED and must be the date of one earlier entry.
+- flag "extends" → ref is REQUIRED and must be the date of one earlier entry.
+
+Be conservative: default to "new" unless the relationship is clear. Never cite an entry that isn't earlier in the list. Never invent dates — only cite dates that appear in the input.
+
+Return a single JSON object of the form:
+  {"entries": [{"flag": "...", "ref": "YYYY-MM-DD or empty"}, ...]}
+The array length must EXACTLY match the input. Preserve input order.
+"""
+
+
+def _build_linkage_user_prompt(concept: str, essence: str, entries: list) -> str:
+    essence_text = essence.strip() or "*No synthesis yet.*"
+    lines = [f"Concept: `{concept}`", "", f"Essence:\n{essence_text}", "", "Entries (chronological):"]
+    for i, e in enumerate(entries, start=1):
+        lines.append(f"{i}. {e.date} — {e.text}")
+    lines.append("")
+    lines.append("Output JSON only.")
+    return "\n".join(lines)
+
+
+def _parse_linkage_response(raw: str) -> list[dict]:
+    """Parse the linkage LLM response into a list of {flag, ref} dicts.
+
+    Tolerates code-fenced JSON. Returns [] on any parse failure.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if isinstance(e, dict)]
 
 
 def cmd_concepts(args: argparse.Namespace) -> None:
@@ -1910,18 +2468,6 @@ def cmd_skill(args: argparse.Namespace) -> None:
             print(line)
         if len(body_lines) > 30:
             print(f"... ({len(body_lines) - 30} more lines)")
-        return
-
-    if action == "run":
-        from personal_mem.skill_runner import run_skill
-
-        run_skill(
-            name=args.name,
-            skill_args=args.skill_args,
-            model=args.model,
-            max_turns=args.max_turns,
-            dry_run=args.dry_run,
-        )
         return
 
     # No action given → default to list

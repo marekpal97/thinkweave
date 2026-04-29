@@ -9,7 +9,11 @@ import pytest
 
 from personal_mem.config import Config
 from personal_mem.indexer import Indexer
-from personal_mem.mcp.server import _flush_insight, _parse_candidate_insights
+from personal_mem.mcp.server import (
+    _build_decision_body,
+    _flush_insight,
+    _parse_candidate_insights,
+)
 from personal_mem.vault import parse_frontmatter
 from personal_mem.schemas import NoteType
 from personal_mem.search import Search
@@ -331,3 +335,128 @@ class TestExtractLogic:
         names = sorted(f.name for f in derived_final)
         assert "first-insight.md" in names
         assert "second-insight.md" in names
+
+
+class TestExtractFTSWriteThrough:
+    """Regression for n-a58ea683: notes created via mem_extract's per-file
+    index_file path must be immediately findable via FTS, with no manual
+    `mem index --full` required. A follow-up incremental rebuild must also
+    leave FTS intact (the original bug was FTS going stale after a no-op
+    incremental because hashes already matched).
+    """
+
+    def test_index_file_makes_note_fts_searchable(
+        self, vault, indexer, search
+    ):
+        session_path = vault.create_note(
+            NoteType.SESSION,
+            "ses-fts",
+            body="## Summary\n",
+            project="test",
+            extra_frontmatter={"source_session": "ses-fts"},
+        )
+        indexer.index_file(session_path)
+        sid = vault.read_note(session_path).id
+
+        dec_path = vault.create_note(
+            NoteType.DECISION,
+            "ExtractFTSRegression",
+            body="## Context\n\nZingZangZoomUnique phrase.\n\n## Decision\n\nOK",
+            project="test",
+            extra_frontmatter={
+                "source_session": sid,
+                "derived_from": [sid],
+                "status": "accepted",
+                "committed": True,
+            },
+            output_dir=session_path.parent,
+        )
+        indexer.index_file(dec_path)
+
+        body_hits = [r.id for r in search.search("ZingZangZoomUnique")]
+        title_hits = [r.id for r in search.search("ExtractFTSRegression")]
+        dec_id = vault.read_note(dec_path).id
+        assert dec_id in body_hits
+        assert dec_id in title_hits
+
+    def test_post_extract_incremental_rebuild_keeps_fts_fresh(
+        self, vault, indexer, search
+    ):
+        session_path = vault.create_note(
+            NoteType.SESSION,
+            "ses-fts2",
+            body="## Summary\n",
+            project="test",
+            extra_frontmatter={"source_session": "ses-fts2"},
+        )
+        indexer.index_file(session_path)
+        sid = vault.read_note(session_path).id
+
+        dec_path = vault.create_note(
+            NoteType.DECISION,
+            "IncrementalRebuildCheck",
+            body="## Context\n\nQQRRPhraseUnique.\n\n## Decision\n\nOK",
+            project="test",
+            extra_frontmatter={
+                "source_session": sid,
+                "derived_from": [sid],
+                "status": "accepted",
+                "committed": True,
+            },
+            output_dir=session_path.parent,
+        )
+        indexer.index_file(dec_path)
+
+        stats = indexer.rebuild(full=False)
+        assert stats["indexed"] == 0
+
+        dec_id = vault.read_note(dec_path).id
+        assert dec_id in [r.id for r in search.search("QQRRPhraseUnique")]
+
+
+class TestBuildDecisionBody:
+    """Regression for n-c41e6f13: wrapper headers must not duplicate when
+    the caller-provided rationale already includes them.
+    """
+
+    def test_plain_rationale_gets_wrapper(self):
+        out = _build_decision_body("A simple reason.", "My Title", "committed")
+        assert out.count("## Context") == 1
+        assert out.count("## Decision") == 1
+        assert "A simple reason." in out
+        assert out.endswith("My Title")
+
+    def test_leading_context_header_dedup(self):
+        rationale = "## Context\n\nSurfaced during the drain."
+        out = _build_decision_body(rationale, "My Title", "committed")
+        assert out.count("## Context") == 1
+        assert "Surfaced during the drain." in out
+
+    def test_embedded_decision_header_suppresses_trailing_title(self):
+        rationale = (
+            "Some context.\n\n## Decision\n\nAdopt approach Z."
+        )
+        out = _build_decision_body(rationale, "My Title", "committed")
+        assert out.count("## Decision") == 1
+        assert "Adopt approach Z." in out
+        assert "My Title" not in out
+
+    def test_consequences_not_injected_when_present(self):
+        rationale = (
+            "ctx\n\n## Decision\n\nabandoned approach\n\n## Consequences\n\nrolled back"
+        )
+        out = _build_decision_body(rationale, "My Title", "abandoned")
+        assert out.count("## Consequences") == 1
+        assert "rolled back" in out
+        assert "Approach was abandoned." not in out
+
+    def test_abandoned_outcome_adds_consequences_when_absent(self):
+        out = _build_decision_body("tried X, didn't work", "My Title", "abandoned")
+        assert "## Consequences" in out
+        assert "Approach was abandoned." in out
+
+    def test_case_insensitive_header_match(self):
+        rationale = "## context\n\nlowercase header"
+        out = _build_decision_body(rationale, "My Title", "committed")
+        assert out.count("## Context") + out.count("## context") == 1
+        assert "lowercase header" in out

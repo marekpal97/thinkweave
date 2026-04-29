@@ -36,3 +36,88 @@ ai/tools:
   - claude-code
   - mcp-server
   - obsidian
+
+# Finance / trading vocabulary.
+# Concepts here are INVARIANT (stable event types, structures, regimes).
+# Named events ("iran-war-2026", "2024-election") belong in theme notes, not
+# in the concept ontology — they cite these concepts, they don't extend them.
+
+finance/markets:
+  - market-data
+  - asset-prices
+  - correlation
+  - liquidity
+  - leverage
+  - thematic-investing
+  - equity-baskets
+  - commodities
+  - semiconductors
+  - critical-minerals
+
+finance/options:
+  - options-strategy
+  - volatility-surface
+  - options-engine
+  - options-trading
+  - implied-volatility
+  - vega
+  - theta
+  - iron-condor
+
+finance/quant:
+  - factor-model
+  - fama-french-factors
+  - portfolio-management
+  - risk-management
+  - reverse-dcf
+  - quantitative-analysis
+
+finance/macro:
+  - macro-trading
+  - inflation
+  - interest-rates
+  - yield-curve
+  - fiscal-deficit
+  - dollar-cycle
+  - recession
+
+finance/regime:
+  - risk-on
+  - risk-off
+  - reflation
+  - stagflation
+  - disinflation
+  - goldilocks
+
+finance/policy:
+  - fomc
+  - rate-cut
+  - rate-hike
+  - quantitative-easing
+  - quantitative-tightening
+
+finance/catalysts:
+  - election
+  - fomc-meeting
+  - cpi-release
+  - earnings-season
+  - geopolitical-shock
+
+finance/geopolitics:
+  - geopolitics
+  - middle-east-conflict
+  - us-china-tensions
+  - trade-war
+  - sanctions
+  - energy-supply-shock
+
+finance/structure:
+  - carry-trade
+  - pairs-trade
+  - vertical-spread
+  - bull-call-spread
+  - long-vol
+  - short-vol
+  - tail-hedge
+  - mean-reversion
+  - momentum

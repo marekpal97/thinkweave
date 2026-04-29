@@ -14,7 +14,7 @@ description: Bulk concept-hub backfill inline in Claude Code. Iterates a hub pla
 
 Bulk backfill for concept hub pages. Walks `.mem/hubs_plan.json` and processes every unprocessed `(concept, note)` pair inline via Claude Code's own LLM capacity. Use this when you want to **watch a backfill happen** in an interactive session and intervene in hard calls.
 
-For cost-optimised bulk backfill with no interactive review, use `mem hubs run` instead — same plan file, submits to the Anthropic Messages Batches API (50% discount, async throughput, per-concept prompt caching). Both paths share `hubs.py` for parse/diff/write, so results are equivalent.
+For cost-optimised bulk backfill with no interactive review, use `mem hubs run` instead — same plan file, submits to the OpenAI Batches API with gpt-5-mini (50% discount, async throughput, automatic prompt caching for the shared hub state). Both paths share `hubs.py` for parse/diff/write, so results are equivalent.
 
 ## When to use which
 

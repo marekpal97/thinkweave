@@ -170,11 +170,13 @@ ml/transformers:
   - transformers
 
 ml/training:
+  - checkpointing
   - cross-entropy
   - curriculum-learning
   - early-stopping
   - interpretability
   - log-loss
+  - model-evaluation
   - model-interpretability
   - reinforcement-learning
   - representation-learning
@@ -293,6 +295,7 @@ thinkmesh:
   - projection-error
 
 finance/options:
+  - options-engine
   - options-strategy
   - options-trading
   - options
@@ -329,6 +332,7 @@ finance/markets:
   - hedge-funds
   - proprietary-trading
   - alternative-data
+  - thematic-investing
 
 finance/research:
   - equity-research

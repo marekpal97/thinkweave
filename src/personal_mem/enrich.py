@@ -1,6 +1,6 @@
 """LLM-assisted concept enrichment for vault notes.
 
-Sends batches of notes to the OpenAI API (gpt-4o-mini) and assigns
+Sends batches of notes to the OpenAI API (gpt-5-mini) and assigns
 concepts from the ontology vocabulary. Writes concepts directly to markdown
 frontmatter — permanent, visible in Obsidian.
 
@@ -25,7 +25,7 @@ from personal_mem.vault import VaultManager, parse_frontmatter, render_frontmatt
 # OpenAI API constants
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
-ENRICH_MODEL = "gpt-4o-mini"
+ENRICH_MODEL = "gpt-5-mini"
 
 BATCH_SIZE = 25  # notes per API call
 BODY_PREVIEW_CHARS = 500  # chars of body to include per note
@@ -86,8 +86,12 @@ Tag these {n} notes with concepts:
 Return JSON only."""
 
 
-def _load_api_key() -> str:
-    """Get OpenAI API key from env or .env file in the project directory."""
+def load_openai_api_key() -> str:
+    """Get OpenAI API key from env or .env file in the project directory.
+
+    Shared between `mem enrich`, `mem hubs run`, and any other caller that
+    needs to hit the OpenAI API.
+    """
     key = os.environ.get(OPENAI_API_KEY_ENV, "")
     if key:
         return key
@@ -101,6 +105,10 @@ def _load_api_key() -> str:
                 return line.split("=", 1)[1].strip()
 
     return ""
+
+
+# Alias preserved for back-compat within this module.
+_load_api_key = load_openai_api_key
 
 
 def _call_openai(

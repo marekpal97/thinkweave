@@ -6,13 +6,17 @@ from unittest.mock import patch
 
 import pytest
 
+from personal_mem.config import Config
+from personal_mem.indexer import Indexer
 from personal_mem.judge import (
     _check_blame_survival,
     _check_re_edited,
     _check_tested,
     evaluate_decision,
+    find_decisions,
 )
 from personal_mem.schemas import NoteMeta, NoteType
+from personal_mem.vault import VaultManager
 
 
 def _make_decision(
@@ -367,3 +371,120 @@ class TestCheckBlameSurvival:
         )
         # Only a.py counted, b.py skipped because abc1234 didn't touch it
         assert result == 1
+
+
+class TestFindDecisions:
+    """Regression for n-a5a38892: session-scoped lookup previously walked the
+    filesystem with `list_notes(limit=100)` and silently missed decisions
+    past the limit or those only tagged via `derived_from`. The indexed
+    lookup must find decisions by either frontmatter field, with no limit.
+    """
+
+    def _setup(self, tmp_path):
+        cfg = Config(vault_root=tmp_path / "vault")
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        idx = Indexer(config=cfg)
+        return cfg, vm, idx
+
+    def _make_session(self, vm, idx, sid_label="ses-x"):
+        ses_path = vm.create_note(
+            note_type=NoteType.SESSION,
+            title=sid_label,
+            body="## Summary\n",
+            project="p",
+            extra_frontmatter={"source_session": sid_label},
+        )
+        idx.index_file(ses_path)
+        return vm.read_note(ses_path).id
+
+    def test_finds_by_source_session(self, tmp_path):
+        _, vm, idx = self._setup(tmp_path)
+        sid = self._make_session(vm, idx)
+        ses_dir = next((vm.root / "projects/p/sessions").iterdir())
+        dec_path = vm.create_note(
+            note_type=NoteType.DECISION,
+            title="FindMe-SourceSession",
+            body="## Context\n\nX\n\n## Decision\n\nY",
+            project="p",
+            extra_frontmatter={
+                "source_session": sid,
+                "status": "accepted",
+                "committed": True,
+            },
+            output_dir=ses_dir,
+        )
+        idx.index_file(dec_path)
+
+        found = find_decisions(idx.db, vm, session_id=sid)
+        idx.close()
+        assert any(d.title == "FindMe-SourceSession" for d in found)
+
+    def test_finds_by_derived_from(self, tmp_path):
+        _, vm, idx = self._setup(tmp_path)
+        sid = self._make_session(vm, idx)
+        ses_dir = next((vm.root / "projects/p/sessions").iterdir())
+        dec_path = vm.create_note(
+            note_type=NoteType.DECISION,
+            title="FindMe-DerivedFrom",
+            body="## Context\n\nX\n\n## Decision\n\nY",
+            project="p",
+            extra_frontmatter={
+                "derived_from": [sid],
+                "status": "accepted",
+                "committed": True,
+            },
+            output_dir=ses_dir,
+        )
+        idx.index_file(dec_path)
+
+        found = find_decisions(idx.db, vm, session_id=sid)
+        idx.close()
+        assert any(d.title == "FindMe-DerivedFrom" for d in found)
+
+    def test_ignores_non_matching_sessions(self, tmp_path):
+        _, vm, idx = self._setup(tmp_path)
+        sid_a = self._make_session(vm, idx, sid_label="ses-a")
+        sid_b = self._make_session(vm, idx, sid_label="ses-b")
+
+        ses_a_dir = (vm.root / "projects/p/sessions/ses-a")
+        dec_path = vm.create_note(
+            note_type=NoteType.DECISION,
+            title="OnlyA",
+            body="## Context\n\nX\n\n## Decision\n\nY",
+            project="p",
+            extra_frontmatter={
+                "source_session": sid_a,
+                "status": "accepted",
+            },
+            output_dir=ses_a_dir,
+        )
+        idx.index_file(dec_path)
+
+        found_b = find_decisions(idx.db, vm, session_id=sid_b)
+        idx.close()
+        assert all(d.title != "OnlyA" for d in found_b)
+
+    def test_no_limit_past_100_decisions(self, tmp_path):
+        """Old implementation truncated at list_notes(limit=100)."""
+        _, vm, idx = self._setup(tmp_path)
+        sid = self._make_session(vm, idx)
+        ses_dir = next((vm.root / "projects/p/sessions").iterdir())
+
+        for i in range(120):
+            p = vm.create_note(
+                note_type=NoteType.DECISION,
+                title=f"bulk-{i}",
+                body="## Context\n\nX\n\n## Decision\n\nY",
+                project="p",
+                extra_frontmatter={
+                    "source_session": sid,
+                    "status": "accepted",
+                },
+                output_dir=ses_dir,
+            )
+            idx.index_file(p)
+
+        found = find_decisions(idx.db, vm, session_id=sid)
+        idx.close()
+        assert len(found) == 120

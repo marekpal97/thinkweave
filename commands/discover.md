@@ -173,7 +173,11 @@ WebSearch("<gap-specific query>")
 
 - **URL/ID match — source hit**: Skip results whose URL, arxiv ID, or repo URL appears in `gap_sources[<current-concept>]` from step 3. Log the skip reason as `already ingested`. This set is concept-scoped and complete — it sees every prior source for this concept regardless of when it was ingested.
 - **URL/ID match — queue hit**: Skip results whose URL, arxiv ID, or repo URL appears in `gap_queue[<current-concept>]` from step 3. Log as `already queued`.
-- **Title match (backstop)**: For each result that survives both URL checks, run `mem_search(query="<paper or article title>", type="source", limit=1)`. If it returns a hit, skip — the paper is already in the vault but tagged under a *different* concept than the one driving the current gap, so the per-gap URL filter couldn't have seen it. Log as `already ingested (cross-concept)`. This is the only filter that queries the entire source corpus; do it last so it only runs on the handful of results that already passed the cheap concept-scoped checks.
+- **Title match (backstop)**: For each result that survives both URL checks, run two cheap cross-concept lookups:
+  - `mem_search(query="<paper or article title>", type="source", limit=1)` — catches material already ingested but tagged under a *different* concept than the current gap. Log as `already ingested (cross-concept)`.
+  - `mem_search(query="<paper or article title>", tags=["todo", "research"], type="note", limit=1)` — catches a queue item added by an earlier `/discover` run under a different concept that hasn't been ingested yet. Without this the same URL can sit in the queue twice under two concepts, and `/research` will waste a batch slot re-ingesting it. Log as `already queued (cross-concept)`.
+
+  These are the only filters that query the entire corpus; do them last so they only run on the handful of results that already passed the cheap concept-scoped checks.
 - **Exclusion patterns**: Skip results matching exclusion patterns from RESEARCH_FOCUS.md, plus any focus-area-specific exclusion language from step 1a (e.g. LLM-as-a-judge hits under focus area 2).
 - **Quality preference**: Prefer arxiv papers, well-known blog posts, and active GitHub repos over random pages.
 

@@ -14,8 +14,8 @@ vault, regardless of note type or project. It has two sections:
 
 This module is the *shared core* used by both execution paths:
 
-- ``mem hubs plan`` / ``mem hubs run`` — bulk backfill via Anthropic SDK
-  and Messages Batches API (see ``cli.py``).
+- ``mem hubs plan`` / ``mem hubs run`` — bulk backfill via the OpenAI SDK
+  and Batches API with gpt-5-mini (see ``cli.py``).
 - ``/update-hubs`` skill — daily incremental via inline Claude Code.
 
 Both paths use the same diff model: **the hub page itself is the processed
@@ -644,9 +644,20 @@ def parse_llm_response(
 
     Returns (entries, essence_revision_needed). Tolerates JSON wrapped
     in ```json ... ``` code fences. Rejects entries with unknown flags
-    or missing text. The caller supplies ``run_date`` so all entries
-    from one run share a consistent date, and ``note_id`` so each entry
-    is auto-cited to the note being processed.
+    or missing text.
+
+    ``run_date`` is the date stamped on every returned entry — callers
+    should pass the *source note's* date (YYYY-MM-DD) so the log becomes
+    a true temporal record of when each artifact was learned. Passing a
+    uniform backfill date flattens the log into a single point in time
+    and loses temporal structure.
+
+    ``note_id`` is the wikilink citation appended to every entry.
+
+    Any `[[...]]` wikilinks embedded in the LLM's artifact text are
+    stripped, since the citation is appended separately. Without this
+    step the rendered line carries duplicated `[[note-id]] — [[note-id]]`
+    tails whenever the LLM quoted the citation inline.
     """
     import json as _json
 
@@ -683,6 +694,10 @@ def parse_llm_response(
         text_val = str(item.get("text", "")).strip()
         if not text_val:
             continue
+        text_val = _strip_inline_wikilinks(text_val)
+        if not text_val:
+            # Entry was entirely a wikilink citation — nothing useful left.
+            continue
         ref = item.get("ref") or ""
         entries.append(
             LogEntry(
@@ -694,6 +709,44 @@ def parse_llm_response(
             )
         )
     return entries, essence_flag
+
+
+# Matches a `[[...]]` wikilink (incl. `[[target|display]]`) possibly wrapped
+# in `( … )` plus any surrounding whitespace/dashes/commas/colons so we don't
+# leave dangling connectives or empty parens where the citation used to be.
+# Examples this must strip cleanly:
+#   "foo [[n-1]] bar"        → "foo bar"
+#   "foo ([[n-1]]) bar"      → "foo bar"
+#   "foo ([[n-1]])."         → "foo."
+#   "implemented in [[n-1]]" → "implemented in"   (trailing cleanup below)
+#   "foo — [[n-1]] — bar"    → "foo bar"
+_INLINE_WIKILINK_RE = re.compile(
+    r"\s*[—\-–,:;]?\s*\(?\s*\[\[[^\]]+\]\]\s*\)?\s*[—\-–,:;]?\s*"
+)
+# Empty-paren fragments the LLM occasionally leaves when the wikilink was
+# the only thing inside the parens.
+_EMPTY_PARENS_RE = re.compile(r"\(\s*\)")
+
+
+def _strip_inline_wikilinks(text: str) -> str:
+    """Remove any `[[...]]` wikilinks the LLM embedded in artifact text.
+
+    The render path always appends the citation as a trailing wikilink,
+    so leaving inline copies in the text produces duplicated citations in
+    the final markdown line. This keeps the text content clean, including
+    the `( ... )` and `— ... —` wrappers the LLM sometimes puts around a
+    citation, and the empty parens left when the wikilink was the sole
+    content of the parens.
+    """
+    cleaned = _INLINE_WIKILINK_RE.sub(" ", text)
+    cleaned = _EMPTY_PARENS_RE.sub(" ", cleaned)
+    # Collapse double spaces and tidy trailing punctuation dangling on its own.
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    # Fix " ." / " ," / " ;" artifacts where punctuation got separated.
+    cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
+    # "implemented in ." → "implemented in" (strip trailing " in .")
+    cleaned = re.sub(r"\s+(in|at|via|as|by|on|to)\s*\.\s*$", ".", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" —-–,:;")
 
 
 def plan_to_dict(plans: list[ConceptPlan]) -> dict:

@@ -17,7 +17,7 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 - `uv run mem concepts merge <from> <to>` — rename concept across all notes + update aliases
 - `uv run mem hubs status [--concept X]` — per-concept processed state (cited vs unprocessed)
 - `uv run mem hubs plan [--concept X] [--project Y] [--limit-notes N] [--limit-concepts N]` — walk vault, write JSON backfill plan
-- `uv run mem hubs run --plan <path> [--dry-run]` — execute backfill via Anthropic SDK + Messages Batches API
+- `uv run mem hubs run --plan <path> [--dry-run]` — execute backfill via OpenAI SDK + Batches API (gpt-5-mini)
 - `uv run mem hooks install` — install Claude Code hooks (Pre/Post/Stop)
 - `uv run mem landing [--project X] [--doc decisions|backlog|state|all]` — generate project landing documents
 - `uv run mem restructure [--dry-run]` — consolidate notes/decisions into session folders
@@ -83,6 +83,8 @@ The shipped `src/personal_mem/ontology.yaml` is a minimal seed — it grows as y
 
 **Tag conventions**: `todo` (open work item), `parked` (deliberately deferred, body explains why), `probe` (user question + discovery — learning artifact). These are regular tags on type=note, not separate note types.
 
+**Trading themes** (project `trade_ideas`): narratives like "middle-east tail hedge 2026" or "AI capex unwind" are temporal stories, not invariants. They live as `type: note` + `tag: theme` in the `trade_ideas` project — body carries the living essence plus a dated catalyst log. Actual positions are `type: decision` + `tag: trade` in the same project, linking back to the theme note(s) they express. Theme notes cite concepts from the `finance/*` domains (`finance/regime`, `finance/geopolitics`, `finance/structure`, etc.) — they never introduce named-event concepts into the ontology. The cross-cycle pattern library emerges in the concept hubs (`reflation`, `middle-east-conflict`, `tail-hedge`); the timed narratives stay in theme notes.
+
 **Landing documents**: Each project has 3 auto-generated landing docs (excluded from vault index):
 - `DECISIONS.md` — decision table + Mermaid DAG. Agent-oriented. Refreshed every wrap.
 - `BACKLOG.md` — todo items + stalled proposals + parked items. Agent-oriented. Refreshed every wrap.
@@ -143,7 +145,7 @@ Each concept in the ontology gets two pages in `vault/concepts/`:
 
 **Two execution paths**, sharing the same `hubs.py` diff and parse/write logic:
 
-1. **Backfill** via `mem hubs plan` + `mem hubs run` — Anthropic SDK + Messages Batches API + Sonnet + prompt caching on per-concept hub state. Use this for fresh vaults with many unprocessed notes across many concepts. Requires `pip install personal-mem[hubs]` for the optional `anthropic` dependency. Plan file lives at `.mem/hubs_plan.json`.
+1. **Backfill** via `mem hubs plan` + `mem hubs run` — OpenAI SDK + Batches API + gpt-5-mini. OpenAI caches prompt prefixes automatically for prompts ≥1024 tokens, so sorting requests by concept within the batch keeps the shared system prompt + hub state off the metered re-compute path. Use this for fresh vaults with many unprocessed notes across many concepts. Requires `OPENAI_API_KEY` in the environment and `pip install personal-mem[hubs]` for the optional `openai` dependency. Plan file lives at `.mem/hubs_plan.json`.
 2. **Daily incremental** via `/update-hubs` skill — small deltas (1–20 notes total), runs inline via Claude Code. Use `mem hubs plan` + manual processing to append entries.
 
 **Coherence hygiene** lives in `/mem-resolve-concepts`: split/merge/stale-essence suggestions, LLM judgment not thresholds, human accepts. Essence rewrites happen there too — `/update-hubs` flags but never rewrites the essence.
@@ -158,7 +160,6 @@ Each concept in the ontology gets two pages in `vault/concepts/`:
 - `src/personal_mem/vault.py` — VaultManager (note CRUD, inline YAML parser, wikilinks, `strip_section`; source routing delegates to `sources/registry.py`)
 - `src/personal_mem/sources/registry.py` — Declarative source-type registry (`SourceTypeSpec` entries drive vault routing)
 - `src/personal_mem/sources/frontmatter.py` — Canonical source-note frontmatter builder used by importers and skills
-- `src/personal_mem/skill_runner.py` — `mem skill run` Anthropic-API runner (optional `anthropic` dep; bridges `mem_*` / `Read` / `Bash` / `WebFetch` in-process)
 - `src/personal_mem/indexer.py` — SQLite index builder (FTS5, edges, concept edges, SHA-256 dedup)
 - `src/personal_mem/search.py` — FTS search, graph traversal (recursive CTEs)
 - `src/personal_mem/context.py` — Structured project-context payload builder (used by SessionStart hook and `mem_project_snapshot`)
@@ -181,8 +182,8 @@ Each concept in the ontology gets two pages in `vault/concepts/`:
 
 - `PERSONAL_MEM_VAULT` — vault root (default: ~/vault)
 - `PERSONAL_MEM_PROJECT` — default project name
-- `OPENAI_API_KEY` — for embeddings (optional)
+- `OPENAI_API_KEY` — required by `mem enrich`, the ChatGPT importer, embeddings, and `mem hubs run`
 
 ## Dependencies
 
-Zero required. Optional: `mcp` (MCP server), `httpx` (embeddings API), `anthropic` (hubs backfill — `pip install personal-mem[hubs]`).
+Zero required. Optional: `mcp` (MCP server), `httpx` (embeddings API), `openai` (hubs backfill + enrich — `pip install personal-mem[hubs]`).

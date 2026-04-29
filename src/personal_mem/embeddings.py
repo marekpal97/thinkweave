@@ -1,7 +1,7 @@
 """API-based embeddings with SQLite cache.
 
-Embeddings are computed via external API (OpenAI/Anthropic) and cached
-in a separate SQLite database (.mem/embeddings.db). Never called during hooks.
+Embeddings are computed via the OpenAI API and cached in a separate
+SQLite database (.mem/embeddings.db). Never called during hooks.
 
 Requires: pip install personal-mem[embeddings]  (httpx)
 """

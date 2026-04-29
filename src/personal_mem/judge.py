@@ -14,13 +14,65 @@ The three-stage temporal model:
 from __future__ import annotations
 
 import logging
+import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_mem.schemas import NoteMeta
+from personal_mem.vault import VaultManager
 
 log = logging.getLogger(__name__)
+
+
+def find_decisions(
+    db: sqlite3.Connection,
+    vm: VaultManager,
+    session_id: str = "",
+    project: str = "",
+) -> list[NoteMeta]:
+    """Look up decision notes via the SQLite index — no filesystem walk.
+
+    Matches session decisions via frontmatter `source_session` *or*
+    `derived_from`, so decisions written by `mem_extract` (which sets both)
+    are found regardless of which field the caller populates.
+
+    When both `session_id` and `project` are empty, returns every decision.
+    """
+    if session_id:
+        rows = db.execute(
+            "SELECT path FROM notes WHERE type = 'decision' "
+            "AND (frontmatter LIKE ? OR frontmatter LIKE ?)",
+            (f'%"source_session": "{session_id}"%', f'%"{session_id}"%'),
+        ).fetchall()
+    elif project:
+        rows = db.execute(
+            "SELECT path FROM notes WHERE type = 'decision' AND project = ?",
+            (project,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT path FROM notes WHERE type = 'decision'"
+        ).fetchall()
+
+    notes: list[NoteMeta] = []
+    for row in rows:
+        p = vm.root / row["path"]
+        if not p.exists():
+            continue
+        try:
+            note = vm.read_note(p)
+        except (ValueError, KeyError):
+            continue
+        if session_id:
+            fm = note.frontmatter
+            derived = fm.get("derived_from", [])
+            if isinstance(derived, str):
+                derived = [derived]
+            if fm.get("source_session") != session_id and session_id not in derived:
+                continue
+        notes.append(note)
+    return notes
 
 
 def evaluate_decision(
