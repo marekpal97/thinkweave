@@ -1,0 +1,21 @@
+# Example crontab for personal_mem automation.
+#
+# Replace `/home/marekpal97/python_projects/personal_mem` with your repo
+# path and `~/.cache/personal_mem/cron.log` with whatever log location
+# you prefer. Sleep between research batches now lives inside the flow
+# definition (vault/.mem/flows.yaml), not in cron-spacing.
+#
+# Install: `crontab -e` and paste the lines below (without the leading
+# `#` from these comments).
+
+# Daily research cycle: discover gaps, drain queue, refresh hubs.
+0 8 * * *  cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run daily-research >> ~/.cache/personal_mem/cron.log 2>&1
+
+# Weekly hygiene: concept and theme dedup + hub coherence.
+0 4 * * 0  cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run weekly-hygiene >> ~/.cache/personal_mem/cron.log 2>&1
+
+# To run a flow ad-hoc:
+#   uv run mem flow list
+#   uv run mem flow show daily-research
+#   uv run mem flow run daily-research --dry-run
+#   uv run mem flow run daily-research

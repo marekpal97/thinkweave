@@ -1,0 +1,37 @@
+# Example flows.yaml — copy to vault/.mem/flows.yaml to enable.
+#
+# Each flow is a sequence of `claude -p` invocations. Skills are the
+# unit of composition; flows just sequence them so cron entries don't
+# re-encode the order and flags.
+#
+# Schema:
+#   flows:
+#     <name>:
+#       description: short one-liner
+#       on_error: continue | abort   # default: continue
+#       log: <absolute path>          # default: stdout/stderr
+#       stages:
+#         - run: "<arg passed to claude -p>"
+#           sleep: <seconds>          # optional, sleep AFTER this stage
+#         - run: "..."
+
+flows:
+  daily-research:
+    description: "Discover gaps, drain queue, refresh hubs."
+    log: ~/.cache/personal_mem/flow_daily-research.log
+    on_error: continue
+    stages:
+      - run: "/discover (use a gap cap of 10 this run)"
+      - run: "/research --queue --batch 5"
+        sleep: 1800
+      - run: "/research --queue --batch 5"
+      - run: "/update-hubs"
+
+  weekly-hygiene:
+    description: "Concept + theme dedup + hub coherence."
+    log: ~/.cache/personal_mem/flow_weekly-hygiene.log
+    on_error: abort
+    stages:
+      - run: "/mem-resolve-concepts"
+      - run: "/themes-resolve"
+      - run: "/update-hubs"
