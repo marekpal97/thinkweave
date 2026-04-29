@@ -155,7 +155,22 @@ def main(argv: list[str] | None = None) -> None:
     p_merge.add_argument("to_concept", help="Canonical concept to merge into")
     p_prune = concepts_sub.add_parser("prune", help="Remove low-count concepts from notes")
     p_prune.add_argument("--dry-run", action="store_true", help="Show what would be pruned")
-    concepts_sub.add_parser("hubs", help="Generate Obsidian hub pages from ontology")
+    p_concepts_hubs = concepts_sub.add_parser(
+        "hubs", help="Generate or prune Obsidian hub pages"
+    )
+    p_concepts_hubs.add_argument(
+        "--prune",
+        action="store_true",
+        help=(
+            "Find and delete orphan hub pages (concepts with zero vault "
+            "notes that aren't in ontology.yaml). Read-only without --apply."
+        ),
+    )
+    p_concepts_hubs.add_argument(
+        "--apply",
+        action="store_true",
+        help="With --prune, actually delete the orphans (otherwise list only).",
+    )
     p_drift = concepts_sub.add_parser(
         "drift",
         help="Advisory drift report (near-dupes, new ontology candidates, stale hubs)",
@@ -163,6 +178,21 @@ def main(argv: list[str] | None = None) -> None:
     p_drift.add_argument("--project", "-p", default="", help="Optional project scope")
     p_drift.add_argument("--threshold", type=int, default=5, help="Min count for candidates")
     p_drift.add_argument("--max-items", type=int, default=5, help="Max per category")
+    p_drift.add_argument(
+        "--hubs",
+        action="store_true",
+        help=(
+            "Also surface redundant-hub candidates: pairs of concept hubs "
+            "with overlapping essence content (Jaccard pre-filter; LLM "
+            "judgment lives in /mem-resolve-concepts)."
+        ),
+    )
+    p_drift.add_argument(
+        "--hub-jaccard",
+        type=float,
+        default=0.4,
+        help="Minimum Jaccard similarity for hub-pair candidates (default: 0.4)",
+    )
     p_notes = concepts_sub.add_parser("notes", help="List notes for a specific concept")
     p_notes.add_argument("concept", help="Concept to search for")
     p_notes.add_argument("--project", "-p", default="", help="Filter by project")
@@ -1326,6 +1356,8 @@ def cmd_concepts(args: argparse.Namespace) -> None:
         print(f"\nTo merge: mem concepts merge <from> <to>")
 
     elif action == "merge":
+        from personal_mem.concepts import delete_concept_hub
+
         from_c = args.from_concept.lower()
         to_c = args.to_concept.lower()
         if from_c == to_c:
@@ -1345,11 +1377,19 @@ def cmd_concepts(args: argparse.Namespace) -> None:
         aliases[to_c] = existing
         save_aliases(cfg, aliases)
 
+        # Remove the renamed concept's hub page so it doesn't linger as a
+        # stale ledger. Safe even if the file never existed.
+        hub_removed = delete_concept_hub(cfg, from_c)
+
         idx = Indexer(config=cfg)
         idx.rebuild(full=True)
         idx.close()
 
-        print(f"Merged '{from_c}' → '{to_c}': {changed} notes updated. Alias saved. Index rebuilt.")
+        suffix = " Stale hub removed." if hub_removed else ""
+        print(
+            f"Merged '{from_c}' → '{to_c}': {changed} notes updated. "
+            f"Alias saved. Index rebuilt.{suffix}"
+        )
 
     elif action == "prune":
         from personal_mem.concepts import build_keep_set, load_ontology, prune_concepts
@@ -1413,11 +1453,38 @@ def cmd_concepts(args: argparse.Namespace) -> None:
     elif action == "hubs":
         from personal_mem.concepts import (
             add_hub_wikilinks,
+            find_orphan_hubs,
             generate_concept_hub_skeletons,
             generate_domain_hubs,
             hubs_marker_path,
             load_ontology,
         )
+
+        # --prune is mutually exclusive with the regenerate flow.
+        if getattr(args, "prune", False):
+            orphans = find_orphan_hubs(cfg)
+            if not orphans:
+                print("No orphan hubs.")
+                return
+
+            print(f"Orphan hubs ({len(orphans)}):")
+            for concept, path in orphans:
+                rel = path.relative_to(cfg.vault_root)
+                print(f"  {concept} → {rel}")
+
+            if not getattr(args, "apply", False):
+                print(
+                    "\nDry run. Re-run with --apply to delete these files."
+                )
+                return
+
+            for _, path in orphans:
+                path.unlink()
+            print(f"\nDeleted {len(orphans)} orphan hub(s).")
+            idx = Indexer(config=cfg)
+            idx.rebuild(full=False)
+            idx.close()
+            return
 
         ontology = load_ontology()
         if not ontology:
@@ -1449,7 +1516,11 @@ def cmd_concepts(args: argparse.Namespace) -> None:
         marker.touch()
 
     elif action == "drift":
-        from personal_mem.concepts import drift_report, format_drift_report
+        from personal_mem.concepts import (
+            drift_report,
+            find_redundant_hub_candidates,
+            format_drift_report,
+        )
 
         report = drift_report(
             cfg,
@@ -1458,6 +1529,25 @@ def cmd_concepts(args: argparse.Namespace) -> None:
             max_items=args.max_items,
         )
         print(format_drift_report(report))
+
+        if getattr(args, "hubs", False):
+            jaccard = getattr(args, "hub_jaccard", 0.4)
+            candidates = find_redundant_hub_candidates(cfg, min_jaccard=jaccard)
+            print()
+            if not candidates:
+                print(
+                    f"No redundant-hub candidates (Jaccard ≥ {jaccard:.2f})."
+                )
+            else:
+                print(
+                    f"Redundant-hub candidates (Jaccard ≥ {jaccard:.2f}): "
+                    f"{len(candidates)} pair(s)"
+                )
+                for a, b, score in candidates[:args.max_items]:
+                    print(
+                        f"  {a} ↔ {b}  (Jaccard {score:.2f}) — "
+                        f"review via `/mem-resolve-concepts`"
+                    )
 
 
 def cmd_init(args: argparse.Namespace) -> None:

@@ -13,13 +13,26 @@ description: Periodic concept and ontology hygiene. Merge near-duplicates, prune
 
 # /mem-resolve-concepts — Concept & Ontology Hygiene
 
-Periodic concept maintenance. Merge duplicates, prune noise, update ontology, regenerate hubs. Designed to run in under 2 minutes.
+Periodic concept maintenance, organised into three phases:
+
+1. **Concepts** — merge near-dupes, surface ontology candidates, surface redundant hubs.
+2. **Hubs** — prune orphan hub pages, regenerate skeletons for any new ontology concept, re-render Evolution sections.
+3. **Ontology** — write back accepted changes to `ontology.yaml`, prune dead vocabulary, rebuild the index.
+
+Designed to run in under 2 minutes. Steps below correspond to phases.
 
 ## Steps
 
 ### 1. Scan
 
-Run `mem_concepts_drift(threshold=5, max_items=30)` to get near-duplicates and ontology candidates. That's the only discovery call you need — do NOT call `mem_concepts_tighten` (too noisy) or dump the full concept list.
+Two discovery calls cover everything:
+
+- `mem_concepts_drift(threshold=5, max_items=30)` — near-duplicate concepts and ontology candidates (string-similarity-based; filtered below).
+- `uv run mem doctor` — coherence linter: tag/concept overlap, unknown tags, and **dead vocabulary** (ontology concepts assigned to <2 notes). The dead-vocab list feeds Phase 3's ontology pruning step.
+
+Optionally surface redundant-hub candidates with `uv run mem concepts drift --hubs` — pre-filtered hub pairs whose Essence content overlaps (Jaccard ≥ 0.4). The pair list is structural; semantic judgment lives in Phase 3.
+
+Do NOT call `mem_concepts_tighten` (too noisy) or dump the full concept list.
 
 ### 2. Filter drift output with LLM judgment
 
@@ -128,10 +141,31 @@ Present as a compact section in the action plan:
 
 Skip this step entirely if there are no concept hubs yet (fresh vault).
 
-### 6. Report (3 lines)
+### 6. Phase 2 — Hubs: prune orphans
+
+After merges and/or ontology edits, run:
+
+```bash
+uv run mem concepts hubs --prune          # dry-run: list orphan hubs
+uv run mem concepts hubs --prune --apply  # delete them
+```
+
+An orphan hub is a `vault/concepts/topics/<concept>.md` whose underlying concept has zero vault assignments AND isn't in `ontology.yaml`. After a merge, the renamed concept's hub is auto-deleted by `mem concepts merge`, so this catches leftovers from older merges or ad-hoc deletions.
+
+### 7. Phase 3 — Ontology: prune dead vocabulary
+
+Re-run `uv run mem doctor` to see the **Dead vocabulary** section. For any concept with 0 notes that's still in `ontology.yaml`:
+
+- If it's clearly a typo or merged-away concept → remove from `ontology.yaml`.
+- If it's a real but unused concept (legitimately zero notes today) → leave it; the ontology can be aspirational for slow-growing domains.
+
+Don't auto-prune. The user approves selectively.
+
+### 8. Report (3 lines)
 
 ```
-Done. Merged N pairs (X notes). Added M to ontology. Hubs regenerated. H hub hygiene suggestions (approved S). Concepts: before → after.
+Done. Merged N pairs (X notes). Added M to ontology, removed K dead.
+Pruned P orphan hubs. H hub hygiene suggestions (approved S). Concepts: before → after.
 ```
 
 No verification drift check needed — if the merges ran without error, they worked.

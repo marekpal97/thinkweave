@@ -509,6 +509,120 @@ def add_hub_wikilinks(
     return modified
 
 
+def delete_concept_hub(config: Config, concept: str) -> bool:
+    """Remove a concept hub page from disk if it exists.
+
+    Used after ``mem concepts merge`` so the renamed concept's hub
+    doesn't linger as a stale ledger. Safe to call when the file is
+    missing — returns False then. Does not touch the index; callers
+    should rebuild after a batch of deletions.
+    """
+    from personal_mem.hubs import concept_hub_path
+
+    path = concept_hub_path(config, concept)
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
+def find_orphan_hubs(config: Config) -> list[tuple[str, Path]]:
+    """Find concept hub pages whose underlying concept has zero vault
+    assignments and is not in ``ontology.yaml``.
+
+    Returns ``[(concept, path), ...]``. Read-only — caller decides whether
+    to delete. A hub for a concept with notes (even if the concept itself
+    isn't in the ontology) is kept; orphan = no notes AND not in ontology.
+    """
+    import sqlite3
+
+    from personal_mem.hubs import topics_dir
+
+    topics = topics_dir(config)
+    if not topics.exists():
+        return []
+
+    ontology = load_ontology()
+    keep = build_keep_set(ontology)
+
+    counts: dict[str, int] = {}
+    if config.index_db.exists():
+        db = sqlite3.connect(str(config.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            for row in db.execute(
+                "SELECT concept, COUNT(*) AS cnt FROM note_concepts GROUP BY concept"
+            ):
+                counts[row["concept"].lower()] = row["cnt"]
+        finally:
+            db.close()
+
+    orphans: list[tuple[str, Path]] = []
+    for path in sorted(topics.glob("*.md")):
+        concept = path.stem.lower()
+        if counts.get(concept, 0) > 0:
+            continue
+        if concept in keep:
+            continue
+        orphans.append((concept, path))
+    return orphans
+
+
+def find_redundant_hub_candidates(
+    config: Config,
+    *,
+    min_essence_chars: int = 80,
+    min_jaccard: float = 0.4,
+) -> list[tuple[str, str, float]]:
+    """Pre-filter concept-hub pairs likely to be redundant.
+
+    Cheap structural check before the (expensive) LLM redundancy pass.
+    Compares the **content** of each hub's essence — token-set Jaccard
+    similarity over normalized words — and returns pairs above the
+    threshold. The actual LLM judgment runs on this candidate list, not
+    on every pair (which is quadratic).
+
+    Returns ``[(concept_a, concept_b, jaccard), ...]`` sorted by Jaccard
+    descending. Hubs with empty or short essences are skipped.
+    """
+    from personal_mem.hubs import parse_concept_hub, topics_dir
+
+    topics = topics_dir(config)
+    if not topics.exists():
+        return []
+
+    essences: dict[str, set[str]] = {}
+    for path in topics.glob("*.md"):
+        hub = parse_concept_hub(path)
+        if not hub.essence or len(hub.essence) < min_essence_chars:
+            continue
+        words = {
+            w.lower().strip(".,;:!?()[]\"'")
+            for w in hub.essence.split()
+            if len(w) >= 4
+        }
+        if words:
+            essences[hub.concept] = words
+
+    concepts = sorted(essences)
+    candidates: list[tuple[str, str, float]] = []
+    for i, a in enumerate(concepts):
+        for b in concepts[i + 1:]:
+            wa, wb = essences[a], essences[b]
+            if not wa or not wb:
+                continue
+            inter = len(wa & wb)
+            union = len(wa | wb)
+            if union == 0:
+                continue
+            jaccard = inter / union
+            if jaccard >= min_jaccard:
+                candidates.append((a, b, jaccard))
+
+    candidates.sort(key=lambda r: r[2], reverse=True)
+    return candidates
+
+
 def merge_concept_in_notes(
     vault_root: Path,
     from_concept: str,

@@ -10,14 +10,18 @@ import pytest
 from personal_mem.concepts import (
     DEAD_VOCAB_THRESHOLD,
     _RESERVED_ONTOLOGY_KEYS,
+    delete_concept_hub,
     doctor_report,
     find_dead_vocabulary,
+    find_orphan_hubs,
+    find_redundant_hub_candidates,
     find_tag_concept_overlap,
     find_unknown_tags,
     format_doctor_report,
     load_ontology,
     load_tag_vocabulary,
 )
+from personal_mem.hubs import ConceptHub, write_concept_hub
 from personal_mem.config import Config
 from personal_mem.indexer import Indexer
 from personal_mem.schemas import NoteType
@@ -272,6 +276,120 @@ class TestDoctorReport:
         assert report["vocabulary_size"] == 1
         assert "No coherence issues detected" in format_doctor_report(report)
 
+class TestStaleHubPruning:
+    def test_delete_concept_hub_removes_existing_file(
+        self, vault: VaultManager, config: Config
+    ):
+        from personal_mem.hubs import concept_hub_path
+
+        hub = ConceptHub(
+            concept="oldname",
+            path=concept_hub_path(config, "oldname"),
+            essence="To be removed.",
+        )
+        write_concept_hub(hub)
+        assert hub.path.exists()
+
+        result = delete_concept_hub(config, "oldname")
+        assert result is True
+        assert not hub.path.exists()
+
+    def test_delete_concept_hub_noop_when_missing(
+        self, vault: VaultManager, config: Config
+    ):
+        result = delete_concept_hub(config, "never-existed")
+        assert result is False
+
+    def test_find_orphan_hubs_identifies_unused_hubs(
+        self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
+    ):
+        from personal_mem.hubs import concept_hub_path
+
+        # Ontology says python is canonical.
+        _write_ontology(monkeypatch, "swe/python:\n  - python\n")
+
+        # Two hub files: python (canonical) and orphan-thing (no notes, not in ontology).
+        for name in ("python", "orphan-thing"):
+            hub = ConceptHub(
+                concept=name,
+                path=concept_hub_path(config, name),
+                essence=f"essence for {name}",
+            )
+            write_concept_hub(hub)
+
+        # python concept has at least one note.
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            extra_frontmatter={"concepts": ["python"]},
+        )
+        indexer.rebuild()
+
+        orphans = find_orphan_hubs(config)
+        names = [c for c, _ in orphans]
+        assert "orphan-thing" in names
+        assert "python" not in names
+
+
+class TestRedundantHubCandidates:
+    def test_finds_overlapping_essences(
+        self, vault: VaultManager, config: Config
+    ):
+        from personal_mem.hubs import concept_hub_path
+
+        # Two hubs with substantially overlapping word sets.
+        a = ConceptHub(
+            concept="vector-database",
+            path=concept_hub_path(config, "vector-database"),
+            essence=(
+                "A vector database stores high-dimensional embeddings and "
+                "supports nearest-neighbour retrieval queries efficiently "
+                "over large corpora."
+            ),
+        )
+        b = ConceptHub(
+            concept="embedding-store",
+            path=concept_hub_path(config, "embedding-store"),
+            essence=(
+                "An embedding store keeps high-dimensional embeddings and "
+                "supports nearest-neighbour retrieval queries efficiently "
+                "over large datasets."
+            ),
+        )
+        c = ConceptHub(
+            concept="kalman-filter",
+            path=concept_hub_path(config, "kalman-filter"),
+            essence=(
+                "A recursive Bayesian estimator that fuses noisy "
+                "measurements with a linear dynamic model to track state."
+            ),
+        )
+        for hub in (a, b, c):
+            write_concept_hub(hub)
+
+        candidates = find_redundant_hub_candidates(config, min_jaccard=0.4)
+        pair_names = {tuple(sorted([x, y])) for x, y, _ in candidates}
+        assert ("embedding-store", "vector-database") in pair_names
+        # kalman-filter shouldn't pair with the embedding hubs.
+        assert all("kalman-filter" not in p for p in pair_names)
+
+    def test_returns_empty_when_essences_too_short(
+        self, vault: VaultManager, config: Config
+    ):
+        from personal_mem.hubs import concept_hub_path
+
+        hub = ConceptHub(
+            concept="tiny",
+            path=concept_hub_path(config, "tiny"),
+            essence="short",
+        )
+        write_concept_hub(hub)
+
+        # min_essence_chars defaults to 80 — this should be skipped.
+        assert find_redundant_hub_candidates(config) == []
+
+
+class TestDoctorReportDirtyVault:
     def test_dirty_vault_surfaces_all_issues(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
