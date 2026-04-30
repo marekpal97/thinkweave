@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> None:
     p_concepts_list = concepts_sub.add_parser("list", help="List all concepts with counts")
     p_concepts_list.add_argument("--prefix", default="", help="Filter by prefix")
     p_concepts_list.add_argument("--min-count", type=int, default=1, help="Minimum note count")
-    concepts_sub.add_parser("tighten", help="Find near-duplicate concepts")
+    concepts_sub.add_parser("tighten", help="[deprecated — use `mem concepts drift`] Find near-duplicate concepts")
     p_merge = concepts_sub.add_parser("merge", help="Merge one concept into another")
     p_merge.add_argument("from_concept", help="Concept to rename/remove")
     p_merge.add_argument("to_concept", help="Canonical concept to merge into")
@@ -1353,6 +1353,11 @@ def cmd_concepts(args: argparse.Namespace) -> None:
             print(f"  {count:3d}  {concept}")
 
     elif action == "tighten":
+        print(
+            "warning: `mem concepts tighten` is deprecated; "
+            "use `mem concepts drift` (richer + filtered).",
+            file=sys.stderr,
+        )
         idx = Indexer(config=cfg)
         concept_counts = get_all_concepts(idx.db)
         idx.close()

@@ -219,7 +219,6 @@ def _build_tools_manifest() -> Section:
         "**Landing & concepts**\n"
         "- `mem_landing(project, doc='decisions'|'backlog'|'state'|'all')` — regenerate landing docs.\n"
         "- `mem_concepts(project, prefix, min_count)` — list concepts with counts.\n"
-        "- `mem_concepts_tighten()` — find near-duplicate concepts.\n"
         "- `mem_concepts_merge(from_concept, to_concept)` — rename across the vault.\n"
         "- `mem_concepts_drift(project)` — advisory drift report (near-dupes, ontology candidates, staleness)."
     )

@@ -728,11 +728,13 @@ def main() -> None:
             Tool(
                 name="mem_concepts_tighten",
                 description=(
+                    "[DEPRECATED — prefer mem_concepts_drift] "
                     "Find near-duplicate concepts that may need merging.\n\n"
                     "Uses string similarity (edit distance, substring, stem matching) "
                     "to identify concept pairs that likely refer to the same thing. "
                     "Returns suggested merges — does not auto-apply.\n\n"
-                    "Call periodically to keep the concept vocabulary clean."
+                    "`mem_concepts_drift` returns the same near-dupes plus ontology "
+                    "candidates and redundant-hub pairs in one call; use that instead."
                 ),
                 inputSchema={
                     "type": "object",
@@ -745,7 +747,7 @@ def main() -> None:
                     "Merge one concept into another across all vault notes.\n\n"
                     "Renames `from_concept` to `to_concept` in every note's frontmatter "
                     "and updates the aliases file so the old name auto-resolves in future.\n\n"
-                    "Use after reviewing mem_concepts_tighten suggestions."
+                    "Use after reviewing mem_concepts_drift suggestions."
                 ),
                 inputSchema={
                     "type": "object",
