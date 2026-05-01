@@ -53,9 +53,15 @@ def indexer(config: Config):
 
 
 def _write_ontology(monkeypatch, content: str) -> Path:
-    """Redirect the ontology loader to a temp file with the given YAML body."""
+    """Redirect the ontology loader to a temp file with the given YAML body.
+
+    Monkeypatches both the seed and the vault override so the test's tmp
+    file is the sole source of ontology data — no seed bleed-through.
+    """
     path = Path(tempfile.mkdtemp()) / "ontology.yaml"
     path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr("personal_mem.concepts._seed_ontology_path", lambda: path)
+    monkeypatch.setattr("personal_mem.concepts._vault_ontology_path", lambda: path)
     monkeypatch.setattr("personal_mem.concepts._ontology_path", lambda: path)
     return path
 
@@ -100,6 +106,99 @@ class TestReservedKeys:
 
     def test_reserved_keys_constant(self):
         assert "tag_vocabulary" in _RESERVED_ONTOLOGY_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Seed/override layering — vault override does NOT silently shadow the seed
+# when the vault is missing a top-level key (n-de89d808 regression).
+# ---------------------------------------------------------------------------
+
+
+class TestOntologyLayering:
+    """Regression tests for the ontology-shadow gotcha.
+
+    Pre-fix: once `{vault}/.mem/ontology.yaml` exists, the shipped seed is
+    never read again — so any new top-level key shipped in the seed (e.g.
+    `tag_vocabulary` from workstream A) was dead weight in production
+    vaults initialised before the key existed.
+
+    Post-fix: the seed is always read first, and the vault override is
+    layered on top per top-level key. Vault wins for keys it explicitly
+    defines; missing keys fall through to the seed.
+    """
+
+    def test_vault_override_missing_key_falls_through_to_seed(
+        self, monkeypatch
+    ):
+        seed_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
+        seed_path.write_text(
+            "tag_vocabulary:\n  - todo\n  - parked\n\n"
+            "swe/python:\n  - python\n",
+            encoding="utf-8",
+        )
+        # Vault override defines its own concept domain but does NOT define
+        # tag_vocabulary — the pre-fix bug would return an empty vocab here.
+        vault_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
+        vault_path.write_text(
+            "swe/python:\n  - python\n  - asyncio\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "personal_mem.concepts._seed_ontology_path", lambda: seed_path
+        )
+        monkeypatch.setattr(
+            "personal_mem.concepts._vault_ontology_path", lambda: vault_path
+        )
+
+        # tag_vocabulary missing from vault → comes from seed.
+        assert load_tag_vocabulary() == {"todo", "parked"}
+        # swe/python defined in vault → vault wins (asyncio added).
+        ontology = load_ontology()
+        assert ontology["swe/python"] == ["python", "asyncio"]
+
+    def test_vault_override_with_explicit_empty_list_shadows_seed(
+        self, monkeypatch
+    ):
+        # User explicitly removed tag_vocabulary by setting an empty list:
+        # the seed must NOT be revived. Explicit user intent wins.
+        seed_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
+        seed_path.write_text(
+            "tag_vocabulary:\n  - todo\n  - parked\n",
+            encoding="utf-8",
+        )
+        vault_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
+        vault_path.write_text(
+            "tag_vocabulary: []\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "personal_mem.concepts._seed_ontology_path", lambda: seed_path
+        )
+        monkeypatch.setattr(
+            "personal_mem.concepts._vault_ontology_path", lambda: vault_path
+        )
+
+        assert load_tag_vocabulary() == set()
+
+    def test_explicit_path_argument_disables_layering(self, monkeypatch):
+        # Tooling that wants a single source of truth passes path= directly.
+        # No seed bleed-through even if the seed monkeypatch is in place.
+        seed_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
+        seed_path.write_text(
+            "tag_vocabulary:\n  - todo\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            "personal_mem.concepts._seed_ontology_path", lambda: seed_path
+        )
+
+        explicit_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
+        explicit_path.write_text(
+            "swe/python:\n  - python\n", encoding="utf-8"
+        )
+
+        # Explicit path → no layering, no tag_vocabulary from seed.
+        assert load_tag_vocabulary(path=explicit_path) == set()
+        assert load_ontology(path=explicit_path) == {"swe/python": ["python"]}
 
 
 # ---------------------------------------------------------------------------

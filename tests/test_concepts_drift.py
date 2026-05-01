@@ -58,6 +58,12 @@ def _stub_ontology(monkeypatch, domains: dict[str, list[str]]) -> Path:
     path.write_text("\n".join(lines), encoding="utf-8")
 
     monkeypatch.setattr(
+        "personal_mem.concepts._seed_ontology_path", lambda: path
+    )
+    monkeypatch.setattr(
+        "personal_mem.concepts._vault_ontology_path", lambda: path
+    )
+    monkeypatch.setattr(
         "personal_mem.concepts._ontology_path", lambda: path
     )
     return path

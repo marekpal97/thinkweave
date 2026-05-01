@@ -180,22 +180,34 @@ def suggest_similar(new_concept: str, existing: list[str], max_suggestions: int 
     return suggestions[:max_suggestions]
 
 
-def _ontology_path() -> Path:
-    """Resolve the ontology YAML path.
+def _seed_ontology_path() -> Path:
+    """Path to the read-only ontology seed shipped with the package."""
+    return Path(__file__).parent / "ontology.yaml"
 
-    Prefers a vault-local override at `{vault}/.mem/ontology.yaml` so personal
-    vocabularies can grow independently of the minimal seed shipped with the
-    package. Falls back to the packaged seed if no override exists.
-    """
+
+def _vault_ontology_path() -> Path | None:
+    """Path to the vault-local override, or None if no vault is configured."""
     try:
         from personal_mem.config import load_config
 
-        override = load_config().mem_dir / "ontology.yaml"
-        if override.exists():
-            return override
+        return load_config().mem_dir / "ontology.yaml"
     except Exception:
-        pass
-    return Path(__file__).parent / "ontology.yaml"
+        return None
+
+
+def _ontology_path() -> Path:
+    """Resolve the user-editable ontology path.
+
+    Returns the vault override when it exists, else the shipped seed. This
+    is the path printed in CLI hints ("add to ontology.yaml at X"). For
+    reading the *effective* ontology, use ``_parse_ontology_file`` — it
+    layers the seed beneath the vault override so new top-level keys
+    shipped with the package don't get silently shadowed by older vaults.
+    """
+    override = _vault_ontology_path()
+    if override is not None and override.exists():
+        return override
+    return _seed_ontology_path()
 
 
 # Top-level ontology keys reserved for non-concept data. Filtered out of
@@ -204,15 +216,8 @@ def _ontology_path() -> Path:
 _RESERVED_ONTOLOGY_KEYS = frozenset({"tag_vocabulary"})
 
 
-def _parse_ontology_file(path: Path | None = None) -> dict[str, list[str]]:
-    """Parse the ontology YAML file into top-level key → [list].
-
-    Returns ALL top-level keys, including reserved ones (tag_vocabulary).
-    Callers wanting just the concept ontology should use ``load_ontology``;
-    callers wanting just the tag vocabulary should use
-    ``load_tag_vocabulary``.
-    """
-    path = path or _ontology_path()
+def _parse_yaml_file(path: Path) -> dict[str, list[str]]:
+    """Parse a single ontology YAML file into top-level key → [list]."""
     if not path.exists():
         return {}
 
@@ -241,6 +246,29 @@ def _parse_ontology_file(path: Path | None = None) -> dict[str, list[str]]:
             if current_key and item:
                 parsed.setdefault(current_key, []).append(item)
     return parsed
+
+
+def _parse_ontology_file(path: Path | None = None) -> dict[str, list[str]]:
+    """Parse the effective ontology — seed layered beneath the vault override.
+
+    With ``path=None`` (the canonical call): read the shipped seed, then
+    layer the vault override on top. The vault wins per top-level key, so
+    any key the vault explicitly defines (even as an empty list) shadows
+    the seed; keys the vault never defined fall through to the seed. This
+    means new ontology keys shipped with the package are picked up by
+    older vaults without a manual migration.
+
+    With ``path`` given: read only that file, no layering. Useful for
+    tests and tooling that want a single source of truth.
+    """
+    if path is not None:
+        return _parse_yaml_file(path)
+
+    layered = _parse_yaml_file(_seed_ontology_path())
+    override_path = _vault_ontology_path()
+    if override_path is not None and override_path.exists():
+        layered.update(_parse_yaml_file(override_path))
+    return layered
 
 
 def load_ontology(path: Path | None = None) -> dict[str, list[str]]:
