@@ -1210,15 +1210,13 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
 
         any_change = False
         for entry, rev in zip(entries_sorted, revisions):
-            new_flag = rev.get("flag", "new").lower()
-            if new_flag not in ALLOWED_FLAGS:
+            new_flag, new_ref = _validate_linkage_revision(
+                entry_date=entry.date,
+                flag=str(rev.get("flag", "new")).lower(),
+                ref=str(rev.get("ref") or "").strip(),
+            )
+            if new_flag is None:
                 continue
-            new_ref = str(rev.get("ref") or "").strip()
-            # Validate ref: must be YYYY-MM-DD and belong to an earlier entry.
-            if new_flag == "new":
-                new_ref = ""
-            if new_ref and not re.match(r"^\d{4}-\d{2}-\d{2}$", new_ref):
-                new_ref = ""
             if new_flag != entry.flag or new_ref != entry.ref:
                 entry.flag = new_flag
                 entry.ref = new_ref
@@ -1258,21 +1256,69 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
         )
 
 
-_HUB_LINKAGE_SYSTEM = """You are revising a learning log for one concept in a personal knowledge vault. Each entry is a distilled learning artifact the user captured from a note. Entries are listed in chronological order (oldest first).
+def _validate_linkage_revision(
+    entry_date: str, flag: str, ref: str
+) -> tuple[str | None, str]:
+    """Validate a single linkage revision against the temporal-DAG contract.
 
-For each entry, decide its relationship to entries that appear EARLIER in the list:
-- "new" — introduces something not covered by any earlier entry
-- "agrees" — reinforces or confirms an earlier entry
-- "contradicts" — directly conflicts with an earlier entry
-- "extends" — elaborates on or refines an earlier entry
+    The contract: an entry's `ref` must point to a STRICTLY EARLIER entry
+    (`ref < entry_date`). Flags `extends` and `contradicts` REQUIRE a
+    valid ref; `agrees` accepts an empty ref; `new` MUST have an empty
+    ref. The LLM has historically inverted subject/object on this task —
+    parser-side validation is the load-bearing rule.
+
+    Returns ``(flag, ref)`` for valid revisions. If the flag itself is
+    unknown, returns ``(None, "")`` so the caller skips the revision.
+    Otherwise the helper repairs invalid combinations:
+
+    - ``new`` + any ref → drop the ref
+    - non-YYYY-MM-DD ref → drop the ref
+    - ``ref >= entry_date`` → drop the ref. If the flag REQUIRED a ref
+      (``extends`` / ``contradicts``), downgrade the flag to ``new``
+      since the structural relationship is no longer expressible.
+    - ``agrees`` with an invalid ref → keep ``agrees``, ref empty.
+    """
+    from personal_mem.hubs import ALLOWED_FLAGS
+
+    if flag not in ALLOWED_FLAGS:
+        return None, ""
+
+    if flag == "new":
+        return "new", ""
+
+    if ref and not re.match(r"^\d{4}-\d{2}-\d{2}$", ref):
+        ref = ""
+
+    if ref and ref >= entry_date:
+        ref = ""
+
+    if not ref and flag in {"extends", "contradicts"}:
+        # These flags REQUIRE a ref. Without one, the relationship is
+        # not expressible — fall back to "new".
+        flag = "new"
+
+    return flag, ref
+
+
+_HUB_LINKAGE_SYSTEM = """You are revising a learning log for one concept in a personal knowledge vault. Each entry is a distilled learning artifact captured from a note. Entries are listed oldest-first; the entry's date is its line prefix.
+
+For each entry E in the list, decide what E does relative to the entries that appear BEFORE it (the entries with strictly earlier dates):
+- "new" — E introduces something not present in any earlier entry.
+- "agrees" — E reinforces, restates, or confirms a claim from an earlier entry.
+- "contradicts" — E directly conflicts with an earlier entry.
+- "extends" — E elaborates on, refines, or adds a corollary to an earlier entry.
+
+E is the SUBJECT. The earlier entry is the OBJECT. The verb describes what E does to the earlier entry — never what the earlier entry does to E. The first entry in the list (no earlier entries exist) MUST be flagged "new".
 
 Rules for the ref field:
 - flag "new" → ref MUST be empty.
-- flag "agrees" → ref is optional (empty if no single earlier entry to cite).
-- flag "contradicts" → ref is REQUIRED and must be the date of one earlier entry.
-- flag "extends" → ref is REQUIRED and must be the date of one earlier entry.
+- flag "agrees" → ref is optional (empty if no single earlier entry to cite; otherwise the date of that earlier entry).
+- flag "contradicts" → ref is REQUIRED and must be the date of an earlier entry.
+- flag "extends" → ref is REQUIRED and must be the date of an earlier entry.
 
-Be conservative: default to "new" unless the relationship is clear. Never cite an entry that isn't earlier in the list. Never invent dates — only cite dates that appear in the input.
+The ref date MUST be strictly less than E's date. If you cannot find an earlier entry that fits, flag E as "new". Never cite a future or same-day entry. Never invent dates — only cite dates that appear in the input.
+
+Be conservative: default to "new" unless the relationship is clear.
 
 Return a single JSON object of the form:
   {"entries": [{"flag": "...", "ref": "YYYY-MM-DD or empty"}, ...]}

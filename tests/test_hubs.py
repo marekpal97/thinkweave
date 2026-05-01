@@ -309,3 +309,74 @@ class TestLinkageHelpers:
         assert len(out) == 2
         assert out[0]["flag"] == "new"
         assert out[1]["flag"] == "extends"
+
+
+class TestValidateLinkageRevision:
+    """Regression for n-c9614ce7: parser-side validation is the
+    load-bearing rule that prevents subject/object inversion from the
+    LLM contaminating hub data. The prompt is a hint; the validator is
+    the contract.
+    """
+
+    def _validate(self, entry_date, flag, ref):
+        from personal_mem.cli import _validate_linkage_revision
+        return _validate_linkage_revision(entry_date, flag, ref)
+
+    def test_unknown_flag_returns_none(self):
+        flag, ref = self._validate("2026-03-01", "weird", "")
+        assert flag is None
+        assert ref == ""
+
+    def test_new_clears_any_ref(self):
+        flag, ref = self._validate("2026-03-01", "new", "2026-01-01")
+        assert flag == "new"
+        assert ref == ""
+
+    def test_valid_extends_with_earlier_ref_passes_through(self):
+        flag, ref = self._validate("2026-03-01", "extends", "2026-01-15")
+        assert flag == "extends"
+        assert ref == "2026-01-15"
+
+    def test_valid_agrees_with_empty_ref_passes_through(self):
+        flag, ref = self._validate("2026-03-01", "agrees", "")
+        assert flag == "agrees"
+        assert ref == ""
+
+    def test_extends_with_future_ref_downgrades_to_new(self):
+        # The exact inversion the LLM produced 51 times: entry-X cites
+        # entry-Y where Y is later. Parser-side: invalid ref → drop ref.
+        # Since extends REQUIRES a ref, the flag downgrades to new.
+        flag, ref = self._validate("2026-01-15", "extends", "2026-03-01")
+        assert flag == "new"
+        assert ref == ""
+
+    def test_contradicts_with_future_ref_downgrades_to_new(self):
+        flag, ref = self._validate("2026-01-15", "contradicts", "2026-03-01")
+        assert flag == "new"
+        assert ref == ""
+
+    def test_extends_with_same_day_ref_downgrades_to_new(self):
+        # ref must be STRICTLY earlier — same-day is not a temporal edge.
+        flag, ref = self._validate("2026-03-01", "extends", "2026-03-01")
+        assert flag == "new"
+        assert ref == ""
+
+    def test_agrees_with_future_ref_keeps_flag_clears_ref(self):
+        # agrees doesn't require a ref, so we keep the flag and just
+        # drop the invalid pointer — the agreement is preserved
+        # qualitatively even if the cited entry isn't a valid earlier
+        # one.
+        flag, ref = self._validate("2026-01-15", "agrees", "2026-03-01")
+        assert flag == "agrees"
+        assert ref == ""
+
+    def test_malformed_ref_string_is_dropped(self):
+        flag, ref = self._validate("2026-03-01", "extends", "yesterday")
+        # Invalid format → ref dropped → required-ref flag downgrades.
+        assert flag == "new"
+        assert ref == ""
+
+    def test_empty_ref_with_required_flag_downgrades(self):
+        flag, ref = self._validate("2026-03-01", "extends", "")
+        assert flag == "new"
+        assert ref == ""
