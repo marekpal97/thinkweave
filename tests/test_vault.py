@@ -117,14 +117,14 @@ class TestRenderFrontmatter:
 
 class TestWikilinks:
     def test_extract_basic(self):
-        text = "See [[hive-swarm]] and [[sqlite-wal]] for details."
+        text = "See [[legacy-proj]] and [[sqlite-wal]] for details."
         links = extract_wikilinks(text)
-        assert links == ["hive-swarm", "sqlite-wal"]
+        assert links == ["legacy-proj", "sqlite-wal"]
 
     def test_extract_with_alias(self):
-        text = "Check [[hive-swarm|Hive Swarm Project]] docs."
+        text = "Check [[legacy-proj|Legacy Project]] docs."
         links = extract_wikilinks(text)
-        assert links == ["hive-swarm"]
+        assert links == ["legacy-proj"]
 
     def test_no_links(self):
         assert extract_wikilinks("No links here.") == []
@@ -187,7 +187,7 @@ class TestVaultManager:
         path = vault.create_note(
             NoteType.SESSION,
             "DAG refactor",
-            project="hive-swarm",
+            project="legacy-proj",
             extra_frontmatter={"source_session": "abc-123"},
         )
         assert path.exists()

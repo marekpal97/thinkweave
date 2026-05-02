@@ -150,7 +150,7 @@ def claude_mem_db(tmp_path: Path) -> Path:
         (id, memory_session_id, project, type, title, subtitle, facts, narrative,
          concepts, files_read, files_modified, prompt_number, created_at,
          created_at_epoch, discovery_tokens)
-        VALUES (3, 'ses-bbb-222', 'hive_swarm', 'feature',
+        VALUES (3, 'ses-bbb-222', 'legacy_proj', 'feature',
                 'Added worker pool', 'Dynamic worker scaling',
                 '["Pool auto-scales"]',
                 'Implemented dynamic worker pool.',
@@ -404,7 +404,7 @@ class TestDataLoading:
         bbb = session_map["ses-bbb-222"]
         assert bbb["summary"] is None
         assert len(bbb["observations"]) == 1
-        assert bbb["project"] == "hive_swarm"
+        assert bbb["project"] == "legacy_proj"
 
         # ccc has empty project → _unscoped
         ccc = session_map["ses-ccc-333"]
@@ -455,7 +455,7 @@ class TestImportClaudeMem:
         # Verify vault structure: check that session folders exist
         projects_dir = config.vault_root / "projects"
         assert (projects_dir / "options_engine" / "sessions").exists()
-        assert (projects_dir / "hive_swarm" / "sessions").exists()
+        assert (projects_dir / "legacy_proj" / "sessions").exists()
         assert (projects_dir / "_unscoped" / "sessions").exists()
         assert (projects_dir / "code_graph" / "sessions").exists()
 
@@ -481,7 +481,7 @@ class TestImportClaudeMem:
         vm.ensure_dirs()
 
         stats = import_claude_mem(
-            config, db_path=claude_mem_db, project_filter="hive_swarm"
+            config, db_path=claude_mem_db, project_filter="legacy_proj"
         )
 
         assert stats["sessions"] == 1

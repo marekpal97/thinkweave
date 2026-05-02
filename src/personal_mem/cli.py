@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- mem import ---
     p_import = sub.add_parser("import", help="Import from external sources")
-    p_import.add_argument("source", choices=["claude-mem", "hive", "file", "chatgpt", "messenger"])
+    p_import.add_argument("source", choices=["claude-mem", "file", "chatgpt", "messenger"])
     p_import.add_argument("path", nargs="?", default="", help="File path (for 'file'/'chatgpt' source)")
     p_import.add_argument("--source-type", default="article", help="Source type for file import")
     p_import.add_argument("--project", "-p", default="")
@@ -186,12 +186,11 @@ def main(argv: list[str] | None = None) -> None:
     p_backlog.add_argument("--tag", default="todo", help="Tag to query (default: todo)")
 
     # --- mem concepts ---
-    p_concepts = sub.add_parser("concepts", help="List, tighten, or merge concepts")
+    p_concepts = sub.add_parser("concepts", help="List, drift, merge, prune concepts")
     concepts_sub = p_concepts.add_subparsers(dest="concepts_action")
     p_concepts_list = concepts_sub.add_parser("list", help="List all concepts with counts")
     p_concepts_list.add_argument("--prefix", default="", help="Filter by prefix")
     p_concepts_list.add_argument("--min-count", type=int, default=1, help="Minimum note count")
-    concepts_sub.add_parser("tighten", help="[deprecated — use `mem concepts drift`] Find near-duplicate concepts")
     p_merge = concepts_sub.add_parser("merge", help="Merge one concept into another")
     p_merge.add_argument("from_concept", help="Concept to rename/remove")
     p_merge.add_argument("to_concept", help="Canonical concept to merge into")
@@ -386,12 +385,6 @@ def main(argv: list[str] | None = None) -> None:
     # --- mem init ---
     sub.add_parser("init", help="Initialize a new vault")
 
-    # --- mem restructure ---
-    p_restructure = sub.add_parser(
-        "restructure", help="Move flat vault files into sessions/notes/decisions subdirectories"
-    )
-    p_restructure.add_argument("--dry-run", action="store_true", help="Show what would move")
-
     # --- mem prune-orphans ---
     p_prune_orphans = sub.add_parser(
         "prune-orphans",
@@ -446,21 +439,6 @@ def main(argv: list[str] | None = None) -> None:
     p_connect.add_argument("--max-links", type=int, default=5, help="Max links per note (default: 5)")
     p_connect.add_argument("--dry-run", action="store_true", help="Show stats without writing files")
 
-    # --- mem migrate ---
-    p_migrate = sub.add_parser(
-        "migrate", help="Bulk-update frontmatter across vault notes"
-    )
-    p_migrate.add_argument("--type", "-t", default="", help="Filter: only notes of this type")
-    p_migrate.add_argument("--project", "-p", default="", help="Filter: only this project")
-    p_migrate.add_argument("--tags", default="", help="Filter: comma-separated tags")
-    p_migrate.add_argument("--set", dest="set_fields", action="append", default=[],
-                           help="Set a frontmatter field: --set key=value (repeatable)")
-    p_migrate.add_argument("--rename-tag", nargs=2, metavar=("OLD", "NEW"),
-                           help="Rename a tag across all matching notes")
-    p_migrate.add_argument("--rename-type", nargs=2, metavar=("OLD", "NEW"),
-                           help="Rename a note type across all matching notes")
-    p_migrate.add_argument("--dry-run", action="store_true", help="Show what would change")
-
     # --- mem sources ---
     p_sources = sub.add_parser(
         "sources",
@@ -497,10 +475,8 @@ def main(argv: list[str] | None = None) -> None:
         "decisions": cmd_decisions,
         "hubs": cmd_hubs,
         "landing": cmd_landing,
-        "migrate": cmd_migrate,
         "project": cmd_project,
         "prune-orphans": cmd_prune_orphans,
-        "restructure": cmd_restructure,
         "enrich": cmd_enrich,
         "connect": cmd_connect,
         "search": cmd_search,
@@ -1389,7 +1365,6 @@ def _parse_linkage_response(raw: str) -> list[dict]:
 
 def cmd_concepts(args: argparse.Namespace) -> None:
     from personal_mem.concepts import (
-        find_near_duplicates,
         get_all_concepts,
         load_aliases,
         merge_concept_in_notes,
@@ -1423,32 +1398,6 @@ def cmd_concepts(args: argparse.Namespace) -> None:
         print(f"Concepts ({len(filtered)} total):\n")
         for concept, count in filtered:
             print(f"  {count:3d}  {concept}")
-
-    elif action == "tighten":
-        print(
-            "warning: `mem concepts tighten` is deprecated; "
-            "use `mem concepts drift` (richer + filtered).",
-            file=sys.stderr,
-        )
-        idx = Indexer(config=cfg)
-        concept_counts = get_all_concepts(idx.db)
-        idx.close()
-
-        if not concept_counts:
-            print("No concepts in vault.")
-            return
-
-        duplicates = find_near_duplicates(list(concept_counts.keys()))
-        if not duplicates:
-            print(f"No near-duplicates found among {len(concept_counts)} concepts.")
-            return
-
-        print(f"Found {len(duplicates)} potential duplicate(s):\n")
-        for a, b, reason in duplicates:
-            count_a = concept_counts.get(a, 0)
-            count_b = concept_counts.get(b, 0)
-            print(f"  {a} ({count_a}) ↔ {b} ({count_b})  — {reason}")
-        print(f"\nTo merge: mem concepts merge <from> <to>")
 
     elif action == "merge":
         from personal_mem.concepts import delete_concept_hub
@@ -2013,12 +1962,6 @@ def cmd_import(args: argparse.Namespace) -> None:
             if stats.get("errors"):
                 print(f"  Errors: {stats['errors']}")
 
-    elif args.source == "hive":
-        from personal_mem.importers.hive_insights import import_hive_insights
-
-        stats = import_hive_insights(cfg, project=args.project)
-        print(f"Imported {stats['imported']} notes from hive, {stats['skipped']} skipped")
-
     elif args.source == "chatgpt":
         if not args.path:
             print("File path required. Usage: mem import chatgpt <path-to-conversations.json>")
@@ -2393,282 +2336,6 @@ def _remove_notes_by_path_prefix(idx, prefix: str) -> int:
     )
     idx.db.execute(f"DELETE FROM notes WHERE id IN ({placeholders})", note_ids)
     return len(note_ids)
-
-
-def cmd_restructure(args: argparse.Namespace) -> None:
-    """Move flat vault files into sessions/notes/decisions subdirectories.
-
-    Also merges 'personal-mem' into 'personal_mem' if both exist.
-    """
-    import shutil
-
-    from personal_mem.vault import VaultManager, parse_frontmatter, render_frontmatter
-
-    cfg = load_config()
-    vm = VaultManager(config=cfg)
-    projects_dir = vm.root / "projects"
-    dry_run = args.dry_run
-    moved = 0
-
-    if not projects_dir.exists():
-        print("No projects directory found.")
-        return
-
-    # Phase 1: Merge personal-mem → personal_mem (if both exist)
-    hyphen_dir = projects_dir / "personal-mem"
-    underscore_dir = projects_dir / "personal_mem"
-    if hyphen_dir.exists() and hyphen_dir.is_dir():
-        print(f"\nMerging personal-mem → personal_mem:")
-        for md_file in hyphen_dir.glob("*.md"):
-            text = md_file.read_text(encoding="utf-8")
-            fm, body = parse_frontmatter(text)
-            note_type = fm.get("type", "note")
-
-            # Update project field
-            if fm.get("project") == "personal-mem":
-                fm["project"] = "personal_mem"
-                text = render_frontmatter(fm) + "\n\n" + body
-
-            # Determine destination
-            if note_type == "session":
-                note_id = fm.get("id", "unknown")
-                date_str = fm.get("date", "unknown")
-                dest_dir = underscore_dir / "sessions" / f"{note_id}-{date_str}"
-            elif note_type == "source":
-                dest_dir = underscore_dir / "sources"
-            else:
-                # Notes and decisions go to sessions/misc
-                dest_dir = underscore_dir / "sessions" / "misc"
-
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest_name = "session.md" if note_type == "session" else md_file.name
-            dest = dest_dir / dest_name
-
-            if dry_run:
-                print(f"  Would move: {md_file.name} → {dest.relative_to(vm.root)}")
-            else:
-                dest.write_text(text, encoding="utf-8")
-                md_file.unlink()
-                print(f"  Moved: {md_file.name} → {dest.relative_to(vm.root)}")
-            moved += 1
-
-        if not dry_run and not any(hyphen_dir.iterdir()):
-            hyphen_dir.rmdir()
-            print(f"  Removed empty directory: personal-mem/")
-
-    # Phase 2: Restructure each project's flat files into session folders
-    for proj_dir in sorted(projects_dir.iterdir()):
-        if not proj_dir.is_dir():
-            continue
-        # Skip the hyphen directory if it was merged in phase 1
-        if proj_dir == hyphen_dir:
-            continue
-
-        flat_files = list(proj_dir.glob("*.md"))
-        if not flat_files:
-            continue
-
-        project_name = proj_dir.name
-        print(f"\nRestructuring {project_name}/:")
-
-        for md_file in flat_files:
-            text = md_file.read_text(encoding="utf-8")
-            fm, body = parse_frontmatter(text)
-            note_type = fm.get("type", "note")
-
-            if note_type == "session":
-                note_id = fm.get("id", "unknown")
-                date_str = fm.get("date", "unknown")
-                dest_dir = proj_dir / "sessions" / f"{note_id}-{date_str}"
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = dest_dir / "session.md"
-            elif note_type == "source":
-                # Sources already have their own directory
-                continue
-            else:
-                # Notes and decisions go to sessions/misc
-                dest_dir = proj_dir / "sessions" / "misc"
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = dest_dir / md_file.name
-
-            if dry_run:
-                print(f"  Would move: {md_file.name} → {dest.relative_to(proj_dir)}")
-            else:
-                shutil.move(str(md_file), str(dest))
-                print(f"  Moved: {md_file.name} → {dest.relative_to(proj_dir)}")
-            moved += 1
-
-    # Phase 3: Consolidate notes/ and decisions/ dirs into session folders
-    for proj_dir in projects_dir.iterdir():
-        if not proj_dir.is_dir():
-            continue
-        notes_dir = proj_dir / "notes"
-        decisions_dir = proj_dir / "decisions"
-        sessions_dir = proj_dir / "sessions"
-
-        for subdir in [notes_dir, decisions_dir]:
-            if not subdir.exists():
-                continue
-            for md_file in list(subdir.glob("*.md")):
-                text = md_file.read_text(encoding="utf-8")
-                fm, _ = parse_frontmatter(text)
-                derived = fm.get("derived_from", [])
-                if isinstance(derived, str):
-                    derived = [derived]
-
-                # Derived notes go to their parent session folder
-                placed = False
-                if derived:
-                    session_id = derived[0]
-                    for ses_dir in sessions_dir.iterdir() if sessions_dir.exists() else []:
-                        if ses_dir.is_dir() and ses_dir.name.startswith(session_id):
-                            dest = ses_dir / md_file.name
-                            if dry_run:
-                                print(f"  Would move: {subdir.name}/{md_file.name} → {dest.relative_to(proj_dir)}")
-                            else:
-                                shutil.move(str(md_file), str(dest))
-                                print(f"  Moved derived {md_file.name} → {dest.relative_to(proj_dir)}")
-                            moved += 1
-                            placed = True
-                            break
-
-                # Standalone notes go to sessions/misc
-                if not placed:
-                    misc_dir = sessions_dir / "misc"
-                    misc_dir.mkdir(parents=True, exist_ok=True)
-                    dest = misc_dir / md_file.name
-                    if dry_run:
-                        print(f"  Would move: {subdir.name}/{md_file.name} → {dest.relative_to(proj_dir)}")
-                    else:
-                        shutil.move(str(md_file), str(dest))
-                        print(f"  Moved {md_file.name} → {dest.relative_to(proj_dir)}")
-                    moved += 1
-
-            # Clean up empty directories
-            if not dry_run and subdir.exists() and not any(subdir.iterdir()):
-                subdir.rmdir()
-                print(f"  Removed empty directory: {subdir.name}/")
-
-    # Phase 4: Rebuild index
-    if moved > 0 and not dry_run:
-        from personal_mem.indexer import Indexer
-
-        idx = Indexer(config=cfg)
-        idx.rebuild(full=True)
-        idx.close()
-        print(f"\nIndex rebuilt.")
-
-    action = "Would move" if dry_run else "Moved"
-    print(f"\n{action} {moved} files total.")
-
-
-def cmd_migrate(args: argparse.Namespace) -> None:
-    """Bulk-update frontmatter across vault notes.
-
-    Examples:
-        mem migrate --rename-tag gotcha pitfall
-        mem migrate --rename-type note knowledge
-        mem migrate --type note --set confidence=0.5
-        mem migrate --project old-name --set project=new-name
-    """
-    from personal_mem.indexer import Indexer
-    from personal_mem.vault import VaultManager, parse_frontmatter, render_frontmatter
-
-    cfg = load_config()
-    vm = VaultManager(config=cfg)
-
-    # Collect all markdown files
-    md_files = vm.get_all_md_files()
-
-    filter_type = args.type
-    filter_project = args.project
-    filter_tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-
-    changed = 0
-    skipped = 0
-
-    for md_file in md_files:
-        text = md_file.read_text(encoding="utf-8")
-        fm, body = parse_frontmatter(text)
-
-        if not fm:
-            skipped += 1
-            continue
-
-        # Apply filters
-        if filter_type and fm.get("type", "") != filter_type:
-            skipped += 1
-            continue
-        if filter_project and fm.get("project", "") != filter_project:
-            skipped += 1
-            continue
-        if filter_tags:
-            note_tags = fm.get("tags", [])
-            if isinstance(note_tags, str):
-                note_tags = [t.strip() for t in note_tags.split(",")]
-            if not set(filter_tags).issubset(set(note_tags)):
-                skipped += 1
-                continue
-
-        modified = False
-
-        # --rename-tag OLD NEW
-        if args.rename_tag:
-            old_tag, new_tag = args.rename_tag
-            tags = fm.get("tags", [])
-            if isinstance(tags, str):
-                tags = [t.strip() for t in tags.split(",")]
-            if old_tag in tags:
-                tags = [new_tag if t == old_tag else t for t in tags]
-                fm["tags"] = tags
-                modified = True
-
-        # --rename-type OLD NEW
-        if args.rename_type:
-            old_type, new_type = args.rename_type
-            if fm.get("type") == old_type:
-                fm["type"] = new_type
-                modified = True
-
-        # --set key=value (repeatable)
-        for field_spec in args.set_fields:
-            if "=" not in field_spec:
-                print(f"Invalid --set format: {field_spec} (expected key=value)")
-                sys.exit(1)
-            key, value = field_spec.split("=", 1)
-            key = key.strip()
-            value = value.strip()
-
-            # Auto-detect lists
-            if value.startswith("[") and value.endswith("]"):
-                value = [v.strip().strip("\"'") for v in value[1:-1].split(",") if v.strip()]
-
-            fm[key] = value
-            modified = True
-
-        if not modified:
-            skipped += 1
-            continue
-
-        if args.dry_run:
-            rel = md_file.relative_to(vm.root)
-            print(f"  Would update: {rel}")
-            changed += 1
-            continue
-
-        # Write back
-        new_content = render_frontmatter(fm) + "\n\n" + body
-        md_file.write_text(new_content, encoding="utf-8")
-        changed += 1
-
-    # Rebuild index after changes
-    if changed > 0 and not args.dry_run:
-        idx = Indexer(config=cfg)
-        idx.rebuild(full=True)
-        idx.close()
-
-    action = "Would update" if args.dry_run else "Updated"
-    print(f"{action} {changed} notes, skipped {skipped}")
 
 
 # ---------------------------------------------------------------------------

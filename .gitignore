@@ -30,3 +30,6 @@ build/
 
 # Vault data (user-specific)
 vault/
+
+# Stashed one-shot migrations (kept locally, not in git)
+_old/

@@ -1,7 +1,7 @@
 """Install/uninstall personal_mem hooks into Claude Code settings.
 
-Follows hive_swarm's merge pattern — reads existing settings,
-appends hooks, preserves permissions. Non-destructive.
+Merge pattern — reads existing settings, appends hooks,
+preserves permissions. Non-destructive.
 """
 
 from __future__ import annotations

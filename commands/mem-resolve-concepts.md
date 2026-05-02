@@ -45,7 +45,7 @@ The drift detector uses string similarity which produces many false positives. A
 **Ontology candidate filtering rules:**
 - DISCARD domain-path concepts used as tags (e.g. `swe/python`, `ml/deep-learning`) — these are ontology structure, not missing entries
 - DISCARD generic process terms (e.g. `architecture`, `testing`, `documentation`, `configuration`) — these are tags, not concepts
-- DISCARD project names used as concepts (e.g. `hive_swarm`, `options_engine`)
+- DISCARD project names used as concepts (e.g. `personal_mem`, `options_engine`)
 - KEEP genuine domain terms that belong in the ontology but aren't there yet
 
 ### 3. Present compact action plan

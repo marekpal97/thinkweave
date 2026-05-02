@@ -29,7 +29,6 @@ _MANIFEST_NAME = "claude_mem_migration.json"
 PROJECT_MAP: dict[str, str] = {
     # Real projects — keep as-is
     "thinkmesh_neural": "thinkmesh_neural",
-    "hive_swarm": "hive_swarm",
     "options_engine": "options_engine",
     "personal_finance_assistant": "personal_finance_assistant",
     "code_graph": "code_graph",

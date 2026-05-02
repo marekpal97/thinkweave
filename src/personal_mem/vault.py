@@ -7,7 +7,6 @@ This module handles reading, writing, and querying notes at the file level.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import uuid
 from datetime import date, datetime, timezone

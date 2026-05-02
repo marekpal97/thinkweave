@@ -237,6 +237,37 @@ The temporal DAG is shared infrastructure (`src/personal_mem/temporal.py`): both
 
 The shipped templates (`scripts/example-flows.yaml`, `scripts/example-crontab`) document the dialect: `description`, optional `log` path, `on_error` (continue / abort), and a list of `stages` each with `run` (the literal `claude -p` argument) and optional `sleep` (seconds after the stage). No templating, no conditionals, no parallel branches — when those are needed, prefer a separate primitive over expanding `FlowSpec`.
 
+## Decision lifecycle
+
+A decision note has a `status` frontmatter field with four legal values:
+
+```
+proposed ──▶ accepted ──▶ deprecated
+                      └─▶ superseded
+```
+
+- **`proposed`** — under consideration; no commit yet, or `mem_extract` saw `outcome: abandoned`/`partial`.
+- **`accepted`** — chosen. Auto-set by `mem_extract` when `outcome: committed`.
+- **`deprecated`** — no longer applicable but not replaced. Set manually.
+- **`superseded`** — replaced by a newer decision. Auto-set: when a new decision's frontmatter declares `supersedes: [dec-X]`, the target `dec-X.status` is flipped to `superseded` inline during the same `mem_extract` call. Single-purpose, no flag, no separate apply step. Implemented in the decision-creation loop in `mcp/server.py` (the `mem_extract` handler).
+
+`judge.py` is **read-only** — it evaluates a decision against the structural evidence in the vault (was the file committed? did tests pass? was it re-edited later?) and emits a verdict (`kept` / `superseded` / `reverted` / `unknown`) plus a confidence score. It never writes back. The verdict is advisory: a caller (human in `/mem-wrap`, agent in a skill) decides what to do with it. This is deliberate — the only auto-flip in the system is the `supersedes`-declared one above, where the writer made the relationship explicit.
+
+## Coherence — how the vault avoids duplication
+
+Six distinct dedup mechanisms, each scoped to a different kind of overlap:
+
+| Scenario | Mechanism | Where |
+|---|---|---|
+| Concept overlap (near-dupes) | `concept_aliases.yaml` + Levenshtein | `mem doctor`, `mem concepts drift` |
+| Concept merge | rename across notes + delete stale hub | `mem concepts merge` |
+| Source slug collision | filesystem check, raises | `VaultManager.create_note` |
+| Note content dup | SHA-256 over body | indexer (skips on insert) |
+| Theme dedup | manual via skill | `/themes-resolve` |
+| Queue item dedup (NEW) | `dedup_keys` from `sources.yaml` | `Queue.dedup_check` (Phase 3) |
+
+Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), refuses (filesystem collision, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
+
 ## A note on the importers under `src/personal_mem/importers/`
 
-These are **one-shot CLI importers**, not skills. They're called via `mem import <source> <path>` and handle bulk migration from external formats: ChatGPT conversation exports, claude-mem databases, Messenger self-exports, Hive Swarm session logs, plain text files. They live next to the knowledge layer because they speak directly to `VaultManager`, but they're not part of the capability model — a contributor adding a new source type should usually write a skill (procedural markdown) rather than a CLI importer (Python module). The importers exist because some source formats predate the skill model; new work should go through skills.
+These are **one-shot CLI importers**, not skills. They're called via `mem import <source> <path>` and handle bulk migration from external formats: ChatGPT conversation exports, claude-mem databases, Messenger self-exports, plain text files. They live next to the knowledge layer because they speak directly to `VaultManager`, but they're not part of the capability model — a contributor adding a new source type should usually write a skill (procedural markdown) rather than a CLI importer (Python module). The importers exist because some source formats predate the skill model; new work should go through skills.

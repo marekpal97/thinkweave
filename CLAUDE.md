@@ -4,7 +4,7 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 
 ## Commands
 
-- `uv run pytest` — run tests (591 tests)
+- `uv run pytest` — run tests (664 tests)
 - `uv run mem init` — initialize a new vault
 - `uv run mem add --type {note|theme|...} --project X --tags "a,b" "Title"` — create a note
 - `uv run mem index [--full] [--embed]` — rebuild SQLite index
@@ -14,7 +14,6 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 - `uv run mem doctor` — coherence linter: tag/concept overlap, unknown tags, dead vocabulary
 - `uv run mem backlog [--project X]` — list notes tagged `todo`, grouped by project
 - `uv run mem concepts list [--prefix X] [--min-count N]` — list concepts with counts
-- `uv run mem concepts tighten` — find near-duplicate concepts
 - `uv run mem concepts merge <from> <to>` — rename concept across all notes + delete stale hub
 - `uv run mem concepts hubs [--prune] [--apply]` — generate hub pages, or list/delete orphan hubs
 - `uv run mem concepts drift [--hubs] [--hub-jaccard 0.4]` — advisory drift report; `--hubs` adds redundant-hub candidates
@@ -26,7 +25,6 @@ Obsidian-native universal memory layer. Markdown is the source of truth; SQLite 
 - `uv run mem hooks install` — install Claude Code hooks (Pre/Post/Stop)
 - `uv run mem landing [--project X] [--doc decisions|backlog|state|themes|all]` — generate landing documents (themes is global)
 - `uv run mem flow {list, show <name>, run <name> [--dry-run]}` — named workflow pipelines from `vault/.mem/flows.yaml`
-- `uv run mem restructure [--dry-run]` — consolidate notes/decisions into session folders
 
 ## Session Context & Extraction
 
@@ -107,7 +105,14 @@ The shipped `src/personal_mem/ontology.yaml` is a minimal seed — it grows as y
 
 **Session lifecycle**: hooks accumulate events (with diff context) + `★ Insight` blocks + git commits/test results into session notes → Stop hook auto-extracts (thin summary, archive events) → `/mem-wrap` enriches with LLM insights and decisions via `mem_extract` → session folder contains clean summary + derived artifacts. For non-code conversations (no hooks fired), `mem_extract` auto-creates a session note.
 
-**Decision lifecycle**: `proposed` → `accepted` → `deprecated`/`superseded`. Decisions capture both successful and abandoned approaches. `mem_judge` evaluates decisions against evidence (committed? tested? re-edited?) and assigns verdicts (kept/superseded/reverted/unknown).
+**Decision lifecycle**: 4 states — `proposed` → `accepted` → `deprecated` | `superseded`. The flow:
+
+- `proposed` — under consideration; no commit yet (or abandoned/partial outcome at extract time).
+- `accepted` — chosen; auto-set when `mem_extract` sees `outcome: committed`.
+- `deprecated` — no longer applicable but not replaced. Set manually.
+- `superseded` — replaced by a newer decision. Auto-set when a new decision frontmatter declares `supersedes: [dec-X]` — the target's `status` is flipped to `superseded` inline, in the same `mem_extract` call. No flag, no separate apply step.
+
+Decisions capture both successful and abandoned approaches. `mem_judge` is read-only: it evaluates decisions against evidence (committed? tested? re-edited?) and assigns verdicts (kept/superseded/reverted/unknown). The verdict is advisory — callers (humans or agents) decide what to do with it. judge.py never writes to vault state.
 
 **Follow-ups**: Any note can be tagged `todo` to mark it for later. `mem backlog` lists all `todo`-tagged notes. Never auto-add `todo` — only when the user explicitly asks.
 

@@ -1610,6 +1610,28 @@ def main() -> None:
             dec_note = vm.read_note(path)
             created_decisions.append(dec_note)
 
+            # Auto-flip status of any decisions this one supersedes.
+            # Single-purpose, no flag, no apply step: if a new decision
+            # declares supersedes: [dec-X], dec-X.status becomes "superseded".
+            for target_id in dec.get("supersedes", []) or []:
+                try:
+                    row = idx.db.execute(
+                        "SELECT path FROM notes WHERE id = ?", (target_id,)
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    target_path = vm.root / row["path"]
+                    if not target_path.exists():
+                        continue
+                    vm.update_note(
+                        target_path,
+                        frontmatter_updates={"status": "superseded"},
+                    )
+                    idx.index_file(target_path)
+                except Exception:
+                    # Never abort extraction over a missing supersedes target.
+                    continue
+
         # Fast-path commit-decision linking: correlate session commits to decisions
         session_commits = session_note.frontmatter.get("commits", [])
         if created_decisions and session_commits:

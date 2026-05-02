@@ -87,11 +87,6 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         _output()
         return
 
-    # Check if hive_swarm is active — defer session management
-    if os.environ.get("HIVE_STATE_DIR"):
-        _output()
-        return
-
     tool_input = hook_input.get("tool_input", {})
     tool_output = hook_input.get("tool_output", "")
 
@@ -526,11 +521,6 @@ def _handle_stop(hook_input: dict) -> None:
         _output()
         return
 
-    # Check if hive_swarm is active — defer
-    if os.environ.get("HIVE_STATE_DIR"):
-        _output()
-        return
-
     try:
         from personal_mem.config import load_config
         from personal_mem.indexer import Indexer
@@ -633,11 +623,6 @@ def _handle_session_start(hook_input: dict) -> None:
     built by ``personal_mem.context.build_project_context``. Never blocks;
     all exceptions fall through to an empty response.
     """
-    # Check if hive_swarm is active — defer to its own context management.
-    if os.environ.get("HIVE_STATE_DIR"):
-        _output()
-        return
-
     try:
         from personal_mem.config import load_config
         from personal_mem.context import build_project_context

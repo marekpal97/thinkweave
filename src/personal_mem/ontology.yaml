@@ -237,7 +237,6 @@ ai/agents:
   - langchain
   - langsmith
   - crewai
-  - hive-swarm
 
 ai/tools:
   - claude-code
