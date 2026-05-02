@@ -1932,6 +1932,17 @@ def cmd_index(args: argparse.Namespace) -> None:
     from personal_mem.core.vault import VaultManager
     VaultManager(config=cfg).ensure_dirs()
 
+    # Idempotent migration: rewrite legacy ``## Learning log`` headings to
+    # ``## Catalyst log`` so concept hubs match the unified spine. No-op
+    # after the first run; runs only on full rebuilds to keep incremental
+    # indexing fast.
+    if args.full:
+        from personal_mem.synthesis.concept_hub import migrate_concept_hub_headings
+
+        migrated = migrate_concept_hub_headings(cfg)
+        if migrated:
+            print(f"Migrated {migrated} concept hub(s) from `## Learning log` to `## Catalyst log`.")
+
     stats = idx.rebuild(full=args.full)
     print(f"Indexed: {stats['indexed']}, Skipped: {stats['skipped']}, "
           f"Removed: {stats['removed']}, Edges: {stats['edges']}")

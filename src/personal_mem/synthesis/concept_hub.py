@@ -1,4 +1,4 @@
-"""Concept hub pages — Essence + Learning log synthesis layer.
+"""Concept hub pages — Essence + Catalyst log synthesis layer.
 
 A *concept hub* is a markdown page at ``vault/concepts/topics/{concept}.md``
 that distills what the user knows about a concept across all notes in the
@@ -6,11 +6,15 @@ vault, regardless of note type or project. It has two sections:
 
 - **Essence** (~500 words): slow-moving working mental model, LLM-revised
   rarely, off the hot path.
-- **Learning log**: append-only list of learning artifacts extracted from
+- **Catalyst log**: append-only list of learning artifacts extracted from
   individual notes, each citing its source note via a ``[[note-id]]``
   wikilink. Entries carry an observational flag (``new``, ``agrees``,
   ``contradicts``, ``extends``) honestly describing their relationship to
   prior entries — no validated lifecycle.
+
+(Historically the section was titled ``## Learning log``; ``synthesis.hub.
+migrate_hub_log_heading`` is the idempotent rename to the unified
+``## Catalyst log`` shared with theme hubs.)
 
 This module is the *shared core* used by both execution paths:
 
@@ -22,25 +26,39 @@ Both paths use the same diff model: **the hub page itself is the processed
 ledger**. To find notes that still need to contribute a learning artifact
 for a given concept, we query ``note_concepts`` in SQLite for all notes
 tagged with that concept, then subtract the set of note IDs already cited
-in the hub page's learning log. No frontmatter mutation on source notes.
+in the hub page's catalyst log. No frontmatter mutation on source notes.
 
 No LLM calls live in this module — it parses, diffs, and writes. The LLM
-work happens in the caller (CLI or skill).
+work happens in the caller (CLI or skill). Parsing/rendering of the
+shared ``## Essence`` + ``## Catalyst log`` skeleton is delegated to
+``synthesis.hub`` so concept hubs and theme hubs share one spine.
 """
 
 from __future__ import annotations
 
 import re
 import sqlite3
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_mem.core.config import Config
 from personal_mem.core.vault import parse_frontmatter
-
-_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
+from personal_mem.synthesis.hub import (
+    ALLOWED_FLAGS,
+    CATALYST_LOG_HEADING,
+    ESSENCE_HEADING,
+    FLAG_AGREES,
+    FLAG_CONTRADICTS,
+    FLAG_EXTENDS,
+    FLAG_NEW,
+    Hub,
+    HubLogEntry,
+    extract_section,
+    migrate_hub_log_heading,
+    parse_log_entries,
+    parse_log_section,
+)
 
 # ---------------------------------------------------------------------------
 # Layout
@@ -49,16 +67,8 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 HUBS_DIRNAME = "concepts"
 TOPICS_DIRNAME = "topics"
 
-ESSENCE_HEADING = "## Essence"
-LEARNING_LOG_HEADING = "## Learning log"
-
-# Observational flag vocabulary. Kept narrow on purpose — these are honest
-# LLM observations the reader can verify, not a lifecycle state machine.
-FLAG_NEW = "new"
-FLAG_AGREES = "agrees"
-FLAG_CONTRADICTS = "contradicts"
-FLAG_EXTENDS = "extends"
-ALLOWED_FLAGS = {FLAG_NEW, FLAG_AGREES, FLAG_CONTRADICTS, FLAG_EXTENDS}
+# Re-export for backwards compatibility — the heading is now declared in hub.py.
+LEARNING_LOG_HEADING = CATALYST_LOG_HEADING
 
 
 def topics_dir(config: Config) -> Path:
@@ -85,25 +95,18 @@ def _slugify_concept(concept: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class LogEntry:
-    """A single learning-log entry on a concept hub page."""
-
-    date: str  # YYYY-MM-DD (hub-update run date)
-    flag: str  # one of ALLOWED_FLAGS
-    ref: str = ""  # optional reference to another entry date, e.g. "2026-01-15"
-    text: str = ""  # artifact text
-    citation: str = ""  # originating note id (wikilink target, no brackets)
-
-    def render(self) -> str:
-        flag_str = f"*{self.flag}*" if not self.ref else f"*{self.flag} {self.ref}*"
-        citation = f" — [[{self.citation}]]" if self.citation else ""
-        return f"- {self.date} · {flag_str} — {self.text}{citation}"
+# Backwards-compatible alias. Existing call-sites import ``LogEntry`` from
+# this module; the underlying type now lives in ``synthesis.hub``.
+LogEntry = HubLogEntry
 
 
 @dataclass
 class ConceptHub:
     """In-memory representation of a parsed concept hub page.
+
+    Thin wrapper around ``Hub``: adds the vocab-keyed ``concept`` field
+    and the ``raw_body`` retention used by writers. Delegates parsing and
+    rendering to the shared spine.
 
     ``raw_body`` is the original body (no frontmatter) so writers can
     reconstruct the file faithfully, only replacing the two managed
@@ -114,7 +117,7 @@ class ConceptHub:
     path: Path
     frontmatter: dict = field(default_factory=dict)
     essence: str = ""  # raw essence content (markdown body of the Essence section)
-    log_entries: list[LogEntry] = field(default_factory=list)
+    log_entries: list[HubLogEntry] = field(default_factory=list)
     raw_body: str = ""  # original body as read from disk, for diagnostics
 
     @property
@@ -127,18 +130,6 @@ class ConceptHub:
 # Parsers
 # ---------------------------------------------------------------------------
 
-# Entry pattern: `- 2026-01-15 · *new* — text text — [[note-id]]`
-# Flag may be `*new*` or `*contradicts 2026-01-15*` etc.
-# Citation may be missing; if present it's the final `[[...]]` wikilink.
-_ENTRY_RE = re.compile(
-    r"^\s*-\s*"
-    r"(?P<date>\d{4}-\d{2}-\d{2})\s*"
-    r"·\s*"
-    r"\*(?P<flag>\w+)(?:\s+(?P<ref>\d{4}-\d{2}-\d{2}))?\*\s*"
-    r"(?:—|--|-)\s*"
-    r"(?P<rest>.*)$"
-)
-
 
 def parse_concept_hub(path: Path, concept: str | None = None) -> ConceptHub:
     """Read a concept hub file from disk and parse it.
@@ -147,6 +138,10 @@ def parse_concept_hub(path: Path, concept: str | None = None) -> ConceptHub:
     sections → best-effort parse, invalid entries are skipped silently
     (they'll be ignored when computing the cited-set, which simply means
     the next run may re-cite the same note — harmless).
+
+    Tolerates both the canonical ``## Catalyst log`` and the legacy
+    ``## Learning log`` heading; ``migrate_hub_log_heading`` rewrites the
+    file to canonical form on first index run.
     """
     if concept is None:
         concept = path.stem
@@ -154,100 +149,25 @@ def parse_concept_hub(path: Path, concept: str | None = None) -> ConceptHub:
     if not path.exists():
         return ConceptHub(concept=concept, path=path)
 
-    text = path.read_text(encoding="utf-8")
-    fm, body = parse_frontmatter(text)
-
-    essence = _extract_section(body, ESSENCE_HEADING)
-    log_body = _extract_section(body, LEARNING_LOG_HEADING)
-    entries = _parse_log_entries(log_body)
-
+    hub = Hub.parse(path, hub_id=concept)
     return ConceptHub(
         concept=concept,
         path=path,
-        frontmatter=fm,
-        essence=essence.strip(),
-        log_entries=entries,
-        raw_body=body,
+        frontmatter=hub.frontmatter,
+        essence=hub.essence,
+        log_entries=hub.log,
+        raw_body=hub.raw_body,
     )
 
 
-def _extract_section(body: str, heading: str) -> str:
-    """Return text inside a markdown ## section, up to the next ## or EOF.
+def parse_log_section_entries(body: str, heading: str) -> list[HubLogEntry]:
+    """Public helper: extract a ``## ...`` section and parse it as log entries.
 
-    Returns empty string if the heading isn't present.
+    Used by themes.py to read a theme's ``## Catalyst log`` with the same
+    grammar as concept hubs. Empty list if the heading is absent or the
+    section has no valid entries.
     """
-    if heading not in body:
-        return ""
-    start = body.index(heading) + len(heading)
-    rest = body[start:]
-    m = re.search(r"\n##\s", rest)
-    if m:
-        return rest[: m.start()]
-    return rest
-
-
-def _parse_log_entries(section_text: str) -> list[LogEntry]:
-    """Parse learning-log entries out of a block of markdown.
-
-    Supports multi-line entry text (continuation lines are joined into the
-    same entry until the next `- YYYY-MM-DD` line or blank + next bullet).
-    """
-    entries: list[LogEntry] = []
-    current_lines: list[str] = []
-    current_header: dict | None = None
-
-    def _flush() -> None:
-        if current_header is None:
-            return
-        rest_text = " ".join(l.strip() for l in current_lines).strip()
-        text, citation = _split_citation(rest_text)
-        entries.append(
-            LogEntry(
-                date=current_header["date"],
-                flag=current_header["flag"],
-                ref=current_header.get("ref", "") or "",
-                text=text.strip(" —-"),
-                citation=citation,
-            )
-        )
-
-    for line in section_text.splitlines():
-        m = _ENTRY_RE.match(line)
-        if m:
-            _flush()
-            current_header = {
-                "date": m.group("date"),
-                "flag": m.group("flag"),
-                "ref": m.group("ref"),
-            }
-            current_lines = [m.group("rest")]
-        elif current_header is not None and line.strip():
-            current_lines.append(line)
-
-    _flush()
-    return [e for e in entries if e.flag in ALLOWED_FLAGS]
-
-
-def _split_citation(text: str) -> tuple[str, str]:
-    """Strip the final [[wikilink]] from an entry's rest-text. Returns (text, citation_id)."""
-    matches = list(_WIKILINK_RE.finditer(text))
-    if not matches:
-        return text, ""
-    last = matches[-1]
-    citation = last.group(1).strip()
-    stripped = (text[: last.start()] + text[last.end():]).rstrip(" —-")
-    return stripped, citation
-
-
-def parse_log_section_entries(body: str, heading: str) -> list[LogEntry]:
-    """Public helper: extract a `## ...` section and parse it as log entries.
-
-    Used by themes.py to read a theme's `## Catalyst log` with the same
-    grammar as concept hubs' Learning log. Empty list if the heading is
-    absent or the section has no valid entries.
-    """
-    section = _extract_section(body, heading)
-    return _parse_log_entries(section)
+    return parse_log_section(body, heading)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +208,7 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
         lines.append("*No synthesis yet.*")
     lines.append("")
 
-    lines.append(LEARNING_LOG_HEADING)
+    lines.append(CATALYST_LOG_HEADING)
     lines.append("")
     if hub.log_entries:
         for entry in hub.log_entries:
@@ -322,11 +242,11 @@ def write_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> P
 def append_log_entries(
     config: Config,
     concept: str,
-    new_entries: list[LogEntry],
+    new_entries: list[HubLogEntry],
     *,
     domains: list[str] | None = None,
 ) -> Path:
-    """Append new learning-log entries to a concept hub, preserving the essence.
+    """Append new catalyst-log entries to a concept hub, preserving the essence.
 
     Loads the existing hub (or creates a new one), appends entries that
     aren't already cited, and writes the file back. Safe to call when the
@@ -364,6 +284,28 @@ def ensure_concept_hub_skeleton(
         return path
     hub = ConceptHub(concept=concept, path=path)
     return write_concept_hub(hub, domains=domains)
+
+
+# ---------------------------------------------------------------------------
+# Migration helpers — exposed at this surface for `mem index --full`.
+# ---------------------------------------------------------------------------
+
+
+def migrate_concept_hub_headings(config: Config) -> int:
+    """Walk ``vault/concepts/topics/`` and rewrite legacy log headings.
+
+    Idempotent: a second run is a no-op. Returns the number of files
+    rewritten on this invocation. Wired into ``mem index --full`` so the
+    rename happens once per vault without a separate command.
+    """
+    topics = topics_dir(config)
+    if not topics.exists():
+        return 0
+    count = 0
+    for path in topics.glob("*.md"):
+        if migrate_hub_log_heading(path):
+            count += 1
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -569,9 +511,9 @@ def build_plan(
 HUB_EXTRACTION_SYSTEM = """You are extracting learning artifacts for a single concept hub in a personal knowledge vault. The user maintains a hub page per concept with two sections:
 
 1. **Essence** — a short (≤500 word) working mental model of the concept. Slow-moving. Only flag for revision when a source genuinely shifts the model.
-2. **Learning log** — an append-only list of discrete learning artifacts, each citing a vault note via a [[note-id]] wikilink.
+2. **Catalyst log** — an append-only list of discrete learning artifacts, each citing a vault note via a [[note-id]] wikilink.
 
-Your job for each note you see: read it, and decide what (if anything) it contributes to this concept's learning log. A learning artifact can be any of: a claim, a technique, a framing, a surprising data point, a useful reference, a novel connection. Not every note will contribute something — return an empty list if it doesn't.
+Your job for each note you see: read it, and decide what (if anything) it contributes to this concept's catalyst log. A learning artifact can be any of: a claim, a technique, a framing, a surprising data point, a useful reference, a novel connection. Not every note will contribute something — return an empty list if it doesn't.
 
 Each entry you propose must carry an observational flag describing its relationship to prior log entries. These are honest observations, not validated states:
 
@@ -604,7 +546,7 @@ HUB_EXTRACTION_USER_TEMPLATE = """Concept: **{concept}**
 ### Essence
 {essence}
 
-### Recent learning log entries
+### Recent catalyst log entries
 {recent_entries}
 
 ## Note to process
@@ -628,7 +570,7 @@ def build_extraction_user_prompt(
     *,
     concept: str,
     essence: str,
-    recent_entries: list[LogEntry],
+    recent_entries: list[HubLogEntry],
     note_id: str,
     note_type: str,
     project: str,
@@ -662,8 +604,8 @@ def parse_llm_response(
     *,
     note_id: str,
     run_date: str,
-) -> tuple[list[LogEntry], bool]:
-    """Parse a structured LLM response into LogEntry objects.
+) -> tuple[list[HubLogEntry], bool]:
+    """Parse a structured LLM response into HubLogEntry objects.
 
     Returns (entries, essence_revision_needed). Tolerates JSON wrapped
     in ```json ... ``` code fences. Rejects entries with unknown flags
@@ -707,7 +649,7 @@ def parse_llm_response(
     if not isinstance(raw_entries, list):
         return [], essence_flag
 
-    entries: list[LogEntry] = []
+    entries: list[HubLogEntry] = []
     for item in raw_entries:
         if not isinstance(item, dict):
             continue
@@ -723,7 +665,7 @@ def parse_llm_response(
             continue
         ref = item.get("ref") or ""
         entries.append(
-            LogEntry(
+            HubLogEntry(
                 date=run_date,
                 flag=flag,
                 ref=str(ref) if ref else "",

@@ -10,17 +10,34 @@ The ``project:`` frontmatter field on a theme is **informational** (primary
 stake) — it never controls filing. Theme dedup, listing, and DAG rendering
 all operate over the global set.
 
-This module owns the canonical frontmatter builder, the body skeleton, and
-the parser for the ``## Catalyst log`` section. The catalyst log uses the
-**same grammar** as concept hubs' learning log (one parser, ``hubs.parse_
-log_section_entries``), and the temporal-DAG renderer (``temporal.py``)
-consumes both surfaces interchangeably.
+This module owns the canonical theme frontmatter builder, the body skeleton,
+the lifecycle constants, and a thin parser that delegates to the unified
+``Hub`` spine for catalyst-log parsing. Concept hubs and theme hubs share
+that spine — see ``synthesis/hub.py`` — so the catalyst-log grammar lives
+in exactly one place.
+
+The theme-hub *specialisation* (vs concept hubs):
+
+- **Identity**: UUID-shaped (``thm-XXXX``), not a vocabulary term.
+- **Auto-update**: none. Catalysts are authored manually (or by skills
+  like ``/themes-resolve``), not extracted from sessions on every run.
+- **Lifecycle**: ``active`` → ``dormant`` / ``resolved`` / ``merged-into:thm-X``.
+- **Citation direction**: notes cite a theme via ``relates_to: [thm-X]``,
+  not via ``concepts: [...]``.
+- **Storage**: ``vault/themes/`` (global), never project-nested.
 """
 
 from __future__ import annotations
 
-from personal_mem.synthesis.concept_hub import LogEntry, parse_log_section_entries
+from personal_mem.synthesis.hub import (
+    CATALYST_LOG_HEADING,
+    Hub,
+    HubLogEntry,
+    parse_log_section,
+)
 
+# Re-export so callers continue to import LogEntry from the theme module.
+LogEntry = HubLogEntry
 
 # Canonical lifecycle states for themes. ``merged-into:thm-XXXXXXXX`` is a
 # sentinel form for survivors-with-a-reference, written by the dedup skill.
@@ -77,9 +94,6 @@ def build_theme_frontmatter(
     return fm
 
 
-CATALYST_LOG_HEADING = "## Catalyst log"
-
-
 def render_theme_body_skeleton(title: str) -> str:
     """Initial body for a new theme.
 
@@ -105,10 +119,22 @@ def render_theme_body_skeleton(title: str) -> str:
     )
 
 
-def parse_theme_catalyst_log(body: str) -> list[LogEntry]:
+def parse_theme_catalyst_log(body: str) -> list[HubLogEntry]:
     """Parse the ``## Catalyst log`` section of a theme body.
 
-    Returns a list of ``LogEntry`` records (the same dataclass concept hubs
-    use). Empty list if the section is absent or empty.
+    Returns a list of ``HubLogEntry`` records — the same dataclass concept
+    hubs use, sourced from ``synthesis.hub``. Empty list if the section is
+    absent or empty.
     """
-    return parse_log_section_entries(body, CATALYST_LOG_HEADING)
+    return parse_log_section(body, CATALYST_LOG_HEADING)
+
+
+def parse_theme(path) -> Hub:
+    """Parse a theme file from disk into a unified ``Hub`` view.
+
+    Convenience wrapper that exposes the shared spine on the theme
+    surface. Theme-specific helpers (``build_theme_frontmatter``,
+    ``render_theme_body_skeleton``, status constants) stay here; the log
+    grammar lives in ``Hub.parse``.
+    """
+    return Hub.parse(path)

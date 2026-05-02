@@ -240,9 +240,38 @@ If you need a new headless path that isn't either of these, add a CLI subcommand
 
 A theme is a NoteType (`type: theme`, prefix `thm-`) that captures a temporal narrative — the kind of story external sources, news, and decisions cite in concert. Themes live at `vault/themes/`, **globally**, regardless of project. The `project:` frontmatter field is informational (primary stake), never a filing rule.
 
-The shape mirrors a concept hub: an `## Essence` (slow-moving thesis), a `## Catalyst log` (append-only dated events using the same grammar as hub learning logs), and `## Open questions`. Decisions express themes via `implements: [thm-XXXX]` plus optional `implements_catalyst: YYYY-MM-DD`. The global `vault/THEMES.md` landing doc renders an Active table plus per-theme Mermaid temporal DAG (catalysts + decisions hung off the catalyst they implement). `/themes-resolve` is the periodic dedup/hygiene skill — same posture as `/mem-resolve-concepts`.
+The shape mirrors a concept hub: an `## Essence` (slow-moving thesis), a `## Catalyst log` (append-only dated events using the same grammar as concept-hub catalyst logs), and `## Open questions`. Decisions express themes via `implements: [thm-XXXX]` plus optional `implements_catalyst: YYYY-MM-DD`. The global `vault/THEMES.md` landing doc renders an Active table plus per-theme Mermaid temporal DAG (catalysts + decisions hung off the catalyst they implement). `/themes-resolve` is the periodic dedup/hygiene skill — same posture as `/mem-resolve-concepts`.
 
-The temporal DAG is shared infrastructure (`src/personal_mem/temporal.py`): both concept hubs and themes parse the same `flag[ ref]` log grammar, build a `TemporalGraph`, and render Mermaid via the same primitive. Concept hubs gain an auto `## Evolution` section when the log has any non-`new` ref; themes inline a per-theme DAG inside `THEMES.md`.
+The temporal DAG is shared infrastructure (`src/personal_mem/retrieval/temporal.py`): both concept hubs and themes parse the same `flag[ ref]` log grammar, build a `TemporalGraph`, and render Mermaid via the same primitive. Concept hubs gain an auto `## Evolution` section when the log has any non-`new` ref; themes inline a per-theme DAG inside `THEMES.md`.
+
+### Concept hub vs theme hub
+
+Both hubs are the synthesis layer over the vault. They share a spine — `## Essence` plus an append-only `## Catalyst log` with the same flag grammar (`new` / `agrees` / `contradicts` / `extends`). That spine is implemented exactly once, in `synthesis/hub.py`, as the `Hub` + `HubLogEntry` dataclasses. Concept-hub and theme-hub modules are thin specialisations.
+
+|  | **Concept hub** | **Theme hub** |
+|---|---|---|
+| Identity | vocabulary term (e.g. `finance/regime`) | UUID (e.g. `thm-aaaa1111`) |
+| Auto-update | yes (`/update-hubs` extracts from sessions) | no (authored only) |
+| Lifecycle | none — concepts don't die | `active → dormant → resolved` / `merged-into:thm-X` |
+| Citation direction | notes cite concept by `concepts: [...]` frontmatter | notes cite theme via `relates_to: [thm-X]` |
+| Resolution skill | `/mem-resolve-concepts` | `/themes-resolve` |
+| Storage | `vault/concepts/topics/{name}.md` | `vault/themes/{thm-X}-{slug}.md` |
+
+**Disambiguation rule:**
+
+- **Concept** = invariant vocabulary term identifying a *category*, *capability*, or *mechanism* (e.g. `finance/regime`, `mcp/server-config`, `retrieval/hybrid`). Ontology-grade. Doesn't have a story arc. Lives forever.
+- **Theme** = narrative arc identifying an *unfolding event* (e.g. `thm-aaaa1111: AI capex unwind 2026`). Has beginning/middle/end. Always cites ≥1 concept.
+
+**The disambiguation test for an LLM agent:**
+
+- "X capability" / "X technique" / "X area of work" → concept
+- "X event" / "X period" / "X transition" / "X campaign" → theme
+- If the candidate name has a year, a quarter, or "rollout/unwind/launch/pivot" — it's a theme.
+- If you cannot picture an `## Essence` paragraph that wouldn't change in 5 years — it's a theme.
+
+**No auto-theme-detection.** Themes are explicit acts of synthesis.
+
+Historically concept hubs used `## Learning log`; the canonical heading on both surfaces is now `## Catalyst log`. `synthesis/hub.migrate_hub_log_heading` is the idempotent rename, wired into `mem index --full`.
 
 ## Workflow stager
 
