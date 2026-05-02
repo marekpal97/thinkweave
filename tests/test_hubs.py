@@ -2,8 +2,8 @@
 
 These are the shared core both hub-execution paths rely on:
 
-- ``/backfill-hubs`` + ``/update-hubs`` skills — inline Claude Code path
-- ``mem hubs run`` — OpenAI Batches API path (gpt-5-mini)
+- ``/drain --target hubs --via inline`` + ``/update-hubs`` skills — inline Claude Code path
+- ``mem drain --target hubs --via batch`` — OpenAI Batches API path (gpt-5-mini)
 
 Both paths call ``append_log_entries`` / ``parse_concept_hub`` /
 ``unprocessed_notes_for_concept`` after producing LLM output, so a

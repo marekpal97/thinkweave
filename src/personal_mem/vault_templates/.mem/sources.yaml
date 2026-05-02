@@ -4,6 +4,13 @@
 # defaults from src/personal_mem/sources/config.py:DEFAULT_CONFIG. Edit
 # this file to retarget queues, swap importers, change drain strategies,
 # or add new source-type entries without forking personal_mem.
+#
+# Adding a new source type (e.g. podcast):
+#   1. Add a SourceTypeSpec entry to src/personal_mem/sources/registry.py
+#   2. Add a `sources:` block here with `queue`, `research_skill`,
+#      `dedup_keys`, `url_patterns`, `drain_strategy` (defaults below).
+#   3. Drop a `commands/research/research-podcast.md` skill alongside.
+# No edits to vault.py, queue.py, or the CLI are required.
 
 sources:
   paper:
@@ -12,14 +19,27 @@ sources:
     drain_strategy: anthropic_batch
     intake_folder: ~/papers_inbox
     summarize_format: technical_brief
-    dedup_keys: [arxiv_id, doi, title]
+    dedup_keys: [arxiv_id, doi, url, title]
     url_patterns: [arxiv.org, openreview.net]
   repo:
     queue: vault/.mem/queues/repos.jsonl
     research_skill: research-repo
     drain_strategy: inline
-    dedup_keys: [github_url, slug]
+    dedup_keys: [github_url, repo_url, slug, url]
     url_patterns: [github.com, gitlab.com]
+  article:
+    queue: vault/.mem/queues/articles.jsonl
+    research_skill: research-article
+    drain_strategy: inline
+    dedup_keys: [url, title]
+  substack:
+    drain_strategy: inline
+    intake_folder: ~/substack_inbox
+    dedup_keys: [url, slug]
+  conversation:
+    drain_strategy: inline
+    importer: chatgpt
+    dedup_keys: [conversation_id, title]
   claude-history:
     drain_strategy: inline
     importer: claude_mem

@@ -35,8 +35,8 @@ If `todo` is small (roughly 1–20 notes across a handful of concepts, a normal 
 
 If `todo` is large (>50 notes total), this is a backfill-scale job. Tell the user they have two alternatives and let them pick:
 
-- **`/backfill-hubs`** — same inline extraction as this skill, but iterates a full plan file with a per-invocation cap. Good when you want to watch it happen and intervene on hard calls.
-- **`mem hubs run --plan .mem/hubs_plan.json`** — submits the plan to the OpenAI Batches API with gpt-5-mini (50% discount, async, automatic prompt caching for the shared hub state). Good when cost efficiency matters more than interactive review.
+- **`/drain --target hubs --via inline`** — same inline extraction as this skill, but iterates a full plan file with a per-invocation cap. Good when you want to watch it happen and intervene on hard calls.
+- **`mem drain --target hubs --via batch`** — submits the plan to the OpenAI Batches API with gpt-5-mini (50% discount, async, automatic prompt caching for the shared hub state). Good when cost efficiency matters more than interactive review.
 
 Don't force the choice — offer both and stop here unless the user confirms continuing with the incremental path.
 
@@ -115,4 +115,4 @@ That's it. No lists of individual entries, no diffs — the user can read the hu
 - **Never delete log entries** — the log is append-only by design. If an entry is wrong, the user can hand-edit.
 - **Never mutate source-note frontmatter** to mark it "processed." The hub page is the ledger.
 - **Don't spawn Explore agents** to crawl the vault for related context — the plan file already has the list of notes to process, and the hub page already has its current state. Everything you need is in step 1–3 reads.
-- **If the plan shows more than ~20 unprocessed notes total**, stop and let the user pick between `/backfill-hubs` (interactive bulk) and `mem hubs run` (Batches API bulk). Both are bulk paths; don't force either.
+- **If the plan shows more than ~20 unprocessed notes total**, stop and let the user pick between `/drain --target hubs --via inline` (interactive bulk) and `mem drain --target hubs --via batch` (Batches API bulk). Both are bulk paths; don't force either.

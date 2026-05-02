@@ -122,18 +122,21 @@ Each capability maps to a **skill file** under `commands/`. Skills are procedura
 
 Current mapping:
 
-| Source type    | Import      | Acquire       | Discover      |
-|----------------|-------------|---------------|---------------|
-| `paper`        | `/research` | `/research --queue` | `/discover` |
-| `repo`         | `/research` | `/research --queue` | `/discover` |
-| `article`      | `/research` | `/research --queue` | `/discover` |
-| `substack`     | —           | `/substack`   | —             |
-| `conversation` | `mem import chatgpt` (CLI) | — | — |
+| Source type    | Import                   | Acquire                       | Discover    |
+|----------------|--------------------------|-------------------------------|-------------|
+| `paper`        | `/research → /research-paper`   | `/drain --source-type paper`   | `/discover` |
+| `repo`         | `/research → /research-repo`    | `/drain --source-type repo`    | `/discover` |
+| `article`      | `/research → /research-article` | `/drain --source-type article` | `/discover` |
+| `substack`     | —                              | `/substack`                    | —           |
+| `conversation` | `mem import chatgpt` (CLI)     | —                              | —           |
+| `claude-history` | —                            | `/drain --source claude-history` | —         |
 
 Two distinct acquisition patterns coexist — on purpose, because the inputs differ:
 
-- **Semantic queue** — `/research --queue` drains notes tagged `todo+research` from the vault itself. Claim-before-fetch via a `processing` tag; items that fail mid-run stay stuck in `processing` and are recoverable.
+- **JSONL queue** — `/drain --source-type <slug>` drains items from `vault/.mem/queues/<slug>.jsonl`. The Queue primitive (see §"Queue primitive") supports claim/dedup/archive. Items live outside the note graph until they become source notes.
 - **Disk inbox** — `/substack` drains files from `~/substack_inbox/` (outside the vault) and moves them to `_processed/<date>/` on success. Nothing mutates vault state until `mem_create` lands a source note.
+
+Legacy `todo+research` notes are migrated into the matching JSONL queue by `mem doctor --migrate` (see `operations/migrations.py`).
 
 Both patterns are correct; they're serving different input flows (knowledge-layer artifacts vs browser-clipped files). A new source type should pick whichever matches its input.
 
@@ -231,7 +234,7 @@ Skills live in `commands/*.md` as plain markdown and run inside Claude Code via 
 
 For bulk, non-interactive work there are two targeted paths — neither requires a generic skill runner:
 
-- **Concept hub backfill** — `mem hubs run --plan <path>` ships its own OpenAI Batches API path. It doesn't route through a skill file; it reads the plan JSON and calls the Batches API directly. `mem hubs link` is the analogous one-shot pass that rewrites flat `new` flags into `agrees`/`contradicts`/`extends` relationships across existing hub log entries (also via OpenAI Batches).
+- **Concept hub backfill** — `mem drain --target hubs --via batch` (alias `mem hubs run`) ships its own OpenAI Batches API path. It doesn't route through a skill file; it reads the plan JSON and calls the Batches API directly. `mem hubs link` is the analogous one-shot pass that rewrites flat `new` flags into `agrees`/`contradicts`/`extends` relationships across existing hub log entries (also via OpenAI Batches).
 - **Autopilot** — `claude -p --model sonnet --dangerously-skip-permissions` invoked from cron gives headless skill execution with the full Claude Code tool surface.
 
 If you need a new headless path that isn't either of these, add a CLI subcommand next to `mem hubs run` rather than reintroducing a generic runner.
@@ -273,6 +276,90 @@ Both hubs are the synthesis layer over the vault. They share a spine — `## Ess
 
 Historically concept hubs used `## Learning log`; the canonical heading on both surfaces is now `## Catalyst log`. `synthesis/hub.migrate_hub_log_heading` is the idempotent rename, wired into `mem index --full`.
 
+## Queue primitive
+
+Per-source-type acquisition state lives in plain JSONL on disk — never inside the vault's note graph. The `Queue` class (`src/personal_mem/sources/queue.py`) is the single API:
+
+```python
+from personal_mem.sources import Queue
+
+q = Queue.for_source_type("paper", vault_root)
+q.enqueue({"url": "https://arxiv.org/abs/...", "title": "..."})
+item = q.dequeue()                                   # FIFO; skips claimed
+items = q.peek(5)
+q.claim(item_id)                                     # idempotent
+q.archive(item_id, status="done")                    # move to dated archive
+conflict = q.dedup_check(new_item, keys=[...])       # active + 30 days archive
+```
+
+Storage layout:
+
+```
+vault/.mem/queues/
+  paper.jsonl                 # active queue (one JSON per line)
+  repo.jsonl
+  article.jsonl
+  _processed/
+    2026-05-03/
+      paper.jsonl             # archived items, status stamped
+```
+
+Items get a UUID `id` and `enqueued_at` timestamp on enqueue if absent. Claims are written via tempfile + `os.replace` (atomic per-process); the design assumes a single user, not concurrent workers.
+
+`dedup_check` consults the active queue plus the last 30 days of archive. `keys` are pulled from `sources.<type>.dedup_keys` in `sources.yaml`, so a paper queue dedups on `arxiv_id`, `doi`, `url`, `title` while an article queue dedups on `url`, `title`. String comparisons are case- and whitespace-insensitive.
+
+The queues directory is excluded from the SQLite index — acquisition state is not knowledge.
+
+## Sources YAML
+
+`vault/.mem/sources.yaml` overlays per-source-type defaults. The shipped `DEFAULT_CONFIG` (in `src/personal_mem/sources/config.py`) is the source of truth; the user file overlays it key-by-key via `load_user_config(vault_root)`.
+
+```yaml
+sources:
+  paper:
+    queue: vault/.mem/queues/papers.jsonl
+    research_skill: research-paper        # commands/research/research-paper.md
+    drain_strategy: anthropic_batch       # inline | anthropic_batch | openai_batch
+    dedup_keys: [arxiv_id, doi, url, title]
+    url_patterns: [arxiv.org, openreview.net]
+landing_files:
+  state: STATE.md
+  backlog: BACKLOG.md
+auto_todo_extraction: true
+```
+
+Where it's read:
+
+- `mem queue` / `mem drain` / `mem_queue` MCP — pick `dedup_keys`, `research_skill`, `drain_strategy`.
+- `commands/research.md` (router skill) — `url_patterns` to classify a URL.
+- `mem doctor --migrate` — `dedup_keys` to dedup-on-enqueue when migrating legacy `todo+research` notes.
+
+`mem_sources_config` MCP exposes the merged dict to skills that don't want to re-parse the YAML themselves.
+
+## Acquisition triad — research / drain / discover
+
+```
+┌─────────────┐     ┌────────────┐     ┌───────────┐
+│  /research  │     │  /drain    │     │ /discover │
+│             │     │            │     │           │
+│ classify URL│     │ drain queue│     │ find gaps │
+│ → subskill  │ ←── │ or import  │ ←── │ → enqueue │
+│ → mem_create│     │ historical │     │   leads   │
+└─────────────┘     └────────────┘     └───────────┘
+       │                  │                   │
+       ▼                  ▼                   ▼
+  source notes      source notes        queue items
+```
+
+- `/research` is now a thin URL classifier (~50 LOC). It dispatches to `commands/research/research-{paper,repo,article}.md` based on the URL pattern. Adding a new source type is one registry entry + one subskill — no router edits.
+- `/drain` is the unified intake worker. Three modes:
+  - `--target hubs [--via inline|batch]` — concept-hub backfill (replaces the old standalone `mem hubs run` and the inline hub-backfill skill)
+  - `--source-type <slug> [--via inline|batch]` — drain a per-type queue
+  - `--source claude-history` — one-shot retroactive importer
+- `/discover` (existing — Phase 4 H makes it project-aware) reads `RESEARCH_FOCUS.md`, finds under-covered concepts, and enqueues new leads via `mem_queue`.
+
+The CLI mirrors the triad: `mem queue` / `mem drain` / `mem update` are the headless surface (cron flows). `mem hubs run` is a deprecation alias that prints a hint then dispatches to the same plumbing.
+
 ## Workflow stager
 
 `mem flow` is a thin declarative layer over the existing skill+cron pattern. Flows live in `vault/.mem/flows.yaml` as named sequences of `claude -p` invocations; cron entries become one-liners that invoke `mem flow run <name>` instead of re-encoding the order and flags.
@@ -306,7 +393,7 @@ Six distinct dedup mechanisms, each scoped to a different kind of overlap:
 | Source slug collision | filesystem check, raises | `VaultManager.create_note` |
 | Note content dup | SHA-256 over body | indexer (skips on insert) |
 | Theme dedup | manual via skill | `/themes-resolve` |
-| Queue item dedup (NEW) | `dedup_keys` from `sources.yaml` | `Queue.dedup_check` (Phase 3) |
+| Queue item dedup | `dedup_keys` from `sources.yaml` | `Queue.dedup_check` |
 
 Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), refuses (filesystem collision, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
 

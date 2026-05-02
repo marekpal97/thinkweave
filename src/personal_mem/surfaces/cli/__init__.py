@@ -121,11 +121,19 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("stats", help="Show vault statistics")
 
     # --- mem doctor ---
-    sub.add_parser(
+    p_doctor = sub.add_parser(
         "doctor",
         help=(
             "Coherence linter: tag/concept overlap, unknown tags, "
             "dead vocabulary. Advisory — never modifies the vault."
+        ),
+    )
+    p_doctor.add_argument(
+        "--migrate",
+        action="store_true",
+        help=(
+            "Run idempotent one-shot data migrations (e.g. todo+research → "
+            "queue) before printing the report."
         ),
     )
 
@@ -461,6 +469,65 @@ def main(argv: list[str] | None = None) -> None:
     p_skill_show = skill_sub.add_parser("show", help="Show a skill's frontmatter + head")
     p_skill_show.add_argument("name", help="Skill name (without .md)")
 
+    # --- mem queue ---
+    p_queue = sub.add_parser(
+        "queue",
+        help="Inspect per-source-type acquisition queues (.mem/queues/*.jsonl)",
+    )
+    p_queue.add_argument(
+        "action",
+        choices=["list", "inspect", "peek"],
+        help="list — all queues with counts; inspect <type> — full listing; peek <type> — first N items",
+    )
+    p_queue.add_argument(
+        "source_type", nargs="?", default="",
+        help="Source type slug (required for inspect / peek)",
+    )
+    p_queue.add_argument(
+        "--source-type", dest="source_type_flag", default="",
+        help="Alternative to positional for `list --source-type X`",
+    )
+    p_queue.add_argument(
+        "--n", type=int, default=5, help="With peek: number of items (default: 5)"
+    )
+
+    # --- mem drain ---
+    p_drain = sub.add_parser(
+        "drain",
+        help=(
+            "Drain a queue or backfill concept hubs. Replaces `mem hubs run` "
+            "and the inline hub-backfill skill."
+        ),
+    )
+    p_drain.add_argument("--target", default="", choices=["", "hubs"])
+    p_drain.add_argument("--source-type", default="")
+    p_drain.add_argument("--source", default="")
+    p_drain.add_argument("--via", default="inline", choices=["inline", "batch"])
+    p_drain.add_argument("--concept", default="")
+    p_drain.add_argument("--project", default="")
+    p_drain.add_argument("--limit", type=int, default=0)
+    p_drain.add_argument("--dry-run", action="store_true")
+    p_drain.add_argument("--plan", default="")
+    p_drain.add_argument("--model", default="gpt-5-mini")
+    p_drain.add_argument("--max-tokens", type=int, default=1024)
+    p_drain.add_argument("--poll-interval", type=int, default=30)
+    p_drain.add_argument("--max-input-tokens", type=int, default=4_500_000)
+
+    # --- mem update ---
+    p_update = sub.add_parser(
+        "update",
+        help="CLI parity for mem_update — minimal subset for headless flows.",
+    )
+    p_update.add_argument("note_id")
+    p_update.add_argument(
+        "--frontmatter", "-f", action="append", default=[],
+        help="Repeatable: key=value frontmatter override",
+    )
+    p_update.add_argument(
+        "--body-append", default="",
+        help="Path to a file appended to the note body",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -494,12 +561,17 @@ def main(argv: list[str] | None = None) -> None:
         "intake": cmd_intake,
         "sources": cmd_sources,
         "skill": cmd_skill,
+        "queue": cmd_queue,
+        "drain": cmd_drain,
+        "update": cmd_update,
     }
     commands[args.command](args)
 
 
 def cmd_backlog(args: argparse.Namespace) -> None:
     from personal_mem.retrieval.search import Search
+    from personal_mem.sources import all_specs
+    from personal_mem.sources.queue import Queue
 
     cfg = load_config()
     s = Search(config=cfg)
@@ -512,11 +584,45 @@ def cmd_backlog(args: argparse.Namespace) -> None:
     )
     s.close()
 
-    if not results:
+    # TODO(post-G): drop UNION once /onboard defaults users to queue-based intake.
+    # Transitional: surface active queue items alongside todo-tagged notes so
+    # users still see the full backlog while the two intake models coexist.
+    queue_rows: list[tuple[str, str, str, str]] = []  # (slug, id, title, url)
+    if args.tag == "todo":
+        seen: set[str] = set()
+        for spec in all_specs():
+            seen.add(spec.slug)
+            q = Queue.for_source_type(spec.slug, cfg.vault_root)
+            for item in q.peek(10_000):
+                if item.get("claimed"):
+                    continue
+                queue_rows.append((
+                    spec.slug,
+                    str(item.get("id", "")),
+                    str(item.get("title") or item.get("url") or "(no title)"),
+                    str(item.get("url", "")),
+                ))
+        # Pick up unregistered queue files too.
+        queues_root = cfg.vault_root / ".mem" / "queues"
+        if queues_root.exists():
+            for child in sorted(queues_root.glob("*.jsonl")):
+                if child.stem in seen:
+                    continue
+                q = Queue.for_source_type(child.stem, cfg.vault_root)
+                for item in q.peek(10_000):
+                    if item.get("claimed"):
+                        continue
+                    queue_rows.append((
+                        child.stem,
+                        str(item.get("id", "")),
+                        str(item.get("title") or item.get("url") or "(no title)"),
+                        str(item.get("url", "")),
+                    ))
+
+    if not results and not queue_rows:
         print(f"No notes tagged '{args.tag}'.")
         return
 
-    # Group by project
     by_project: dict[str, list] = {}
     for r in results:
         proj = r.project or "(unscoped)"
@@ -527,6 +633,12 @@ def cmd_backlog(args: argparse.Namespace) -> None:
         for r in notes:
             tag_str = f" [{', '.join(t for t in r.tags if t != args.tag)}]" if len(r.tags) > 1 else ""
             print(f"  [{r.type}] {r.title} ({r.id}) {r.date}{tag_str}")
+
+    if queue_rows:
+        print("\n[queued]:")
+        for slug, qid, title, url in queue_rows:
+            url_part = f"  {url}" if url else ""
+            print(f"  [{slug}] {title} ({qid}){url_part}")
 
 
 def cmd_landing(args: argparse.Namespace) -> None:
@@ -597,6 +709,13 @@ def _hubs_plan(cfg, args: argparse.Namespace) -> None:
 
 
 def _hubs_run(cfg, args: argparse.Namespace) -> None:
+    # Phase 3 D deprecation: `mem hubs run` is now `mem drain --target hubs --via batch`.
+    if getattr(args, "command", "") == "hubs":
+        print(
+            "deprecated: use `mem drain --target hubs --via batch` "
+            "(alias kept for one release)."
+        )
+
     from personal_mem.synthesis.concept_hub import (
         LogEntry,
         append_log_entries,
@@ -2097,13 +2216,24 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
-    """Run vault coherence checks (read-only)."""
+    """Run vault coherence checks (read-only by default).
+
+    With ``--migrate``, runs idempotent one-shot data migrations from
+    ``operations/migrations.py`` (e.g. ``todo+research`` → queue) before
+    printing the report.
+    """
     from personal_mem.synthesis.concepts import doctor_report, format_doctor_report
 
     cfg = load_config()
     if not cfg.index_db.exists():
         print(f"Index not found at {cfg.index_db}. Run `mem index` first.")
         sys.exit(1)
+
+    if getattr(args, "migrate", False):
+        from personal_mem.operations.migrations import migrate_todo_research_to_queue
+
+        moved = migrate_todo_research_to_queue(cfg.vault_root)
+        print(f"migrate_todo_research_to_queue: {moved} note(s) moved to queues")
 
     report = doctor_report(cfg)
     print(format_doctor_report(report))
@@ -2527,3 +2657,194 @@ def _format_list_field(value) -> str:
             return "—"
         return ",".join(str(v) for v in value)
     return str(value)
+
+
+# ---------------------------------------------------------------------------
+# mem queue / mem drain / mem update — Phase 3 D
+# ---------------------------------------------------------------------------
+
+
+def cmd_queue(args: argparse.Namespace) -> None:
+    """Inspect per-source-type acquisition queues."""
+    from personal_mem.sources import all_specs
+    from personal_mem.sources.queue import Queue
+
+    cfg = load_config()
+    action = args.action
+    source_type = (args.source_type or args.source_type_flag or "").strip()
+
+    if action == "list":
+        seen: set[str] = set()
+        rows: list[tuple[str, int]] = []
+        for spec in all_specs():
+            if source_type and spec.slug != source_type:
+                continue
+            q = Queue.for_source_type(spec.slug, cfg.vault_root)
+            seen.add(spec.slug)
+            rows.append((spec.slug, len(q.peek(10_000))))
+        queues_dir = cfg.vault_root / ".mem" / "queues"
+        if queues_dir.exists():
+            for child in sorted(queues_dir.glob("*.jsonl")):
+                if child.stem in seen:
+                    continue
+                if source_type and child.stem != source_type:
+                    continue
+                q = Queue.for_source_type(child.stem, cfg.vault_root)
+                rows.append((child.stem, len(q.peek(10_000))))
+        if not rows:
+            print("No queues found.")
+            return
+        print(f"{'SOURCE_TYPE':<20} {'COUNT':>8}")
+        print("-" * 30)
+        for slug, count in rows:
+            print(f"{slug:<20} {count:>8}")
+        return
+
+    if action == "inspect":
+        if not source_type:
+            print("inspect requires a source_type. Usage: mem queue inspect <slug>")
+            sys.exit(1)
+        q = Queue.for_source_type(source_type, cfg.vault_root)
+        items = q.peek(10_000)
+        if not items:
+            print(f"Queue '{source_type}' is empty.")
+            return
+        print(json.dumps(items, indent=2, ensure_ascii=False))
+        return
+
+    if action == "peek":
+        if not source_type:
+            print("peek requires a source_type. Usage: mem queue peek <slug> [--n N]")
+            sys.exit(1)
+        q = Queue.for_source_type(source_type, cfg.vault_root)
+        items = q.peek(args.n)
+        if not items:
+            print(f"Queue '{source_type}' is empty.")
+            return
+        print(json.dumps(items, indent=2, ensure_ascii=False))
+        return
+
+
+def cmd_drain(args: argparse.Namespace) -> None:
+    """Drain queues or backfill concept hubs.
+
+    Replaces ``mem hubs run`` (use ``--target hubs --via batch``) and the
+    legacy inline hub-backfill skill (use ``--target hubs --via inline``
+    to be pointed at the ``/drain`` Claude Code skill).
+    """
+    cfg = load_config()
+
+    if args.target == "hubs":
+        if args.via == "batch":
+            _hubs_run(cfg, args)
+            return
+        print(
+            "Inline hub drain runs as a Claude Code skill.\n"
+            "  Run:  /drain --target hubs --via inline\n"
+            "  (or /update-hubs for small daily deltas).\n"
+            "This CLI prints this hint and exits — the actual extraction "
+            "happens in the skill, with full mem_* tool access."
+        )
+        return
+
+    if args.source_type:
+        if args.via == "batch":
+            print(
+                f"Batch drain for source_type='{args.source_type}' is not yet "
+                "implemented. Roadmap: anthropic_batch / openai_batch drivers "
+                "picked from sources.yaml::sources.<type>.drain_strategy."
+            )
+            sys.exit(2)
+        from personal_mem.sources import load_user_config
+
+        sources_cfg = load_user_config(cfg.vault_root).get("sources", {})
+        skill = (
+            sources_cfg.get(args.source_type, {}).get("research_skill")
+            or f"research-{args.source_type}"
+        )
+        print(
+            f"Inline drain for source_type='{args.source_type}' runs as a "
+            f"Claude Code skill.\n"
+            f"  Run:  /drain --source-type {args.source_type}\n"
+            f"  Per-item skill: /{skill}\n"
+            "This CLI prints this hint and exits — the actual fetch + "
+            "summarize loop happens in the skill."
+        )
+        return
+
+    if args.source == "claude-history":
+        from personal_mem.importers.claude_mem import import_claude_mem
+
+        stats = import_claude_mem(
+            cfg, db_path=None, project_filter="", dry_run=args.dry_run
+        )
+        if "error" in stats:
+            print(f"Error: {stats['error']}")
+            sys.exit(1)
+        if not args.dry_run:
+            print(
+                f"Imported: {stats['sessions']} sessions, "
+                f"{stats['notes']} notes, {stats['decisions']} decisions"
+            )
+        return
+
+    print(
+        "Usage: mem drain --target hubs [--via inline|batch]\n"
+        "       mem drain --source-type <slug> [--via inline]\n"
+        "       mem drain --source claude-history"
+    )
+    sys.exit(1)
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    """Minimal CLI parity for mem_update — set frontmatter, append body.
+
+    Used by headless cron flows that don't go through the MCP surface.
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
+
+    cfg = load_config()
+    vm = VaultManager(config=cfg)
+
+    idx = Indexer(config=cfg)
+    row = idx.db.execute(
+        "SELECT path FROM notes WHERE id = ?", (args.note_id,)
+    ).fetchone()
+    idx.close()
+    if not row:
+        print(f"Note {args.note_id} not found in index.")
+        sys.exit(1)
+
+    path = vm.root / row["path"]
+    text = path.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+
+    for kv in args.frontmatter:
+        if "=" not in kv:
+            print(f"Bad --frontmatter token (need key=value): {kv}")
+            sys.exit(1)
+        key, val = kv.split("=", 1)
+        if val.lower() in ("true", "false"):
+            fm[key] = val.lower() == "true"
+        elif "," in val:
+            fm[key] = [v.strip() for v in val.split(",") if v.strip()]
+        else:
+            fm[key] = val
+
+    if args.body_append:
+        append_path = Path(args.body_append).expanduser()
+        if not append_path.exists():
+            print(f"--body-append file not found: {append_path}")
+            sys.exit(1)
+        body = body.rstrip() + "\n\n" + append_path.read_text(encoding="utf-8")
+
+    new_text = render_frontmatter(fm) + "\n" + body.lstrip("\n")
+    path.write_text(new_text, encoding="utf-8")
+
+    idx = Indexer(config=cfg)
+    try:
+        idx.index_file(path)
+    finally:
+        idx.close()
+    print(f"Updated {args.note_id} ({path.relative_to(cfg.vault_root)})")

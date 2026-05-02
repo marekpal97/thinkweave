@@ -17,6 +17,7 @@ from personal_mem.sources.intake import (
     archive_to_processed,
     enumerate_inbox,
 )
+from personal_mem.sources.queue import Queue
 from personal_mem.sources.registry import (
     REGISTRY,
     Layout,
@@ -31,6 +32,7 @@ __all__ = [
     "REGISTRY",
     "InboxEntry",
     "Layout",
+    "Queue",
     "SourceTypeSpec",
     "all_specs",
     "archive_to_processed",
