@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.hooks.handler import (
+from personal_mem.core.config import Config
+from personal_mem.surfaces.hooks.handler import (
     _buffer_event,
     _build_auto_summary,
     _build_event,
@@ -31,7 +31,7 @@ from personal_mem.hooks.handler import (
     archive_buffer,
     cleanup_buffer,
 )
-from personal_mem.hooks.install import install_hooks, uninstall_hooks
+from personal_mem.surfaces.hooks.install import install_hooks, uninstall_hooks
 
 
 class TestHookHelpers:
@@ -177,7 +177,7 @@ class TestHookInstaller:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "python3 -m personal_mem.hooks.handler stop",
+                                "command": "python3 -m personal_mem.surfaces.hooks.handler stop",
                                 "timeout": 5,
                             }
                         ],
@@ -455,7 +455,7 @@ class TestGitCommitDetection:
 
 
 class TestGetCommitFiles:
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_file_list(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "src/a.py\nsrc/b.py\n"
@@ -463,24 +463,24 @@ class TestGetCommitFiles:
         assert result == ["src/a.py", "src/b.py"]
         mock_run.assert_called_once()
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_error(self, mock_run):
         mock_run.side_effect = FileNotFoundError("git not found")
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_timeout(self, mock_run):
         import subprocess as sp
         mock_run.side_effect = sp.TimeoutExpired("git", 5)
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_nonzero_exit(self, mock_run):
         mock_run.return_value.returncode = 1
         mock_run.return_value.stdout = ""
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_filters_blank_lines(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "src/a.py\n\n  \nsrc/b.py\n"
@@ -489,13 +489,13 @@ class TestGetCommitFiles:
 
 
 class TestBuildEventCommitFiles:
-    @patch("personal_mem.hooks.handler._get_commit_files", return_value=["src/a.py", "src/b.py"])
+    @patch("personal_mem.surfaces.hooks.handler._get_commit_files", return_value=["src/a.py", "src/b.py"])
     def test_commit_event_includes_files(self, mock_files):
         output = "[main abc1234] Fix bug\n 2 files changed\n"
         event = _build_event("Bash", {"command": "git commit -m 'Fix bug'"}, output, "14:00")
         assert event["commit"]["files"] == ["src/a.py", "src/b.py"]
 
-    @patch("personal_mem.hooks.handler._get_commit_files", return_value=[])
+    @patch("personal_mem.surfaces.hooks.handler._get_commit_files", return_value=[])
     def test_commit_event_no_files_key_when_empty(self, mock_files):
         output = "[main abc1234] Fix bug\n 2 files changed\n"
         event = _build_event("Bash", {"command": "git commit -m 'Fix bug'"}, output, "14:00")
@@ -697,7 +697,7 @@ class TestSummarizeEvents:
 class TestHookErrorLogging:
     def test_log_error_creates_file(self, tmp_path):
         cfg = Config(vault_root=tmp_path / "vault")
-        with patch("personal_mem.config.load_config", return_value=cfg):
+        with patch("personal_mem.core.config.load_config", return_value=cfg):
             _log_error("test_hook", ValueError("test error"))
 
         log_path = cfg.mem_dir / "hooks.log"
@@ -708,7 +708,7 @@ class TestHookErrorLogging:
 
     def test_log_error_appends(self, tmp_path):
         cfg = Config(vault_root=tmp_path / "vault")
-        with patch("personal_mem.config.load_config", return_value=cfg):
+        with patch("personal_mem.core.config.load_config", return_value=cfg):
             _log_error("hook1", ValueError("error1"))
             _log_error("hook2", RuntimeError("error2"))
 
@@ -719,7 +719,7 @@ class TestHookErrorLogging:
     def test_log_error_never_raises(self):
         # Even if everything fails inside, _log_error should not raise
         # Force a failure by making the import path invalid
-        with patch.dict("sys.modules", {"personal_mem.config": None}):
+        with patch.dict("sys.modules", {"personal_mem.core.config": None}):
             _log_error("test", ValueError("err"))  # Should not raise
 
 
@@ -756,16 +756,16 @@ class TestSessionStartHandler:
         """Invoke _handle_session_start with a stubbed config + project, capture stdout."""
         import io
 
-        from personal_mem.config import Config
-        from personal_mem.hooks import handler as handler_mod
+        from personal_mem.core.config import Config
+        from personal_mem.surfaces.hooks import handler as handler_mod
 
         cfg = Config(vault_root=vault_dir)
         # Force our config through load_config so the handler uses the tmp vault
         monkeypatch.setattr(
-            "personal_mem.config.load_config", lambda: cfg
+            "personal_mem.core.config.load_config", lambda: cfg
         )
         monkeypatch.setattr(
-            "personal_mem.hooks.handler._detect_project",
+            "personal_mem.surfaces.hooks.handler._detect_project",
             lambda hook_input: project,
         )
 
@@ -789,10 +789,10 @@ class TestSessionStartHandler:
     def test_populated_vault_emits_additional_context(
         self, tmp_path: Path, monkeypatch
     ):
-        from personal_mem.indexer import Indexer
-        from personal_mem.schemas import NoteType
-        from personal_mem.vault import VaultManager
-        from personal_mem.config import Config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.core.config import Config
 
         vault_dir = tmp_path / "vault"
         cfg = Config(vault_root=vault_dir)
@@ -831,13 +831,13 @@ class TestSessionStartHandler:
         """Hook must always exit cleanly, even if the payload builder raises."""
         import io
 
-        from personal_mem.hooks import handler as handler_mod
+        from personal_mem.surfaces.hooks import handler as handler_mod
 
         def boom(*args, **kwargs):
             raise RuntimeError("synthetic failure")
 
         monkeypatch.setattr(
-            "personal_mem.context.build_project_context", boom
+            "personal_mem.retrieval.context.build_project_context", boom
         )
         buf = io.StringIO()
         monkeypatch.setattr("sys.stdout", buf)

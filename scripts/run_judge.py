@@ -12,11 +12,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from personal_mem.config import load_config
-from personal_mem.indexer import Indexer
-from personal_mem.judge import evaluate_decision
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import load_config
+from personal_mem.core.indexer import Indexer
+from personal_mem.synthesis.judge import evaluate_decision
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 # Map vault project names to git repo directories
 PROJECT_REPOS: dict[str, str] = {

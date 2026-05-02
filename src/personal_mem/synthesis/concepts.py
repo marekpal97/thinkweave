@@ -12,7 +12,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import Config
+from personal_mem.core.config import Config
 
 
 def _aliases_path(config: Config) -> Path:
@@ -198,7 +198,7 @@ def _seed_ontology_path() -> Path:
 def _vault_ontology_path() -> Path | None:
     """Path to the vault-local override, or None if no vault is configured."""
     try:
-        from personal_mem.config import load_config
+        from personal_mem.core.config import load_config
 
         return load_config().mem_dir / "ontology.yaml"
     except Exception:
@@ -328,7 +328,7 @@ def prune_concepts(
 
     Returns stats dict: {files_modified, concepts_removed}.
     """
-    from personal_mem.vault import parse_frontmatter, render_frontmatter
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
 
     stats = {"files_modified": 0, "concepts_removed": 0}
 
@@ -449,7 +449,7 @@ def generate_concept_hub_skeletons(
     Returns ``{concept: path}`` for every concept referenced by the
     ontology, whether it was newly created or already existed.
     """
-    from personal_mem.hubs import ensure_concept_hub_skeleton
+    from personal_mem.synthesis.concept_hub import ensure_concept_hub_skeleton
 
     ontology = ontology or load_ontology()
     if not ontology:
@@ -487,7 +487,7 @@ def add_hub_wikilinks(
     Appends a '## Domains' section with links like [[concepts/math--linear-algebra]].
     Returns count of modified files.
     """
-    from personal_mem.vault import parse_frontmatter, render_frontmatter
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
 
     ontology = ontology or load_ontology()
     c2d = concept_to_domains(ontology)
@@ -555,7 +555,7 @@ def delete_concept_hub(config: Config, concept: str) -> bool:
     missing — returns False then. Does not touch the index; callers
     should rebuild after a batch of deletions.
     """
-    from personal_mem.hubs import concept_hub_path
+    from personal_mem.synthesis.concept_hub import concept_hub_path
 
     path = concept_hub_path(config, concept)
     if path.exists():
@@ -574,7 +574,7 @@ def find_orphan_hubs(config: Config) -> list[tuple[str, Path]]:
     """
     import sqlite3
 
-    from personal_mem.hubs import topics_dir
+    from personal_mem.synthesis.concept_hub import topics_dir
 
     topics = topics_dir(config)
     if not topics.exists():
@@ -623,7 +623,7 @@ def find_redundant_hub_candidates(
     Returns ``[(concept_a, concept_b, jaccard), ...]`` sorted by Jaccard
     descending. Hubs with empty or short essences are skipped.
     """
-    from personal_mem.hubs import parse_concept_hub, topics_dir
+    from personal_mem.synthesis.concept_hub import parse_concept_hub, topics_dir
 
     topics = topics_dir(config)
     if not topics.exists():
@@ -667,7 +667,7 @@ def merge_concept_in_notes(
     to_concept: str,
 ) -> int:
     """Rename a concept across all vault notes. Returns count of modified files."""
-    from personal_mem.vault import parse_frontmatter, render_frontmatter
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
 
     from_lower = from_concept.lower()
     to_lower = to_concept.lower()

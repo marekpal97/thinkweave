@@ -19,7 +19,7 @@ consumes both surfaces interchangeably.
 
 from __future__ import annotations
 
-from personal_mem.hubs import LogEntry, parse_log_section_entries
+from personal_mem.synthesis.concept_hub import LogEntry, parse_log_section_entries
 
 
 # Canonical lifecycle states for themes. ``merged-into:thm-XXXXXXXX`` is a

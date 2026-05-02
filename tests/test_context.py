@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.context import (
+from personal_mem.core.config import Config
+from personal_mem.retrieval.context import (
     CHARS_PER_TOKEN,
     SECTIONS,
     build_project_context,
@@ -15,9 +15,9 @@ from personal_mem.context import (
     _extract_summary,
     _slice_markdown_section,
 )
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------

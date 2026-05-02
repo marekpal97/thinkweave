@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
+from personal_mem.core.config import Config
 from personal_mem.importers.claude_mem import (
     META_CONCEPT_TO_TAG,
     PROJECT_MAP,
@@ -28,8 +28,8 @@ from personal_mem.importers.claude_mem import (
     import_claude_mem,
     normalize_project,
 )
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager, parse_frontmatter
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager, parse_frontmatter
 
 
 # ── Fixtures ──────────────────────────────────────────────────────

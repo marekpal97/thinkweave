@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from personal_mem.temporal import (
+from personal_mem.retrieval.temporal import (
     TemporalEdge,
     TemporalGraph,
     TemporalNode,

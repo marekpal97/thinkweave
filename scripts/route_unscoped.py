@@ -23,7 +23,7 @@ from pathlib import Path
 # Add src to path so we can import personal_mem
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from personal_mem.vault import parse_frontmatter, render_frontmatter
+from personal_mem.core.vault import parse_frontmatter, render_frontmatter
 
 VAULT = Path.home() / "vault"
 

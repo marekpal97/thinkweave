@@ -22,7 +22,7 @@ from ontology_cleanup_2026_05 import (  # noqa: E402
     cleanup_vault,
 )
 
-from personal_mem.vault import parse_frontmatter, render_frontmatter  # noqa: E402
+from personal_mem.core.vault import parse_frontmatter, render_frontmatter  # noqa: E402
 
 
 # ----------------------------------------------------------------------

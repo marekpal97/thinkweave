@@ -10,7 +10,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
+from personal_mem.core.config import Config, load_config
 
 
 @dataclass
@@ -842,7 +842,7 @@ class Search:
         caller gets titles/paths/etc., not just IDs.
         """
         try:
-            from personal_mem.embeddings import EmbeddingSearch
+            from personal_mem.core.embeddings import EmbeddingSearch
         except ImportError:
             return []
 

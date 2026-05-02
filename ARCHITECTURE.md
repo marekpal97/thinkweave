@@ -1,5 +1,17 @@
 # personal_mem — Architecture
 
+## Document roles
+
+personal_mem ships three top-level docs with sharp non-overlapping roles:
+
+| Doc | Audience | Purpose |
+|---|---|---|
+| `README.md` | New users | Pitch, quickstart, install. *(Phase 5 G3 rewrite pending.)* |
+| `CLAUDE.md` | Agents in-session | Retrieval contract, lifecycles, operational rules. ≤150 LOC. |
+| `ARCHITECTURE.md` (this) | Contributors | Layer boundaries, source primitive, capability model, coherence mechanics. |
+
+If you're an agent answering a user question, read `CLAUDE.md` first. If you're reading code or adding a new source type, you're in the right place.
+
 This document describes the shape of the codebase for contributors: the two layers the framework is split into, what a **source** is, how the three source capabilities (import / acquire / discover) fit together, and how everything ties through the ontology. If you're reading this before adding a new source type or writing a new skill, start here.
 
 ## Two layers
@@ -7,30 +19,31 @@ This document describes the shape of the codebase for contributors: the two laye
 personal_mem splits cleanly into two layers with a one-way dependency.
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│ Claude Code layer                                                      │
-│                                                                        │
-│   commands/*.md          src/personal_mem/hooks/                       │
-│   (procedural skills)    (SessionStart, Pre, Post, Stop)               │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │  (imports only)
-                                   ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ Knowledge layer                                                        │
-│                                                                        │
-│   vault.py       — note CRUD, frontmatter, wikilinks, layout routing   │
-│   indexer.py     — SQLite FTS5 index, concept edges, hash dedup        │
-│   search.py      — FTS, graph traversal, hybrid search                 │
-│   concepts.py    — ontology loader, concept merging/tightening         │
-│   hubs.py        — concept hub parse/diff/write                        │
-│   landing.py     — DECISIONS / BACKLOG / STATE generators              │
-│   sources/       — source-type registry + canonical frontmatter        │
-│   mcp/server.py  — MCP tool surface (the `mem_*` tools)                │
-│   cli.py         — `mem` CLI bridging skills and knowledge layer       │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Claude Code layer                                                       │
+│                                                                         │
+│   commands/*.md                  src/personal_mem/surfaces/hooks/       │
+│   (procedural skills)            (SessionStart, Pre, Post, Stop)        │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │  (imports only)
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Knowledge layer (src/personal_mem/)                                     │
+│                                                                         │
+│   core/         schemas, config, vault, indexer, embeddings             │
+│   retrieval/    search, context, temporal                               │
+│   synthesis/    concept_hub, theme_hub, concepts, landing, judge        │
+│   sources/      registry, frontmatter, intake, config (sources.yaml)    │
+│   surfaces/cli/ `mem` CLI                                               │
+│   surfaces/mcp/ MCP tool surface (the `mem_*` tools)                    │
+│   surfaces/hooks/ Claude Code hooks (handler + install)                 │
+│   importers/    one-shot CLI importers (chatgpt, claude_mem, …)         │
+│   operations/   cross-cutting jobs (Phase 4 C2)                         │
+│   flows.py, extract.py, enrich.py, prune.py                             │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-The knowledge layer modules (`vault`, `indexer`, `search`, `concepts`, `hubs`, `landing`, `sources`) import **only** from each other and from `config` / `schemas`. None of them import from `hooks/` or `cli.py`. This is checked by reading; no linter enforces it. If you're adding to the knowledge layer and find yourself wanting to `import ... from personal_mem.hooks`, that's a signal you're mixing concerns — stop and rethink.
+The dependency rule: `core` imports nothing from the rest; `retrieval` and `synthesis` import only from `core` (and their own neighbors); `surfaces/` is a thin shell that orchestrates the others. None of these import from each other's surfaces (no `core` reaching into `surfaces/cli`). If you find yourself wanting to import `surfaces.*` from `core/`, stop — you're mixing concerns.
 
 The Claude Code layer sits on top: hooks feed session events into the knowledge layer via the CLI; skills drive the knowledge layer via MCP tools. Both are clients of the knowledge API; neither is a peer.
 

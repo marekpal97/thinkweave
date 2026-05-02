@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
-from personal_mem.landing import LANDING_FILENAMES
-from personal_mem.vault import VaultManager, content_hash, extract_wikilinks, parse_frontmatter
+from personal_mem.core.config import Config, load_config
+from personal_mem.synthesis.landing import LANDING_FILENAMES
+from personal_mem.core.vault import VaultManager, content_hash, extract_wikilinks, parse_frontmatter
 
 log = logging.getLogger(__name__)
 
@@ -334,7 +334,7 @@ class Indexer:
         # Lazy-load alias reverse map and concept-to-domain map
         if not hasattr(self, "_reverse_map"):
             try:
-                from personal_mem.concepts import (
+                from personal_mem.synthesis.concepts import (
                     build_reverse_map,
                     concept_to_domains,
                     load_aliases,
@@ -543,7 +543,7 @@ class Indexer:
         Returns:
             Stats: notes_updated, notes_skipped, links_written.
         """
-        from personal_mem.vault import strip_section
+        from personal_mem.core.vault import strip_section
 
         stats = {"notes_updated": 0, "notes_skipped": 0, "links_written": 0}
         SEE_ALSO = "## See Also"

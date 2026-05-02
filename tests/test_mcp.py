@@ -7,17 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.mcp.server import (
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.surfaces.mcp.server import (
     _build_decision_body,
     _flush_insight,
     _parse_candidate_insights,
 )
-from personal_mem.vault import parse_frontmatter
-from personal_mem.schemas import NoteType
-from personal_mem.search import Search
-from personal_mem.vault import VaultManager
+from personal_mem.core.vault import parse_frontmatter
+from personal_mem.core.schemas import NoteType
+from personal_mem.retrieval.search import Search
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture

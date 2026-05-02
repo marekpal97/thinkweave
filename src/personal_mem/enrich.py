@@ -19,8 +19,8 @@ import sqlite3
 import time
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
-from personal_mem.vault import VaultManager, parse_frontmatter, render_frontmatter
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
 
 # OpenAI API constants
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"

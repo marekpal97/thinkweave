@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from personal_mem.config import Config, load_config
-from personal_mem.vault import VaultManager, parse_frontmatter
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.vault import VaultManager, parse_frontmatter
 
 # Minimum events.jsonl size in bytes for a session to count as "substantive".
 # Below this, the only events are likely PreToolUse stubs with no real work.

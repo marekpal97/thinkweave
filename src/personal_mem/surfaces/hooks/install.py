@@ -22,9 +22,14 @@ from pathlib import Path
 #     bare-name form shipped before absolute-path resolution).
 #   - `run_hook.sh`: the original bash wrapper, deleted in favor of the
 #     entry point.
-#   - `personal_mem.hooks.handler`: `python -m personal_mem.hooks.handler`
+#   - `personal_mem.surfaces.hooks.handler`: `python -m personal_mem.surfaces.hooks.handler`
 #     entries from even earlier installs.
-HOOK_MARKERS = ("mem-hook", "run_hook.sh", "personal_mem.hooks.handler")
+HOOK_MARKERS = (
+    "mem-hook",
+    "run_hook.sh",
+    "personal_mem.surfaces.hooks.handler",
+    "personal_mem.hooks.handler",  # legacy (pre-restructure)
+)
 
 
 def _resolve_hook_cmd() -> str:

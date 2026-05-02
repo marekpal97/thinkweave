@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from personal_mem.hubs import LogEntry  # noqa: E402
+from personal_mem.synthesis.concept_hub import LogEntry  # noqa: E402
 
 from salvage_inverted_hub_refs import salvage_hub  # noqa: E402
 

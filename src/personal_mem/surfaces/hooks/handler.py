@@ -40,7 +40,7 @@ def _log_error(hook_type: str, error: Exception) -> None:
     try:
         import traceback
 
-        from personal_mem.config import load_config
+        from personal_mem.core.config import load_config
 
         cfg = load_config()
         log_path = cfg.mem_dir / "hooks.log"
@@ -91,7 +91,7 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
     tool_output = hook_input.get("tool_output", "")
 
     try:
-        from personal_mem.config import load_config
+        from personal_mem.core.config import load_config
 
         cfg = load_config()
 
@@ -116,7 +116,7 @@ def _find_session_note(vm, session_id: str) -> Path | None:
     """Find an existing session note for this Claude Code session."""
     if not session_id:
         return None
-    from personal_mem.schemas import NoteType
+    from personal_mem.core.schemas import NoteType
 
     for note in vm.list_notes(note_type=NoteType.SESSION, limit=20):
         if note.frontmatter.get("source_session") == session_id:
@@ -129,8 +129,8 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     if not session_id:
         return
 
-    from personal_mem.schemas import NoteType
-    from personal_mem.vault import VaultManager
+    from personal_mem.core.schemas import NoteType
+    from personal_mem.core.vault import VaultManager
 
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
@@ -147,7 +147,7 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     )
 
     # Index once so MCP tools (mem_search) can find this session mid-conversation
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     idx = Indexer(config=cfg)
     idx.index_file(session_path)
@@ -522,9 +522,9 @@ def _handle_stop(hook_input: dict) -> None:
         return
 
     try:
-        from personal_mem.config import load_config
-        from personal_mem.indexer import Indexer
-        from personal_mem.vault import (
+        from personal_mem.core.config import load_config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.vault import (
             VaultManager,
             render_frontmatter,
         )
@@ -620,12 +620,12 @@ def _handle_session_start(hook_input: dict) -> None:
     """SessionStart: inject structured project context before the first user turn.
 
     Emits a ``hookSpecificOutput.additionalContext`` payload (~7–10k tokens)
-    built by ``personal_mem.context.build_project_context``. Never blocks;
+    built by ``personal_mem.retrieval.context.build_project_context``. Never blocks;
     all exceptions fall through to an empty response.
     """
     try:
-        from personal_mem.config import load_config
-        from personal_mem.context import build_project_context
+        from personal_mem.core.config import load_config
+        from personal_mem.retrieval.context import build_project_context
 
         cfg = load_config()
         project = _detect_project(hook_input)

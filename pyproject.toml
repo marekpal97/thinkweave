@@ -13,8 +13,8 @@ all = ["personal-mem[mcp,embeddings,hubs]"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
-mem = "personal_mem.cli:main"
-mem-hook = "personal_mem.hooks.handler:main"
+mem = "personal_mem.surfaces.cli:main"
+mem-hook = "personal_mem.surfaces.hooks.handler:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -22,6 +22,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_mem"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/personal_mem/vault_templates" = "personal_mem/vault_templates"
+"src/personal_mem/ontology.yaml" = "personal_mem/ontology.yaml"
+"src/personal_mem/ontology.example.yaml" = "personal_mem/ontology.example.yaml"
 
 [tool.ruff]
 line-length = 100

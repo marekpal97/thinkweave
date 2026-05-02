@@ -21,10 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
-from personal_mem.config import Config, load_config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 _MANIFEST_NAME = "messenger_import.json"
 

@@ -89,14 +89,14 @@ save_aliases(cfg, aliases)
 **Hub regeneration + index rebuild** (always, after merges and/or ontology edits):
 
 ```python
-from personal_mem.concepts import (
+from personal_mem.synthesis.concepts import (
     add_hub_wikilinks,
     generate_domain_hubs,
     generate_concept_hub_skeletons,
     hubs_marker_path,
     load_ontology,
 )
-from personal_mem.indexer import Indexer
+from personal_mem.core.indexer import Indexer
 
 ontology = load_ontology()
 generate_domain_hubs(cfg, ontology)              # thin navigation pages

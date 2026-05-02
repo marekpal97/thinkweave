@@ -14,8 +14,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import load_config
-from personal_mem.schemas import EdgeType, NoteType
+from personal_mem.core.config import load_config
+from personal_mem.core.schemas import EdgeType, NoteType
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -499,7 +499,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def cmd_backlog(args: argparse.Namespace) -> None:
-    from personal_mem.search import Search
+    from personal_mem.retrieval.search import Search
 
     cfg = load_config()
     s = Search(config=cfg)
@@ -530,7 +530,7 @@ def cmd_backlog(args: argparse.Namespace) -> None:
 
 
 def cmd_landing(args: argparse.Namespace) -> None:
-    from personal_mem.landing import write_landing_docs
+    from personal_mem.synthesis.landing import write_landing_docs
 
     cfg = load_config()
     project = args.project or cfg.default_project
@@ -567,7 +567,7 @@ def cmd_hubs(args: argparse.Namespace) -> None:
 
 
 def _hubs_plan(cfg, args: argparse.Namespace) -> None:
-    from personal_mem.hubs import build_plan, plan_to_dict
+    from personal_mem.synthesis.concept_hub import build_plan, plan_to_dict
 
     plans = build_plan(
         cfg,
@@ -597,7 +597,7 @@ def _hubs_plan(cfg, args: argparse.Namespace) -> None:
 
 
 def _hubs_run(cfg, args: argparse.Namespace) -> None:
-    from personal_mem.hubs import (
+    from personal_mem.synthesis.concept_hub import (
         LogEntry,
         append_log_entries,
         build_extraction_user_prompt,
@@ -606,7 +606,7 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
         parse_llm_response,
         HUB_EXTRACTION_SYSTEM,
     )
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     plan_path = Path(args.plan) if args.plan else (cfg.mem_dir / "hubs_plan.json")
     if not plan_path.exists():
@@ -623,7 +623,7 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
     # Build requests per concept — one LLM call per (concept, note) pair.
     # Within a concept, the system prompt is stable (current essence + recent
     # entries), so we mark it cacheable.
-    from personal_mem.vault import VaultManager
+    from personal_mem.core.vault import VaultManager
 
     vm = VaultManager(config=cfg)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -642,7 +642,7 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
                 continue
             note_text = note_path.read_text(encoding="utf-8")
             # Strip frontmatter for the body input
-            from personal_mem.vault import parse_frontmatter
+            from personal_mem.core.vault import parse_frontmatter
             _, body = parse_frontmatter(note_text)
 
             user_prompt = build_extraction_user_prompt(
@@ -890,7 +890,7 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
 
 
 def _hubs_status(cfg, args: argparse.Namespace) -> None:
-    from personal_mem.hubs import (
+    from personal_mem.synthesis.concept_hub import (
         all_concepts_in_vault,
         concept_hub_path,
         parse_concept_hub,
@@ -921,13 +921,13 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
     """Retroactive fix: swap backfill dates for source-note dates, strip
     duplicated inline wikilink citations. No LLM calls.
     """
-    from personal_mem.hubs import (
+    from personal_mem.synthesis.concept_hub import (
         parse_concept_hub,
         topics_dir,
         write_concept_hub,
         _strip_inline_wikilinks,
     )
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     topics = topics_dir(cfg)
     if not topics.exists():
@@ -1018,7 +1018,7 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
     relationships between entries on the same hub. One LLM request per hub
     via the OpenAI Batches API.
     """
-    from personal_mem.hubs import (
+    from personal_mem.synthesis.concept_hub import (
         ALLOWED_FLAGS,
         LogEntry,
         concept_hub_path,
@@ -1026,7 +1026,7 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
         topics_dir,
         write_concept_hub,
     )
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     topics = topics_dir(cfg)
     hub_files = sorted(topics.glob("*.md"))
@@ -1280,7 +1280,7 @@ def _validate_linkage_revision(
       since the structural relationship is no longer expressible.
     - ``agrees`` with an invalid ref → keep ``agrees``, ref empty.
     """
-    from personal_mem.hubs import ALLOWED_FLAGS
+    from personal_mem.synthesis.concept_hub import ALLOWED_FLAGS
 
     if flag not in ALLOWED_FLAGS:
         return None, ""
@@ -1364,13 +1364,13 @@ def _parse_linkage_response(raw: str) -> list[dict]:
 
 
 def cmd_concepts(args: argparse.Namespace) -> None:
-    from personal_mem.concepts import (
+    from personal_mem.synthesis.concepts import (
         get_all_concepts,
         load_aliases,
         merge_concept_in_notes,
         save_aliases,
     )
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     cfg = load_config()
 
@@ -1400,7 +1400,7 @@ def cmd_concepts(args: argparse.Namespace) -> None:
             print(f"  {count:3d}  {concept}")
 
     elif action == "merge":
-        from personal_mem.concepts import delete_concept_hub
+        from personal_mem.synthesis.concepts import delete_concept_hub
 
         from_c = args.from_concept.lower()
         to_c = args.to_concept.lower()
@@ -1436,7 +1436,7 @@ def cmd_concepts(args: argparse.Namespace) -> None:
         )
 
     elif action == "prune":
-        from personal_mem.concepts import build_keep_set, load_ontology, prune_concepts
+        from personal_mem.synthesis.concepts import build_keep_set, load_ontology, prune_concepts
 
         ontology = load_ontology()
         if not ontology:
@@ -1448,7 +1448,7 @@ def cmd_concepts(args: argparse.Namespace) -> None:
 
         if args.dry_run:
             # Count what would be pruned
-            from personal_mem.vault import VaultManager, parse_frontmatter
+            from personal_mem.core.vault import VaultManager, parse_frontmatter
             vm = VaultManager(config=cfg)
             would_remove = 0
             would_modify = 0
@@ -1476,7 +1476,7 @@ def cmd_concepts(args: argparse.Namespace) -> None:
         print("Index rebuilt.")
 
     elif action == "notes":
-        from personal_mem.search import Search
+        from personal_mem.retrieval.search import Search
 
         s = Search(config=cfg)
         concept = args.concept.lower()
@@ -1495,7 +1495,7 @@ def cmd_concepts(args: argparse.Namespace) -> None:
             print(f"  [{r.type}] {r.title} ({r.id}){tag_str}{proj_str}")
 
     elif action == "hubs":
-        from personal_mem.concepts import (
+        from personal_mem.synthesis.concepts import (
             add_hub_wikilinks,
             find_orphan_hubs,
             generate_concept_hub_skeletons,
@@ -1560,7 +1560,7 @@ def cmd_concepts(args: argparse.Namespace) -> None:
         marker.touch()
 
     elif action == "drift":
-        from personal_mem.concepts import (
+        from personal_mem.synthesis.concepts import (
             drift_report,
             find_redundant_hub_candidates,
             format_drift_report,
@@ -1595,17 +1595,33 @@ def cmd_concepts(args: argparse.Namespace) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    from personal_mem.vault import VaultManager
+    from personal_mem.core.vault import VaultManager
 
     cfg = load_config()
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
+    _seed_vault_templates(cfg.vault_root)
     print(f"Vault initialized at {cfg.vault_root}")
 
 
+def _seed_vault_templates(vault_root: Path) -> None:
+    """Copy any default files from the package-bundled `vault_templates/`
+    into the vault if they don't already exist. Currently seeds
+    `.mem/sources.yaml`."""
+    import shutil
+
+    pkg_root = Path(__file__).resolve().parents[2]  # → .../src/personal_mem
+    sources_template = pkg_root / "vault_templates" / ".mem" / "sources.yaml"
+    if sources_template.exists():
+        target = Path(vault_root) / ".mem" / "sources.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            shutil.copyfile(sources_template, target)
+
+
 def cmd_add(args: argparse.Namespace) -> None:
-    from personal_mem.vault import VaultManager
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.vault import VaultManager
+    from personal_mem.core.indexer import Indexer
 
     cfg = load_config()
     vm = VaultManager(config=cfg)
@@ -1639,7 +1655,7 @@ def cmd_add(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    from personal_mem.search import Search
+    from personal_mem.retrieval.search import Search
 
     cfg = load_config()
 
@@ -1728,7 +1744,7 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 def _cmd_search_semantic(args: argparse.Namespace, cfg) -> None:
     try:
-        from personal_mem.embeddings import EmbeddingSearch
+        from personal_mem.core.embeddings import EmbeddingSearch
     except ImportError:
         print("Semantic search requires: pip install personal-mem[embeddings]")
         sys.exit(1)
@@ -1741,7 +1757,7 @@ def _cmd_search_semantic(args: argparse.Namespace, cfg) -> None:
         return
 
     for note_id, score in results:
-        from personal_mem.search import Search
+        from personal_mem.retrieval.search import Search
         s = Search(config=cfg)
         note = s.get_note_by_id(note_id)
         s.close()
@@ -1750,8 +1766,8 @@ def _cmd_search_semantic(args: argparse.Namespace, cfg) -> None:
 
 
 def cmd_show(args: argparse.Namespace) -> None:
-    from personal_mem.search import Search
-    from personal_mem.vault import VaultManager
+    from personal_mem.retrieval.search import Search
+    from personal_mem.core.vault import VaultManager
 
     cfg = load_config()
     s = Search(config=cfg)
@@ -1777,8 +1793,8 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 
 def cmd_link(args: argparse.Namespace) -> None:
-    from personal_mem.indexer import EDGE_TYPE_TO_FIELD, Indexer
-    from personal_mem.vault import VaultManager
+    from personal_mem.core.indexer import EDGE_TYPE_TO_FIELD, Indexer
+    from personal_mem.core.vault import VaultManager
 
     cfg = load_config()
     idx = Indexer(config=cfg)
@@ -1811,7 +1827,7 @@ def cmd_link(args: argparse.Namespace) -> None:
 
 
 def cmd_graph(args: argparse.Namespace) -> None:
-    from personal_mem.search import Search
+    from personal_mem.retrieval.search import Search
 
     cfg = load_config()
     s = Search(config=cfg)
@@ -1826,7 +1842,7 @@ def cmd_graph(args: argparse.Namespace) -> None:
 def cmd_enrich(args: argparse.Namespace) -> None:
     """LLM-assisted concept enrichment for notes missing concepts."""
     from personal_mem.enrich import enrich
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     cfg = load_config()
 
@@ -1874,7 +1890,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
 
         if args.connect:
             print("\nMaterializing links for Obsidian...")
-            from personal_mem.indexer import Indexer as Idx2
+            from personal_mem.core.indexer import Indexer as Idx2
             idx2 = Idx2(config=cfg)
             cstats = idx2.materialize_links(max_links=5)
             print(f"  Updated: {cstats['notes_updated']}, Links: {cstats['links_written']}")
@@ -1889,7 +1905,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
 
 def cmd_connect(args: argparse.Namespace) -> None:
     """Materialize SQLite edges as wikilinks in markdown for Obsidian."""
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     cfg = load_config()
     idx = Indexer(config=cfg)
@@ -1907,13 +1923,13 @@ def cmd_connect(args: argparse.Namespace) -> None:
 
 
 def cmd_index(args: argparse.Namespace) -> None:
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     cfg = load_config()
     idx = Indexer(config=cfg)
 
     # Ensure vault dirs exist
-    from personal_mem.vault import VaultManager
+    from personal_mem.core.vault import VaultManager
     VaultManager(config=cfg).ensure_dirs()
 
     stats = idx.rebuild(full=args.full)
@@ -1922,7 +1938,7 @@ def cmd_index(args: argparse.Namespace) -> None:
 
     if args.embed:
         try:
-            from personal_mem.embeddings import EmbeddingSearch
+            from personal_mem.core.embeddings import EmbeddingSearch
             es = EmbeddingSearch(config=cfg)
             embed_stats = es.compute_all()
             print(f"Embeddings: {embed_stats['computed']} computed, {embed_stats['skipped']} cached")
@@ -2028,7 +2044,7 @@ def cmd_import(args: argparse.Namespace) -> None:
 
 
 def cmd_context(args: argparse.Namespace) -> None:
-    from personal_mem.search import Search
+    from personal_mem.retrieval.search import Search
 
     cfg = load_config()
     s = Search(config=cfg)
@@ -2054,7 +2070,7 @@ def cmd_context(args: argparse.Namespace) -> None:
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
-    from personal_mem.indexer import Indexer
+    from personal_mem.core.indexer import Indexer
 
     cfg = load_config()
     idx = Indexer(config=cfg)
@@ -2071,7 +2087,7 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     """Run vault coherence checks (read-only)."""
-    from personal_mem.concepts import doctor_report, format_doctor_report
+    from personal_mem.synthesis.concepts import doctor_report, format_doctor_report
 
     cfg = load_config()
     if not cfg.index_db.exists():
@@ -2180,12 +2196,12 @@ def cmd_hooks(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     if args.hooks_action == "install":
-        from personal_mem.hooks.install import install_hooks
+        from personal_mem.surfaces.hooks.install import install_hooks
 
         project = args.project if hasattr(args, "project") else ""
         install_hooks(project_dir=project)
     elif args.hooks_action == "uninstall":
-        from personal_mem.hooks.install import uninstall_hooks
+        from personal_mem.surfaces.hooks.install import uninstall_hooks
 
         uninstall_hooks()
     elif args.hooks_action == "status":
@@ -2207,7 +2223,7 @@ def cmd_hooks(args: argparse.Namespace) -> None:
 
 def cmd_decisions(args: argparse.Namespace) -> None:
     """Query decisions — primary use: ``mem decisions --file <path>``."""
-    from personal_mem.search import Search
+    from personal_mem.retrieval.search import Search
 
     if not args.file_path:
         print("Usage: mem decisions --file <path> [--project X] [--status accepted]")
@@ -2238,7 +2254,7 @@ def cmd_decisions(args: argparse.Namespace) -> None:
 
 def cmd_project(args: argparse.Namespace) -> None:
     """Print a structured project snapshot — same payload as the SessionStart hook."""
-    from personal_mem.context import build_project_context
+    from personal_mem.retrieval.context import build_project_context
 
     cfg = load_config()
     sections = None
@@ -2299,7 +2315,7 @@ def cmd_prune_orphans(args: argparse.Namespace) -> None:
     # After real delete, drop the stale rows from the index so searches /
     # landing docs / SessionStart don't keep surfacing deleted sessions.
     try:
-        from personal_mem.indexer import Indexer
+        from personal_mem.core.indexer import Indexer
 
         idx = Indexer(config=cfg)
         removed = 0
@@ -2454,7 +2470,7 @@ def _commands_dir() -> Path:
 
 def _load_skill(name: str) -> dict | None:
     """Load a single skill file by name. Returns None if not found."""
-    from personal_mem.vault import parse_frontmatter
+    from personal_mem.core.vault import parse_frontmatter
 
     path = _commands_dir() / f"{name}.md"
     if not path.exists():

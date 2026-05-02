@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
-from personal_mem.schemas import NoteType
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.schemas import NoteType
 
 # Rough approximation: 1 token ≈ 4 characters for English markdown. Used
 # to convert caller-facing token budgets into char budgets.

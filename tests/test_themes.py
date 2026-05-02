@@ -15,21 +15,21 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.landing import (
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.synthesis.landing import (
     LANDING_FILENAMES,
     themes_ledger,
     write_landing_docs,
 )
-from personal_mem.schemas import NOTE_ID_PREFIXES, NoteType
-from personal_mem.themes import (
+from personal_mem.core.schemas import NOTE_ID_PREFIXES, NoteType
+from personal_mem.synthesis.theme_hub import (
     THEME_STATUSES,
     THEME_STATUS_ACTIVE,
     build_theme_frontmatter,
     render_theme_body_skeleton,
 )
-from personal_mem.vault import VaultManager
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -247,12 +247,12 @@ class TestThemesLanding:
 
 class TestCatalystLogParsing:
     def test_parse_empty_body(self):
-        from personal_mem.themes import parse_theme_catalyst_log
+        from personal_mem.synthesis.theme_hub import parse_theme_catalyst_log
 
         assert parse_theme_catalyst_log("# Title\n\n## Catalyst log\n\n") == []
 
     def test_parse_entries_with_linkage(self):
-        from personal_mem.themes import parse_theme_catalyst_log
+        from personal_mem.synthesis.theme_hub import parse_theme_catalyst_log
 
         body = (
             "# Theme\n\n"
@@ -271,7 +271,7 @@ class TestThemeTemporalDAGInLanding:
     def test_themes_md_includes_per_theme_dag(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.themes import render_theme_body_skeleton
+        from personal_mem.synthesis.theme_hub import render_theme_body_skeleton
 
         # Build a theme body with a populated catalyst log + linkage.
         body = (
@@ -313,7 +313,7 @@ class TestThemeTemporalDAGInLanding:
     def test_themes_md_omits_dag_when_no_links(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.themes import render_theme_body_skeleton
+        from personal_mem.synthesis.theme_hub import render_theme_body_skeleton
 
         # A theme with one catalyst, no refs, no decisions → no DAG.
         skeleton = render_theme_body_skeleton("Lonely theme")
@@ -344,7 +344,7 @@ class TestConceptHubEvolutionSection:
     ):
         # Direct test of render_concept_hub: build a hub with linked entries,
         # render, assert ## Evolution appears.
-        from personal_mem.hubs import (
+        from personal_mem.synthesis.concept_hub import (
             ConceptHub,
             LogEntry,
             render_concept_hub,
@@ -377,7 +377,7 @@ class TestConceptHubEvolutionSection:
     def test_evolution_section_skipped_when_only_new(
         self, vault: VaultManager, config: Config, tmp_path
     ):
-        from personal_mem.hubs import (
+        from personal_mem.synthesis.concept_hub import (
             ConceptHub,
             LogEntry,
             render_concept_hub,

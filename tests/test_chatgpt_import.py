@@ -119,7 +119,7 @@ def conversations_file(tmp_path: Path) -> Path:
 @pytest.fixture
 def vault_config(tmp_path: Path):
     """Create a minimal vault config pointing to a temp directory."""
-    from personal_mem.config import Config
+    from personal_mem.core.config import Config
 
     vault_root = tmp_path / "vault"
     vault_root.mkdir()

@@ -2,9 +2,9 @@
 import sys
 sys.path.insert(0, '/home/marekpal97/python_projects/personal_mem/src')
 
-from personal_mem.concepts import merge_concept_in_notes, load_aliases, save_aliases
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
+from personal_mem.synthesis.concepts import merge_concept_in_notes, load_aliases, save_aliases
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
 
 cfg = Config()
 

@@ -10,6 +10,7 @@ Adding a new source type means adding one ``SourceTypeSpec`` entry to
 ``vault.py`` are required — the vault dispatches on ``spec.layout``.
 """
 
+from personal_mem.sources.config import DEFAULT_CONFIG, load_user_config
 from personal_mem.sources.frontmatter import build_source_frontmatter
 from personal_mem.sources.intake import (
     InboxEntry,
@@ -26,6 +27,7 @@ from personal_mem.sources.registry import (
 )
 
 __all__ = [
+    "DEFAULT_CONFIG",
     "REGISTRY",
     "InboxEntry",
     "Layout",
@@ -35,5 +37,6 @@ __all__ = [
     "build_source_frontmatter",
     "enumerate_inbox",
     "get_spec",
+    "load_user_config",
     "normalize",
 ]

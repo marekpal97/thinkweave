@@ -19,8 +19,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.schemas import NoteMeta
-from personal_mem.vault import VaultManager
+from personal_mem.core.schemas import NoteMeta
+from personal_mem.core.vault import VaultManager
 
 log = logging.getLogger(__name__)
 

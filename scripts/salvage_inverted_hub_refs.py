@@ -36,14 +36,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from personal_mem.config import load_config
-from personal_mem.hubs import (
+from personal_mem.core.config import load_config
+from personal_mem.synthesis.concept_hub import (
     LogEntry,
     parse_concept_hub,
     topics_dir,
     write_concept_hub,
 )
-from personal_mem.indexer import Indexer
+from personal_mem.core.indexer import Indexer
 
 
 def salvage_hub(

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.concepts import (
+from personal_mem.synthesis.concepts import (
     DEAD_VOCAB_THRESHOLD,
     _RESERVED_ONTOLOGY_KEYS,
     delete_concept_hub,
@@ -21,11 +21,11 @@ from personal_mem.concepts import (
     load_ontology,
     load_tag_vocabulary,
 )
-from personal_mem.hubs import ConceptHub, write_concept_hub
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.synthesis.concept_hub import ConceptHub, write_concept_hub
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -60,9 +60,9 @@ def _write_ontology(monkeypatch, content: str) -> Path:
     """
     path = Path(tempfile.mkdtemp()) / "ontology.yaml"
     path.write_text(content, encoding="utf-8")
-    monkeypatch.setattr("personal_mem.concepts._seed_ontology_path", lambda: path)
-    monkeypatch.setattr("personal_mem.concepts._vault_ontology_path", lambda: path)
-    monkeypatch.setattr("personal_mem.concepts._ontology_path", lambda: path)
+    monkeypatch.setattr("personal_mem.synthesis.concepts._seed_ontology_path", lambda: path)
+    monkeypatch.setattr("personal_mem.synthesis.concepts._vault_ontology_path", lambda: path)
+    monkeypatch.setattr("personal_mem.synthesis.concepts._ontology_path", lambda: path)
     return path
 
 
@@ -144,10 +144,10 @@ class TestOntologyLayering:
             encoding="utf-8",
         )
         monkeypatch.setattr(
-            "personal_mem.concepts._seed_ontology_path", lambda: seed_path
+            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
         monkeypatch.setattr(
-            "personal_mem.concepts._vault_ontology_path", lambda: vault_path
+            "personal_mem.synthesis.concepts._vault_ontology_path", lambda: vault_path
         )
 
         # tag_vocabulary missing from vault → comes from seed.
@@ -172,10 +172,10 @@ class TestOntologyLayering:
             encoding="utf-8",
         )
         monkeypatch.setattr(
-            "personal_mem.concepts._seed_ontology_path", lambda: seed_path
+            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
         monkeypatch.setattr(
-            "personal_mem.concepts._vault_ontology_path", lambda: vault_path
+            "personal_mem.synthesis.concepts._vault_ontology_path", lambda: vault_path
         )
 
         assert load_tag_vocabulary() == set()
@@ -188,7 +188,7 @@ class TestOntologyLayering:
             "tag_vocabulary:\n  - todo\n", encoding="utf-8"
         )
         monkeypatch.setattr(
-            "personal_mem.concepts._seed_ontology_path", lambda: seed_path
+            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
 
         explicit_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
@@ -379,7 +379,7 @@ class TestStaleHubPruning:
     def test_delete_concept_hub_removes_existing_file(
         self, vault: VaultManager, config: Config
     ):
-        from personal_mem.hubs import concept_hub_path
+        from personal_mem.synthesis.concept_hub import concept_hub_path
 
         hub = ConceptHub(
             concept="oldname",
@@ -402,7 +402,7 @@ class TestStaleHubPruning:
     def test_find_orphan_hubs_identifies_unused_hubs(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        from personal_mem.hubs import concept_hub_path
+        from personal_mem.synthesis.concept_hub import concept_hub_path
 
         # Ontology says python is canonical.
         _write_ontology(monkeypatch, "swe/python:\n  - python\n")
@@ -434,7 +434,7 @@ class TestRedundantHubCandidates:
     def test_finds_overlapping_essences(
         self, vault: VaultManager, config: Config
     ):
-        from personal_mem.hubs import concept_hub_path
+        from personal_mem.synthesis.concept_hub import concept_hub_path
 
         # Two hubs with substantially overlapping word sets.
         a = ConceptHub(
@@ -475,7 +475,7 @@ class TestRedundantHubCandidates:
     def test_returns_empty_when_essences_too_short(
         self, vault: VaultManager, config: Config
     ):
-        from personal_mem.hubs import concept_hub_path
+        from personal_mem.synthesis.concept_hub import concept_hub_path
 
         hub = ConceptHub(
             concept="tiny",

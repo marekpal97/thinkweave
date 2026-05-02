@@ -6,9 +6,9 @@ Does NOT modify any files — review output before running prune.
 import sys
 sys.path.insert(0, '/home/marekpal97/python_projects/personal_mem/src')
 
-from personal_mem.concepts import get_all_concepts, load_ontology, build_keep_set
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
+from personal_mem.synthesis.concepts import get_all_concepts, load_ontology, build_keep_set
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
 
 cfg = Config()
 idx = Indexer(config=cfg)

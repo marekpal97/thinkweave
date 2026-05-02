@@ -13,8 +13,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
-from personal_mem.schemas import NoteType
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.schemas import NoteType
 
 # Landing doc filenames — excluded from indexer.
 # DECISIONS / BACKLOG / STATE are per-project; THEMES is global (vault root).
@@ -673,7 +673,7 @@ def _query_themes(db) -> list[dict]:
     - ``catalyst_entries``: parsed catalyst-log entries.
     - ``last_catalyst``: the most recent catalyst date.
     """
-    from personal_mem.themes import parse_theme_catalyst_log
+    from personal_mem.synthesis.theme_hub import parse_theme_catalyst_log
 
     rows = db.execute(
         "SELECT id, title, date, project, frontmatter, body_text "
@@ -810,7 +810,7 @@ def themes_ledger(config: Config) -> str:
         # that has either catalyst-log linkage or pinned decisions to
         # render. Themes with only `new` flags and no decisions get no
         # diagram.
-        from personal_mem.temporal import (
+        from personal_mem.retrieval.temporal import (
             entries_to_graph,
             render_evolution_section,
         )

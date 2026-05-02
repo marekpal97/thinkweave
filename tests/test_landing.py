@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.landing import (
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.synthesis.landing import (
     LANDING_FILENAMES,
     backlog_summary,
     decisions_ledger,
@@ -17,8 +17,8 @@ from personal_mem.landing import (
     state_of_play_context,
     write_landing_docs,
 )
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -380,7 +380,7 @@ class TestIndexerExclusion:
         stats = indexer.rebuild(full=True)
 
         # Landing docs should NOT be in the index
-        from personal_mem.search import Search
+        from personal_mem.retrieval.search import Search
         s = Search(config=config)
         for fname in LANDING_FILENAMES:
             results = s.search(query=fname.replace(".md", ""), limit=10)

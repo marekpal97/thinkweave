@@ -16,10 +16,10 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import DecisionStatus, NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import DecisionStatus, NoteType
+from personal_mem.core.vault import VaultManager
 
 _DEFAULT_CLAUDE_MEM_DB = Path.home() / ".claude-mem" / "claude-mem.db"
 _MANIFEST_NAME = "claude_mem_migration.json"

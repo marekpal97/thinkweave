@@ -1,6 +1,6 @@
 """MCP server for personal_mem — 8 tools for any agent to interact with the vault.
 
-Run: python -m personal_mem.mcp.server
+Run: python -m personal_mem.surfaces.mcp.server
 Transport: stdio
 
 Requires: pip install personal-mem[mcp]
@@ -81,7 +81,7 @@ def _append_to_section(path: Path, section_header: str, content: str) -> None:
 
 def _strip_section(body: str, heading: str) -> str:
     """Remove a markdown section — delegates to vault.strip_section."""
-    from personal_mem.vault import strip_section
+    from personal_mem.core.vault import strip_section
 
     return strip_section(body, heading)
 
@@ -125,11 +125,11 @@ def main() -> None:
 
     import asyncio
 
-    from personal_mem.config import load_config
-    from personal_mem.indexer import Indexer
-    from personal_mem.schemas import EdgeType, NoteMeta, NoteType
-    from personal_mem.search import Search
-    from personal_mem.vault import VaultManager, parse_frontmatter, render_frontmatter
+    from personal_mem.core.config import load_config
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.schemas import EdgeType, NoteMeta, NoteType
+    from personal_mem.retrieval.search import Search
+    from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
 
     server = Server("personal-mem")
     cfg = load_config()
@@ -1258,7 +1258,7 @@ def main() -> None:
         return [TextContent(type="text", text=json.dumps(dict(note), indent=2))]
 
     def _handle_link(args: dict) -> list[TextContent]:
-        from personal_mem.indexer import EDGE_TYPE_TO_FIELD
+        from personal_mem.core.indexer import EDGE_TYPE_TO_FIELD
 
         source_id = args["source_id"]
         target_id = args["target_id"]
@@ -1660,7 +1660,7 @@ def main() -> None:
         suggestions = []
         try:
             if created_decisions:
-                from personal_mem.concepts import get_all_concepts, suggest_similar
+                from personal_mem.synthesis.concepts import get_all_concepts, suggest_similar
 
                 all_concepts = get_all_concepts(idx.db)
                 existing_list = list(all_concepts.keys())
@@ -1761,7 +1761,7 @@ def main() -> None:
 
         # Archive event buffer to session directory
         try:
-            from personal_mem.hooks.handler import archive_buffer
+            from personal_mem.surfaces.hooks.handler import archive_buffer
             source_session = session_note.frontmatter.get("source_session", session_id)
             archive_buffer(cfg.mem_dir, source_session, session_path.parent)
         except Exception:
@@ -1773,7 +1773,7 @@ def main() -> None:
     def _handle_judge(args: dict) -> list[TextContent]:
         from collections import defaultdict
 
-        from personal_mem.judge import evaluate_decision, find_decisions
+        from personal_mem.synthesis.judge import evaluate_decision, find_decisions
 
         vm = VaultManager(config=cfg)
         s = Search(config=cfg)
@@ -1861,7 +1861,7 @@ def main() -> None:
         return [TextContent(type="text", text="\n".join(lines))]
 
     def _handle_unlink(args: dict) -> list[TextContent]:
-        from personal_mem.indexer import EDGE_TYPE_TO_FIELD
+        from personal_mem.core.indexer import EDGE_TYPE_TO_FIELD
 
         source_id = args["source_id"]
         target_id = args["target_id"]
@@ -1889,7 +1889,7 @@ def main() -> None:
 
         new_targets = [t for t in targets if t != target_id]
         # Direct write: update_note merges lists, but we need to replace
-        from personal_mem.vault import parse_frontmatter, render_frontmatter
+        from personal_mem.core.vault import parse_frontmatter, render_frontmatter
         text = source_path.read_text(encoding="utf-8")
         fm, body = parse_frontmatter(text)
         if new_targets:
@@ -1937,7 +1937,7 @@ def main() -> None:
         return [TextContent(type="text", text=header + "\n".join(lines))]
 
     def _handle_concepts_tighten(args: dict) -> list[TextContent]:
-        from personal_mem.concepts import (
+        from personal_mem.synthesis.concepts import (
             find_near_duplicates,
             get_all_concepts,
             load_aliases,
@@ -1970,7 +1970,7 @@ def main() -> None:
         return [TextContent(type="text", text="\n".join(lines))]
 
     def _handle_concepts_merge(args: dict) -> list[TextContent]:
-        from personal_mem.concepts import (
+        from personal_mem.synthesis.concepts import (
             load_aliases,
             merge_concept_in_notes,
             save_aliases,
@@ -2013,7 +2013,7 @@ def main() -> None:
         )]
 
     def _handle_landing(args: dict) -> list[TextContent]:
-        from personal_mem.landing import (
+        from personal_mem.synthesis.landing import (
             state_of_play_context,
             write_landing_docs,
         )
@@ -2051,7 +2051,7 @@ def main() -> None:
 
     def _handle_enrich(args: dict) -> list[TextContent]:
         from personal_mem.enrich import enrich
-        from personal_mem.indexer import Indexer
+        from personal_mem.core.indexer import Indexer
 
         note_types = args.get("note_types") or ["session", "note", "decision", "source"]
         stats = enrich(
@@ -2284,7 +2284,7 @@ def main() -> None:
         return [TextContent(type="text", text="\n".join(lines))]
 
     def _handle_project_snapshot(args: dict) -> list[TextContent]:
-        from personal_mem.context import build_project_context
+        from personal_mem.retrieval.context import build_project_context
 
         project = args.get("project", "")
         if not project:
@@ -2299,7 +2299,7 @@ def main() -> None:
         return [TextContent(type="text", text=payload)]
 
     def _handle_concepts_drift(args: dict) -> list[TextContent]:
-        from personal_mem.concepts import drift_report, format_drift_report
+        from personal_mem.synthesis.concepts import drift_report, format_drift_report
 
         report = drift_report(
             cfg,

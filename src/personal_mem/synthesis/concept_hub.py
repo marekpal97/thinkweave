@@ -37,8 +37,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import Config
-from personal_mem.vault import parse_frontmatter
+from personal_mem.core.config import Config
+from personal_mem.core.vault import parse_frontmatter
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 
@@ -269,7 +269,7 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
         fm["domains"] = sorted(set(domains))
     fm["updated"] = now
 
-    from personal_mem.vault import render_frontmatter
+    from personal_mem.core.vault import render_frontmatter
 
     lines = [render_frontmatter(fm), "", f"# {hub.concept}", ""]
     if domains:
@@ -300,7 +300,7 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
     # Auto-managed Evolution section — derived view of the linkage graph
     # built into the log entries. Empty when no entry has a non-`new` ref,
     # so we omit the section entirely rather than leave a placeholder.
-    from personal_mem.temporal import entries_to_graph, render_evolution_section
+    from personal_mem.retrieval.temporal import entries_to_graph, render_evolution_section
 
     graph = entries_to_graph(hub.log_entries, kind="log_entry")
     has_links = any(e for e in graph.edges)
@@ -524,7 +524,7 @@ def build_plan(
 
     Read-only: no LLM calls, no writes.
     """
-    from personal_mem.concepts import concept_to_domains, load_ontology
+    from personal_mem.synthesis.concepts import concept_to_domains, load_ontology
 
     ontology = load_ontology()
     c2d = concept_to_domains(ontology)

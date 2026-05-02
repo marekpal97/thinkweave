@@ -16,7 +16,7 @@ import struct
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
+from personal_mem.core.config import Config, load_config
 
 EMBEDDINGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS embeddings (

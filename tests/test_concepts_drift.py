@@ -8,16 +8,16 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.concepts import (
+from personal_mem.synthesis.concepts import (
     DRIFT_COUNT_THRESHOLD,
     drift_report,
     format_drift_report,
     hubs_marker_path,
 )
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -58,13 +58,13 @@ def _stub_ontology(monkeypatch, domains: dict[str, list[str]]) -> Path:
     path.write_text("\n".join(lines), encoding="utf-8")
 
     monkeypatch.setattr(
-        "personal_mem.concepts._seed_ontology_path", lambda: path
+        "personal_mem.synthesis.concepts._seed_ontology_path", lambda: path
     )
     monkeypatch.setattr(
-        "personal_mem.concepts._vault_ontology_path", lambda: path
+        "personal_mem.synthesis.concepts._vault_ontology_path", lambda: path
     )
     monkeypatch.setattr(
-        "personal_mem.concepts._ontology_path", lambda: path
+        "personal_mem.synthesis.concepts._ontology_path", lambda: path
     )
     return path
 

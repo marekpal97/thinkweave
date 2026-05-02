@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.schemas import DecisionStatus, NoteType
-from personal_mem.vault import (
+from personal_mem.core.config import Config
+from personal_mem.core.schemas import DecisionStatus, NoteType
+from personal_mem.core.vault import (
     VaultManager,
     content_hash,
     extract_wikilinks,

@@ -33,7 +33,7 @@ That gets you all themes. Then for each one (or batch):
 You can also surface the redundant-hub Jaccard pre-filter for theme essences if the inventory is large:
 
 ```bash
-uv run python -c "from personal_mem.concepts import find_redundant_hub_candidates; from personal_mem.config import load_config; print(find_redundant_hub_candidates(load_config(), min_jaccard=0.4))"
+uv run python -c "from personal_mem.synthesis.concepts import find_redundant_hub_candidates; from personal_mem.core.config import load_config; print(find_redundant_hub_candidates(load_config(), min_jaccard=0.4))"
 ```
 
 (That helper was built for concept hubs but works on any text under `vault/concepts/topics/*.md`. For themes, fall back to LLM judgment over the theme essences.)

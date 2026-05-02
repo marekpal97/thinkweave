@@ -12,8 +12,8 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
-from personal_mem.schemas import NOTE_ID_PREFIXES, DecisionStatus, NoteMeta, NoteType
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.schemas import NOTE_ID_PREFIXES, DecisionStatus, NoteMeta, NoteType
 from personal_mem.sources import registry as source_registry
 
 # --- YAML frontmatter parsing (inline, no PyYAML dependency) ---

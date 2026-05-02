@@ -1,0 +1,39 @@
+# personal_mem source-config overrides
+#
+# All keys are optional — anything you omit falls back to the in-code
+# defaults from src/personal_mem/sources/config.py:DEFAULT_CONFIG. Edit
+# this file to retarget queues, swap importers, change drain strategies,
+# or add new source-type entries without forking personal_mem.
+
+sources:
+  paper:
+    queue: vault/.mem/queues/papers.jsonl
+    research_skill: research-paper
+    drain_strategy: anthropic_batch
+    intake_folder: ~/papers_inbox
+    summarize_format: technical_brief
+    dedup_keys: [arxiv_id, doi, title]
+    url_patterns: [arxiv.org, openreview.net]
+  repo:
+    queue: vault/.mem/queues/repos.jsonl
+    research_skill: research-repo
+    drain_strategy: inline
+    dedup_keys: [github_url, slug]
+    url_patterns: [github.com, gitlab.com]
+  claude-history:
+    drain_strategy: inline
+    importer: claude_mem
+    dedup_keys: [session_uuid]
+
+projects:
+  default:
+    discover_strategies: [concept_coverage]
+
+landing_files:
+  state: STATE.md
+  backlog: BACKLOG.md
+  decisions: DECISIONS.md
+  themes: THEMES.md
+  research_focus: RESEARCH_FOCUS.md
+
+auto_todo_extraction: true

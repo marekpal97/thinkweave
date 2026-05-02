@@ -18,10 +18,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.config import Config, load_config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import Config, load_config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 _MANIFEST_NAME = "chatgpt_import.json"
 

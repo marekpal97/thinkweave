@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.hubs import (
+from personal_mem.core.config import Config
+from personal_mem.synthesis.concept_hub import (
     LogEntry,
     _strip_inline_wikilinks,
     append_log_entries,
@@ -32,9 +32,9 @@ from personal_mem.hubs import (
     parse_llm_response,
     unprocessed_notes_for_concept,
 )
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -254,11 +254,11 @@ class TestLinkageHelpers:
     """
 
     def _build_prompt(self, concept, essence, entries):
-        from personal_mem.cli import _build_linkage_user_prompt
+        from personal_mem.surfaces.cli import _build_linkage_user_prompt
         return _build_linkage_user_prompt(concept, essence, entries)
 
     def _parse(self, raw):
-        from personal_mem.cli import _parse_linkage_response
+        from personal_mem.surfaces.cli import _parse_linkage_response
         return _parse_linkage_response(raw)
 
     def test_prompt_preserves_chronological_order(self):
@@ -319,7 +319,7 @@ class TestValidateLinkageRevision:
     """
 
     def _validate(self, entry_date, flag, ref):
-        from personal_mem.cli import _validate_linkage_revision
+        from personal_mem.surfaces.cli import _validate_linkage_revision
         return _validate_linkage_revision(entry_date, flag, ref)
 
     def test_unknown_flag_returns_none(self):
