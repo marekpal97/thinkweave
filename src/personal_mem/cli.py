@@ -155,6 +155,31 @@ def main(argv: list[str] | None = None) -> None:
     p_hooks_status = hooks_sub.add_parser("status", help="Show recent hook errors")
     p_hooks_status.add_argument("--limit", "-n", type=int, default=20, help="Number of lines to show")
 
+    # --- mem intake ---
+    p_intake = sub.add_parser(
+        "intake",
+        help="Drop-folder intake helpers (enumerate / archive) shared by /substack, /email, ...",
+    )
+    intake_sub = p_intake.add_subparsers(dest="intake_action")
+
+    p_intake_enum = intake_sub.add_parser(
+        "enumerate", help="List inbox entries as JSON on stdout"
+    )
+    p_intake_enum.add_argument("path", help="Inbox directory")
+    p_intake_enum.add_argument(
+        "--archive-name",
+        default="_processed",
+        help="Name of the archive folder to skip (default: _processed)",
+    )
+
+    p_intake_arch = intake_sub.add_parser(
+        "archive", help="Move an entry into <inbox>/_processed/<YYYY-MM-DD>/"
+    )
+    p_intake_arch.add_argument("entry", help="Entry path (file or folder) to archive")
+    p_intake_arch.add_argument(
+        "--inbox", required=True, help="Inbox root (entry must be a direct child)"
+    )
+
     # --- mem backlog ---
     p_backlog = sub.add_parser("backlog", help="List notes tagged 'todo'")
     p_backlog.add_argument("--project", "-p", default="", help="Filter by project")
@@ -490,6 +515,7 @@ def main(argv: list[str] | None = None) -> None:
         "flow": cmd_flow,
         "hooks": cmd_hooks,
         "init": cmd_init,
+        "intake": cmd_intake,
         "sources": cmd_sources,
         "skill": cmd_skill,
     }
@@ -2153,6 +2179,56 @@ def cmd_flow(args: argparse.Namespace) -> None:
             sys.exit(1)
         code = run_flow(flows[args.name], dry_run=args.dry_run)
         sys.exit(code if not args.dry_run else 0)
+
+
+def cmd_intake(args: argparse.Namespace) -> None:
+    """Drop-folder intake helpers — enumerate / archive.
+
+    Intentionally narrow: just enumeration + archival. LLM-driven work
+    (frontmatter parsing, brief writing, concept mapping) stays in the
+    skill that calls these. Image backfill is platform-specific and lives
+    with each importer skill.
+    """
+    from personal_mem.sources.intake import (
+        archive_to_processed,
+        enumerate_inbox,
+    )
+
+    action = args.intake_action
+    if not action:
+        print("Usage: mem intake enumerate <path> | archive <entry> --inbox <root>")
+        sys.exit(1)
+
+    if action == "enumerate":
+        inbox = Path(args.path).expanduser()
+        entries = enumerate_inbox(inbox, archive_name=args.archive_name)
+        payload = [
+            {
+                "path": str(e.path),
+                "kind": e.kind,
+                "companion_dir": str(e.companion_dir) if e.companion_dir else None,
+            }
+            for e in entries
+        ]
+        print(json.dumps(payload))
+        return
+
+    if action == "archive":
+        entry = Path(args.entry).expanduser()
+        inbox_root = Path(args.inbox).expanduser()
+        try:
+            final_path = archive_to_processed(entry, inbox_root)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        print(str(final_path))
+        return
+
+    print(f"Unknown intake action: {action}", file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_hooks(args: argparse.Namespace) -> None:

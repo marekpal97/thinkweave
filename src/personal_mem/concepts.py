@@ -134,8 +134,14 @@ def find_near_duplicates(concepts: list[str]) -> list[tuple[str, str, str]]:
             # One is substring of other
             elif len(a) >= 3 and len(b) >= 3 and (a in b or b in a):
                 reason = "substring"
-            # Levenshtein distance ≤ 2 (only for concepts of similar length)
-            elif abs(len(a) - len(b)) <= 2 and _levenshtein(a, b) <= 2:
+            # Levenshtein distance ≤ 2 (only for concepts of similar length;
+            # skip very short strings where 2 edits is most of the word, e.g.
+            # `1rm` vs `art` = e.d. 2 but unrelated)
+            elif (
+                min(len(a), len(b)) >= 4
+                and abs(len(a) - len(b)) <= 2
+                and _levenshtein(a, b) <= 2
+            ):
                 reason = f"edit distance {_levenshtein(a, b)}"
 
             if reason:
@@ -174,7 +180,11 @@ def suggest_similar(new_concept: str, existing: list[str], max_suggestions: int 
             suggestions.append(ex_lower)
         elif len(new_lower) >= 3 and len(ex_lower) >= 3 and (new_lower in ex_lower or ex_lower in new_lower):
             suggestions.append(ex_lower)
-        elif abs(len(new_lower) - len(ex_lower)) <= 2 and _levenshtein(new_lower, ex_lower) <= 2:
+        elif (
+            min(len(new_lower), len(ex_lower)) >= 4
+            and abs(len(new_lower) - len(ex_lower)) <= 2
+            and _levenshtein(new_lower, ex_lower) <= 2
+        ):
             suggestions.append(ex_lower)
 
     return suggestions[:max_suggestions]

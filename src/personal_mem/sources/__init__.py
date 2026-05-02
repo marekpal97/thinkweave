@@ -11,6 +11,11 @@ Adding a new source type means adding one ``SourceTypeSpec`` entry to
 """
 
 from personal_mem.sources.frontmatter import build_source_frontmatter
+from personal_mem.sources.intake import (
+    InboxEntry,
+    archive_to_processed,
+    enumerate_inbox,
+)
 from personal_mem.sources.registry import (
     REGISTRY,
     Layout,
@@ -22,10 +27,13 @@ from personal_mem.sources.registry import (
 
 __all__ = [
     "REGISTRY",
+    "InboxEntry",
     "Layout",
     "SourceTypeSpec",
     "all_specs",
+    "archive_to_processed",
     "build_source_frontmatter",
+    "enumerate_inbox",
     "get_spec",
     "normalize",
 ]

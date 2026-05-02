@@ -94,29 +94,31 @@ class TestHookInstaller:
 
         settings = json.loads(settings_path.read_text())
         assert "hooks" in settings
-        assert "PreToolUse" in settings["hooks"]
+        # PreToolUse retired — fresh install must not register it.
+        assert "PreToolUse" not in settings["hooks"]
         assert "PostToolUse" in settings["hooks"]
-
-        # Verify hook structure
-        pre = settings["hooks"]["PreToolUse"][0]
-        assert pre["matcher"] == "Write|Edit"
-        assert pre["hooks"][0]["timeout"] == 5
 
         post = settings["hooks"]["PostToolUse"][0]
         assert post["matcher"] == "Write|Edit|Bash"
+        assert post["hooks"][0]["timeout"] == 5
 
     def test_install_preserves_existing(self, tmp_path: Path):
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
         claude_dir.mkdir(parents=True)
 
-        # Pre-existing settings
+        # Pre-existing settings: a foreign PreToolUse entry plus a foreign
+        # PostToolUse entry. The installer must leave both untouched while
+        # appending its own PostToolUse hook.
         existing = {
             "permissions": {"allow": ["Bash(ls)"]},
             "hooks": {
                 "PreToolUse": [
                     {"matcher": "SomeOther", "hooks": [{"type": "command", "command": "echo hi"}]}
-                ]
+                ],
+                "PostToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo post"}]}
+                ],
             },
         }
         (claude_dir / "settings.local.json").write_text(json.dumps(existing))
@@ -126,14 +128,17 @@ class TestHookInstaller:
         settings = json.loads((claude_dir / "settings.local.json").read_text())
         # Existing permission preserved
         assert "Bash(ls)" in settings["permissions"]["allow"]
-        # Existing hook preserved
-        assert len(settings["hooks"]["PreToolUse"]) == 2
-        # Our hook added — entry-point command is `mem-hook pre_tool_use`
-        assert any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
+        # Foreign PreToolUse hook left intact, no personal_mem entry added
+        assert len(settings["hooks"]["PreToolUse"]) == 1
+        assert not any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
+        # Foreign PostToolUse preserved + personal_mem PostToolUse appended
+        assert len(settings["hooks"]["PostToolUse"]) == 2
+        assert any("mem-hook" in str(entry) for entry in settings["hooks"]["PostToolUse"])
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
-        mem-hook) gets rewritten to the current absolute-path form."""
+        mem-hook) gets rewritten to the current absolute-path form for
+        retained phases. The retired PreToolUse phase is stripped instead."""
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
         claude_dir.mkdir(parents=True)
@@ -187,18 +192,18 @@ class TestHookInstaller:
         settings = json.loads(
             (claude_dir / "settings.local.json").read_text()
         )
-        # All three legacy entries rewritten in place — no duplicates.
-        assert len(settings["hooks"]["PreToolUse"]) == 1
+        # PreToolUse: retired phase stripped entirely (no foreign hooks
+        # were present to retain, so the key disappears).
+        assert "PreToolUse" not in settings["hooks"]
+        # Retained phases rewritten in place — no duplicates.
         assert len(settings["hooks"]["PostToolUse"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
 
-        pre_cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         post_cmd = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
 
         # New form: absolute path ending in `mem-hook[.exe] <phase>`.
         for cmd, phase in [
-            (pre_cmd, "pre_tool_use"),
             (post_cmd, "post_tool_use"),
             (stop_cmd, "stop"),
         ]:
@@ -212,8 +217,49 @@ class TestHookInstaller:
             )
 
         # Legacy fragments fully replaced.
-        assert "run_hook.sh" not in pre_cmd
         assert "python3" not in stop_cmd
+
+    def test_install_strips_retired_pretooluse_but_keeps_foreign(self, tmp_path: Path):
+        """Re-running install must remove a stale personal_mem PreToolUse
+        entry without disturbing PreToolUse hooks owned by other tools."""
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+
+        legacy = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Write|Edit",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/abs/path/to/mem-hook pre_tool_use",
+                                "timeout": 5,
+                            }
+                        ],
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {"type": "command", "command": "echo other-tool"}
+                        ],
+                    },
+                ]
+            }
+        }
+        (claude_dir / "settings.local.json").write_text(json.dumps(legacy))
+
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (claude_dir / "settings.local.json").read_text()
+        )
+        pre = settings["hooks"]["PreToolUse"]
+        assert len(pre) == 1
+        # The personal_mem entry is gone; the foreign one is intact.
+        assert pre[0]["matcher"] == "Bash"
+        assert "mem-hook" not in str(pre)
 
     def test_install_writes_absolute_path(self, tmp_path: Path):
         """Fresh install writes an absolute path so /bin/sh can exec
@@ -225,7 +271,9 @@ class TestHookInstaller:
         settings = json.loads(
             (project_dir / ".claude" / "settings.local.json").read_text()
         )
-        for hook_type in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
+        # PreToolUse retired — only the three retained phases get installed.
+        assert "PreToolUse" not in settings["hooks"]
+        for hook_type in ("SessionStart", "PostToolUse", "Stop"):
             cmd = settings["hooks"][hook_type][0]["hooks"][0]["command"]
             head = cmd.rsplit(" ", 1)[0]
             assert "mem-hook" in head
@@ -245,9 +293,13 @@ class TestHookInstaller:
         settings = json.loads(
             (project_dir / ".claude" / "settings.local.json").read_text()
         )
-        # Should not duplicate
-        assert len(settings["hooks"]["PreToolUse"]) == 1
+        # PreToolUse retired — never installed; idempotent reinstall must
+        # not resurrect it.
+        assert "PreToolUse" not in settings["hooks"]
+        # Retained phases must not duplicate.
         assert len(settings["hooks"]["PostToolUse"]) == 1
+        assert len(settings["hooks"]["SessionStart"]) == 1
+        assert len(settings["hooks"]["Stop"]) == 1
 
     def test_install_includes_stop_hook(self, tmp_path: Path):
         project_dir = tmp_path / "project"

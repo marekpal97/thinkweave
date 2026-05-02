@@ -86,9 +86,11 @@ def install_hooks(project_dir: str = "") -> None:
     session_start_hooks = hooks.setdefault("SessionStart", [])
     _ensure_hook(session_start_hooks, "", f"{hook_cmd} session_start")
 
-    # PreToolUse hook
-    pre_hooks = hooks.setdefault("PreToolUse", [])
-    _ensure_hook(pre_hooks, "Write|Edit", f"{hook_cmd} pre_tool_use")
+    # PreToolUse: previously injected "related vault notes" before each
+    # Write/Edit. Retired — redundant with SessionStart context and the
+    # filename-stem heuristic produced noisy hits. Strip any stale entry
+    # left over from earlier installs.
+    _strip_personal_mem_hooks(hooks, "PreToolUse")
 
     # PostToolUse hook
     post_hooks = hooks.setdefault("PostToolUse", [])
@@ -142,6 +144,27 @@ def _is_personal_mem_hook(command: str) -> bool:
     if not command:
         return False
     return any(marker in command for marker in HOOK_MARKERS)
+
+
+def _strip_personal_mem_hooks(hooks: dict, hook_type: str) -> None:
+    """Remove every personal_mem entry under `hook_type`, leaving foreign
+    hooks untouched. Used to retire a hook phase we no longer install
+    (currently PreToolUse) — re-running `mem hooks install` cleans the
+    stale entry out of existing settings without disturbing anything else.
+    """
+    entries = hooks.get(hook_type, [])
+    pruned = [
+        entry
+        for entry in entries
+        if not any(
+            _is_personal_mem_hook(h.get("command", ""))
+            for h in entry.get("hooks", [])
+        )
+    ]
+    if pruned:
+        hooks[hook_type] = pruned
+    elif hook_type in hooks:
+        del hooks[hook_type]
 
 
 def _ensure_hook(entries: list, matcher: str, command: str) -> None:

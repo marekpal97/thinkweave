@@ -49,14 +49,17 @@ Before starting, confirm inbox path: `echo $SUBSTACK_INBOX || echo ~/substack_in
 ### 1. Enumerate the inbox
 
 ```
-Bash("ls -1 ~/substack_inbox/ 2>/dev/null")
+Bash("uv run mem intake enumerate ~/substack_inbox/")
 ```
 
-Each entry is either:
-- A flat `.md` file → single-file input
-- A directory → folder bundle (contains `index.md` or some `.md` file alongside image files)
+Uses `mem intake` so `/email` and other drop-folder importers share the same enumeration semantics (`_processed/` skipped, flat vs folder classified, `<stem>-images/`/`<stem>_assets/` companion resolved).
 
-Skip `_processed/` (that's the archive). If the inbox is empty, report "Nothing to drain." and stop.
+Output is JSON: `[{"path": "...", "kind": "flat"|"folder", "companion_dir": "..."|null}, ...]`. Already excludes `_processed/`, dotfiles, loose non-`.md` files, and folders without any markdown. If the array is empty, report "Nothing to drain." and stop.
+
+For each entry, dispatch on `kind`:
+
+- `flat` → `Read` the `path`. If `companion_dir` is non-null, `ls` it to discover sibling images.
+- `folder` → `ls` the `path`, prefer `index.md` else first `*.md` alphabetically; image candidates are siblings inside `path`.
 
 ### 2. Parse each input
 
@@ -223,10 +226,16 @@ mem_link(source_id="<new-src-id>", target_id="<related-id>", edge_type="relates_
 Move the source from the inbox to a dated archive folder — never delete:
 
 ```
-Bash("mkdir -p ~/substack_inbox/_processed/$(date +%Y-%m-%d) && mv ~/substack_inbox/<entry> ~/substack_inbox/_processed/$(date +%Y-%m-%d)/")
+Bash("uv run mem intake archive '<entry-path>' --inbox ~/substack_inbox/")
 ```
 
-For folder bundles, `<entry>` is the directory. For flat files, it's the `.md` file plus any sibling `-images/` folder.
+Uses `mem intake archive` so the dated-folder + companion-dir + collision-suffix logic is shared with `/email` and other drop-folder importers (and is unit-tested), instead of being open-coded in every skill.
+
+`<entry-path>` is the `path` field returned by `mem intake enumerate` for this item. The command:
+- Creates `~/substack_inbox/_processed/<YYYY-MM-DD>/` on demand.
+- Moves the entry plus any companion dir (`<stem>-images/` or `<stem>_assets/`) for flat entries.
+- Appends `-1`, `-2`, … to the basename on same-day name collisions, so retries after a partial failure are safe.
+- Prints the final archive path on stdout. Exit code is non-zero on missing entry or entry-outside-inbox.
 
 ### 12. Loop or finish
 

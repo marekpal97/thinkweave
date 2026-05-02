@@ -11,10 +11,15 @@ Exit 0 = success.
 SessionStart: Injects ~7–10k tokens of structured project context
   (recent sessions, STATE, backlog, decisions, tool manifest) so Claude
   wakes up oriented. Never blocks — always exits 0.
-PreToolUse (Write|Edit): Injects relevant vault context as a system message.
 PostToolUse (Write|Edit|Bash): Buffers events to JSONL. Session note
   materialization is deferred to Stop hook.
 Stop: Reconstructs session from buffer, writes summary, indexes once.
+
+Note: an earlier PreToolUse(Write|Edit) handler injected "Related vault
+notes" before each file edit. It was redundant with SessionStart context
+and the filename-stem heuristic produced noisy hits, so it was removed.
+Re-running `mem hooks install` strips any stale PreToolUse entry from
+existing settings.
 """
 
 from __future__ import annotations
@@ -55,69 +60,19 @@ def main() -> None:
     tool_name = hook_input.get("tool_name", "")
 
     try:
-        if hook_type == "pre_tool_use":
-            _handle_pre(tool_name, hook_input)
-        elif hook_type == "post_tool_use":
+        if hook_type == "post_tool_use":
             _handle_post(tool_name, hook_input)
         elif hook_type == "stop":
             _handle_stop(hook_input)
         elif hook_type == "session_start":
             _handle_session_start(hook_input)
         else:
+            # Includes legacy `pre_tool_use` invocations from settings.json
+            # entries written before that hook was retired. Falls through
+            # to an empty {} payload, which Claude Code treats as a no-op.
             _output()
     except Exception as e:
         _log_error(hook_type, e)
-        _output()
-
-
-def _handle_pre(tool_name: str, hook_input: dict) -> None:
-    """PreToolUse: inject relevant vault context as a system message."""
-    if tool_name not in ("Write", "Edit"):
-        _output()
-        return
-
-    tool_input = hook_input.get("tool_input", {})
-    file_path = tool_input.get("file_path", tool_input.get("path", ""))
-
-    if not file_path or _is_internal(file_path):
-        _output()
-        return
-
-    # Check if hive_swarm is active — if so, defer
-    if os.environ.get("HIVE_STATE_DIR"):
-        _output()
-        return
-
-    try:
-        from personal_mem.config import load_config
-        from personal_mem.search import Search
-
-        cfg = load_config()
-        if not cfg.index_db.exists():
-            _output()
-            return
-
-        s = Search(config=cfg)
-
-        # Search for notes related to this file
-        filename = Path(file_path).stem
-        results = s.get_context(query=filename, limit=3)
-        s.close()
-
-        if not results:
-            _output()
-            return
-
-        # Build context message
-        lines = ["[mem] Related vault notes:"]
-        for r in results[:3]:
-            tags = f" [{', '.join(r.tags[:3])}]" if r.tags else ""
-            lines.append(f"  - [{r.type}] {r.title}{tags}")
-        msg = "\n".join(lines)
-
-        _output(system_message=msg)
-    except Exception as e:
-        _log_error("pre_tool_use", e)
         _output()
 
 
