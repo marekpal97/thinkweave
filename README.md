@@ -34,7 +34,8 @@ Claude session import, hooks install, first index, landing docs.
 
 ## Daily loop
 
-- `/research <url>` — ingest a source (paper, repo, article)
+- `/ingest <thing>` — universal front door for any input shape (URL, file path, inline text, structured ID)
+- `/research <url>` — URL-explicit shortcut (paper / repo / article)
 - `/drain` — process queued items in batch
 - `/discover` — find research gaps via configured strategies
 - `/mem-wrap` — extract session knowledge before `/clear`

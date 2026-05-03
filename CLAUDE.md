@@ -96,6 +96,9 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 | `/mem-wrap` | session_extraction | — | — | Full LLM session extraction (insights, decisions, refresh DECISIONS+BACKLOG) |
 | `/mem-resolve-concepts` | ontology_hygiene | — | — | Concept and ontology hygiene |
 | `/themes-resolve` | theme_synthesis | — | — | Theme dedup, status changes, essence rewrites |
+| `/ingest` | input_routing | * | import | Universal input router — URL / file / text / structured-id → dispatch to specialist skill. |
+| `/capture` | text_capture | — | import | Inline-text ingestion (snippet, quote, fragment) → mem_create. |
+| `/ingest-paper-file` | paper_file_ingest | paper | import | Local PDF paper → text extraction → mem_create as paper. |
 | `/research` | url_routing | paper, repo, article | import, acquire | URL classifier; dispatches to research-paper/-repo/-article |
 | `/drain` | queue_drain | — | acquire | Drain a per-source-type acquisition queue. |
 | `/discover` | research_discovery | paper, repo, article | discover | Cross-project research gap analysis → queue items |
