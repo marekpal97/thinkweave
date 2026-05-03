@@ -69,7 +69,7 @@ Per gap descriptor:
 
 - **`kind: gap` (concept_coverage)** — run a WebSearch for the
   concept, dedup against existing sources / queue items via
-  `mem_concept_source_counts(concepts=[<name>])`, and create up to
+  `mem_concepts(action="source_counts", concepts=[<name>])`, and create up to
   3 queue items via `mem_queue` (or `mem_create` with `tags=[todo,
   research]` for legacy backlog routing). Each new item carries
   `Gap: [[<concept>]]` in its body and the gap concept(s) in its

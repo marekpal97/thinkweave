@@ -493,6 +493,8 @@ proposed ──▶ accepted ──▶ deprecated
 
 `judge.py` is **read-only** — it evaluates a decision against the structural evidence in the vault (was the file committed? did tests pass? was it re-edited later?) and emits a verdict (`kept` / `superseded` / `reverted` / `unknown`) plus a confidence score. It never writes back. The verdict is advisory: a caller (human in `/mem-wrap`, agent in a skill) decides what to do with it. This is deliberate — the only auto-flip in the system is the `supersedes`-declared one above, where the writer made the relationship explicit.
 
+Note frontmatter is open-set — the indexer preserves unrecognized keys without modification, so downstream consumers can extend the schema (e.g. with `pipeline`, `run_id`, or other integration-specific keys) without forking the framework.
+
 ## Coherence — how the vault avoids duplication
 
 Six distinct dedup mechanisms, each scoped to a different kind of overlap:
@@ -501,12 +503,12 @@ Six distinct dedup mechanisms, each scoped to a different kind of overlap:
 |---|---|---|
 | Concept overlap (near-dupes) | `concept_aliases.yaml` + Levenshtein | `mem doctor`, `mem concepts drift` |
 | Concept merge | rename across notes + delete stale hub | `mem concepts merge` |
-| Source slug collision | filesystem check, raises | `VaultManager.create_note` |
+| Source slug collision | filesystem check, auto-increments (`<slug>-1`, `<slug>-2`, …) | `VaultManager.create_note` |
 | Note content dup | SHA-256 over body | indexer (skips on insert) |
 | Theme dedup | manual via skill | `/themes-resolve` |
 | Queue item dedup | `dedup_keys` from `sources.yaml` | `Queue.dedup_check` |
 
-Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), refuses (filesystem collision, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
+Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), silently sidesteps (slug auto-increment, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
 
 ## Operations layer
 

@@ -8,7 +8,6 @@ tools:
   - mem_search
   - mem_create
   - mem_concepts
-  - mem_concept_source_counts
 description: One sentence describing what this skill does. Appears in `mem sources list` and `mem skill list`.
 ---
 
@@ -187,7 +186,7 @@ Gap identification: analyse what's already in the vault, find what's missing, cr
 
 {DESCRIBE YOUR SIGNAL SOURCES. Common ones:
   - `Read vault/sources/RESEARCH_FOCUS.md` for user-declared priorities
-  - `mem_concept_source_counts(concepts=[...])` for per-concept coverage
+  - `mem_concepts(action="source_counts", concepts=[...])` for per-concept coverage
   - `mem_timeline(days=14)` for recent project activity
   - `mem_search` against existing sources to avoid re-queueing duplicates}
 
