@@ -129,7 +129,7 @@ Current mapping:
 | `article`      | `/research → /research-article` | `/drain --source-type article` | `/discover` |
 | `substack`     | —                              | `/substack`                    | —           |
 | `conversation` | `mem import chatgpt` (CLI)     | —                              | —           |
-| `claude-history` | —                            | `/drain --source claude-history` | —         |
+| `claude-history` | —                            | `/onboard` (one-shot retroactive import; CLI: `mem drain --source claude-history`) | — |
 
 Two distinct acquisition patterns coexist — on purpose, because the inputs differ:
 
@@ -455,8 +455,8 @@ The shipped `src/personal_mem/ontology.yaml` is a minimal seed. The example file
 │  /research  │     │  /drain    │     │ /discover │
 │             │     │            │     │           │
 │ classify URL│     │ drain queue│     │ find gaps │
-│ → subskill  │ ←── │ or import  │ ←── │ → enqueue │
-│ → mem_create│     │ historical │     │   leads   │
+│ → subskill  │ ←── │ for one    │ ←── │ → enqueue │
+│ → mem_create│     │ source type│     │   leads   │
 └─────────────┘     └────────────┘     └───────────┘
        │                  │                   │
        ▼                  ▼                   ▼
@@ -464,13 +464,12 @@ The shipped `src/personal_mem/ontology.yaml` is a minimal seed. The example file
 ```
 
 - `/research` is now a thin URL classifier (~50 LOC). It dispatches to `commands/research/research-{paper,repo,article}.md` based on the URL pattern. Adding a new source type is one registry entry + one subskill — no router edits.
-- `/drain` is the unified intake worker. Three modes:
-  - `--target hubs [--via inline|batch]` — concept-hub backfill (replaces the old standalone `mem hubs run` and the inline hub-backfill skill)
-  - `--source-type <slug> [--via inline|batch]` — drain a per-type queue
-  - `--source claude-history` — one-shot retroactive importer
+- `/drain` is the per-source-type queue worker. Single mode: `--source-type <slug>` drains `vault/.mem/queues/<slug>.jsonl` FIFO and dispatches each item to the matching `research-<slug>` skill. No other modes — synthesis and migration moved out (see below).
 - `/discover` is project-aware: it reads `RESEARCH_FOCUS.md`, finds under-covered concepts, and enqueues new leads via `mem_queue`.
 
-The CLI mirrors the triad: `mem queue` / `mem drain` / `mem update` are the headless surface (cron flows). `mem hubs run` is a deprecation alias that prints a hint then dispatches to the same plumbing.
+**Synthesis is a separate axis from acquisition.** Concept-hub backfill and theme dedup don't acquire anything — they aggregate what's already in the vault. Those are owned by `/update-hubs` (default = incremental; `--bulk inline|batch` = backfill) and `/themes-resolve`. Migration (one-shot retroactive imports such as `claude-history`) is also not acquisition; it runs as a CLI step inside `/onboard`, not as a skill mode of `/drain`. Keeping these axes verb-distinct is what restored the triad's clarity after the W3 split.
+
+The CLI mirrors the triad: `mem queue` / `mem drain` / `mem update` are the headless surface (cron flows). `mem drain --target hubs --via {inline|batch}` and `mem drain --source claude-history` remain as headless plumbing — the skill-level surface for hub backfill is `/update-hubs --bulk`, and the skill-level surface for retroactive Claude import is `/onboard`. `mem hubs run` is a deprecation alias that prints a hint then dispatches to the same plumbing.
 
 ## Workflow stager
 

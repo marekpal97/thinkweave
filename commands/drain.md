@@ -3,7 +3,7 @@ name: drain
 owns_mechanic: queue_drain
 capabilities: [acquire]
 consumes: [mem_queue, mem_sources_config, mem_search, mem_concepts, mem_create, mem_read, mem_update, mem_link]
-produces: [vault/sources/**, vault/concepts/topics/*.md]
+produces: [vault/sources/**]
 tools:
   - Read
   - Write
@@ -18,114 +18,33 @@ tools:
   - mem_link
   - mem_queue
   - mem_sources_config
-description: Drain pending acquisition work — concept-hub backfill, per-source-type queues, or one-shot retroactive importers. Inline default; opt into `--via batch` for large jobs.
+description: Drain a per-source-type acquisition queue. One slug per invocation; per-item dispatch to the matching `research-<slug>` skill.
 ---
 
-# /drain — Drain Acquisition Work
+# /drain — Per-source-type queue drainer
 
-`/drain` is the unified entry point for catching up on pending intake:
+`/drain --source-type <slug>` is the single-purpose queue worker. It walks
+`vault/.mem/queues/<source_type>.jsonl` FIFO and dispatches each item to
+the per-type research skill.
 
-- `--target hubs` — backfill concept-hub learning logs from unprocessed notes
-- `--source-type <slug>` — drain a per-type acquisition queue (paper, repo, article, …)
-- `--source claude-history` — one-shot retroactive importer (always inline)
+**Scope.** This skill *only* drains acquisition queues. Two former modes
+have moved out:
 
-**Default route is inline** (Claude Code session, one item at a time).
-`--via batch` opts into the OpenAI/Anthropic Batches API where supported
-(currently `--target hubs --via batch` only — wired into `mem hubs run`'s
-existing plumbing).
-
-For small daily concept-hub deltas (1–20 notes), prefer `/update-hubs`.
-
----
-
-## Mode A: `--target hubs` (concept hub backfill)
-
-Bulk concept-hub backfill. Walks `.mem/hubs_plan.json` and processes every
-unprocessed `(concept, note)` pair, appending learning artifacts.
-
-### A1. Load or build the plan
-
-If `.mem/hubs_plan.json` already exists, `Read` it. Otherwise run:
-```
-mem hubs plan [--concept X] [--project Y] [--limit-notes N] [--limit-concepts M]
-```
-
-The plan is a JSON object:
-```
-{
-  "total_concepts": N,
-  "total_notes": M,
-  "est_input_tokens": …,
-  "concepts": [
-    {"concept": "…", "domains": […], "unprocessed_notes": [{"id": "n-…", "path": "…", "title": "…", "type": "…", "project": "…", "date": "…"}, …]},
-    …
-  ]
-}
-```
-
-Report the plan size before starting. If it exceeds ~200 pairs, suggest
-`mem drain --target hubs --via batch` instead.
-
-### A2. Cap and process
-
-Process at most **100 (concept, note) pairs per invocation**. Honour
-`--cap N` if the user passed one.
-
-For each pair:
-
-1. `Read vault/concepts/topics/{concept}.md` — note current essence and
-   recent log entries.
-2. `Read <note_path>` — the originating note from the plan entry.
-3. Extract 0–3 learning artifacts. Pick a flag for each:
-   - `new` — adds something not represented in the existing log
-   - `agrees` — supports an existing entry (cite the entry's date in `ref`)
-   - `contradicts` — conflicts with an existing entry (cite date in `ref`)
-   - `extends` — elaborates on an existing entry (cite date in `ref`)
-4. Append entries to the hub's `## Catalyst log` (or `## Learning log` —
-   whichever the hub uses) just before the next `## ` heading. Format:
-   ```
-   - YYYY-MM-DD · *flag* — artifact text — [[note-id]]
-   ```
-   Date = the source note's date (not today). Text ≤200 chars, distilled.
-5. Track concepts that need essence revision in a running list (rare;
-   most additions go to the log, not the essence).
-
-### A3. Reindex and report
-
-```
-mem index
-```
-
-Report:
-```
-Processed N / M pairs (cap C).
-Appended X learning-log entries across Y concepts.
-Essence revision flagged for: [concepts, or "none"].
-Pairs remaining: Z. Run /drain --target hubs again to continue.
-```
-
-### A4. Scope guardrails
-
-- Never rewrite essence here — that's `/mem-resolve-concepts`.
-- Never delete log entries — append-only.
-- Never mutate source-note frontmatter to mark "processed" — the hub
-  page IS the ledger.
-- Never spawn Explore agents — the plan + hub already have everything.
-- Stop at the cap. Hand back to the user.
-
-For the `--via batch` route, exit early: `mem drain --target hubs --via=batch`
-runs entirely in the CLI (OpenAI Batches API + gpt-5-mini). No Claude Code
-work to do.
+- Concept-hub backfill (synthesis, vault → vault, no queue) → use
+  **`/update-hubs --bulk`** (`inline` or `batch` sub-mode).
+- One-shot retroactive Claude session import (migration, runs once per
+  vault) → use **`/onboard`** (which wraps the underlying CLI). The CLI
+  `mem drain --source claude-history` still exists for ad-hoc reruns.
 
 ---
 
-## Mode B: `--source-type <slug>` (queue drain)
+## Per-item flow
 
 Drain `vault/.mem/queues/<source_type>.jsonl`. Each entry is a dict with
 at least `id`, `url`, optional `title`, `concepts`. Process FIFO,
 one item per outer loop pass.
 
-### B1. Load config + queue
+### 1. Load config + queue
 
 ```
 mem_sources_config()
@@ -138,7 +57,7 @@ mem_queue(action="peek", source_type="<slug>", n=<batch>)
 ```
 Defaults to 5 items; honour `--limit N`.
 
-### B2. Per-item flow
+### 2. Per-item dispatch
 
 For each item:
 
@@ -157,7 +76,7 @@ For each item:
    mem_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="failed")
    ```
 
-### B3. Report
+### 3. Report
 
 ```
 Drained N / M items from queue '<slug>'.
@@ -168,28 +87,14 @@ Remaining: <queue size>
 
 ---
 
-## Mode C: `--source claude-history` (retroactive import)
-
-One-shot, always inline. The CLI does the heavy lifting; this skill exists
-so users can invoke it from Claude Code.
-
-```
-Bash("uv run mem drain --source claude-history")
-```
-
-Report the imported counts (sessions / notes / decisions) verbatim.
-
-This is intended to run once when adopting personal_mem — Phase 5 G will
-fold this into `/onboard`.
-
----
-
 ## When to use which route
 
 | Path | Best for | Cost |
 |---|---|---|
-| `/drain --target hubs` (inline) | 20–200 hub pairs, want oversight | Claude Code session |
-| `mem drain --target hubs --via batch` | 200+ pairs, no review | OpenAI Batches (50% off) |
-| `/update-hubs` | 1–20 daily delta pairs | Claude Code session |
 | `/drain --source-type paper` | Drain papers queue | Claude Code session |
-| `/drain --source claude-history` | One-shot bootstrap | Claude Code session |
+| `/drain --source-type repo` | Drain repos queue | Claude Code session |
+| `/drain --source-type article` | Drain articles queue | Claude Code session |
+| `/update-hubs` (default) | 1–20 daily delta hub pairs | Claude Code session |
+| `/update-hubs --bulk inline` | 100+ hub pairs, want oversight | Claude Code session |
+| `/update-hubs --bulk batch` | 100+ hub pairs, no review | OpenAI Batches (50% off) |
+| `/onboard` | First-time bootstrap incl. retroactive Claude session import | Claude Code session |

@@ -97,10 +97,10 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 | `/mem-resolve-concepts` | ontology_hygiene | — | — | Concept and ontology hygiene |
 | `/themes-resolve` | theme_synthesis | — | — | Theme dedup, status changes, essence rewrites |
 | `/research` | url_routing | paper, repo, article | import, acquire | URL classifier; dispatches to research-paper/-repo/-article |
-| `/drain` | queue_drain | — | acquire | Drain queues / hub-backfill / claude-history importer |
+| `/drain` | queue_drain | — | acquire | Drain a per-source-type acquisition queue. |
 | `/discover` | research_discovery | paper, repo, article | discover | Cross-project research gap analysis → queue items |
 | `/substack` | substack_inbox | substack | acquire | Drain Substack disk inbox |
-| `/update-hubs` | concept_hubs | — | — | Daily incremental concept-hub sync |
+| `/update-hubs` | concept_hubs | — | — | Concept-hub sync — incremental (default) or bulk (`--bulk [inline\|batch]`). |
 
 ## 6. Operational rules
 

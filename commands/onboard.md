@@ -70,16 +70,19 @@ ls -1 ~/.claude/projects/ 2>/dev/null | wc -l
 If the count is > 0, tell the user: "Found N session histories under
 `~/.claude/projects/`. Importing them will let your existing Claude
 Code work feed the memory layer." Then ask: import now? Default **no**
-— it can be expensive and can be run later via
-`mem drain --source claude-history`.
+— it can be expensive and can be re-run later via the same CLI step
+below.
 
-If they say **yes**, run:
+If they say **yes**, invoke the migration CLI directly. This is a
+one-shot retroactive import (not a queue drain) — it walks
+`~/.claude/projects/` once and lifts existing session histories into the
+vault as session/decision notes.
 
 ```bash
 PERSONAL_MEM_VAULT=<chosen-path> uv run mem drain --source claude-history
 ```
 
-If they say **no**, mention they can run that command later.
+If they say **no**, mention they can re-run the same command later.
 
 ## Step 4 — Source types
 
