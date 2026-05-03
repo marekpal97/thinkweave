@@ -147,7 +147,7 @@ flows or interactive admin. There is no MCP parity for these subcommands.
 
 ### MCP tool surface
 
-After Phase 4 C consolidation, the MCP server exposes 17 tools:
+After Phase 4 C consolidation, the MCP server exposes 18 tools:
 
 `mem_search`, `mem_create`, `mem_read`, `mem_update`, `mem_link`, `mem_unlink`,
 `mem_context`, `mem_graph` (filter-dispatched), `mem_concepts` (action-dispatched),

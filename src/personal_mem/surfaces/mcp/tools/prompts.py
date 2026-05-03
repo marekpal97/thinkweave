@@ -21,43 +21,59 @@ from personal_mem.operations.search import query_prompts
 TOOL_NAME = "mem_prompts"
 
 
-def tool_schema() -> dict:
-    """Return the JSONSchema descriptor registered with the MCP server."""
-    return {
-        "name": TOOL_NAME,
-        "description": (
-            "Read-only listing of user prompts captured by the "
-            "UserPromptSubmit hook.\n\n"
-            "Returns prompts captured for a project, ordered by recency. "
-            "Each entry has `ts`, `text`, `session_id`, `project`, and "
-            "`cwd`. Source data lives in per-session JSONL buffers, not "
-            "the SQLite index — it's append-only event data.\n\n"
-            "Use to ground gap analysis in what the user has actually "
-            "been asking (e.g. /discover prioritises concepts mentioned "
-            "in recent prompts)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "project": {
-                    "type": "string",
-                    "description": "Project to scope to. Required.",
+def tool_schemas() -> list:
+    """Return list of Tool schemas registered with the MCP server."""
+    from mcp.types import Tool
+
+    return [
+        Tool(
+            name=TOOL_NAME,
+            description=(
+                "Read-only listing of user prompts captured by the "
+                "UserPromptSubmit hook (Phase 4 E).\n\n"
+                "Returns prompts captured for a project, ordered by "
+                "recency. Each entry has `ts`, `text`, `session_id`, "
+                "`project`, and `cwd`. Source data lives in per-session "
+                "JSONL buffers, not the SQLite index — it's append-only "
+                "event data.\n\n"
+                "Use to ground gap analysis in what the user has "
+                "actually been asking (e.g. /discover prioritises "
+                "concepts mentioned in recent prompts)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Project to scope to. Required.",
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": (
+                            "Earliest ISO date/datetime (YYYY-MM-DD or "
+                            "full ISO timestamp). Inclusive. Optional."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Max prompts to return.",
+                    },
                 },
-                "since": {
-                    "type": "string",
-                    "description": (
-                        "Earliest ISO date/datetime (YYYY-MM-DD or full "
-                        "ISO timestamp). Inclusive. Optional."
-                    ),
-                },
-                "limit": {
-                    "type": "integer",
-                    "default": 50,
-                    "description": "Max prompts to return.",
-                },
+                "required": ["project"],
             },
-            "required": ["project"],
-        },
+        ),
+    ]
+
+
+def tool_schema() -> dict:
+    """Legacy single-tool descriptor — retained for back-compat with code
+    that imported the dict directly. Prefer ``tool_schemas()``."""
+    schemas = tool_schemas()
+    return {
+        "name": schemas[0].name,
+        "description": schemas[0].description,
+        "inputSchema": schemas[0].inputSchema,
     }
 
 
@@ -76,3 +92,10 @@ def handle(cfg: Config, args: dict) -> str:
 
     rows = query_prompts(cfg, project=project, since=since, limit=limit)
     return json.dumps(rows, indent=2)
+
+
+def handle_textcontent(cfg: Config, args: dict):
+    """Wrap :func:`handle` output in ``[TextContent]`` for the dispatch table."""
+    from mcp.types import TextContent
+
+    return [TextContent(type="text", text=handle(cfg, args))]
