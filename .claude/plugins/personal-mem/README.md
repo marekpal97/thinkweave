@@ -14,7 +14,7 @@ Install the Python package first (it provides the `mem` CLI that this
 plugin invokes):
 
 ```bash
-pip install -e .            # from the repo root
+pip install -e ".[all]"     # from the repo root; [all] = mcp+embeddings+hubs
 ```
 
 Then add the plugin to Claude Code:

@@ -12,10 +12,15 @@ hooks and enriched by `/mem-wrap` before you `/clear`.
 ## Install
 
 ```bash
-git clone https://github.com/marekpal97/personal_mem.git
+# Clone from wherever you got it (your fork, the upstream repo, etc.)
+git clone <your-fork-or-org>/personal_mem.git
 cd personal_mem
-pip install -e .
+pip install -e ".[all]"   # mcp + httpx + openai extras
 ```
+
+`[all]` is recommended — bare `pip install -e .` skips the MCP server,
+embedding similarity, and OpenAI Batches hub-backfill. Drop down to
+`[mcp]` if you only want the MCP surface.
 
 In Claude Code:
 

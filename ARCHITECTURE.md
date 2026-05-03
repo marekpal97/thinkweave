@@ -6,7 +6,7 @@ personal_mem ships three top-level docs with sharp non-overlapping roles:
 
 | Doc | Audience | Purpose |
 |---|---|---|
-| `README.md` | New users | Pitch, quickstart, install. *(Phase 5 G3 rewrite pending.)* |
+| `README.md` | New users | Pitch, quickstart, install. |
 | `CLAUDE.md` | Agents in-session | Retrieval contract, lifecycles, operational rules. ≤150 LOC. |
 | `ARCHITECTURE.md` (this) | Contributors | Layer boundaries, source primitive, capability model, coherence mechanics. |
 
@@ -38,7 +38,7 @@ personal_mem splits cleanly into two layers with a one-way dependency.
 │   surfaces/mcp/ MCP tool surface (the `mem_*` tools)                    │
 │   surfaces/hooks/ Claude Code hooks (handler + install)                 │
 │   importers/    one-shot CLI importers (chatgpt, claude_mem, …)         │
-│   operations/   cross-cutting jobs (Phase 4 C2)                         │
+│   operations/   cross-cutting jobs (the seam between surfaces and core) │
 │   flows.py, extract.py, enrich.py, prune.py                             │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -468,7 +468,7 @@ The shipped `src/personal_mem/ontology.yaml` is a minimal seed. The example file
   - `--target hubs [--via inline|batch]` — concept-hub backfill (replaces the old standalone `mem hubs run` and the inline hub-backfill skill)
   - `--source-type <slug> [--via inline|batch]` — drain a per-type queue
   - `--source claude-history` — one-shot retroactive importer
-- `/discover` (existing — Phase 4 H makes it project-aware) reads `RESEARCH_FOCUS.md`, finds under-covered concepts, and enqueues new leads via `mem_queue`.
+- `/discover` is project-aware: it reads `RESEARCH_FOCUS.md`, finds under-covered concepts, and enqueues new leads via `mem_queue`.
 
 The CLI mirrors the triad: `mem queue` / `mem drain` / `mem update` are the headless surface (cron flows). `mem hubs run` is a deprecation alias that prints a hint then dispatches to the same plumbing.
 
@@ -512,9 +512,9 @@ Concept aliasing is the only mechanism that mutates content automatically — ev
 ## Operations layer
 
 `src/personal_mem/operations/` is the seam between surfaces (CLI, MCP) and
-the knowledge layer (`core/`, `retrieval/`, `synthesis/`, `sources/`). Phase 4 C
-extracted this layer so note creation, concept queries, hub backfill, etc.
-are implemented exactly once.
+the knowledge layer (`core/`, `retrieval/`, `synthesis/`, `sources/`). Note
+creation, concept queries, hub backfill, etc. are implemented exactly once
+here, then consumed by both surfaces.
 
 ```
 surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)

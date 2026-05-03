@@ -112,9 +112,10 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 
 ## 7. CLI reference (Bash)
 
-Phase 4 C consolidations: `mem connect` → `mem index --materialize-links`; the
-`mem_concepts*` MCP tools are folded into `mem_concepts(action=...)`;
-`mem_source_lens` + `mem_decisions_for_file` are folded into `mem_graph(filter=...)`.
+Consolidations to keep in mind: `mem connect` is folded into
+`mem index --materialize-links`; the `mem_concepts*` MCP tools are folded into
+`mem_concepts(action=...)`; `mem_source_lens` + `mem_decisions_for_file` are
+folded into `mem_graph(filter=...)`. Old names linger as deprecation aliases.
 
 ```
 mem init                                    # initialize vault + .mem/sources.yaml
@@ -147,7 +148,7 @@ flows or interactive admin. There is no MCP parity for these subcommands.
 
 ### MCP tool surface
 
-After Phase 4 C consolidation, the MCP server exposes 18 tools:
+The MCP server exposes 18 tools:
 
 `mem_search`, `mem_create`, `mem_read`, `mem_update`, `mem_link`, `mem_unlink`,
 `mem_context`, `mem_graph` (filter-dispatched), `mem_concepts` (action-dispatched),
