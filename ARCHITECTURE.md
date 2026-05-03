@@ -185,48 +185,7 @@ A concept named in any of these places is the same concept. That's how a paper's
 
 ## Adding a new source type
 
-Five steps. Nothing else should need to change.
-
-### 1. Add a `SourceTypeSpec` entry
-
-Edit `src/personal_mem/sources/registry.py`:
-
-```python
-"podcast": SourceTypeSpec(
-    slug="podcast",
-    bucket="podcasts",
-    layout="folder",
-    skills=("podcast",),
-    description="Podcast episode transcripts. Ingested via /podcast.",
-),
-```
-
-Pick the layout: `flat` (single-file summary, no raw companion), `folder` (slug subdir with raw alongside — the usual choice), or `author_folder` (show-level nesting for serial content).
-
-### 2. Copy `_source_template.md` to `commands/{your-skill-name}.md`
-
-The template is the universal skill scaffold with YAML frontmatter (`source_type`, `capabilities`, `tools`, `description`) plus three clearly marked capability sections (import / acquire / discover) and three always-on sections (ontology tie-in, frontmatter shape, reporting).
-
-### 3. Fill in frontmatter + delete unused capability sections
-
-Declare what your skill actually does. A skill can ship with just one capability — `/substack` is acquire-only. Delete the Import or Discover sections if your skill doesn't implement them.
-
-### 4. Write the bespoke fetch/parse/interpret logic
-
-Per capability section. This is where per-source variation lives and where the template explicitly warns against abstraction. Pattern-match from:
-
-- `commands/research.md` — import + acquire via URL classification + WebFetch/git-clone/curl
-- `commands/substack.md` — acquire via disk-inbox drain + multimodal figure interpretation
-- `commands/discover.md` — discover via concept-coverage analysis + queue generation
-
-### 5. Verify
-
-```bash
-mem sources show podcast        # registry entry visible
-mem skill show podcast          # frontmatter parses
-```
-
-End-to-end smoke test: run the skill in Claude Code (via the Skill tool) on a real input and check `mem_search(type="source", query="...")` finds the new note.
+The five-step pattern (registry entry → config defaults → skill file → optional research subskill → smoke test) is documented end-to-end in §"Adding a new source type" further down, with a worked `podcast` example. Skim that section before editing anything; nothing else in the framework should need to change.
 
 ## Running skills
 
@@ -238,6 +197,27 @@ For bulk, non-interactive work there are two targeted paths — neither requires
 - **Autopilot** — `claude -p --model sonnet --dangerously-skip-permissions` invoked from cron gives headless skill execution with the full Claude Code tool surface.
 
 If you need a new headless path that isn't either of these, add a CLI subcommand next to `mem hubs run` rather than reintroducing a generic runner.
+
+## Prompt primitive
+
+Every user prompt submitted in Claude Code is captured as a structured event in the active session's JSONL buffer. The `UserPromptSubmit` hook (registered by `mem hooks install`, handled in `surfaces/hooks/handler._handle_user_prompt_submit`) appends one line per submission:
+
+```jsonl
+{"ts": "2026-05-02T15:47:00+00:00", "type": "prompt", "text": "What does the indexer skip?", "session_id": "cc-uuid", "cwd": "/path"}
+```
+
+The schema is intentionally flat — same buffer file the Edit/Write/Bash post-tool events land in, just discriminated by `"type": "prompt"`. `extract.extract_prompts(events_jsonl)` lifts these rows into `Prompt` dataclasses (`ts`, `text`, `session_id`, `project`, `cwd`).
+
+**Probe classification.** `extract.classify_probe(prompt, events)` is a conservative heuristic — it returns `True` only when the text reads like a question (ends with `?` or opens with a lead phrase like *what is*, *explain*, *how does*) **and** no `Edit`/`Write` event lands within the next 3 events of the buffer. False negatives over false positives — STATE.md's "Open Probes" section is more useful when sparse and accurate than when noisy.
+
+**Where it's consumed:**
+
+- `synthesis/landing._gather_prompt_probes` walks both archived `vault/projects/<project>/sessions/*/events.jsonl` and active `.mem/buffer/<session_uuid>.jsonl` files, applies `classify_probe`, and merges the result with `probe`-tagged notes for STATE.md's "Open Probes" section.
+- `mem_prompts` MCP tool (`surfaces/mcp/tools/prompts.py` → `operations.search.query_prompts`) gives skills read-only access to prompts, project-scoped, with optional `since` / `limit` filters. `/discover` uses it to bias gap analysis toward what the user has actually been asking.
+
+The legacy `probe` *tag* becomes a manual override only. The canonical signal is the prompt event; the tag stays load-bearing for back-compat (you can still hand-tag a note `probe` to surface it on STATE.md), but new code should reach for the prompt primitive.
+
+**Auto-todo extraction.** A side-channel in the same module: `extract.extract_todos(text)` scans free-form text for `TODO: …` / `FIXME: …` / `we should …` / `next step: …` / `follow-up: …` patterns and returns `Todo` dataclasses. Wired into `mem_extract` (gated by `auto_todo_extraction` in `sources.yaml`, default `True`); each match becomes a note tagged `[todo, auto]`. `mem backlog` shows an `[auto]` marker so they're distinguishable from hand-curated todos; `mem backlog --hide-auto` filters them out. Promotion is by deleting the `auto` tag; dismissal is by deleting the note.
 
 ## Themes — global narrative aggregators
 
@@ -310,11 +290,14 @@ Items get a UUID `id` and `enqueued_at` timestamp on enqueue if absent. Claims a
 
 The queues directory is excluded from the SQLite index — acquisition state is not knowledge.
 
-## Sources YAML
+## User configuration — `sources.yaml`
 
-`vault/.mem/sources.yaml` overlays per-source-type defaults. The shipped `DEFAULT_CONFIG` (in `src/personal_mem/sources/config.py`) is the source of truth; the user file overlays it key-by-key via `load_user_config(vault_root)`.
+`vault/.mem/sources.yaml` overlays per-vault defaults. The shipped `DEFAULT_CONFIG` (in `src/personal_mem/sources/config.py`) is the source of truth; the user file overlays it key-by-key via `load_user_config(vault_root)`. Missing user file → defaults; malformed YAML → defaults (the loader is robust for `mem doctor` to surface errors later).
+
+The schema has four top-level sections; everything is optional:
 
 ```yaml
+# Per-source-type overrides. Keys mirror SourceTypeSpec slugs.
 sources:
   paper:
     queue: vault/.mem/queues/papers.jsonl
@@ -322,19 +305,148 @@ sources:
     drain_strategy: anthropic_batch       # inline | anthropic_batch | openai_batch
     dedup_keys: [arxiv_id, doi, url, title]
     url_patterns: [arxiv.org, openreview.net]
+    intake_folder: ~/papers_inbox
+  repo:
+    queue: vault/.mem/queues/repos.jsonl
+    research_skill: research-repo
+    dedup_keys: [github_url, slug]
+    url_patterns: [github.com, gitlab.com]
+  # ... article, substack, conversation, claude-history are also pre-shipped.
+
+# Per-project knobs. Strategy lists drive `mem discover`; per-strategy
+# settings (stale_days, min_mentions, external tools) live nested under
+# the strategy name.
+projects:
+  default:
+    discover_strategies: [concept_coverage]
+  myresearch:
+    discover_strategies: [concept_coverage, decision_review]
+    decision_review:
+      stale_days: 45
+  trade_ideas:
+    discover_strategies: [external_tool_runner]
+    external_tool_runner:
+      tools:
+        - command: ["./scripts/scrape_signals.py"]
+        - command: "python -m mytools.gh_trending"
+      timeout: 90
+
+# Landing-doc filenames. Override these to use your own vocabulary
+# (STATUS.md, ADR.md, …); the indexer, mem landing, and the SessionStart
+# hook all read from this map.
 landing_files:
   state: STATE.md
   backlog: BACKLOG.md
+  decisions: DECISIONS.md
+  themes: THEMES.md
+  research_focus: RESEARCH_FOCUS.md
+
 auto_todo_extraction: true
 ```
 
-Where it's read:
+Where each section is read:
 
-- `mem queue` / `mem drain` / `mem_queue` MCP — pick `dedup_keys`, `research_skill`, `drain_strategy`.
-- `commands/research.md` (router skill) — `url_patterns` to classify a URL.
-- `mem doctor --migrate` — `dedup_keys` to dedup-on-enqueue when migrating legacy `todo+research` notes.
+| Section | Consumers |
+|---|---|
+| `sources.<type>.queue` / `dedup_keys` / `drain_strategy` / `research_skill` | `mem queue` / `mem drain` / `mem_queue` MCP |
+| `sources.<type>.url_patterns` | `commands/research.md` URL router |
+| `projects.<name>.discover_strategies` | `mem discover` (CLI) and `/discover` skill |
+| `projects.<name>.<strategy>.{stale_days, min_mentions, tools, …}` | individual discovery strategies |
+| `landing_files.{state, backlog, decisions, themes, research_focus}` | `synthesis/landing.py`, the indexer, `retrieval/context.py` |
 
-`mem_sources_config` MCP exposes the merged dict to skills that don't want to re-parse the YAML themselves.
+`mem_sources_config` MCP exposes the merged dict to skills that don't want to re-parse the YAML themselves. The CLI exposes `mem sources list` / `mem sources show <slug>` for the source-type registry view.
+
+## Discovery strategies
+
+`mem discover` is a thin CLI shell over a strategy registry: it loads `projects.<name>.discover_strategies` from `sources.yaml`, looks each name up in `personal_mem.discover.strategies`, calls `strategy.run(vault, project, config)`, and prints the merged JSON result. Strategies don't write to the vault directly — they emit gap descriptors that `/discover` (or a cron flow) translates into queue items, BACKLOG entries, or per-project review files.
+
+Built-in strategies:
+
+| Strategy | What it surfaces |
+|---|---|
+| `concept_coverage` | Load-bearing concepts whose source coverage falls below `min_sources` (default 2). Mirrors the original `/discover` default. |
+| `decision_review` | `proposed`/`accepted` decisions older than `stale_days` (default 30). |
+| `theme_drift` | `active` themes whose `## Catalyst log` has gone silent for `stale_days` (default 60). |
+| `external_tool_runner` | Shells out to `projects.<name>.external_tool_runner.tools`; reads JSONL stdout, merges into the gap list. |
+
+Each strategy lives in its own file under `src/personal_mem/discover/strategies/` and exposes a module-level `STRATEGY` instance plus a class with `name: str` and `run(vault, project, config) -> list[dict]`. Adding a new strategy is **one file plus one `register()` line** in `strategies/__init__.py` — no CLI, MCP, or skill edits required. This directory is the framework's growth axis post-launch: community extensions land here.
+
+A strategy's config knobs are namespaced under the strategy name (e.g. `projects.myresearch.decision_review.stale_days`) so multiple projects can pull different parameters without colliding.
+
+## Adding a new source type
+
+Worked example: `podcast`. Five steps end-to-end.
+
+### 1. Register the source type
+
+Edit `src/personal_mem/sources/registry.py`:
+
+```python
+"podcast": SourceTypeSpec(
+    slug="podcast",
+    bucket="podcasts",
+    layout="folder",        # episode-slug/source.md + companion files
+    skills=("podcast",),
+    description="Podcast episode transcripts. Ingested via /podcast.",
+),
+```
+
+Pick a layout: `flat` (single-file summary, no raw companion), `folder` (slug subdir with raw alongside — the usual choice), or `author_folder` (show-level nesting for serial content).
+
+### 2. Add per-type config to `sources.yaml`
+
+In `src/personal_mem/sources/config.py:DEFAULT_CONFIG['sources']`:
+
+```python
+"podcast": {
+    "queue": "vault/.mem/queues/podcasts.jsonl",
+    "drain_strategy": "inline",
+    "dedup_keys": ["url", "episode_id", "title"],
+    "url_patterns": ["overcast.fm", "pca.st", "spotify.com/episode"],
+},
+```
+
+Add a matching block to `vault_templates/.mem/sources.yaml` so new vaults ship with the override stub the user can edit.
+
+### 3. Drop a skill at `commands/podcast.md`
+
+Copy `commands/_source_template.md` and fill in:
+
+```yaml
+---
+name: podcast
+source_type: podcast
+capabilities: [import, acquire]      # whichever your skill ships
+tools: [Read, Bash, WebFetch, mem_create, mem_queue, ...]
+description: Ingest podcast transcripts (Overcast, Pocket Casts, Spotify).
+---
+```
+
+Implement the bespoke fetch + transcribe + summarise logic in the body — that's where per-source variation lives, and where the template warns against premature abstraction.
+
+### 4. Add a research subskill (optional)
+
+If `/research` should classify podcast URLs, add `commands/research/research-podcast.md` with the import logic. The router (`commands/research.md`) reads `url_patterns` from step 2 and dispatches automatically — no router edits.
+
+### 5. Verify
+
+```bash
+mem sources show podcast        # registry entry visible
+mem skill show podcast          # frontmatter parses
+echo '{"url": "https://overcast.fm/+xyz", "title": "Test"}' \
+  | mem queue add podcast --stdin
+mem drain --source-type podcast --limit 1
+```
+
+If the smoke test creates a source note at `vault/sources/podcasts/<slug>/source.md`, the integration is live. No edits to `vault.py`, `queue.py`, the CLI, or the MCP server were needed at any step.
+
+## Default source-type set
+
+The framework ships with a deliberately small set: `paper`, `repo`, `article`, `substack`, `conversation`, `claude-history`. These cover the most common knowledge-worker inputs without baking in domain-specific assumptions. Every other source type — podcasts, YouTube, Messenger exports, RSS, email, Slack archives — is the user's to add via the five-step pattern above. The framework imposes no universe of sources; it just gives you the seam.
+
+## Ontology — user-chosen, not framework-imposed
+
+The shipped `src/personal_mem/ontology.yaml` is a minimal seed. The example file `ontology.example.yaml` shows what the original author's vault looks like after months of use — a mix of ML, AI tooling, finance, and SWE concepts — but **no domain hierarchy is privileged by the framework**. A vault that only ever imports cooking recipes will grow a `cuisine/`, `technique/`, `ingredient/` tree; a security-research vault will grow `cve/`, `exploit-class/`, `mitigation/`. The framework's only opinion is that concepts belong to a top-level domain (so the domain hub at `vault/concepts/<domain>.md` stays meaningful) and that new terms enter via `proposed_concepts` for canonicalisation through `/mem-resolve-concepts`.
 
 ## Acquisition triad — research / drain / discover
 
@@ -396,6 +508,45 @@ Six distinct dedup mechanisms, each scoped to a different kind of overlap:
 | Queue item dedup | `dedup_keys` from `sources.yaml` | `Queue.dedup_check` |
 
 Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), refuses (filesystem collision, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
+
+## Operations layer
+
+`src/personal_mem/operations/` is the seam between surfaces (CLI, MCP) and
+the knowledge layer (`core/`, `retrieval/`, `synthesis/`, `sources/`). Phase 4 C
+extracted this layer so note creation, concept queries, hub backfill, etc.
+are implemented exactly once.
+
+```
+surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
+       │             │
+       └──────┬──────┘
+              ▼
+    operations/                      ← pure functions
+      notes.py        create / read / update / link / unlink
+      search.py       query_fts / query_similar / query_hybrid / query_context / query_prompts
+      graph.py        walk(filter='source_lens'|'decisions_for_file'|'concept_walk'|…)
+      concepts.py     list / tighten / merge / drift / source_counts / search
+      hubs.py         plan / status / repair
+      decisions.py    list_by_file / judge (read-only)
+      queue.py        list_queues / peek / inspect / enqueue (auto-dedup)
+      drain.py        run_hubs_batch — OpenAI Batches monolith for hub backfill
+      migrations.py   registry of one-shot vault data migrations
+              ▼
+   core/, retrieval/, synthesis/, sources/   ← knowledge layer
+```
+
+The dependency rule: operations may import from `core/`, `retrieval/`,
+`synthesis/`, `sources/`, but never from `surfaces/`. CLI and MCP handlers
+import from operations, not from the knowledge layer directly. So `cmd_add`
+(CLI) and `mem_create` (MCP) both delegate to
+`operations.notes.create_note(cfg, …)` — the same call, the same code path.
+
+Operations functions take a `Config` (or `VaultManager` / `Indexer`) plus
+parameters and return data. They don't `print` and they don't call
+`sys.exit`. Surfaces own input shape (argparse / JSON) and output shape
+(text / JSON). The one exception is `drain.run_hubs_batch`, which inherits
+process-exit semantics from the long-running OpenAI Batches loop the previous
+in-CLI implementation used; lifting it cleanly is a follow-up.
 
 ## A note on the importers under `src/personal_mem/importers/`
 

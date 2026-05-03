@@ -91,6 +91,11 @@ def install_hooks(project_dir: str = "") -> None:
     session_start_hooks = hooks.setdefault("SessionStart", [])
     _ensure_hook(session_start_hooks, "", f"{hook_cmd} session_start")
 
+    # UserPromptSubmit hook — captures every user prompt as a JSONL event,
+    # promoting prompts into a first-class primitive (Phase 4 E).
+    user_prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
+    _ensure_hook(user_prompt_hooks, "", f"{hook_cmd} user_prompt_submit")
+
     # PreToolUse: previously injected "related vault notes" before each
     # Write/Edit. Retired — redundant with SessionStart context and the
     # filename-stem heuristic produced noisy hits. Strip any stale entry
@@ -123,7 +128,13 @@ def uninstall_hooks(project_dir: str = "") -> None:
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     hooks = settings.get("hooks", {})
 
-    for hook_type in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
+    for hook_type in (
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+    ):
         entries = hooks.get(hook_type, [])
         hooks[hook_type] = [
             entry

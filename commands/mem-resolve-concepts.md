@@ -1,12 +1,13 @@
 ---
 name: mem-resolve-concepts
+owns_mechanic: ontology_hygiene
+consumes: [mem_concepts]
+produces: [ontology.yaml, vault/concepts/topics/*.md]
 tools:
   - Read
   - Edit
   - Bash
   - mem_concepts
-  - mem_concepts_drift
-  - mem_concepts_merge
 description: Periodic concept and ontology hygiene. Merge near-duplicates, prune noise, update `ontology.yaml`, regenerate concept hubs. Designed to run under 2 min.
 ---
 

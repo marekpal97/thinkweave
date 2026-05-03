@@ -1,6 +1,9 @@
 ---
 name: drain
+owns_mechanic: queue_drain
 capabilities: [acquire]
+consumes: [mem_queue, mem_sources_config, mem_search, mem_concepts, mem_create, mem_read, mem_update, mem_link]
+produces: [vault/sources/**, vault/concepts/topics/*.md]
 tools:
   - Read
   - Write
@@ -9,7 +12,6 @@ tools:
   - WebFetch
   - mem_search
   - mem_concepts
-  - mem_concept_search
   - mem_create
   - mem_read
   - mem_update

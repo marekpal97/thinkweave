@@ -1,4 +1,4 @@
-"""Claude Code Pre/PostToolUse/Stop/SessionStart hook handler.
+"""Claude Code Pre/PostToolUse/Stop/SessionStart/UserPromptSubmit hook handler.
 
 Invoked as the `mem-hook` console script (declared in pyproject.toml).
 pip/uv materialize this as a cross-platform executable, so Claude Code
@@ -11,6 +11,9 @@ Exit 0 = success.
 SessionStart: Injects ~7–10k tokens of structured project context
   (recent sessions, STATE, backlog, decisions, tool manifest) so Claude
   wakes up oriented. Never blocks — always exits 0.
+UserPromptSubmit: Captures every user prompt as a structured "prompt"
+  event in the JSONL buffer. Promotes user prompts into a first-class
+  primitive (`Prompt`) — replaces the heuristic `probe`-tag flow.
 PostToolUse (Write|Edit|Bash): Buffers events to JSONL. Session note
   materialization is deferred to Stop hook.
 Stop: Reconstructs session from buffer, writes summary, indexes once.
@@ -66,6 +69,8 @@ def main() -> None:
             _handle_stop(hook_input)
         elif hook_type == "session_start":
             _handle_session_start(hook_input)
+        elif hook_type == "user_prompt_submit":
+            _handle_user_prompt_submit(hook_input)
         else:
             # Includes legacy `pre_tool_use` invocations from settings.json
             # entries written before that hook was retired. Falls through
@@ -109,6 +114,53 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         _output()
     except Exception as e:
         _log_error("post_tool_use", e)
+        _output()
+
+
+def _handle_user_prompt_submit(hook_input: dict) -> None:
+    """UserPromptSubmit: append a structured prompt event to the JSONL buffer.
+
+    Schema written to ``buffer/<session_id>.jsonl``::
+
+        {"ts": "...", "type": "prompt", "text": "...",
+         "session_id": "...", "cwd": "..."}
+
+    Promotes user prompts into a first-class primitive that ``extract.py``
+    can lift into ``Prompt`` objects + classify as probes — replacing the
+    older heuristic ``probe`` tag flow. Never blocks Claude Code; failures
+    are logged silently.
+    """
+    try:
+        from personal_mem.core.config import load_config
+
+        cfg = load_config()
+
+        session_id = hook_input.get(
+            "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
+        )
+        prompt_text = hook_input.get("prompt", hook_input.get("user_prompt", ""))
+        if not session_id or not prompt_text:
+            _output()
+            return
+
+        now = datetime.now(timezone.utc).isoformat()
+        cwd = hook_input.get("cwd", "")
+        event = {
+            "ts": now,
+            "type": "prompt",
+            "text": prompt_text,
+            "session_id": session_id,
+            "cwd": cwd,
+        }
+        _buffer_event(cfg.mem_dir, session_id, event)
+
+        # Eagerly create the session note too, so a buffer that begins
+        # with prompts (no Edit/Bash yet) still has a note to attach to.
+        _ensure_session(cfg, session_id, hook_input)
+
+        _output()
+    except Exception as e:
+        _log_error("user_prompt_submit", e)
         _output()
 
 

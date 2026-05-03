@@ -1,7 +1,10 @@
 ---
 name: research
+owns_mechanic: url_routing
 source_type: [paper, repo, article]
 capabilities: [import, acquire]
+consumes: [mem_queue, mem_sources_config, mem_search]
+produces: [vault/sources/papers/**, vault/sources/repos/**, vault/sources/articles/**]
 tools:
   - Read
   - Bash

@@ -400,36 +400,40 @@ def main() -> None:
                 name="mem_graph",
                 description=(
                     "**Modality: graph (recursive CTE over typed edges).**\n\n"
-                    "Walk outward from a note id along typed edges, bidirectional. Use "
-                    "to understand how a note relates to the broader knowledge base.\n\n"
-                    "Optional `note_type` and `project` filter the *projected* nodes "
-                    "(what's returned), not the traversal itself — the walk still "
-                    "reaches through nodes of any type, but only matching nodes "
-                    "appear in the result. Lets you ask 'show me only the source "
-                    "nodes connected to this decision'."
+                    "Filter-dispatched (Phase 4 C consolidation):\n\n"
+                    "- `filter=''` (default): walk outward from `id` along typed edges. "
+                    "Optional `note_type` and `project` filter the projected nodes.\n"
+                    "- `filter='source_lens'`: given `source_id`, return everything that "
+                    "cites it, derives from it, or shares concepts with it.\n"
+                    "- `filter='decisions_for_file'`: given `file_path`, return every "
+                    "decision whose `file_paths` frontmatter touches it. "
+                    "Optional `project`, `status`, `limit`.\n"
+                    "- `filter='concept_walk'`: notes by concept set ops. Args: "
+                    "`concepts` (list), `match_mode='any|all'`, `min_matches`, plus filters."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "id": {"type": "string", "description": "Starting note ID."},
-                        "depth": {"type": "integer", "default": 2, "description": "How many hops to traverse."},
-                        "edge_types": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Filter to only these edge types (e.g. [\"derived_from\", \"builds_on\"]).",
-                        },
-                        "note_type": {
-                            "description": (
-                                "Restrict returned nodes to this type. String or list "
-                                "(e.g. 'source' or ['source','decision'])."
-                            ),
-                        },
-                        "project": {
+                        "filter": {
                             "type": "string",
-                            "description": "Restrict returned nodes to this project.",
+                            "enum": ["", "source_lens", "decisions_for_file", "concept_walk"],
+                            "default": "",
                         },
+                        "id": {"type": "string"},
+                        "depth": {"type": "integer", "default": 2},
+                        "edge_types": {"type": "array", "items": {"type": "string"}},
+                        "note_type": {},
+                        "project": {"type": "string"},
+                        "source_id": {"type": "string"},
+                        "file_path": {"type": "string"},
+                        "status": {"type": "string"},
+                        "concepts": {"type": "array", "items": {"type": "string"}},
+                        "match_mode": {"type": "string", "enum": ["any", "all"], "default": "any"},
+                        "min_matches": {"type": "integer", "default": 0},
+                        "since": {"type": "string"},
+                        "until": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50},
                     },
-                    "required": ["id"],
                 },
             ),
             Tool(
@@ -703,137 +707,47 @@ def main() -> None:
             Tool(
                 name="mem_concepts",
                 description=(
-                    "List all concepts in the vault with note counts.\n\n"
-                    "Concepts are domain-specific technical terms (e.g. write-ahead-log, "
-                    "recursive-cte) — distinct from tags which are broad categories "
-                    "(e.g. debugging, todo). Use BEFORE assigning concepts to new notes — "
-                    "reuse existing labels for consistency. Notes sharing 2+ concepts are "
-                    "auto-linked in the knowledge graph."
+                    "Unified concept tool. Action-dispatched (Phase 4 C consolidation).\n\n"
+                    "- `action='list'` (default): list concepts with counts. Args: prefix, min_count.\n"
+                    "- `action='tighten'`: find near-duplicate concept pairs (Levenshtein).\n"
+                    "- `action='merge'`: rename concept across all notes. Args: from_concept, to_concept.\n"
+                    "- `action='search'`: find notes by concepts (union/intersection). "
+                    "Args: concept | concepts, match_mode='any|all', min_matches, project, type, "
+                    "project_concepts, cooccurrence, since, until, limit.\n"
+                    "- `action='source_counts'`: bulk source-count for concepts. Args: concepts.\n"
+                    "- `action='drift'`: drift report (near-dupes + ontology candidates + "
+                    "optional redundant-hub pairs). Args: project, threshold, max_items, hubs, hub_jaccard.\n\n"
+                    "Concepts are domain-specific terms (e.g. write-ahead-log) — distinct from "
+                    "tags which are broad categories. Use action='list' BEFORE assigning concepts "
+                    "to new notes."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "prefix": {
+                        "action": {
                             "type": "string",
-                            "description": "Filter concepts starting with this prefix.",
+                            "enum": ["list", "tighten", "merge", "search", "source_counts", "drift"],
+                            "default": "list",
                         },
-                        "min_count": {
-                            "type": "integer",
-                            "default": 1,
-                            "description": "Minimum note count to include.",
-                        },
-                    },
-                },
-            ),
-            Tool(
-                name="mem_concepts_tighten",
-                description=(
-                    "[DEPRECATED — prefer mem_concepts_drift] "
-                    "Find near-duplicate concepts that may need merging.\n\n"
-                    "Uses string similarity (edit distance, substring, stem matching) "
-                    "to identify concept pairs that likely refer to the same thing. "
-                    "Returns suggested merges — does not auto-apply.\n\n"
-                    "`mem_concepts_drift` returns the same near-dupes plus ontology "
-                    "candidates and redundant-hub pairs in one call; use that instead."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {},
-                },
-            ),
-            Tool(
-                name="mem_concepts_merge",
-                description=(
-                    "Merge one concept into another across all vault notes.\n\n"
-                    "Renames `from_concept` to `to_concept` in every note's frontmatter "
-                    "and updates the aliases file so the old name auto-resolves in future.\n\n"
-                    "Use after reviewing mem_concepts_drift suggestions."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "from_concept": {
-                            "type": "string",
-                            "description": "The concept to rename/remove.",
-                        },
-                        "to_concept": {
-                            "type": "string",
-                            "description": "The canonical concept to merge into.",
-                        },
-                    },
-                    "required": ["from_concept", "to_concept"],
-                },
-            ),
-            Tool(
-                name="mem_concept_search",
-                description=(
-                    "Find notes by one or more concepts, with intersection or union semantics.\n\n"
-                    "- `concept` (single str) or `concepts` (list) — accepts either.\n"
-                    "- `match_mode='any'` (default, union) — matches notes touching any of the concepts.\n"
-                    "- `match_mode='all'` (intersection) — matches notes touching every concept. "
-                    "Set `min_matches=N` to require at least N (partial intersection).\n\n"
-                    "`project` is optional — omit to search cross-project. `type` accepts a string "
-                    "or a list of types.\n\n"
-                    "Also supports listing all concepts for a project (omit concept, provide project, "
-                    "set `project_concepts=true`) or finding co-occurring concepts (`cooccurrence=true`).\n\n"
-                    "Example: `concepts=['machine-learning','pytorch'], match_mode='all', "
-                    "type=['source','session']` → all source+session notes touching both concepts."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "concept": {
-                            "type": "string",
-                            "description": "Single concept. Use `concepts` list for multi-concept.",
-                        },
-                        "concepts": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "List of concepts (multi-concept search).",
-                        },
-                        "match_mode": {
-                            "type": "string",
-                            "enum": ["any", "all"],
-                            "default": "any",
-                            "description": (
-                                "'any' = union (default, matches any concept). "
-                                "'all' = intersection (matches every concept)."
-                            ),
-                        },
-                        "min_matches": {
-                            "type": "integer",
-                            "default": 0,
-                            "description": (
-                                "Minimum distinct concepts a note must match (only used in "
-                                "match_mode='all'). 0 = require all concepts in the list."
-                            ),
-                        },
-                        "project": {
-                            "type": "string",
-                            "description": "Filter by project. Empty = cross-project.",
-                        },
-                        "type": {
-                            "description": "Note type filter — string or list of strings.",
-                        },
+                        "prefix": {"type": "string"},
+                        "min_count": {"type": "integer", "default": 1},
+                        "from_concept": {"type": "string"},
+                        "to_concept": {"type": "string"},
+                        "concept": {"type": "string"},
+                        "concepts": {"type": "array", "items": {"type": "string"}},
+                        "match_mode": {"type": "string", "enum": ["any", "all"], "default": "any"},
+                        "min_matches": {"type": "integer", "default": 0},
+                        "project": {"type": "string"},
+                        "type": {},
+                        "project_concepts": {"type": "boolean", "default": False},
+                        "cooccurrence": {"type": "boolean", "default": False},
+                        "since": {"type": "string"},
+                        "until": {"type": "string"},
                         "limit": {"type": "integer", "default": 20},
-                        "project_concepts": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": "If true, return concept frequency for the project instead of notes.",
-                        },
-                        "cooccurrence": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": "If true, return concepts that co-occur with the given concept.",
-                        },
-                        "since": {
-                            "type": "string",
-                            "description": "Earliest ISO date (YYYY-MM-DD).",
-                        },
-                        "until": {
-                            "type": "string",
-                            "description": "Latest ISO date (YYYY-MM-DD).",
-                        },
+                        "threshold": {"type": "integer", "default": 5},
+                        "max_items": {"type": "integer", "default": 5},
+                        "hubs": {"type": "boolean", "default": False},
+                        "hub_jaccard": {"type": "number", "default": 0.4},
                     },
                 },
             ),
@@ -956,120 +870,6 @@ def main() -> None:
                 },
             ),
             Tool(
-                name="mem_concept_source_counts",
-                description=(
-                    "Bulk source-count + URL lookup for a list of concepts.\n\n"
-                    "Collapses /discover's O(N) per-concept under-source fan-out "
-                    "into a single JOIN. For each input concept returns the full "
-                    "set of source notes tagged with it — id, title, and url. "
-                    "Concepts with zero sources still appear in the output with "
-                    "count=0, so callers can iterate without KeyError checks.\n\n"
-                    "Use for: under-sourced gap identification (count < 2) plus "
-                    "per-gap dedup set collection (urls → gap_sources)."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "concepts": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "List of concepts to look up.",
-                        },
-                    },
-                    "required": ["concepts"],
-                },
-            ),
-            Tool(
-                name="mem_source_lens",
-                description=(
-                    "Given a source note ID (e.g. an imported ChatGPT conversation, a "
-                    "paper, a web clipping), return everything that cites it, derives "
-                    "from it, or shares concepts with it.\n\n"
-                    "Returns: the source, inbound-edge notes (decisions, sessions, "
-                    "other notes that reference it), and a concept reach report "
-                    "(how many other notes use each of the source's concepts).\n\n"
-                    "Use when you want to 'walk out' from a specific source and see "
-                    "its influence across the vault."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "source_id": {
-                            "type": "string",
-                            "description": "The note ID of the source (e.g. 'src-chatgpt-0a1b2c3d').",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "default": 50,
-                            "description": "Max inbound notes to return.",
-                        },
-                    },
-                    "required": ["source_id"],
-                },
-            ),
-            Tool(
-                name="mem_decisions_for_file",
-                description=(
-                    "Return every decision whose `file_paths` frontmatter includes the "
-                    "given file path. Answers 'every decision ever made touching "
-                    "src/personal_mem/vault.py' in one indexed JOIN.\n\n"
-                    "Uses the `decision_files` indexer table — no frontmatter scanning."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Path to query, e.g. 'src/personal_mem/vault.py'. Must match the stored path exactly.",
-                        },
-                        "project": {
-                            "type": "string",
-                            "description": "Optional project filter.",
-                        },
-                        "status": {
-                            "type": "string",
-                            "description": "Optional status filter: proposed, accepted, deprecated, superseded.",
-                        },
-                        "limit": {"type": "integer", "default": 50},
-                    },
-                    "required": ["file_path"],
-                },
-            ),
-            Tool(
-                name="mem_concepts_drift",
-                description=(
-                    "Advisory drift report for the concept ontology. Read-only — "
-                    "never modifies anything.\n\n"
-                    "Surfaces three kinds of drift:\n"
-                    "1. Near-duplicate concepts (e.g. 'neural-network' ≈ 'neural-networks')\n"
-                    "2. New concept candidates — concepts with count >= 5 that are "
-                    "NOT listed in ontology.yaml (ontology growth signals)\n"
-                    "3. Ontology staleness — ontology.yaml has been edited since "
-                    "the last `mem concepts hubs` run\n\n"
-                    "Use as a mem-wrap step (advisory) — surface findings, don't act on "
-                    "them. Acting requires user confirmation (`mem concepts merge`, etc.)."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "project": {
-                            "type": "string",
-                            "description": "Optional project scope. Empty = vault-wide.",
-                        },
-                        "threshold": {
-                            "type": "integer",
-                            "default": 5,
-                            "description": "Minimum count for concept candidates to surface.",
-                        },
-                        "max_items": {
-                            "type": "integer",
-                            "default": 5,
-                            "description": "Max items per drift category to return.",
-                        },
-                    },
-                },
-            ),
-            Tool(
                 name="mem_project_snapshot",
                 description=(
                     "On-demand structured project overview — the same payload that the "
@@ -1157,10 +957,72 @@ def main() -> None:
                     "properties": {},
                 },
             ),
+            Tool(
+                name="mem_prompts",
+                description=(
+                    "Read-only listing of user prompts captured by the "
+                    "UserPromptSubmit hook (Phase 4 E).\n\n"
+                    "Returns prompts captured for a project, ordered by "
+                    "recency. Each entry has `ts`, `text`, `session_id`, "
+                    "`project`, and `cwd`. Source data lives in per-session "
+                    "JSONL buffers, not the SQLite index — it's append-only "
+                    "event data.\n\n"
+                    "Use to ground gap analysis in what the user has "
+                    "actually been asking (e.g. /discover prioritises "
+                    "concepts mentioned in recent prompts)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {
+                            "type": "string",
+                            "description": "Project to scope to. Required.",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": (
+                                "Earliest ISO date/datetime (YYYY-MM-DD or "
+                                "full ISO timestamp). Inclusive. Optional."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 50,
+                            "description": "Max prompts to return.",
+                        },
+                    },
+                    "required": ["project"],
+                },
+            ),
         ]
+
+    # Phase 4 C: deprecation aliases for the 7 tools folded into
+    # mem_concepts(action=...) and mem_graph(filter=...). Print a warning to
+    # stderr, then dispatch into the consolidated path. TODO(post-G): drop.
+    DEPRECATION_ALIASES = {
+        "mem_concepts_tighten": ("mem_concepts", {"action": "tighten"}),
+        "mem_concepts_merge": ("mem_concepts", {"action": "merge"}),
+        "mem_concept_search": ("mem_concepts", {"action": "search"}),
+        "mem_concept_source_counts": ("mem_concepts", {"action": "source_counts"}),
+        "mem_concepts_drift": ("mem_concepts", {"action": "drift"}),
+        "mem_source_lens": ("mem_graph", {"filter": "source_lens"}),
+        "mem_decisions_for_file": ("mem_graph", {"filter": "decisions_for_file"}),
+    }
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        # Deprecation aliases — fold removed tool names into the consolidated tools.
+        if name in DEPRECATION_ALIASES:
+            new_name, defaults = DEPRECATION_ALIASES[name]
+            key, val = next(iter(defaults.items()))
+            print(
+                f"deprecated: {name} → {new_name}({key}={val!r}); alias kept "
+                f"for one release.",
+                file=sys.stderr,
+            )
+            arguments = {**defaults, **arguments}
+            name = new_name
+
         if name == "mem_search":
             return _handle_search(arguments)
         elif name == "mem_create":
@@ -1172,7 +1034,7 @@ def main() -> None:
         elif name == "mem_context":
             return _handle_context(arguments)
         elif name == "mem_graph":
-            return _handle_graph(arguments)
+            return _handle_graph_dispatch(arguments)
         elif name == "mem_update":
             return _handle_update(arguments)
         elif name == "mem_extract":
@@ -1182,35 +1044,47 @@ def main() -> None:
         elif name == "mem_unlink":
             return _handle_unlink(arguments)
         elif name == "mem_concepts":
-            return _handle_concepts(arguments)
-        elif name == "mem_concepts_tighten":
-            return _handle_concepts_tighten(arguments)
-        elif name == "mem_concepts_merge":
-            return _handle_concepts_merge(arguments)
-        elif name == "mem_concept_search":
-            return _handle_concept_search(arguments)
+            return _handle_concepts_dispatch(arguments)
         elif name == "mem_enrich":
             return _handle_enrich(arguments)
         elif name == "mem_landing":
             return _handle_landing(arguments)
         elif name == "mem_timeline":
             return _handle_timeline(arguments)
-        elif name == "mem_concept_source_counts":
-            return _handle_concept_source_counts(arguments)
-        elif name == "mem_source_lens":
-            return _handle_source_lens(arguments)
-        elif name == "mem_decisions_for_file":
-            return _handle_decisions_for_file(arguments)
-        elif name == "mem_concepts_drift":
-            return _handle_concepts_drift(arguments)
         elif name == "mem_project_snapshot":
             return _handle_project_snapshot(arguments)
         elif name == "mem_queue":
             return _handle_queue(arguments)
         elif name == "mem_sources_config":
             return _handle_sources_config(arguments)
+        elif name == "mem_prompts":
+            return _handle_prompts(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+    def _handle_concepts_dispatch(args: dict) -> list[TextContent]:
+        action = args.get("action", "list")
+        if action == "tighten":
+            return _handle_concepts_tighten(args)
+        if action == "merge":
+            return _handle_concepts_merge(args)
+        if action == "search":
+            return _handle_concept_search(args)
+        if action == "source_counts":
+            return _handle_concept_source_counts(args)
+        if action == "drift":
+            return _handle_concepts_drift(args)
+        return _handle_concepts(args)
+
+    def _handle_graph_dispatch(args: dict) -> list[TextContent]:
+        flt = args.get("filter", "")
+        if flt == "source_lens":
+            return _handle_source_lens(args)
+        if flt == "decisions_for_file":
+            return _handle_decisions_for_file(args)
+        if flt == "concept_walk":
+            return _handle_concept_search(args)
+        return _handle_graph(args)
 
     def _handle_search(args: dict) -> list[TextContent]:
         s = Search(config=cfg)
@@ -1745,9 +1619,61 @@ def main() -> None:
         except Exception:
             pass
 
+        # Auto-todo extraction (Phase 4 E5).
+        # Gated by `auto_todo_extraction` in sources.yaml (default True).
+        # We scan the session text + insight bodies for "TODO: X" /
+        # "we should X" / "next step: X" patterns and create one note per
+        # match tagged `[todo, auto]`. The user promotes by deleting the
+        # `auto` tag, dismisses by deleting the note. `mem backlog` shows
+        # an `[auto]` marker so they aren't mistaken for hand-curated items.
+        created_todos = []
+        try:
+            from personal_mem.sources import load_user_config
+
+            cfg_merged = load_user_config(cfg.vault_root)
+            if cfg_merged.get("auto_todo_extraction", True):
+                from personal_mem.extract import extract_todos
+
+                # Scan session body + every extracted insight body. Most
+                # signal lives in the insight bodies because that's where
+                # the user (or LLM) phrased the followups.
+                scan_chunks = [session_note.body]
+                for ins in insights:
+                    scan_chunks.append(ins.get("body", ""))
+                for dec in decisions:
+                    scan_chunks.append(dec.get("rationale", ""))
+                combined = "\n".join(c for c in scan_chunks if c)
+                todos = extract_todos(combined, source_session_id=session_id)
+
+                seen_titles = set()
+                for todo in todos:
+                    title = todo.text.strip()
+                    if not title or title.lower() in seen_titles:
+                        continue
+                    seen_titles.add(title.lower())
+                    extra_fm = {
+                        "derived_from": [session_id],
+                        "auto_extracted": True,
+                    }
+                    path = vm.create_note(
+                        note_type=NoteType.NOTE,
+                        title=title[:80],
+                        body=f"Auto-extracted TODO: {title}",
+                        project=project,
+                        tags=["todo", "auto"],
+                        extra_frontmatter=extra_fm,
+                        output_dir=session_path.parent,
+                    )
+                    idx.index_file(path)
+                    created_todos.append(vm.read_note(path))
+        except Exception:
+            # Auto-todo extraction is best-effort — never abort the main
+            # extraction pipeline over it.
+            pass
+
         # Add summary to session note
         summary_text = args.get("summary", "")
-        all_created = created + created_decisions
+        all_created = created + created_decisions + created_todos
         if not summary_text and all_created:
             note_titles = ", ".join(n.title for n in created) if created else ""
             dec_titles = ", ".join(n.title for n in created_decisions) if created_decisions else ""
@@ -1809,6 +1735,11 @@ def main() -> None:
             report_lines.append(
                 f"  Created [{dec_note.type.value}] {dec_note.title} ({dec_note.id}) "
                 f"status={dec_note.frontmatter.get('status')}, committed={outcome_str}"
+            )
+        for todo_note in created_todos:
+            report_lines.append(
+                f"  Auto-todo [{todo_note.type.value}] {todo_note.title} "
+                f"({todo_note.id}) tags=[todo, auto]"
             )
         if not all_created:
             report_lines.append("  No insights or decisions extracted.")
@@ -2439,6 +2370,12 @@ def main() -> None:
 
         merged = load_user_config(cfg.vault_root)
         return [TextContent(type="text", text=json.dumps(merged, indent=2))]
+
+    def _handle_prompts(args: dict) -> list[TextContent]:
+        from personal_mem.surfaces.mcp.tools.prompts import handle as handle_prompts
+
+        payload = handle_prompts(cfg, args)
+        return [TextContent(type="text", text=payload)]
 
     async def run():
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):

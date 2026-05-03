@@ -1,8 +1,16 @@
-"""Generate project landing documents — DECISIONS.md, BACKLOG.md, STATE.md.
+"""Generate project landing documents.
 
-These are materialized views over existing vault notes, excluded from the
-index. DECISIONS and BACKLOG are fully auto-generated from data. STATE
-gathers context for LLM-assisted narrative generation.
+These are materialized views over existing vault notes, excluded from
+the index. ``decisions`` and ``backlog`` are fully auto-generated from
+data; ``state`` gathers context for LLM-assisted narrative generation.
+
+Filename defaults (``DECISIONS.md``, ``BACKLOG.md``, ``STATE.md``,
+``THEMES.md``, ``RESEARCH_FOCUS.md``) ship in
+``personal_mem.sources.config.DEFAULT_CONFIG`` under the
+``landing_files`` key and can be overridden per-vault in
+``vault/.mem/sources.yaml``. Callers that need the *current* filename
+set should use :func:`landing_filenames` /
+:func:`landing_filename_set` rather than hardcoding any of the strings.
 """
 
 from __future__ import annotations
@@ -10,15 +18,58 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from personal_mem.core.config import Config, load_config
 from personal_mem.core.schemas import NoteType
 
-# Landing doc filenames — excluded from indexer.
-# DECISIONS / BACKLOG / STATE are per-project; THEMES is global (vault root).
-LANDING_FILENAMES = {"DECISIONS.md", "BACKLOG.md", "STATE.md", "THEMES.md"}
+# In-code defaults — used when no vault root is in scope (tests, fresh
+# bootstrap). Mirrors ``DEFAULT_CONFIG['landing_files']`` in
+# ``sources/config.py``; user overrides flow through
+# :func:`landing_filenames` below.
+DEFAULT_LANDING_FILENAMES: dict[str, str] = {
+    "decisions": "DECISIONS.md",
+    "backlog": "BACKLOG.md",
+    "state": "STATE.md",
+    "themes": "THEMES.md",
+    "research_focus": "RESEARCH_FOCUS.md",
+}
+
+
+def landing_filenames(vault_root: Path | None = None) -> dict[str, str]:
+    """Return the merged ``landing_files`` mapping for the given vault.
+
+    Reads ``vault/.mem/sources.yaml`` if present and overlays user
+    overrides on top of :data:`DEFAULT_LANDING_FILENAMES`. Missing
+    vault root → defaults.
+    """
+    from personal_mem.sources.config import load_user_config
+
+    merged = dict(DEFAULT_LANDING_FILENAMES)
+    if vault_root is None:
+        return merged
+    user = load_user_config(vault_root).get("landing_files", {}) or {}
+    for key, value in user.items():
+        if isinstance(value, str) and value:
+            merged[key] = value
+    return merged
+
+
+def landing_filename_set(vault_root: Path | None = None) -> set[str]:
+    """Set of currently configured landing-doc filenames.
+
+    Used by the indexer to skip auto-generated landing files. The set
+    derives from :func:`landing_filenames` so it picks up user overrides.
+    """
+    return set(landing_filenames(vault_root).values())
+
+
+# Backwards-compatible alias — preserves the old import path
+# (``from personal_mem.synthesis.landing import LANDING_FILENAMES``).
+# Resolves at import time using the in-code defaults; callers that need
+# user-overridable filenames should call :func:`landing_filename_set`.
+LANDING_FILENAMES = set(DEFAULT_LANDING_FILENAMES.values())
 
 
 def _get_db(config: Config):
@@ -341,6 +392,120 @@ def backlog_summary(config: Config, project: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _gather_prompt_probes(
+    config: Config,
+    project: str,
+    limit: int = 10,
+) -> list[dict]:
+    """Walk a project's session JSONL buffers and return classified probes.
+
+    Looks at archived per-session ``events.jsonl`` files plus any active
+    ``.mem/buffer/<session>.jsonl`` files mapped to this project, lifts
+    prompt events via ``extract.extract_prompts``, runs them through
+    ``extract.classify_probe``, and returns the most recent ``limit``
+    probes. Each entry is shaped like a ``probes`` row from the SQL path
+    so the renderer can merge both sources.
+
+    This deliberately does no SQL query — prompt events live in JSONL,
+    not the index. Failures (missing dirs, bad JSON) degrade silently.
+    """
+    from personal_mem.extract import classify_probe, extract_prompts
+
+    project_root = config.vault_root / "projects" / project
+    sessions_root = project_root / "sessions"
+
+    candidates: list[tuple[datetime, dict]] = []
+    if sessions_root.exists():
+        # Iterate only the immediate session-folder children, then look for
+        # events.jsonl. Pattern matches both `<id>-<date>/events.jsonl` and
+        # `misc/events.jsonl` shapes.
+        for sess_dir in sessions_root.iterdir():
+            if not sess_dir.is_dir():
+                continue
+            events_file = sess_dir / "events.jsonl"
+            if not events_file.exists():
+                continue
+            try:
+                events = []
+                for line in events_file.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+                prompts = extract_prompts(events_file)
+            except Exception:
+                continue
+            for p in prompts:
+                if not classify_probe(p, events):
+                    continue
+                candidates.append((
+                    p.ts,
+                    {
+                        "id": "",
+                        "title": p.text[:160],
+                        "date": p.ts.date().isoformat() if p.ts != datetime.min else "",
+                        "session": sess_dir.name,
+                        "source": "prompt",
+                    },
+                ))
+
+    # Active (non-archived) buffers in .mem/buffer. We can't trivially map a
+    # buffer's session UUID to a project, so we check the project of any
+    # session note that already references the same source_session — if
+    # missing, we conservatively skip rather than mislabel.
+    buffer_root = config.mem_dir / "buffer"
+    if buffer_root.exists():
+        try:
+            from personal_mem.core.schemas import NoteType
+            from personal_mem.core.vault import VaultManager
+
+            vm = VaultManager(config=config)
+            session_to_project: dict[str, str] = {}
+            for note in vm.list_notes(note_type=NoteType.SESSION, limit=200):
+                src = note.frontmatter.get("source_session", "")
+                if src:
+                    session_to_project[str(src)] = note.project or ""
+        except Exception:
+            session_to_project = {}
+
+        for buf_file in buffer_root.glob("*.jsonl"):
+            session_uuid = buf_file.stem
+            if session_to_project.get(session_uuid) not in (project, ""):
+                # Skip buffers we know belong to a different project.
+                if session_uuid in session_to_project:
+                    continue
+            try:
+                events = []
+                for line in buf_file.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+                prompts = extract_prompts(buf_file)
+            except Exception:
+                continue
+            for p in prompts:
+                if not classify_probe(p, events):
+                    continue
+                candidates.append((
+                    p.ts,
+                    {
+                        "id": "",
+                        "title": p.text[:160],
+                        "date": p.ts.date().isoformat() if p.ts != datetime.min else "",
+                        "session": session_uuid,
+                        "source": "prompt",
+                    },
+                ))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return [row for _, row in candidates[:limit]]
+
+
 def _shorten_path(filepath: str) -> str:
     """Shorten an absolute file path to a readable relative form.
 
@@ -385,8 +550,13 @@ def _gather_state_context(config: Config, project: str) -> dict:
             "test_runs": fm.get("test_runs", []),
         })
 
-    # Probe-tagged notes (last 14 days)
-    probes = []
+    # Probes — two sources, merged:
+    #   1. Notes tagged `probe` (manual override; see CLAUDE.md §3 Prompt
+    #      lifecycle). Still load-bearing for back-compat, but no longer the
+    #      primary signal.
+    #   2. Classified prompts from session JSONL buffers via
+    #      `_gather_prompt_probes` — the canonical Phase 4 E source.
+    probes: list[dict] = []
     for row in db.execute(
         "SELECT id, title, date, tags, frontmatter FROM notes "
         "WHERE project = ? AND date >= ? ORDER BY date DESC",
@@ -403,7 +573,19 @@ def _gather_state_context(config: Config, project: str) -> dict:
                 "title": row["title"],
                 "date": row["date"],
                 "session": derived[0] if derived else "",
+                "source": "tag",
             })
+
+    # Merge in classified prompt-probes. Dedup by lowercased title — when
+    # the user explicitly tagged a prompt-derived note as `probe`, the SQL
+    # row wins (it has a real id to link to).
+    seen_titles = {p["title"].strip().lower() for p in probes if p.get("title")}
+    for prompt_probe in _gather_prompt_probes(config, project, limit=20):
+        key = prompt_probe["title"].strip().lower()
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+        probes.append(prompt_probe)
 
     # Concept frequency
     concept_counts: dict[str, int] = defaultdict(int)
@@ -523,7 +705,10 @@ def state_of_play(config: Config, project: str) -> str:
                     lines.append(f"  {d['summary']}")
             lines.append("")
         else:
-            lines.append("All decisions have high confidence. See DECISIONS.md for the full ledger.")
+            decisions_doc = landing_filenames(config.vault_root)["decisions"]
+            lines.append(
+                f"All decisions have high confidence. See {decisions_doc} for the full ledger."
+            )
             lines.append("")
 
     # Section 2: What's been changing
@@ -556,14 +741,21 @@ def state_of_play(config: Config, project: str) -> str:
         lines.append("No sessions in the last 14 days.")
         lines.append("")
 
-    # Section 3: Probes / What You've Been Exploring
+    # Section 3: Open Probes — merges manual `probe`-tagged notes with
+    # classified prompts from session JSONL buffers (Phase 4 E).
     probes = ctx["probes"]
     if probes:
-        lines.append("## What You've Been Exploring")
+        lines.append("## Open Probes")
         lines.append("")
         for p in probes[:10]:
-            sess_ref = f", [[{p['session']}]]" if p["session"] else ""
-            lines.append(f"- \"{p['title']}\" ({p['date']}{sess_ref})")
+            session = p.get("session", "")
+            sess_ref = f", [[{session}]]" if session else ""
+            tag = ""
+            if p.get("source") == "prompt":
+                tag = " · *prompt*"
+            elif p.get("source") == "tag":
+                tag = " · *tagged*"
+            lines.append(f"- \"{p['title']}\" ({p['date']}{sess_ref}){tag}")
         lines.append("")
 
     # Section 4: Concept Landscape
@@ -586,10 +778,13 @@ def state_of_play_context(config: Config, project: str) -> str:
     full narrative STATE.md using its judgment.
     """
     ctx = _gather_state_context(config, project)
+    state_doc = landing_filenames(config.vault_root)["state"]
 
     sections = []
-    sections.append(f"# Context for STATE.md — {project}\n")
-    sections.append("Use this data to write a STATE.md that tells the human what matters most.\n")
+    sections.append(f"# Context for {state_doc} — {project}\n")
+    sections.append(
+        f"Use this data to write a {state_doc} that tells the human what matters most.\n"
+    )
 
     # Format guidance for the LLM writing STATE.md
     sections.append("## Format Guidance\n")
@@ -637,11 +832,12 @@ def state_of_play_context(config: Config, project: str) -> str:
         for f, count in sorted(ctx["file_freq"].items(), key=lambda x: -x[1])[:15]:
             sections.append(f"  {count}x {_shorten_path(f)}")
 
-    # Probes
+    # Probes — merged from `probe`-tagged notes + classified prompt events.
     if ctx["probes"]:
         sections.append("\n## Recent Probes (user questions)")
         for p in ctx["probes"]:
-            sections.append(f"- \"{p['title']}\" ({p['date']})")
+            origin = p.get("source", "tag")
+            sections.append(f"- \"{p['title']}\" ({p['date']}, source={origin})")
 
     # Concepts
     if ctx["concept_counts"]:
@@ -653,11 +849,17 @@ def state_of_play_context(config: Config, project: str) -> str:
 
 
 def generate_all(config: Config, project: str) -> dict[str, str]:
-    """Generate all 3 landing documents. Returns {filename: content}."""
+    """Generate all 3 landing documents. Returns {filename: content}.
+
+    Filenames respect ``vault/.mem/sources.yaml: landing_files:`` so a
+    user who renamed ``STATE.md`` to ``STATUS.md`` (or any other vocab)
+    sees their key in the returned mapping.
+    """
+    names = landing_filenames(config.vault_root)
     return {
-        "DECISIONS.md": decisions_ledger(config, project),
-        "BACKLOG.md": backlog_summary(config, project),
-        "STATE.md": state_of_play(config, project),
+        names["decisions"]: decisions_ledger(config, project),
+        names["backlog"]: backlog_summary(config, project),
+        names["state"]: state_of_play(config, project),
     }
 
 
@@ -896,13 +1098,14 @@ def write_landing_docs(
     project_dir = config.vault_root / "projects" / project
     project_dir.mkdir(parents=True, exist_ok=True)
 
+    names = landing_filenames(config.vault_root)
     project_generators = {
-        "decisions": ("DECISIONS.md", decisions_ledger),
-        "backlog": ("BACKLOG.md", backlog_summary),
-        "state": ("STATE.md", state_of_play),
+        "decisions": (names["decisions"], decisions_ledger),
+        "backlog": (names["backlog"], backlog_summary),
+        "state": (names["state"], state_of_play),
     }
     global_generators = {
-        "themes": ("THEMES.md", themes_ledger),
+        "themes": (names["themes"], themes_ledger),
     }
 
     valid = set(project_generators) | set(global_generators) | {"all"}

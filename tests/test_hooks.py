@@ -849,3 +849,97 @@ class TestSessionStartHandler:
         # Stdout should still be valid JSON (empty dict)
         result = json.loads(buf.getvalue() or "{}")
         assert isinstance(result, dict)
+
+
+class TestUserPromptSubmitHook:
+    """Phase 4 E1 — UserPromptSubmit captures every prompt to the JSONL buffer."""
+
+    def test_appends_prompt_event(self, tmp_path: Path, monkeypatch):
+        from personal_mem.core.config import Config
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+
+        # Avoid the eager session-note creation path (it indexes/writes to
+        # the vault) — for this unit test we only care about the JSONL line.
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._ensure_session",
+            lambda *a, **k: None,
+        )
+
+        handler_mod._handle_user_prompt_submit(
+            {
+                "session_id": "ses-cc-1",
+                "prompt": "What does the indexer skip?",
+                "cwd": "/some/where",
+            }
+        )
+
+        buf_file = cfg.mem_dir / "buffer" / "ses-cc-1.jsonl"
+        assert buf_file.exists()
+        lines = buf_file.read_text().splitlines()
+        assert len(lines) == 1
+        row = json.loads(lines[0])
+        assert row["type"] == "prompt"
+        assert row["text"] == "What does the indexer skip?"
+        assert row["session_id"] == "ses-cc-1"
+        assert row["cwd"] == "/some/where"
+        assert row["ts"]  # populated
+
+    def test_missing_text_skipped(self, tmp_path: Path, monkeypatch):
+        from personal_mem.core.config import Config
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._ensure_session",
+            lambda *a, **k: None,
+        )
+
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-cc-2", "prompt": ""}
+        )
+
+        # No buffer should have been created
+        assert not (cfg.mem_dir / "buffer" / "ses-cc-2.jsonl").exists()
+
+    def test_install_registers_user_prompt_submit(self, tmp_path: Path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert "UserPromptSubmit" in settings["hooks"]
+        ups = settings["hooks"]["UserPromptSubmit"][0]
+        assert "user_prompt_submit" in ups["hooks"][0]["command"]
+        assert "mem-hook" in ups["hooks"][0]["command"]
+
+    def test_install_idempotent_with_user_prompt_submit(self, tmp_path: Path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 1
+
+    def test_uninstall_removes_user_prompt_submit(self, tmp_path: Path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        uninstall_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert "hooks" not in settings or "UserPromptSubmit" not in settings.get(
+            "hooks", {}
+        )

@@ -15,7 +15,10 @@ from itertools import combinations
 from pathlib import Path
 
 from personal_mem.core.config import Config, load_config
-from personal_mem.synthesis.landing import LANDING_FILENAMES
+from personal_mem.synthesis.landing import (
+    LANDING_FILENAMES,
+    landing_filename_set,
+)
 from personal_mem.core.vault import VaultManager, content_hash, extract_wikilinks, parse_frontmatter
 
 log = logging.getLogger(__name__)
@@ -192,9 +195,14 @@ class Indexer:
         indexed_paths: set[str] = set()
         md_files = self.vault.get_all_md_files()
 
+        # Pull the user-configured landing-filename set once per rebuild,
+        # so a vault that renamed STATE.md → STATUS.md still excludes
+        # whatever the user actually called it.
+        landing_skip = landing_filename_set(self.config.vault_root)
+
         for md_file in md_files:
             # Skip landing documents (materialized views, not source material)
-            if md_file.name in LANDING_FILENAMES:
+            if md_file.name in landing_skip:
                 continue
             # Skip source companion files (raw.md, snapshot.md, etc.) — these
             # are archival artifacts of source notes, not standalone notes.
@@ -230,7 +238,7 @@ class Indexer:
 
     def index_file(self, path: Path) -> None:
         """Index or re-index a single file. Used by hooks for incremental updates."""
-        if path.name in LANDING_FILENAMES:
+        if path.name in landing_filename_set(self.config.vault_root):
             return  # Landing docs are excluded from the index
         if path.name in SOURCE_COMPANION_FILENAMES:
             return  # Source companion artifacts (raw.md, snapshot.md, etc.)

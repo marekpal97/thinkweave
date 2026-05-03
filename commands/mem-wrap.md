@@ -1,5 +1,8 @@
 ---
 name: mem-wrap
+owns_mechanic: session_extraction
+consumes: [mem_extract, mem_judge, mem_landing, mem_concepts, mem_project_snapshot]
+produces: [session.md, DECISIONS.md, BACKLOG.md]
 tools:
   - Read
   - mem_project_snapshot
@@ -7,7 +10,6 @@ tools:
   - mem_judge
   - mem_landing
   - mem_concepts
-  - mem_concepts_drift
 description: End-of-session memory extraction. Enriches the session with insights, decisions, and concept proposals; refreshes DECISIONS and BACKLOG landing docs.
 ---
 

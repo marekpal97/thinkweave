@@ -1,5 +1,8 @@
 ---
 name: themes-resolve
+owns_mechanic: theme_synthesis
+consumes: [mem_search, mem_read, mem_update, mem_link]
+produces: [vault/themes/thm-*.md, THEMES.md]
 tools:
   - Read
   - Edit

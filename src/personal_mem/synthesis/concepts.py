@@ -495,11 +495,14 @@ def add_hub_wikilinks(
     vm_root = config.vault_root
     modified = 0
 
+    from personal_mem.synthesis.landing import landing_filename_set
+
+    landing_skip = landing_filename_set(config.vault_root)
     for md_file in vm_root.rglob("*.md"):
         # Skip hub pages and landing pages
         if md_file.parent.name == "concepts":
             continue
-        if md_file.name in ("DECISIONS.md", "BACKLOG.md", "STATE.md"):
+        if md_file.name in landing_skip:
             continue
 
         text = md_file.read_text(encoding="utf-8")

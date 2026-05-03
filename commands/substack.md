@@ -1,13 +1,15 @@
 ---
 name: substack
+owns_mechanic: substack_inbox
 source_type: substack
 capabilities: [acquire]
+consumes: [mem_search, mem_concepts, mem_create, mem_update, mem_link]
+produces: [vault/sources/substack/**]
 tools:
   - Read
   - Bash
   - mem_search
   - mem_concepts
-  - mem_concept_search
   - mem_create
   - mem_update
   - mem_link
@@ -89,11 +91,18 @@ If `url` can't be recovered, skip the item with an error logged — we won't ing
 ### 3. Load ontology + concept registry (once per batch)
 
 ```
-Read /home/marekpal97/python_projects/personal_mem/src/personal_mem/ontology.yaml
-mem_concepts(prefix="finance", min_count=1)
+Read src/personal_mem/ontology.yaml
+mem_concepts(min_count=1)
 ```
 
-Focus on the `finance/research`, `finance/quant`, `finance/markets`, `finance/options` branches — those are the investment-research vocabulary. The `finance/research` branch today only has 6 concepts (equity-research, fundamental-analysis, research-agent, deep-research, earnings-analysis, sec-filings). Expect to propose new ones for macro, thematic, sector, valuation, rates, credit, etc.
+Identify which ontology branches the publication you're draining
+maps to — substack is a generic newsletter platform, so the relevant
+vocabulary depends on what the user follows. (Examples: a
+finance-focused publication maps onto `finance/*` branches; an
+ML-focused publication onto `ml/*`; a politics newsletter onto
+whichever domain you've added for that subject.) If you spot a gap
+in the ontology, propose new concepts in `proposed_concepts` and let
+`/mem-resolve-concepts` canonicalise them later.
 
 ### 4. Search vault for connections
 
@@ -113,14 +122,14 @@ Images need to land inside the source note's directory so `raw.md` can reference
 
 Hold the list of local image paths (from step 2's bundle discovery) and the list of remote image URLs (extracted from the body during step 6) in memory until you reach step 9.
 
-### 6. Write the investment-research brief
+### 6. Write a dense brief
 
-**Not a summary — a dense brief.** You're writing something the user's future self will find useful 6 months from now when they've forgotten the post but need to remember what it argued and what it meant for positioning.
+**Not a summary — a dense brief.** You're writing something the user's future self will find useful 6 months from now when they've forgotten the post but need to remember what it argued.
 
 Use the body template at the bottom of this file. Key sections:
 - **Thesis** — the core argument, not the topic
 - **Claims & Evidence** — specific claims + what backs them, distinguishing data-backed from opinion
-- **Investable Implications** — tickers, sectors, asset classes, positioning advice, timeframe
+- **Implications** — what the post argues should follow from the thesis. (For investment-research publications this is positioning / tickers / sectors / asset classes / timeframe; for ML or policy publications this is whatever actionable take the author leaves behind. Pick the framing that matches the source.)
 - **Risks & Counterarguments** — what could invalidate the thesis
 - **Vault Connections** — prior notes/decisions this relates to
 
@@ -128,7 +137,7 @@ Write the brief from the text body. Images are archived in `assets/` for later i
 
 ### 7. Concept mapping
 
-- Map to existing `finance/` concepts wherever they fit.
+- Map to whatever ontology branches actually fit the publication.
 - Propose new concepts aggressively — lowercase, hyphenated, specific (e.g. `rate-cycles`, `sector-rotation`, `thematic-investing`, `private-credit`). Put new proposals in `proposed_concepts`.
 - **Do NOT edit `ontology.yaml` inline** — consolidation happens via `/mem-resolve-concepts` later.
 - Minimum 3 concepts per source (concepts are the primary linkage mechanism).
@@ -140,8 +149,8 @@ mem_create(
   type="source",
   title="<post title>",
   body="<structured brief from step 6>",
-  tags=["investment-research"],
-  concepts=["<mapped concepts from finance/ branches>"],
+  tags=["substack"],
+  concepts=["<mapped ontology concepts>"],
   frontmatter={
     "source_type": "substack",
     "url": "<post url>",

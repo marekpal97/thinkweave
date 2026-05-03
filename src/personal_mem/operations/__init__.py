@@ -1,7 +1,12 @@
-"""Cross-cutting operations: migrations, drain handlers, queue helpers.
+"""Operations layer — the seam between surfaces (CLI, MCP) and the knowledge layer.
 
-Phase 4 C2 will move more of the existing CLI/MCP plumbing in here. For
-now this package is the seam where Phase 3 D's data migrations live.
+Both the `mem` CLI and the `mem_*` MCP tools call into these functions.
+Each module owns one cross-cutting concern; surface handlers should be
+5-10 line wrappers that translate input shape (argparse / JSON) into a call
+into here, and translate the result into the surface's output (text or JSON).
+
+The dependency rule: operations may import from `core/`, `retrieval/`,
+`synthesis/`, `sources/`, but NEVER from `surfaces/`.
 """
 
 from personal_mem.operations.migrations import migrate_todo_research_to_queue

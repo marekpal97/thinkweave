@@ -362,22 +362,27 @@ def _get_derived_artifacts(
 
 
 def _build_state_excerpt(cfg: Config, project: str, max_chars: int = 12000) -> Section:
-    """Read STATE.md verbatim (up to max_chars)."""
+    """Read the configured state-of-play landing doc verbatim (up to max_chars)."""
+    from personal_mem.synthesis.landing import landing_filenames
+
     if not project:
         return Section("state", _default_title("state"), "_(no project set)_", 100)
 
-    state_path = cfg.vault_root / "projects" / project / "STATE.md"
+    state_name = landing_filenames(cfg.vault_root)["state"]
+    state_path = cfg.vault_root / "projects" / project / state_name
     if not state_path.exists():
         return Section(
             key="state",
             title=_default_title("state"),
-            body="_(STATE.md not found — run `mem landing --doc state`)_",
+            body=f"_({state_name} not found — run `mem landing --doc state`)_",
             soft_budget_chars=200,
         )
 
     text = state_path.read_text(encoding="utf-8")
     if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n_... (STATE.md truncated — read full file for more)_"
+        text = text[:max_chars] + (
+            f"\n\n_... ({state_name} truncated — read full file for more)_"
+        )
 
     return Section(
         key="state",
@@ -388,16 +393,19 @@ def _build_state_excerpt(cfg: Config, project: str, max_chars: int = 12000) -> S
 
 
 def _build_backlog(cfg: Config, project: str) -> Section:
-    """Read BACKLOG.md's 'Open' section verbatim."""
+    """Read the configured backlog landing doc's 'Open' section verbatim."""
+    from personal_mem.synthesis.landing import landing_filenames
+
     if not project:
         return Section("backlog", _default_title("backlog"), "_(no project set)_", 100)
 
-    backlog_path = cfg.vault_root / "projects" / project / "BACKLOG.md"
+    backlog_name = landing_filenames(cfg.vault_root)["backlog"]
+    backlog_path = cfg.vault_root / "projects" / project / backlog_name
     if not backlog_path.exists():
         return Section(
             key="backlog",
             title=_default_title("backlog"),
-            body="_(BACKLOG.md not found — run `mem landing --doc backlog`)_",
+            body=f"_({backlog_name} not found — run `mem landing --doc backlog`)_",
             soft_budget_chars=200,
         )
 

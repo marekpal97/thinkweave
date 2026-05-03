@@ -1,5 +1,8 @@
 ---
 name: update-hubs
+owns_mechanic: concept_hubs
+consumes: [mem_search, mem_read, mem_graph]
+produces: [vault/concepts/topics/*.md]
 tools:
   - Read
   - Edit

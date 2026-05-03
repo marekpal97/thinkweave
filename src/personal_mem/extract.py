@@ -5,12 +5,18 @@ Produces structured metadata from JSONL event buffers:
 - Decision skeletons from multi-file commits
 - Concept assignment from file paths using ontology patterns
 - Failure tagging from insight content keywords
+- Prompt primitive (E2): typed user-prompt events lifted from the buffer,
+  with a conservative probe classifier
+- Auto-todo extraction (E5): lift "TODO: X" / "we should X" / "next step: X"
+  patterns out of session text into ``Todo`` entries
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 
@@ -221,6 +227,224 @@ def _detect_failure_signals(
             ))
 
     return failures
+
+
+# ---------------------------------------------------------------------------
+# Prompt primitive (Phase 4 E)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Prompt:
+    """A captured user prompt event lifted from the JSONL buffer.
+
+    The shape mirrors what ``surfaces/hooks/handler._handle_user_prompt_submit``
+    writes (one JSONL line per submission). ``ts`` is the wall-clock UTC
+    moment of capture; ``session_id`` is the Claude Code session UUID
+    (``hook_input["session_id"]``), not a vault note id.
+    """
+
+    ts: datetime
+    text: str
+    session_id: str
+    project: str | None = None
+    cwd: str | None = None
+
+
+def _parse_ts(raw: str) -> datetime:
+    """Tolerant ISO timestamp parser for prompt events.
+
+    Handler emits ``datetime.now(timezone.utc).isoformat()`` which yields
+    a ``+00:00`` suffix Python parses cleanly. Older buffers used a ``Z``
+    suffix; we strip it. On any failure we fall back to ``datetime.min``
+    so callers can keep going on corrupt rows.
+    """
+    if not raw:
+        return datetime.min
+    cleaned = raw.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(cleaned)
+    except (ValueError, TypeError):
+        return datetime.min
+
+
+def extract_prompts(events_jsonl: Path) -> list[Prompt]:
+    """Read an events JSONL file and return its ``Prompt`` entries.
+
+    Filters by ``type == "prompt"``. Skips malformed lines (we never
+    abort an extraction over a single bad row — the buffer is append-only
+    and can be killed mid-write). Returns an empty list when the file
+    doesn't exist.
+    """
+    if not events_jsonl.exists():
+        return []
+
+    out: list[Prompt] = []
+    for line in events_jsonl.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("type") != "prompt":
+            continue
+        text = row.get("text", "")
+        session_id = row.get("session_id", "")
+        if not text or not session_id:
+            continue
+        out.append(
+            Prompt(
+                ts=_parse_ts(row.get("ts", "")),
+                text=str(text),
+                session_id=str(session_id),
+                project=row.get("project"),
+                cwd=row.get("cwd"),
+            )
+        )
+    return out
+
+
+_PROBE_FOLLOW_LOOKAHEAD = 3
+_UNFAMILIAR_HINTS = ("look at", "look up", "what is", "what's", "explain", "where", "how does")
+
+
+def classify_probe(prompt: Prompt, events: list[dict]) -> bool:
+    """Conservative heuristic: is this prompt a *probe* (an exploratory
+    user question rather than an instruction)?
+
+    Returns True only when:
+
+    1. Text ends with ``?`` (after trimming), OR contains a probe-style
+       lead phrase ("what is", "how does", "explain", …) AND
+    2. No ``Edit`` / ``Write`` event appears within the next
+       :data:`_PROBE_FOLLOW_LOOKAHEAD` events of the buffer (i.e. the
+       prompt didn't immediately translate into a code change), OR a
+       ``Read`` of an unfamiliar file follows.
+
+    False negatives are preferred over false positives — STATE.md's "Open
+    Probes" section is more useful when sparse and accurate. This is a
+    deliberately small heuristic; tuning lives downstream.
+
+    TODO(post-E5): empirically tune the lookahead window + lead-phrase
+    list against real captured prompts once the hook has been live for
+    a few sessions. Current values are an educated first cut.
+    """
+    text = (prompt.text or "").strip()
+    if not text:
+        return False
+
+    looks_like_question = text.rstrip(" .!").endswith("?") or any(
+        hint in text.lower() for hint in _UNFAMILIAR_HINTS
+    )
+    if not looks_like_question:
+        return False
+
+    # Locate the prompt in the event stream. Match by ts + text — the hook
+    # writes a unique (ts, type, text) tuple per submission. Fall back to
+    # the first prompt event with the same text if ts comparison fails.
+    target_iso = prompt.ts.isoformat() if prompt.ts != datetime.min else ""
+    idx: int | None = None
+    for i, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") != "prompt":
+            continue
+        if ev.get("text") != prompt.text:
+            continue
+        if target_iso and ev.get("ts") != target_iso:
+            continue
+        idx = i
+        break
+
+    if idx is None:
+        # Couldn't locate — fall back to text-shape signal alone. This is
+        # conservative: a question that ends with `?` and never made it
+        # into the buffer log is treated as a probe.
+        return True
+
+    # Look ahead in the buffer for code-modifying tools
+    follow_window = events[idx + 1 : idx + 1 + _PROBE_FOLLOW_LOOKAHEAD]
+    for ev in follow_window:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("tool") in ("Edit", "Write"):
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Auto-todo extraction (Phase 4 E5)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Todo:
+    """A candidate TODO lifted from session text."""
+
+    text: str
+    source_session_id: str = ""
+    source_event_idx: int = -1
+
+
+# Match either an explicit TODO marker or a soft "we should X" / "next step: X"
+# pattern. Captures the action text after the marker.
+_TODO_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bTODO\s*[:\-]\s*(.+)", re.IGNORECASE),
+    re.compile(r"\bFIXME\s*[:\-]\s*(.+)", re.IGNORECASE),
+    re.compile(r"\bnext\s+step\s*[:\-]\s*(.+)", re.IGNORECASE),
+    re.compile(r"\b(?:we|i)\s+should\s+(.+)", re.IGNORECASE),
+    re.compile(r"\bfollow[\- ]?up\s*[:\-]\s*(.+)", re.IGNORECASE),
+)
+
+
+def extract_todos(
+    session_text: str,
+    source_session_id: str = "",
+) -> list[Todo]:
+    """Heuristic TODO extraction over arbitrary session text.
+
+    Scans line-by-line for ``TODO: …`` / ``FIXME: …`` / ``next step: …``
+    and the soft ``we should …`` / ``I should …`` / ``follow-up: …``
+    patterns. Returns one ``Todo`` per matching line; the captured text
+    is trimmed and clamped to 200 chars.
+
+    Conservative by design — auto-todos go to the user's backlog with an
+    ``[auto]`` marker, so a noisy false positive only costs a deletion,
+    not lost knowledge. Still: prefer high precision so the marker stays
+    trustworthy.
+    """
+    if not session_text:
+        return []
+
+    seen: set[str] = set()
+    out: list[Todo] = []
+    for idx, line in enumerate(session_text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for pat in _TODO_PATTERNS:
+            m = pat.search(stripped)
+            if not m:
+                continue
+            todo_text = m.group(1).strip(" .,;-—:")
+            if not todo_text or len(todo_text) < 3:
+                break
+            todo_text = todo_text[:200]
+            key = todo_text.lower()
+            if key in seen:
+                break
+            seen.add(key)
+            out.append(
+                Todo(
+                    text=todo_text,
+                    source_session_id=source_session_id,
+                    source_event_idx=idx,
+                )
+            )
+            break
+    return out
 
 
 def assign_concepts_from_paths(

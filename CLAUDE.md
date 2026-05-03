@@ -11,7 +11,7 @@ Three modalities, plus compositions on top.
 - **FTS** — `mem_search(query, mode='fts')`. Keyword/phrase. Cheap. Empty `query` returns recent matches honouring filters (list mode).
 - **Similarity** — `mem_search(query, mode='similar')`. Concept-shaped query, no keyword. Soft-fails to FTS when embeddings unavailable.
 - **Hybrid** — `mem_search(query, mode='hybrid')`. Unsure → RRF fusion (k=60).
-- **Graph** — `mem_graph(id, depth, filter=…)`. Structural walk over typed edges. Filter is forward-looking (`source_lens` | `decisions_for_file` | `concept_walk`); during the transition the dedicated tools `mem_source_lens`, `mem_decisions_for_file`, `mem_concept_search` still exist.
+- **Graph** — `mem_graph(id, depth, filter=…)`. Structural walk over typed edges. Filter dispatches the variant: `''` (default — walk from `id`), `'source_lens'` (was `mem_source_lens`), `'decisions_for_file'` (was `mem_decisions_for_file`), `'concept_walk'` (was `mem_concept_search`). The old standalone tools remain as deprecation aliases for one release.
 
 Compositions:
 
@@ -36,6 +36,8 @@ All filters take `since` / `until` ISO dates; `mem_search` accepts `concepts=[�
 **Concept.** Notes carry `concepts: [...]` (≥2 required). Notes sharing 2+ concepts auto-link. `vault/concepts/topics/{concept}.md` is the synthesis hub: `## Essence` (≤500w mental model) + `## Learning log` (append-only, every entry cites `[[note-id]]` with a flag — `new`/`agrees`/`contradicts`/`extends`). Backfill via `mem hubs run` (OpenAI Batches); incremental via `/update-hubs`. `/mem-resolve-concepts` is the periodic hygiene pass (merge near-dupes, prune dead vocabulary, update ontology).
 
 **Theme.** `type: theme`, prefix `thm-`, lifecycle `active`/`dormant`/`resolved`/`merged-into:thm-X`. Lives at `vault/themes/{thm-XXXX}-{slug}.md` regardless of project. Three sections: `## Essence`, `## Catalyst log` (same grammar as concept-hub log), `## Open questions`. Decisions implementing a theme carry `implements: [thm-XXXX]`. `/themes-resolve` is the periodic hygiene pass.
+
+**Prompt.** Captured by the `UserPromptSubmit` hook as a JSONL event (`{"type": "prompt", "text", "session_id", "ts", "cwd"}`) inside the active session's events buffer. `extract.extract_prompts` lifts them into `Prompt` dataclasses; `extract.classify_probe` applies a conservative heuristic (text ends with `?` / opens with a probe lead phrase, no follow-up Edit/Write within 3 events) to flag exploratory questions. Surfaced in STATE.md "Open Probes" and to `/discover` via the `mem_prompts` MCP tool. The legacy `probe` *tag* becomes a manual override only — the canonical signal is now the prompt event itself.
 
 **Decision.** Four states: `proposed → accepted → deprecated|superseded`.
 
@@ -87,17 +89,18 @@ Both hubs share a spine — `## Essence` (≤500w) plus an append-only `## Catal
 
 ## 5. Skills
 
-*(Phase 4 C5 will populate this table from `mem skill list`.)*
+Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerate.
 
-| Skill | Purpose |
-|---|---|
-| `/mem-wrap` | Full LLM session extraction (insights, decisions, refresh DECISIONS+BACKLOG) |
-| `/mem-resolve-concepts` | Concept and ontology hygiene |
-| `/themes-resolve` | Theme dedup, status changes, essence rewrites |
-| `/research` | Ingest papers/repos/articles (URL or queue drain) |
-| `/discover` | Cross-project research gap analysis → queue items |
-| `/substack` | Drain Substack disk inbox |
-| `/update-hubs` | Daily incremental concept-hub sync |
+| Skill | owns_mechanic | source_type | capabilities | Purpose |
+|---|---|---|---|---|
+| `/mem-wrap` | session_extraction | — | — | Full LLM session extraction (insights, decisions, refresh DECISIONS+BACKLOG) |
+| `/mem-resolve-concepts` | ontology_hygiene | — | — | Concept and ontology hygiene |
+| `/themes-resolve` | theme_synthesis | — | — | Theme dedup, status changes, essence rewrites |
+| `/research` | url_routing | paper, repo, article | import, acquire | URL classifier; dispatches to research-paper/-repo/-article |
+| `/drain` | queue_drain | — | acquire | Drain queues / hub-backfill / claude-history importer |
+| `/discover` | research_discovery | paper, repo, article | discover | Cross-project research gap analysis → queue items |
+| `/substack` | substack_inbox | substack | acquire | Drain Substack disk inbox |
+| `/update-hubs` | concept_hubs | — | — | Daily incremental concept-hub sync |
 
 ## 6. Operational rules
 
@@ -109,21 +112,52 @@ Both hubs share a spine — `## Essence` (≤500w) plus an append-only `## Catal
 
 ## 7. CLI reference (Bash)
 
+Phase 4 C consolidations: `mem connect` → `mem index --materialize-links`; the
+`mem_concepts*` MCP tools are folded into `mem_concepts(action=...)`;
+`mem_source_lens` + `mem_decisions_for_file` are folded into `mem_graph(filter=...)`.
+
 ```
 mem init                                    # initialize vault + .mem/sources.yaml
 mem add --type {note|theme|...} "Title"     # create a note
-mem index [--full] [--embed]                # rebuild SQLite index
+mem index [--full] [--embed] [--materialize-links]   # rebuild SQLite index (+ wikilinks)
 mem search "q" [--type X] [--concept Y]     # FTS / similarity / hybrid
 mem graph <id>                              # local graph
 mem stats                                   # vault health
-mem doctor                                  # coherence linter
-mem backlog [--project X]                   # todo notes
-mem concepts {list|merge|hubs|drift|tighten}
-mem hubs {status|plan|run|link|repair}      # concept-hub backfill
-mem hooks {install|uninstall}
+mem doctor [--migrate]                      # coherence linter (+ optional data migrations)
+mem backlog [--project X]                   # todo notes + active queue items
+mem concepts {list|merge|hubs|drift|notes|prune}
+mem hubs {status|plan|run|link|repair}      # concept-hub backfill (run = deprecation alias for `drain`)
+mem drain --target hubs --via {inline|batch}  # batch path replaces `mem hubs run`
+mem queue {list|inspect|peek}               # per-source-type acquisition queues
+mem hooks {install|uninstall|status}
 mem landing [--project X] [--doc all]       # regenerate DECISIONS/BACKLOG/STATE/THEMES
 mem flow {list|show|run}                    # named workflow pipelines
+mem skill {list|show <name>}                # inspect commands/*.md frontmatter
+mem sources {list|show <slug>}              # inspect source-type registry
+mem prune-orphans [--yes]                   # delete abandoned session folders (used by /mem-wrap)
+mem update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
+mem enrich [--project X]                    # LLM concept enrichment (gpt-5-mini)
+mem import {claude-mem|chatgpt|file|messenger}
+mem intake {enumerate|archive}              # drop-folder helpers for /substack and friends
 ```
+
+**Agents shouldn't run** `mem doctor`, `mem stats`, `mem flow`, `mem intake`,
+`mem enrich`, `mem import`, `mem prune-orphans` directly — they belong in cron
+flows or interactive admin. There is no MCP parity for these subcommands.
+
+### MCP tool surface
+
+After Phase 4 C consolidation, the MCP server exposes 17 tools:
+
+`mem_search`, `mem_create`, `mem_read`, `mem_update`, `mem_link`, `mem_unlink`,
+`mem_context`, `mem_graph` (filter-dispatched), `mem_concepts` (action-dispatched),
+`mem_extract`, `mem_judge`, `mem_landing`, `mem_enrich`, `mem_timeline`,
+`mem_project_snapshot`, `mem_queue`, `mem_sources_config`, `mem_prompts`.
+
+7 deprecation aliases (one release): `mem_concepts_tighten`, `mem_concepts_merge`,
+`mem_concept_search`, `mem_concept_source_counts`, `mem_concepts_drift`,
+`mem_source_lens`, `mem_decisions_for_file`. Calls work but log a deprecation
+warning to stderr.
 
 ## Environment
 

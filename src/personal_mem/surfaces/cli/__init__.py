@@ -95,6 +95,14 @@ def main(argv: list[str] | None = None) -> None:
     p_index = sub.add_parser("index", help="Rebuild the SQLite index")
     p_index.add_argument("--full", action="store_true", help="Full rebuild (drop and recreate)")
     p_index.add_argument("--embed", action="store_true", help="Compute embeddings via API")
+    p_index.add_argument(
+        "--materialize-links",
+        action="store_true",
+        help="After indexing, write SQLite edges as wikilinks (## See Also) for Obsidian.",
+    )
+    p_index.add_argument(
+        "--max-links", type=int, default=5, help="With --materialize-links: max links per note (default: 5)"
+    )
 
     # --- mem import ---
     p_import = sub.add_parser("import", help="Import from external sources")
@@ -192,6 +200,11 @@ def main(argv: list[str] | None = None) -> None:
     p_backlog = sub.add_parser("backlog", help="List notes tagged 'todo'")
     p_backlog.add_argument("--project", "-p", default="", help="Filter by project")
     p_backlog.add_argument("--tag", default="todo", help="Tag to query (default: todo)")
+    p_backlog.add_argument(
+        "--hide-auto",
+        action="store_true",
+        help="Hide auto-extracted todos (those tagged with `auto`).",
+    )
 
     # --- mem concepts ---
     p_concepts = sub.add_parser("concepts", help="List, drift, merge, prune concepts")
@@ -513,6 +526,27 @@ def main(argv: list[str] | None = None) -> None:
     p_drain.add_argument("--poll-interval", type=int, default=30)
     p_drain.add_argument("--max-input-tokens", type=int, default=4_500_000)
 
+    # --- mem discover ---
+    p_discover = sub.add_parser(
+        "discover",
+        help=(
+            "Run discovery strategies (concept_coverage, decision_review, "
+            "theme_drift, external_tool_runner). Returns gap descriptors as JSON."
+        ),
+    )
+    p_discover.add_argument(
+        "--project", "-p", default="",
+        help="Project name. Loads `projects.<name>.discover_strategies` from sources.yaml.",
+    )
+    p_discover.add_argument(
+        "--strategy", "-s", default="",
+        help="Run a single named strategy instead of the project's configured list.",
+    )
+    p_discover.add_argument(
+        "--list", action="store_true",
+        help="List registered strategies and exit.",
+    )
+
     # --- mem update ---
     p_update = sub.add_parser(
         "update",
@@ -563,6 +597,7 @@ def main(argv: list[str] | None = None) -> None:
         "skill": cmd_skill,
         "queue": cmd_queue,
         "drain": cmd_drain,
+        "discover": cmd_discover,
         "update": cmd_update,
     }
     commands[args.command](args)
@@ -583,6 +618,14 @@ def cmd_backlog(args: argparse.Namespace) -> None:
         limit=50,
     )
     s.close()
+
+    # `--hide-auto` filters out auto-extracted todos (Phase 4 E5). The
+    # `auto` tag is stamped by `mem_extract`'s auto-todo loop; the user
+    # promotes a todo by deleting that tag, so this flag lets them see
+    # only the curated list.
+    hide_auto = getattr(args, "hide_auto", False)
+    if hide_auto:
+        results = [r for r in results if "auto" not in (r.tags or [])]
 
     # TODO(post-G): drop UNION once /onboard defaults users to queue-based intake.
     # Transitional: surface active queue items alongside todo-tagged notes so
@@ -632,7 +675,8 @@ def cmd_backlog(args: argparse.Namespace) -> None:
         print(f"\n{proj}:")
         for r in notes:
             tag_str = f" [{', '.join(t for t in r.tags if t != args.tag)}]" if len(r.tags) > 1 else ""
-            print(f"  [{r.type}] {r.title} ({r.id}) {r.date}{tag_str}")
+            auto_marker = " [auto]" if "auto" in (r.tags or []) else ""
+            print(f"  [{r.type}] {r.title} ({r.id}) {r.date}{tag_str}{auto_marker}")
 
     if queue_rows:
         print("\n[queued]:")
@@ -709,6 +753,7 @@ def _hubs_plan(cfg, args: argparse.Namespace) -> None:
 
 
 def _hubs_run(cfg, args: argparse.Namespace) -> None:
+    """Thin CLI wrapper around operations/drain.py::run_hubs_batch."""
     # Phase 3 D deprecation: `mem hubs run` is now `mem drain --target hubs --via batch`.
     if getattr(args, "command", "") == "hubs":
         print(
@@ -716,296 +761,17 @@ def _hubs_run(cfg, args: argparse.Namespace) -> None:
             "(alias kept for one release)."
         )
 
-    from personal_mem.synthesis.concept_hub import (
-        LogEntry,
-        append_log_entries,
-        build_extraction_user_prompt,
-        concept_hub_path,
-        parse_concept_hub,
-        parse_llm_response,
-        HUB_EXTRACTION_SYSTEM,
+    from personal_mem.operations.drain import run_hubs_batch
+
+    run_hubs_batch(
+        cfg,
+        plan_path=Path(args.plan) if args.plan else None,
+        model=args.model,
+        max_tokens=args.max_tokens,
+        poll_interval=args.poll_interval,
+        max_input_tokens=args.max_input_tokens,
+        dry_run=args.dry_run,
     )
-    from personal_mem.core.indexer import Indexer
-
-    plan_path = Path(args.plan) if args.plan else (cfg.mem_dir / "hubs_plan.json")
-    if not plan_path.exists():
-        print(f"Plan file not found: {plan_path}")
-        print("Run `mem hubs plan` first.")
-        sys.exit(1)
-
-    payload = json.loads(plan_path.read_text(encoding="utf-8"))
-    concept_plans = payload.get("concepts", [])
-    if not concept_plans:
-        print("Plan is empty.")
-        return
-
-    # Build requests per concept — one LLM call per (concept, note) pair.
-    # Within a concept, the system prompt is stable (current essence + recent
-    # entries), so we mark it cacheable.
-    from personal_mem.core.vault import VaultManager
-
-    vm = VaultManager(config=cfg)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    # Build requests list first so we can preview / dry-run
-    requests_to_send = []  # [(concept, note_id, system_prompt, user_prompt)]
-
-    for cp in concept_plans:
-        concept = cp["concept"]
-        hub_path = concept_hub_path(cfg, concept)
-        hub = parse_concept_hub(hub_path, concept=concept)
-
-        for note_entry in cp["unprocessed_notes"]:
-            note_path = vm.root / note_entry["path"]
-            if not note_path.exists():
-                continue
-            note_text = note_path.read_text(encoding="utf-8")
-            # Strip frontmatter for the body input
-            from personal_mem.core.vault import parse_frontmatter
-            _, body = parse_frontmatter(note_text)
-
-            user_prompt = build_extraction_user_prompt(
-                concept=concept,
-                essence=hub.essence,
-                recent_entries=hub.log_entries,
-                note_id=note_entry["id"],
-                note_type=note_entry.get("type", "note"),
-                project=note_entry.get("project", ""),
-                date=note_entry.get("date", ""),
-                title=note_entry.get("title", ""),
-                body=body,
-            )
-            # Use the source note's own date so the learning log carries
-            # real temporal structure (when the artifact was learned, not
-            # when this backfill ran). Fall back to today only if the plan
-            # entry is missing a date.
-            note_date = (note_entry.get("date") or today)[:10]
-            requests_to_send.append(
-                {
-                    "concept": concept,
-                    "note_id": note_entry["id"],
-                    "note_date": note_date,
-                    "system": HUB_EXTRACTION_SYSTEM,
-                    "user": user_prompt,
-                    "cache_key": concept,
-                }
-            )
-
-    print(f"Built {len(requests_to_send)} request(s) across {len(concept_plans)} concept(s).")
-
-    if args.dry_run:
-        print("\n--- DRY RUN: first request preview ---")
-        if requests_to_send:
-            r = requests_to_send[0]
-            print(f"concept: {r['concept']}")
-            print(f"note_id: {r['note_id']}")
-            print(f"system: {len(r['system'])} chars")
-            print(f"user: {len(r['user'])} chars")
-            print("\n--- user prompt (first 800 chars) ---")
-            print(r["user"][:800])
-        return
-
-    # Import OpenAI SDK lazily so the optional dependency is only
-    # required when actually running.
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print(
-            "mem hubs run requires the OpenAI SDK.\n"
-            "Install with: uv add --optional hubs openai  "
-            "(or `pip install openai`)"
-        )
-        sys.exit(1)
-
-    from personal_mem.enrich import load_openai_api_key
-
-    api_key = load_openai_api_key()
-    if not api_key:
-        print(
-            "OPENAI_API_KEY is not set (neither in env nor in the project .env)."
-            " Export it or add OPENAI_API_KEY=sk-... to the repo .env."
-        )
-        sys.exit(1)
-    os.environ["OPENAI_API_KEY"] = api_key
-
-    client = OpenAI()
-
-    # Sort requests by concept so batch rows for the same concept are
-    # contiguous — maximises OpenAI's automatic prompt-cache hits on the
-    # shared system prompt + hub state (cached for 5-10 min once seen).
-    sorted_requests = sorted(
-        requests_to_send,
-        key=lambda r: (r["cache_key"], r["note_id"]),
-    )
-
-    # Cap total enqueued tokens to stay under the OpenAI org limit. Tokens
-    # estimated as chars / 4 — matches the heuristic used in build_plan.
-    if args.max_input_tokens > 0:
-        budget = args.max_input_tokens
-        capped: list[dict] = []
-        total_tokens = 0
-        for r in sorted_requests:
-            est = (len(r["system"]) + len(r["user"])) // 4
-            if total_tokens + est > budget:
-                break
-            capped.append(r)
-            total_tokens += est
-        deferred = len(sorted_requests) - len(capped)
-        if deferred > 0:
-            print(
-                f"Capping at {len(capped)} request(s) (~{total_tokens:,} input "
-                f"tokens) to stay under --max-input-tokens={budget:,}. "
-                f"{deferred} request(s) deferred — rerun `mem hubs plan` + "
-                f"`mem hubs run` after this batch completes."
-            )
-        sorted_requests = capped
-
-    # Build the JSONL batch file. One line per request; OpenAI Batches
-    # expects the raw /v1/chat/completions body under the `body` key.
-    # custom_id → (concept, note_id, note_date) — note_date is threaded
-    # through so parse_llm_response stamps each entry with the source
-    # note's date instead of a uniform backfill date.
-    id_to_key: dict[str, tuple[str, str, str]] = {}
-    jsonl_lines: list[str] = []
-    for i, r in enumerate(sorted_requests):
-        custom_id = f"req-{i:05d}"
-        id_to_key[custom_id] = (r["concept"], r["note_id"], r["note_date"])
-        body = {
-            "model": args.model,
-            "max_completion_tokens": args.max_tokens,
-            "messages": [
-                {"role": "system", "content": r["system"]},
-                {"role": "user", "content": r["user"]},
-            ],
-        }
-        jsonl_lines.append(
-            json.dumps({
-                "custom_id": custom_id,
-                "method": "POST",
-                "url": "/v1/chat/completions",
-                "body": body,
-            })
-        )
-
-    batch_input_path = cfg.mem_dir / "hubs_batch_input.jsonl"
-    batch_input_path.parent.mkdir(parents=True, exist_ok=True)
-    batch_input_path.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
-    print(f"Wrote batch input: {batch_input_path} ({len(jsonl_lines)} line(s))")
-
-    print(f"Uploading batch input to OpenAI Files API...")
-    with batch_input_path.open("rb") as f:
-        input_file = client.files.create(file=f, purpose="batch")
-    print(f"Input file ID: {input_file.id}")
-
-    print(f"Submitting batch of {len(jsonl_lines)} request(s) to {args.model}...")
-    batch = client.batches.create(
-        input_file_id=input_file.id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={"source": "personal-mem.hubs"},
-    )
-    print(f"Batch ID: {batch.id}")
-    (cfg.mem_dir / "hubs_last_run").write_text(
-        json.dumps({"batch_id": batch.id, "input_file_id": input_file.id}, indent=2),
-        encoding="utf-8",
-    )
-    print("Polling for completion (typically minutes for small batches, up to 24h for large)...")
-
-    import time as _time
-    terminal_statuses = {"completed", "failed", "expired", "cancelled"}
-    while True:
-        batch = client.batches.retrieve(batch.id)
-        counts = batch.request_counts
-        print(
-            f"  status={batch.status} "
-            f"completed={counts.completed if counts else 0} "
-            f"failed={counts.failed if counts else 0} "
-            f"total={counts.total if counts else 0}"
-        )
-        if batch.status in terminal_statuses:
-            break
-        _time.sleep(args.poll_interval)
-
-    if batch.status != "completed":
-        print(f"Batch did not complete cleanly: status={batch.status}")
-        if batch.errors:
-            print(f"Errors: {batch.errors}")
-        sys.exit(1)
-
-    if not batch.output_file_id:
-        print("Batch completed but has no output_file_id.")
-        sys.exit(1)
-
-    print(f"Downloading results from output file {batch.output_file_id}...")
-    output_content = client.files.content(batch.output_file_id).text
-
-    # Parse results and apply entries
-    applied = 0
-    essence_flagged: set[str] = set()
-    for line in output_content.splitlines():
-        if not line.strip():
-            continue
-        try:
-            result = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        custom_id = result.get("custom_id", "")
-        concept, note_id, note_date = id_to_key.get(custom_id, ("", "", ""))
-        if not concept:
-            continue
-        if result.get("error"):
-            continue
-        response = result.get("response", {})
-        if response.get("status_code") != 200:
-            continue
-        body = response.get("body", {})
-        choices = body.get("choices", [])
-        if not choices:
-            continue
-        raw = choices[0].get("message", {}).get("content", "")
-        if not raw:
-            continue
-        entries, needs_essence = parse_llm_response(
-            raw, note_id=note_id, run_date=note_date or today
-        )
-        if entries:
-            append_log_entries(cfg, concept, entries)
-            applied += len(entries)
-        if needs_essence:
-            essence_flagged.add(concept)
-
-    print(f"\nApplied {applied} new log entries.")
-    if essence_flagged:
-        print(f"Essence revision flagged for {len(essence_flagged)} concept(s):")
-        for c in sorted(essence_flagged):
-            print(f"  {c}")
-        print("Run /mem-resolve-concepts to review flagged essences.")
-
-    # Reindex touched hub pages incrementally — best-effort against SQLite
-    # lock contention from a live MCP server.
-    import sqlite3 as _sqlite3
-
-    idx = Indexer(config=cfg)
-    touched_concepts = {c for c, _, _ in id_to_key.values()}
-    reindex_failures = 0
-    for concept in touched_concepts:
-        path = concept_hub_path(cfg, concept)
-        if not path.exists():
-            continue
-        try:
-            idx.index_file(path)
-        except _sqlite3.OperationalError as e:
-            reindex_failures += 1
-            if reindex_failures == 1:
-                print(f"  warning: reindex hit SQLite contention ({e}); continuing")
-    idx.close()
-    print(f"Reindexed {len(touched_concepts) - reindex_failures} of {len(touched_concepts)} hub page(s).")
-    if reindex_failures:
-        print(
-            f"  {reindex_failures} hub(s) couldn't be reindexed due to DB "
-            f"contention. Run `uv run mem index` once the contending process "
-            f"releases the lock."
-        )
 
 
 def _hubs_status(cfg, args: argparse.Namespace) -> None:
@@ -1168,10 +934,17 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
 
     print(f"Building linkage requests for {len(work)} hub(s)...")
 
-    system_prompt = _HUB_LINKAGE_SYSTEM
+    from personal_mem.operations.drain import (
+        HUB_LINKAGE_SYSTEM,
+        build_linkage_user_prompt,
+        parse_linkage_response,
+        validate_linkage_revision,
+    )
+
+    system_prompt = HUB_LINKAGE_SYSTEM
     requests_to_send: list[dict] = []
     for concept, entries, essence in work:
-        user_prompt = _build_linkage_user_prompt(concept, essence, entries)
+        user_prompt = build_linkage_user_prompt(concept, essence, entries)
         requests_to_send.append({
             "concept": concept,
             "system": system_prompt,
@@ -1318,7 +1091,7 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
         )
         if not raw:
             continue
-        revisions = _parse_linkage_response(raw)
+        revisions = parse_linkage_response(raw)
         if not revisions:
             continue
 
@@ -1331,7 +1104,7 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
 
         any_change = False
         for entry, rev in zip(entries_sorted, revisions):
-            new_flag, new_ref = _validate_linkage_revision(
+            new_flag, new_ref = validate_linkage_revision(
                 entry_date=entry.date,
                 flag=str(rev.get("flag", "new")).lower(),
                 ref=str(rev.get("ref") or "").strip(),
@@ -1377,109 +1150,24 @@ def _hubs_link(cfg, args: argparse.Namespace) -> None:
         )
 
 
-def _validate_linkage_revision(
-    entry_date: str, flag: str, ref: str
-) -> tuple[str | None, str]:
-    """Validate a single linkage revision against the temporal-DAG contract.
+# Backwards-compatibility shims — these helpers moved to operations/drain.py
+# in Phase 4 C. Tests still import them from this module.
+def _validate_linkage_revision(entry_date: str, flag: str, ref: str):
+    from personal_mem.operations.drain import validate_linkage_revision
 
-    The contract: an entry's `ref` must point to a STRICTLY EARLIER entry
-    (`ref < entry_date`). Flags `extends` and `contradicts` REQUIRE a
-    valid ref; `agrees` accepts an empty ref; `new` MUST have an empty
-    ref. The LLM has historically inverted subject/object on this task —
-    parser-side validation is the load-bearing rule.
-
-    Returns ``(flag, ref)`` for valid revisions. If the flag itself is
-    unknown, returns ``(None, "")`` so the caller skips the revision.
-    Otherwise the helper repairs invalid combinations:
-
-    - ``new`` + any ref → drop the ref
-    - non-YYYY-MM-DD ref → drop the ref
-    - ``ref >= entry_date`` → drop the ref. If the flag REQUIRED a ref
-      (``extends`` / ``contradicts``), downgrade the flag to ``new``
-      since the structural relationship is no longer expressible.
-    - ``agrees`` with an invalid ref → keep ``agrees``, ref empty.
-    """
-    from personal_mem.synthesis.concept_hub import ALLOWED_FLAGS
-
-    if flag not in ALLOWED_FLAGS:
-        return None, ""
-
-    if flag == "new":
-        return "new", ""
-
-    if ref and not re.match(r"^\d{4}-\d{2}-\d{2}$", ref):
-        ref = ""
-
-    if ref and ref >= entry_date:
-        ref = ""
-
-    if not ref and flag in {"extends", "contradicts"}:
-        # These flags REQUIRE a ref. Without one, the relationship is
-        # not expressible — fall back to "new".
-        flag = "new"
-
-    return flag, ref
-
-
-_HUB_LINKAGE_SYSTEM = """You are revising a learning log for one concept in a personal knowledge vault. Each entry is a distilled learning artifact captured from a note. Entries are listed oldest-first; the entry's date is its line prefix.
-
-For each entry E in the list, decide what E does relative to the entries that appear BEFORE it (the entries with strictly earlier dates):
-- "new" — E introduces something not present in any earlier entry.
-- "agrees" — E reinforces, restates, or confirms a claim from an earlier entry.
-- "contradicts" — E directly conflicts with an earlier entry.
-- "extends" — E elaborates on, refines, or adds a corollary to an earlier entry.
-
-E is the SUBJECT. The earlier entry is the OBJECT. The verb describes what E does to the earlier entry — never what the earlier entry does to E. The first entry in the list (no earlier entries exist) MUST be flagged "new".
-
-Rules for the ref field:
-- flag "new" → ref MUST be empty.
-- flag "agrees" → ref is optional (empty if no single earlier entry to cite; otherwise the date of that earlier entry).
-- flag "contradicts" → ref is REQUIRED and must be the date of an earlier entry.
-- flag "extends" → ref is REQUIRED and must be the date of an earlier entry.
-
-The ref date MUST be strictly less than E's date. If you cannot find an earlier entry that fits, flag E as "new". Never cite a future or same-day entry. Never invent dates — only cite dates that appear in the input.
-
-Be conservative: default to "new" unless the relationship is clear.
-
-Return a single JSON object of the form:
-  {"entries": [{"flag": "...", "ref": "YYYY-MM-DD or empty"}, ...]}
-The array length must EXACTLY match the input. Preserve input order.
-"""
+    return validate_linkage_revision(entry_date, flag, ref)
 
 
 def _build_linkage_user_prompt(concept: str, essence: str, entries: list) -> str:
-    essence_text = essence.strip() or "*No synthesis yet.*"
-    lines = [f"Concept: `{concept}`", "", f"Essence:\n{essence_text}", "", "Entries (chronological):"]
-    for i, e in enumerate(entries, start=1):
-        lines.append(f"{i}. {e.date} — {e.text}")
-    lines.append("")
-    lines.append("Output JSON only.")
-    return "\n".join(lines)
+    from personal_mem.operations.drain import build_linkage_user_prompt
+
+    return build_linkage_user_prompt(concept, essence, entries)
 
 
 def _parse_linkage_response(raw: str) -> list[dict]:
-    """Parse the linkage LLM response into a list of {flag, ref} dicts.
+    from personal_mem.operations.drain import parse_linkage_response
 
-    Tolerates code-fenced JSON. Returns [] on any parse failure.
-    """
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(data, dict):
-        return []
-    entries = data.get("entries", [])
-    if not isinstance(entries, list):
-        return []
-    return [e for e in entries if isinstance(e, dict)]
+    return parse_linkage_response(raw)
 
 
 def cmd_concepts(args: argparse.Namespace) -> None:
@@ -2023,12 +1711,20 @@ def cmd_enrich(args: argparse.Namespace) -> None:
 
 
 def cmd_connect(args: argparse.Namespace) -> None:
-    """Materialize SQLite edges as wikilinks in markdown for Obsidian."""
+    """[DEPRECATED] Use `mem index --materialize-links` instead.
+
+    Phase 4 C: this command is folded into `mem index`. Alias kept for one
+    release; will be removed.
+    """
+    print(
+        "deprecated: use `mem index --materialize-links` "
+        "(alias kept for one release).",
+        file=sys.stderr,
+    )
     from personal_mem.core.indexer import Indexer
 
     cfg = load_config()
     idx = Indexer(config=cfg)
-
     stats = idx.materialize_links(max_links=args.max_links, dry_run=args.dry_run)
     prefix = "[dry run] " if args.dry_run else ""
     print(
@@ -2074,6 +1770,18 @@ def cmd_index(args: argparse.Namespace) -> None:
             print(f"Embeddings: {embed_stats['computed']} computed, {embed_stats['skipped']} cached")
         except ImportError:
             print("Embeddings require: pip install personal-mem[embeddings]")
+
+    # Phase 4 C: `mem index --materialize-links` replaces `mem connect`.
+    if getattr(args, "materialize_links", False):
+        cstats = idx.materialize_links(max_links=getattr(args, "max_links", 5))
+        print(
+            f"Materialize: {cstats['notes_updated']} note(s) updated, "
+            f"{cstats['notes_skipped']} skipped, "
+            f"{cstats['links_written']} link(s) written."
+        )
+        # Re-index incrementally to pick up new wikilinks in the FTS body.
+        fstats = idx.rebuild(full=False)
+        print(f"  Reindex edges: {fstats['edges']}")
 
     idx.close()
 
@@ -2565,13 +2273,14 @@ def cmd_skill(args: argparse.Namespace) -> None:
         if not skills:
             print("No skills found in commands/.")
             return
-        print(f"{'NAME':<22} {'SOURCE_TYPE':<24} {'CAPABILITIES':<22} DESCRIPTION")
-        print("-" * 110)
+        print(f"{'NAME':<22} {'OWNS_MECHANIC':<22} {'SOURCE_TYPE':<22} {'CAPABILITIES':<18} DESCRIPTION")
+        print("-" * 130)
         for skill in skills:
+            mech = _format_list_field(skill["fm"].get("owns_mechanic"))
             st = _format_list_field(skill["fm"].get("source_type"))
             caps = _format_list_field(skill["fm"].get("capabilities"))
             desc = skill["fm"].get("description", "").strip().replace("\n", " ")
-            print(f"{skill['name']:<22} {st:<24} {caps:<22} {desc}")
+            print(f"{skill['name']:<22} {mech:<22} {st:<22} {caps:<18} {desc}")
         return
 
     if action == "show":
@@ -2604,9 +2313,12 @@ def cmd_skill(args: argparse.Namespace) -> None:
 
 
 def _commands_dir() -> Path:
-    """Return the commands/ directory shipped with the package."""
-    # cli.py lives at src/personal_mem/cli.py; commands/ is at the repo root.
-    return Path(__file__).resolve().parent.parent.parent / "commands"
+    """Return the commands/ directory shipped with the package.
+
+    This file lives at ``src/personal_mem/surfaces/cli/__init__.py``;
+    ``commands/`` is at the repo root, four levels up.
+    """
+    return Path(__file__).resolve().parents[4] / "commands"
 
 
 def _load_skill(name: str) -> dict | None:
@@ -2794,6 +2506,58 @@ def cmd_drain(args: argparse.Namespace) -> None:
         "       mem drain --source claude-history"
     )
     sys.exit(1)
+
+
+def cmd_discover(args: argparse.Namespace) -> None:
+    """Run the configured discovery strategies for a project.
+
+    Resolution order:
+
+    1. ``--strategy NAME`` — explicit, runs only that strategy.
+    2. ``sources.yaml: projects.<project>.discover_strategies`` — list.
+    3. ``sources.yaml: projects.default.discover_strategies`` — fallback.
+
+    Output is JSON on stdout: a list of gap-descriptor dicts as returned
+    by each strategy's ``run`` method, with the ``strategy`` field
+    stamped onto every entry. Callers (the ``/discover`` skill, cron
+    flows) read this JSON and decide how to enqueue / write back.
+    """
+    from personal_mem.core.vault import VaultManager
+    from personal_mem.discover import get, names
+    from personal_mem.sources import load_user_config
+
+    if getattr(args, "list", False):
+        for n in names():
+            print(n)
+        return
+
+    cfg = load_config()
+    user_cfg = load_user_config(cfg.vault_root)
+    project = args.project or cfg.default_project or ""
+
+    if args.strategy:
+        strategy_names = [args.strategy]
+    else:
+        projects_cfg = user_cfg.get("projects", {}) or {}
+        scope = projects_cfg.get(project) if project else None
+        if not scope:
+            scope = projects_cfg.get("default", {})
+        strategy_names = list(scope.get("discover_strategies", ["concept_coverage"]))
+
+    vm = VaultManager(config=cfg)
+    all_items: list[dict] = []
+    for sname in strategy_names:
+        try:
+            strategy = get(sname)
+        except KeyError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        items = strategy.run(vm, project or None, user_cfg)
+        for item in items:
+            item.setdefault("strategy", sname)
+            all_items.append(item)
+
+    print(json.dumps(all_items, indent=2))
 
 
 def cmd_update(args: argparse.Namespace) -> None:
