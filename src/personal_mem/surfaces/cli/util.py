@@ -20,6 +20,17 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Vault initialized at {cfg.vault_root}")
 
 
+def cmd_mcp(args: argparse.Namespace) -> None:
+    """Run the personal_mem MCP server over stdio.
+
+    Thin shim around ``personal_mem.surfaces.mcp.server.main``. Used by
+    the Claude Code plugin shell (``plugin.json`` invokes ``mem mcp``).
+    """
+    from personal_mem.surfaces.mcp.server import main as mcp_main
+
+    mcp_main()
+
+
 def _seed_vault_templates(vault_root: Path) -> None:
     """Copy any default files from the package-bundled `vault_templates/`
     into the vault if they don't already exist. Currently seeds

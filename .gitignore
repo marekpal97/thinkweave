@@ -22,8 +22,9 @@ build/
 # uv
 .python-version
 
-# Claude Code local state
-.claude/
+# Claude Code local state — but keep the plugin shell (it ships with the repo)
+.claude/*
+!.claude/plugins/
 
 # MCP config (may contain local paths)
 .mcp.json

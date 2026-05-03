@@ -1,0 +1,1 @@
+../../../../commands/themes-resolve.md

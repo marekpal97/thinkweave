@@ -47,7 +47,7 @@ from personal_mem.surfaces.cli.notes import (
 from personal_mem.surfaces.cli.parser import build_parser
 from personal_mem.surfaces.cli.queue import cmd_queue
 from personal_mem.surfaces.cli.skill import cmd_skill
-from personal_mem.surfaces.cli.util import cmd_init, cmd_prune_orphans, cmd_sources
+from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
 
 
 _DISPATCH = {
@@ -73,6 +73,7 @@ _DISPATCH = {
     "flow": cmd_flow,
     "hooks": cmd_hooks,
     "init": cmd_init,
+    "mcp": cmd_mcp,
     "intake": cmd_intake,
     "sources": cmd_sources,
     "skill": cmd_skill,

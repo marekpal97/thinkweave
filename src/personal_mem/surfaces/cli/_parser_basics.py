@@ -117,6 +117,14 @@ def add_index_subparsers(sub) -> None:
 
     sub.add_parser("stats", help="Show vault statistics")
 
+    sub.add_parser(
+        "mcp",
+        help=(
+            "Run the personal_mem MCP server over stdio. "
+            "Used by Claude Code plugin registration."
+        ),
+    )
+
     p_doctor = sub.add_parser(
         "doctor",
         help=(

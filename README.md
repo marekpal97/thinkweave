@@ -1,218 +1,45 @@
 # personal_mem
 
-An Obsidian-native universal memory layer for agentic systems. Markdown is the source of truth; SQLite is a derived, rebuildable index.
+Obsidian-native universal memory layer for Claude Code. Markdown is the
+source of truth; SQLite is a derived, rebuildable index.
 
-personal_mem gives Claude Code (or any MCP-aware agent) durable, searchable memory across sessions: a vault of markdown notes typed as `note`, `session`, `decision`, or `source`; a knowledge graph built from wikilinks and shared concepts; and a set of MCP tools for search, retrieval, and creation. Sessions are captured automatically via Claude Code hooks, summarized at exit, and can be enriched by a `/mem-wrap` skill at session end.
-
-It is designed to be **lightweight**, **file-first** (your notes live in plain `.md` files browseable in Obsidian), and **extensible** — adding a new source type is a dict entry plus a skill file, not a framework rewrite.
+personal_mem gives Claude Code (or any MCP-aware agent) durable memory
+across sessions: a typed vault (note / session / decision / source /
+theme), a knowledge graph from wikilinks and shared concepts, and MCP
+tools for search, retrieval, and creation. Sessions are captured via
+hooks and enriched by `/mem-wrap` before you `/clear`.
 
 ## Install
 
 ```bash
 git clone https://github.com/marekpal97/personal_mem.git
 cd personal_mem
-uv pip install -e .[all]       # core + MCP server + embeddings
+pip install -e .
 ```
 
-Or as a library dependency:
-
-```bash
-uv add personal-mem[mcp,embeddings]
-```
-
-Requires Python ≥ 3.11. The core has **zero runtime dependencies**; MCP and embeddings are opt-in extras.
-
-## Quickstart
-
-```bash
-# 1. Point at a vault location (anywhere — Obsidian can open it later).
-export PERSONAL_MEM_VAULT=~/vault
-export PERSONAL_MEM_PROJECT=myproject   # optional — auto-detected from git
-
-# 2. Initialize the vault directory structure.
-uv run mem init
-
-# 3. Install Claude Code hooks into the current project's .claude/ folder.
-#    This wires SessionStart context injection + auto-capture of sessions.
-uv run mem hooks install
-
-# 4. (Optional) Register the MCP server so Claude Code can call mem_search etc.
-#    See your Claude Code docs for mcp-server registration — the script is
-#    `uv run python -m personal_mem.mcp.server`.
-```
-
-Open a fresh Claude Code session in that directory — the SessionStart hook injects ~7–10k tokens of project context (recent sessions, decisions, backlog, concepts, MCP tool manifest) before your first turn.
-
-## Vault layout
+In Claude Code:
 
 ```
-vault/
-├── projects/
-│   └── {project}/
-│       ├── DECISIONS.md          # auto-generated decision ledger + DAG
-│       ├── BACKLOG.md            # auto-generated open items
-│       ├── STATE.md              # human-oriented overview (LLM-assisted)
-│       └── sessions/
-│           └── {session-id}-{date}/
-│               ├── session.md    # clean summary
-│               ├── events.jsonl  # archived raw event log
-│               ├── derived-note.md
-│               └── derived-decision.md
-├── sources/                      # external reference material
-│   ├── papers/
-│   ├── repos/
-│   ├── articles/
-│   ├── conversations/
-│   └── substack/
-├── daily/
-├── templates/
-└── .mem/
-    ├── index.db                  # SQLite FTS + graph index
-    ├── embeddings.db             # optional semantic search cache
-    └── concept_aliases.yaml      # vocabulary canonicalization
+/plugin add ./.claude/plugins/personal-mem
+/onboard
 ```
 
-The SQLite index is derived — delete it and run `uv run mem index --full` to rebuild from markdown.
+`/onboard` walks the rest: vault location, source types, retroactive
+Claude session import, hooks install, first index, landing docs.
 
-## Retrieval — three modalities
+## Daily loop
 
-Retrieval is three modalities. Pick by what you have:
+- `/research <url>` — ingest a source (paper, repo, article)
+- `/drain` — process queued items in batch
+- `/discover` — find research gaps via configured strategies
+- `/mem-wrap` — extract session knowledge before `/clear`
 
-- **FTS** — keyword/text. `mem_search(query, mode='fts')`. Empty `query` is list mode (recency-sorted, all filters honoured).
-- **Similarity** — semantic via embeddings. `mem_search(query, mode='similar')`; `mode='hybrid'` fuses FTS + similarity (RRF, k=60) when uncertain.
-- **Graph** — structural over typed edges. `mem_graph(id, depth)`. Specialisations with built-in filters: `mem_source_lens`, `mem_decisions_for_file`, `mem_concept_search`.
+## Architecture
 
-`mem_context` composes FTS → similarity-via-concept → recency, deduped, when you want a budgeted blob rather than raw hits. `mem_project_snapshot` returns the SessionStart payload on demand.
+- **Three retrieval modalities**: FTS, similarity, graph.
+- **Hub abstraction**: concepts (vocabulary) and themes (narrative
+  arcs) share a spine.
+- **Source-type registry**: paper / repo / article ship as defaults;
+  add your own via `sources.yaml` + a single skill file.
 
-All filtering primitives accept `since` / `until` (ISO date strings). `mem_search` accepts `concepts=[…]` to combine text + concept filters. `mem_graph` accepts optional `note_type` / `project` to project the result set.
-
-## MCP tools
-
-When the MCP server is registered, Claude gets a set of memory primitives:
-
-| Tool | Modality | Purpose |
-|---|---|---|
-| `mem_search(query, mode, type, project, tags, concepts, since, until, limit)` | FTS / similarity / fused | Primary text retrieval. Empty query = list mode. |
-| `mem_concept_search(concepts, match_mode, type, project, since, until, …)` | Graph (concept edges) | Set ops over concept membership. |
-| `mem_context(query, type, project, concepts, since, until)` | Composition | Three-layer retrieval, deduped. |
-| `mem_timeline(project, days)` | Graph (specialisation) | Chronological sessions + decisions. |
-| `mem_read(id)` / `mem_graph(id, depth, note_type, project)` | Fetch / Graph | Single note read; recursive-CTE graph walk. |
-| `mem_source_lens(source_id)` | Graph (specialisation) | Walk out from a source to inbound decisions/sessions/concepts. |
-| `mem_decisions_for_file(file_path, project)` | Graph (specialisation) | Every decision touching a file. |
-| `mem_project_snapshot(project)` | Composition | Same payload the SessionStart hook injects. |
-| `mem_create(note_type, title, body, …)` | — | Create a note (note / session / decision / source / theme). |
-| `mem_update(note_id, …)` | — | Update a note. |
-| `mem_link(source_id, target_id, edge_type)` | — | Add a typed edge. |
-| `mem_extract(session_id, ...)` | — | Enrich a session with LLM insights + decisions. |
-| `mem_judge(session_id)` | — | Evaluate decisions against git evidence. |
-| `mem_concept_source_counts(concepts)` | — | Bulk under-source check for gap analysis. |
-| `mem_landing(project, doc)` | — | Regenerate landing documents (DECISIONS / BACKLOG / STATE / THEMES). |
-
-Run `uv run python -m personal_mem.mcp.server` to start the server stdio, or register it in your Claude Code MCP config.
-
-## Adding a new source type
-
-personal_mem is designed so new kinds of reference material plug in without touching the framework. The canonical pattern: **1 registry entry + 1 skill file**.
-
-Say you want to ingest emails (e.g. from a local mbox drain or a forwarded-to-folder setup).
-
-### 1. Register the source type
-
-Add a `SourceTypeSpec` entry to `src/personal_mem/sources/registry.py`:
-
-```python
-"email": SourceTypeSpec(
-    slug="email",
-    bucket="emails",
-    layout="folder",          # flat | folder | author_folder
-    skills=("email",),
-    description="Forwarded / imported emails. Ingested via /email.",
-),
-```
-
-That is the entire framework change. `VaultManager.create_note` reads the registry when it writes a source note, so any note with `source_type: email` will now route to `vault/sources/emails/{slug}/source.md`. The indexer, search, MCP server, concept graph, and frontmatter schema all treat it uniformly — no special-casing anywhere.
-
-Verify with:
-
-```bash
-uv run mem sources show email
-```
-
-### 2. Write the ingestion skill
-
-Copy `commands/_source_template.md` to `commands/email.md` and fill in the YAML frontmatter (`source_type`, `capabilities`, `tools`, `description`) plus the body. The template is a *universal skill template* with clearly marked sections for the three capabilities (import / acquire / discover). Delete the sections you don't implement and fill in the bespoke fetch/parse/interpret logic for the ones you do.
-
-For worked examples, look at the real skill files already in `commands/`:
-- `commands/research.md` — import + acquire for papers, repos, articles (URL → PDF/git clone/HTML fetch)
-- `commands/substack.md` — acquire only, disk-inbox drain with multimodal figure interpretation
-- `commands/discover.md` — discover only, gap analysis that produces queue items
-
-Each is deliberately bespoke because each source has genuinely different ingestion logic. There is no shared skill framework, and that is on purpose — collapsing them into a base class would destroy the per-source variation that makes each useful.
-
-Verify with:
-
-```bash
-uv run mem skill show email
-uv run mem skill run email --dry-run
-```
-
-### 3. (Optional) Propose domain concepts
-
-If your new source type introduces vocabulary that isn't in `ontology.yaml` yet, don't add it eagerly. Instead, have the ingestion skill put new terms in the `proposed_concepts` frontmatter field. They will be picked up by `/mem-resolve-concepts` for review and canonicalized into `ontology.yaml` once they earn their place (count ≥ 5 across the vault).
-
-### 4. Verify end-to-end
-
-```bash
-# Unit — the bucket routes correctly
-uv run python -c "
-from personal_mem.vault import VaultManager
-from personal_mem.schemas import NoteType
-vm = VaultManager()
-path = vm.create_note(
-    NoteType.SOURCE,
-    'Test Email',
-    extra_frontmatter={'source_type': 'email', 'url': 'mid:123'},
-)
-print(path)
-"
-# Expect: .../vault/sources/emails/test-email/source.md
-```
-
-Then use the skill end-to-end from Claude Code and check `mem_search(query='...', type='source')` returns your new entry.
-
-## Running skills headless
-
-Skills run interactively inside Claude Code via the Skill tool — that's the default and primary path. For headless, non-interactive workflows there are two targeted options:
-
-- **Concept hub backfill** — `mem hubs run --plan .mem/hubs_plan.json` ships its own OpenAI Batches API path (gpt-5-mini). Install with `pip install 'personal-mem[hubs]'` and export `OPENAI_API_KEY`.
-- **Autopilot** — `claude -p --model sonnet --dangerously-skip-permissions` from cron gives you headless skill execution with the full Claude Code tool surface. Used by the `/research` + `/discover` cron entries.
-
-## Configuration
-
-| Env var | Default | Purpose |
-|---|---|---|
-| `PERSONAL_MEM_VAULT` | `~/vault` | Vault root directory |
-| `PERSONAL_MEM_PROJECT` | auto (git) | Default project name |
-| `OPENAI_API_KEY` | — | Required by `mem enrich`, the ChatGPT importer, embeddings, and `mem hubs run` |
-
-Project detection walks up from the current directory looking for `.git` (file or directory — worktrees supported). Override with `PERSONAL_MEM_PROJECT` per worktree if you need explicit control.
-
-## Philosophy
-
-- **Markdown is the source of truth.** The SQLite index is derived and disposable; your notes live in plain files you can open in Obsidian, edit with any editor, version in git, and read without any tooling.
-- **Capture is automatic, enrichment is explicit.** Claude Code hooks accumulate tool events, git commits, test results, and `★ Insight` blocks into a session buffer. The Stop hook archives and summarizes thinly; full LLM enrichment happens only when you run `/mem-wrap` before clearing.
-- **The knowledge graph is typed.** Edges come from wikilinks, shared concepts (≥2 overlaps auto-link), and explicit `mem_link` calls with edge types (`supersedes`, `derived_from`, `touches_file`, etc.). Concepts are the load-bearing vocabulary — tags are for filtering.
-- **Extension means addition, not surgery.** New source types, new landing doc types, new importers — all of them plug in at well-defined seams (`sources/registry.py`, `landing.py`, `importers/`) without touching the rest.
-
-## Development
-
-```bash
-uv run pytest              # 450+ tests
-uv run ruff check src tests
-```
-
-The codebase is ~10k LOC with zero runtime dependencies in the core. See `CLAUDE.md` for architectural notes, the session + decision lifecycle, and the retrieval protocol. See `src/personal_mem/ontology.example.yaml` for a reference ontology populated across ML, AI tooling, finance, and SWE domains.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+[CLAUDE.md](CLAUDE.md) — LLM agent runtime · [ARCHITECTURE.md](ARCHITECTURE.md) — contributors · [LICENSE](LICENSE) — MIT.
