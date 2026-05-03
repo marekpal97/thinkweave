@@ -24,6 +24,7 @@ from personal_mem.sources.registry import (
     SourceTypeSpec,
     all_specs,
     get_spec,
+    load_user_specs,
     normalize,
 )
 
@@ -40,5 +41,6 @@ __all__ = [
     "enumerate_inbox",
     "get_spec",
     "load_user_config",
+    "load_user_specs",
     "normalize",
 ]

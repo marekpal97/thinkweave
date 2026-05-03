@@ -251,15 +251,18 @@ class VaultManager:
     # Adding a new source type means adding a SourceTypeSpec entry there and
     # writing a skill under commands/; no edits in this file are required.
 
-    @staticmethod
-    def _normalize_source_type(source_type: str) -> str:
-        """Fold legacy aliases into the canonical source_type vocabulary."""
-        return source_registry.normalize(source_type)
+    def _normalize_source_type(self, source_type: str) -> str:
+        """Fold legacy aliases into the canonical source_type vocabulary.
 
-    @staticmethod
-    def _source_bucket(source_type: str) -> str:
+        Consults the user-side overlay at
+        ``<vault_root>/.mem/source_types.yaml`` first, then the in-code
+        REGISTRY.
+        """
+        return source_registry.normalize(source_type, vault_root=self.root)
+
+    def _source_bucket(self, source_type: str) -> str:
         """Return the bucket subfolder for a given source_type, or ''."""
-        spec = source_registry.get_spec(source_type)
+        spec = source_registry.get_spec(source_type, vault_root=self.root)
         return spec.bucket if spec else ""
 
     def _sanitize_filename(self, title: str) -> str:
@@ -426,11 +429,11 @@ class VaultManager:
             # Normalise source_type (legacy aliases like github → repo) on
             # write so the on-disk vocabulary stays consistent.
             raw_source_type = fm.get("source_type", "") or ""
-            source_type = source_registry.normalize(raw_source_type)
+            source_type = source_registry.normalize(raw_source_type, vault_root=self.root)
             if source_type != raw_source_type:
                 fm["source_type"] = source_type
 
-            spec = source_registry.get_spec(source_type)
+            spec = source_registry.get_spec(source_type, vault_root=self.root)
 
             # output_dir is the extraction escape hatch — extracted sources
             # target a session folder directly and must bypass bucketing.

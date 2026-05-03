@@ -258,7 +258,7 @@ def add_admin_subparsers(sub) -> None:
 
     p_sources = sub.add_parser(
         "sources",
-        help="List and inspect registered source types",
+        help="List, inspect, and scaffold source types",
     )
     sources_sub = p_sources.add_subparsers(dest="sources_action")
     sources_sub.add_parser("list", help="List all registered source types")
@@ -266,6 +266,36 @@ def add_admin_subparsers(sub) -> None:
         "show", help="Show full spec for a source type"
     )
     p_sources_show.add_argument("slug", help="Source type slug (e.g. paper, substack)")
+
+    p_sources_scaffold = sources_sub.add_parser(
+        "scaffold",
+        help=(
+            "Register a new source type without editing Python. Writes a "
+            "SourceTypeSpec entry to <vault>/.mem/source_types.yaml, a "
+            "skill at commands/<slug>.md, and a config block to "
+            "vault_templates/.mem/sources.yaml."
+        ),
+    )
+    p_sources_scaffold.add_argument("slug", help="Canonical source_type slug (e.g. podcast, email)")
+    p_sources_scaffold.add_argument(
+        "--bucket",
+        required=True,
+        help="Subfolder under vault/sources/ (e.g. podcasts, emails)",
+    )
+    p_sources_scaffold.add_argument(
+        "--layout",
+        required=True,
+        choices=["flat", "folder", "author_folder"],
+        help="On-disk routing pattern",
+    )
+    p_sources_scaffold.add_argument(
+        "--description", default="", help="One-liner shown by `mem sources list`"
+    )
+    p_sources_scaffold.add_argument(
+        "--aliases",
+        default="",
+        help="Comma-separated legacy slugs that should fold into the new slug on write",
+    )
 
     p_skill = sub.add_parser(
         "skill",
