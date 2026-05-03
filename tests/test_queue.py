@@ -196,6 +196,80 @@ def test_dedup_check_excludes_self(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# MCP archive action
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_archive_action_moves_item_to_dated_folder(tmp_path: Path) -> None:
+    """End-to-end: enqueue via Queue, archive via the mem_queue MCP handler."""
+    from datetime import datetime, timezone
+
+    from personal_mem.core.config import Config
+    from personal_mem.surfaces.mcp.tools.queue import handle as mem_queue_handle
+
+    cfg = Config(vault_root=tmp_path)
+    q = Queue.for_source_type("paper", tmp_path)
+    item_id = q.enqueue({"url": "https://arxiv.org/abs/2401.00001"})
+
+    result = mem_queue_handle(
+        cfg,
+        {
+            "action": "archive",
+            "source_type": "paper",
+            "item_id": item_id,
+            "status": "done",
+        },
+    )
+
+    # Handler returns a single TextContent confirming the archive.
+    assert len(result) == 1
+    assert item_id in result[0].text
+    assert "done" in result[0].text
+
+    # Active queue is empty.
+    assert q.peek(10) == []
+
+    # Archive file exists at .mem/queues/_processed/<today>/paper.jsonl.
+    today = datetime.now(timezone.utc).date().isoformat()
+    archive_file = tmp_path / ".mem" / "queues" / "_processed" / today / "paper.jsonl"
+    assert archive_file.exists()
+
+    rows = [
+        json.loads(line)
+        for line in archive_file.read_text().splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["id"] == item_id
+    assert rows[0]["status"] == "done"
+    assert "archived_at" in rows[0]
+
+
+def test_mcp_archive_action_requires_source_type(tmp_path: Path) -> None:
+    from personal_mem.core.config import Config
+    from personal_mem.surfaces.mcp.tools.queue import handle as mem_queue_handle
+
+    cfg = Config(vault_root=tmp_path)
+    result = mem_queue_handle(
+        cfg, {"action": "archive", "item_id": "q-abc", "status": "done"}
+    )
+    assert len(result) == 1
+    assert "source_type" in result[0].text
+
+
+def test_mcp_archive_action_requires_item_id(tmp_path: Path) -> None:
+    from personal_mem.core.config import Config
+    from personal_mem.surfaces.mcp.tools.queue import handle as mem_queue_handle
+
+    cfg = Config(vault_root=tmp_path)
+    result = mem_queue_handle(
+        cfg, {"action": "archive", "source_type": "paper", "status": "done"}
+    )
+    assert len(result) == 1
+    assert "item_id" in result[0].text
+
+
+# ---------------------------------------------------------------------------
 # claim contention (single-user simulation)
 # ---------------------------------------------------------------------------
 

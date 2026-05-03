@@ -147,13 +147,15 @@ For each item:
    primitive (call into `mem queue` CLI / future `mem_queue claim`).
 2. **Dispatch** to the per-type research skill: `Skill(skill="research-<slug>", args="<url>")`.
    That skill handles fetch + summarize + concept mapping + `mem_create`.
-3. **On success** — archive the queue item with status `done`. (Until a
-   `mem_queue archive` MCP is wired, do this from Bash:
+3. **On success** — archive the queue item with status `done`:
    ```
-   Bash("uv run python -c \"from personal_mem.sources.queue import Queue; from personal_mem.core.config import load_config; q = Queue.for_source_type('<slug>', load_config().vault_root); q.archive('<item-id>', 'done')\"")
+   mem_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="done")
    ```
 4. **On failure** — leave the item in place; archive with status `failed`
-   only if the failure is non-recoverable.
+   only if the failure is non-recoverable:
+   ```
+   mem_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="failed")
+   ```
 
 ### B3. Report
 

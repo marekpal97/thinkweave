@@ -1,4 +1,4 @@
-"""``mem_queue`` — list / inspect / peek / enqueue per-source-type queues."""
+"""``mem_queue`` — list / inspect / peek / enqueue / archive per-source-type queues."""
 
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ def tool_schemas() -> list:
                 "  list              — show all queues with item counts\n"
                 "  inspect           — full listing for one source_type\n"
                 "  peek              — first N items for one source_type\n"
-                "  enqueue           — add a new item to a queue\n\n"
+                "  enqueue           — add a new item to a queue\n"
+                "  archive           — move a claimed item to the dated archive\n\n"
                 "Queues live at vault/.mem/queues/<source_type>.jsonl."
             ),
             inputSchema={
@@ -28,11 +29,11 @@ def tool_schemas() -> list:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "inspect", "peek", "enqueue"],
+                        "enum": ["list", "inspect", "peek", "enqueue", "archive"],
                     },
                     "source_type": {
                         "type": "string",
-                        "description": "Queue slug (paper, repo, article, …). Required for inspect/peek/enqueue.",
+                        "description": "Queue slug (paper, repo, article, …). Required for inspect/peek/enqueue/archive.",
                     },
                     "n": {
                         "type": "integer",
@@ -42,6 +43,15 @@ def tool_schemas() -> list:
                     "item": {
                         "type": "object",
                         "description": "With enqueue: the dict to enqueue (url, title, …).",
+                    },
+                    "item_id": {
+                        "type": "string",
+                        "description": "With archive: the queue item id to move into the dated archive.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "default": "done",
+                        "description": "With archive: status stamped onto the archived row (done/failed/duplicate/…).",
                     },
                 },
                 "required": ["action"],
@@ -117,5 +127,19 @@ def handle(cfg: Config, args: dict):
             )]
         new_id = q.enqueue(item)
         return [TextContent(type="text", text=f"enqueued {new_id}")]
+
+    if action == "archive":
+        if not source_type:
+            return [TextContent(type="text", text="archive requires source_type")]
+        item_id = args.get("item_id", "") or ""
+        if not item_id:
+            return [TextContent(type="text", text="archive requires item_id")]
+        status = args.get("status") or "done"
+        q = Queue.for_source_type(source_type, cfg.vault_root)
+        q.archive(item_id, status)
+        return [TextContent(
+            type="text",
+            text=f"archived {item_id} with status={status}",
+        )]
 
     return [TextContent(type="text", text=f"Unknown queue action: {action}")]

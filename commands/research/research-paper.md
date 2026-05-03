@@ -109,7 +109,7 @@ For weaker connections: `relates_to`.
 If you were called by `/drain --source-type paper`, archive the queue
 item:
 ```
-Bash("uv run python -c \"from personal_mem.sources.queue import Queue; from personal_mem.core.config import load_config; q = Queue.for_source_type('paper', load_config().vault_root); q.archive('<queue-id>', 'done')\"")
+mem_queue(action="archive", source_type="paper", item_id="<queue-id>", status="done")
 ```
 
 ### 7. Report
