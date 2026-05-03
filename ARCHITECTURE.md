@@ -323,7 +323,7 @@ projects:
     discover_strategies: [concept_coverage, decision_review]
     decision_review:
       stale_days: 45
-  trade_ideas:
+  external_signals:        # any project name; news triage, market signals, paper feeds, …
     discover_strategies: [external_tool_runner]
     external_tool_runner:
       tools:

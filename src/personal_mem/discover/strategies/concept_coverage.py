@@ -21,8 +21,8 @@ queue item placeholder:
     }
 
 The CLI's ``mem discover`` then routes these into the appropriate
-queue (BACKLOG, RESEARCH_FOCUS, or a per-source-type JSONL queue) per
-the project config.
+queue (the project's backlog or research-focus landing doc, or a
+per-source-type JSONL queue) per the project config.
 """
 
 from __future__ import annotations

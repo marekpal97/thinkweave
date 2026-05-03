@@ -1,11 +1,11 @@
 """Generate project landing documents.
 
 These are materialized views over existing vault notes, excluded from
-the index. ``decisions`` and ``backlog`` are fully auto-generated from
-data; ``state`` gathers context for LLM-assisted narrative generation.
+the index. The ``decisions`` and ``backlog`` ledgers are fully
+auto-generated from data; ``state`` gathers context for LLM-assisted
+narrative generation.
 
-Filename defaults (``DECISIONS.md``, ``BACKLOG.md``, ``STATE.md``,
-``THEMES.md``, ``RESEARCH_FOCUS.md``) ship in
+Filename defaults ship in
 ``personal_mem.sources.config.DEFAULT_CONFIG`` under the
 ``landing_files`` key and can be overridden per-vault in
 ``vault/.mem/sources.yaml``. Callers that need the *current* filename
@@ -24,17 +24,20 @@ from pathlib import Path
 from personal_mem.core.config import Config, load_config
 from personal_mem.core.schemas import NoteType
 
-# In-code defaults — used when no vault root is in scope (tests, fresh
-# bootstrap). Mirrors ``DEFAULT_CONFIG['landing_files']`` in
-# ``sources/config.py``; user overrides flow through
+
+def _default_landing_filenames() -> dict[str, str]:
+    """In-code defaults — pulled from
+    :data:`personal_mem.sources.config.DEFAULT_CONFIG` so the framework
+    has a single source of truth for landing-doc names."""
+    from personal_mem.sources.config import DEFAULT_CONFIG
+
+    return dict(DEFAULT_CONFIG["landing_files"])
+
+
+# Module-level default mapping kept for back-compat. Mirrors
+# ``DEFAULT_CONFIG['landing_files']``. User overrides flow through
 # :func:`landing_filenames` below.
-DEFAULT_LANDING_FILENAMES: dict[str, str] = {
-    "decisions": "DECISIONS.md",
-    "backlog": "BACKLOG.md",
-    "state": "STATE.md",
-    "themes": "THEMES.md",
-    "research_focus": "RESEARCH_FOCUS.md",
-}
+DEFAULT_LANDING_FILENAMES: dict[str, str] = _default_landing_filenames()
 
 
 def landing_filenames(vault_root: Path | None = None) -> dict[str, str]:
@@ -43,10 +46,17 @@ def landing_filenames(vault_root: Path | None = None) -> dict[str, str]:
     Reads ``vault/.mem/sources.yaml`` if present and overlays user
     overrides on top of :data:`DEFAULT_LANDING_FILENAMES`. Missing
     vault root → defaults.
+
+    The mapping always includes a ``research_focus`` key. The framework
+    does not auto-generate the research-focus landing doc — it remains a
+    user-maintained file (or a per-project ``concept_coverage`` strategy
+    populates it). Projects with no ``concept_coverage`` strategy in
+    ``projects.<name>.discover_strategies`` simply leave it absent;
+    ``/discover`` is a no-op for them.
     """
     from personal_mem.sources.config import load_user_config
 
-    merged = dict(DEFAULT_LANDING_FILENAMES)
+    merged = _default_landing_filenames()
     if vault_root is None:
         return merged
     user = load_user_config(vault_root).get("landing_files", {}) or {}
@@ -149,7 +159,7 @@ def _query_edges(db, project: str) -> list[dict]:
 
 
 def decisions_ledger(config: Config, project: str) -> str:
-    """Generate DECISIONS.md — decision table + Mermaid DAG."""
+    """Generate the per-project decisions landing doc — table + Mermaid DAG."""
     db = _get_db(config)
     decisions = _query_decisions(db, project)
     edges = _query_edges(db, project)
@@ -272,7 +282,8 @@ def _group_by_concepts(notes: list[dict], db) -> dict[str, list[dict]]:
 
 
 def backlog_summary(config: Config, project: str) -> str:
-    """Generate BACKLOG.md — open items, stalled proposals, parked items."""
+    """Generate the per-project backlog landing doc — open items, stalled
+    proposals, parked items."""
     db = _get_db(config)
     today = date.today()
     stale_cutoff = (today - timedelta(days=7)).isoformat()
@@ -521,7 +532,7 @@ def _shorten_path(filepath: str) -> str:
 
 
 def _gather_state_context(config: Config, project: str) -> dict:
-    """Gather all data needed for STATE.md generation.
+    """Gather all data needed for the state-of-play landing doc.
 
     Returns a structured dict with decisions, sessions, probes, concepts,
     and file touch frequencies. This is the raw material for LLM narrative
@@ -625,7 +636,7 @@ def _gather_state_context(config: Config, project: str) -> dict:
 
 
 def state_of_play(config: Config, project: str) -> str:
-    """Generate STATE.md — data-driven version.
+    """Generate the data-driven state-of-play landing doc.
 
     When called via CLI, this produces a useful data-driven document.
     When called via MCP, the agent can enhance it with LLM narrative.
@@ -772,10 +783,10 @@ def state_of_play(config: Config, project: str) -> str:
 
 
 def state_of_play_context(config: Config, project: str) -> str:
-    """Return structured context for LLM-assisted STATE.md generation.
+    """Return structured context for the LLM-assisted state-of-play doc.
 
     Used by the MCP tool — the agent gets this context and writes the
-    full narrative STATE.md using its judgment.
+    full narrative landing doc using its judgment.
     """
     ctx = _gather_state_context(config, project)
     state_doc = landing_filenames(config.vault_root)["state"]
@@ -786,7 +797,7 @@ def state_of_play_context(config: Config, project: str) -> str:
         f"Use this data to write a {state_doc} that tells the human what matters most.\n"
     )
 
-    # Format guidance for the LLM writing STATE.md
+    # Format guidance for the LLM writing the state-of-play landing doc
     sections.append("## Format Guidance\n")
     sections.append(
         "**Key Files → Reading Guide**: Don't list key files as a flat table. "
@@ -852,8 +863,8 @@ def generate_all(config: Config, project: str) -> dict[str, str]:
     """Generate all 3 landing documents. Returns {filename: content}.
 
     Filenames respect ``vault/.mem/sources.yaml: landing_files:`` so a
-    user who renamed ``STATE.md`` to ``STATUS.md`` (or any other vocab)
-    sees their key in the returned mapping.
+    user who renamed any of the standard names sees their key in the
+    returned mapping.
     """
     names = landing_filenames(config.vault_root)
     return {
@@ -952,7 +963,7 @@ def _last_catalyst_date(body: str) -> str:
 
 
 def themes_ledger(config: Config) -> str:
-    """Generate THEMES.md — global theme ledger.
+    """Generate the global themes landing doc.
 
     Lists active themes (table), dormant themes (collapsed), resolved
     themes (collapsed). Each theme row links to its full page where the
@@ -1079,18 +1090,25 @@ def write_landing_docs(
     config: Config,
     project: str,
     docs: str = "all",
+    landing_filenames_override: dict[str, str] | None = None,
 ) -> dict[str, Path]:
     """Generate and write landing documents.
 
     Project-scoped docs (decisions, backlog, state) land in
-    ``projects/{project}/``. The global ``themes`` doc lands at vault
-    root (``vault/THEMES.md``) — passing ``docs="themes"`` ignores the
-    ``project`` argument since themes are global. ``docs="all"`` writes
-    every doc, project-scoped + global.
+    ``projects/{project}/``. The global themes doc lands at the vault
+    root — passing ``docs="themes"`` ignores the ``project`` argument
+    since themes are global. ``docs="all"`` writes every doc,
+    project-scoped + global.
 
     Args:
-        docs: Which docs to generate — ``all``, ``decisions``, ``backlog``,
-            ``state``, ``themes``.
+        docs: Which docs to generate — ``all``, ``decisions``,
+            ``backlog``, ``state``, ``themes``.
+        landing_filenames_override: Optional explicit mapping that
+            replaces the resolved-from-config filenames. Keys: any
+            subset of ``decisions``/``backlog``/``state``/``themes``/
+            ``research_focus``. Missing keys fall back to the resolved
+            user/default names. ``None`` (the default) reads
+            ``vault/.mem/sources.yaml`` via :func:`landing_filenames`.
 
     Returns:
         Dict of {filename: written_path}.
@@ -1099,6 +1117,10 @@ def write_landing_docs(
     project_dir.mkdir(parents=True, exist_ok=True)
 
     names = landing_filenames(config.vault_root)
+    if landing_filenames_override:
+        for key, value in landing_filenames_override.items():
+            if isinstance(value, str) and value:
+                names[key] = value
     project_generators = {
         "decisions": (names["decisions"], decisions_ledger),
         "backlog": (names["backlog"], backlog_summary),

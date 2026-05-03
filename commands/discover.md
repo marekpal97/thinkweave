@@ -39,7 +39,7 @@ projects:
     discover_strategies: [concept_coverage]
   myresearch:
     discover_strategies: [concept_coverage, decision_review]
-  trade_ideas:
+  external_signals:      # any project name; e.g. news triage, market signals, paper feeds, …
     discover_strategies: [external_tool_runner]
     external_tool_runner:
       tools:

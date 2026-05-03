@@ -6,7 +6,8 @@ Walks the decisions table, finds entries with status ``proposed`` or
 mentioning them since.
 
 Each emitted item is a review prompt — the caller can route them to
-BACKLOG (the typical destination) or to a per-project review queue.
+the project's backlog landing doc (the typical destination) or to a
+per-project review queue.
 """
 
 from __future__ import annotations

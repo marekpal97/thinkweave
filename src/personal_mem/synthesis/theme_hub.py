@@ -100,8 +100,8 @@ def render_theme_body_skeleton(title: str) -> str:
     Three sections — ``## Essence`` (slow-moving thesis), ``## Catalyst
     log`` (dated event log; same grammar as concept hubs so the temporal-
     DAG renderer consumes both), and ``## Open questions`` (probe follow-
-    ups). The Evolution view is a derived render in THEMES.md, not stored
-    on the theme page.
+    ups). The Evolution view is a derived render in the global themes
+    landing doc, not stored on the theme page.
     """
     return (
         f"# {title}\n\n"

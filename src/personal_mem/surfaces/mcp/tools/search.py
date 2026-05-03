@@ -115,8 +115,8 @@ def tool_schemas() -> list:
                 "On-demand structured project overview — the same payload that the "
                 "SessionStart hook injects at session startup.\n\n"
                 "Sections: header, MCP tools manifest, last 5 wrapped sessions, "
-                "STATE.md, BACKLOG open items, recent decisions, open probes, "
-                "concept histogram, recent sources, retrieval hints.\n\n"
+                "state-of-play landing doc, backlog open items, recent decisions, "
+                "open probes, concept histogram, recent sources, retrieval hints.\n\n"
                 "Use mid-session when context is fading or to get an overview of "
                 "a different project without switching CWDs."
             ),

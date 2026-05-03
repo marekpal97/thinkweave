@@ -322,9 +322,10 @@ def classify_probe(prompt: Prompt, events: list[dict]) -> bool:
        prompt didn't immediately translate into a code change), OR a
        ``Read`` of an unfamiliar file follows.
 
-    False negatives are preferred over false positives — STATE.md's "Open
-    Probes" section is more useful when sparse and accurate. This is a
-    deliberately small heuristic; tuning lives downstream.
+    False negatives are preferred over false positives — the state-of-
+    play landing doc's "Open Probes" section is more useful when sparse
+    and accurate. This is a deliberately small heuristic; tuning lives
+    downstream.
 
     TODO(post-E5): empirically tune the lookahead window + lead-phrase
     list against real captured prompts once the hook has been live for

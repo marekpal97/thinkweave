@@ -91,7 +91,7 @@ def tool_schemas() -> list:
                                 "file_paths": {"type": "array", "items": {"type": "string"}, "description": "Files affected by this decision."},
                                 "outcome": {"type": "string", "enum": ["committed", "abandoned", "partial"], "description": "Was this change committed, abandoned, or partially done?"},
                                 "tags": {"type": "array", "items": {"type": "string"}, "description": "Broad categories (e.g. refactor, bugfix, performance)."},
-                                "summary": {"type": "string", "description": "One-sentence summary of the decision. Used in DECISIONS.md landing page. Keep concise."},
+                                "summary": {"type": "string", "description": "One-sentence summary of the decision. Used in the per-project decisions landing page. Keep concise."},
                                 "concepts": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -159,19 +159,22 @@ def tool_schemas() -> list:
         Tool(
             name="mem_landing",
             description=(
-                "Generate landing documents.\n\n"
-                "DECISIONS.md (per-project): Decision ledger with table + Mermaid DAG.\n"
-                "BACKLOG.md (per-project): Open items (todo), stalled proposals, parked.\n"
-                "STATE.md (per-project): Data-driven skeleton — for best results, read "
-                "the generated STATE.md and enhance with your own judgment. Use "
+                "Generate landing documents. Filenames resolve from "
+                "vault/.mem/sources.yaml: landing_files: (defaults documented "
+                "in ARCHITECTURE.md §User configuration).\n\n"
+                "decisions (per-project): Decision ledger with table + Mermaid DAG.\n"
+                "backlog (per-project): Open items (todo), stalled proposals, parked.\n"
+                "state (per-project): Data-driven skeleton — for best results, read "
+                "the generated file and enhance with your own judgment. Use "
                 "state_context=true to get raw data for a richer narrative.\n"
-                "THEMES.md (global, vault root): Global theme ledger — active, dormant, "
+                "themes (global, vault root): Global theme ledger — active, dormant, "
                 "resolved themes with project / last-catalyst / # decisions columns. "
                 "Themes are global so this doc is too — pass doc='themes' and the "
                 "project argument is ignored.\n\n"
                 "Documents are excluded from the vault index (they're views, not source).\n"
-                "Run after extraction to refresh DECISIONS and BACKLOG. Only update STATE "
-                "if the session genuinely changed the project's big picture."
+                "Run after extraction to refresh the decisions + backlog ledgers. "
+                "Only refresh state-of-play if the session genuinely changed the "
+                "project's big picture."
             ),
             inputSchema={
                 "type": "object",
@@ -193,9 +196,10 @@ def tool_schemas() -> list:
                         "type": "boolean",
                         "default": False,
                         "description": (
-                            "If true, returns structured context data for STATE.md "
-                            "instead of writing the file. Use this to write a richer "
-                            "narrative STATE.md with your own judgment."
+                            "If true, returns structured context data for the "
+                            "state-of-play landing doc instead of writing the "
+                            "file. Use this to write a richer narrative with "
+                            "your own judgment."
                         ),
                     },
                 },

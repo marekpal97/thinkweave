@@ -196,7 +196,7 @@ class Indexer:
         md_files = self.vault.get_all_md_files()
 
         # Pull the user-configured landing-filename set once per rebuild,
-        # so a vault that renamed STATE.md → STATUS.md still excludes
+        # so a vault that renamed any landing doc still excludes
         # whatever the user actually called it.
         landing_skip = landing_filename_set(self.config.vault_root)
 

@@ -45,9 +45,9 @@ uv run python -c "from personal_mem.synthesis.concepts import find_redundant_hub
 
 Apply LLM judgment (no thresholds) to each theme:
 
-- **Duplicate**: another theme covers materially the same narrative arc. Same target asset, same time horizon, same mechanism. Output: `merge: <thm-A> + <thm-B>`.
+- **Duplicate**: another theme covers materially the same narrative arc. Same subject, same time horizon, same mechanism. Output: `merge: <thm-A> + <thm-B>`.
 - **Dormant**: catalyst log hasn't moved in months and the thesis no longer feels load-bearing. Output: `archive: <thm-X>` (status → `dormant`).
-- **Resolved**: the narrative played out — either confirmed (decisions implemented and exited) or invalidated (decisions stopped out, thesis broken). Output: `resolve: <thm-X>` (status → `resolved`).
+- **Resolved**: the narrative played out — either confirmed (decisions implemented; outcome reached) or invalidated (decisions reverted; thesis broken). Output: `resolve: <thm-X>` (status → `resolved`).
 - **Stale essence**: the catalyst log has diverged from the essence — recent entries contradict or extend the working thesis. Output: `rewrite essence: <thm-X>`.
 
 These are observational, not prescriptive — surface, don't autofix.

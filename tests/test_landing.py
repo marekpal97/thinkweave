@@ -476,3 +476,45 @@ class TestLandingFilenamesConfig:
         # that only need the in-code defaults.
         assert "STATE.md" in LANDING_FILENAMES
         assert "DECISIONS.md" in LANDING_FILENAMES
+
+    def test_write_landing_docs_explicit_override(
+        self, tmp_path: Path
+    ):
+        """Caller-passed ``landing_filenames_override`` wins over the
+        sources.yaml mapping AND the defaults."""
+        vault_root = tmp_path / "vault"
+        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
+        # User config sets one rename — the override should still beat it.
+        (vault_root / ".mem" / "sources.yaml").write_text(
+            "landing_files:\n  state: STATUS.md\n", encoding="utf-8",
+        )
+        cfg = Config(vault_root=vault_root)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        idx = Indexer(config=cfg)
+        try:
+            idx.rebuild(full=True)
+        finally:
+            idx.close()
+
+        written = write_landing_docs(
+            cfg,
+            "any-proj",
+            docs="all",
+            landing_filenames_override={
+                "state": "OVERVIEW.md",
+                "decisions": "ADR.md",
+            },
+        )
+        # Explicit override beats both defaults and sources.yaml entries
+        assert "OVERVIEW.md" in written
+        assert "ADR.md" in written
+        assert "STATUS.md" not in written  # sources.yaml value got beaten
+        assert "STATE.md" not in written
+        # Untouched keys still resolve via the resolved (sources.yaml ∪
+        # defaults) chain
+        assert "BACKLOG.md" in written
+        assert "THEMES.md" in written
+        # All overridden files exist on disk under the project dir
+        assert (vault_root / "projects" / "any-proj" / "OVERVIEW.md").exists()
+        assert (vault_root / "projects" / "any-proj" / "ADR.md").exists()

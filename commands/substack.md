@@ -107,7 +107,7 @@ in the ontology, propose new concepts in `proposed_concepts` and let
 ### 4. Search vault for connections
 
 ```
-mem_search(query="<key terms + tickers + themes from this post>", mode="hybrid", limit=5)
+mem_search(query="<key terms + named entities + themes from this post>", mode="hybrid", limit=5)
 mem_concept_search(concepts=["<concepts you're about to assign>"], match_mode="any", limit=5)
 ```
 
@@ -138,7 +138,7 @@ Write the brief from the text body. Images are archived in `assets/` for later i
 ### 7. Concept mapping
 
 - Map to whatever ontology branches actually fit the publication.
-- Propose new concepts aggressively — lowercase, hyphenated, specific (e.g. `rate-cycles`, `sector-rotation`, `thematic-investing`, `private-credit`). Put new proposals in `proposed_concepts`.
+- Propose new concepts aggressively — lowercase, hyphenated, specific. Examples by domain: finance → `rate-cycles`, `sector-rotation`; ML → `chain-of-thought`, `kv-cache`; policy → `industrial-policy`, `permitting-reform`. Put new proposals in `proposed_concepts`.
 - **Do NOT edit `ontology.yaml` inline** — consolidation happens via `/mem-resolve-concepts` later.
 - Minimum 3 concepts per source (concepts are the primary linkage mechanism).
 
@@ -294,17 +294,19 @@ Batch summary: N processed, M skipped, K errors, inbox remaining count. Suggeste
 ## Claims & Evidence
 - [specific claim + evidence: "argues X because Y", "cites Z data from source"]
 - [distinguish data-backed claims from opinion/framework/anecdote]
-- [quantitative findings: prices, rates, multiples, flows]
+- [quantitative findings — whatever metrics the post leans on (e.g.
+  benchmark scores for an ML post; prices/flows for a finance post;
+  poll numbers for a politics post)]
 - [note which claims reference figures — images are in `assets/` for later inspection]
 
-## Investable Implications
-- [tickers, sectors, asset classes, themes mentioned by name]
-- [what the author thinks you should do — buy/sell/avoid/watch, and the timeframe]
-- [positioning advice: sizing, hedges, catalysts to wait for]
+## Actionable Implications
+- [named entities, categories, themes the post calls out by name]
+- [what the author thinks the reader should do — try/avoid/watch — and the timeframe]
+- [practical guidance: prerequisites, caveats, signals to wait for]
 
 ## Risks & Counterarguments
 - [what the author acknowledges could invalidate the thesis]
-- [base rates, prior regime analogies, unknown unknowns called out]
+- [base rates, prior analogies, unknown unknowns called out]
 
 ## Vault Connections
 - Relates to [[note-title]] — [why: shared thesis, contradicts, prior iteration of the same theme]
