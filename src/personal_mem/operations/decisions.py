@@ -1,7 +1,8 @@
-"""Decision operations — read-only queries over the decision corpus.
+"""Decision operations — queries and judging over the decision corpus.
 
-Mutation lives elsewhere: ``mem_extract`` writes new decisions; ``mem_judge``
-writes verdicts/status. This module is the read-side seam.
+``mem_extract`` writes new decisions (via ``operations.extract``); this
+module owns reads and the ``mem_judge`` mutation pass that scores existing
+decisions against structural evidence and flips ``status`` accordingly.
 """
 
 from __future__ import annotations
@@ -69,3 +70,55 @@ def judge(cfg: Config, *, decision_id: str = "", session_id: str = "", project: 
         out.append((dec, result))
     s.close()
     return out
+
+
+def judge_and_writeback(
+    cfg: Config,
+    *,
+    decision_id: str = "",
+    session_id: str = "",
+    project: str = "",
+):
+    """Run :func:`judge` and persist verdict/status to each decision's frontmatter.
+
+    Returns the same ``[(NoteMeta, result_dict), ...]`` shape as :func:`judge`.
+    Verdict → status mapping: ``kept→accepted``, ``superseded→superseded``,
+    ``reverted→deprecated``. Decisions with no matching session evidence are
+    skipped silently (and an empty list is returned).
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import VaultManager
+
+    results = judge(cfg, decision_id=decision_id, session_id=session_id, project=project)
+    if not results:
+        return results
+
+    vm = VaultManager(config=cfg)
+    status_map = {
+        "kept": "accepted",
+        "superseded": "superseded",
+        "reverted": "deprecated",
+    }
+    for dec, result in results:
+        fm_updates: dict = {
+            "verdict": result["verdict"],
+            "confidence": result["confidence"],
+            "judged_at": result["judged_at"],
+        }
+        if result["blame_lines"] >= 0:
+            fm_updates["blame_lines"] = result["blame_lines"]
+        if result.get("commit_refs"):
+            fm_updates["commit_refs"] = result["commit_refs"]
+            if not dec.frontmatter.get("committed"):
+                fm_updates["committed"] = True
+        vm.update_note(vm.root / dec.path, frontmatter_updates=fm_updates)
+        idx = Indexer(config=cfg)
+        idx.index_file(vm.root / dec.path)
+        idx.close()
+        new_status = status_map.get(result["verdict"])
+        if new_status and new_status != dec.frontmatter.get("status"):
+            vm.update_note(
+                vm.root / dec.path,
+                frontmatter_updates={"status": new_status},
+            )
+    return results

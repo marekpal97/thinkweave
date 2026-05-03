@@ -11,36 +11,15 @@ from personal_mem.core.schemas import NoteType
 
 
 def cmd_add(args: argparse.Namespace) -> None:
-    from personal_mem.core.indexer import Indexer
-    from personal_mem.core.vault import VaultManager
-
+    from personal_mem.operations.notes import create_note
     cfg = load_config()
-    vm = VaultManager(config=cfg)
-    vm.ensure_dirs()
-
-    note_type = NoteType(args.type)
+    body = args.body or (sys.stdin.read() if not sys.stdin.isatty() else "")
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-    project = args.project or cfg.default_project
-
-    body = args.body
-    if not body and not sys.stdin.isatty():
-        body = sys.stdin.read()
-
-    path = vm.create_note(
-        note_type=note_type,
-        title=args.title,
-        body=body,
-        project=project,
-        tags=tags,
-        session_id=args.session,
+    note = create_note(
+        cfg, note_type=NoteType(args.type), title=args.title, body=body,
+        project=args.project or cfg.default_project, tags=tags, session_id=args.session,
     )
-
-    idx = Indexer(config=cfg)
-    idx.index_file(path)
-    idx.close()
-
-    note = vm.read_note(path)
-    print(f"Created {note.type.value} [{note.id}] at {path.relative_to(cfg.vault_root)}")
+    print(f"Created {note.type.value} [{note.id}] at {(cfg.vault_root / note.path).relative_to(cfg.vault_root)}")
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -211,58 +190,28 @@ def cmd_context(args: argparse.Namespace) -> None:
         print(f"  [{r.type}] {r.title} ({r.id}){tag_str}")
 
 
+def _parse_fm_token(kv: str) -> tuple[str, object]:
+    if "=" not in kv:
+        print(f"Bad --frontmatter token (need key=value): {kv}"); sys.exit(1)
+    key, val = kv.split("=", 1)
+    if val.lower() in ("true", "false"):
+        return key, val.lower() == "true"
+    if "," in val:
+        return key, [v.strip() for v in val.split(",") if v.strip()]
+    return key, val
+
+
 def cmd_update(args: argparse.Namespace) -> None:
-    """Minimal CLI parity for mem_update — set frontmatter, append body.
-
-    Used by headless cron flows that don't go through the MCP surface.
-    """
-    from personal_mem.core.indexer import Indexer
-    from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
-
+    """CLI parity for mem_update — set frontmatter, append body."""
+    from personal_mem.operations.notes import update_note
     cfg = load_config()
-    vm = VaultManager(config=cfg)
-
-    idx = Indexer(config=cfg)
-    row = idx.db.execute(
-        "SELECT path FROM notes WHERE id = ?", (args.note_id,)
-    ).fetchone()
-    idx.close()
-    if not row:
-        print(f"Note {args.note_id} not found in index.")
-        sys.exit(1)
-
-    path = vm.root / row["path"]
-    text = path.read_text(encoding="utf-8")
-    fm, body = parse_frontmatter(text)
-
-    for kv in args.frontmatter:
-        if "=" not in kv:
-            print(f"Bad --frontmatter token (need key=value): {kv}")
-            sys.exit(1)
-        key, val = kv.split("=", 1)
-        if val.lower() in ("true", "false"):
-            fm[key] = val.lower() == "true"
-        elif "," in val:
-            fm[key] = [v.strip() for v in val.split(",") if v.strip()]
-        else:
-            fm[key] = val
-
-    if args.body_append:
-        append_path = Path(args.body_append).expanduser()
-        if not append_path.exists():
-            print(f"--body-append file not found: {append_path}")
-            sys.exit(1)
-        body = body.rstrip() + "\n\n" + append_path.read_text(encoding="utf-8")
-
-    new_text = render_frontmatter(fm) + "\n" + body.lstrip("\n")
-    path.write_text(new_text, encoding="utf-8")
-
-    idx = Indexer(config=cfg)
+    fm_updates = dict(_parse_fm_token(kv) for kv in args.frontmatter)
+    body_append = Path(args.body_append).expanduser().read_text(encoding="utf-8") if args.body_append else ""
     try:
-        idx.index_file(path)
-    finally:
-        idx.close()
-    print(f"Updated {args.note_id} ({path.relative_to(cfg.vault_root)})")
+        note = update_note(cfg, args.note_id, frontmatter_updates=fm_updates or None, body_append=body_append)
+    except (FileNotFoundError, ValueError) as e:
+        print(str(e)); sys.exit(1)
+    print(f"Updated {args.note_id} ({(cfg.vault_root / note.path).relative_to(cfg.vault_root)})")
 
 
 def cmd_decisions(args: argparse.Namespace) -> None:

@@ -385,24 +385,11 @@ def _build_auto_summary(
     return ". ".join(parts) + "."
 
 
-def cleanup_buffer(mem_dir: Path, session_id: str) -> None:
-    """Delete the buffer file after successful extraction."""
-    buf_file = mem_dir / "buffer" / f"{session_id}.jsonl"
-    buf_file.unlink(missing_ok=True)
-
-
-def archive_buffer(mem_dir: Path, session_id: str, session_dir: Path) -> None:
-    """Move the buffer file to events.jsonl in the session directory."""
-    buf_file = mem_dir / "buffer" / f"{session_id}.jsonl"
-    if not buf_file.exists():
-        return
-    dest = session_dir / "events.jsonl"
-    try:
-        import shutil
-        shutil.move(str(buf_file), str(dest))
-    except Exception:
-        # Fallback: just delete
-        buf_file.unlink(missing_ok=True)
+# Buffer I/O lives in personal_mem.core.buffer so MCP tools can call it
+# without crossing the surfaces/ → surfaces/ boundary. Re-exported here so
+# legacy imports (`from personal_mem.surfaces.hooks.handler import ...`)
+# keep working.
+from personal_mem.core.buffer import archive_buffer, cleanup_buffer  # noqa: E402, F401
 
 
 def _is_significant_command(command: str) -> bool:
