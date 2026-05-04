@@ -140,6 +140,14 @@ def add_index_subparsers(sub) -> None:
             "queue) before printing the report."
         ),
     )
+    p_doctor.add_argument(
+        "--fix-phantoms",
+        action="store_true",
+        help=(
+            "Delete zero-byte n-*/dec-*/src-* phantom files at vault root "
+            "(unresolved-wikilink residue). Safe; never touches non-empty files."
+        ),
+    )
 
     p_connect = sub.add_parser(
         "connect",
@@ -175,12 +183,45 @@ def add_index_subparsers(sub) -> None:
     p_enrich.add_argument("--no-connect", dest="connect", action="store_false")
 
     p_import = sub.add_parser("import", help="Import from external sources")
-    p_import.add_argument("source", choices=["claude-mem", "file", "chatgpt", "messenger"])
+    p_import.add_argument(
+        "source",
+        choices=["claude-code", "claude-mem", "file", "chatgpt", "messenger"],
+    )
     p_import.add_argument("path", nargs="?", default="", help="File path (for 'file'/'chatgpt' source)")
     p_import.add_argument("--source-type", default="article", help="Source type for file import")
     p_import.add_argument("--project", "-p", default="")
     p_import.add_argument("--dry-run", action="store_true", help="Show what would be imported")
     p_import.add_argument("--db-path", default="", help="Path to claude-mem database")
+    p_import.add_argument(
+        "--cc-root",
+        default="",
+        help="Override Claude Code projects root (default ~/.claude/projects)",
+    )
+    p_import.add_argument(
+        "--enrich",
+        action="store_true",
+        help=(
+            "claude-code: enrich previously-materialized sessions with "
+            "decisions/insights (does not re-materialize)."
+        ),
+    )
+    p_import.add_argument(
+        "--via",
+        choices=["batch"],
+        default="batch",
+        help="Enrichment strategy. Currently only 'batch' (Anthropic Batches).",
+    )
+    p_import.add_argument(
+        "--enrich-limit",
+        type=int,
+        default=0,
+        help="Cap how many pending sessions to enrich in this batch (0 = all).",
+    )
+    p_import.add_argument(
+        "--enrich-model",
+        default="claude-haiku-4-5-20251001",
+        help="Claude model for batch enrichment.",
+    )
     p_import.add_argument("--limit", type=int, default=0, help="Max conversations to import (chatgpt)")
     p_import.add_argument("--since", default="", help="Import conversations from this date (YYYY-MM-DD)")
     p_import.add_argument("--until", default="", help="Import conversations until this date (YYYY-MM-DD)")
@@ -234,6 +275,26 @@ def add_admin_subparsers(sub) -> None:
     p_intake_arch.add_argument("entry", help="Entry path (file or folder) to archive")
     p_intake_arch.add_argument(
         "--inbox", required=True, help="Inbox root (entry must be a direct child)"
+    )
+
+    p_install = sub.add_parser(
+        "install",
+        help=(
+            "Machine-scope setup: verify console scripts and register the "
+            "personal-mem MCP server in ~/.claude.json (idempotent)."
+        ),
+    )
+    p_install.add_argument(
+        "--vault",
+        default=None,
+        help=(
+            "Default PERSONAL_MEM_VAULT to embed in the MCP entry's env "
+            "(optional — leave unset to inherit from shell)."
+        ),
+    )
+    p_install.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Proceed without prompting on create or overwrite.",
     )
 
     sub.add_parser("init", help="Initialize a new vault")
@@ -295,6 +356,17 @@ def add_admin_subparsers(sub) -> None:
         "--aliases",
         default="",
         help="Comma-separated legacy slugs that should fold into the new slug on write",
+    )
+    p_sources_scaffold.add_argument(
+        "--skill-target",
+        choices=["user", "repo", "none"],
+        default="user",
+        help=(
+            "Where to write the skill file. 'user' = ~/.claude/commands/ "
+            "(machine-global, default — works across all projects). "
+            "'repo' = personal_mem/commands/ (legacy; for contributor "
+            "use). 'none' = skip skill creation entirely."
+        ),
     )
 
     p_skill = sub.add_parser(

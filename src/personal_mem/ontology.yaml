@@ -168,7 +168,6 @@ ml/deep-learning:
 
 ml/transformers:
   - attention
-  - attention-mechanism
   - self-attention
   - multi-head-attention
   - transformer-architecture
@@ -228,7 +227,6 @@ ai/llms:
   - natural-language-processing
 
 ai/agents:
-  - agentic-systems
   - agentic-ai
   - multi-agent-systems
   - orchestration
@@ -311,6 +309,7 @@ swe/data:
   - streamlit
   - matplotlib
   - seaborn
+  - deduplication
 
 swe/infra:
   - git
@@ -460,6 +459,7 @@ fitness:
   - caloric-deficit
   - sleep-hygiene
   - high-intensity-interval-training
+  - health
 
 
 # ============================================================

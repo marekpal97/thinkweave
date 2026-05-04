@@ -206,10 +206,17 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     idx.close()
 
 
+_EPHEMERAL_CWD_RE = re.compile(r"^(agent-[a-f0-9]{12,}|[a-f0-9-]{32,})$")
+
+
 def _detect_project(hook_input: dict) -> str:
     """Detect the current project from env var, git, or cwd.
 
     Priority: PERSONAL_MEM_PROJECT env var > git repo name > cwd directory name.
+
+    When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
+    cloud-agent run, or a bare UUID), fall through to ``_unscoped`` instead
+    of letting the runtime's session-id leak in as a project name.
     """
     env_proj = os.environ.get("PERSONAL_MEM_PROJECT")
     if env_proj:
@@ -225,6 +232,8 @@ def _detect_project(hook_input: dict) -> str:
         if parent == parent.parent:
             break
 
+    if _EPHEMERAL_CWD_RE.match(cwd_path.name):
+        return "_unscoped"
     return cwd_path.name
 
 

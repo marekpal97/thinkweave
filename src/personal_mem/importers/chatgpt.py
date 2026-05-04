@@ -387,8 +387,13 @@ def import_chatgpt(
                 "source_id": thread.id,
                 "date": thread.created.isoformat(),
             }
+            # The summarize prompt asks the LLM to list concepts without
+            # showing it the ontology, so everything it returns is unvetted.
+            # Route to proposed_concepts: so /mem-resolve-concepts can review
+            # and promote canonical ones, rather than polluting concepts:
+            # directly. (See plan B4a — the sprawl faucet fix.)
             if summary.get("concepts"):
-                extra_fm["concepts"] = summary["concepts"]
+                extra_fm["proposed_concepts"] = summary["concepts"]
 
             path = vm.create_note(
                 note_type=NoteType.SOURCE,

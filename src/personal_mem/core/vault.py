@@ -407,6 +407,18 @@ class VaultManager:
         if extra_frontmatter:
             fm.update(extra_frontmatter)
 
+        # Obsidian resolves [[note-id]] wikilinks by filename or alias, never by
+        # the frontmatter `id:` field. Notes are filed by slug, so without this
+        # alias every [[n-XXX]] / [[dec-XXX]] / [[src-XXX]] click in a hub or
+        # See-Also list would create a phantom file at vault root.
+        existing_aliases = fm.get("aliases") or []
+        if not isinstance(existing_aliases, list):
+            existing_aliases = [existing_aliases]
+        if note_id not in existing_aliases:
+            fm["aliases"] = [note_id, *existing_aliases]
+        else:
+            fm["aliases"] = existing_aliases
+
         # Determine file path
         target_dir = self._note_dir(note_type, project, output_dir=output_dir)
         slug = self._sanitize_filename(title)
@@ -588,12 +600,17 @@ class VaultManager:
         return self.root / p
 
     def get_all_md_files(self) -> list[Path]:
-        """Get all markdown files in the vault (excluding templates, .obsidian)."""
+        """Get all markdown files in the vault (excluding templates, .obsidian, .archive)."""
         results = []
         for md_file in self.root.rglob("*.md"):
             rel = md_file.relative_to(self.root)
             parts = rel.parts
-            if "templates" in parts or ".obsidian" in parts or ".mem" in parts:
+            if (
+                "templates" in parts
+                or ".obsidian" in parts
+                or ".mem" in parts
+                or ".archive" in parts
+            ):
                 continue
             results.append(md_file)
         return results

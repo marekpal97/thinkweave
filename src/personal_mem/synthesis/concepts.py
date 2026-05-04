@@ -8,6 +8,7 @@ to find near-duplicate concepts and a YAML aliases file for canonical mappings.
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -191,8 +192,14 @@ def suggest_similar(new_concept: str, existing: list[str], max_suggestions: int 
 
 
 def _seed_ontology_path() -> Path:
-    """Path to the read-only ontology seed shipped with the package."""
-    return Path(__file__).parent / "ontology.yaml"
+    """Path to the read-only ontology seed shipped with the package.
+
+    The seed lives at ``src/personal_mem/ontology.yaml`` — one directory up
+    from this module. Earlier the path used ``Path(__file__).parent`` which
+    resolved to ``synthesis/ontology.yaml`` and silently never existed,
+    leaving the system running on the vault override only.
+    """
+    return Path(__file__).parent.parent / "ontology.yaml"
 
 
 def _vault_ontology_path() -> Path | None:
@@ -304,11 +311,32 @@ def load_tag_vocabulary(path: Path | None = None) -> set[str]:
 
 
 def build_keep_set(ontology: dict[str, list[str]]) -> set[str]:
-    """Build the set of all concepts referenced in the ontology."""
+    """Build the set of all concepts referenced in the ontology.
+
+    Includes both **domain keys** (top-level entries like ``swe/python``,
+    ``ml/deep-learning``) and **leaf concepts** (the items under each
+    domain). Domain keys are themselves valid coarse-grained concepts —
+    the dual-level hierarchy lets a note tag at the domain when no
+    finer-grained leaf concept fits.
+    """
     keep: set[str] = set()
-    for concepts in ontology.values():
+    for domain, concepts in ontology.items():
+        keep.add(domain.lower())
         keep.update(c.lower() for c in concepts)
     return keep
+
+
+def build_leaf_set(ontology: dict[str, list[str]]) -> set[str]:
+    """Just the leaf concepts — domain keys excluded.
+
+    Use for "is this term *substantively* covered" checks like
+    dead-vocabulary detection, where structural domain headers shouldn't
+    count as terms expected to have note coverage.
+    """
+    leaves: set[str] = set()
+    for concepts in ontology.values():
+        leaves.update(c.lower() for c in concepts)
+    return leaves
 
 
 def concept_to_domains(ontology: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -932,8 +960,11 @@ def find_dead_vocabulary(
     first). Concepts in the ontology with zero vault assignments are
     included with count=0.
     """
-    keep = build_keep_set(ontology)
-    if not keep:
+    # Dead-vocabulary checks the *leaves* — domain headers like `swe/python`
+    # are structural and shouldn't be flagged as dead just because no note
+    # tags them directly (their leaf concepts may still have full coverage).
+    leaves = build_leaf_set(ontology)
+    if not leaves:
         return []
 
     counts: dict[str, int] = {}
@@ -943,12 +974,42 @@ def find_dead_vocabulary(
         counts[row["concept"].lower()] = row["cnt"]
 
     dead: list[tuple[str, int]] = []
-    for concept in sorted(keep):
+    for concept in sorted(leaves):
         cnt = counts.get(concept, 0)
         if cnt < min_count:
             dead.append((concept, cnt))
     dead.sort(key=lambda r: r[1])
     return dead
+
+
+_PHANTOM_NAME_RE = re.compile(r"^(n|dec|src|ses|thm)-[a-z0-9]+\.md$")
+
+
+def find_phantom_note_files(vault_root: Path) -> list[Path]:
+    """Return zero-byte note-id-named files outside session folders.
+
+    These are the residue of Obsidian wikilink misresolution: when a
+    [[n-XXX]] / [[dec-XXX]] / [[src-XXX]] click cannot resolve to an
+    existing filename or alias, Obsidian creates an empty file at the
+    vault root with the wikilink target as filename. Real notes never
+    look like this — they live under their slug filename and carry the
+    id in frontmatter — so a zero-byte file with this shape is always
+    phantom residue and safe to delete.
+    """
+    if not vault_root.exists():
+        return []
+    phantoms: list[Path] = []
+    for path in vault_root.rglob("*.md"):
+        if not _PHANTOM_NAME_RE.match(path.name):
+            continue
+        # Notes inside a session folder are legitimate (sessions filename
+        # their session.md but extracted notes inside the folder may be
+        # named after their id).
+        if "/sessions/" in str(path):
+            continue
+        if path.stat().st_size == 0:
+            phantoms.append(path)
+    return phantoms
 
 
 def doctor_report(config: Config) -> dict:
@@ -963,6 +1024,8 @@ def doctor_report(config: Config) -> dict:
       with fewer than DEAD_VOCAB_THRESHOLD vault assignments
     - ``vocabulary_size``: int — size of the canonical tag vocabulary
       (0 = linting disabled because no vocabulary is declared)
+    - ``phantom_note_files``: list of Path — zero-byte n-*/dec-*/src-*
+      files at vault root, residue of unresolved wikilink clicks
     """
     import sqlite3
 
@@ -971,7 +1034,10 @@ def doctor_report(config: Config) -> dict:
         "unknown_tags": [],
         "dead_vocabulary": [],
         "vocabulary_size": 0,
+        "phantom_note_files": [],
     }
+
+    result["phantom_note_files"] = find_phantom_note_files(config.vault_root)
 
     if not config.index_db.exists():
         return result
@@ -1029,6 +1095,18 @@ def format_doctor_report(report: dict) -> str:
         for concept, cnt in dead:
             suffix = "0 notes — never used" if cnt == 0 else f"{cnt} note(s)"
             lines.append(f"  '{concept}' — {suffix}")
+        lines.append("")
+
+    phantoms = report.get("phantom_note_files", [])
+    if phantoms:
+        lines.append(
+            f"Phantom note files ({len(phantoms)}; zero-byte residue of "
+            "unresolved wikilink clicks; safe to delete with --fix-phantoms):"
+        )
+        for path in phantoms[:20]:
+            lines.append(f"  {path}")
+        if len(phantoms) > 20:
+            lines.append(f"  … and {len(phantoms) - 20} more")
         lines.append("")
 
     if not lines:

@@ -31,33 +31,41 @@ BATCH_SIZE = 25  # notes per API call
 BODY_PREVIEW_CHARS = 500  # chars of body to include per note
 
 
-def _build_ontology_text(ontology_path: Path) -> str:
-    """Read ontology.yaml and format it as a compact vocabulary list for the prompt."""
-    if not ontology_path.exists():
-        return "(no ontology file found)"
+def _build_ontology_text(ontology: dict[str, list[str]]) -> str:
+    """Format the merged ontology dict as a compact prompt-friendly list.
 
-    lines = ontology_path.read_text(encoding="utf-8").splitlines()
-    domain = ""
+    The dict is the same shape returned by ``load_ontology()`` (seed layered
+    beneath the vault override), so the prompt always reflects the user's
+    most recent ``/mem-resolve-concepts`` cleanup, not just the shipped seed.
+    """
+    if not ontology:
+        return "(no ontology found)"
     sections: list[str] = []
-    concepts: list[str] = []
-
-    for line in lines:
-        if line.startswith("#") or not line.strip():
+    for domain, concepts in ontology.items():
+        if domain.startswith("_"):
             continue
-        if not line.startswith(" ") and not line.startswith("\t") and ":" in line:
-            if domain and concepts:
-                sections.append(f"{domain}: {', '.join(concepts)}")
-            domain = line.rstrip(":").strip()
-            concepts = []
-        elif line.strip().startswith("- "):
-            concept = line.strip()[2:].strip()
-            if not concept.startswith("_"):  # skip _relationships section
-                concepts.append(concept)
-
-    if domain and concepts:
-        sections.append(f"{domain}: {', '.join(concepts)}")
-
+        clean = [c for c in concepts if not c.startswith("_")]
+        if clean:
+            sections.append(f"{domain}: {', '.join(clean)}")
     return "\n".join(sections)
+
+
+def _ontology_concept_set(ontology: dict[str, list[str]]) -> set[str]:
+    """Flat set of every valid concept across all domains.
+
+    Used to validate the LLM's output server-side: anything outside this set
+    is treated as a *proposed* concept, not a canonical one — keeps invented
+    vocabulary out of the live ``concepts:`` field while still capturing it
+    for ``/mem-resolve-concepts`` to review.
+    """
+    valid: set[str] = set()
+    for domain, concepts in ontology.items():
+        if domain.startswith("_"):
+            continue
+        for c in concepts:
+            if not c.startswith("_"):
+                valid.add(c.lower())
+    return valid
 
 
 _SYSTEM_PROMPT_TEMPLATE = """\
@@ -68,7 +76,8 @@ You are a concept tagger for a personal knowledge vault. Assign concepts to note
 
 ## Rules
 - Assign 2-6 concepts per note from the list above when applicable
-- You MAY invent new concepts (kebab-case) if the note clearly covers a topic not listed — they will be registered
+- Put concepts that match the list above into "concepts"
+- If a note clearly covers a topic NOT in the list above and no listed concept fits, propose a new term (kebab-case) in "proposed_concepts" — never invent into "concepts"
 - Sessions: extract concepts from the work described (e.g. fts5, mcp, sqlite) — NOT meta-concepts like "session" or "meeting"
 - Decisions: tag with what was decided about (e.g. "indexing", "sqlite", "fts5")
 - Sources: tag with the subject matter of the source
@@ -76,7 +85,7 @@ You are a concept tagger for a personal knowledge vault. Assign concepts to note
 - Return ONLY valid JSON, no commentary
 
 ## Response format
-{{"results": [{{"id": "note-id", "concepts": ["concept1", "concept2"]}}]}}"""
+{{"results": [{{"id": "note-id", "concepts": ["c1", "c2"], "proposed_concepts": ["new-term"]}}]}}"""
 
 _USER_PROMPT_TEMPLATE = """\
 Tag these {n} notes with concepts:
@@ -163,8 +172,17 @@ def _call_openai(
     return parsed.get("results", [])
 
 
-def _write_concepts_to_note(vault: VaultManager, rel_path: str, concepts: list[str]) -> bool:
-    """Update the concepts frontmatter field of a markdown file.
+def _write_concepts_to_note(
+    vault: VaultManager,
+    rel_path: str,
+    concepts: list[str],
+    proposed_concepts: list[str] | None = None,
+) -> bool:
+    """Update the concepts and proposed_concepts frontmatter fields.
+
+    Canonical concepts (validated against the ontology) go to ``concepts:``;
+    LLM-invented terms go to ``proposed_concepts:``. The split happens at
+    the caller — this function trusts what it's given.
 
     Returns True if the file was modified.
     """
@@ -175,16 +193,31 @@ def _write_concepts_to_note(vault: VaultManager, rel_path: str, concepts: list[s
     text = file_path.read_text(encoding="utf-8")
     fm, body = parse_frontmatter(text)
 
-    # Merge with existing concepts (deduplicate, preserve existing)
+    # Merge canonical concepts.
     existing = fm.get("concepts", [])
     if isinstance(existing, str):
         existing = [c.strip() for c in existing.split(",") if c.strip()]
     merged = list(dict.fromkeys(existing + [c.lower().strip() for c in concepts if c]))
 
-    if set(merged) == set(existing):
-        return False  # Nothing new
+    # Merge proposed concepts.
+    existing_proposed = fm.get("proposed_concepts", []) or []
+    if isinstance(existing_proposed, str):
+        existing_proposed = [c.strip() for c in existing_proposed.split(",") if c.strip()]
+    proposed_in = proposed_concepts or []
+    merged_proposed = list(dict.fromkeys(
+        existing_proposed + [c.lower().strip() for c in proposed_in if c]
+    ))
+
+    nothing_new = (
+        set(merged) == set(existing)
+        and set(merged_proposed) == set(existing_proposed)
+    )
+    if nothing_new:
+        return False
 
     fm["concepts"] = merged
+    if merged_proposed:
+        fm["proposed_concepts"] = merged_proposed
     new_text = render_frontmatter(fm) + "\n" + body
     file_path.write_text(new_text, encoding="utf-8")
     return True
@@ -225,8 +258,13 @@ def enrich(
             f"Set {OPENAI_API_KEY_ENV} environment variable (or add to .env) to use mem enrich."
         )
 
-    ontology_path = Path(__file__).parent / "ontology.yaml"
-    ontology_text = _build_ontology_text(ontology_path)
+    # Load the merged ontology (seed + vault override) so the prompt reflects
+    # the user's most recent /mem-resolve-concepts cleanup, not just the seed.
+    from personal_mem.synthesis.concepts import load_ontology
+
+    ontology = load_ontology()
+    ontology_text = _build_ontology_text(ontology)
+    valid_concept_set = _ontology_concept_set(ontology)
 
     # Query candidates from index
     db = sqlite3.connect(str(cfg.index_db))
@@ -313,23 +351,42 @@ def enrich(
         id_to_path = {n["id"]: n["path"] for n in notes_payload}
         for result in results:
             note_id = result.get("id", "")
-            concepts = result.get("concepts", [])
+            llm_concepts = result.get("concepts", []) or []
+            llm_proposed = result.get("proposed_concepts", []) or []
             rel_path = id_to_path.get(note_id, "")
 
-            if not rel_path or not concepts:
+            # Server-side split: anything the LLM put under "concepts" that's
+            # not actually in the ontology gets routed to proposed_concepts.
+            # The LLM is asked to do this itself via the prompt, but we validate
+            # because invented concepts in canonical fields are exactly the
+            # sprawl faucet we're plugging.
+            canonical = [
+                c.lower().strip() for c in llm_concepts
+                if c and c.lower().strip() in valid_concept_set
+            ]
+            invented = [
+                c.lower().strip() for c in llm_concepts
+                if c and c.lower().strip() not in valid_concept_set
+            ]
+            invented += [c.lower().strip() for c in llm_proposed if c]
+            invented = list(dict.fromkeys(invented))
+
+            if not rel_path or (not canonical and not invented):
                 stats["skipped"] += 1
                 continue
 
             if dry_run:
                 stats["enriched"] += 1
-                stats["new_concepts"] += len(concepts)
+                stats["new_concepts"] += len(canonical)
                 continue
 
             try:
-                modified = _write_concepts_to_note(vault, rel_path, concepts)
+                modified = _write_concepts_to_note(
+                    vault, rel_path, canonical, proposed_concepts=invented
+                )
                 if modified:
                     stats["enriched"] += 1
-                    stats["new_concepts"] += len(concepts)
+                    stats["new_concepts"] += len(canonical)
                 else:
                     stats["skipped"] += 1
             except Exception as e:

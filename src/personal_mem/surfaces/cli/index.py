@@ -73,7 +73,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     With ``--migrate``, runs idempotent one-shot data migrations from
     ``operations/migrations.py`` (e.g. ``todo+research`` → queue) before
-    printing the report.
+    printing the report. With ``--fix-phantoms``, deletes the zero-byte
+    phantom files surfaced by the report.
     """
     from personal_mem.synthesis.concepts import doctor_report, format_doctor_report
 
@@ -89,6 +90,18 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         print(f"migrate_todo_research_to_queue: {moved} note(s) moved to queues")
 
     report = doctor_report(cfg)
+
+    if getattr(args, "fix_phantoms", False):
+        phantoms = report.get("phantom_note_files", [])
+        for path in phantoms:
+            try:
+                path.unlink()
+            except OSError as exc:
+                print(f"  ! could not delete {path}: {exc}")
+        print(f"fix-phantoms: deleted {len(phantoms)} zero-byte file(s)")
+        # Re-run after deletion so the printed report reflects the new state.
+        report = doctor_report(cfg)
+
     print(format_doctor_report(report))
 
 
@@ -185,6 +198,58 @@ def cmd_enrich(args: argparse.Namespace) -> None:
 
 def cmd_import(args: argparse.Namespace) -> None:
     cfg = load_config()
+
+    if args.source == "claude-code":
+        from personal_mem.onboarding.claude_code_seed import (
+            DEFAULT_CC_PROJECTS_ROOT,
+            import_claude_code,
+        )
+
+        if getattr(args, "enrich", False):
+            from personal_mem.onboarding.enrich_batch import run_enrichment_batch
+
+            run_enrichment_batch(
+                cfg,
+                project_filter=args.project,
+                model=args.enrich_model,
+                limit=args.enrich_limit,
+                dry_run=args.dry_run,
+            )
+            return
+
+        root = Path(args.cc_root) if args.cc_root else DEFAULT_CC_PROJECTS_ROOT
+        stats = import_claude_code(
+            cfg,
+            project_filter=args.project,
+            dry_run=args.dry_run,
+            claude_projects_root=root,
+        )
+        label = "Would materialize" if args.dry_run else "Materialized"
+        print(
+            f"{label}: {stats['materialized']} session(s) across "
+            f"{len(stats['per_project'])} project(s).\n"
+            f"  discovered={stats['discovered']}  "
+            f"skipped_no_content={stats['skipped_no_content']}  "
+            f"skipped_filter={stats['skipped_filter']}  "
+            f"skipped_already_imported={stats['skipped_already_imported']}\n"
+        )
+        if stats["per_project"]:
+            print("  per-project breakdown:")
+            for proj, counts in sorted(
+                stats["per_project"].items(),
+                key=lambda kv: -kv[1]["materialized"],
+            ):
+                print(
+                    f"    {counts['materialized']:>4}  {proj}"
+                    f"  (of {counts['discovered']} discovered)"
+                )
+        if stats["errors"]:
+            print(f"\n  errors ({len(stats['errors'])}):")
+            for err in stats["errors"][:10]:
+                print(f"    {err}")
+        if args.dry_run:
+            print("\n(Dry run — re-run without --dry-run to materialize.)")
+        return
 
     if args.source == "claude-mem":
         from pathlib import Path as _Path
