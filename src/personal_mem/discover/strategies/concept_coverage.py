@@ -12,7 +12,7 @@ queue item placeholder:
     {
         "strategy": "concept_coverage",
         "concept": "graph-memory",
-        "domains": ["ai/memory"],
+        "domains": ["ai-memory"],
         "mention_count": 14,
         "source_count": 1,
         "title": "Gap: graph-memory (1 source / 14 mentions)",

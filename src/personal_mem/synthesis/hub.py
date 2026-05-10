@@ -63,11 +63,15 @@ ALLOWED_FLAGS = {FLAG_NEW, FLAG_AGREES, FLAG_CONTRADICTS, FLAG_EXTENDS}
 # ---------------------------------------------------------------------------
 
 
-# Entry pattern: `- 2026-01-15 · *new* — text text — [[note-id]]`
-# Flag may be `*new*` or `*contradicts 2026-01-15*` etc.
-# Citation may be missing; if present it's the final `[[...]]` wikilink.
+# Entry pattern. Supports both flat and threaded log layouts:
+#   `- 2026-01-15 · *new* — text — [[note-id]]`            (anchor)
+#   `    - ↳ 2026-02-03 · *extends 2026-01-15* — … — …`    (child of anchor)
+# The leading whitespace + arrow are decorative — the (date, flag, ref,
+# text, citation) fields are recovered from the same regex regardless of
+# nesting depth. The arrow `↳` (U+21B3) is optional; old flat logs still parse.
 _ENTRY_RE = re.compile(
     r"^\s*-\s*"
+    r"(?:↳\s*)?"
     r"(?P<date>\d{4}-\d{2}-\d{2})\s*"
     r"·\s*"
     r"\*(?P<flag>\w+)(?:\s+(?P<ref>\d{4}-\d{2}-\d{2}))?\*\s*"
@@ -105,10 +109,88 @@ class HubLogEntry:
         """
         return [self.citation] if self.citation else []
 
-    def render(self) -> str:
+    def render(self, *, depth: int = 0) -> str:
+        """Render this entry as one markdown line.
+
+        ``depth`` controls threading. Depth 0 is a top-level anchor
+        (rendered as ``- {date} · *flag* — text — [[id]]``); depth ≥ 1
+        is a descendant rendered as a nested list item with a ``↳``
+        cue (``    - ↳ {date} · *extends 2026-01-15* — text — [[id]]``).
+        Indentation is 4 spaces per level — the canonical markdown
+        nested-list indent that Obsidian renders as a real sub-bullet.
+        """
         flag_str = f"*{self.flag}*" if not self.ref else f"*{self.flag} {self.ref}*"
         citation = f" — [[{self.citation}]]" if self.citation else ""
-        return f"- {self.date} · {flag_str} — {self.text}{citation}"
+        if depth <= 0:
+            prefix = "- "
+        else:
+            prefix = ("    " * depth) + "- ↳ "
+        return f"{prefix}{self.date} · {flag_str} — {self.text}{citation}"
+
+
+# ---------------------------------------------------------------------------
+# Threading — derived view of the (date, flag, ref) DAG for rendering.
+# ---------------------------------------------------------------------------
+
+
+def thread_log(entries: list["HubLogEntry"]) -> list[tuple["HubLogEntry", int]]:
+    """Order log entries into a threaded layout for rendering.
+
+    Returns a list of ``(entry, depth)`` tuples. ``depth == 0`` is a
+    thread anchor (a ``new`` entry, or a non-``new`` entry whose ``ref``
+    doesn't match any earlier entry — orphaned by a prior linkage failure
+    or curation pass). ``depth ≥ 1`` is a descendant indented under its
+    predecessor.
+
+    A child of entry E is any entry Y where ``Y.ref == E.date`` AND
+    ``(Y.date, Y.citation) > (E.date, E.citation)``. When ``Y.ref``
+    matches multiple same-day candidates, the first by ``(date, citation)``
+    sort wins as the parent — deterministic, but not perfectly faithful
+    to the model's original choice (we have no way to disambiguate).
+
+    Anchors render in chronological order; within each thread, descendants
+    are also chronological. The top-level reading flow is therefore the
+    same chronology you'd get from a flat log; threading just adds vertical
+    structure for the connected entries.
+    """
+    if not entries:
+        return []
+
+    sorted_entries = sorted(entries, key=lambda e: (e.date, e.citation))
+    by_date: dict[str, list[HubLogEntry]] = {}
+    for e in sorted_entries:
+        by_date.setdefault(e.date, []).append(e)
+
+    children_of: dict[int, list[HubLogEntry]] = {}
+    parent_of: dict[int, HubLogEntry] = {}
+    for e in sorted_entries:
+        if e.flag == FLAG_NEW or not e.ref:
+            continue
+        candidates = by_date.get(e.ref, [])
+        # Pick the earliest candidate that strictly precedes e.
+        parent: HubLogEntry | None = None
+        for c in candidates:
+            if (c.date, c.citation) < (e.date, e.citation):
+                parent = c
+                break
+        if parent is None:
+            continue  # orphan — render as anchor
+        children_of.setdefault(id(parent), []).append(e)
+        parent_of[id(e)] = parent
+
+    result: list[tuple[HubLogEntry, int]] = []
+
+    def emit(entry: HubLogEntry, depth: int) -> None:
+        result.append((entry, depth))
+        for child in children_of.get(id(entry), []):
+            emit(child, depth + 1)
+
+    for entry in sorted_entries:
+        if id(entry) in parent_of:
+            continue  # rendered as a descendant of its parent
+        emit(entry, 0)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +202,7 @@ class HubLogEntry:
 class Hub:
     """Shared spine for concept hubs and theme hubs.
 
-    ``id`` is the surface-specific identity (concept name like ``finance/regime``
+    ``id`` is the surface-specific identity (concept name like ``finance-regime``
     on a concept hub; UUID like ``thm-aaaa1111`` on a theme hub).
 
     ``open_questions`` is empty on concept hubs and present on theme hubs.
@@ -184,12 +266,25 @@ class Hub:
             path=path,
         )
 
-    def render(self, *, include_open_questions: bool = False) -> str:
+    def render(
+        self,
+        *,
+        include_open_questions: bool = False,
+        threaded: bool = False,
+    ) -> str:
         """Render the shared body skeleton.
 
-        Concept hubs leave ``include_open_questions`` False (they don't
+        ``include_open_questions`` — concept hubs leave False (they don't
         carry the section); theme hubs pass True so the section is always
         rendered, even when empty (it's part of the authored skeleton).
+
+        ``threaded`` — when True, the catalyst log is laid out as a
+        threaded tree: ``new`` entries are top-level bullets and non-``new``
+        entries indent under their predecessor with a ``↳`` cue. Order
+        within each thread is chronological; anchors are also chronological
+        at the top level. When False (default), the log renders as a flat
+        chronological list — the historical layout. Both layouts round-trip
+        through the parser without loss.
 
         This intentionally does not include frontmatter — the concept-hub
         renderer wraps this with its own frontmatter logic, and themes are
@@ -205,8 +300,12 @@ class Hub:
         lines.append(CATALYST_LOG_HEADING)
         lines.append("")
         if self.log:
-            for entry in self.log:
-                lines.append(entry.render())
+            if threaded:
+                for entry, depth in thread_log(self.log):
+                    lines.append(entry.render(depth=depth))
+            else:
+                for entry in self.log:
+                    lines.append(entry.render())
         else:
             lines.append("*No entries yet.*")
         lines.append("")

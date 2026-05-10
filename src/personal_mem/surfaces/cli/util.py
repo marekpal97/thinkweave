@@ -264,29 +264,37 @@ def _cmd_sources_scaffold(
         user_yaml.write_text(header + block, encoding="utf-8")
     written.append(user_yaml)
 
-    # --- artifact 2: commands/<slug>.md ---
+    # --- artifact 2: skill file ---
+    skill_target = getattr(args, "skill_target", "user")
     pkg_root = Path(__file__).resolve().parents[1].parent  # .../src/personal_mem
     template_path = pkg_root / "vault_templates" / "source_skill_template.md"
-    repo_root = pkg_root.parent.parent  # .../personal_mem
-    commands_dir = repo_root / "commands"
-    skill_path = commands_dir / f"{slug}.md"
-    if skill_path.exists():
-        print(
-            f"error: {skill_path} already exists. Refusing to overwrite. "
-            f"(The .mem/source_types.yaml entry was still written.)",
-            file=sys.stderr,
+    if skill_target == "user":
+        commands_dir = Path.home() / ".claude" / "commands"
+    elif skill_target == "repo":
+        repo_root = pkg_root.parent.parent  # .../personal_mem
+        commands_dir = repo_root / "commands"
+    else:
+        commands_dir = None
+
+    if commands_dir is not None:
+        skill_path = commands_dir / f"{slug}.md"
+        if skill_path.exists():
+            print(
+                f"error: {skill_path} already exists. Refusing to overwrite. "
+                f"(The .mem/source_types.yaml entry was still written.)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        commands_dir.mkdir(parents=True, exist_ok=True)
+        template = template_path.read_text(encoding="utf-8")
+        rendered = template.format(
+            slug=slug,
+            bucket=bucket,
+            layout=layout,
+            description=description or f"Ingest {slug} entries into the vault.",
         )
-        sys.exit(1)
-    commands_dir.mkdir(parents=True, exist_ok=True)
-    template = template_path.read_text(encoding="utf-8")
-    rendered = template.format(
-        slug=slug,
-        bucket=bucket,
-        layout=layout,
-        description=description or f"Ingest {slug} entries into the vault.",
-    )
-    skill_path.write_text(rendered, encoding="utf-8")
-    written.append(skill_path)
+        skill_path.write_text(rendered, encoding="utf-8")
+        written.append(skill_path)
 
     # --- artifact 3: vault_templates/.mem/sources.yaml default block ---
     template_sources = pkg_root / "vault_templates" / ".mem" / "sources.yaml"

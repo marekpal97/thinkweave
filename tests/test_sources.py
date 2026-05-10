@@ -30,6 +30,7 @@ def _scaffold_args(
     layout: str = "folder",
     description: str = "",
     aliases: str = "",
+    skill_target: str = "repo",
 ) -> argparse.Namespace:
     return argparse.Namespace(
         sources_action="scaffold",
@@ -38,6 +39,7 @@ def _scaffold_args(
         layout=layout,
         description=description,
         aliases=aliases,
+        skill_target=skill_target,
     )
 
 

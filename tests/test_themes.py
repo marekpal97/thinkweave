@@ -91,7 +91,7 @@ class TestThemeVaultRouting:
             extra_frontmatter=build_theme_frontmatter(
                 "AI capex unwind 2026",
                 project="trade_ideas",
-                concepts=["finance/regime", "finance/structure"],
+                concepts=["finance-regime", "finance-structure"],
             ),
         )
 
@@ -144,12 +144,12 @@ class TestThemeFrontmatter:
         fm = build_theme_frontmatter(
             "AI capex unwind 2026",
             project="trade_ideas",
-            concepts=["finance/regime", "finance/structure"],
+            concepts=["finance-regime", "finance-structure"],
             relates_to=["thm-aaaa1111"],
             status="dormant",
         )
         assert fm["project"] == "trade_ideas"
-        assert fm["concepts"] == ["finance/regime", "finance/structure"]
+        assert fm["concepts"] == ["finance-regime", "finance-structure"]
         assert fm["relates_to"] == ["thm-aaaa1111"]
         assert fm["status"] == "dormant"
 
@@ -162,6 +162,17 @@ class TestThemeFrontmatter:
         assert "## Essence" in body
         assert "## Catalyst log" in body
         assert "## Open questions" in body
+
+    def test_parent_omitted_when_empty(self):
+        fm = build_theme_frontmatter("Standalone theme")
+        assert "parent" not in fm
+
+    def test_parent_field_written_when_supplied(self):
+        fm = build_theme_frontmatter(
+            "Memory chip supercycle 2026",
+            parent="thm-aaaa1111",
+        )
+        assert fm["parent"] == "thm-aaaa1111"
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +201,7 @@ class TestThemesLanding:
             extra_frontmatter=build_theme_frontmatter(
                 "AI capex unwind 2026",
                 project="trade_ideas",
-                concepts=["finance/regime"],
+                concepts=["finance-regime"],
             ),
         )
         indexer.rebuild()
@@ -238,6 +249,272 @@ class TestThemesLanding:
     ):
         with pytest.raises(ValueError):
             write_landing_docs(config, project="x", docs="bogus")
+
+
+class TestCatalogSection:
+    """Active themes get a `## Catalog (active)` section after the table.
+
+    Stable shape so the news triage helper can locate-by-heading and
+    pass it as cached context: `### {title}` heading, bullet block with
+    id/parent/concepts/last-catalyst, blockquote essence excerpt.
+    """
+
+    def test_catalog_renders_per_active_theme(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        from personal_mem.synthesis.theme_hub import (
+            render_theme_body_skeleton,
+        )
+
+        # A theme with a real essence (skeleton placeholder is intentionally
+        # filtered out — we don't pollute the catalog with prompt text).
+        skeleton = render_theme_body_skeleton("AI capex unwind 2026")
+        before, _, after = skeleton.partition("## Essence")
+        body = (
+            before
+            + "## Essence\n\n"
+            + "Hyperscalers pulled forward GPU spend in 2024-2025; "
+            + "sustained ROI hasn't materialized; 2026 is the year "
+            + "that thesis is re-tested.\n\n"
+            + "## Catalyst log\n\n"
+            + "## Open questions\n"
+        )
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="AI capex unwind 2026",
+            body=body,
+            extra_frontmatter=build_theme_frontmatter(
+                "AI capex unwind 2026",
+                concepts=["semiconductors", "thematic-investing"],
+            ),
+        )
+        indexer.rebuild()
+        content = themes_ledger(config)
+
+        # Catalog section exists.
+        assert "## Catalog (active)" in content
+        # Card heading.
+        assert "### AI capex unwind 2026" in content
+        # Concepts bullet rendered with backticks.
+        assert "`semiconductors`" in content
+        assert "`thematic-investing`" in content
+        # Essence excerpt rendered as blockquote.
+        assert "> Hyperscalers pulled forward GPU spend" in content
+        # Top-level marker present.
+        assert "_(top-level)_" in content
+
+    def test_catalog_skips_skeleton_essence(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """A theme with the unedited skeleton essence (italic placeholder
+        text) gets card structure but no blockquote — we don't pollute
+        the catalog with prompt instructions."""
+        from personal_mem.synthesis.theme_hub import (
+            render_theme_body_skeleton,
+        )
+
+        body = render_theme_body_skeleton("Unedited theme")
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="Unedited theme",
+            body=body,
+            extra_frontmatter=build_theme_frontmatter("Unedited theme"),
+        )
+        indexer.rebuild()
+        content = themes_ledger(config)
+
+        assert "### Unedited theme" in content
+        # Skeleton text starts with `_Replace with…` — must not bleed
+        # into the catalog. The blockquote is omitted entirely.
+        assert "_Replace with the working thesis" not in content
+        assert "> _Replace" not in content
+
+    def test_catalog_renders_parent_link(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Child themes show their parent as a wikilink in the card,
+        not as `(top-level)`."""
+        parent_path = vault.create_note(
+            note_type=NoteType.THEME,
+            title="Parent theme",
+            extra_frontmatter=build_theme_frontmatter("Parent theme"),
+        )
+        parent_id = vault.read_note(parent_path).id
+
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="Child theme",
+            extra_frontmatter=build_theme_frontmatter(
+                "Child theme",
+                parent=parent_id,
+            ),
+        )
+        indexer.rebuild()
+        content = themes_ledger(config)
+
+        # Find the child's card and check the parent line.
+        child_marker = "### Child theme"
+        assert child_marker in content
+        idx = content.index(child_marker)
+        # Within the next ~400 chars (card body), parent line must
+        # reference the parent's id, not "(top-level)".
+        card_body = content[idx : idx + 400]
+        assert f"[[{parent_id}]]" in card_body
+        assert "(Parent theme)" in card_body
+
+
+class TestThemeHierarchy:
+    """Two-tier hierarchy: parent themes group narrower children.
+
+    Mirrors how the concept ontology nests broad → narrow. The
+    `parent: thm-X` frontmatter field is the only edge; `themes_ledger`
+    renders parents at depth 0 and children indented with `↳ `. Stable
+    order is preserved; orphaned children (parent not in the rendered
+    set) are promoted to roots so nothing is dropped.
+    """
+
+    def test_landing_renders_child_indented_under_parent(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        parent = vault.create_note(
+            note_type=NoteType.THEME,
+            title="AI capex unwind 2026",
+            extra_frontmatter=build_theme_frontmatter("AI capex unwind 2026"),
+        )
+        # Read the parent's id so we can wire the child to it.
+        parent_note = vault.read_note(parent)
+        parent_id = parent_note.id
+
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="Memory chip supercycle 2026",
+            extra_frontmatter=build_theme_frontmatter(
+                "Memory chip supercycle 2026",
+                parent=parent_id,
+            ),
+        )
+        indexer.rebuild()
+        content = themes_ledger(config)
+
+        # Parent appears un-indented; child has the ↳ marker.
+        assert "AI capex unwind 2026" in content
+        assert "↳ " in content
+        # The child link cell uses the prefix.
+        assert "↳ [[themes/" in content
+        # Parent comes before child in the table.
+        assert content.index("AI capex unwind 2026") < content.index(
+            "Memory chip supercycle 2026"
+        )
+
+    def test_orphan_child_renders_at_root(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """If a child's parent is missing from the rendered set, the
+        child still appears (at depth 0) — never silently dropped."""
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="Orphan child",
+            extra_frontmatter=build_theme_frontmatter(
+                "Orphan child",
+                parent="thm-doesnotexist",
+            ),
+        )
+        indexer.rebuild()
+        content = themes_ledger(config)
+
+        assert "Orphan child" in content
+        # No indent prefix on the orphan — promoted to root.
+        # (We can't assert ↳ absent because other tests may have ↳;
+        # instead, verify the link line for "Orphan child" doesn't
+        # carry the ↳ prefix.)
+        for line in content.split("\n"):
+            if "Orphan child" in line and line.startswith("|"):
+                assert "↳" not in line
+
+
+class TestPromoteCandidateWithParent:
+    """`promote_candidate(parent=...)` writes parent into the new theme's
+    frontmatter so the hierarchy is established at promotion time."""
+
+    def test_promote_with_parent_writes_field(
+        self, vault: VaultManager, config: Config, tmp_path
+    ):
+        from personal_mem.synthesis.theme_candidates import (
+            _candidates_dir,
+            promote_candidate,
+        )
+
+        # Hand-write a minimal candidate stub.
+        cdir = _candidates_dir(config)
+        cdir.mkdir(parents=True, exist_ok=True)
+        cand_path = cdir / "cand-test1234-supercycle.md"
+        cand_path.write_text(
+            "---\n"
+            "type: theme\n"
+            "id: cand-test1234\n"
+            "date: \"2026-05-10T00:00:00+00:00\"\n"
+            "source_type: news\n"
+            "candidacy: inferred-from-news\n"
+            "status: candidate\n"
+            "cluster_size: 3\n"
+            "cluster_sources: [src-aaa, src-bbb, src-ccc]\n"
+            "cluster_concepts: [semiconductors, thematic-investing]\n"
+            "aliases: [cand-test1234]\n"
+            "---\n\n"
+            "# Candidate: semiconductors / thematic-investing\n",
+            encoding="utf-8",
+        )
+
+        # Promote with --parent set.
+        new_path = promote_candidate(
+            config,
+            "cand-test1234",
+            title="Memory chip supercycle 2026",
+            essence="Test essence.",
+            parent="thm-parent01",
+        )
+
+        text = new_path.read_text(encoding="utf-8")
+        assert "parent: thm-parent01" in text
+        # Candidate stub gone.
+        assert not cand_path.exists()
+
+    def test_promote_without_parent_omits_field(
+        self, vault: VaultManager, config: Config, tmp_path
+    ):
+        from personal_mem.synthesis.theme_candidates import (
+            _candidates_dir,
+            promote_candidate,
+        )
+
+        cdir = _candidates_dir(config)
+        cdir.mkdir(parents=True, exist_ok=True)
+        cand_path = cdir / "cand-test5678-toplevel.md"
+        cand_path.write_text(
+            "---\n"
+            "type: theme\n"
+            "id: cand-test5678\n"
+            "date: \"2026-05-10T00:00:00+00:00\"\n"
+            "source_type: news\n"
+            "candidacy: inferred-from-news\n"
+            "status: candidate\n"
+            "cluster_size: 3\n"
+            "cluster_sources: [src-x, src-y, src-z]\n"
+            "cluster_concepts: [interest-rates, risk-off]\n"
+            "aliases: [cand-test5678]\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        new_path = promote_candidate(
+            config,
+            "cand-test5678",
+            title="Top-level theme",
+            essence="No parent.",
+        )
+
+        text = new_path.read_text(encoding="utf-8")
+        assert "parent:" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -333,17 +610,25 @@ class TestThemeTemporalDAGInLanding:
         indexer.rebuild()
 
         content = themes_ledger(config)
-        # Theme appears in table but no per-theme DAG section.
+        # Theme appears in table + catalog, but no per-theme Mermaid DAG.
+        # (The catalog section emits `### {title}` for every active theme
+        # — the original assertion conflated "no DAG" with "no H3", which
+        # is wrong now that the catalog renders structured sub-blocks.)
         assert "Lonely theme" in content
-        assert "### Lonely theme" not in content
+        assert "```mermaid" not in content
 
 
-class TestConceptHubEvolutionSection:
-    def test_evolution_section_rendered_when_links_present(
+class TestConceptHubThreadedRendering:
+    """Concept hubs render the catalyst log as a threaded markdown tree —
+    `new` entries are top-level bullets and non-`new` entries indent under
+    their predecessor with a `↳` cue. This replaces the prior Mermaid
+    `## Evolution` section, which was unreadable past ~30 entries and
+    produced churny diffs on every append.
+    """
+
+    def test_extends_entry_renders_indented_under_anchor(
         self, vault: VaultManager, config: Config, tmp_path
     ):
-        # Direct test of render_concept_hub: build a hub with linked entries,
-        # render, assert ## Evolution appears.
         from personal_mem.synthesis.concept_hub import (
             ConceptHub,
             LogEntry,
@@ -371,10 +656,23 @@ class TestConceptHubEvolutionSection:
             ],
         )
         rendered = render_concept_hub(hub)
-        assert "## Evolution" in rendered
-        assert "```mermaid" in rendered
 
-    def test_evolution_section_skipped_when_only_new(
+        # Mermaid is gone.
+        assert "## Evolution" not in rendered
+        assert "```mermaid" not in rendered
+
+        # Threaded layout: anchor at depth 0, descendant nested with ↳.
+        assert "- 2026-01-01 · *new* — seed — [[n-aaa]]" in rendered
+        assert (
+            "    - ↳ 2026-02-01 · *extends 2026-01-01* — extends seed — [[n-bbb]]"
+            in rendered
+        )
+        # The descendant comes after its anchor in the rendered text.
+        assert rendered.index("seed — [[n-aaa]]") < rendered.index(
+            "extends seed — [[n-bbb]]"
+        )
+
+    def test_flat_log_when_no_links(
         self, vault: VaultManager, config: Config, tmp_path
     ):
         from personal_mem.synthesis.concept_hub import (
@@ -393,3 +691,6 @@ class TestConceptHubEvolutionSection:
         )
         rendered = render_concept_hub(hub)
         assert "## Evolution" not in rendered
+        assert "```mermaid" not in rendered
+        # Both anchors at depth 0 — no indentation, no arrow.
+        assert "↳" not in rendered

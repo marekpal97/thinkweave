@@ -143,7 +143,7 @@ class TestDriftNewConceptCandidates:
         indexer: Indexer,
         monkeypatch,
     ):
-        _stub_ontology(monkeypatch, {"math/calc": ["gradient"]})
+        _stub_ontology(monkeypatch, {"math-calc": ["gradient"]})
 
         # Create 5 notes with "recursive-cte" — crosses the threshold of 5
         for i in range(5):
@@ -166,7 +166,7 @@ class TestDriftNewConceptCandidates:
         indexer: Indexer,
         monkeypatch,
     ):
-        _stub_ontology(monkeypatch, {"math/calc": ["gradient"]})
+        _stub_ontology(monkeypatch, {"math-calc": ["gradient"]})
 
         for i in range(6):
             vault.create_note(
@@ -218,7 +218,7 @@ class TestOntologyStale:
         indexer: Indexer,
         monkeypatch,
     ):
-        _stub_ontology(monkeypatch, {"math/calc": ["x"]})
+        _stub_ontology(monkeypatch, {"math-calc": ["x"]})
         indexer.rebuild(full=True)
 
         # No marker file → stale by default
@@ -233,7 +233,7 @@ class TestOntologyStale:
         indexer: Indexer,
         monkeypatch,
     ):
-        ontology_path = _stub_ontology(monkeypatch, {"math/calc": ["x"]})
+        ontology_path = _stub_ontology(monkeypatch, {"math-calc": ["x"]})
         indexer.rebuild(full=True)
 
         # Touch marker AFTER the ontology to make it fresh
@@ -252,7 +252,7 @@ class TestOntologyStale:
         indexer: Indexer,
         monkeypatch,
     ):
-        ontology_path = _stub_ontology(monkeypatch, {"math/calc": ["x"]})
+        ontology_path = _stub_ontology(monkeypatch, {"math-calc": ["x"]})
         indexer.rebuild(full=True)
 
         marker = hubs_marker_path(config)
@@ -261,7 +261,7 @@ class TestOntologyStale:
 
         time.sleep(0.01)
         # Edit the ontology after marker was written
-        ontology_path.write_text("math/calc: [x, y]\n", encoding="utf-8")
+        ontology_path.write_text("math-calc: [x, y]\n", encoding="utf-8")
 
         report = drift_report(config)
         assert report["ontology_stale"] is True

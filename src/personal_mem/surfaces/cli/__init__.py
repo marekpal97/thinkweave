@@ -31,6 +31,7 @@ from personal_mem.surfaces.cli.index import (
     cmd_index,
     cmd_stats,
 )
+from personal_mem.surfaces.cli.install import cmd_install
 from personal_mem.surfaces.cli.intake import cmd_intake
 from personal_mem.surfaces.cli.landing import cmd_landing
 from personal_mem.surfaces.cli.notes import (
@@ -47,6 +48,7 @@ from personal_mem.surfaces.cli.notes import (
 from personal_mem.surfaces.cli.parser import build_parser
 from personal_mem.surfaces.cli.queue import cmd_queue
 from personal_mem.surfaces.cli.skill import cmd_skill
+from personal_mem.surfaces.cli.themes import cmd_themes
 from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
 
 
@@ -73,6 +75,7 @@ _DISPATCH = {
     "flow": cmd_flow,
     "hooks": cmd_hooks,
     "init": cmd_init,
+    "install": cmd_install,
     "mcp": cmd_mcp,
     "intake": cmd_intake,
     "sources": cmd_sources,
@@ -80,6 +83,7 @@ _DISPATCH = {
     "queue": cmd_queue,
     "drain": cmd_drain,
     "discover": cmd_discover,
+    "themes": cmd_themes,
     "update": cmd_update,
 }
 

@@ -9,12 +9,15 @@ dependencies = []
 mcp = ["mcp>=1.0"]
 embeddings = ["httpx"]
 hubs = ["openai>=1.50"]
-all = ["personal-mem[mcp,embeddings,hubs]"]
+seed = ["anthropic>=0.40"]
+news = ["feedparser>=6.0", "readability-lxml>=0.8.1", "httpx"]
+all = ["personal-mem[mcp,embeddings,hubs,seed,news]"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
 mem = "personal_mem.surfaces.cli:main"
 mem-hook = "personal_mem.surfaces.hooks.handler:main"
+mem-mcp = "personal_mem.surfaces.mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

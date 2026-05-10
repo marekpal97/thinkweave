@@ -40,19 +40,28 @@ class TestPickTargetConcept:
         assert target == "apple"
 
     def test_drops_domain_path_concepts(self):
-        # All concepts contain "/" → no candidate.
+        # Obsolete after the slash→dash rename (n-23928237 follow-up):
+        # `pick_target_concept`'s "domain-path = contains '/'" filter is now
+        # always satisfied because no canonical concept carries a slash.
+        # Detecting parent-domain concepts (e.g. ``swe-python``) would
+        # require an ontology lookup the script doesn't do; that's a
+        # separate redistribution arc. For now: when only dash-form
+        # parent-domain candidates are present, the script picks one
+        # alphabetically rather than refusing.
         target = pick_target_concept(
-            source_concepts={"swe/python", "ml/deep-learning"},
+            source_concepts={"swe-python", "ml-deep-learning"},
             hub_slug="swe-python",
             concept_counts=self._counts(),
         )
-        assert target is None
+        # ``swe-python`` is filtered as the hub's own slug; only
+        # ``ml-deep-learning`` remains.
+        assert target == "ml-deep-learning"
 
     def test_drops_hubs_own_dotted_slug(self):
-        # Hub is swe-python.md; the dotted form swe/python on the source
+        # Hub is swe-python.md; the dotted form swe-python on the source
         # note must NOT be picked. Other concept must win.
         target = pick_target_concept(
-            source_concepts={"swe/python", "pytest"},
+            source_concepts={"swe-python", "pytest"},
             hub_slug="swe-python",
             concept_counts=self._counts(pytest=5),
         )

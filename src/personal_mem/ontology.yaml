@@ -101,7 +101,7 @@ tag_vocabulary:
 # Math
 # ============================================================
 
-math/linear-algebra:
+math-linear-algebra:
   - eigenvalues
   - eigenvectors
   - svd
@@ -109,14 +109,14 @@ math/linear-algebra:
   - dimensionality
   - dimensionality-reduction
 
-math/calculus:
+math-calculus:
   - gradient
   - derivative
   - chain-rule
   - taylor-series
   - convergence
 
-math/probability:
+math-probability:
   - probability
   - probability-distribution
   - bayesian-inference
@@ -128,7 +128,7 @@ math/probability:
   - maximum-likelihood-estimation
   - statistical-inference
 
-math/optimization:
+math-optimization:
   - optimization
   - convex-optimization
   - stochastic-gradient-descent
@@ -140,7 +140,7 @@ math/optimization:
 # ML
 # ============================================================
 
-ml/classical:
+ml-classical:
   - machine-learning
   - classifier
   - clustering
@@ -152,7 +152,7 @@ ml/classical:
   - dimensionality-reduction
   - xgboost
 
-ml/deep-learning:
+ml-deep-learning:
   - neural-networks
   - backpropagation
   - cnn
@@ -166,7 +166,7 @@ ml/deep-learning:
   - pytorch
   - inductive-bias
 
-ml/transformers:
+ml-transformers:
   - attention
   - self-attention
   - multi-head-attention
@@ -177,7 +177,7 @@ ml/transformers:
   - fine-tuning
   - scaling-laws
 
-ml/training:
+ml-training:
   - training
   - reinforcement-learning
   - representation-learning
@@ -189,14 +189,14 @@ ml/training:
   - model-evaluation
   - interpretability
 
-ml/embeddings:
+ml-embeddings:
   - embeddings
   - embedding-space
   - cosine-similarity
   - vector-store
   - chromadb
 
-ml/novelty:
+ml-novelty:
   - novelty-detection
   - anomaly-detection
   - novelty-scoring
@@ -215,7 +215,7 @@ ml/novelty:
 # AI / agentic / tooling
 # ============================================================
 
-ai/llms:
+ai-llms:
   - llm
   - openai-api
   - prompt-engineering
@@ -226,7 +226,7 @@ ai/llms:
   - rag
   - natural-language-processing
 
-ai/agents:
+ai-agents:
   - agentic-ai
   - multi-agent-systems
   - orchestration
@@ -236,7 +236,7 @@ ai/agents:
   - langsmith
   - crewai
 
-ai/tools:
+ai-tools:
   - claude-code
   - claude-code-skills
   - mcp
@@ -247,7 +247,7 @@ ai/tools:
   - statusline
   - custom-commands
 
-ai/harness:
+ai-harness:
   - agent-harness
   - sub-agent
   - tool-use-loop
@@ -257,7 +257,7 @@ ai/harness:
   - custom-commands
   - session-management
 
-ai/memory:
+ai-memory:
   - memory-system
   - knowledge-graph
   - graph-memory
@@ -271,7 +271,7 @@ ai/memory:
   - chunking
   - ranking
 
-ai/infra:
+ai-infra:
   - api
   - docker
   - fastapi
@@ -285,7 +285,7 @@ ai/infra:
 # Software engineering
 # ============================================================
 
-swe/python:
+swe-python:
   - python
   - pandas
   - dataframe
@@ -299,7 +299,7 @@ swe/python:
   - pathlib
   - pre-commit
 
-swe/data:
+swe-data:
   - sql
   - sqlite
   - fts5
@@ -311,7 +311,7 @@ swe/data:
   - seaborn
   - deduplication
 
-swe/infra:
+swe-infra:
   - git
   - docker
   - tmux
@@ -347,7 +347,7 @@ thinkmesh:
 # these invariants; they don't extend them.
 # ============================================================
 
-finance/markets:
+finance-markets:
   - market-data
   - asset-prices
   - correlation
@@ -364,7 +364,7 @@ finance/markets:
   - proprietary-trading
   - alternative-data
 
-finance/options:
+finance-options:
   - options-strategy
   - options-trading
   - options-engine
@@ -380,7 +380,7 @@ finance/options:
   - black-scholes
   - iron-condor
 
-finance/quant:
+finance-quant:
   - factor-model
   - factor-modeling
   - fama-french-factors
@@ -395,7 +395,7 @@ finance/quant:
   - asset-allocation
   - diversification
 
-finance/research:
+finance-research:
   - equity-research
   - fundamental-analysis
   - research-agent
@@ -405,7 +405,7 @@ finance/research:
   - market-research
   - macro-research
 
-finance/macro:
+finance-macro:
   - macro-trading
   - inflation
   - interest-rates
@@ -414,7 +414,7 @@ finance/macro:
   - recession
   - labor-market
 
-finance/regime:
+finance-regime:
   - risk-on
   - risk-off
   - reflation
@@ -422,13 +422,13 @@ finance/regime:
   - disinflation
   - goldilocks
 
-finance/policy:
+finance-policy:
   - fomc                    # institutional invariant — kept as policy actor
 
-finance/geopolitics:
+finance-geopolitics:
   - geopolitics             # broad lens kept; named conflicts live in themes
 
-finance/structure:
+finance-structure:
   - carry-trade
   - pairs-trade
   - vertical-spread

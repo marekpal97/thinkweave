@@ -51,6 +51,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "intake_folder": "~/substack_inbox",
             "dedup_keys": ["url", "slug"],
         },
+        "news": {
+            "queue": "vault/.mem/queues/news.jsonl",
+            "feed_config": "vault/.mem/news_feeds.yaml",
+            # v2 admission: Haiku title-triage against the active-themes
+            # catalog rendered in vault/THEMES.md (## Catalog (active)).
+            # The legacy focus_manifest field is intentionally absent —
+            # FOCUS.md is a deprecated stub.
+            "triage_model": "claude-haiku-4-5",
+            "themes_catalog": "vault/THEMES.md",
+            "dedup_keys": ["url", "entry_id"],
+            "drain_strategy": "subagent",
+            "drain_parallelism": 4,
+            "drain_batch_max": 20,
+            "subagent_type": "research-news-worker",
+            "subagent_model": "sonnet",
+            "post_batch_hooks": ["theme_scan"],
+            "research_skill": "research-news",
+        },
         "conversation": {
             "drain_strategy": "inline",
             "importer": "chatgpt",

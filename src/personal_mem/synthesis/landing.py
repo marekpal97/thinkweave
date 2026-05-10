@@ -886,6 +886,7 @@ def _query_themes(db) -> list[dict]:
     - ``catalyst_entries``: parsed catalyst-log entries.
     - ``last_catalyst``: the most recent catalyst date.
     """
+    from personal_mem.synthesis.hub import ESSENCE_HEADING, extract_section
     from personal_mem.synthesis.theme_hub import parse_theme_catalyst_log
 
     rows = db.execute(
@@ -921,6 +922,7 @@ def _query_themes(db) -> list[dict]:
         body_text = row["body_text"] or ""
         catalyst_entries = parse_theme_catalyst_log(body_text)
         last_catalyst = _last_catalyst_date(body_text)
+        essence = extract_section(body_text, ESSENCE_HEADING).strip()
 
         themes.append({
             "id": row["id"],
@@ -930,6 +932,8 @@ def _query_themes(db) -> list[dict]:
             "status": fm.get("status", "active"),
             "concepts": fm.get("concepts", []),
             "relates_to": fm.get("relates_to", []),
+            "parent": str(fm.get("parent") or ""),
+            "essence": essence,
             "implements_count": len(decisions),
             "decisions": decisions,
             "catalyst_entries": catalyst_entries,
@@ -981,7 +985,7 @@ def themes_ledger(config: Config) -> str:
         "",
         "Themes are global narratives — temporal stories cited by sources, "
         "decisions, and notes from any project. Concepts they cite are "
-        "invariants (e.g. `finance/regime`); the timed catalysts live "
+        "invariants (e.g. `finance-regime`); the timed catalysts live "
         "inside each theme's `## Catalyst log` section.",
         "",
     ]
@@ -1000,8 +1004,12 @@ def themes_ledger(config: Config) -> str:
         and not str(t["status"]).startswith("merged-into")
     ]
 
-    def _row(t: dict) -> str:
-        link = f"[[themes/{t['id']}-{_slug_for_link(t['title'])}|{t['title']}]]"
+    def _row(t: dict, depth: int = 0) -> str:
+        prefix = "↳ " * depth
+        link = (
+            f"{prefix}[[themes/{t['id']}-{_slug_for_link(t['title'])}|"
+            f"{t['title']}]]"
+        )
         proj = t["project"] or "—"
         # Catalyst log dates are bare YYYY-MM-DD; the index `date` column
         # carries an ISO timestamp — trim the time portion for display.
@@ -1015,9 +1023,28 @@ def themes_ledger(config: Config) -> str:
         lines.append("")
         lines.append("| Theme | Project | Last catalyst | # decisions |")
         lines.append("|---|---|---|---|")
-        for t in active:
-            lines.append(_row(t))
+        for t, depth in _hierarchical_order(active):
+            lines.append(_row(t, depth))
         lines.append("")
+
+        # Catalog — compact essence + concepts per active theme. Two
+        # audiences: the human reader who wants more than a table row,
+        # and the news triage helper which slurps this section as the
+        # cached system context for Haiku verdicts. The format is stable
+        # markdown — `### {title}` heading + bullet block + blockquote
+        # essence — so triage can locate the section by heading and pass
+        # it whole.
+        lines.append(f"## Catalog (active)")
+        lines.append("")
+        lines.append(
+            "*Compact view of active themes — used by news triage and as "
+            "a quick read of what's being tracked. Generated from each "
+            "theme's frontmatter and `## Essence` section.*"
+        )
+        lines.append("")
+        for t, depth in _hierarchical_order(active):
+            lines.append(_catalog_card(t, depth, by_id={x["id"]: x for x in active}))
+            lines.append("")
 
         # Per-theme temporal DAG — inlined Mermaid diagram for any theme
         # that has either catalyst-log linkage or pinned decisions to
@@ -1049,8 +1076,8 @@ def themes_ledger(config: Config) -> str:
             lines.append("")
             lines.append("| Theme | Project | Last catalyst | # decisions |")
             lines.append("|---|---|---|---|")
-            for t in group:
-                lines.append(_row(t))
+            for t, depth in _hierarchical_order(group):
+                lines.append(_row(t, depth))
             lines.append("")
             lines.append("</details>")
             lines.append("")
@@ -1084,6 +1111,127 @@ def _slug_for_link(title: str) -> str:
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = slug.strip("-")
     return slug[:80] if slug else "untitled"
+
+
+def _catalog_card(t: dict, depth: int, by_id: dict[str, dict]) -> str:
+    """Render one active theme as a markdown sub-block for the Catalog section.
+
+    Stable shape so the triage helper can parse-by-heading:
+
+        ### {title}
+        - **id:** `thm-XXXX`
+        - **parent:** `thm-YYYY` (or "(top-level)")
+        - **concepts:** `c1`, `c2`, `c3`
+        - **last catalyst:** YYYY-MM-DD
+        > {essence excerpt — first ~400 chars}
+
+    Children are rendered identically — depth signals nesting only via
+    the parent line, not via heading level (kept at H3 throughout so
+    Obsidian's outline view is flat-readable).
+    """
+    title = t["title"] or t["id"]
+    parent_id = t.get("parent") or ""
+    parent_line = (
+        f"- **parent:** [[{parent_id}]] ({by_id[parent_id]['title']})"
+        if parent_id and parent_id in by_id
+        else "- **parent:** _(top-level)_"
+    )
+    concepts = t.get("concepts") or []
+    concepts_line = (
+        "- **concepts:** "
+        + (", ".join(f"`{c}`" for c in concepts) if concepts else "_(none yet)_")
+    )
+    raw_last = t.get("last_catalyst") or t.get("date") or ""
+    last = raw_last.split("T", 1)[0] if raw_last else "—"
+    essence = (t.get("essence") or "").strip()
+    essence_excerpt = _truncate_essence(essence, max_chars=400)
+
+    parts = [
+        f"### {title}",
+        f"- **id:** `{t['id']}`",
+        parent_line,
+        concepts_line,
+        f"- **last catalyst:** {last}",
+    ]
+    if essence_excerpt:
+        parts.append("")
+        # Blockquote-style so the triage helper can strip `> ` markers
+        # cleanly when serialising into the Haiku prompt.
+        for line in essence_excerpt.split("\n"):
+            parts.append(f"> {line}" if line else ">")
+    return "\n".join(parts)
+
+
+def _truncate_essence(essence: str, *, max_chars: int = 400) -> str:
+    """Compress an essence paragraph to <= max_chars, breaking on a
+    sentence boundary when feasible. Skeleton placeholder text (italic
+    underscores prefacing the body) is dropped entirely — those notes
+    have no real essence yet and shouldn't pollute the catalog.
+    """
+    text = essence.strip()
+    if not text:
+        return ""
+    # Skeleton placeholder check — generated bodies wrap the prompt
+    # text in italics; treat that as "no real essence yet".
+    if text.startswith("_") and text.endswith("_"):
+        return ""
+    if len(text) <= max_chars:
+        return text
+    # Try to break at a sentence boundary within the budget.
+    cutoff = text.rfind(". ", 0, max_chars)
+    if cutoff > max_chars // 2:
+        return text[: cutoff + 1] + "…"
+    # Fall back to nearest word boundary.
+    cutoff = text.rfind(" ", 0, max_chars)
+    if cutoff > max_chars // 2:
+        return text[:cutoff] + "…"
+    return text[:max_chars] + "…"
+
+
+def _hierarchical_order(themes: list[dict]) -> list[tuple[dict, int]]:
+    """Order themes as a parent → children tree, depth-first.
+
+    Themes are nodes; ``parent`` frontmatter is the only edge. Themes whose
+    ``parent`` is empty *or* points outside the input set are roots
+    (rendered at depth 0). Children appear immediately after their parent
+    at depth+1. Multi-parent themes are not supported — the first parent
+    wins and any deeper cycle is broken on second visit.
+
+    Stable: roots preserve the input order; siblings preserve input order
+    among themselves. Disconnected children (parent unknown / not in
+    list) get promoted to roots so nothing is dropped.
+    """
+    by_id = {t["id"]: t for t in themes}
+    children_of: dict[str, list[dict]] = {}
+    for t in themes:
+        p = t.get("parent") or ""
+        if p and p in by_id:
+            children_of.setdefault(p, []).append(t)
+
+    out: list[tuple[dict, int]] = []
+    visited: set[str] = set()
+
+    def _walk(t: dict, depth: int) -> None:
+        if t["id"] in visited:
+            return
+        visited.add(t["id"])
+        out.append((t, depth))
+        for child in children_of.get(t["id"], []):
+            _walk(child, depth + 1)
+
+    for t in themes:
+        p = t.get("parent") or ""
+        if p and p in by_id:
+            continue
+        _walk(t, 0)
+
+    # Pick up any disconnected children whose parent reference points
+    # outside the visible group (e.g., dormant parent, active child).
+    for t in themes:
+        if t["id"] not in visited:
+            _walk(t, 0)
+
+    return out
 
 
 def write_landing_docs(

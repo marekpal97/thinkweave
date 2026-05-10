@@ -44,7 +44,7 @@ The drift detector uses string similarity which produces many false positives. A
 - KEEP only pairs where the concepts genuinely refer to the same thing: typos (`autoresarch` → `autoresearch`), singular/plural (`embedding` → `embeddings`), naming variants (`options_engine` → `options-engine`), redundant prefixes (`agentic-langgraph` → `langgraph`)
 
 **Ontology candidate filtering rules:**
-- DISCARD domain-path concepts used as tags (e.g. `swe/python`, `ml/deep-learning`) — these are ontology structure, not missing entries
+- DISCARD domain-path concepts used as tags (e.g. `swe-python`, `ml-deep-learning`) — these are ontology structure, not missing entries
 - DISCARD generic process terms (e.g. `architecture`, `testing`, `documentation`, `configuration`) — these are tags, not concepts
 - DISCARD project names used as concepts (e.g. `personal_mem`, `options_engine`)
 - KEEP genuine domain terms that belong in the ontology but aren't there yet
@@ -66,7 +66,7 @@ Stats: X total concepts, Y singletons, Z ontology coverage
 ### Ontology additions (N)
 | Concept (count) | Domain |
 |-----------------|--------|
-| `wandb` (18) | ml/training |
+| `wandb` (18) | ml-training |
 
 Approve all and go, or list exceptions.
 ```
@@ -114,6 +114,78 @@ hubs_marker_path(cfg).touch()
 
 `generate_concept_hub_skeletons` NEVER overwrites existing concept hubs — it only creates empty stubs for concepts that don't have a hub yet. LLM-written essence and learning-log content is preserved across regenerations. This ensures `ontology.yaml` changes propagate to hub pages, wikilinks, and the index in one pass. No manual `mem concepts hubs` step needed.
 
+### 4.4. Surface promotion candidates from proposed_concepts (default step)
+
+Strict creation policy means new vocabulary lives in `proposed_concepts:`
+until a term reaches critical mass. This step lifts those that have:
+
+```bash
+uv run mem concepts proposed-counts --min-count 5
+```
+
+Apply the same LLM filter as step 2's "Ontology candidate filtering rules"
+— discard generic process terms, project names, domain-path concepts
+already used as tags. Present surviving candidates as a compact promotion
+table:
+
+```
+### Promotions (N candidates)
+| Term (count) | Domain | Reason |
+|--------------|--------|--------|
+| `streaming-ingestion` (8) | swe-data | recurrent across pipeline notes |
+| `regime-shift` (6) | finance-markets | thematic in trade-ideas |
+```
+
+On approval, run one promotion per row:
+
+```bash
+uv run mem concepts promote streaming-ingestion --domain swe-data
+uv run mem concepts promote regime-shift --domain finance-markets
+```
+
+Each call: writes the term into `vault/.mem/ontology.yaml` under the
+chosen domain, walks every note carrying it in `proposed_concepts:` and
+moves it to `concepts:`, ensures the hub skeleton at
+`vault/concepts/topics/{term}.md`, and rebuilds the index.
+
+Below-threshold proposed terms persist — they may grow into promotion
+candidates next round, or get caught by `prune-singletons` if they
+remain count=1 noise.
+
+### 4.5. Canonical singleton noise prune (default step)
+
+Run **after** merges and promotions land — both can shift a count=1
+concept into count≥2, so this comes last. Strips the canonical
+(`concepts:`) singleton noise floor:
+
+```bash
+uv run mem concepts prune-singletons --dry-run    # preview
+uv run mem concepts prune-singletons              # apply (rebuilds index)
+```
+
+**Scope: `concepts:` only — `proposed_concepts:` is sanctuary by
+design.** Emergent vocabulary enters proposed at count=1 (its natural
+starting state). Pruning that field on count alone would undo the
+demotion sweep's work and erase legitimate candidates that simply
+haven't accumulated yet. Cleaning the proposed pool happens through
+promotion (step 4.4) or via the `/mem-resolve-concepts` reviewer's
+explicit kill list — never via automated count-based pruning.
+
+A canonical singleton is kept when:
+
+- the concept appears in the merged ontology (seed + vault override), or
+- any `DOMAIN_MARKERS` substring matches the concept name —
+  domain-vocabulary fragments for math, ML, finance, fitness, physics,
+  and a small allowlist of proper-noun tools (see
+  `synthesis/concepts.py:DOMAIN_MARKERS`).
+
+Anything else is pruned. Under the strict creation policy this prune is
+mostly a guardrail — once `demote-non-ontology` has run, the only
+canonical singletons left are pre-policy leftovers and direct vault
+edits. If a domain you care about isn't covered by the markers (e.g.
+you want all `chem-*` singletons preserved), extend `DOMAIN_MARKERS`
+rather than running this with `--dry-run` and cherry-picking.
+
 ### 5. Hub coherence review
 
 After merges, ontology edits, and regeneration, do one sweep over the concept hubs at `vault/concepts/topics/*.md` to check their health. This step is LLM judgment, not rule-based — no numeric thresholds.
@@ -141,16 +213,18 @@ Present as a compact section in the action plan:
 
 Skip this step entirely if there are no concept hubs yet (fresh vault).
 
-### 6. Phase 2 — Hubs: prune orphans
+### 6. Phase 2 — Hubs: archive orphans
 
 After merges and/or ontology edits, run:
 
 ```bash
 uv run mem concepts hubs --prune          # dry-run: list orphan hubs
-uv run mem concepts hubs --prune --apply  # delete them
+uv run mem concepts hubs --prune --apply  # archive them
 ```
 
-An orphan hub is a `vault/concepts/topics/<concept>.md` whose underlying concept has zero vault assignments AND isn't in `ontology.yaml`. After a merge, the renamed concept's hub is auto-deleted by `mem concepts merge`, so this catches leftovers from older merges or ad-hoc deletions.
+An orphan hub is a `vault/concepts/topics/<concept>.md` whose underlying concept has zero vault assignments AND isn't in `ontology.yaml`. **`--apply` archives, not deletes** — files move to `vault/concepts/topics/_archive/` so the synthesis work is preserved if the concept gets re-promoted later. The directory lives *inside* `topics/` so non-recursive scans (`mem hubs status`, `mem hubs link`, `mem hubs repair`) skip archived files automatically.
+
+Hub archival also runs *automatically* at the end of `uv run mem concepts demote-non-ontology` — every term that exits the canonical pool has its hub relocated in the same operation. This step catches leftovers from ad-hoc ontology edits or older merges that pre-date the doctrine.
 
 ### 7. Phase 3 — Ontology: prune dead vocabulary
 

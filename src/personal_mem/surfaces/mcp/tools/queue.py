@@ -51,7 +51,11 @@ def tool_schemas() -> list:
                     "status": {
                         "type": "string",
                         "default": "done",
-                        "description": "With archive: status stamped onto the archived row (done/failed/duplicate/…).",
+                        "description": "With archive: status stamped onto the archived row (done/failed/rejected/duplicate/…).",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "With archive: optional explanation (e.g. worker rejection reason). Preserved on the archived record.",
                     },
                 },
                 "required": ["action"],
@@ -135,11 +139,13 @@ def handle(cfg: Config, args: dict):
         if not item_id:
             return [TextContent(type="text", text="archive requires item_id")]
         status = args.get("status") or "done"
+        reason = args.get("reason") or None
         q = Queue.for_source_type(source_type, cfg.vault_root)
-        q.archive(item_id, status)
+        q.archive(item_id, status, reason=reason)
+        suffix = f" reason={reason!r}" if reason else ""
         return [TextContent(
             type="text",
-            text=f"archived {item_id} with status={status}",
+            text=f"archived {item_id} with status={status}{suffix}",
         )]
 
     return [TextContent(type="text", text=f"Unknown queue action: {action}")]

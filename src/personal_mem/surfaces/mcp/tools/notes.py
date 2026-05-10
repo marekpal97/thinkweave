@@ -226,10 +226,30 @@ def handle_create(cfg: Config, args: dict):
 
     from personal_mem.core.indexer import Indexer
     from personal_mem.core.vault import VaultManager
+    from personal_mem.synthesis.concepts import split_concepts_by_ontology
 
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
     note_type = NoteType(args["type"])
+
+    # Strict policy: anything in `concepts:` that isn't in the merged
+    # ontology gets routed to `proposed_concepts:`. Caller intent is
+    # preserved (proposed terms stay proposed; canonical-but-unknown
+    # terms move into the proposed queue for /mem-resolve-concepts).
+    extra_frontmatter = dict(args.get("frontmatter") or {})
+    if "concepts" in extra_frontmatter or "proposed_concepts" in extra_frontmatter:
+        canonical, proposed = split_concepts_by_ontology(
+            extra_frontmatter.get("concepts"),
+            proposed=extra_frontmatter.get("proposed_concepts"),
+        )
+        if canonical:
+            extra_frontmatter["concepts"] = canonical
+        else:
+            extra_frontmatter.pop("concepts", None)
+        if proposed:
+            extra_frontmatter["proposed_concepts"] = proposed
+        else:
+            extra_frontmatter.pop("proposed_concepts", None)
 
     path = vm.create_note(
         note_type=note_type,
@@ -237,7 +257,7 @@ def handle_create(cfg: Config, args: dict):
         body=args.get("body", ""),
         project=args.get("project", ""),
         tags=args.get("tags"),
-        extra_frontmatter=args.get("frontmatter"),
+        extra_frontmatter=extra_frontmatter or None,
         session_id=args.get("session_id", ""),
     )
 

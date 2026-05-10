@@ -54,10 +54,14 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
         validate_linkage_revision,
     )
 
+    titles_by_id = _load_titles_for_citations(cfg, work)
+
     system_prompt = HUB_LINKAGE_SYSTEM
     requests_to_send: list[dict] = []
     for concept, entries, essence in work:
-        user_prompt = build_linkage_user_prompt(concept, essence, entries)
+        user_prompt = build_linkage_user_prompt(
+            concept, essence, entries, titles_by_id=titles_by_id
+        )
         requests_to_send.append({
             "concept": concept,
             "system": system_prompt,
@@ -208,15 +212,33 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
         hub_path = concept_hub_path(cfg, concept)
         hub = parse_concept_hub(hub_path, concept=concept)
         entries_sorted = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
-        if len(revisions) != len(entries_sorted):
+
+        # Length tolerance: gpt-5-mini occasionally truncates very long hubs.
+        # Apply revisions for the first min(len(revisions), len(entries))
+        # entries — they're in input order — and leave any tail unchanged.
+        # We refuse only when the response is structurally empty.
+        if not revisions:
             continue
+        if len(revisions) != len(entries_sorted):
+            print(
+                f"  {concept}: response had {len(revisions)} revisions for "
+                f"{len(entries_sorted)} entries — applying first "
+                f"{min(len(revisions), len(entries_sorted))}, leaving the rest unchanged."
+            )
+
+        by_date_texts: dict[str, list[str]] = {}
+        for e in entries_sorted:
+            by_date_texts.setdefault(e.date, []).append(e.text)
 
         any_change = False
-        for entry, rev in zip(entries_sorted, revisions):
-            new_flag, new_ref = validate_linkage_revision(
+        pairs = list(zip(entries_sorted, revisions))
+        for entry, rev in pairs:
+            new_flag, new_ref, _quote = validate_linkage_revision(
                 entry_date=entry.date,
                 flag=str(rev.get("flag", "new")).lower(),
                 ref=str(rev.get("ref") or "").strip(),
+                ref_quote=str(rev.get("ref_quote") or "").strip(),
+                by_date_texts=by_date_texts,
             )
             if new_flag is None:
                 continue
@@ -253,3 +275,42 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
             f"  {reindex_failures} hub(s) couldn't be reindexed. "
             f"Run `uv run mem index` to catch up."
         )
+
+
+def _load_titles_for_citations(cfg, work) -> dict[str, str]:
+    """Bulk-resolve note titles for every citation across every hub.
+
+    The linkage prompt decorates each entry with `[from: "<title>"]` so the
+    model has more than the distilled artifact line to reason about. One
+    SELECT covers every citation; missing ids fall back to no decoration.
+    """
+    citation_ids: set[str] = set()
+    for _concept, entries, _essence in work:
+        for e in entries:
+            if e.citation:
+                citation_ids.add(e.citation)
+    if not citation_ids or not cfg.index_db.exists():
+        return {}
+
+    import sqlite3
+
+    titles: dict[str, str] = {}
+    db = sqlite3.connect(cfg.index_db)
+    try:
+        db.row_factory = sqlite3.Row
+        chunk = 500
+        ids = list(citation_ids)
+        for i in range(0, len(ids), chunk):
+            batch = ids[i : i + chunk]
+            placeholders = ",".join("?" * len(batch))
+            rows = db.execute(
+                f"SELECT id, title FROM notes WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            for r in rows:
+                t = (r["title"] or "").strip()
+                if t:
+                    titles[r["id"]] = t
+    finally:
+        db.close()
+    return titles

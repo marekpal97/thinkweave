@@ -131,7 +131,7 @@ class TestAssignConceptsFromPaths:
         assert "sqlite" in concepts
 
     def test_with_ontology(self):
-        ontology = {"ml/deep-learning": ["pytorch", "neural-networks"]}
+        ontology = {"ml-deep-learning": ["pytorch", "neural-networks"]}
         concepts = assign_concepts_from_paths(
             ["src/pytorch/model.py"], ontology
         )

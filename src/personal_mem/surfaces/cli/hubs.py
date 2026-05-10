@@ -207,16 +207,18 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
 
 # Backwards-compatibility shims — these helpers moved to operations/drain.py
 # in Phase 4 C. Tests still import them under their underscore-prefixed names.
-def _validate_linkage_revision(entry_date: str, flag: str, ref: str):
+def _validate_linkage_revision(entry_date: str, flag: str, ref: str, **kwargs):
     from personal_mem.operations.drain import validate_linkage_revision
 
-    return validate_linkage_revision(entry_date, flag, ref)
+    return validate_linkage_revision(entry_date, flag, ref, **kwargs)
 
 
-def _build_linkage_user_prompt(concept: str, essence: str, entries: list) -> str:
+def _build_linkage_user_prompt(
+    concept: str, essence: str, entries: list, **kwargs
+) -> str:
     from personal_mem.operations.drain import build_linkage_user_prompt
 
-    return build_linkage_user_prompt(concept, essence, entries)
+    return build_linkage_user_prompt(concept, essence, entries, **kwargs)
 
 
 def _parse_linkage_response(raw: str) -> list[dict]:

@@ -29,6 +29,9 @@ from typing import Literal
 Layout = Literal["flat", "folder", "author_folder"]
 _VALID_LAYOUTS: tuple[str, ...] = ("flat", "folder", "author_folder")
 
+TemporalGrain = Literal["event", "concept", "none"]
+_VALID_TEMPORAL_GRAINS: tuple[str, ...] = ("event", "concept", "none")
+
 
 @dataclass(frozen=True)
 class SourceTypeSpec:
@@ -47,6 +50,16 @@ class SourceTypeSpec:
             this source type. Informational only — used by ``mem sources
             show`` to cross-reference.
         description: one-liner shown by ``mem sources list``.
+        temporal_grain: how the source type relates to time-ordered narrative.
+            ``event`` — emits temporally-anchored signals (substack, news);
+            theme-candidate floater runs at post-ingest and may write stubs
+            to ``vault/themes/_candidates/``.
+            ``concept`` — emits domain knowledge with no inherent time arc
+            (paper, repo, article); concept hubs handle synthesis, no theme
+            floating.
+            ``none`` — no synthesis hook (conversation, ad-hoc capture).
+            Default is ``concept`` so adding a new source type doesn't
+            silently start floating themes.
     """
 
     slug: str
@@ -55,6 +68,7 @@ class SourceTypeSpec:
     aliases: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
     description: str = ""
+    temporal_grain: TemporalGrain = "concept"
 
 
 REGISTRY: dict[str, SourceTypeSpec] = {
@@ -93,6 +107,7 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         description=(
             "ChatGPT conversation exports. Imported via `mem import chatgpt`."
         ),
+        temporal_grain="none",
     ),
     "substack": SourceTypeSpec(
         slug="substack",
@@ -102,6 +117,18 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         description=(
             "Substack newsletters. Acquired via /substack from the disk inbox."
         ),
+        temporal_grain="event",
+    ),
+    "news": SourceTypeSpec(
+        slug="news",
+        bucket="news",
+        layout="author_folder",
+        skills=("research-news", "news"),
+        description=(
+            "Curated financial / macro news. RSS+cron intake, FOCUS-gated, "
+            "subagent drain. Outlet (Reuters, Bankier, …) drives author folder."
+        ),
+        temporal_grain="event",
     ),
 }
 
@@ -229,6 +256,15 @@ def load_user_specs(vault_root: Path) -> dict[str, SourceTypeSpec]:
         skills_raw = payload.get("skills", []) or []
         aliases = tuple(str(a) for a in aliases_raw) if isinstance(aliases_raw, list) else ()
         skills = tuple(str(s) for s in skills_raw) if isinstance(skills_raw, list) else ()
+        temporal_grain = payload.get("temporal_grain", "concept")
+        if temporal_grain not in _VALID_TEMPORAL_GRAINS:
+            print(
+                f"warning: source_types.yaml entry for {slug!r} has invalid "
+                f"temporal_grain {temporal_grain!r} (must be one of "
+                f"{_VALID_TEMPORAL_GRAINS}) — defaulting to 'concept'",
+                file=sys.stderr,
+            )
+            temporal_grain = "concept"
         out[str(slug)] = SourceTypeSpec(
             slug=str(slug),
             bucket=str(bucket),
@@ -236,5 +272,6 @@ def load_user_specs(vault_root: Path) -> dict[str, SourceTypeSpec]:
             aliases=aliases,
             skills=skills,
             description=str(payload.get("description", "")),
+            temporal_grain=temporal_grain,  # type: ignore[arg-type]
         )
     return out

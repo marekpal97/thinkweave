@@ -136,12 +136,14 @@ class Queue:
                 return True
         return False
 
-    def archive(self, item_id: str, status: str) -> None:
+    def archive(self, item_id: str, status: str, reason: str | None = None) -> None:
         """Move ``item_id`` from the active queue into the dated archive.
 
-        ``status`` (``done`` / ``failed`` / ``duplicate`` / …) is stamped
-        onto the archived record. The active queue is rewritten without
-        the item; the archive jsonl is appended to.
+        ``status`` (``done`` / ``failed`` / ``rejected`` / ``duplicate`` / …)
+        is stamped onto the archived record, along with an optional
+        ``reason`` string when the worker emits one (e.g. rejection
+        explanations). The active queue is rewritten without the item;
+        the archive jsonl is appended to.
 
         No-op if the id isn't present (so callers can call ``archive``
         defensively without a pre-check).
@@ -157,6 +159,8 @@ class Queue:
         if target is None:
             return
         target["status"] = status
+        if reason:
+            target["reason"] = reason
         target["archived_at"] = datetime.now(timezone.utc).isoformat(
             timespec="seconds"
         )

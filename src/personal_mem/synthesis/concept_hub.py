@@ -193,8 +193,10 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
 
     lines = [render_frontmatter(fm), "", f"# {hub.concept}", ""]
     if domains:
+        from personal_mem.synthesis.concepts import _domain_label
+
         dlist = " · ".join(
-            f"[[concepts/{d.replace('/', '--')}|{d.split('/')[-1].replace('-', ' ').title()}]]"
+            f"[[concepts/{d}|{_domain_label(d)}]]"
             for d in sorted(set(domains))
         )
         lines.append(f"*Domains: {dlist}*")
@@ -211,23 +213,19 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
     lines.append(CATALYST_LOG_HEADING)
     lines.append("")
     if hub.log_entries:
-        for entry in hub.log_entries:
-            lines.append(entry.render())
+        from personal_mem.synthesis.hub import thread_log
+
+        for entry, depth in thread_log(hub.log_entries):
+            lines.append(entry.render(depth=depth))
     else:
         lines.append("*No entries yet.*")
     lines.append("")
 
-    # Auto-managed Evolution section — derived view of the linkage graph
-    # built into the log entries. Empty when no entry has a non-`new` ref,
-    # so we omit the section entirely rather than leave a placeholder.
-    from personal_mem.retrieval.temporal import entries_to_graph, render_evolution_section
-
-    graph = entries_to_graph(hub.log_entries, kind="log_entry")
-    has_links = any(e for e in graph.edges)
-    if has_links:
-        section = render_evolution_section(graph)
-        if section:
-            lines.append(section)
+    # No Mermaid `## Evolution` block — the threaded log above already
+    # exposes the DAG structure typographically. Mermaid was unreadable
+    # past ~30 entries and produced churny diffs on every append; the
+    # threaded markdown renders natively in Obsidian, scales to the largest
+    # hubs, and shows append-only diffs cleanly.
 
     return "\n".join(lines)
 
@@ -513,14 +511,27 @@ HUB_EXTRACTION_SYSTEM = """You are extracting learning artifacts for a single co
 1. **Essence** — a short (≤500 word) working mental model of the concept. Slow-moving. Only flag for revision when a source genuinely shifts the model.
 2. **Catalyst log** — an append-only list of discrete learning artifacts, each citing a vault note via a [[note-id]] wikilink.
 
-Your job for each note you see: read it, and decide what (if anything) it contributes to this concept's catalyst log. A learning artifact can be any of: a claim, a technique, a framing, a surprising data point, a useful reference, a novel connection. Not every note will contribute something — return an empty list if it doesn't.
+Your job for each note you see: read it, and decide what (if anything) it contributes to this concept's catalyst log.
 
-Each entry you propose must carry an observational flag describing its relationship to prior log entries. These are honest observations, not validated states:
+**The bar is high.** An artifact must be **durable** — something a future user, browsing this hub a year from now, would still want to be reminded of.
 
-- `new` — adds something not represented in the existing log
-- `agrees` — supports/reinforces an existing entry (include `ref` = that entry's date)
-- `contradicts` — conflicts with an existing entry (include `ref` = that entry's date)
-- `extends` — elaborates on an existing entry (include `ref` = that entry's date)
+Passes the bar:
+- a non-obvious technique
+- a counterintuitive framing or mental model
+- a load-bearing constraint (the kind of thing whose violation breaks something downstream)
+- a hard-won gotcha (the kind of thing that cost time to learn)
+- a strong reference (a paper, repo, or page worth coming back to)
+- a real decision-changing data point
+
+Does NOT pass:
+- routine operations ("ran the test suite", "synced the lockfile")
+- commodity facts ("pytest fixtures exist", "X has a CLI")
+- session ephemera ("19/19 tests green", "build took 7s")
+- a near-duplicate of an existing entry shown in the recent log — even if it comes from a different note. Look at the recent entries before deciding; if your candidate artifact substantially restates one already there, return empty.
+
+**Most notes contribute 0–1 artifacts.** A genuinely rich note may warrant 2; the cap is 3 but you should rarely reach it. When in doubt, return empty — a sparse log of strong artifacts beats a dense log of weak ones.
+
+**Flag assignment is best-effort here.** A separate linkage pass runs over the full chronological log later and rewrites the flags into a temporal DAG. So default to `new` and don't overthink it. Use `agrees` / `extends` / `contradicts` only when the connection to a specific listed log entry is obvious from your reading of this note alone; in that case, include `ref` = that entry's exact date.
 
 Entry text must be **short** (1–3 sentences, max ~200 chars). Distilled, not summarized. Terse artifact statements, not paraphrases of the note.
 
@@ -577,11 +588,24 @@ def build_extraction_user_prompt(
     date: str,
     title: str,
     body: str,
-    recent_limit: int = 10,
+    recent_limit: int = 25,
+    full_log_threshold: int = 50,
 ) -> str:
-    """Render the user prompt for extracting artifacts from a single note."""
+    """Render the user prompt for extracting artifacts from a single note.
+
+    When the existing log is small (≤``full_log_threshold`` entries) the
+    full log is shown so the model can see every potential predecessor.
+    Past that, only the most recent ``recent_limit`` entries are shown to
+    cap prompt size — a defensible compromise since the linkage pass
+    sees the full log later anyway.
+    """
     essence_text = essence.strip() or "*No synthesis yet.*"
-    recent = recent_entries[-recent_limit:] if recent_entries else []
+    if not recent_entries:
+        recent = []
+    elif len(recent_entries) <= full_log_threshold:
+        recent = recent_entries
+    else:
+        recent = recent_entries[-recent_limit:]
     if recent:
         recent_text = "\n".join(e.render() for e in recent)
     else:

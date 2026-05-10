@@ -14,6 +14,74 @@ def add_concepts_subparsers(sub) -> None:
     p_merge.add_argument("to_concept", help="Canonical concept to merge into")
     p_prune = concepts_sub.add_parser("prune", help="Remove low-count concepts from notes")
     p_prune.add_argument("--dry-run", action="store_true", help="Show what would be pruned")
+    p_prune_singletons = concepts_sub.add_parser(
+        "prune-singletons",
+        help=(
+            "Strip count=1 concepts not in the ontology and not matching "
+            "DOMAIN_MARKERS — the noise floor of LLM enrichment. Default "
+            "step in /mem-resolve-concepts."
+        ),
+    )
+    p_prune_singletons.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be pruned without writing files or rebuilding index.",
+    )
+    p_demote = concepts_sub.add_parser(
+        "demote-non-ontology",
+        help=(
+            "Move every non-ontology term from `concepts:` to "
+            "`proposed_concepts:` on every note. One-shot retroactive "
+            "application of the strict creation policy."
+        ),
+    )
+    p_demote.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be demoted without writing files or rebuilding index.",
+    )
+    p_consolidate = concepts_sub.add_parser(
+        "consolidate-parents",
+        help=(
+            "Drop a domain concept from `concepts:` when any of its leaves "
+            "is also present on the same note. Counterpart to the strict "
+            "ontology gate — gates writes vs cleans post-hoc redundancy."
+        ),
+    )
+    p_consolidate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be consolidated without writing files or rebuilding index.",
+    )
+    p_proposed = concepts_sub.add_parser(
+        "proposed-counts",
+        help=(
+            "List proposed_concepts terms aggregated by occurrence count. "
+            "Use with /mem-resolve-concepts to find promotion candidates."
+        ),
+    )
+    p_proposed.add_argument(
+        "--min-count", type=int, default=1,
+        help="Hide terms below this count (default: 1).",
+    )
+    p_proposed.add_argument(
+        "--prefix", default="",
+        help="Filter terms by prefix.",
+    )
+    p_promote = concepts_sub.add_parser(
+        "promote",
+        help=(
+            "Promote a proposed_concept to canonical ontology status: "
+            "add to vault ontology.yaml, walk every note carrying the "
+            "term in proposed_concepts: and move it to concepts:, "
+            "ensure hub skeleton, rebuild index."
+        ),
+    )
+    p_promote.add_argument("concept", help="Term to promote (will be lowercased).")
+    p_promote.add_argument(
+        "--domain", required=True,
+        help="Ontology domain to attach the term to (e.g. ml-training, swe-python).",
+    )
     p_concepts_hubs = concepts_sub.add_parser(
         "hubs", help="Generate or prune Obsidian hub pages"
     )
@@ -101,8 +169,13 @@ def add_hubs_subparsers(sub) -> None:
     p_hubs_run.add_argument(
         "--max-tokens",
         type=int,
-        default=1024,
-        help="Max output tokens per request (default: 1024)",
+        default=8192,
+        help=(
+            "Max output tokens per request (default: 8192). gpt-5-mini is a "
+            "reasoning model — visible JSON for per-note extraction is small "
+            "(~200 tokens) but hidden reasoning typically uses 2-5K. Smaller "
+            "caps starve the model and trigger finish_reason=length with empty content."
+        ),
     )
     p_hubs_run.add_argument(
         "--poll-interval",
@@ -162,8 +235,13 @@ def add_hubs_subparsers(sub) -> None:
     p_hubs_link.add_argument(
         "--max-tokens",
         type=int,
-        default=2048,
-        help="Max output tokens per request (default: 2048; linkage responses are longer than per-note extractions)",
+        default=32768,
+        help=(
+            "Max output tokens per request (default: 32768). gpt-5-mini is "
+            "a reasoning model — visible JSON output for a 150-entry hub is "
+            "~6K tokens but hidden reasoning can consume 10-20K. Smaller caps "
+            "starve the model and trigger finish_reason=length with empty content."
+        ),
     )
     p_hubs_link.add_argument(
         "--poll-interval",
@@ -187,6 +265,86 @@ def add_hubs_subparsers(sub) -> None:
         "--dry-run",
         action="store_true",
         help="Build requests and print the first one, but don't submit to the API",
+    )
+
+
+def add_themes_subparsers(sub) -> None:
+    p_themes = sub.add_parser(
+        "themes",
+        help=(
+            "Theme candidate scan / archive / promotion — backs the "
+            "/themes-resolve skill's source-coupled floating mechanism."
+        ),
+    )
+    themes_sub = p_themes.add_subparsers(dest="themes_action")
+
+    p_scan = themes_sub.add_parser(
+        "scan-candidates",
+        help=(
+            "Scan recent event-grain sources for clusters; write candidate "
+            "stubs to vault/themes/_candidates/. Deterministic, no LLM."
+        ),
+    )
+    p_scan.add_argument(
+        "--source-type", default="",
+        help="Restrict to one source type (default: all event-grain types).",
+    )
+    p_scan.add_argument(
+        "--recent-days", type=int, default=0,
+        help="Window for 'recent' sources (default: 30).",
+    )
+    p_scan.add_argument(
+        "--min-cluster-size", type=int, default=0,
+        help="Minimum sources in a cluster to trigger a candidate (default: 3).",
+    )
+    p_scan.add_argument(
+        "--min-shared-concepts", type=int, default=0,
+        help="Minimum concept overlap between cluster sources (default: 2).",
+    )
+    p_scan.add_argument(
+        "--dry-run", action="store_true",
+        help="Report what would be created without writing files.",
+    )
+
+    p_archive = themes_sub.add_parser(
+        "archive-stale-candidates",
+        help=(
+            "Move candidates older than --stale-days into "
+            "vault/themes/_candidates/_archive/."
+        ),
+    )
+    p_archive.add_argument(
+        "--stale-days", type=int, default=0,
+        help="Age threshold in days (default: 30).",
+    )
+    p_archive.add_argument(
+        "--dry-run", action="store_true",
+        help="Report what would be archived without moving files.",
+    )
+
+    p_promote = themes_sub.add_parser(
+        "promote-candidate",
+        help=(
+            "Mint a thm- ID from a candidate stub, write the canonical "
+            "theme file, delete the candidate."
+        ),
+    )
+    p_promote.add_argument("candidate_id", help="Candidate ID (e.g. cand-abcd1234).")
+    p_promote.add_argument(
+        "--title", required=True,
+        help="Theme title (used for filename slug and `## Essence` heading).",
+    )
+    p_promote.add_argument(
+        "--essence", default="",
+        help="Initial essence paragraph (≤500 words).",
+    )
+    p_promote.add_argument("--project", default="", help="Optional project tag.")
+    p_promote.add_argument(
+        "--parent", default="",
+        help=(
+            "Parent theme id (thm-XXXXXXXX). Establishes a child relation "
+            "in the two-tier theme hierarchy. Empty = top-level."
+        ),
     )
 
 
@@ -229,7 +387,7 @@ def add_drain_subparsers(sub) -> None:
     p_drain.add_argument("--dry-run", action="store_true")
     p_drain.add_argument("--plan", default="")
     p_drain.add_argument("--model", default="gpt-5-mini")
-    p_drain.add_argument("--max-tokens", type=int, default=1024)
+    p_drain.add_argument("--max-tokens", type=int, default=8192)
     p_drain.add_argument("--poll-interval", type=int, default=30)
     p_drain.add_argument("--max-input-tokens", type=int, default=4_500_000)
 

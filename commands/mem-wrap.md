@@ -58,7 +58,7 @@ When assigning concepts:
 - Draw from the vocabulary loaded in step 2.5 — reuse existing labels
 - Pick concepts that connect this note to OTHER notes (thematic, not descriptive)
 - Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`)
-- Use domain-qualified paths when they exist (`ml/deep-learning` not `deep-learning`)
+- Use domain-qualified paths when they exist (`ml-deep-learning` not `deep-learning`)
 - A good concept test: "would another note about this topic share this concept?"
 
 ### Writing Good Insights

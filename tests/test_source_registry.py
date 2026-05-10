@@ -17,7 +17,7 @@ from personal_mem.sources import (
 
 def test_registry_has_expected_slugs():
     """Every slug documented in ARCHITECTURE.md must be registered."""
-    expected = {"paper", "repo", "article", "conversation", "substack"}
+    expected = {"paper", "repo", "article", "conversation", "substack", "news"}
     assert set(REGISTRY.keys()) == expected
 
 
@@ -33,7 +33,14 @@ def test_every_spec_is_frozen_dataclass():
 
 def test_all_specs_returns_every_entry_in_insertion_order():
     specs = all_specs()
-    assert [s.slug for s in specs] == ["paper", "repo", "article", "conversation", "substack"]
+    assert [s.slug for s in specs] == [
+        "paper",
+        "repo",
+        "article",
+        "conversation",
+        "substack",
+        "news",
+    ]
 
 
 def test_layouts_cover_all_three_patterns():

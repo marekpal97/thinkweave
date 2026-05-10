@@ -510,6 +510,37 @@ Six distinct dedup mechanisms, each scoped to a different kind of overlap:
 
 Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), silently sidesteps (slug auto-increment, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
 
+## Invocation surface
+
+The framework's *internal* contracts (layer dependencies, operations seam,
+retrieval modalities) are codified above. This section codifies the
+*external* contracts — every name an outside system (Claude Code, cron,
+another agent) can bind to. **These are public API. Renaming any of them
+breaks consumers we can't see.**
+
+| Surface | Name | Stability | What breaks if it moves |
+|---|---|---|---|
+| Console script | `mem` | stable | every shell invocation, every cron job, every `claude -p` autopilot line |
+| Console script | `mem-hook` | stable | every Claude Code session (registered in `.claude/settings.json` by `mem hooks install`) |
+| Console script | `mem-mcp` | stable | every MCP-server config that addresses personal_mem |
+| MCP tool name | `mem_search`, `mem_create`, `mem_read`, `mem_update`, `mem_link`, `mem_unlink`, `mem_context`, `mem_graph`, `mem_concepts`, `mem_extract`, `mem_judge`, `mem_landing`, `mem_enrich`, `mem_timeline`, `mem_project_snapshot`, `mem_queue`, `mem_sources_config`, `mem_prompts` | stable | every skill that calls the tool by name |
+| MCP tool name | `mem_concepts_tighten`, `mem_concepts_merge`, `mem_concept_search`, `mem_concept_source_counts`, `mem_concepts_drift`, `mem_source_lens`, `mem_decisions_for_file` | deprecated (one release) | nothing yet — aliases dispatch to the canonical tools and log a warning to stderr |
+| Module entry | `python -m personal_mem.surfaces.mcp.server` | stable | rare — prefer the `mem-mcp` console script |
+| Module entry | `python -m personal_mem.mcp.server` | back-compat shim | external configs that haven't migrated to `mem-mcp` yet |
+| Hook subcommands | `mem-hook {session_start,user_prompt_submit,pre_tool_use,post_tool_use,stop}` | stable | every entry in `.claude/settings.json` written by `mem hooks install` |
+| Skill files | `commands/<name>.md` filenames | stable | `/<name>` invocations and the plugin in `.claude/plugins/personal-mem/` (which symlinks the same files) |
+| YAML keys | `sources.<slug>.{queue,research_skill,drain_strategy,dedup_keys,url_patterns,intake_folder}`, `projects.<name>.{discover_strategies,…}`, `landing_files.{state,backlog,decisions,themes,research_focus}`, `auto_todo_extraction` | stable | every user's `vault/.mem/sources.yaml` |
+
+The rule: when restructuring internal modules, treat anything in the table
+above as an immovable identifier. Internal layout (`personal_mem/foo/bar.py`)
+is private; the names in this table are the contract. If you must rename one,
+add a back-compat alias for one release before removing.
+
+The `python -m personal_mem.mcp.server` shim exists because the original
+external configs predate the `mem-mcp` console script. After enough release
+windows for users to migrate, the shim can be dropped — but the console-script
+name itself never moves.
+
 ## Operations layer
 
 `src/personal_mem/operations/` is the seam between surfaces (CLI, MCP) and

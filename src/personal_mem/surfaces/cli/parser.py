@@ -20,6 +20,7 @@ from personal_mem.surfaces.cli._parser_concepts_hubs import (
     add_concepts_subparsers,
     add_drain_subparsers,
     add_hubs_subparsers,
+    add_themes_subparsers,
 )
 
 
@@ -36,5 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_concepts_subparsers(sub)
     add_hubs_subparsers(sub)
     add_drain_subparsers(sub)
+    add_themes_subparsers(sub)
 
     return parser

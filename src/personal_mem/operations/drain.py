@@ -58,7 +58,6 @@ def run_hubs_batch(
         return {"applied": 0, "concepts": 0}
 
     vm = VaultManager(config=cfg)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     requests_to_send: list[dict] = []
     for cp in concept_plans:
@@ -84,7 +83,7 @@ def run_hubs_batch(
                 title=note_entry.get("title", ""),
                 body=body,
             )
-            note_date = (note_entry.get("date") or today)[:10]
+            note_date = _resolve_note_date(vm, note_path, note_entry)
             requests_to_send.append(
                 {
                     "concept": concept,
@@ -256,7 +255,7 @@ def run_hubs_batch(
         if not raw:
             continue
         entries, needs_essence = parse_llm_response(
-            raw, note_id=note_id, run_date=note_date or today
+            raw, note_id=note_id, run_date=note_date
         )
         if entries:
             append_log_entries(cfg, concept, entries)
@@ -311,17 +310,71 @@ def run_hubs_batch(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_note_date(vm, note_path: Path, note_entry: dict) -> str:
+    """Pick a YYYY-MM-DD date for a backfill entry, biased toward the
+    note's own timeline.
+
+    Priority:
+      1. ``note_entry["date"]`` from the SQLite index (frontmatter ``date``).
+      2. Frontmatter ``created`` field, parsed off disk.
+      3. The file's mtime.
+
+    Today's date is *never* used — the catalyst log records when each
+    artifact was actually learned, and stamping every backfilled entry
+    with the run date flattens the temporal DAG into a single point.
+    """
+    indexed = (note_entry.get("date") or "").strip()
+    if indexed:
+        return indexed[:10]
+
+    try:
+        text = note_path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    if text:
+        from personal_mem.core.vault import parse_frontmatter as _pf
+
+        try:
+            fm, _body = _pf(text)
+        except Exception:
+            fm = {}
+        for key in ("created", "date"):
+            value = (fm or {}).get(key)
+            if isinstance(value, str) and len(value) >= 10:
+                return value[:10]
+
+    try:
+        mtime = note_path.stat().st_mtime
+    except OSError:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
 def validate_linkage_revision(
-    entry_date: str, flag: str, ref: str
-) -> tuple[str | None, str]:
-    """Validate a single linkage revision against the temporal-DAG contract."""
+    entry_date: str,
+    flag: str,
+    ref: str,
+    *,
+    ref_quote: str = "",
+    by_date_texts: dict[str, list[str]] | None = None,
+) -> tuple[str | None, str, str]:
+    """Validate a single linkage revision against the temporal-DAG contract.
+
+    Returns ``(flag, ref, ref_quote)``. ``flag`` is ``None`` only on an
+    unknown flag value. Quote validation: when ``by_date_texts`` is
+    provided and ``ref_quote`` is non-empty, the quote must be a
+    substring (case-insensitive, ≥20 chars) of at least one entry's
+    text on ``ref``'s date — otherwise the revision is downgraded to
+    ``new``. This forces the model to anchor non-``new`` claims in the
+    actual cited text rather than asserting a relationship abstractly.
+    """
     from personal_mem.synthesis.concept_hub import ALLOWED_FLAGS
 
     if flag not in ALLOWED_FLAGS:
-        return None, ""
+        return None, "", ""
 
     if flag == "new":
-        return "new", ""
+        return "new", "", ""
 
     if ref and not re.match(r"^\d{4}-\d{2}-\d{2}$", ref):
         ref = ""
@@ -329,39 +382,80 @@ def validate_linkage_revision(
     if ref and ref >= entry_date:
         ref = ""
 
-    if not ref and flag in {"extends", "contradicts"}:
-        flag = "new"
+    # Strict ref-required policy: every non-`new` flag must point to a
+    # specific earlier entry. An "agrees" without a ref is structurally
+    # indistinguishable from a "new" — the connection is just an unverifiable
+    # assertion. Demote to keep the DAG honest.
+    if not ref:
+        return "new", "", ""
 
-    return flag, ref
+    quote = (ref_quote or "").strip()
+    if by_date_texts is not None:
+        candidates = by_date_texts.get(ref, [])
+        if not candidates:
+            return "new", "", ""
+        if len(quote) < 20:
+            return "new", "", ""
+        ql = quote.lower()
+        if not any(ql in text.lower() for text in candidates):
+            return "new", "", ""
+
+    return flag, ref, quote
 
 
-HUB_LINKAGE_SYSTEM = """You are revising a learning log for one concept in a personal knowledge vault. Each entry is a distilled learning artifact captured from a note. Entries are listed oldest-first; the entry's date is its line prefix.
+HUB_LINKAGE_SYSTEM = """You are revising a learning log for one concept in a personal knowledge vault. Each entry is a distilled learning artifact captured from a source note. Entries are listed oldest-first; the entry's date is its line prefix; a `[from: …]` decoration shows the citing note's title.
 
-For each entry E in the list, decide what E does relative to the entries that appear BEFORE it (the entries with strictly earlier dates):
-- "new" — E introduces something not present in any earlier entry.
-- "agrees" — E reinforces, restates, or confirms a claim from an earlier entry.
+Your job: turn this flat chronological list into a connected DAG. For each entry E, decide what E does relative to entries with STRICTLY EARLIER dates:
+- "new" — E introduces something none of the earlier entries cover.
+- "agrees" — E reinforces, restates, or empirically confirms a claim from an earlier entry.
+- "extends" — E elaborates, refines, generalizes, or adds a corollary to an earlier entry.
 - "contradicts" — E directly conflicts with an earlier entry.
-- "extends" — E elaborates on, refines, or adds a corollary to an earlier entry.
 
-E is the SUBJECT. The earlier entry is the OBJECT. The verb describes what E does to the earlier entry — never what the earlier entry does to E. The first entry in the list (no earlier entries exist) MUST be flagged "new".
+E is the SUBJECT; the cited earlier entry is the OBJECT. Never invert. The first entry (no earlier entries exist) MUST be "new".
 
-Rules for the ref field:
-- flag "new" → ref MUST be empty.
-- flag "agrees" → ref is optional (empty if no single earlier entry to cite; otherwise the date of that earlier entry).
-- flag "contradicts" → ref is REQUIRED and must be the date of an earlier entry.
-- flag "extends" → ref is REQUIRED and must be the date of an earlier entry.
+A coherent learning log accumulates relationships. If you flag most entries "new", you have under-connected the log — re-scan and look for the closest semantic predecessor. In a well-developed concept (≥10 entries) it is normal for half or more of the entries to be `agrees` / `extends` / `contradicts`. All-`new` is a failure mode, not a safe default.
 
-The ref date MUST be strictly less than E's date. If you cannot find an earlier entry that fits, flag E as "new". Never cite a future or same-day entry. Never invent dates — only cite dates that appear in the input.
+Rules for non-"new" flags (they are STRICT):
+- `ref` is REQUIRED and must be the YYYY-MM-DD date of an earlier entry that actually appears in the input.
+- `ref_quote` is REQUIRED: a verbatim ≥20-character contiguous slice from the cited entry's text (the part after the date and the `[from: …]` decoration). This anchors your relationship claim to actual prior text. Quotes that don't match the cited entry will be downgraded to "new" silently.
+- `note` is REQUIRED: a short (≤80 char) explanation of WHY this is the relationship. Forces you to articulate the connection. Will be discarded; it exists only as a self-discipline mechanism.
 
-Be conservative: default to "new" unless the relationship is clear.
+Pick ONE predecessor per entry — the closest semantic neighbor. Never cite a future or same-day entry. Never invent dates or quotes.
 
-Return a single JSON object of the form:
-  {"entries": [{"flag": "...", "ref": "YYYY-MM-DD or empty"}, ...]}
-The array length must EXACTLY match the input. Preserve input order.
+Example of a healthy DAG (3 entries):
+```
+Input:
+1. 2025-09-12 — pytest-bdd lets you write Gherkin scenarios as tests  [from: "BDD intro"]
+2. 2025-11-04 — pytest-bdd's @scenario binding is brittle when steps are reused  [from: "First gotcha"]
+3. 2026-02-18 — switched off pytest-bdd; plain pytest with helper fns scales further  [from: "Decision: drop bdd"]
+
+Output:
+{"entries": [
+  {"flag": "new",         "ref": "",           "ref_quote": "", "note": "first entry, no predecessor"},
+  {"flag": "extends",     "ref": "2025-09-12", "ref_quote": "pytest-bdd lets you write Gherkin", "note": "elaborates pytest-bdd practical limits"},
+  {"flag": "contradicts", "ref": "2025-09-12", "ref_quote": "pytest-bdd lets you write Gherkin", "note": "drops pytest-bdd as net-negative"}
+]}
+```
+
+Output a single JSON object exactly like the example. The "entries" array length MUST exactly match the input length and preserve input order.
 """
 
 
-def build_linkage_user_prompt(concept: str, essence: str, entries: list) -> str:
+def build_linkage_user_prompt(
+    concept: str,
+    essence: str,
+    entries: list,
+    *,
+    titles_by_id: dict[str, str] | None = None,
+) -> str:
+    """Render the per-hub linkage prompt.
+
+    When ``titles_by_id`` is provided, each entry line includes the citing
+    note's title as a `[from: "…"]` decoration so the model has more than a
+    distilled artifact line to reason about. Falls back to no decoration
+    when the title is missing or unknown.
+    """
+    titles_by_id = titles_by_id or {}
     essence_text = essence.strip() or "*No synthesis yet.*"
     lines = [
         f"Concept: `{concept}`",
@@ -371,7 +465,9 @@ def build_linkage_user_prompt(concept: str, essence: str, entries: list) -> str:
         "Entries (chronological):",
     ]
     for i, e in enumerate(entries, start=1):
-        lines.append(f"{i}. {e.date} — {e.text}")
+        title = titles_by_id.get(e.citation, "").strip()
+        suffix = f"  [from: \"{title}\"]" if title else ""
+        lines.append(f"{i}. {e.date} — {e.text}{suffix}")
     lines.append("")
     lines.append("Output JSON only.")
     return "\n".join(lines)

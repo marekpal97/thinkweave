@@ -28,6 +28,11 @@ from personal_mem.core.vault import (
     strip_section,
 )
 from personal_mem.retrieval.search import Search
+from personal_mem.synthesis.concepts import (
+    build_keep_set,
+    load_ontology,
+    split_concepts_by_ontology,
+)
 
 
 @dataclass
@@ -230,14 +235,26 @@ def extract_session(
     insights_in = insights_in[:3]
     decisions_in = decisions or []
 
+    # Strict creation policy: terms not in the merged ontology (seed +
+    # vault override) cannot reach canonical `concepts:` from extraction.
+    # They flow into `proposed_concepts:` and surface in
+    # /mem-resolve-concepts at count >= DRIFT_COUNT_THRESHOLD for review.
+    ontology_keep = build_keep_set(load_ontology())
+
     for insight in insights_in:
         title = insight["title"]
         body = insight["body"]
         tags = insight.get("tags", [])
-        concepts = insight.get("concepts", [])
+        canonical, proposed = split_concepts_by_ontology(
+            insight.get("concepts", []),
+            proposed=insight.get("proposed_concepts", []),
+            ontology_keep=ontology_keep,
+        )
         extra_fm: dict = {"derived_from": [session_id]}
-        if concepts:
-            extra_fm["concepts"] = concepts
+        if canonical:
+            extra_fm["concepts"] = canonical
+        if proposed:
+            extra_fm["proposed_concepts"] = proposed
         path = vm.create_note(
             note_type=NoteType.NOTE,
             title=title,
@@ -265,8 +282,15 @@ def extract_session(
         }
         if dec.get("file_paths"):
             extra_fm["file_paths"] = dec["file_paths"]
-        if dec.get("concepts"):
-            extra_fm["concepts"] = dec["concepts"]
+        dec_canonical, dec_proposed = split_concepts_by_ontology(
+            dec.get("concepts", []),
+            proposed=dec.get("proposed_concepts", []),
+            ontology_keep=ontology_keep,
+        )
+        if dec_canonical:
+            extra_fm["concepts"] = dec_canonical
+        if dec_proposed:
+            extra_fm["proposed_concepts"] = dec_proposed
         if dec.get("supersedes"):
             extra_fm["supersedes"] = dec["supersedes"]
         if dec.get("cites"):

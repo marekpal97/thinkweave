@@ -115,7 +115,7 @@ class TestConceptCoverage:
                 f"Note {i}",
                 body="See [[graph-memory]].",
                 project="test",
-                extra_frontmatter={"concepts": ["graph-memory", "ai/memory"]},
+                extra_frontmatter={"concepts": ["graph-memory", "ai-memory"]},
             )
         _index(vault, indexer)
 
@@ -138,7 +138,7 @@ class TestConceptCoverage:
                 extra_frontmatter={
                     "source_type": "paper",
                     "url": f"https://x/{i}",
-                    "concepts": ["graph-memory", "ai/memory"],
+                    "concepts": ["graph-memory", "ai-memory"],
                 },
             )
         for i in range(5):
@@ -147,7 +147,7 @@ class TestConceptCoverage:
                 f"Note {i}",
                 body="See it.",
                 project="test",
-                extra_frontmatter={"concepts": ["graph-memory", "ai/memory"]},
+                extra_frontmatter={"concepts": ["graph-memory", "ai-memory"]},
             )
         _index(vault, indexer)
 
@@ -167,7 +167,7 @@ class TestConceptCoverage:
             "Lone",
             body="See [[rare-thing]].",
             project="test",
-            extra_frontmatter={"concepts": ["rare-thing", "ai/memory"]},
+            extra_frontmatter={"concepts": ["rare-thing", "ai-memory"]},
         )
         _index(vault, indexer)
 

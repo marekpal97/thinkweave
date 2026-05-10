@@ -58,6 +58,7 @@ def build_theme_frontmatter(
     concepts: list[str] | None = None,
     relates_to: list[str] | None = None,
     status: str = THEME_STATUS_ACTIVE,
+    parent: str = "",
     **extra: object,
 ) -> dict:
     """Build a canonical theme frontmatter dict.
@@ -67,13 +68,19 @@ def build_theme_frontmatter(
         project: optional primary-stake project. Informational only —
             does not affect filing (themes are global).
         concepts: ontology concepts the theme cites. By convention these
-            are stable invariants (``finance/regime``, ``finance/structure``,
+            are stable invariants (``finance-regime``, ``finance-structure``,
             etc.) — not named events. Defaults to ``[]``.
         relates_to: list of other theme IDs (e.g. ``["thm-aaaa1111"]``)
             this theme relates to. Defaults to ``[]``.
         status: lifecycle state — one of THEME_STATUSES, or the sentinel
             ``merged-into:thm-XXXX`` written by the dedup skill. Defaults
             to ``active``.
+        parent: optional parent theme id (``thm-XXXXXXXX``). Establishes a
+            two-tier hierarchy where a broad parent groups narrower
+            children — analogous to concept-namespace nesting in the
+            ontology. Empty string (default) means top-level. Single-
+            parent only; multi-parent themes are merge-via-status, not
+            tree edges.
         **extra: any theme-specific fields. Merged after canonical fields
             so callers can override.
 
@@ -90,6 +97,8 @@ def build_theme_frontmatter(
     }
     if project:
         fm["project"] = project
+    if parent:
+        fm["parent"] = parent
     fm.update(extra)
     return fm
 

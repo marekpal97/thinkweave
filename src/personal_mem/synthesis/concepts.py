@@ -266,14 +266,19 @@ def _parse_yaml_file(path: Path) -> dict[str, list[str]]:
 
 
 def _parse_ontology_file(path: Path | None = None) -> dict[str, list[str]]:
-    """Parse the effective ontology — seed layered beneath the vault override.
+    """Parse the effective ontology — seed deep-merged with the vault override.
 
     With ``path=None`` (the canonical call): read the shipped seed, then
-    layer the vault override on top. The vault wins per top-level key, so
-    any key the vault explicitly defines (even as an empty list) shadows
-    the seed; keys the vault never defined fall through to the seed. This
-    means new ontology keys shipped with the package are picked up by
-    older vaults without a manual migration.
+    layer the vault override on top via per-domain leaf-list union. For a
+    domain key present in both files, the resulting leaf list is the
+    de-duplicated union of both — neither file silently drops the other's
+    leaves. For a domain key in only one file, that file's leaves stand
+    alone.
+
+    For non-list values (e.g. ``tag_vocabulary`` is a list-of-strings, not
+    a domain → leaves shape) the vault override still replaces the seed
+    when both are lists; if shapes differ, vault wins. The deep-merge
+    semantic only applies where both files present a list.
 
     With ``path`` given: read only that file, no layering. Useful for
     tests and tooling that want a single source of truth.
@@ -281,11 +286,29 @@ def _parse_ontology_file(path: Path | None = None) -> dict[str, list[str]]:
     if path is not None:
         return _parse_yaml_file(path)
 
-    layered = _parse_yaml_file(_seed_ontology_path())
+    seed = _parse_yaml_file(_seed_ontology_path())
     override_path = _vault_ontology_path()
-    if override_path is not None and override_path.exists():
-        layered.update(_parse_yaml_file(override_path))
-    return layered
+    if override_path is None or not override_path.exists():
+        return seed
+
+    override = _parse_yaml_file(override_path)
+    merged: dict[str, list[str]] = dict(seed)
+    for key, vault_value in override.items():
+        seed_value = merged.get(key)
+        if isinstance(seed_value, list) and isinstance(vault_value, list):
+            # Per-domain leaf-list union, preserving order: seed first,
+            # then any vault-only leaves appended. Case-insensitive dedup.
+            seen = {leaf.lower() for leaf in seed_value}
+            unioned = list(seed_value)
+            for leaf in vault_value:
+                if leaf.lower() not in seen:
+                    unioned.append(leaf)
+                    seen.add(leaf.lower())
+            merged[key] = unioned
+        else:
+            # Either a new key or a non-list shape — fall back to vault wins.
+            merged[key] = vault_value
+    return merged
 
 
 def load_ontology(path: Path | None = None) -> dict[str, list[str]]:
@@ -313,8 +336,8 @@ def load_tag_vocabulary(path: Path | None = None) -> set[str]:
 def build_keep_set(ontology: dict[str, list[str]]) -> set[str]:
     """Build the set of all concepts referenced in the ontology.
 
-    Includes both **domain keys** (top-level entries like ``swe/python``,
-    ``ml/deep-learning``) and **leaf concepts** (the items under each
+    Includes both **domain keys** (top-level entries like ``swe-python``,
+    ``ml-deep-learning``) and **leaf concepts** (the items under each
     domain). Domain keys are themselves valid coarse-grained concepts —
     the dual-level hierarchy lets a note tag at the domain when no
     finer-grained leaf concept fits.
@@ -346,6 +369,642 @@ def concept_to_domains(ontology: dict[str, list[str]]) -> dict[str, list[str]]:
         for c in concepts:
             reverse[c.lower()].append(domain)
     return dict(reverse)
+
+
+# Substring markers for "domain-relevant" concepts kept by the singleton
+# prune even when they appear in only one note. These are domain-specific
+# vocabulary fragments — math/ML/finance/fitness/physics/tools — where a
+# single occurrence is more likely a real-but-rare term than enrichment
+# noise. The seed list grew out of two ad-hoc prune scripts that were run
+# manually before the lift; revisions go here. Concept matches if any
+# marker is a substring of the concept name (case-insensitive).
+DOMAIN_MARKERS: frozenset[str] = frozenset({
+    # Math
+    "theorem", "lemma", "proof", "equation", "polynomial", "matrix",
+    "vector", "integral", "derivative", "convergence", "distribution",
+    "variance", "eigenvalue", "factorization", "decomposition",
+    "approximation", "coefficient", "exponent", "logarithm", "algebra",
+    "calculus", "topology", "manifold", "subspace", "orthogonal",
+    "gaussian", "binomial", "poisson", "bayesian", "stochastic",
+    "combinatorics", "permutation", "combinations", "probability",
+    "fourier", "laplace", "markov", "monte-carlo", "mcmc",
+    "stirling", "cauchy", "riemann", "seminorm", "semidefinite",
+    # ML / DL
+    "neural", "gradient", "backprop", "activation", "embedding",
+    "attention", "transformer", "encoder", "decoder", "convolution",
+    "pooling", "dropout", "normalization", "regularization",
+    "classifier", "regression", "clustering", "reinforcement",
+    "supervised", "unsupervised", "self-supervised", "contrastive",
+    "loss-function", "epoch", "learning-rate", "optimizer",
+    "overfitting", "underfitting", "precision", "recall",
+    "cnn", "rnn", "lstm", "gru", "gan", "vae",
+    "bert", "gpt", "tokeniz", "embed",
+    "tf-idf", "nlp", "sparsity", "negative-sampling",
+    "hinge-loss", "class-weight", "resampling", "bootstrap",
+    "layernorm", "batchnorm",
+    # Finance
+    "option", "volatility", "delta", "gamma", "theta", "vega",
+    "portfolio", "sharpe", "hedge", "futures",
+    "bond", "equity", "valuation", "dcf", "arbitrage",
+    "leverage", "margin", "spread", "condor",
+    "straddle", "strangle", "collar", "covered",
+    "black-scholes", "fama-french", "capm",
+    "brokerage", "trading", "market-making",
+    "retail-investor", "sell-side",
+    # Fitness / health
+    "hypertrophy", "strength", "muscle", "protein", "calori",
+    "exercise", "bench", "squat", "deadlift",
+    "pull-up", "push-up", "cardio", "hiit", "recovery",
+    "tendon", "biomechanic", "collagen", "creatine",
+    "vitamin", "supplement", "macronutrient", "nutrition",
+    "cancer", "mole", "dermatolog", "vaccination", "allerg",
+    "infection", "medication", "dosage", "symptom", "shoulder",
+    "gastrointestinal", "digestion", "musculoskeletal",
+    # Physics
+    "quantum", "qubit", "photon", "particle", "antimatter", "cern",
+    # Specific tools / proper nouns worth keeping
+    "beveridge", "graphql", "keras", "networkx", "spark",
+    "itertools", "geojson", "vitest", "typescript",
+})
+
+# Files at vault top-level that are landing docs / synthesis outputs and
+# must not have their concept frontmatter rewritten by a prune pass.
+_PRUNE_SKIP_FILENAMES: frozenset[str] = frozenset({
+    "DECISIONS.md", "BACKLOG.md", "STATE.md", "RESEARCH_FOCUS.md",
+    "THEMES.md",
+})
+
+
+_DOMAIN_PREFIXES: frozenset[str] = frozenset({
+    "swe", "ai", "ml", "math", "finance",
+})
+
+
+def _domain_label(domain: str) -> str:
+    """Friendly title for a domain wikilink — drop the recognised prefix
+    segment and title-case the remainder.
+
+    ``swe-python`` → ``Python``. ``ai-agents`` → ``Agents``.
+    Falls through unchanged when the domain doesn't start with a known
+    prefix (e.g. ``thinkmesh``, ``fitness``) — those become ``Thinkmesh``
+    / ``Fitness``.
+    """
+    parts = domain.split("-", 1)
+    if len(parts) == 2 and parts[0] in _DOMAIN_PREFIXES:
+        return parts[1].replace("-", " ").title()
+    return domain.replace("-", " ").title()
+
+
+def is_domain_concept(concept: str, *, markers: frozenset[str] = DOMAIN_MARKERS) -> bool:
+    """True if any DOMAIN_MARKERS substring appears in the concept (lowercased)."""
+    cl = concept.lower()
+    return any(marker in cl for marker in markers)
+
+
+def split_concepts_by_ontology(
+    candidate: list[str] | None,
+    *,
+    proposed: list[str] | None = None,
+    ontology_keep: set[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Partition a concept list into (canonical, proposed) by ontology membership.
+
+    Strict policy enforcement: terms in ``candidate`` that exist in the
+    merged ontology (seed + vault override) go to ``canonical``; everything
+    else — plus anything already in ``proposed`` — flows to ``proposed``.
+    Each output list is lowercased, stripped, and deduped (preserving
+    order). When ``ontology_keep`` is omitted, the merged ontology is
+    loaded fresh.
+
+    Used at every concept-write surface (mem_extract, enrich, importers)
+    so non-ontology vocabulary can never reach canonical ``concepts:``
+    without explicit promotion via ``/mem-resolve-concepts``.
+    """
+    if ontology_keep is None:
+        ontology_keep = build_keep_set(load_ontology())
+
+    canonical: list[str] = []
+    proposed_out: list[str] = []
+    seen_canonical: set[str] = set()
+    seen_proposed: set[str] = set()
+
+    for raw in candidate or []:
+        if not raw:
+            continue
+        c = raw.lower().strip()
+        if not c:
+            continue
+        if c in ontology_keep:
+            if c not in seen_canonical:
+                canonical.append(c)
+                seen_canonical.add(c)
+        else:
+            if c not in seen_proposed:
+                proposed_out.append(c)
+                seen_proposed.add(c)
+
+    for raw in proposed or []:
+        if not raw:
+            continue
+        c = raw.lower().strip()
+        if not c or c in seen_canonical:
+            continue
+        if c not in seen_proposed:
+            proposed_out.append(c)
+            seen_proposed.add(c)
+
+    return canonical, proposed_out
+
+
+def prune_noisy_singletons(
+    config: Config,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Strip count=1 *canonical* concepts when they're neither in the
+    ontology nor matched by any DOMAIN_MARKERS substring.
+
+    Operates on `concepts:` only. **`proposed_concepts:` is sanctuary
+    by design** — emergent terms enter at count=1, that's their natural
+    starting state, not noise. Cleaning the proposed pool happens via
+    promotion (graduation to canonical) or explicit review inside
+    ``/mem-resolve-concepts``, never via automated count-based pruning.
+    Treating combined counts here would conflict with the strict
+    creation policy by stripping terms the demotion sweep just moved.
+
+    The keep heuristic preserves: (a) ontology entries (seed + vault
+    override merged), (b) domain-vocabulary substrings (see
+    ``DOMAIN_MARKERS``). Under the strict policy, canonical singletons
+    are rare (non-ontology can't enter ``concepts:`` from any write
+    surface) — this prune is mostly a guardrail against pre-policy
+    leftovers and direct vault edits.
+
+    Returns stats dict::
+
+        {
+            "singletons": int,         # canonical count==1 terms
+            "kept_ontology": int,      # preserved by ontology match
+            "kept_domain": int,        # preserved by DOMAIN_MARKERS
+            "removed": list[str],      # singleton terms being pruned
+            "files_modified": int,     # notes whose `concepts:` was edited
+            "instances_removed": int,  # canonical occurrences stripped
+        }
+
+    Hub pages, the archive directory, and landing docs are skipped. On
+    ``dry_run=True`` no files are written and the index is not rebuilt;
+    stats describe the would-be prune.
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+
+    idx = Indexer(config=config)
+    canonical_counts = get_all_concepts(idx.db)
+    idx.close()
+
+    ontology_keep = build_keep_set(load_ontology())
+    singletons = {c for c, n in canonical_counts.items() if n == 1}
+
+    remove: set[str] = set()
+    kept_ontology = 0
+    kept_domain = 0
+    for c in singletons:
+        if c in ontology_keep:
+            kept_ontology += 1
+        elif is_domain_concept(c):
+            kept_domain += 1
+        else:
+            remove.add(c)
+
+    files_modified = 0
+    instances_removed = 0
+
+    for path in config.vault_root.rglob("*.md"):
+        rel = str(path.relative_to(config.vault_root))
+        if rel.startswith("concepts/") or rel.startswith(".archive/"):
+            continue
+        if path.name in _PRUNE_SKIP_FILENAMES:
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "concepts:" not in text:
+            continue
+
+        fm, body = parse_frontmatter(text)
+        existing = fm.get("concepts")
+        if not existing:
+            continue
+        if isinstance(existing, str):
+            existing = [c.strip() for c in existing.split(",") if c.strip()]
+        if not isinstance(existing, list):
+            continue
+
+        filtered = [c for c in existing if c.lower() not in remove]
+        if len(filtered) == len(existing):
+            continue
+
+        instances_removed += len(existing) - len(filtered)
+        files_modified += 1
+
+        if dry_run:
+            continue
+
+        if filtered:
+            fm["concepts"] = filtered
+        else:
+            fm.pop("concepts", None)
+        path.write_text(render_frontmatter(fm) + "\n" + body, encoding="utf-8")
+
+    if not dry_run and files_modified > 0:
+        idx = Indexer(config=config)
+        idx.rebuild(full=True)
+        idx.close()
+
+    return {
+        "singletons": len(singletons),
+        "kept_ontology": kept_ontology,
+        "kept_domain": kept_domain,
+        "removed": sorted(remove),
+        "files_modified": files_modified,
+        "instances_removed": instances_removed,
+    }
+
+
+def get_all_proposed_concepts(db) -> dict[str, int]:
+    """Aggregate `proposed_concepts:` across every indexed note.
+
+    `proposed_concepts:` is not materialized in `note_concepts` (which
+    indexes only canonical assignments), so we read it from the
+    `notes.frontmatter` JSON column. Returns `{concept: count}` keyed
+    by lowercased term, sorted at the call site if needed.
+    """
+    counts: dict[str, int] = {}
+    for row in db.execute("SELECT frontmatter FROM notes"):
+        fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
+        proposed = fm.get("proposed_concepts") or []
+        if isinstance(proposed, str):
+            proposed = [c.strip() for c in proposed.split(",") if c.strip()]
+        for c in proposed:
+            if not c:
+                continue
+            term = c.lower().strip()
+            counts[term] = counts.get(term, 0) + 1
+    return counts
+
+
+def promote_proposed_concept(
+    config: Config,
+    concept: str,
+    *,
+    domain: str,
+) -> dict:
+    """Promote a proposed concept to canonical ontology status.
+
+    Three actions in one pass:
+
+    1. Add the term to ``vault/.mem/ontology.yaml`` under ``domain``
+       (creating the override file and the domain key if missing).
+    2. Walk every note carrying the term in ``proposed_concepts:`` and
+       move it to ``concepts:`` (preserving existing canonical entries).
+    3. Ensure a concept-hub skeleton exists at
+       ``vault/concepts/topics/{concept}.md`` and rebuild the index.
+
+    Returns stats::
+
+        {
+            "notes_modified": int,    # notes whose frontmatter shifted
+            "ontology_updated": bool, # True if the term was newly added
+            "hub_created": bool,      # True if a new hub skeleton was written
+        }
+
+    Idempotent: re-running with a term already canonical is a no-op
+    (zero modifications, ontology untouched, hub already present).
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+    from personal_mem.synthesis.concept_hub import (
+        concept_hub_path,
+        ensure_concept_hub_skeleton,
+    )
+
+    term = concept.lower().strip()
+    if not term:
+        raise ValueError("concept must be a non-empty string")
+    if not domain:
+        raise ValueError("domain must be specified for promotion")
+
+    domain_key = domain.lower().strip()
+    ontology = load_ontology()
+    ontology_updated = False
+
+    if term not in build_keep_set(ontology):
+        # Add to vault override (the user-editable layer). Don't touch
+        # the shipped seed.
+        override_path = _vault_ontology_path()
+        if override_path is None:
+            raise RuntimeError("Vault override path is unavailable; cannot promote.")
+        override_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = (
+            _parse_yaml_file(override_path) if override_path.exists() else {}
+        )
+        existing.setdefault(domain_key, [])
+        if term not in [c.lower() for c in existing[domain_key]]:
+            existing[domain_key] = sorted({*existing[domain_key], term})
+        # Re-emit as YAML preserving inline-list format (compact).
+        lines: list[str] = []
+        for d in sorted(existing):
+            items = sorted({c.lower() for c in existing[d]})
+            if items:
+                lines.append(f"{d}: [{', '.join(items)}]")
+            else:
+                lines.append(f"{d}: []")
+        override_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        ontology_updated = True
+
+    # Walk the vault and shift the term from proposed → canonical.
+    notes_modified = 0
+    for path in config.vault_root.rglob("*.md"):
+        rel = str(path.relative_to(config.vault_root))
+        if rel.startswith("concepts/") or rel.startswith(".archive/"):
+            continue
+        if path.name in _PRUNE_SKIP_FILENAMES:
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "proposed_concepts:" not in text:
+            continue
+
+        fm, body = parse_frontmatter(text)
+        proposed = fm.get("proposed_concepts") or []
+        if isinstance(proposed, str):
+            proposed = [c.strip() for c in proposed.split(",") if c.strip()]
+        if not proposed:
+            continue
+
+        if term not in [c.lower() for c in proposed]:
+            continue
+
+        new_proposed = [c for c in proposed if c.lower() != term]
+        canonical = fm.get("concepts") or []
+        if isinstance(canonical, str):
+            canonical = [c.strip() for c in canonical.split(",") if c.strip()]
+        if term not in [c.lower() for c in canonical]:
+            canonical = list(canonical) + [term]
+
+        fm["concepts"] = canonical
+        if new_proposed:
+            fm["proposed_concepts"] = new_proposed
+        else:
+            fm.pop("proposed_concepts", None)
+
+        path.write_text(render_frontmatter(fm) + "\n" + body, encoding="utf-8")
+        notes_modified += 1
+
+    # Ensure a hub skeleton.
+    hub_path = concept_hub_path(config, term)
+    hub_created = not hub_path.exists()
+    ensure_concept_hub_skeleton(config, term, domains=[domain_key])
+
+    if notes_modified > 0 or ontology_updated:
+        idx = Indexer(config=config)
+        idx.rebuild(full=True)
+        idx.close()
+
+    return {
+        "notes_modified": notes_modified,
+        "ontology_updated": ontology_updated,
+        "hub_created": hub_created,
+    }
+
+
+def demote_non_ontology_concepts(
+    config: Config,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """One-shot vault sweep: move non-ontology terms from `concepts:` to
+    `proposed_concepts:` on every note.
+
+    Retroactively applies the strict creation policy to the existing
+    population. Pure deterministic operation — no LLM, no API. Each note's
+    `concepts:` list is partitioned against the merged ontology
+    (seed + vault override): matches stay in `concepts:`, non-matches
+    flow into `proposed_concepts:` (preserving any existing entries
+    there). Order is preserved within each output list; duplicates are
+    deduped.
+
+    Hub pages, the archive directory, and landing docs are skipped — the
+    same exclusion list as ``prune_noisy_singletons``.
+
+    Returns::
+
+        {
+            "files_modified": int,
+            "concepts_demoted": int,    # total occurrences moved
+            "terms_demoted": list[str], # distinct terms (sorted)
+        }
+
+    On ``dry_run=True`` no files are written and the index is not rebuilt;
+    stats describe what *would* have happened.
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+
+    ontology_keep = build_keep_set(load_ontology())
+
+    files_modified = 0
+    concepts_demoted = 0
+    terms_demoted: set[str] = set()
+
+    for path in config.vault_root.rglob("*.md"):
+        rel = str(path.relative_to(config.vault_root))
+        if rel.startswith("concepts/") or rel.startswith(".archive/"):
+            continue
+        if path.name in _PRUNE_SKIP_FILENAMES:
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "concepts:" not in text:
+            continue
+
+        fm, body = parse_frontmatter(text)
+        existing = fm.get("concepts")
+        if not existing:
+            continue
+        if isinstance(existing, str):
+            existing = [c.strip() for c in existing.split(",") if c.strip()]
+        if not isinstance(existing, list):
+            continue
+
+        existing_proposed = fm.get("proposed_concepts") or []
+        if isinstance(existing_proposed, str):
+            existing_proposed = [
+                c.strip() for c in existing_proposed.split(",") if c.strip()
+            ]
+
+        canonical, proposed = split_concepts_by_ontology(
+            existing,
+            proposed=existing_proposed,
+            ontology_keep=ontology_keep,
+        )
+
+        # No-op when the canonical list equals the existing list (case-
+        # insensitive) and no items moved into proposed beyond what was
+        # already there.
+        moved_terms = {c for c in (existing or []) if c.lower() not in ontology_keep}
+        if not moved_terms:
+            continue
+
+        terms_demoted.update(t.lower() for t in moved_terms)
+        concepts_demoted += len(moved_terms)
+        files_modified += 1
+
+        if dry_run:
+            continue
+
+        if canonical:
+            fm["concepts"] = canonical
+        else:
+            fm.pop("concepts", None)
+        if proposed:
+            fm["proposed_concepts"] = proposed
+        elif "proposed_concepts" in fm:
+            fm.pop("proposed_concepts", None)
+
+        path.write_text(render_frontmatter(fm) + "\n" + body, encoding="utf-8")
+
+    hubs_archived: list[str] = []
+    if not dry_run and files_modified > 0:
+        idx = Indexer(config=config)
+        idx.rebuild(full=True)
+        idx.close()
+        # Doctrine: a term that just left the canonical pool can leave a
+        # stranded hub file behind (its notes no longer cite it as
+        # canonical, the term isn't in the ontology). Relocate any such
+        # hubs to topics/_archive/ in the same operation so the live
+        # surface stays aligned with the canonical vocabulary. Lossless —
+        # the synthesis work is preserved for possible re-promotion.
+        archived = archive_orphan_hubs(config)
+        hubs_archived = sorted(c for c, _ in archived)
+
+    return {
+        "files_modified": files_modified,
+        "concepts_demoted": concepts_demoted,
+        "terms_demoted": sorted(terms_demoted),
+        "hubs_archived": hubs_archived,
+    }
+
+
+def consolidate_parent_leaf_concepts(
+    config: Config,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """One-shot vault sweep: drop a domain concept from ``concepts:`` when
+    any of its leaves is also present on the same note.
+
+    Counterpart to the strict ontology gate — the gate runs at *write*
+    time, this runs at cleanup time. The 2-tier ontology gives us
+    parent/child semantics: top-level keys (``swe-python``, ``ai-agents``)
+    are parents; listed entries underneath are children. A note carrying
+    both a parent and one of its children is asserting two facts where
+    one is strictly more specific; drop the parent.
+
+    Skips the same set of paths as ``demote_non_ontology_concepts`` —
+    hub pages, archive, landing docs.
+
+    Returns::
+
+        {
+            "files_modified": int,
+            "occurrences_dropped": int,   # total parent-occurrences removed
+            "domains_touched": list[str], # distinct parents pruned (sorted)
+        }
+
+    On ``dry_run=True`` no files are written and the index is not
+    rebuilt; stats describe what *would* have happened.
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+
+    ontology = load_ontology()
+    domain_to_leaves: dict[str, set[str]] = {
+        d.lower(): {leaf.lower() for leaf in leaves}
+        for d, leaves in ontology.items()
+    }
+
+    files_modified = 0
+    occurrences_dropped = 0
+    domains_touched: set[str] = set()
+
+    for path in config.vault_root.rglob("*.md"):
+        rel = str(path.relative_to(config.vault_root))
+        if rel.startswith("concepts/") or rel.startswith(".archive/"):
+            continue
+        if path.name in _PRUNE_SKIP_FILENAMES:
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "concepts:" not in text:
+            continue
+
+        fm, body = parse_frontmatter(text)
+        existing = fm.get("concepts")
+        if not existing:
+            continue
+        if isinstance(existing, str):
+            existing = [c.strip() for c in existing.split(",") if c.strip()]
+        if not isinstance(existing, list):
+            continue
+
+        existing_lc = {c.lower() for c in existing}
+        to_drop: set[str] = set()
+        for c in existing:
+            cl = c.lower()
+            leaves = domain_to_leaves.get(cl)
+            if leaves and existing_lc & leaves:
+                to_drop.add(cl)
+
+        if not to_drop:
+            continue
+
+        new_concepts = [c for c in existing if c.lower() not in to_drop]
+        domains_touched.update(to_drop)
+        occurrences_dropped += len(to_drop)
+        files_modified += 1
+
+        if dry_run:
+            continue
+
+        if new_concepts:
+            fm["concepts"] = new_concepts
+        else:
+            fm.pop("concepts", None)
+
+        path.write_text(render_frontmatter(fm) + "\n" + body, encoding="utf-8")
+
+    if not dry_run and files_modified > 0:
+        idx = Indexer(config=config)
+        idx.rebuild(full=True)
+        idx.close()
+
+    return {
+        "files_modified": files_modified,
+        "occurrences_dropped": occurrences_dropped,
+        "domains_touched": sorted(domains_touched),
+    }
 
 
 def prune_concepts(
@@ -456,8 +1115,9 @@ def generate_domain_hubs(
             lines.append("*No concepts listed.*")
         lines.append("")
 
-        safe_name = domain.replace("/", "--") + ".md"
-        hub_path = concepts_dir / safe_name
+        # Domain names are dash-form (e.g. ``swe-python``); filename mirrors
+        # the canonical name 1:1, no slug munging required.
+        hub_path = concepts_dir / f"{domain}.md"
         hub_path.write_text("\n".join(lines), encoding="utf-8")
         generated[domain] = hub_path
 
@@ -553,9 +1213,13 @@ def add_hub_wikilinks(
         if not note_domains:
             continue
 
-        # Build wikilinks section
+        # Build wikilinks section. Domain names are dash-form (e.g.
+        # ``swe-python``); the friendly label drops the domain prefix and
+        # title-cases the remainder (``swe-python`` → ``Python``).
         links = sorted(note_domains)
-        link_lines = [f"[[concepts/{d.replace('/', '--')}|{d.split('/')[-1].replace('-', ' ').title()}]]" for d in links]
+        link_lines = [
+            f"[[concepts/{d}|{_domain_label(d)}]]" for d in links
+        ]
         domains_section = "\n## Domains\n" + " · ".join(link_lines)
 
         # Replace existing domains section or append
@@ -593,6 +1257,84 @@ def delete_concept_hub(config: Config, concept: str) -> bool:
         path.unlink()
         return True
     return False
+
+
+HUB_ARCHIVE_DIRNAME = "_archive"
+
+
+def hub_archive_dir(config: Config) -> Path:
+    """Directory holding archived (formerly canonical, now orphan) concept hubs.
+
+    Mirrors ``themes/_candidates/_archive/``. Lives *inside* ``topics/`` so
+    non-recursive ``topics.glob('*.md')`` scans (status, link, repair) skip
+    archived files automatically — no filter logic required.
+    """
+    from personal_mem.synthesis.concept_hub import topics_dir
+
+    return topics_dir(config) / HUB_ARCHIVE_DIRNAME
+
+
+def archive_concept_hub(config: Config, concept: str) -> Path | None:
+    """Move a concept hub file to ``topics/_archive/`` if it exists.
+
+    Reversible counterpart to :func:`delete_concept_hub`. Used when a
+    concept gets demoted out of the canonical ontology — the hub's log
+    entries cite real notes that still exist, so we keep the synthesis
+    work for possible re-promotion rather than discarding it.
+
+    Returns the new archived path, or ``None`` if no hub file existed.
+    On filename collision (rare — only if the same concept was archived
+    before and re-promoted then re-demoted) we suffix the existing file
+    with ``.bak`` to preserve both copies; the just-moved file takes the
+    canonical archive name.
+    """
+    import shutil
+
+    from personal_mem.synthesis.concept_hub import concept_hub_path
+
+    src = concept_hub_path(config, concept)
+    if not src.exists():
+        return None
+
+    archive_dir = hub_archive_dir(config)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    dst = archive_dir / src.name
+    if dst.exists():
+        # Preserve the prior archive copy under a .bak suffix, then take
+        # the canonical name for the just-moved file.
+        bak = dst.with_suffix(dst.suffix + ".bak")
+        if bak.exists():
+            bak.unlink()
+        dst.rename(bak)
+    shutil.move(str(src), str(dst))
+    return dst
+
+
+def archive_orphan_hubs(
+    config: Config,
+    *,
+    dry_run: bool = False,
+) -> list[tuple[str, Path]]:
+    """Move every orphan hub (concept absent from ontology *and* zero notes)
+    into ``topics/_archive/``. Returns ``[(concept, archived_path), ...]``
+    for the paths that moved (or *would* move on ``dry_run=True``).
+
+    Idempotent: safe to call repeatedly. Use after edits to ``ontology.yaml``
+    or after ``demote_non_ontology_concepts`` to keep the live ``topics/``
+    surface aligned with the current canonical vocabulary.
+    """
+    orphans = find_orphan_hubs(config)
+    moved: list[tuple[str, Path]] = []
+    if dry_run:
+        archive_dir = hub_archive_dir(config)
+        for concept, src in orphans:
+            moved.append((concept, archive_dir / src.name))
+        return moved
+    for concept, _src in orphans:
+        new_path = archive_concept_hub(config, concept)
+        if new_path is not None:
+            moved.append((concept, new_path))
+    return moved
 
 
 def find_orphan_hubs(config: Config) -> list[tuple[str, Path]]:
@@ -960,7 +1702,7 @@ def find_dead_vocabulary(
     first). Concepts in the ontology with zero vault assignments are
     included with count=0.
     """
-    # Dead-vocabulary checks the *leaves* — domain headers like `swe/python`
+    # Dead-vocabulary checks the *leaves* — domain headers like `swe-python`
     # are structural and shouldn't be flagged as dead just because no note
     # tags them directly (their leaf concepts may still have full coverage).
     leaves = build_leaf_set(ontology)
