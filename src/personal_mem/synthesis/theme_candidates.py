@@ -250,6 +250,133 @@ def scan_candidates(
     return outcome
 
 
+DORMANT_DEFAULT_STALE_DAYS = 90
+
+
+def _iter_canonical_theme_paths(config: Config):
+    """Yield paths to canonical themes — top-level ``*.md`` files in
+    ``vault/themes/``. Candidates live in the ``_candidates/`` subdirectory
+    and are excluded by non-recursive globbing.
+
+    Theme files are named ``<slug>.md`` (the ``thm-XXXX`` ID lives in
+    frontmatter, not the filename) for raw ``create_note`` themes;
+    promotion-from-candidate produces ``<thm-id>-<slug>.md`` files. Both
+    shapes match this glob.
+    """
+    themes_dir = config.vault_root / "themes"
+    if not themes_dir.exists():
+        return
+    for path in themes_dir.glob("*.md"):
+        yield path
+
+
+def find_dormant_themes(
+    config: Config,
+    *,
+    stale_days: int = DORMANT_DEFAULT_STALE_DAYS,
+    today: date | None = None,
+) -> list[tuple[Path, date | None]]:
+    """Return canonical themes whose catalyst log hasn't moved in
+    ``stale_days`` days (or never had an entry).
+
+    Deterministic replacement for the LLM-judgment dormancy check in
+    ``/themes-resolve``. Returns ``[(path, last_catalyst_date_or_None)]``
+    so the caller can present a table without re-reading each theme.
+
+    Themes already in a terminal status (``resolved`` or
+    ``merged-into:thm-*``) are skipped — dormancy doesn't apply once a
+    theme has stopped being active. ``today`` is the cutoff anchor;
+    omit for the real current date (used by tests).
+    """
+    from personal_mem.synthesis.theme_hub import (
+        THEME_STATUS_RESOLVED,
+        last_catalyst_date,
+        parse_theme,
+    )
+
+    anchor = today or date.today()
+    cutoff = anchor - timedelta(days=stale_days)
+    out: list[tuple[Path, date | None]] = []
+    for path in _iter_canonical_theme_paths(config):
+        try:
+            hub = parse_theme(path)
+        except Exception:
+            continue
+        status = hub.frontmatter.get("status", "")
+        if status == THEME_STATUS_RESOLVED or status.startswith("merged-into:"):
+            continue
+        last = last_catalyst_date(path)
+        if last is None or last < cutoff:
+            out.append((path, last))
+    return out
+
+
+def find_resolved_themes(config: Config) -> list[tuple[Path, list[str]]]:
+    """Return canonical themes whose linked decisions are all in a
+    terminal state (``superseded`` or ``deprecated``).
+
+    Walks the index ``edges`` table for ``implements`` / ``relates_to``
+    edges pointing at each theme, then reads each linked decision's
+    ``status`` from the notes table. A theme is "resolved" when it has at
+    least one linked decision and *all* of them are in terminal status.
+    Themes with zero decision links are skipped (not resolved — orphan).
+
+    Returns ``[(path, [linked_decision_ids])]`` so the caller can show
+    which decisions drove the verdict. Themes already marked ``resolved``
+    or ``merged-into:thm-*`` are skipped. Deterministic replacement for
+    the LLM-judgment "thesis played out" check in ``/themes-resolve``.
+    """
+    import json
+
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.synthesis.theme_hub import THEME_STATUS_RESOLVED, parse_theme
+
+    out: list[tuple[Path, list[str]]] = []
+    idx = Indexer(config=config)
+    try:
+        for path in _iter_canonical_theme_paths(config):
+            try:
+                hub = parse_theme(path)
+            except Exception:
+                continue
+            status = hub.frontmatter.get("status", "")
+            if status == THEME_STATUS_RESOLVED or status.startswith("merged-into:"):
+                continue
+            theme_id = hub.frontmatter.get("id", "")
+            if not theme_id:
+                continue
+            rows = idx.db.execute(
+                """
+                SELECT DISTINCT n.id, n.frontmatter
+                FROM edges e
+                JOIN notes n ON n.id = e.source
+                WHERE e.target = ?
+                  AND e.edge_type IN ('implements', 'relates_to')
+                  AND n.type = 'decision'
+                """,
+                (theme_id,),
+            ).fetchall()
+            if not rows:
+                continue
+            linked_ids: list[str] = []
+            all_terminal = True
+            for row in rows:
+                try:
+                    fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    fm = {}
+                dec_status = fm.get("status", "")
+                linked_ids.append(row["id"])
+                if dec_status not in ("superseded", "deprecated"):
+                    all_terminal = False
+                    break
+            if all_terminal and linked_ids:
+                out.append((path, linked_ids))
+    finally:
+        idx.close()
+    return out
+
+
 def archive_stale_candidates(
     config: Config,
     *,

@@ -41,14 +41,34 @@ uv run python -c "from personal_mem.synthesis.concepts import find_redundant_hub
 
 (That helper was built for concept hubs but works on any text under `vault/concepts/topics/*.md`. For themes, fall back to LLM judgment over the theme essences.)
 
-### 2. Three judgments per theme
+### 2. Four judgments per theme — two deterministic, two LLM
 
-Apply LLM judgment (no thresholds) to each theme:
+**Deterministic** (Python helpers; no LLM judgment needed):
 
-- **Duplicate**: another theme covers materially the same narrative arc. Same subject, same time horizon, same mechanism. Output: `merge: <thm-A> + <thm-B>`.
-- **Dormant**: catalyst log hasn't moved in months and the thesis no longer feels load-bearing. Output: `archive: <thm-X>` (status → `dormant`).
-- **Resolved**: the narrative played out — either confirmed (decisions implemented; outcome reached) or invalidated (decisions reverted; thesis broken). Output: `resolve: <thm-X>` (status → `resolved`).
-- **Stale essence**: the catalyst log has diverged from the essence — recent entries contradict or extend the working thesis. Output: `rewrite essence: <thm-X>`.
+```python
+from personal_mem.synthesis.theme_candidates import (
+    find_dormant_themes, find_resolved_themes,
+)
+dormant = find_dormant_themes(cfg, stale_days=90)   # [(path, last_catalyst_date_or_None)]
+resolved = find_resolved_themes(cfg)                # [(path, [linked_decision_ids])]
+```
+
+- **Dormant**: catalyst log hasn't moved in 90 days (or never had an
+  entry). The helper reads the log directly — no semantic check. Output:
+  `archive: <thm-X>` (status → `dormant`).
+- **Resolved**: every linked decision (`implements:` / `relates_to:`
+  edges) is in terminal status (`superseded` or `deprecated`). The helper
+  walks the index edge table — no narrative judgment. Output:
+  `resolve: <thm-X>` (status → `resolved`).
+
+**LLM judgment** (the genuinely semantic calls):
+
+- **Duplicate**: another theme covers materially the same narrative arc.
+  Same subject, same time horizon, same mechanism. Output:
+  `merge: <thm-A> + <thm-B>`.
+- **Stale essence**: the catalyst log has diverged from the essence —
+  recent entries contradict or extend the working thesis. Output:
+  `rewrite essence: <thm-X>`.
 
 These are observational, not prescriptive — surface, don't autofix.
 

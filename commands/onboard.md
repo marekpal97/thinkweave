@@ -2,8 +2,8 @@
 name: onboard
 owns_mechanic: project_bootstrap
 capabilities: [bootstrap]
-consumes: [mem_sources_config]
-produces: [.claude/settings.json hooks, projects.<name> in vault sources.yaml, per-project landing docs]
+consumes: [mem_sources_config, mem_landing, mem_concepts]
+produces: [.claude/settings.json hooks, projects.<name> in vault sources.yaml, vault/.mem/ontology.yaml, per-project landing docs]
 tools:
   - Read
   - Write
@@ -11,149 +11,236 @@ tools:
   - Bash
   - mem_sources_config
   - mem_landing
-description: Wire this repo into an existing personal_mem vault — hooks, project registration, optional Claude Code seed, first landing docs.
+  - mem_concepts
+description: First-run onboarding — seed vault from prior Claude Code history, bootstrap ontology, configure focus + sources, install hooks, emit landing docs.
 ---
 
-# /onboard — wire this project into the vault
+# /onboard — make existing work legible to mem
 
-Project-scope skill. Run **once per repository** where you want
-personal_mem hooks active. Idempotent: re-running is safe.
+Personal_mem's first-run flow. Seeds the vault from your historical
+Claude Code conversations *first*, then layers ontology, focus, source
+types, and per-project hooks on top of that seed. Idempotent — safe to
+re-run; later passes only do what hasn't been done yet.
 
-**Prerequisites** — run these first if you haven't:
+The skill is invoked from a project directory but its early steps are
+vault-scope. They run once across all your projects; the per-project
+work at the end attaches the *current* repo to the seeded vault.
 
-- `pipx install personal-mem` (or `pip install -e .[all]` from a clone)
-- `mem install` — registers the personal-mem MCP server in
-  `~/.claude.json` (machine-scope, one time)
-- `mem init` — initialise your vault (one time per knowledge home)
-
-If `mem-mcp` isn't on PATH or `~/.claude.json` lacks the personal-mem
-entry, stop and tell the user to run `mem install` before continuing.
-Verify with:
+**Prerequisites — verify, don't recover:**
 
 ```bash
 command -v mem-mcp >/dev/null && echo "mcp ok" || echo "missing"
 test -f ~/.claude.json && grep -q '"personal-mem"' ~/.claude.json && echo "registered" || echo "missing"
+test -f "${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml" && echo "vault ready" || echo "MISSING — run mem init"
 ```
 
-If `mem init` hasn't been run (`$PERSONAL_MEM_VAULT/.mem/sources.yaml`
-doesn't exist), stop and tell the user to run it. This skill does not
-own vault initialisation.
+If any check fails, stop and tell the user which prerequisite is
+missing. This skill does not own machine setup (`mem install`) or vault
+init (`mem init`).
 
 ---
 
-## Step 1 — Confirm vault target
+## Step 1 — Seed from historical Claude Code conversations (mandatory)
 
-Read `$PERSONAL_MEM_VAULT` (or default `~/vault`). Confirm with the user
-that this is the vault they want this project to write into.
-
-```bash
-echo "Vault: ${PERSONAL_MEM_VAULT:-~/vault}"
-ls "${PERSONAL_MEM_VAULT:-~/vault}/.mem/sources.yaml" >/dev/null 2>&1 && echo "ready" || echo "MISSING — run mem init"
-```
-
-If missing, stop. Don't try to recover; tell the user to run `mem init`.
-
-## Step 2 — Register this project in the vault
-
-Derive the project name from the repo's basename (lowercase, `-` → `_`):
+This is the spine. Everything else in onboarding is configured *on top*
+of the seed — there's no skip, no "later." If the user has prior CC
+history, importing it is what makes mem useful from the first query.
+If they don't, this step short-circuits and the rest still runs.
 
 ```bash
-basename "$(pwd)" | tr 'A-Z-' 'a-z_'
+# Discover what's available
+mem import claude-code --dry-run
 ```
 
-Confirm the derived name with the user; let them override.
+The dry-run reports per-project session counts (project names are
+auto-derived from each session's `cwd` — multi-project aware, no manual
+mapping needed). Show the user the breakdown:
 
-Append the project under `projects:` in the vault `sources.yaml` if not
-already present, with the default discover strategy:
-
-```yaml
-projects:
-  <project>:
-    discover_strategies: [concept_coverage]
+```
+Discovered N sessions across M projects:
+  • project-a: 47 sessions
+  • project-b: 23 sessions
+  • personal-mem: 8 sessions
 ```
 
-Use Edit (not Write) — preserve the rest of the file.
-
-## Step 3 — Install hooks for this project
+Then commit:
 
 ```bash
+mem import claude-code              # inline mode — uses the running model
+# or, if N > ~200 and ANTHROPIC_API_KEY is set:
+mem import claude-code --via batch  # Anthropic Batches; faster on large histories
+```
+
+**If `~/.claude/projects/` doesn't exist or has no usable sessions,**
+print one line ("No prior Claude Code history found — skipping seed.")
+and continue to step 2. Don't ask. Don't offer alternatives. The seed
+is non-negotiable when present, harmless when absent.
+
+After import lands, the vault has session notes, decision notes, and
+many `proposed_concepts:` entries from auto-enrichment. Those drive
+step 2.
+
+## Step 2 — Bootstrap the ontology
+
+Imported sessions surface domain vocabulary as `proposed_concepts:` —
+candidates that haven't earned canonical status yet. On a fresh vault
+this is the moment to canonicalise the high-frequency ones in one pass,
+so subsequent retrieval and hub generation operate on a real ontology
+instead of an empty seed.
+
+Use a lower threshold than periodic hygiene (3 vs. the standard 5) —
+fresh vaults need a faster ramp:
+
+```bash
+uv run mem concepts proposed-counts --min-count 3
+```
+
+Pipe the output through the deterministic filter (drops domain-path
+concepts, generic process terms, project-name leakage) before showing
+the user:
+
+```python
+from personal_mem.synthesis.concepts import filter_promotion_candidates
+surviving = filter_promotion_candidates([c for c, _ in proposed_counts])
+```
+
+Present the survivors as a compact table:
+
+```
+## Ontology bootstrap — promote N candidates?
+
+| Concept (count) | Suggested domain |
+|-----------------|------------------|
+| `wandb` (12) | ml-training |
+| `regime-shift` (7) | finance-markets |
+```
+
+Apply LLM judgment on the survivors only — assign each to its best
+domain (use `mem concepts list` for the existing domain catalogue).
+Promote on user approval:
+
+```bash
+mem concepts promote --concept <term> --domain <domain>
+```
+
+Skip terms the user rejects. Re-runnable: a future `/onboard` pass
+finds whatever's still proposed.
+
+## Step 3 — Focus & acquisition setup
+
+Read the projects discovered in step 1. Ask the user which are *active
+focuses* (vs. archived / one-off):
+
+```
+Which projects do you want active in your vault?
+(Active projects get landing docs, discovery, and source-type defaults.)
+
+  [1] project-a (47 sessions)   [yes / archive]
+  [2] project-b (23 sessions)   [yes / archive]
+  [3] personal-mem (8 sessions) [yes / archive]
+```
+
+For each "yes," ensure an entry under `projects:` in
+`<vault>/.mem/sources.yaml` (Edit, not Write — preserve existing
+config). For "archive," skip — the import is still in the vault, just
+not foregrounded.
+
+Then walk the user through **source types**: which kinds of external
+content they want mem to acquire. List the registered types via
+`mem_sources_config()` and ask what they want enabled:
+
+```
+Available source types (papers, repos, articles ship by default):
+  paper, repo, article, conversation, substack
+
+Want to enable any optional ones?
+  - substack — newsletters via disk drop (~/inbox/substack/)
+  - news — high-volume queue with subagent triage
+```
+
+For each enabled type, confirm the intake path / queue location and
+write to `sources.yaml` (the spec already documents the keys —
+`intake_folder`, `queue`, `dedup_keys`). Don't synthesise config from
+scratch; reuse the templates in the registry.
+
+If the user describes an input shape that *isn't* covered (e.g.
+podcast transcripts, email digests, kindle highlights), point them at
+`/source-fit "<one-sentence description>"` to diagnose, then
+`/source-scaffold <slug>` if it genuinely needs a new type. Don't try
+to scaffold during `/onboard` — that's a separate skill with its own
+flow.
+
+## Step 4 — Per-project wiring
+
+For the *current* repo (the directory where `/onboard` was invoked),
+plus any other active projects from step 3, do the per-project setup:
+
+```bash
+# 4a. Register the project entry (idempotent)
+# Already done by step 3's sources.yaml writes.
+
+# 4b. Install hooks for THIS repo
 PERSONAL_MEM_VAULT=<vault> uv run mem hooks install
 ```
 
-This registers SessionStart, Pre/PostToolUse, Stop, and
-UserPromptSubmit hooks in *this repo's* `.claude/settings.json`. Confirm
-with the user the install printed no errors.
+Hooks land in `.claude/settings.json` of the current repo: SessionStart,
+UserPromptSubmit, PostToolUse, Stop. Confirm the install printed no
+errors. Other active projects need their own hook install run from
+their respective repos — point the user at this when they next open
+those projects:
 
-## Step 4 — Optional: seed from prior Claude Code conversations
-
-If `~/.claude/projects/` exists with > 0 entries, ask:
-
-> "Found N session histories under `~/.claude/projects/`. Importing
-> them seeds the vault with knowledge from your past Claude Code work.
-> This is a one-shot vault-scope op — it walks every project, not just
-> this one. Run now? (yes / no / later)"
-
-Default **no**. If yes, dispatch to:
-
-```bash
-mem import claude-code [--via inline|batch] [--dry-run]
+```
+You'll want to run `/onboard` once in each active project so its hooks
+get installed locally.
 ```
 
-- `--via inline` (default): uses the running Claude model. Slow but no
-  API key needed. Recommended for first run.
-- `--via batch`: requires `ANTHROPIC_API_KEY`. Faster for large
-  histories (hundreds of sessions), runs unattended.
+## Step 5 — First landing docs
 
-Run `--dry-run` first so the user sees per-project counts before
-committing. Project discovery is automatic from the `cwd` field of
-each session's events.
-
-## Step 5 — First landing docs for this project
+For each active project:
 
 ```bash
 PERSONAL_MEM_VAULT=<vault> uv run mem landing --project <project> --doc all
 ```
 
-Generates `STATE.md` / `BACKLOG.md` / `DECISIONS.md` for this project
-under `<vault>/projects/<project>/`.
+Generates `STATE.md` / `BACKLOG.md` / `DECISIONS.md` under
+`<vault>/projects/<project>/`. With imported content, these aren't
+empty — they reflect actual prior work.
+
+Also refresh global `THEMES.md`:
+
+```bash
+uv run mem landing --doc themes
+```
 
 ## Wrap-up
 
-Print a summary:
-
-- Project registered: `<project>`
-- Vault: `<vault>`
-- Hooks installed: yes/no
-- Claude Code seed: skipped / dry-run / imported N sessions
-
-Then print a "what's next" block. Tailor it to what just happened:
+Print a summary tailored to what just happened:
 
 ```
-You're set up. The next time you sit down to work in this project:
+You're set up.
+
+Imported:    N sessions across M projects
+Promoted:    K concepts to canonical ontology
+Active:      <list of active projects>
+Hooks:       installed in <current_project>
+Landing:     STATE/BACKLOG/DECISIONS for active projects, THEMES global
+
+The next time you sit down to work in this repo:
 
   • /mem-wrap         before /clear, so the session feeds the vault
   • /research <url>   to ingest a paper / repo / article
+  • /ingest <thing>   for anything else (file, text, ID)
 
-If you want to bring a new KIND of input into the vault — something
-the defaults don't cover (e.g. podcast transcripts, email digests,
-tweets you save, Notion exports, your kindle highlights) — run:
+Cross-vault hygiene (run when things feel noisy):
 
-  • /source-fit "<one-sentence description of the input>"
-       → tells you if an existing source type already handles it,
-         needs a config tweak, or genuinely needs a new type
-  • /source-scaffold <slug>
-       → only if /source-fit said you need a new type
+  • /mem-resolve-concepts   — concept dedup, ontology pruning
+  • /themes-resolve         — theme dormancy, candidate promotion
 
-These two are vault-scope, not per-project. Run them once when you
-hit a new input shape; the new /<slug> skill is then available in
-every project.
-
-If you skipped the Claude Code seed in step 4 and want it later:
-  • mem import claude-code --dry-run        # see per-project counts
-  • mem import claude-code                  # materialize
-  • mem import claude-code --enrich --via batch   # optional, costs API
+If you hit a new input shape that the defaults don't cover:
+  • /source-fit "<description>"
+  • /source-scaffold <slug>      (only if /source-fit says you need to)
 ```
 
-Print exactly that block — verbatim plus any per-project context. Do
-not paraphrase or expand. The whole point of the wrap-up is that the
-user can copy the next command without re-reading.
+Print exactly that — verbatim plus per-run substitutions. The whole
+point of the wrap-up is that the user can copy the next command without
+re-reading.

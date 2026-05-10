@@ -112,7 +112,7 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 | `/discover` | research_discovery | paper, repo, article | discover | Cross-project research gap analysis → queue items |
 | `/substack` | substack_inbox | substack | acquire | Drain Substack disk inbox |
 | `/update-hubs` | concept_hubs | — | — | Concept-hub sync — incremental (default) or bulk (`--bulk [inline\|batch]`). |
-| `/onboard` | project_bootstrap | — | bootstrap | Per-project: register project in vault, install hooks, optional Claude Code seed, first landing docs. **Not** for vault init (`mem init`) or machine setup (`mem install`). |
+| `/onboard` | project_bootstrap | — | bootstrap | First-run flow: mandatory historical Claude Code import (always step 1), ontology bootstrap from imported `proposed_concepts:`, focus + source-type configuration, per-project hooks, first landing docs. Idempotent — re-running only does what's still missing. **Not** for vault init (`mem init`) or machine setup (`mem install`). |
 | `/source-fit` | source_diagnosis | — | — | Read-only: classify a free-form input description against existing source types. Returns covered / adapt / scaffold. Vault-scope. |
 | `/source-scaffold` | source_scaffold | — | — | Generative: create a new source type via vault overlay + machine-global skill file (`~/.claude/commands/<slug>.md`). Vault-scope. |
 
@@ -121,11 +121,14 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 - **No filesystem crawls.** Never `find`/`ls`/`grep` the vault from a Bash tool. Use the SessionStart context (already in your conversation), MCP tools, or a single `Read` of a known file path.
 - **One MCP call per question.** Pick the modality from §2; don't fan out unless the first call is genuinely insufficient.
 - **Pre-`/clear`: run `/mem-wrap`.** There is no clear hook; this is the only way to preserve mid-session knowledge.
+- **`/mem-wrap` is zero-API but bounded by your model's per-turn reasoning cost.** `mem_extract` is pure Python; `mem_judge` and `mem_landing` are also deterministic. Latency is shaped by tool-call topology — one round-trip per decision is N expensive turns on a high-reasoning model. If `/mem-wrap` feels slow, the suspect is the per-decision loop in `operations/decisions.py`, not API spend.
 - **Concepts mandatory.** Every note created via `mem_extract` must carry ≥2 concepts. Load existing labels via `mem_concepts` before assigning. Prefer specific terms (`ml/deep-learning` over `deep-learning`).
 - **Strict ontology gating.** Only ontology-listed terms may go in `concepts:`. Any new term goes in `proposed_concepts:`. The strict gate is server-enforced — `mem_extract`, `mem_create`, and the importers all run incoming concept lists through the merged ontology and shunt non-matches to `proposed_concepts:` automatically. Promotion (proposed → canonical) is `/mem-resolve-concepts`'s job, triggered when a proposed term reaches critical mass (default `count ≥ 5`). You don't pre-canonicalise; you just attach concepts and let the gate sort them.
 - **Auto-todo only on request.** Never tag `todo` unless the user explicitly asks.
 
 ## 7. CLI reference (Bash)
+
+The CLI exposes **32 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
 
 Consolidations to keep in mind: `mem connect` is folded into
 `mem index --materialize-links`; the `mem_concepts*` MCP tools are folded into
@@ -138,11 +141,15 @@ mem add --type {note|theme|...} "Title"     # create a note
 mem index [--full] [--embed] [--materialize-links]   # rebuild SQLite index (+ wikilinks)
 mem search "q" [--type X] [--concept Y]     # FTS / similarity / hybrid
 mem graph <id>                              # local graph
+mem context "q" [--type X]                  # 3-layer retrieval (FTS → concept → recency)
 mem stats                                   # vault health
 mem doctor [--migrate]                      # coherence linter (+ optional data migrations)
 mem backlog [--project X]                   # todo notes + active queue items
+mem decisions [--file <path>] [--project X] # decision ledger lookup
+mem project {list|show|set-active}          # project registry on the vault
 mem concepts {list|merge|hubs|drift|notes|prune}
 mem hubs {status|plan|run|link|repair}      # concept-hub backfill (run = deprecation alias for `drain`)
+mem themes {list|scan-candidates|archive-stale-candidates|promote-candidate}
 mem drain --target hubs --via {inline|batch}  # batch path replaces `mem hubs run`
 mem queue {list|inspect|peek}               # per-source-type acquisition queues
 mem hooks {install|uninstall|status}
@@ -155,11 +162,18 @@ mem update <note_id> [-f key=val ...]       # frontmatter / body-append for head
 mem enrich [--project X]                    # LLM concept enrichment (gpt-5-mini)
 mem import {claude-mem|chatgpt|file|messenger}
 mem intake {enumerate|archive}              # drop-folder helpers for /substack and friends
+mem discover [--project X]                  # cross-project research gap analysis
+mem show <id>                               # render a single note
+mem link <src_id> <tgt_id> [--type X]       # add typed edge
+mem install [--vault PATH] [--yes]          # register MCP server in ~/.claude.json
+mem mcp                                     # invoke the MCP server (used by ~/.claude.json)
+mem connect                                 # deprecation alias → index --materialize-links
 ```
 
 **Agents shouldn't run** `mem doctor`, `mem stats`, `mem flow`, `mem intake`,
-`mem enrich`, `mem import`, `mem prune-orphans` directly — they belong in cron
-flows or interactive admin. There is no MCP parity for these subcommands.
+`mem enrich`, `mem import`, `mem prune-orphans`, `mem install`, `mem mcp`,
+`mem init`, `mem hooks` directly — they belong in cron flows or interactive
+admin. There is no MCP parity for these subcommands.
 
 ### MCP tool surface
 

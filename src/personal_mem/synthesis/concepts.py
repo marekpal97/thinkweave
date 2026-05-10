@@ -162,6 +162,110 @@ def get_all_concepts(db) -> dict[str, int]:
     return concept_counts
 
 
+# Generic English/process terms that appear as substrings of real concepts
+# but are never themselves domain-meaningful. Used by the deterministic
+# drift filter to drop near-duplicate pairs where the shorter concept is
+# one of these (e.g. `activation-functions` ≈ `function` is a false positive
+# — the shared substring is generic English, not a real near-dup signal).
+# Keep this list conservative: only add terms that have *no* domain meaning
+# in any field. When in doubt, leave it out — the LLM still applies semantic
+# judgment on the surviving pairs.
+_DRIFT_STOPWORDS: frozenset[str] = frozenset({
+    # Process / engineering generic
+    "architecture", "testing", "configuration", "documentation",
+    "deployment", "integration", "validation", "monitoring",
+    "automation", "orchestration", "abstraction", "implementation",
+    "maintenance", "operation", "operations", "review",
+    # Software-shape generic
+    "function", "method", "module", "component", "feature", "service",
+    "system", "tool", "library", "framework", "package", "plugin",
+    "interface", "api", "endpoint", "handler", "wrapper",
+    # State / time / phase generic
+    "state", "mode", "phase", "stage", "version", "status",
+    "session", "context", "instance", "object", "value",
+    # Communication / shape generic
+    "summary", "report", "result", "output", "input", "data",
+    "format", "structure", "pattern", "design", "model",
+    # Generic action verbs as nouns
+    "search", "filter", "match", "check", "compare", "track",
+})
+
+
+def filter_drift_candidates(
+    pairs: list[tuple[str, str, str]],
+    *,
+    stopwords: frozenset[str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Drop drift pairs that are deterministic false positives.
+
+    Rules applied (in order):
+
+    1. Both concepts ≤ 3 characters — short concepts produce noisy
+       substring/edit-distance hits (e.g. `ai` ≈ `api`, `1rm` ≈ `gru`).
+    2. Substring match where the shorter concept is in
+       :data:`_DRIFT_STOPWORDS` — generic English words that happen to
+       appear inside longer domain terms (e.g. `activation-functions`
+       ≈ `function`, `ab-testing` ≈ `testing`) are not true near-dups.
+
+    Pairs surviving these rules still need LLM judgment on whether they're
+    *actually* the same concept (typo, plural, alias) — the filter just
+    removes the work the LLM would otherwise spend on obvious false
+    positives. Keep the rule set conservative; when in doubt, leave the
+    pair in and let the model decide.
+    """
+    keep_words = stopwords if stopwords is not None else _DRIFT_STOPWORDS
+    out: list[tuple[str, str, str]] = []
+    for a, b, reason in pairs:
+        if len(a) <= 3 and len(b) <= 3:
+            continue
+        # Substring match where the shorter is generic English
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        if "substring" in reason and shorter in keep_words:
+            continue
+        out.append((a, b, reason))
+    return out
+
+
+def filter_promotion_candidates(
+    concepts: list[str],
+    *,
+    stopwords: frozenset[str] | None = None,
+    domain_prefixes: frozenset[str] | None = None,
+) -> list[str]:
+    """Drop promotion candidates that are deterministic false positives.
+
+    Applied to ``proposed_concepts:`` reaching the promotion threshold —
+    drops three classes that should never enter the canonical ontology:
+
+    1. Domain-path concepts (``swe-python``, ``ml-deep-learning``) —
+       these are ontology *structure*, not entries. Filtered by leading
+       ``<prefix>-`` segment matching :data:`_DOMAIN_PREFIXES`.
+    2. Generic process terms in :data:`_DRIFT_STOPWORDS` — `architecture`,
+       `testing`, `configuration`, etc. — these are tags, not concepts.
+    3. Underscore-bearing terms — by convention concepts are kebab-case
+       lowercase; underscores indicate project-name leakage
+       (``personal_mem``, ``options_engine``).
+
+    Returns surviving candidates in the original order. Use the LLM only
+    on this filtered list to decide which terms genuinely deserve ontology
+    membership.
+    """
+    keep_words = stopwords if stopwords is not None else _DRIFT_STOPWORDS
+    prefixes = domain_prefixes if domain_prefixes is not None else _DOMAIN_PREFIXES
+    out: list[str] = []
+    for c in concepts:
+        cl = c.lower()
+        if "_" in cl:
+            continue
+        head, _, _ = cl.partition("-")
+        if head and head in prefixes:
+            continue
+        if cl in keep_words:
+            continue
+        out.append(c)
+    return out
+
+
 def suggest_similar(new_concept: str, existing: list[str], max_suggestions: int = 3) -> list[str]:
     """Suggest existing concepts similar to a new one.
 
@@ -230,7 +334,7 @@ def _ontology_path() -> Path:
 # Top-level ontology keys reserved for non-concept data. Filtered out of
 # load_ontology() so callers iterating "domains → concepts" don't trip
 # over them, but accessible via load_tag_vocabulary() and similar.
-_RESERVED_ONTOLOGY_KEYS = frozenset({"tag_vocabulary"})
+_RESERVED_ONTOLOGY_KEYS = frozenset({"tag_vocabulary", "domain_markers"})
 
 
 def _parse_yaml_file(path: Path) -> dict[str, list[str]]:
@@ -455,10 +559,27 @@ def _domain_label(domain: str) -> str:
     return domain.replace("-", " ").title()
 
 
-def is_domain_concept(concept: str, *, markers: frozenset[str] = DOMAIN_MARKERS) -> bool:
-    """True if any DOMAIN_MARKERS substring appears in the concept (lowercased)."""
+def load_domain_markers() -> frozenset[str]:
+    """Return the effective domain-marker substring set.
+
+    Built-in :data:`DOMAIN_MARKERS` (math/ML/finance/fitness/physics/tools)
+    union the vault override at ``<vault>/.mem/ontology.yaml::domain_markers``.
+    Vault list extends — never replaces — the built-ins so personal_mem
+    upgrades keep the curated set intact while users add their own domains
+    (chemistry, music, law, …) without code edits.
+    """
+    parsed = _parse_ontology_file()
+    extra = parsed.get("domain_markers") or []
+    if not extra:
+        return DOMAIN_MARKERS
+    return DOMAIN_MARKERS | frozenset(m.lower() for m in extra if m)
+
+
+def is_domain_concept(concept: str, *, markers: frozenset[str] | None = None) -> bool:
+    """True if any domain-marker substring appears in the concept (lowercased)."""
     cl = concept.lower()
-    return any(marker in cl for marker in markers)
+    effective = markers if markers is not None else load_domain_markers()
+    return any(marker in cl for marker in effective)
 
 
 def split_concepts_by_ontology(
@@ -562,6 +683,7 @@ def prune_noisy_singletons(
     idx.close()
 
     ontology_keep = build_keep_set(load_ontology())
+    domain_markers = load_domain_markers()
     singletons = {c for c, n in canonical_counts.items() if n == 1}
 
     remove: set[str] = set()
@@ -570,7 +692,7 @@ def prune_noisy_singletons(
     for c in singletons:
         if c in ontology_keep:
             kept_ontology += 1
-        elif is_domain_concept(c):
+        elif is_domain_concept(c, markers=domain_markers):
             kept_domain += 1
         else:
             remove.add(c)

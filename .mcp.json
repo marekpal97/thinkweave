@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "personal-mem": {
+      "type": "stdio",
+      "command": "mem-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

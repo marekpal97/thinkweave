@@ -85,6 +85,10 @@ def judge_and_writeback(
     Verdict → status mapping: ``kept→accepted``, ``superseded→superseded``,
     ``reverted→deprecated``. Decisions with no matching session evidence are
     skipped silently (and an empty list is returned).
+
+    Batched: one frontmatter write combines verdict + status fields, and a
+    single :class:`Indexer` instance re-indexes all touched files at the end
+    (vs. open/close per decision).
     """
     from personal_mem.core.indexer import Indexer
     from personal_mem.core.vault import VaultManager
@@ -99,6 +103,7 @@ def judge_and_writeback(
         "superseded": "superseded",
         "reverted": "deprecated",
     }
+    touched_paths = []
     for dec, result in results:
         fm_updates: dict = {
             "verdict": result["verdict"],
@@ -111,14 +116,16 @@ def judge_and_writeback(
             fm_updates["commit_refs"] = result["commit_refs"]
             if not dec.frontmatter.get("committed"):
                 fm_updates["committed"] = True
-        vm.update_note(vm.root / dec.path, frontmatter_updates=fm_updates)
-        idx = Indexer(config=cfg)
-        idx.index_file(vm.root / dec.path)
-        idx.close()
         new_status = status_map.get(result["verdict"])
         if new_status and new_status != dec.frontmatter.get("status"):
-            vm.update_note(
-                vm.root / dec.path,
-                frontmatter_updates={"status": new_status},
-            )
+            fm_updates["status"] = new_status
+        vm.update_note(vm.root / dec.path, frontmatter_updates=fm_updates)
+        touched_paths.append(vm.root / dec.path)
+
+    idx = Indexer(config=cfg)
+    try:
+        for path in touched_paths:
+            idx.index_file(path)
+    finally:
+        idx.close()
     return results

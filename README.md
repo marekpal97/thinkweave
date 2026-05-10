@@ -9,27 +9,58 @@ theme), a knowledge graph from wikilinks and shared concepts, and MCP
 tools for search, retrieval, and creation. Sessions are captured via
 hooks and enriched by `/mem-wrap` before you `/clear`.
 
-## Install — three scopes, three steps
+## Install
 
-personal_mem distinguishes **machine** (one per laptop), **vault** (one
-per knowledge home), and **project** (one per repo). Each scope has one
-verb that owns its setup; nothing else writes there.
+Two paths — the Claude Code plugin (recommended, one command) or the
+legacy `pip install` + `mem install` flow (kept for users on a clone or
+without marketplace access).
 
-### Once per machine
+**Prerequisites either way:**
 
-Requires [`uv`](https://github.com/astral-sh/uv) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
+- **`uv` is required**, not optional — install with
+  `curl -LsSf https://astral.sh/uv/install.sh | sh`. The console scripts
+  (`mem`, `mem-hook`, `mem-mcp`) are installed into the uv-managed venv;
+  `pip install` alone won't make them reachable from Claude Code's shell.
+- **`pipx install personal-mem` first** so `mem-mcp` is on `$PATH` when
+  the plugin's MCP server entry tries to invoke it. Without this the
+  plugin's MCP block is registered but the server fails to start.
+
+### Plugin install (recommended)
+
+Once per machine — collapses MCP registration, hook installation, and
+slash-command discovery into one operation:
+
+```bash
+pipx install personal-mem            # makes mem, mem-hook, mem-mcp resolvable
+claude plugin install personal-mem   # registers MCP, hooks, commands
+# → restart Claude Code so the plugin's MCP server is picked up
+```
+
+After restart, run `/onboard` from any repo. It seeds your vault from
+prior Claude Code conversations *unconditionally* (step 1), bootstraps
+the ontology from imported `proposed_concepts:` (step 2), walks you
+through focus + source-type configuration (step 3), and emits first
+landing docs (step 4). Idempotent — re-running only does what's still
+missing.
+
+### Legacy install (no plugin)
+
+If you can't use the plugin path (private fork, marketplace not
+available, etc.):
 
 ```bash
 git clone <your-fork-or-org>/personal_mem.git
 cd personal_mem
 uv sync --extra mcp                  # installs mem, mem-hook, mem-mcp
 mem install --yes                    # registers personal-mem in ~/.claude.json
+# → restart Claude Code now, before continuing
 ```
 
 `mem install` is idempotent. It writes the personal-mem MCP-server
 block into `~/.claude.json` if absent; if a different block exists, it
 shows the diff and waits for `--yes` before overwriting. It does not
-touch any vault or any project's `.claude/`.
+touch any vault or any project's `.claude/`. Hooks still need a separate
+`mem hooks install` per repo (the plugin path declares hooks globally).
 
 Optional environment:
 
@@ -48,7 +79,9 @@ Creates `<vault>/.mem/sources.yaml` (overlay-friendly defaults), the
 SQLite index, the ontology seed, and the concept-hub directory. Add
 `PERSONAL_MEM_VAULT=...` to your shell rc to make it permanent.
 
-### Each repo where you want memory active
+### `/onboard` — the first-run flow
+
+After plugin (or legacy) install, run `/onboard` from any repo:
 
 ```bash
 cd <your-repo>
@@ -56,11 +89,19 @@ claude
 > /onboard
 ```
 
-`/onboard` registers this project in the vault, installs Claude Code
-hooks (SessionStart, Pre/PostToolUse, Stop, UserPromptSubmit) into this
-repo's `.claude/settings.json`, optionally seeds the vault from your
-prior Claude Code conversations, and emits first per-project landing
-docs.
+`/onboard` is the spine of new-user UX:
+
+1. **Always-first**: imports prior Claude Code conversations (multi-
+   project, auto-discovers everything under `~/.claude/projects/`).
+   No skip option — this is what makes mem useful from the first query.
+2. **Ontology bootstrap**: surfaces high-frequency `proposed_concepts:`
+   from the import for canonicalisation.
+3. **Focus + source-types**: walks you through which projects are
+   active and which source types you want enabled.
+4. **Per-project hooks** (legacy install only — plugin install handles
+   hooks globally) and **first landing docs** for each active project.
+
+Idempotent: re-running picks up wherever it left off.
 
 ## Daily loop
 

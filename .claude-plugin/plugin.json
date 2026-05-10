@@ -1,0 +1,11 @@
+{
+  "name": "personal-mem",
+  "description": "Obsidian-native memory layer — markdown vault + SQLite index + 18 MCP tools, 14 slash commands, 4 hooks. Run /onboard after install to seed from prior Claude Code history.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Marek Paluch"
+  },
+  "homepage": "https://github.com/marekpal97/personal-mem",
+  "repository": "marekpal97/personal-mem",
+  "license": "MIT"
+}

@@ -34,20 +34,36 @@ Optionally surface redundant-hub candidates with `uv run mem concepts drift --hu
 
 Do NOT call `mem_concepts_tighten` (too noisy) or dump the full concept list.
 
-### 2. Filter drift output with LLM judgment
+### 2. Filter drift output (deterministic)
 
-The drift detector uses string similarity which produces many false positives. Apply these filters before presenting anything:
+Drift detection produces many string-similarity false positives. The
+filtering rules are now Python helpers — pipe the raw drift output through
+them before applying any LLM judgment:
 
-**Near-duplicate filtering rules:**
-- DISCARD edit-distance matches where both concepts are <=3 characters (e.g. `ai` ≈ `api`, `1rm` ≈ `gru`) — short concepts are almost never true duplicates
-- DISCARD substring matches where the shorter concept is a generic English word that happens to appear inside a longer domain term (e.g. `activation-functions` ≈ `function`, `ab-testing` ≈ `testing`)
-- KEEP only pairs where the concepts genuinely refer to the same thing: typos (`autoresarch` → `autoresearch`), singular/plural (`embedding` → `embeddings`), naming variants (`options_engine` → `options-engine`), redundant prefixes (`agentic-langgraph` → `langgraph`)
+```python
+from personal_mem.synthesis.concepts import (
+    filter_drift_candidates,        # near-dup pairs
+    filter_promotion_candidates,    # ontology candidates
+)
 
-**Ontology candidate filtering rules:**
-- DISCARD domain-path concepts used as tags (e.g. `swe-python`, `ml-deep-learning`) — these are ontology structure, not missing entries
-- DISCARD generic process terms (e.g. `architecture`, `testing`, `documentation`, `configuration`) — these are tags, not concepts
-- DISCARD project names used as concepts (e.g. `personal_mem`, `options_engine`)
-- KEEP genuine domain terms that belong in the ontology but aren't there yet
+surviving_pairs = filter_drift_candidates(drift["near_duplicates"])
+surviving_candidates = filter_promotion_candidates(drift["candidates"])
+```
+
+What the helpers drop:
+
+- Near-dup pairs where both concepts are ≤3 chars (short concepts produce
+  noisy edit-distance hits like `ai` ≈ `api`).
+- Substring matches where the shorter concept is a generic English word
+  that happens to appear inside a longer domain term (`activation-functions`
+  ≈ `function`).
+- Promotion candidates that are domain-path concepts (`swe-python`),
+  generic process terms (`architecture`, `testing`), or contain underscores
+  (project-name leakage like `personal_mem`).
+
+Apply LLM judgment **only on the survivors** — decide whether each pair is
+a real near-dup (typo, plural, alias) and whether each candidate is a
+genuine domain term worth promoting.
 
 ### 3. Present compact action plan
 
@@ -123,10 +139,11 @@ until a term reaches critical mass. This step lifts those that have:
 uv run mem concepts proposed-counts --min-count 5
 ```
 
-Apply the same LLM filter as step 2's "Ontology candidate filtering rules"
-— discard generic process terms, project names, domain-path concepts
-already used as tags. Present surviving candidates as a compact promotion
-table:
+Pipe the proposed-counts output through `filter_promotion_candidates()`
+(same helper as step 2) — it strips domain-path concepts, generic process
+terms, and underscore-bearing project-name leakage. Apply LLM judgment
+only on the survivors to decide which genuinely deserve canonicalisation,
+then present them as a compact promotion table:
 
 ```
 ### Promotions (N candidates)
@@ -174,17 +191,20 @@ explicit kill list — never via automated count-based pruning.
 A canonical singleton is kept when:
 
 - the concept appears in the merged ontology (seed + vault override), or
-- any `DOMAIN_MARKERS` substring matches the concept name —
-  domain-vocabulary fragments for math, ML, finance, fitness, physics,
-  and a small allowlist of proper-noun tools (see
-  `synthesis/concepts.py:DOMAIN_MARKERS`).
+- any domain-marker substring matches the concept name. The built-in
+  marker set (math, ML, finance, fitness, physics, common tools) lives at
+  `synthesis/concepts.py:DOMAIN_MARKERS`; add domains specific to your
+  vault by listing substrings under
+  `<vault>/.mem/ontology.yaml::domain_markers` — vault entries *extend*
+  the built-ins (never replace them) so package upgrades stay safe.
 
 Anything else is pruned. Under the strict creation policy this prune is
 mostly a guardrail — once `demote-non-ontology` has run, the only
 canonical singletons left are pre-policy leftovers and direct vault
 edits. If a domain you care about isn't covered by the markers (e.g.
-you want all `chem-*` singletons preserved), extend `DOMAIN_MARKERS`
-rather than running this with `--dry-run` and cherry-picking.
+you want all `chem-*` singletons preserved), add `chem` (or any other
+substring that matches your concept names) to your vault override's
+`domain_markers:` list and rerun.
 
 ### 5. Hub coherence review
 

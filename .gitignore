@@ -26,8 +26,9 @@ build/
 .claude/*
 !.claude/plugins/
 
-# MCP config (may contain local paths)
-.mcp.json
+# MCP config — .mcp.json IS the plugin's MCP server declaration
+# (shipped at the repo root per Claude Code plugin spec). Local dev
+# overrides should go in .claude/settings.local.json, not here.
 
 # Vault data (user-specific)
 vault/

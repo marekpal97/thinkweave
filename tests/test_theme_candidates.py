@@ -15,8 +15,14 @@ from personal_mem.synthesis.theme_candidates import (
     CANDIDATES_ARCHIVE_NAME,
     CANDIDATES_DIR_NAME,
     archive_stale_candidates,
+    find_dormant_themes,
+    find_resolved_themes,
     promote_candidate,
     scan_candidates,
+)
+from personal_mem.synthesis.theme_hub import (
+    build_theme_frontmatter,
+    render_theme_body_skeleton,
 )
 
 
@@ -295,3 +301,192 @@ class TestPromoteCandidate:
     def test_missing_candidate_raises(self, config: Config):
         with pytest.raises(FileNotFoundError):
             promote_candidate(config, "cand-doesnotexist", title="Whatever")
+
+
+def _make_theme(
+    vault: VaultManager,
+    title: str,
+    *,
+    catalyst_dates: list[str] | None = None,
+    status: str = "active",
+    concepts: list[str] | None = None,
+) -> Path:
+    """Create a canonical theme file with optional dated catalyst entries."""
+    body_parts = [render_theme_body_skeleton(title)]
+    if catalyst_dates:
+        # Append catalyst log entries in the canonical grammar.
+        log_lines = [
+            f"- {d} · *new* — entry — [[src-test{i:04d}]]"
+            for i, d in enumerate(catalyst_dates)
+        ]
+        # Replace the placeholder italics block under "## Catalyst log"
+        body = body_parts[0]
+        body = body.replace(
+            "_Append-only. One entry per line, same format as concept hubs:_\n"
+            "_`- YYYY-MM-DD · *flag* — one-liner — [[src-XXXX]]`_\n"
+            "_Flags: `new`, `agrees`, `contradicts`, `extends`. For the latter "
+            "three, append a date pointing to an earlier catalyst:_\n"
+            "_`- YYYY-MM-DD · *contradicts YYYY-MM-DD* — text — [[src-XXXX]]`_",
+            "\n".join(log_lines),
+        )
+        body_parts = [body]
+    return vault.create_note(
+        note_type=NoteType.THEME,
+        title=title,
+        body=body_parts[0],
+        extra_frontmatter=build_theme_frontmatter(
+            title,
+            status=status,
+            concepts=concepts or ["finance-regime"],
+        ),
+    )
+
+
+class TestFindDormantThemes:
+    """Deterministic dormancy detection — reads catalyst log dates,
+    flags themes whose latest entry is older than the cutoff."""
+
+    def test_theme_with_no_catalysts_is_dormant(
+        self, vault: VaultManager, config: Config
+    ):
+        from datetime import date
+
+        _make_theme(vault, "Empty theme")
+        result = find_dormant_themes(config, today=date(2026, 5, 10))
+        assert len(result) == 1
+        path, last = result[0]
+        assert last is None
+        assert "empty-theme" in path.name
+
+    def test_old_catalyst_is_dormant(
+        self, vault: VaultManager, config: Config
+    ):
+        from datetime import date
+
+        _make_theme(
+            vault,
+            "Old theme",
+            catalyst_dates=["2025-01-15", "2025-02-20"],
+        )
+        result = find_dormant_themes(
+            config, stale_days=90, today=date(2026, 5, 10)
+        )
+        assert len(result) == 1
+        _, last = result[0]
+        assert last == date(2025, 2, 20)
+
+    def test_recent_catalyst_is_not_dormant(
+        self, vault: VaultManager, config: Config
+    ):
+        from datetime import date
+
+        _make_theme(
+            vault,
+            "Recent theme",
+            catalyst_dates=["2026-04-15", "2026-05-01"],
+        )
+        result = find_dormant_themes(
+            config, stale_days=90, today=date(2026, 5, 10)
+        )
+        assert result == []
+
+    def test_resolved_theme_is_skipped(
+        self, vault: VaultManager, config: Config
+    ):
+        from datetime import date
+
+        _make_theme(vault, "Done theme", status="resolved")
+        result = find_dormant_themes(config, today=date(2026, 5, 10))
+        assert result == []
+
+    def test_merged_theme_is_skipped(
+        self, vault: VaultManager, config: Config
+    ):
+        from datetime import date
+
+        _make_theme(
+            vault, "Merged theme", status="merged-into:thm-other"
+        )
+        result = find_dormant_themes(config, today=date(2026, 5, 10))
+        assert result == []
+
+
+class TestFindResolvedThemes:
+    """Deterministic resolution detection — walks the index edges table
+    for decisions linked via implements/relates_to, flags themes whose
+    decisions are all in terminal status."""
+
+    def _make_decision(
+        self,
+        vault: VaultManager,
+        *,
+        title: str,
+        implements_theme: str,
+        status: str,
+    ) -> Path:
+        return vault.create_note(
+            note_type=NoteType.DECISION,
+            title=title,
+            body=f"# {title}\n",
+            extra_frontmatter={
+                "status": status,
+                "implements": [implements_theme],
+                "concepts": ["finance-regime", "finance-structure"],
+            },
+        )
+
+    def test_theme_with_all_terminal_decisions_is_resolved(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        path = _make_theme(vault, "Played out theme")
+        theme_id = vault.read_note(path).id
+        self._make_decision(
+            vault,
+            title="D1",
+            implements_theme=theme_id,
+            status="superseded",
+        )
+        self._make_decision(
+            vault,
+            title="D2",
+            implements_theme=theme_id,
+            status="deprecated",
+        )
+        indexer.rebuild()
+
+        result = find_resolved_themes(config)
+        assert len(result) == 1
+        result_path, decision_ids = result[0]
+        assert result_path == path
+        assert len(decision_ids) == 2
+
+    def test_theme_with_active_decision_is_not_resolved(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        path = _make_theme(vault, "Still active theme")
+        theme_id = vault.read_note(path).id
+        self._make_decision(
+            vault,
+            title="D1",
+            implements_theme=theme_id,
+            status="superseded",
+        )
+        self._make_decision(
+            vault,
+            title="D2",
+            implements_theme=theme_id,
+            status="accepted",  # not terminal
+        )
+        indexer.rebuild()
+
+        result = find_resolved_themes(config)
+        assert result == []
+
+    def test_theme_with_no_linked_decisions_is_skipped(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        _make_theme(vault, "Orphan theme")
+        indexer.rebuild()
+
+        result = find_resolved_themes(config)
+        assert result == []

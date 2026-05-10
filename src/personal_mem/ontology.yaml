@@ -97,6 +97,25 @@ tag_vocabulary:
   - infrastructure        # domain: infra / platform
 
 
+# Domain-marker substrings — `prune_noisy_singletons` keeps any canonical
+# concept whose name contains one of these, even when count==1 and the
+# concept isn't in the ontology. The built-in set in `synthesis/concepts.py`
+# (math, ML, finance, fitness, physics, common tools) ships as defaults; add
+# your own domain substrings here in your *vault* override at
+# `<vault>/.mem/ontology.yaml::domain_markers` (this file is the package
+# seed — edit the vault override, not this). The vault list extends, never
+# replaces, the built-ins. Substring match, case-insensitive, lowercase
+# only.
+#
+# Example for a chemistry/music vault:
+#   domain_markers:
+#     - polymer
+#     - catalyst
+#     - chord
+#     - cadence
+domain_markers: []
+
+
 # ============================================================
 # Math
 # ============================================================
