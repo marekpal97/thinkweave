@@ -342,6 +342,40 @@ def add_admin_subparsers(sub) -> None:
         help="Skip the orphan-prune step",
     )
 
+    p_rlvr = sub.add_parser(
+        "rlvr",
+        help=(
+            "RLVR (decision-context RL) data export. One row per decision "
+            "joining frontmatter + body citations + context_served. "
+            "Schema lives in operations/rlvr_export.RLVRRow."
+        ),
+    )
+    rlvr_sub = p_rlvr.add_subparsers(dest="rlvr_action")
+    p_rlvr_export = rlvr_sub.add_parser(
+        "export",
+        help="Stream RLVR rows as JSONL on stdout (one decision per line).",
+    )
+    p_rlvr_export.add_argument(
+        "--project", "-p", default="",
+        help="Filter to a single project (default: all projects).",
+    )
+    p_rlvr_export.add_argument(
+        "--since", default="",
+        help="Earliest decision date (YYYY-MM-DD, inclusive).",
+    )
+    p_rlvr_export.add_argument(
+        "--until", default="",
+        help="Latest decision date (YYYY-MM-DD, inclusive).",
+    )
+    p_rlvr_export.add_argument(
+        "--committed-only", action="store_true",
+        help="Skip rows whose decision was not committed.",
+    )
+    p_rlvr_export.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Print a 'N rows emitted' summary on stderr after streaming.",
+    )
+
     p_sources = sub.add_parser(
         "sources",
         help="List, inspect, and scaffold source types",

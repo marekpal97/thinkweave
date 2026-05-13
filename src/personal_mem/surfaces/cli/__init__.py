@@ -47,6 +47,7 @@ from personal_mem.surfaces.cli.notes import (
 )
 from personal_mem.surfaces.cli.parser import build_parser
 from personal_mem.surfaces.cli.queue import cmd_queue
+from personal_mem.surfaces.cli.rlvr import cmd_rlvr
 from personal_mem.surfaces.cli.skill import cmd_skill
 from personal_mem.surfaces.cli.themes import cmd_themes
 from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
@@ -87,6 +88,7 @@ _DISPATCH = {
     "themes": cmd_themes,
     "update": cmd_update,
     "wrap-finalize": cmd_wrap_finalize,
+    "rlvr": cmd_rlvr,
 }
 
 
