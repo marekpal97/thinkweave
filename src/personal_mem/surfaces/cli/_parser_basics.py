@@ -317,6 +317,31 @@ def add_admin_subparsers(sub) -> None:
         help="Minimum session age in seconds to be eligible (default: 3600)",
     )
 
+    p_wrap_finalize = sub.add_parser(
+        "wrap-finalize",
+        help=(
+            "Deterministic tail of /mem-wrap: prune orphans → index → judge "
+            "extracted decisions → refresh DECISIONS/BACKLOG → concept-drift "
+            "advisory, all in one process. Run after mem_extract has written "
+            "the session's insights/decisions."
+        ),
+    )
+    p_wrap_finalize.add_argument(
+        "session_id", help="Session note ID (ses-...) that was just extracted"
+    )
+    p_wrap_finalize.add_argument(
+        "--project", "-p", default="",
+        help="Project (defaults to PERSONAL_MEM_PROJECT)",
+    )
+    p_wrap_finalize.add_argument(
+        "--json", action="store_true",
+        help="Emit a JSON summary on stdout (for headless flows)",
+    )
+    p_wrap_finalize.add_argument(
+        "--no-prune", action="store_true",
+        help="Skip the orphan-prune step",
+    )
+
     p_sources = sub.add_parser(
         "sources",
         help="List, inspect, and scaffold source types",

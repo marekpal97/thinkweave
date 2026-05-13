@@ -50,6 +50,7 @@ from personal_mem.surfaces.cli.queue import cmd_queue
 from personal_mem.surfaces.cli.skill import cmd_skill
 from personal_mem.surfaces.cli.themes import cmd_themes
 from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
+from personal_mem.surfaces.cli.wrap import cmd_wrap_finalize
 
 
 _DISPATCH = {
@@ -85,6 +86,7 @@ _DISPATCH = {
     "discover": cmd_discover,
     "themes": cmd_themes,
     "update": cmd_update,
+    "wrap-finalize": cmd_wrap_finalize,
 }
 
 
