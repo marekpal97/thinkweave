@@ -102,6 +102,22 @@ CREATE TABLE IF NOT EXISTS concept_hierarchy (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ch_ancestor ON concept_hierarchy(ancestor);
+
+-- Context served to a session, projected from per-session retrieval_log.jsonl.
+-- One row per (session, note, source). `source` is the closed-set distinction
+-- between SessionStart payload notes ('startup') and on-the-fly MCP retrievals
+-- during the session ('onthefly'). Feeds the RLVR decision-context export.
+-- Rebuildable from retrieval_log.jsonl — markdown stays truth.
+CREATE TABLE IF NOT EXISTS context_served (
+    session_id TEXT NOT NULL,
+    note_id    TEXT NOT NULL,
+    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly')),
+    ts         TEXT,
+    PRIMARY KEY (session_id, note_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cs_session ON context_served(session_id);
+CREATE INDEX IF NOT EXISTS idx_cs_note ON context_served(note_id);
 """
 
 FTS_SCHEMA_SQL = """
@@ -182,6 +198,7 @@ class Indexer:
             self.db.execute("DELETE FROM note_tags")
             self.db.execute("DELETE FROM decision_files")
             self.db.execute("DELETE FROM concept_hierarchy")
+            self.db.execute("DELETE FROM context_served")
             self.db.execute("DELETE FROM notes")
             self._rebuild_fts()
 
@@ -233,6 +250,11 @@ class Indexer:
             stats["edges"] = self._rebuild_edges()
             self._rebuild_fts()
 
+        # Project retrieval_log.jsonl sidecars into context_served. Cheap walk
+        # — most session folders won't have a retrieval log yet (only ones
+        # that ran post-RLVR-slice-2). Idempotent via INSERT OR REPLACE.
+        self._rebuild_context_served()
+
         self.db.commit()
         return stats
 
@@ -252,6 +274,20 @@ class Indexer:
         file_hash = content_hash(text)
         rel_path = str(path.relative_to(self.vault.root))
         self._index_file(path, text, file_hash, rel_path)
+
+        # If this is a session note, project its sibling retrieval_log.jsonl
+        # opportunistically — wrap-finalize's incremental index pass relies on
+        # this to pick up the buffer that archive_buffer just split out.
+        try:
+            fm, _ = parse_frontmatter(text)
+            if fm.get("type") == "session":
+                sess_id = fm.get("id", "")
+                if sess_id:
+                    self._project_session_retrieval_log(
+                        sess_id, path.parent / "retrieval_log.jsonl"
+                    )
+        except Exception:
+            log.exception("context_served projection failed for %s", rel_path)
         self._rebuild_fts()
         self.db.commit()
 
@@ -532,6 +568,83 @@ class Indexer:
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the notes table."""
         self.db.execute("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')")
+
+    # ------------------------------------------------------------------
+    # RLVR substrate: context_served projection (slice 3)
+    # ------------------------------------------------------------------
+
+    def _rebuild_context_served(self) -> None:
+        """Project every session's ``retrieval_log.jsonl`` into ``context_served``.
+
+        Called at the end of :meth:`rebuild`. Walks every indexed session note
+        (the `notes` table tells us which) and feeds its sibling
+        ``retrieval_log.jsonl`` through :meth:`_project_session_retrieval_log`.
+
+        Cost: one extra `SELECT id, path FROM notes WHERE type='session'` plus
+        a stat-and-read per session folder. Most session folders won't have a
+        retrieval log yet — pre-RLVR sessions skip silently. Idempotent.
+        """
+        rows = self.db.execute(
+            "SELECT id, path FROM notes WHERE type = 'session'"
+        ).fetchall()
+        for row in rows:
+            sess_id = row["id"]
+            rel_path = row["path"]
+            sess_path = self.vault.root / rel_path
+            if not sess_path.exists():
+                continue
+            log_path = sess_path.parent / "retrieval_log.jsonl"
+            try:
+                self._project_session_retrieval_log(sess_id, log_path)
+            except Exception:
+                log.exception("context_served projection failed for %s", sess_id)
+
+    def _project_session_retrieval_log(
+        self, session_id: str, log_path: Path
+    ) -> int:
+        """Parse one ``retrieval_log.jsonl`` and upsert its rows.
+
+        Each ``startup`` event contributes one row per ``returned_id`` with
+        ``source='startup'``. Each ``retrieval`` event contributes one per
+        ``returned_id`` with ``source='onthefly'``. If the same note appears
+        in both, both rows persist — the export-side code decides precedence
+        (onthefly wins over startup-only).
+
+        Returns the number of rows upserted; 0 if the log file is missing.
+        Tolerates malformed lines line-by-line.
+        """
+        if not log_path.exists():
+            return 0
+
+        upserted = 0
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                etype = ev.get("type", "")
+                if etype == "startup":
+                    src = "startup"
+                elif etype == "retrieval":
+                    src = "onthefly"
+                else:
+                    continue
+                ts = ev.get("ts", "")
+                returned_ids = ev.get("returned_ids", []) or []
+                for nid in returned_ids:
+                    if not isinstance(nid, str) or not nid:
+                        continue
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO context_served "
+                        "(session_id, note_id, source, ts) VALUES (?, ?, ?, ?)",
+                        (session_id, nid, src, ts),
+                    )
+                    upserted += 1
+        return upserted
 
     def materialize_links(self, max_links: int = 7, dry_run: bool = False) -> dict:
         """Write a managed ``## See Also`` section into each note with its top connections.

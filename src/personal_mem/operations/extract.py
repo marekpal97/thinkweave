@@ -299,6 +299,12 @@ def extract_session(
             extra_fm["plan_ref"] = dec["plan_ref"]
         if dec.get("summary"):
             extra_fm["summary"] = dec["summary"]
+        if dec.get("predicted_outcome"):
+            # Optional forward-looking text the wrap composer (or caller)
+            # writes when recording the decision. Judged later by
+            # synthesis/judge.py:_evaluate_prediction_match — feeds the
+            # `prediction.match` column in the RLVR export.
+            extra_fm["predicted_outcome"] = dec["predicted_outcome"]
         dec_body = _build_decision_body(
             dec.get("rationale", ""), dec["title"], outcome_value
         )

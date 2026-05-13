@@ -83,6 +83,9 @@ def evaluate_decision(
     """Evaluate a decision based on downstream evidence. Pure data, no LLM.
 
     Returns dict with verdict, confidence (0.0-1.0), and evidence string.
+    If the decision carries a ``predicted_outcome`` field, the result also
+    carries ``prediction_match`` ∈ {confirmed, partial, contradicted,
+    unevaluable} — see :func:`_evaluate_prediction_match`.
     """
     judged_at = datetime.now(timezone.utc).isoformat()
 
@@ -130,49 +133,113 @@ def evaluate_decision(
         "blame_lines": blame_lines,
     }
 
+    # Choose verdict from the evidence ladder. One assembly point at the end
+    # so prediction_match writeback (and any future cross-cutting field) has
+    # exactly one place to attach.
     if superseder:
         if blame_lines > 0:
             # Lines survive despite a later decision on the same file —
             # co-contributor, not truly superseded.
-            return {
-                **base,
-                "verdict": "kept",
-                "confidence": 0.5,
-                "evidence": f"Re-edited by {superseder} but {blame_lines} lines survive{plan_note}",
-            }
-        return {
-            **base,
-            "verdict": "superseded",
-            "confidence": 0.7,
-            "evidence": f"Re-edited by {superseder}{plan_note}",
-        }
-    if committed and tested:
-        return {
-            **base,
-            "verdict": "kept",
-            "confidence": 0.9,
-            "evidence": f"Committed and tests pass{plan_note}",
-        }
-    if committed and not files_exist:
-        return {
-            **base,
-            "verdict": "reverted",
-            "confidence": 0.6,
-            "evidence": f"Committed but files removed{plan_note}",
-        }
-    if committed:
-        return {
-            **base,
-            "verdict": "kept",
-            "confidence": 0.6,
-            "evidence": f"Committed, not tested{plan_note}",
-        }
-    return {
+            verdict, confidence, evidence = (
+                "kept", 0.5,
+                f"Re-edited by {superseder} but {blame_lines} lines survive{plan_note}",
+            )
+        else:
+            verdict, confidence, evidence = (
+                "superseded", 0.7, f"Re-edited by {superseder}{plan_note}",
+            )
+    elif committed and tested:
+        verdict, confidence, evidence = (
+            "kept", 0.9, f"Committed and tests pass{plan_note}",
+        )
+    elif committed and not files_exist:
+        verdict, confidence, evidence = (
+            "reverted", 0.6, f"Committed but files removed{plan_note}",
+        )
+    elif committed:
+        verdict, confidence, evidence = (
+            "kept", 0.6, f"Committed, not tested{plan_note}",
+        )
+    else:
+        verdict, confidence, evidence = (
+            "unknown", 0.0, f"Not committed{plan_note}",
+        )
+
+    result = {
         **base,
-        "verdict": "unknown",
-        "confidence": 0.0,
-        "evidence": f"Not committed{plan_note}",
+        "verdict": verdict,
+        "confidence": confidence,
+        "evidence": evidence,
     }
+
+    # Prediction match — only emitted when the decision carries a prediction.
+    # Pure deterministic keyword + structural-evidence match; the memo says
+    # `unevaluable` is a legit common terminal value and a semantic upgrade
+    # pass is out of MVP scope.
+    predicted = (fm.get("predicted_outcome") or "").strip()
+    if predicted:
+        result["prediction_match"] = _evaluate_prediction_match(
+            predicted,
+            verdict=verdict,
+            committed=committed,
+            tested=tested,
+            session_meta=session_meta,
+        )
+    return result
+
+
+# Keyword families for prediction-match dispatch. Conservative by design —
+# anything that doesn't match a family stays `unevaluable`. Widening these
+# is a deliberate decision (semantic upgrade), not a casual edit.
+_TEST_KEYWORDS = ("test", "pass", "fail", "green", "red", "ci ", "ci.")
+_COMMIT_KEYWORDS = ("commit", "land", "ship", "merge", "deploy")
+
+
+def _evaluate_prediction_match(
+    predicted: str,
+    *,
+    verdict: str,
+    committed: bool,
+    tested: bool,
+    session_meta: NoteMeta | None,
+) -> str:
+    """Map (predicted_outcome, structural evidence) → prediction_match.
+
+    Returns one of ``confirmed`` / ``partial`` / ``contradicted`` /
+    ``unevaluable``. The default is ``unevaluable`` — only narrow,
+    deterministic rules can promote off it. No LLM, no embedding compare.
+    """
+    text = predicted.lower()
+
+    # Test-prediction family: did the user predict the tests would pass/fail?
+    if any(kw in text for kw in _TEST_KEYWORDS):
+        if session_meta is not None:
+            runs = session_meta.frontmatter.get("test_runs", []) or []
+            # Defensive: render_frontmatter stringifies dicts inside lists, so
+            # test_runs can roundtrip as str. Skip non-dict entries rather
+            # than crashing — same pattern keeps _check_tested honest.
+            any_failed = any(
+                isinstance(r, dict) and (r.get("failed", 0) or 0) > 0
+                for r in runs
+            )
+            if any_failed:
+                # Predicted anything about tests + tests actually failed in
+                # the session — contradicted regardless of polarity (the
+                # narrow rule set doesn't try to read prediction polarity).
+                return "contradicted"
+        if tested:
+            return "confirmed"
+        return "unevaluable"
+
+    # Commit/landing-prediction family.
+    if any(kw in text for kw in _COMMIT_KEYWORDS):
+        if verdict == "reverted":
+            return "contradicted"
+        if committed:
+            return "confirmed"
+        return "unevaluable"
+
+    return "unevaluable"
 
 
 def _check_re_edited(

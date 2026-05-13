@@ -106,6 +106,17 @@ def tool_schemas() -> list:
                                 "supersedes": {"type": "string", "description": "ID of decision this replaces."},
                                 "cites": {"type": "array", "items": {"type": "string"}, "description": "Source note IDs that informed this decision."},
                                 "plan_ref": {"type": "string", "description": "Which plan item this decision implements (e.g. 'Step 3: Replace auth middleware')."},
+                                "predicted_outcome": {
+                                    "type": "string",
+                                    "description": (
+                                        "OPTIONAL forward-looking prediction about what should happen "
+                                        "if this decision is right (e.g. 'tests will pass on next run', "
+                                        "'this will land in one commit'). Judged later by mem_judge — "
+                                        "narrow deterministic rules promote it to confirmed/contradicted, "
+                                        "otherwise unevaluable. Feeds the RLVR export. Leave empty "
+                                        "when the session has no clear prediction; never invent one."
+                                    ),
+                                },
                             },
                             "required": ["title", "rationale", "outcome", "concepts"],
                         },

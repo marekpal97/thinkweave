@@ -943,7 +943,12 @@ class Search:
         return merged
 
     def render_graph_text(self, note_id: str, depth: int = 2) -> str:
-        """Render a text representation of the local graph."""
+        """Render a text representation of the local graph.
+
+        Each line carries the neighbour's note id in trailing parens so a
+        downstream parser (and a human reader) can pluck node identities in
+        one step — same stamping shape as mem_search/mem_context.
+        """
         center = self.get_note_by_id(note_id)
         if not center:
             return f"Note {note_id} not found."
@@ -954,11 +959,11 @@ class Search:
         for node in nodes:
             for edge in node.edges:
                 if edge.source == note_id:
-                    lines.append(f"  --{edge.edge_type}--> [{node.type}] {node.title}")
+                    lines.append(f"  --{edge.edge_type}--> [{node.type}] {node.title} ({node.id})")
                 elif edge.target == note_id:
-                    lines.append(f"  <--{edge.edge_type}-- [{node.type}] {node.title}")
+                    lines.append(f"  <--{edge.edge_type}-- [{node.type}] {node.title} ({node.id})")
                 else:
-                    lines.append(f"  ~{edge.edge_type}~ [{node.type}] {node.title}")
+                    lines.append(f"  ~{edge.edge_type}~ [{node.type}] {node.title} ({node.id})")
 
         return "\n".join(lines)
 

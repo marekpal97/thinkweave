@@ -116,6 +116,10 @@ def judge_and_writeback(
             fm_updates["commit_refs"] = result["commit_refs"]
             if not dec.frontmatter.get("committed"):
                 fm_updates["committed"] = True
+        if "prediction_match" in result:
+            # Only present when the decision carried `predicted_outcome:`.
+            # See synthesis/judge.py:_evaluate_prediction_match.
+            fm_updates["prediction_match"] = result["prediction_match"]
         new_status = status_map.get(result["verdict"])
         if new_status and new_status != dec.frontmatter.get("status"):
             fm_updates["status"] = new_status

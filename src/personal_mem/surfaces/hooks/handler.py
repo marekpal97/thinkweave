@@ -87,8 +87,16 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
     Lean by design — all heavy work (frontmatter updates, summary,
     FTS indexing) is deferred to the Stop hook. The JSONL buffer is
     the source of truth during the session.
+
+    Gated to Write/Edit/Bash (file/command activity) plus the closed set
+    of personal_mem MCP retrieval tools. Retrieval events feed the RLVR
+    decision-context substrate — see ``operations/retrieval_log.py``.
     """
-    if tool_name not in ("Write", "Edit", "Bash"):
+    from personal_mem.operations.retrieval_log import RETRIEVAL_TOOLS
+
+    is_action_tool = tool_name in ("Write", "Edit", "Bash")
+    is_retrieval_tool = tool_name in RETRIEVAL_TOOLS
+    if not (is_action_tool or is_retrieval_tool):
         _output()
         return
 
@@ -103,12 +111,21 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         session_id = hook_input.get("session_id", os.environ.get("CLAUDE_SESSION_ID", ""))
         now = datetime.now(timezone.utc).isoformat()
 
-        # Buffer the event (crash-safe, append-only)
-        event = _build_event(tool_name, tool_input, tool_output, now)
+        # Buffer the event (crash-safe, append-only). Retrieval and action
+        # events are kept in the same buffer file — the Stop-time finalizer
+        # partitions them into events.jsonl vs retrieval_log.jsonl.
+        if is_action_tool:
+            event = _build_event(tool_name, tool_input, tool_output, now)
+        else:
+            from personal_mem.operations.retrieval_log import build_retrieval_event
+
+            event = build_retrieval_event(tool_name, tool_input, tool_output, now)
         if event:
             _buffer_event(cfg.mem_dir, session_id, event)
 
-        # Ensure session note exists (creates + indexes once on first event)
+        # Ensure session note exists (creates + indexes once on first event).
+        # Retrieval-only sessions (e.g. agent doing pure research) still get
+        # a session note materialised here.
         _ensure_session(cfg, session_id, hook_input)
 
         _output()
@@ -670,6 +687,14 @@ def _handle_session_start(hook_input: dict) -> None:
     Emits a ``hookSpecificOutput.additionalContext`` payload (~7–10k tokens)
     built by ``personal_mem.retrieval.context.build_project_context``. Never blocks;
     all exceptions fall through to an empty response.
+
+    Also records a single ``type: startup`` event in the session buffer with
+    the set of note IDs the payload contains and the token estimate. This
+    feeds the RLVR substrate's ``startup`` source — distinct from
+    ``onthefly`` retrievals, and per the design weighted *lower* than
+    on-the-fly hits when computing context value (a decision citing a note
+    that was only in the startup payload is a weaker "context helped"
+    signal than one that fetched the note mid-session).
     """
     try:
         from personal_mem.core.config import load_config
@@ -678,6 +703,29 @@ def _handle_session_start(hook_input: dict) -> None:
         cfg = load_config()
         project = _detect_project(hook_input)
         payload = build_project_context(cfg, project, budget_tokens=10000)
+
+        # Record the startup event regardless of whether we emit the payload —
+        # an empty payload (cold vault) is itself a fact the RLVR row should
+        # carry (n_retrievals_onthefly stays 0, startup_token_est = 0).
+        try:
+            from personal_mem.operations.retrieval_log import parse_returned_ids
+
+            session_id = hook_input.get(
+                "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
+            )
+            if session_id:
+                event = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "type": "startup",
+                    "returned_ids": parse_returned_ids(payload),
+                    # Rough token estimate — matches the SessionStart budget
+                    # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
+                    "token_est": len(payload) // 4,
+                }
+                _buffer_event(cfg.mem_dir, session_id, event)
+        except Exception as e:
+            # Capture is best-effort; never block the payload injection.
+            _log_error("session_start_capture", e)
 
         if not payload.strip():
             _output()

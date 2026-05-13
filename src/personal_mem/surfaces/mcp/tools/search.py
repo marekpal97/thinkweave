@@ -298,7 +298,9 @@ def handle_timeline(cfg: Config, args: dict):
                 conf = dfm.get("confidence", "")
                 status = dfm.get("status", "proposed")
                 verdict_str = f" ({verdict}, {conf})" if verdict else ""
-                lines.append(f"  - [{status}] {dec.title}{verdict_str}")
+                # Trail with (id) — uniform with mem_search; lets the retrieval
+                # log parser pick decisions out of timeline output.
+                lines.append(f"  - [{status}] {dec.title} ({dec.id}){verdict_str}")
 
         if not processed:
             lines.append("  ⚠ Session not yet processed")
