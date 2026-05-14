@@ -27,7 +27,17 @@ def tool_schemas() -> list:
 
 
 def _format_extract_report(out) -> str:
-    lines = [f"Extracted from session {out.session_id}:"]
+    # Header — distinguish the input session_id from the minted ses-id when
+    # they diverge (typical when the caller passed a Claude Code UUID and
+    # extract auto-minted a session note).
+    if out.session_note_id and out.session_note_id != out.session_id:
+        header = (
+            f"Extracted from session {out.session_id} "
+            f"(session note: {out.session_note_id})"
+        )
+    else:
+        header = f"Extracted from session {out.session_id}"
+    lines = [header + ":"]
     if out.summary:
         lines.append(f"Summary: {out.summary}")
     for n in out.created_notes:
@@ -44,6 +54,22 @@ def _format_extract_report(out) -> str:
         lines.append("  No insights or decisions extracted.")
     lines.extend(out.suggestions[:5])
     lines.append(f"Session marked processed={out.processed_at}")
+    # Surface the exact finalize command — pass `session_id` (the input),
+    # NOT `session_note_id`. Decisions stamp `source_session = session_id`
+    # and the judge matches on that field; passing the ses-id when input
+    # was a UUID silently returns 0 decisions (issue surfaced 2026-05-14).
+    project = ""
+    if out.created_decisions:
+        project = out.created_decisions[0].frontmatter.get("project", "") or ""
+    elif out.created_notes:
+        project = out.created_notes[0].frontmatter.get("project", "") or ""
+    finalize_arg = out.session_id  # the input — what decisions are stamped with
+    if project:
+        lines.append(
+            f"▶ To finalize: mem wrap-finalize {finalize_arg} --project {project}"
+        )
+    else:
+        lines.append(f"▶ To finalize: mem wrap-finalize {finalize_arg}")
     return "\n".join(lines)
 
 

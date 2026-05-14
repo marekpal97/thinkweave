@@ -37,9 +37,22 @@ from personal_mem.synthesis.concepts import (
 
 @dataclass
 class ExtractOutcome:
-    """Structured result from :func:`extract_session`."""
+    """Structured result from :func:`extract_session`.
+
+    ``session_id`` is whatever the caller passed in — Claude Code UUID,
+    minted ses-id, slug, anything. ``session_note_id`` is the canonical
+    personal_mem id stamped on the session note's frontmatter (always
+    ``ses-XXXXXXXX``). They diverge when the caller passed a non-ses-id
+    value and ``mem_extract`` auto-minted a fresh note.
+
+    **Pass ``session_id`` (not ``session_note_id``) to** ``mem wrap-finalize``
+    — decisions are stamped with ``source_session = session_id`` (the input
+    form), and the judge matches on that field. The format report flags
+    this explicitly so callers don't pick the wrong identifier.
+    """
 
     session_id: str
+    session_note_id: str = ""
     summary: str = ""
     created_notes: list[NoteMeta] = field(default_factory=list)
     created_decisions: list[NoteMeta] = field(default_factory=list)
@@ -192,6 +205,11 @@ def extract_session(
             return outcome
 
     session_note = vm.read_note(session_path)
+    # Surface the canonical (auto-minted or pre-existing) personal_mem id
+    # alongside the caller's input `session_id`. The two diverge when the
+    # caller passed something other than a `ses-XXX` value (e.g. a Claude
+    # Code UUID). Format report uses this to flag the right wrap-finalize arg.
+    outcome.session_note_id = session_note.id
 
     if session_note.frontmatter.get("processed") and not force:
         processed_at = session_note.frontmatter.get("processed_at", "unknown date")
