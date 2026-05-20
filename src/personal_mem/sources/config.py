@@ -66,8 +66,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "drain_batch_max": 20,
             "subagent_type": "research-news-worker",
             "subagent_model": "sonnet",
-            "post_batch_hooks": ["theme_scan"],
-            "research_skill": "research-news",
+            # post_batch_hooks no longer needs ["theme_scan"] here —
+            # VaultManager.create_note fires scan_candidates for every
+            # event-grain source on create. Kept empty so drain reports
+            # don't show a redundant hook.
+            "post_batch_hooks": [],
+            # /research router dispatches news URLs to /news (the one-off
+            # ingest skill). The cron-driven drain uses the subagent path
+            # (subagent_type above) — research_skill is only consulted by
+            # Path A (sequential Skill dispatch) which news doesn't take.
+            "research_skill": "news",
+            "url_patterns": [
+                "reuters.com",
+                "ft.com",
+                "bloomberg.com",
+                "wsj.com",
+                "bankier.pl",
+            ],
         },
         "conversation": {
             "drain_strategy": "inline",

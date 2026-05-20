@@ -123,10 +123,15 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         slug="news",
         bucket="news",
         layout="author_folder",
-        skills=("research-news", "news"),
+        # `news` is the one-off URL ingest skill; `drain` handles the
+        # queued/cron path via the `research-news-worker` subagent. No
+        # `research-news` skill — news intentionally skips Path A of the
+        # router (sequential Skill dispatch) in favour of triage+writer
+        # fan-out. See commands/news.md and commands/drain.md.
+        skills=("news", "drain"),
         description=(
-            "Curated financial / macro news. RSS+cron intake, FOCUS-gated, "
-            "subagent drain. Outlet (Reuters, Bankier, …) drives author folder."
+            "Curated financial / macro news. RSS+cron intake, theme-triaged "
+            "via Haiku, subagent drain. Outlet drives author folder."
         ),
         temporal_grain="event",
     ),
