@@ -129,7 +129,8 @@ def add_index_subparsers(sub) -> None:
         "doctor",
         help=(
             "Coherence linter: tag/concept overlap, unknown tags, "
-            "dead vocabulary. Advisory — never modifies the vault."
+            "dead vocabulary. Advisory — never modifies the vault. "
+            "Use --mcp for MCP-wiring diagnostics, --all for both."
         ),
     )
     p_doctor.add_argument(
@@ -147,6 +148,20 @@ def add_index_subparsers(sub) -> None:
             "Delete zero-byte n-*/dec-*/src-* phantom files at vault root "
             "(unresolved-wikilink residue). Safe; never touches non-empty files."
         ),
+    )
+    p_doctor.add_argument(
+        "--mcp",
+        action="store_true",
+        help=(
+            "Run MCP-registration diagnostics only: which scopes declare "
+            "personal-mem, whether the launcher resolves, env-var sanity. "
+            "Exits non-zero on FAIL."
+        ),
+    )
+    p_doctor.add_argument(
+        "--all",
+        action="store_true",
+        help="Run vault coherence + MCP diagnostics together.",
     )
 
     p_connect = sub.add_parser(

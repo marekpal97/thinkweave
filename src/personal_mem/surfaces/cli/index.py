@@ -69,40 +69,69 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
-    """Run vault coherence checks (read-only by default).
+    """Run coherence + MCP-wiring checks (read-only by default).
+
+    Flag matrix:
+      bare        → vault coherence only (legacy default)
+      --mcp       → MCP-registration diagnostics only
+      --all       → both
+      --migrate / --fix-phantoms only meaningful with the vault path
 
     With ``--migrate``, runs idempotent one-shot data migrations from
     ``operations/migrations.py`` (e.g. ``todo+research`` → queue) before
     printing the report. With ``--fix-phantoms``, deletes the zero-byte
     phantom files surfaced by the report.
+
+    Exits non-zero if any selected check fails.
     """
-    from personal_mem.synthesis.concepts import doctor_report, format_doctor_report
+    from personal_mem.surfaces.cli.mcp_doctor import run_mcp_doctor
 
-    cfg = load_config()
-    if not cfg.index_db.exists():
-        print(f"Index not found at {cfg.index_db}. Run `mem index` first.")
-        sys.exit(1)
+    mcp_mode = bool(getattr(args, "mcp", False))
+    all_mode = bool(getattr(args, "all", False))
+    # Default: vault-only. --mcp = MCP-only. --all = both.
+    do_vault = all_mode or not mcp_mode
+    do_mcp = all_mode or mcp_mode
 
-    if getattr(args, "migrate", False):
-        from personal_mem.operations.migrations import migrate_todo_research_to_queue
+    exit_code = 0
 
-        moved = migrate_todo_research_to_queue(cfg.vault_root)
-        print(f"migrate_todo_research_to_queue: {moved} note(s) moved to queues")
+    if do_vault:
+        from personal_mem.synthesis.concepts import doctor_report, format_doctor_report
 
-    report = doctor_report(cfg)
+        cfg = load_config()
+        if not cfg.index_db.exists():
+            print(f"Index not found at {cfg.index_db}. Run `mem index` first.")
+            sys.exit(1)
 
-    if getattr(args, "fix_phantoms", False):
-        phantoms = report.get("phantom_note_files", [])
-        for path in phantoms:
-            try:
-                path.unlink()
-            except OSError as exc:
-                print(f"  ! could not delete {path}: {exc}")
-        print(f"fix-phantoms: deleted {len(phantoms)} zero-byte file(s)")
-        # Re-run after deletion so the printed report reflects the new state.
+        if getattr(args, "migrate", False):
+            from personal_mem.operations.migrations import migrate_todo_research_to_queue
+
+            moved = migrate_todo_research_to_queue(cfg.vault_root)
+            print(f"migrate_todo_research_to_queue: {moved} note(s) moved to queues")
+
         report = doctor_report(cfg)
 
-    print(format_doctor_report(report))
+        if getattr(args, "fix_phantoms", False):
+            phantoms = report.get("phantom_note_files", [])
+            for path in phantoms:
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    print(f"  ! could not delete {path}: {exc}")
+            print(f"fix-phantoms: deleted {len(phantoms)} zero-byte file(s)")
+            # Re-run after deletion so the printed report reflects the new state.
+            report = doctor_report(cfg)
+
+        print(format_doctor_report(report))
+
+    if do_mcp:
+        if do_vault:
+            print()  # visual separator
+        result = run_mcp_doctor()
+        if not result.passed:
+            exit_code = 1
+
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 def cmd_connect(args: argparse.Namespace) -> None:
