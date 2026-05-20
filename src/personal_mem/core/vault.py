@@ -479,7 +479,66 @@ class VaultManager:
         header = f"# {title}\n\n" if note_type != NoteType.SOURCE else ""
         content = render_frontmatter(fm) + "\n\n" + header + body
         filepath.write_text(content, encoding="utf-8")
+
+        # Post-write hook: event-grain sources auto-float theme candidates.
+        #
+        # The CLAUDE.md contract — "Event-shaped types … post-ingest path
+        # runs a deterministic cluster check (≥3 recent sources sharing
+        # ≥2 concepts, no covering theme) and writes a candidate stub."
+        # — was previously honoured only when `/drain` invoked the
+        # `theme_scan` post-batch hook. Direct `mem_create` / `mem_extract`
+        # / `/news` / `/capture` paths all bypassed it. This block closes
+        # that gap.
+        #
+        # Conservative scope: only fires for NoteType.SOURCE with an
+        # event-grain spec (substack, news). Failure must never poison
+        # the create — scan_candidates touches the index and theme
+        # filesystem; either can be transient.
+        if note_type == NoteType.SOURCE:
+            self._maybe_float_theme_candidate(filepath, fm)
+
         return filepath
+
+    def _maybe_float_theme_candidate(self, filepath: Path, fm: dict) -> None:
+        """Run the theme-candidate floater if this source's spec has
+        ``temporal_grain='event'``. Wraps the call in a defensive
+        try/except — a failure here must not surface as a create failure.
+
+        The floater is itself idempotent (it reads existing candidates
+        before writing and skips duplicates), so re-firing for the same
+        source is harmless. Cost: one indexer instantiation + one SQL
+        scan over recent sources of the same type; sub-100ms on a
+        single-digit-thousands-of-notes vault.
+        """
+        import logging
+
+        source_type = fm.get("source_type", "") or ""
+        if not source_type:
+            return
+        spec = source_registry.get_spec(source_type, vault_root=self.root)
+        if spec is None or spec.temporal_grain != "event":
+            return
+
+        try:
+            # Reindex the new file so scan_candidates sees it. The scan
+            # reads from the SQLite index, not the filesystem.
+            from personal_mem.core.indexer import Indexer
+            from personal_mem.synthesis.theme_candidates import scan_candidates
+
+            idx = Indexer(config=self.config)
+            try:
+                idx.index_file(filepath)
+            finally:
+                idx.close()
+
+            scan_candidates(self.config, source_type=spec.slug)
+        except Exception:
+            # Log but don't propagate — create succeeded; theme floating
+            # is opportunistic, not load-bearing for the write contract.
+            logging.getLogger(__name__).exception(
+                "theme_candidate floater failed for %s; create succeeded",
+                filepath,
+            )
 
     def read_note(self, path: Path | str) -> NoteMeta:
         """Read and parse a note file into NoteMeta."""

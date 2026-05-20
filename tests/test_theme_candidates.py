@@ -75,18 +75,23 @@ class TestScanCandidatesEventGrain:
     def test_cluster_of_three_creates_candidate(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
+        # Creates may auto-fire scan_candidates via the post-write hook
+        # in VaultManager._maybe_float_theme_candidate (event-grain
+        # sources). Validate by inspecting the candidates directory
+        # directly rather than via a second explicit scan, which would
+        # dedup against the first stub.
         for i in range(3):
             _make_substack_source(
                 vault, f"Source {i}", concepts=["ai-capex", "hyperscaler"]
             )
         indexer.rebuild()
+        scan_candidates(config, source_type="substack")
 
-        outcome = scan_candidates(config, source_type="substack")
-
-        assert len(outcome.candidates_created) == 1
-        path = outcome.candidates_created[0]
+        cdir = config.vault_root / "themes" / CANDIDATES_DIR_NAME
+        cand_files = list(cdir.glob("cand-*.md"))
+        assert len(cand_files) == 1
+        path = cand_files[0]
         assert path.exists()
-        assert (config.vault_root / "themes" / CANDIDATES_DIR_NAME) in path.parents
 
         fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert fm["status"] == "candidate"
@@ -148,7 +153,11 @@ class TestScanCandidatesNonEventGrain:
     def test_unspecified_source_type_scans_all_event_grain(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        # A paper cluster + a substack cluster: only the substack one fires.
+        # A paper cluster + a substack cluster: only the substack one
+        # fires. Auto-fire from VaultManager._maybe_float_theme_candidate
+        # already lands the candidate on the 3rd substack create; the
+        # explicit scan_candidates() here dedups against it. Assert via
+        # filesystem.
         for i in range(3):
             vault.create_note(
                 note_type=NoteType.SOURCE,
@@ -163,13 +172,12 @@ class TestScanCandidatesNonEventGrain:
                 vault, f"Substack {i}", concepts=["ai-capex", "hyperscaler"]
             )
         indexer.rebuild()
+        scan_candidates(config)
 
-        outcome = scan_candidates(config)
-
-        assert len(outcome.candidates_created) == 1
-        fm, _ = parse_frontmatter(
-            outcome.candidates_created[0].read_text(encoding="utf-8")
-        )
+        cdir = config.vault_root / "themes" / CANDIDATES_DIR_NAME
+        cand_files = list(cdir.glob("cand-*.md"))
+        assert len(cand_files) == 1
+        fm, _ = parse_frontmatter(cand_files[0].read_text(encoding="utf-8"))
         assert fm["source_type"] == "substack"
 
 
@@ -203,19 +211,23 @@ class TestScanCandidatesDeduplication:
     def test_existing_candidate_dedupes(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
+        # The 3rd substack create auto-fires _maybe_float_theme_candidate
+        # which writes the first stub. The explicit scan_candidates() call
+        # below must dedup against it.
         for i in range(3):
             _make_substack_source(
                 vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
             )
         indexer.rebuild()
 
-        first = scan_candidates(config, source_type="substack")
-        assert len(first.candidates_created) == 1
+        # Auto-fire created the stub already.
+        cdir = config.vault_root / "themes" / CANDIDATES_DIR_NAME
+        assert len(list(cdir.glob("cand-*.md"))) == 1
 
-        # Re-scan immediately: the active candidate dedupes.
-        second = scan_candidates(config, source_type="substack")
-        assert second.candidates_created == []
-        assert second.clusters_skipped_existing_candidate >= 1
+        # Explicit re-scan: active candidate dedupes, no new stub.
+        outcome = scan_candidates(config, source_type="substack")
+        assert outcome.candidates_created == []
+        assert outcome.clusters_skipped_existing_candidate >= 1
 
 
 class TestArchiveStaleCandidates:
