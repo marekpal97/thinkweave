@@ -190,43 +190,65 @@ def _build_header(cfg: Config, project: str) -> Section:
 def _build_tools_manifest() -> Section:
     """Static manifest of MCP tools so Claude knows what's available.
 
-    Keep this list in sync with ``mcp/server.py``. Grouped by purpose.
+    Keep this list in sync with ``mcp/server.py``. The shape mirrors
+    the retrieval contract in ``CLAUDE.md`` §2: three modalities (FTS /
+    similarity / graph) plus compositions. The 18 canonical tools are
+    grouped by purpose; deprecated names (``mem_concept_search``,
+    ``mem_source_lens``, ``mem_decisions_for_file``, the three
+    ``mem_concepts_*`` variants) are folded into their consolidated
+    surfaces — ``mem_concepts(action=...)`` and
+    ``mem_graph(filter=...)`` — and never advertised here.
     """
     body = (
-        "Personal-mem exposes these tools via MCP. Prefer them over shelling out:\n"
+        "Personal-mem exposes 18 tools via MCP. Prefer them over shelling out.\n"
+        "Retrieval is three modalities — FTS, similarity, graph — plus compositions.\n"
         "\n"
-        "**Search & retrieve**\n"
-        "- `mem_search(query, mode='fts'|'similar'|'hybrid', project, type, tags, limit)` — FTS / semantic / hybrid (RRF) search. `type` accepts str or list. Empty query returns date-sorted recent notes.\n"
-        "- `mem_concept_search(concepts, match_mode='any'|'all', project, type, min_matches, limit)` — find notes by one or more concepts, intersection or union. Cross-project when `project` omitted.\n"
-        "- `mem_context(query, project, type, concepts, limit)` — 3-layer retrieval (FTS → concept expansion → recency) with type filter.\n"
-        "- `mem_timeline(project, days)` — chronological view of sessions + decisions.\n"
+        "**Search (FTS / similarity / hybrid)**\n"
+        "- `mem_search(query, mode='fts'|'similar'|'hybrid', project, type, tags, concepts, since, until, limit)` — keyword, semantic, or RRF-fused hybrid. Empty `query` = list mode. `concepts=[…]` combines text + concept filter.\n"
+        "- `mem_context(query, project, type, concepts, since, until, limit)` — 3-layer composition (FTS → similarity-via-concept → recency), deduped budget blob.\n"
+        "- `mem_timeline(project, days)` — chronological window of sessions + decisions.\n"
+        "- `mem_project_snapshot(project, sections, budget_tokens)` — re-fetch this SessionStart payload on demand.\n"
+        "\n"
+        "**Graph (filter-dispatched)**\n"
+        "- `mem_graph(id, depth, filter, …)` — typed-edge walk. `filter` dispatches the variant:\n"
+        "  - `''` (default) — walk from `id`.\n"
+        "  - `'source_lens'` — walk out from a source: decisions, sessions, inbound notes, concept reach.\n"
+        "  - `'decisions_for_file'` — every decision ever made touching `file_path` (indexed JOIN).\n"
+        "  - `'concept_walk'` — set ops over concept edges (`concepts`, `match_mode`, `min_matches`).\n"
+        "  Optional `note_type` / `project` projection; `since` / `until` ISO dates.\n"
         "- `mem_read(id)` — fetch a single note by ID.\n"
-        "- `mem_graph(id, depth)` — walk the typed-edge graph outward.\n"
-        "- `mem_source_lens(source_id)` — walk out from a source: decisions, sessions, inbound notes, concept reach.\n"
-        "- `mem_decisions_for_file(file_path, project)` — every decision ever made touching a file (indexed JOIN).\n"
-        "- `mem_project_snapshot(project, sections, budget_tokens)` — on-demand project overview (same payload as this one).\n"
         "\n"
         "**Create & link**\n"
-        "- `mem_create(note_type, title, body, tags, concepts, project, session_id)` — create a note.\n"
+        "- `mem_create(note_type, title, body, tags, concepts, project, session_id)` — create a note. Strict ontology gating: unknown concept terms shunt to `proposed_concepts:`.\n"
         "- `mem_update(note_id, frontmatter_updates, body_append)` — update a note.\n"
         "- `mem_link(source_id, target_id, edge_type)` — add a typed edge.\n"
         "- `mem_unlink(source_id, target_id, edge_type)` — remove an edge.\n"
         "\n"
-        "**Extract & judge** (session end)\n"
-        "- `mem_extract(session_id, summary, insights, decisions, projects)` — enrich a session with insights + decisions.\n"
-        "- `mem_judge(session_id)` — evaluate decisions against git evidence.\n"
+        "**Concepts (action-dispatched)**\n"
+        "- `mem_concepts(action, …)` — folded surface. `action` dispatches:\n"
+        "  - `'list'` — concepts with counts (`project`, `prefix`, `min_count`).\n"
+        "  - `'search'` — find notes by concepts (`concepts`, `match_mode='any'|'all'`, `min_matches`).\n"
+        "  - `'merge'` — rename `from_concept` → `to_concept` vault-wide.\n"
+        "  - `'tighten'` — promote/canonicalise a proposed concept.\n"
+        "  - `'drift'` — advisory drift report (near-dupes, ontology candidates, staleness).\n"
+        "  - `'source_counts'` — concept × source-type histogram.\n"
         "\n"
-        "**Landing & concepts**\n"
-        "- `mem_landing(project, doc='decisions'|'backlog'|'state'|'all')` — regenerate landing docs.\n"
-        "- `mem_concepts(project, prefix, min_count)` — list concepts with counts.\n"
-        "- `mem_concepts_merge(from_concept, to_concept)` — rename across the vault.\n"
-        "- `mem_concepts_drift(project)` — advisory drift report (near-dupes, ontology candidates, staleness)."
+        "**Extract, judge, landing** (session end / hygiene)\n"
+        "- `mem_extract(session_id, summary, insights, decisions, projects)` — enrich a session with insights + decisions. Auto-creates a session note for non-code conversations.\n"
+        "- `mem_judge(session_id)` — read-only verdict (`kept`/`superseded`/`reverted`/`unknown`) from git + tests; never writes.\n"
+        "- `mem_landing(project, doc='decisions'|'backlog'|'state'|'themes'|'all')` — regenerate landing docs.\n"
+        "- `mem_enrich(project)` — LLM concept enrichment (gpt-5-mini).\n"
+        "\n"
+        "**Sources, queues, prompts**\n"
+        "- `mem_queue(action, source_type, …)` — list / inspect / peek per-source-type acquisition queues.\n"
+        "- `mem_sources_config(action)` — inspect the source-type registry.\n"
+        "- `mem_prompts(project, since, classified_as)` — surfaced user prompts (probe-classified or all)."
     )
     return Section(
         key="tools",
         title=_default_title("tools"),
         body=body,
-        soft_budget_chars=2400,
+        soft_budget_chars=3200,
     )
 
 
@@ -655,20 +677,28 @@ def _build_recent_sources(cfg: Config, project: str, n: int = 5) -> Section:
 def _build_footer() -> Section:
     body = (
         "Retrieval is three modalities. Pick by what you have:\n"
-        "- **FTS** — keyword/text. `mem_search(query, mode='fts')`. Empty query = list mode.\n"
-        "- **Similarity** — semantic. `mem_search(query, mode='similar')`. "
-        "`mode='hybrid'` fuses FTS + similarity (RRF) when uncertain.\n"
-        "- **Graph** — structural. `mem_graph(id, depth)`. Specialisations: "
-        "`mem_source_lens` (walk out from a source), `mem_decisions_for_file` "
-        "(file → decisions), `mem_concept_search` (set ops over concept edges).\n"
+        "- **FTS** — keyword/phrase. `mem_search(query, mode='fts')`. Cheap. Empty query = list mode.\n"
+        "- **Similarity** — concept-shaped query, no keyword. `mem_search(query, mode='similar')`. Soft-fails to FTS when embeddings unavailable.\n"
+        "- **Hybrid** — unsure → RRF fusion. `mem_search(query, mode='hybrid')`.\n"
+        "- **Graph** — structural walk. `mem_graph(id, depth, filter=…)` dispatches the variant: "
+        "`''` (walk from id), `'source_lens'`, `'decisions_for_file'`, `'concept_walk'`.\n"
         "\n"
         "Compositions:\n"
         "- `mem_context(query, type=['note','decision','theme'])` — FTS → similarity-via-"
         "concept → recency, deduped. Use when you want a budgeted blob.\n"
         "- `mem_project_snapshot(project)` — re-fetch this payload on demand.\n"
+        "- `mem_timeline(project, days)` — chronological window of sessions + decisions.\n"
         "\n"
-        "All filtering primitives accept `since` / `until` (ISO dates), and "
-        "`mem_search` accepts `concepts=[...]` for combined text+concept queries.\n"
+        "If you want to… | Use:\n"
+        "- Find X (keyword/phrase) → `mem_search` (`mode='fts'`, fall back to `'hybrid'`)\n"
+        "- Tell me about Y (budgeted blob) → `mem_context`\n"
+        "- What touches Z (note id walk) → `mem_graph`\n"
+        "- State of project P right now → `mem_project_snapshot`\n"
+        "- What happened in window W → `mem_timeline`\n"
+        "\n"
+        "All filtering primitives accept `since` / `until` (ISO dates); "
+        "`mem_search` accepts `concepts=[...]` for combined text+concept queries; "
+        "`mem_graph` accepts `note_type` / `project` projection.\n"
         "\n"
         "Run `/mem-wrap` before `/clear` or `/exit` to preserve this session's insights."
     )
@@ -676,7 +706,7 @@ def _build_footer() -> Section:
         key="footer",
         title=_default_title("footer"),
         body=body,
-        soft_budget_chars=1200,
+        soft_budget_chars=1400,
     )
 
 
