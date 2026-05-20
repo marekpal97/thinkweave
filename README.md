@@ -15,15 +15,21 @@ Two paths — the Claude Code plugin (recommended, one command) or the
 legacy `pip install` + `mem install` flow (kept for users on a clone or
 without marketplace access).
 
+**Invocation contract.** All three registration paths (project-scope
+`.mcp.json`, machine-scope `~/.claude.json` written by `mem install`,
+and the plugin manifest) launch the MCP server via the same canonical
+shape: `uv run --project <path> --extra mcp mem-mcp`. The `<path>`
+differs by scope (`.` for the project file, an absolute path for the
+machine file, `${CLAUDE_PLUGIN_ROOT}` for the plugin manifest), but the
+launcher is always `uv`. This avoids Claude Code's stripped-PATH
+launcher missing the bare `mem-mcp` console script. Run `mem doctor
+--mcp` if registration looks wrong.
+
 **Prerequisites either way:**
 
 - **`uv` is required**, not optional — install with
-  `curl -LsSf https://astral.sh/uv/install.sh | sh`. The console scripts
-  (`mem`, `mem-hook`, `mem-mcp`) are installed into the uv-managed venv;
-  `pip install` alone won't make them reachable from Claude Code's shell.
-- **`pipx install personal-mem` first** so `mem-mcp` is on `$PATH` when
-  the plugin's MCP server entry tries to invoke it. Without this the
-  plugin's MCP block is registered but the server fails to start.
+  `curl -LsSf https://astral.sh/uv/install.sh | sh`. All three MCP
+  invocations route through `uv run`; without it nothing resolves.
 
 ### Plugin install (recommended)
 
@@ -31,10 +37,12 @@ Once per machine — collapses MCP registration, hook installation, and
 slash-command discovery into one operation:
 
 ```bash
-pipx install personal-mem            # makes mem, mem-hook, mem-mcp resolvable
 claude plugin install personal-mem   # registers MCP, hooks, commands
 # → restart Claude Code so the plugin's MCP server is picked up
 ```
+
+The plugin manifest declares the MCP server inline, so no separate
+`mem install` step is required.
 
 After restart, run `/onboard` from any repo. It seeds your vault from
 prior Claude Code conversations *unconditionally* (step 1), bootstraps
