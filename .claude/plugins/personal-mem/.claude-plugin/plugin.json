@@ -2,10 +2,12 @@
   "name": "personal-mem",
   "version": "0.1.0",
   "description": "Obsidian-native universal memory layer for Claude Code",
-  "mcp_servers": {
+  "mcpServers": {
     "personal-mem": {
-      "command": "mem",
-      "args": ["mcp"]
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "--extra", "mcp", "mem-mcp"],
+      "env": {}
     }
   },
   "post_install": "mem hooks install"

@@ -7,5 +7,13 @@
   },
   "homepage": "https://github.com/marekpal97/personal-mem",
   "repository": "marekpal97/personal-mem",
-  "license": "MIT"
+  "license": "MIT",
+  "mcpServers": {
+    "personal-mem": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "--extra", "mcp", "mem-mcp"],
+      "env": {}
+    }
+  }
 }
