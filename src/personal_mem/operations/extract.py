@@ -322,6 +322,12 @@ def extract_session(
             # writes when recording the decision. Judged later by
             # synthesis/judge.py:_evaluate_prediction_match — feeds the
             # `prediction.match` column in the RLVR export.
+            #
+            # Canonical shape (since P1-1): a dict
+            #   {"family": "test"|"commit", "text": "...", "polarity": ...}
+            # The legacy bare-string form still roundtrips for back-compat —
+            # the judge sniffs the family with word-boundary regexes and
+            # logs a deprecation warning. New code should pass the dict.
             extra_fm["predicted_outcome"] = dec["predicted_outcome"]
         dec_body = _build_decision_body(
             dec.get("rationale", ""), dec["title"], outcome_value

@@ -119,6 +119,125 @@ class TestEvaluatePredictionMatch:
             session_meta=_sess([{"passed": 5, "failed": 0}]),
         ) == "confirmed"
 
+    # ------------------------------------------------------------------
+    # P1-1 — structured family form, partial semantics, polarity, legacy
+    # back-compat, ambiguous polarity.
+    # ------------------------------------------------------------------
+
+    def test_structured_test_family_confirmed(self):
+        """Structured form dispatches by ``family`` — no keyword sniff."""
+        # The text deliberately contains no keyword that the legacy regex
+        # would match. The structured `family` field still routes it to
+        # the test-family evaluator.
+        assert _evaluate_prediction_match(
+            {"family": "test", "text": "x will be green", "polarity": "positive"},
+            verdict="kept",
+            committed=True,
+            tested=True,
+            session_meta=_sess([{"passed": 3, "failed": 0}]),
+        ) == "confirmed"
+
+    def test_structured_test_family_partial_on_mixed_runs(self):
+        """Structured form upgrades mixed-result test runs to ``partial``."""
+        assert _evaluate_prediction_match(
+            {"family": "test", "text": "tests will pass", "polarity": "positive"},
+            verdict="kept",
+            committed=True,
+            tested=False,
+            session_meta=_sess([{"passed": 2, "failed": 1}]),
+        ) == "partial"
+
+    def test_structured_negative_polarity_confirmed_on_failure(self):
+        """Negative-polarity predictions invert confirmed/contradicted."""
+        # Prediction: "tests will fail" + tests actually failed → confirmed.
+        assert _evaluate_prediction_match(
+            {"family": "test", "text": "tests will fail", "polarity": "negative"},
+            verdict="unknown",
+            committed=False,
+            tested=False,
+            session_meta=_sess([{"passed": 0, "failed": 2}]),
+        ) == "confirmed"
+
+    def test_structured_negative_commit_polarity_confirmed_on_revert(self):
+        """Negative commit prediction confirmed by a revert."""
+        assert _evaluate_prediction_match(
+            {"family": "commit", "text": "won't land", "polarity": "negative"},
+            verdict="reverted",
+            committed=True,
+            tested=False,
+            session_meta=_sess(),
+        ) == "confirmed"
+
+    def test_legacy_bare_string_mixed_runs_stay_contradicted(self):
+        """Legacy bare strings preserve the old any-failure → contradicted rule.
+
+        Polarity was sniffed not asserted, so we don't trust it enough to
+        promote a mixed-run case to ``partial``. Pinning this contract.
+        """
+        assert _evaluate_prediction_match(
+            "tests will pass",  # bare string
+            verdict="kept",
+            committed=True,
+            tested=False,
+            session_meta=_sess([{"passed": 2, "failed": 1}]),
+        ) == "contradicted"
+
+    def test_legacy_bare_string_with_negative_cue_is_unevaluable(self):
+        """A bare string with a negative cue downgrades to ambiguous."""
+        # "tests will fail to expose the bug" — sniffed polarity becomes
+        # None (ambiguous), so evaluator refuses to map. This is the
+        # polarity-inversion fix described in the P1-1 brief.
+        assert _evaluate_prediction_match(
+            "tests will fail to expose the bug",
+            verdict="kept",
+            committed=True,
+            tested=False,
+            session_meta=_sess([{"passed": 1, "failed": 2}]),
+        ) == "unevaluable"
+
+    def test_structured_unknown_family_is_unevaluable(self):
+        """An unrecognised ``family`` value falls through to unevaluable."""
+        assert _evaluate_prediction_match(
+            {"family": "vibes", "text": "the code will feel right", "polarity": "positive"},
+            verdict="kept",
+            committed=True,
+            tested=True,
+            session_meta=_sess([{"passed": 3, "failed": 0}]),
+        ) == "unevaluable"
+
+    def test_prose_no_longer_misfires_test_family(self):
+        """Word-boundary regex stops 'pass the buffer' from hitting test family.
+
+        Pre-P1-1, the bare substring ``"pass"`` would match — and the
+        evaluator would then route to the test family. Word-boundary regex
+        rules that out: ``\\bpass\\b`` doesn't appear in this sentence.
+        """
+        assert _evaluate_prediction_match(
+            "pass the buffer to the next stage",
+            verdict="kept",
+            committed=True,
+            tested=False,
+            session_meta=_sess(),
+        ) == "unevaluable"
+
+    def test_prose_no_longer_misfires_commit_family(self):
+        """Word-boundary regex stops 'merge the lists' from hitting commit family."""
+        assert _evaluate_prediction_match(
+            "deploys a regex matcher inline",  # 'deploys' DOES match (legitimate)
+            verdict="unknown",
+            committed=False,
+            tested=False,
+            session_meta=_sess(),
+        ) == "unevaluable"
+        # ...but a non-keyword sentence does not, regardless of substrings.
+        assert _evaluate_prediction_match(
+            "the function deploysauce more carefully",  # no word-boundary match
+            verdict="kept",
+            committed=True,
+            tested=False,
+            session_meta=_sess(),
+        ) == "unevaluable"
+
 
 # ---------------------------------------------------------------------------
 # Writeback integration — judge_and_writeback emits/omits the field
