@@ -98,9 +98,12 @@ class TestHookInstaller:
         assert "PreToolUse" not in settings["hooks"]
         assert "PostToolUse" in settings["hooks"]
 
-        post = settings["hooks"]["PostToolUse"][0]
-        assert post["matcher"] == "Write|Edit|Bash"
-        assert post["hooks"][0]["timeout"] == 5
+        # Two PostToolUse entries: action-tool gate + MCP-tool gate.
+        matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
+        assert "Write|Edit|Bash" in matchers
+        assert "mcp__personal-mem__.*" in matchers
+        for entry in settings["hooks"]["PostToolUse"]:
+            assert entry["hooks"][0]["timeout"] == 5
 
     def test_install_preserves_existing(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -131,9 +134,16 @@ class TestHookInstaller:
         # Foreign PreToolUse hook left intact, no personal_mem entry added
         assert len(settings["hooks"]["PreToolUse"]) == 1
         assert not any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
-        # Foreign PostToolUse preserved + personal_mem PostToolUse appended
-        assert len(settings["hooks"]["PostToolUse"]) == 2
-        assert any("mem-hook" in str(entry) for entry in settings["hooks"]["PostToolUse"])
+        # Foreign PostToolUse preserved + two personal_mem PostToolUse
+        # entries appended (action gate + MCP gate).
+        assert len(settings["hooks"]["PostToolUse"]) == 3
+        mem_entries = [
+            e for e in settings["hooks"]["PostToolUse"]
+            if "mem-hook" in str(e)
+        ]
+        assert len(mem_entries) == 2
+        mem_matchers = {e["matcher"] for e in mem_entries}
+        assert mem_matchers == {"Write|Edit|Bash", "mcp__personal-mem__.*"}
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
@@ -195,16 +205,25 @@ class TestHookInstaller:
         # PreToolUse: retired phase stripped entirely (no foreign hooks
         # were present to retain, so the key disappears).
         assert "PreToolUse" not in settings["hooks"]
-        # Retained phases rewritten in place — no duplicates.
-        assert len(settings["hooks"]["PostToolUse"]) == 1
+        # Retained phases rewritten in place — the legacy single-matcher
+        # PostToolUse entry stays at one and gets rewritten with the
+        # current absolute path; the second MCP-matcher entry is appended
+        # on top. Stop has no slot fan-out, so it stays at exactly one.
+        assert len(settings["hooks"]["PostToolUse"]) == 2
         assert len(settings["hooks"]["Stop"]) == 1
 
-        post_cmd = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        # Identify the action vs MCP PostToolUse entry by matcher.
+        post_entries = settings["hooks"]["PostToolUse"]
+        action_entry = next(e for e in post_entries if e["matcher"] == "Write|Edit|Bash")
+        mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__personal-mem__.*")
+        action_cmd = action_entry["hooks"][0]["command"]
+        mcp_cmd = mcp_entry["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
 
         # New form: absolute path ending in `mem-hook[.exe] <phase>`.
         for cmd, phase in [
-            (post_cmd, "post_tool_use"),
+            (action_cmd, "post_tool_use"),
+            (mcp_cmd, "post_tool_use"),
             (stop_cmd, "stop"),
         ]:
             assert cmd.endswith(f" {phase}")
@@ -274,15 +293,17 @@ class TestHookInstaller:
         # PreToolUse retired — only the three retained phases get installed.
         assert "PreToolUse" not in settings["hooks"]
         for hook_type in ("SessionStart", "PostToolUse", "Stop"):
-            cmd = settings["hooks"][hook_type][0]["hooks"][0]["command"]
-            head = cmd.rsplit(" ", 1)[0]
-            assert "mem-hook" in head
-            assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
-                f"{hook_type}: expected absolute path, got {head!r}"
-            )
-            # The resolved path should actually exist (we just installed
-            # the package in the dev environment running these tests).
-            assert Path(head).exists(), f"{hook_type}: {head} does not exist"
+            for entry in settings["hooks"][hook_type]:
+                cmd = entry["hooks"][0]["command"]
+                head = cmd.rsplit(" ", 1)[0]
+                assert "mem-hook" in head
+                assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
+                    f"{hook_type}: expected absolute path, got {head!r}"
+                )
+                # The resolved path should actually exist (we just
+                # installed the package in the dev environment running
+                # these tests).
+                assert Path(head).exists(), f"{hook_type}: {head} does not exist"
 
     def test_install_idempotent(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -296,8 +317,11 @@ class TestHookInstaller:
         # PreToolUse retired — never installed; idempotent reinstall must
         # not resurrect it.
         assert "PreToolUse" not in settings["hooks"]
-        # Retained phases must not duplicate.
-        assert len(settings["hooks"]["PostToolUse"]) == 1
+        # PostToolUse owns two slots (action + MCP) — must not duplicate
+        # within slot. Single-matcher phases stay at exactly one.
+        assert len(settings["hooks"]["PostToolUse"]) == 2
+        post_matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
+        assert post_matchers == {"Write|Edit|Bash", "mcp__personal-mem__.*"}
         assert len(settings["hooks"]["SessionStart"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
 
@@ -326,6 +350,58 @@ class TestHookInstaller:
         assert "session_start" in ss["hooks"][0]["command"]
         # No matcher is used for SessionStart
         assert ss["matcher"] == ""
+
+    def test_install_registers_mcp_post_tool_use_matcher(self, tmp_path: Path):
+        """RLVR context-served substrate depends on this matcher.
+
+        Claude Code matches PostToolUse entries against the dispatched
+        tool's ``tool_name`` string. MCP calls arrive with names like
+        ``mcp__personal-mem__mem_search`` — they don't match
+        ``Write|Edit|Bash``. Without a second matcher targeting
+        ``mcp__personal-mem__.*``, ``_handle_post``'s retrieval branch
+        (see operations/retrieval_log.RETRIEVAL_TOOLS) never fires and
+        ``retrieval_log.jsonl`` only contains the SessionStart entry.
+
+        Regression for the audit finding that the matcher was
+        action-tool-only — pinning the installed shape rather than just
+        the in-handler gate.
+        """
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        post_entries = settings["hooks"]["PostToolUse"]
+        # The MCP-matcher entry must be present.
+        mcp_entry = next(
+            (e for e in post_entries if e["matcher"] == "mcp__personal-mem__.*"),
+            None,
+        )
+        assert mcp_entry is not None, (
+            f"no MCP-matcher PostToolUse entry installed; got matchers "
+            f"{[e['matcher'] for e in post_entries]!r}"
+        )
+        # It must dispatch to the same handler entry point as the action gate.
+        assert "mem-hook" in mcp_entry["hooks"][0]["command"]
+        assert mcp_entry["hooks"][0]["command"].endswith(" post_tool_use")
+
+    def test_install_idempotent_for_mcp_matcher(self, tmp_path: Path):
+        """Re-installing must rewrite the MCP entry in place, not duplicate."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        mcp_entries = [
+            e for e in settings["hooks"]["PostToolUse"]
+            if e["matcher"] == "mcp__personal-mem__.*"
+        ]
+        assert len(mcp_entries) == 1
 
     def test_uninstall(self, tmp_path: Path):
         project_dir = tmp_path / "project"

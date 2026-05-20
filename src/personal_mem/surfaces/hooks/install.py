@@ -102,9 +102,34 @@ def install_hooks(project_dir: str = "") -> None:
     # left over from earlier installs.
     _strip_personal_mem_hooks(hooks, "PreToolUse")
 
-    # PostToolUse hook
+    # PostToolUse hook — two matchers:
+    #   1. ``Write|Edit|Bash`` — the action-tool gate that feeds the
+    #      session-event buffer (files touched, commits, test runs).
+    #   2. ``mcp__personal-mem__.*`` — every personal_mem MCP call. The
+    #      retrieval-only subset (``mem_search``, ``mem_context``,
+    #      ``mem_graph``, ``mem_read``, ``mem_timeline``,
+    #      ``mem_project_snapshot``) feeds the RLVR context-served
+    #      substrate via ``operations/retrieval_log.RETRIEVAL_TOOLS``.
+    #      The handler's in-process gate (``_handle_post``:97–100)
+    #      filters out non-retrieval MCP tools (``mem_create`` etc.) so
+    #      the regex matcher is safe and cheap — the cost of an unmatched
+    #      MCP call is one no-op hook invocation. Claude Code's matcher
+    #      string accepts regex; the dot-star form matches the
+    #      ``mcp__<server>__<tool>`` naming convention emitted by the
+    #      MCP transport.
     post_hooks = hooks.setdefault("PostToolUse", [])
-    _ensure_hook(post_hooks, "Write|Edit|Bash", f"{hook_cmd} post_tool_use")
+    _ensure_hook(
+        post_hooks,
+        "Write|Edit|Bash",
+        f"{hook_cmd} post_tool_use",
+        slot="action",
+    )
+    _ensure_hook(
+        post_hooks,
+        "mcp__personal-mem__.*",
+        f"{hook_cmd} post_tool_use",
+        slot="mcp",
+    )
 
     # Stop hook — gates session exit for knowledge extraction
     stop_hooks = hooks.setdefault("Stop", [])
@@ -183,17 +208,39 @@ def _strip_personal_mem_hooks(hooks: dict, hook_type: str) -> None:
         del hooks[hook_type]
 
 
-def _ensure_hook(entries: list, matcher: str, command: str) -> None:
+def _ensure_hook(entries: list, matcher: str, command: str, *, slot: str | None = None) -> None:
     """Add a hook entry, or rewrite any existing personal_mem hook in place.
 
     Matches any form this project has ever written (see HOOK_MARKERS),
     so reinstalling always converges to the current absolute-path form
     regardless of which historical variant is stored in the file.
+
+    ``slot``: when a single hook phase has more than one personal_mem
+    entry (PostToolUse owns two — the ``Write|Edit|Bash`` action gate
+    and the ``mcp__personal-mem__.*`` MCP gate), we need to disambiguate
+    which existing entry to rewrite. The slot is matched by the entry's
+    ``matcher`` string, so legacy single-entry installs migrate cleanly:
+    the first personal_mem entry that matches the requested slot's
+    matcher is rewritten in place; any unmatched-slot install appends a
+    fresh entry. With no slot, the first personal_mem entry found is
+    rewritten — preserving the original single-matcher contract for
+    SessionStart / UserPromptSubmit / Stop, which only ever own one
+    entry per phase.
     """
     for entry in entries:
+        entry_matcher = entry.get("matcher", "")
+        # Slot-aware: only rewrite an entry that already targets this
+        # slot. Lets a single phase own multiple personal_mem entries
+        # (PostToolUse: action gate + MCP gate) without each install
+        # call clobbering the other.
+        if slot is not None and entry_matcher != matcher:
+            continue
         for hook in entry.get("hooks", []):
             if _is_personal_mem_hook(hook.get("command", "")):
                 hook["command"] = command
+                # Snap matcher to the canonical value too, in case a
+                # legacy install wrote a stale matcher string.
+                entry["matcher"] = matcher
                 return
 
     entries.append(
