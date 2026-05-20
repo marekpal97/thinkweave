@@ -382,7 +382,7 @@ class TestBatchedGitLog:
     with 5+10s timeouts).
     """
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_single_subprocess_call_for_multiple_files(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = (
@@ -393,7 +393,7 @@ class TestBatchedGitLog:
             "def5678\n"
             "src/c.py\n"
         )
-        from personal_mem.judge import _check_committed_via_git
+        from personal_mem.synthesis.judge import _check_committed_via_git
 
         result = _check_committed_via_git(
             ["src/a.py", "src/b.py", "src/c.py"],
@@ -410,7 +410,7 @@ class TestBatchedGitLog:
         # No `--` separator with file paths appended (no per-file scoping)
         assert "--" not in args
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_parses_hash_to_files_map(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = (
@@ -421,7 +421,7 @@ class TestBatchedGitLog:
             "def5678\n"
             "src/b.py\n"
         )
-        from personal_mem.judge import _check_committed_via_git
+        from personal_mem.synthesis.judge import _check_committed_via_git
         result = _check_committed_via_git(
             ["src/a.py", "src/b.py"], "2026-04-01",
         )
@@ -431,7 +431,7 @@ class TestBatchedGitLog:
         assert "def5678" in result
         assert result["def5678"] == ["src/b.py"]
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_filters_to_target_files(self, mock_run):
         """Commit hashes with no overlap into file_paths should be dropped."""
         mock_run.return_value.returncode = 0
@@ -442,15 +442,15 @@ class TestBatchedGitLog:
             "def5678\n"
             "unrelated/x.py\n"
         )
-        from personal_mem.judge import _check_committed_via_git
+        from personal_mem.synthesis.judge import _check_committed_via_git
         result = _check_committed_via_git(["src/a.py"], "2026-04-01")
         assert "abc1234" in result
         # def5678 didn't touch any file in target set — excluded
         assert "def5678" not in result
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_empty_inputs_no_subprocess(self, mock_run):
-        from personal_mem.judge import _check_committed_via_git
+        from personal_mem.synthesis.judge import _check_committed_via_git
         # No file_paths → no subprocess call needed
         assert _check_committed_via_git([], "2026-04-01") == {}
         assert mock_run.call_count == 0
@@ -458,15 +458,15 @@ class TestBatchedGitLog:
         assert _check_committed_via_git(["a.py"], "") == {}
         assert mock_run.call_count == 0
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_handles_subprocess_failure(self, mock_run):
-        from personal_mem.judge import _check_committed_via_git
+        from personal_mem.synthesis.judge import _check_committed_via_git
         mock_run.side_effect = FileNotFoundError("git not found")
         assert _check_committed_via_git(["a.py"], "2026-04-01") == {}
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_handles_timeout(self, mock_run):
-        from personal_mem.judge import _check_committed_via_git
+        from personal_mem.synthesis.judge import _check_committed_via_git
         import subprocess as _sp
         mock_run.side_effect = _sp.TimeoutExpired("git", 15)
         assert _check_committed_via_git(["a.py"], "2026-04-01") == {}
@@ -480,8 +480,8 @@ class TestBlameSkipWhenUncommitted:
     so we must not invoke it at all.
     """
 
-    @patch("personal_mem.judge._check_blame_survival")
-    @patch("personal_mem.judge._check_committed_via_git", return_value={})
+    @patch("personal_mem.synthesis.judge._check_blame_survival")
+    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
     def test_uncommitted_skips_blame(self, mock_git, mock_blame):
         """Uncommitted decision must NOT trigger _check_blame_survival."""
         dec = _make_decision(committed=False, file_paths=["a.py"])
@@ -491,8 +491,8 @@ class TestBlameSkipWhenUncommitted:
         mock_blame.assert_not_called()
         assert result["blame_lines"] == -1
 
-    @patch("personal_mem.judge._check_blame_survival", return_value=3)
-    @patch("personal_mem.judge._check_committed_via_git", return_value={})
+    @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=3)
+    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
     def test_committed_still_calls_blame(self, mock_git, mock_blame, tmp_path):
         """Committed decisions still pay the blame cost — that's the design."""
         existing = tmp_path / "a.py"
@@ -507,7 +507,7 @@ class TestJudgeSubprocessCount:
     """Regression for P0-9: 3 decisions × 3 files should issue ≤ 3 git log
     calls (one per decision), not 9 (one per file × decision)."""
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_three_decisions_three_files_each_uses_one_git_call_per_decision(
         self, mock_run, tmp_path,
     ):
