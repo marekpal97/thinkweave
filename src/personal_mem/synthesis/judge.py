@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -113,8 +114,18 @@ def evaluate_decision(
                     seen_refs.add(h)
                     commit_refs.append(h)
 
-    # Check blame survival — how many lines this decision still owns
-    blame_lines = _check_blame_survival(file_paths, commit_refs, hash_to_files)
+    # Check blame survival — how many lines this decision still owns.
+    # P0-9 guard: skip blame entirely when the decision isn't committed.
+    # An uncommitted decision has nothing to attribute blame against; the
+    # per-file `git blame --porcelain` calls are the dominant judge cost
+    # in /mem-wrap. Inside _check_blame_survival the empty commit_refs
+    # branch returns -1 immediately, but reaching that branch still costs
+    # the function-call dispatch + (with the new ThreadPoolExecutor) the
+    # cost of forming the task list — cheap, but free is cheaper.
+    if committed:
+        blame_lines = _check_blame_survival(file_paths, commit_refs, hash_to_files)
+    else:
+        blame_lines = -1
 
     # Check if files still exist (not reverted/deleted)
     files_exist = all(Path(fp).exists() for fp in file_paths) if file_paths else True
@@ -269,31 +280,66 @@ def _check_committed_via_git(
     Returns a dict mapping each short hash to the file_paths it touched.
     This enables narrower blame checks (only blame files a commit actually
     changed) and catches post-session commits that the hooks didn't capture.
+
+    Implementation: a single ``git log --since=<date> --name-only --pretty=…``
+    call replaces the per-file fanout. We then intersect each commit's
+    touched files against ``file_paths`` to build the same hash→files map.
+    For a decision touching N files this is O(1) subprocess calls instead
+    of O(N). The window is bounded by --since, so the parsed stream is
+    proportional to "commits since the decision", which is small for live
+    judging and reasonable even for backfill.
     """
-    if not since_date:
+    if not since_date or not file_paths:
         return {}
     # Bare dates like "2026-04-05" need explicit time for reliable git --since
     if "T" not in since_date:
         since_date = f"{since_date}T00:00:00"
+
+    try:
+        result = subprocess.run(
+            [
+                "git", "log",
+                f"--since={since_date}",
+                "--name-only",
+                "--pretty=format:%h",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return {}
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+
+    # Format with `--pretty=format:%h\n` + `--name-only`:
+    #   <hash>
+    #   <file>
+    #   <file>
+    #
+    #   <hash>
+    #   <file>
+    #   ...
+    # Blank lines separate commit blocks. The %h line is always non-empty.
+    target = set(file_paths)
     hash_to_files: dict[str, list[str]] = {}
-    for fp in file_paths:
-        try:
-            result = subprocess.run(
-                ["git", "log", "--oneline", f"--since={since_date}", "--", fp],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split(None, 1)
-                    if parts:
-                        h = parts[0]
-                        hash_to_files.setdefault(h, [])
-                        if fp not in hash_to_files[h]:
-                            hash_to_files[h].append(fp)
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    current_hash: str | None = None
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            # Blank line — end of current commit block.
+            current_hash = None
             continue
+        if current_hash is None:
+            # First non-blank line after a separator is the commit hash.
+            current_hash = stripped
+            continue
+        # Subsequent lines are file paths touched by current_hash.
+        if stripped in target:
+            entry = hash_to_files.setdefault(current_hash, [])
+            if stripped not in entry:
+                entry.append(stripped)
+
     return hash_to_files
 
 
@@ -315,6 +361,38 @@ def _check_tested(session_meta: NoteMeta | None, file_paths: list[str]) -> bool:
     return False
 
 
+def _blame_one_file(fp: str, relevant_refs: list[str]) -> tuple[bool, int]:
+    """Run `git blame --porcelain` for a single file.
+
+    Returns ``(checked, count)`` — ``checked`` flags whether blame ran
+    successfully (so the outer caller can decide between -1 and a real
+    total when every file fails).
+    """
+    if not Path(fp).exists() or not relevant_refs:
+        return False, 0
+    try:
+        result = subprocess.run(
+            ["git", "blame", "--porcelain", fp],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False, 0
+    if result.returncode != 0:
+        return False, 0
+    total = 0
+    for line in result.stdout.splitlines():
+        if not line or line[0] == "\t":
+            continue
+        full_hash = line.split()[0]
+        for ref in relevant_refs:
+            if full_hash.startswith(ref):
+                total += 1
+                break
+    return True, total
+
+
 def _check_blame_survival(
     file_paths: list[str],
     commit_refs: list[str],
@@ -327,41 +405,40 @@ def _check_blame_survival(
     that file. This prevents cross-contamination from large commits that
     touch many files but are only relevant to one decision's file_paths.
 
+    Per-file blame runs in a small thread pool (max 4 workers) so a
+    decision touching multiple files doesn't pay sequential subprocess
+    latency for each one (P0-9 defense-in-depth). Pool size is capped
+    to avoid starving git on disk-bound forks.
+
     Returns total surviving line count across all files, or -1 if blame
     cannot be determined (e.g., file deleted, git unavailable).
     """
     if not file_paths or not commit_refs:
         return -1
-    total = 0
-    checked = False
+
+    # Compute per-file relevant_refs once.
+    tasks: list[tuple[str, list[str]]] = []
     for fp in file_paths:
-        if not Path(fp).exists():
-            continue
-        # Narrow refs to those that actually touched this file
         if hash_to_files:
             relevant_refs = [r for r in commit_refs if fp in hash_to_files.get(r, [])]
         else:
-            relevant_refs = commit_refs
-        if not relevant_refs:
-            continue
-        try:
-            result = subprocess.run(
-                ["git", "blame", "--porcelain", fp],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                continue
-            checked = True
-            for line in result.stdout.splitlines():
-                if not line or line[0] == "\t":
-                    continue
-                full_hash = line.split()[0]
-                for ref in relevant_refs:
-                    if full_hash.startswith(ref):
-                        total += 1
-                        break
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            continue
-    return total if checked else -1
+            relevant_refs = list(commit_refs)
+        tasks.append((fp, relevant_refs))
+
+    # Single-file fast path keeps test mocks (patch subprocess.run with
+    # side_effect/return_value) simple — they expect synchronous, in-thread
+    # invocation. For multi-file we still call the per-file helper directly
+    # so subprocess.run mocks bound at module scope remain intercepted.
+    if len(tasks) <= 1:
+        results = [_blame_one_file(fp, refs) for fp, refs in tasks]
+    else:
+        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as ex:
+            results = list(ex.map(lambda t: _blame_one_file(*t), tasks))
+
+    total = 0
+    any_checked = False
+    for checked, count in results:
+        if checked:
+            any_checked = True
+            total += count
+    return total if any_checked else -1

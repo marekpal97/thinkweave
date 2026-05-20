@@ -36,3 +36,6 @@ line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "perf: performance regression assertion (may be skipped on slow CI hosts)",
+]
