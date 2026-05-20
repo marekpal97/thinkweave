@@ -495,6 +495,36 @@ proposed ──▶ accepted ──▶ deprecated
 
 Note frontmatter is open-set — the indexer preserves unrecognized keys without modification, so downstream consumers can extend the schema (e.g. with `pipeline`, `run_id`, or other integration-specific keys) without forking the framework.
 
+## RLVR substrate — decision-context capture
+
+Each decision has, in principle, two reward signals attached: an *outcome* (did the code land and stay?) and a *prediction* (did the call play out as the author guessed?). The framework records the substrate for both passively — no model turns, no extra hooks beyond the ones already installed — so a downstream RL loop can join decision rows against the context they came out of. The MVP shipped 2026-05-14; the pipeline below is the steady-state shape.
+
+```
+SessionStart hook ─────────────────────▶ buffer/<sid>.jsonl  (one {"type": "startup", "ids": [...], "token_est": N})
+MCP retrieval tool call                        │
+  └─▶ PostToolUse hook ────────────────▶ buffer/<sid>.jsonl  (one {"type": "retrieval", "tool": "...", "returned_ids": [...]})
+Stop hook  /  mem_extract                      │
+  └─▶ archive_buffer ──────────────────▶ events.jsonl  +  retrieval_log.jsonl  (sibling files in the session folder)
+mem index  /  Indexer.rebuild ──────────▶ context_served(session_id, note_id, source ∈ {startup, onthefly}, ts)
+/mem-wrap  →  mem wrap-finalize  →  mem_judge_and_writeback
+  └─▶ verdict + prediction_match written to decision frontmatter
+mem rlvr export ────────────────────────▶ JSONL stream (one row per decision)
+```
+
+**Capture.** Two writers, one buffer. The `SessionStart` hook (`surfaces/hooks/handler._handle_session_start`) writes exactly one `type: startup` event per session containing the ids served in the SessionStart payload plus a `token_est`. The `PostToolUse` hook (registered with two matchers — `Write|Edit|Bash` for the action stream and `mcp__personal-mem__.*` for the MCP stream, see `surfaces/hooks/install.py`) writes one `type: retrieval` event per MCP retrieval tool call. The captured tool set is the closed frozenset `RETRIEVAL_TOOLS` in `operations/retrieval_log.py` — six tools: `mem_search`, `mem_context`, `mem_graph`, `mem_read`, `mem_timeline`, `mem_project_snapshot`. A future retrieval tool must opt in explicitly; mutation tools (`mem_create`, `mem_link`, …) are deliberately excluded.
+
+**Buffer split.** `core/buffer.archive_buffer` is called at Stop and inside `mem_extract`. It partitions the per-session buffer JSONL by event `type`: action/prompt events → `events.jsonl`, `retrieval` + `startup` events → `retrieval_log.jsonl` (sibling files in the session folder). When a session has retrieval events but no action events, `events.jsonl` is touched empty — the orphan-detector in `prune.py` keys off file presence, so the empty file keeps the "events.jsonl missing → orphan session" rule intact.
+
+**Projection.** `Indexer._rebuild_context_served` (called from `rebuild` and from `index_paths` when a session folder is touched) walks every session's `retrieval_log.jsonl` and projects rows into the `context_served(session_id, note_id, source, ts)` table. `source` is `startup` for ids that came in via the SessionStart event, `onthefly` for ids returned by an MCP retrieval call. A note served both ways resolves to `onthefly` — the on-the-fly retrieval is the stronger signal. The table is fully rebuildable from markdown alone (the SQLite DB stays a derived index).
+
+**Citation extraction.** `operations/rlvr_export.assemble_row` walks decision body wikilinks via `extract_wikilinks` and intersects them against `context_served` for the decision's session. Output: `cited_onthefly_ids` (decision body cites a note that was retrieved on the fly) vs `cited_startup_only_ids` (decision body cites a note that arrived only via the SessionStart payload). Frontmatter relations (`derived_from`, `relates_to`) are *not* counted — only semantic body citations.
+
+**`prediction_match`.** A decision may carry a `predicted_outcome:` string in frontmatter — a forward-looking claim ("tests will pass", "lands in one commit"). `synthesis/judge._evaluate_prediction_match` maps `(predicted_outcome, structural evidence)` to a `prediction_match` value (current MVP enum: `confirmed` / `partial` / `contradicted` / `unevaluable`) using a narrow keyword family crossed with the existing `verdict` + `tested` signals. The judge stays read-only; the writeback into decision frontmatter happens in `operations/decisions.mem_judge_and_writeback`, which is the only writer of either `verdict` or `prediction_match`. Conservative by design: `unevaluable` is a legitimate common terminal value and no LLM is in the loop.
+
+**Export.** `mem rlvr export [--project] [--since] [--until] [--committed-only]` (CLI surface; implementation in `operations/rlvr_export.export_rows`) yields one JSONL row per decision joining decision frontmatter + body citations + the `context_served` projection. The locked row schema is documented in the module docstring — `{decision_id, project, session_id, created_at, prediction: {text, match}, outcome: {verdict, committed, blame_lines, days_alive}, context: {n_retrievals_onthefly, cited_onthefly_ids, cited_startup_only_ids, startup_token_est}}`. The exporter opens one `Indexer`, caches `retrieval_log.jsonl` reads by session, and never writes back — feeding RL pipelines is a read-only consumption point.
+
+See CLAUDE.md §3 "Context-served (RLVR substrate)" and "Predicted-outcome" for the agent-facing summary; the symbols and storage layout above are the contributor view.
+
 ## Coherence — how the vault avoids duplication
 
 Six distinct dedup mechanisms, each scoped to a different kind of overlap:
