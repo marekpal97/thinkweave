@@ -14,6 +14,17 @@
 # Weekly hygiene: concept and theme dedup + hub coherence.
 0 4 * * 0  cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run weekly-hygiene >> ~/.cache/personal_mem/cron.log 2>&1
 
+# News intake (optional — requires `uv pip install personal-mem[news]`).
+# Pulls RSS feeds declared in vault/.mem/news_feeds.yaml into the news
+# acquisition queue every two hours. The downstream /drain step is part
+# of the news-cycle flow (see example-flows.yaml::news-cycle) so the
+# pull stage stays cheap and reliable; LLM cost happens on drain.
+0 */2 * * * cd /home/marekpal97/python_projects/personal_mem && uv run python scripts/pull_news_feeds.py >> ~/.cache/personal_mem/news-pull.log 2>&1
+
+# News drain (every 6h: triage + brief). Spaced from the pulls so the
+# queue accumulates a useful batch before Haiku triage runs.
+30 */6 * * * cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run news-cycle >> ~/.cache/personal_mem/cron.log 2>&1
+
 # To run a flow ad-hoc:
 #   uv run mem flow list
 #   uv run mem flow show daily-research

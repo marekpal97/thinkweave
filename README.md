@@ -121,14 +121,45 @@ Idempotent: re-running picks up wherever it left off.
 - `/source-scaffold <slug>` — generate a new source type (vault overlay + machine-global skill)
 - `/mem-wrap` — extract session knowledge before `/clear`
 
+## Sources
+
+Five source types ship as defaults — `paper`, `repo`, `article`,
+`substack`, `conversation` — plus `news` for RSS-driven intake. Add
+your own without forking via `/source-scaffold` (or
+`mem sources scaffold`).
+
+### News module (optional)
+
+The news source type pulls RSS feeds on a cron schedule, runs a Haiku
+title-triage gate against your active themes, and dispatches Sonnet
+writer subagents only for accepted items.
+
+```bash
+# 1. Install the news extra (feedparser + readability-lxml + httpx)
+uv pip install -e .[news]
+# (or)
+pipx inject personal-mem feedparser readability-lxml httpx
+
+# 2. Declare feeds in vault/.mem/news_feeds.yaml. A template ships at
+#    src/personal_mem/vault_templates/.mem/news_feeds.yaml — `mem init`
+#    copies it into your vault. Each outlet specifies name, slug,
+#    feeds (URLs), tier, region, language.
+
+# 3. Add the pull + drain lines to crontab (see scripts/example-crontab).
+#    Hourly RSS pulls + 6-hourly drains is a reasonable starting cadence.
+```
+
+One-off ingest stays available via `/news <url>` (in-conversation) —
+runs the same triage as the cron path.
+
 ## Architecture
 
 - **Three retrieval modalities**: FTS, similarity, graph.
 - **Hub abstraction**: concepts (vocabulary) and themes (narrative
   arcs) share a spine.
 - **Source-type registry**: paper / repo / article / substack /
-  conversation ship as defaults; add your own without forking via
-  `/source-scaffold` (or `mem sources scaffold`).
+  conversation / news ship as defaults; add your own without forking
+  via `/source-scaffold` (or `mem sources scaffold`).
 - **Three install scopes**: machine (`mem install`) / vault (`mem
   init`) / project (`/onboard`). Each is idempotent; each owns
   exactly one set of artifacts. See ARCHITECTURE.md §Invocation

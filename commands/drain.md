@@ -125,6 +125,8 @@ The reason field stamped at `vault/.mem/queues/_processed/<YYYY-MM-DD>/<source_t
 
 Run each hook in the order declared in `post_batch_hooks`. Note: hooks run **once per drain invocation**, not per fan-out batch.
 
+> **`theme_scan` is now redundant for the standard config and disabled by default.** `VaultManager.create_note` fires `scan_candidates(source_type=<slug>)` for every event-grain source on write, so floating happens once per source rather than once per batch. The default `sources.<type>.post_batch_hooks` is therefore `[]`. The hook implementation below is preserved for users who want belt-and-suspenders coverage (e.g. after a bulk import path that bypasses VaultManager).
+
 ### `theme_scan` — float new theme candidates from the unfiled pile
 
 The triage stage emits `keep_unfiled` for items with substantive signal but no theme match. Those notes carry `theme_unfiled: true` in frontmatter. After the batch closes, scan for clusters across the unfiled pile (≥3 notes sharing ≥2 concepts) — the same deterministic clustering used elsewhere, restricted to unfiled news:
@@ -133,7 +135,7 @@ The triage stage emits `keep_unfiled` for items with substantive signal but no t
 Bash("uv run mem themes scan-candidates --source-type <slug>")
 ```
 
-The scan is deterministic and fast. Candidates land at `vault/themes/_candidates/cand-XXXX-*.md` and are promoted via `/themes-resolve --promote <cand-id> [--parent thm-Y]`. Once promoted, a follow-up step links accumulated unfiled notes whose concept overlap matches the new theme's `concepts:`.
+The scan is deterministic, fast, and idempotent — running it after the per-create auto-fire is a no-op (existing candidates dedupe). Candidates land at `vault/themes/_candidates/cand-XXXX-*.md` and are promoted via `/themes-resolve --promote <cand-id> [--parent thm-Y]`. Once promoted, a follow-up step links accumulated unfiled notes whose concept overlap matches the new theme's `concepts:`.
 
 Output is a candidate-creation count; surface it in the final summary.
 

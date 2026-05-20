@@ -151,11 +151,15 @@ content they want mem to acquire. List the registered types via
 
 ```
 Available source types (papers, repos, articles ship by default):
-  paper, repo, article, conversation, substack
+  paper, repo, article, conversation, substack, news
 
 Want to enable any optional ones?
   - substack — newsletters via disk drop (~/inbox/substack/)
-  - news — high-volume queue with subagent triage
+  - news — RSS-pulled outlet queue with Haiku triage + Sonnet writer
+    fan-out. Requires `uv pip install -e .[news]` (feedparser +
+    readability-lxml + httpx) and a cron line for
+    `scripts/pull_news_feeds.py`. See README §News module +
+    scripts/example-crontab.
 ```
 
 For each enabled type, confirm the intake path / queue location and

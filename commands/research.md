@@ -1,10 +1,10 @@
 ---
 name: research
 owns_mechanic: url_routing
-source_type: [paper, repo, article]
+source_type: [paper, repo, article, news]
 capabilities: [import, acquire]
 consumes: [mem_queue, mem_sources_config, mem_search]
-produces: [vault/sources/papers/**, vault/sources/repos/**, vault/sources/articles/**]
+produces: [vault/sources/papers/**, vault/sources/repos/**, vault/sources/articles/**, vault/sources/news/**]
 tools:
   - Read
   - Bash
@@ -12,7 +12,7 @@ tools:
   - mem_queue
   - mem_sources_config
   - mem_search
-description: Router skill — classifies URLs and dispatches to research-paper / research-repo / research-article. For queue drain use `/drain --source-type <slug>`.
+description: Router skill — classifies URLs and dispatches to research-paper / research-repo / research-article (or /news for news outlets). For queue drain use `/drain --source-type <slug>`.
 ---
 
 # /research — URL Router
@@ -31,16 +31,24 @@ their fetcher.
 
 ## Classification table
 
-| Source type | Default `url_patterns`              | Subskill           |
-|-------------|-------------------------------------|--------------------|
-| `paper`     | `arxiv.org`, `openreview.net`       | `research-paper`   |
-| `repo`      | `github.com`, `gitlab.com`          | `research-repo`    |
-| `article`   | (fallback for unmatched URLs)       | `research-article` |
+| Source type | Default `url_patterns`                                       | Subskill           |
+|-------------|--------------------------------------------------------------|--------------------|
+| `paper`     | `arxiv.org`, `openreview.net`                                | `research-paper`   |
+| `repo`      | `github.com`, `gitlab.com`                                   | `research-repo`    |
+| `news`      | `reuters.com`, `ft.com`, `bloomberg.com`, `wsj.com`, `bankier.pl` | `news`         |
+| `article`   | (fallback for unmatched URLs)                                | `research-article` |
 
 The patterns are read from `sources.<type>.url_patterns` in
 `sources.yaml` — users override defaults per vault. New source types add
 a registry entry + a `commands/research/research-<type>.md` subskill;
 this router needs no edits.
+
+**News is the exception.** Instead of a dedicated `research-news`
+subskill, the router dispatches to the existing `/news` skill, which
+runs the same Haiku title-triage as the `/drain --source-type news`
+cron path before invoking a Sonnet writer subagent. The two-stage shape
+is news-specific (triage gate + writer fan-out), so news doesn't fit
+the per-URL Skill dispatch the other types use.
 
 ## Modes
 

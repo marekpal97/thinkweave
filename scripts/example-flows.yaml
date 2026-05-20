@@ -35,3 +35,18 @@ flows:
       - run: "/mem-resolve-concepts"
       - run: "/themes-resolve"
       - run: "/update-hubs"
+
+  news-cycle:
+    description: "Drain the news acquisition queue (triage + write briefs)."
+    log: ~/.cache/personal_mem/flow_news-cycle.log
+    on_error: continue
+    stages:
+      # The pull-feeds step lives in cron, not here — it has no LLM cost
+      # and runs more often than the drain. Run pulls hourly/bihourly,
+      # drain every 6h: the queue accumulates a useful batch before
+      # Haiku triage fires, keeping per-batch cost low.
+      - run: "/drain --source-type news --limit 20"
+      # Optional: refresh STATE/THEMES.md so the next session sees the
+      # candidate count delta. Cheap; runs deterministic landing-doc
+      # generators only.
+      - run: "uv run mem landing --doc themes"

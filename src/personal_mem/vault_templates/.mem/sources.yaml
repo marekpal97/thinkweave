@@ -51,8 +51,14 @@ sources:
     drain_batch_max: 20
     subagent_type: research-news-worker
     subagent_model: sonnet
-    post_batch_hooks: [theme_scan]
-    research_skill: research-news
+    # post_batch_hooks left empty — theme_scan now auto-fires from
+    # VaultManager.create_note for every event-grain source on create.
+    post_batch_hooks: []
+    # /research router dispatches news URLs to the one-off /news skill;
+    # cron drain takes the subagent path above. No `research-news`
+    # standalone skill exists by design.
+    research_skill: news
+    url_patterns: [reuters.com, ft.com, bloomberg.com, wsj.com, bankier.pl]
   conversation:
     drain_strategy: inline
     importer: chatgpt
