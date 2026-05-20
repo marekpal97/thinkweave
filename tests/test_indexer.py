@@ -135,6 +135,153 @@ class TestIndexer:
         assert db_stats["notes_source"] == 1
 
 
+class TestMtimeGate:
+    """Regression for P0-8: mtime-gated incremental rebuild.
+
+    On a no-op rebuild we must NOT call ``read_text`` for files whose
+    on-disk mtime matches the cached value. Slow-path readback dominated
+    no-op rebuild on a 6.5k-file vault (~25s wall on WSL→9P).
+    """
+
+    def test_noop_rebuild_does_not_read_unchanged_files(
+        self, vault: VaultManager, indexer: Indexer, tmp_path: Path,
+        monkeypatch,
+    ):
+        # Populate vault with 5 notes, full-index once.
+        paths = []
+        for i in range(5):
+            p = vault.create_note(NoteType.NOTE, f"Note {i}", body=f"Body {i}", project="p")
+            paths.append(p)
+        indexer.rebuild(full=True)
+
+        # Patch Path.read_text to count invocations across all md files.
+        from pathlib import Path as _P
+        original_read_text = _P.read_text
+        read_calls: list[str] = []
+
+        def counting_read_text(self, *a, **kw):
+            if self.suffix == ".md":
+                read_calls.append(str(self))
+            return original_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(_P, "read_text", counting_read_text)
+
+        # No-op incremental — nothing should be read.
+        stats = indexer.rebuild(full=False)
+        assert stats["indexed"] == 0
+        assert stats["removed"] == 0
+        assert stats["skipped"] == 5
+        assert len(read_calls) == 0, (
+            f"expected zero reads on no-op rebuild, got {len(read_calls)}: {read_calls}"
+        )
+
+    def test_one_changed_file_reads_only_that_file(
+        self, vault: VaultManager, indexer: Indexer, monkeypatch,
+    ):
+        # 5 notes, indexed once.
+        paths = []
+        for i in range(5):
+            p = vault.create_note(NoteType.NOTE, f"Note {i}", body=f"Body {i}", project="p")
+            paths.append(p)
+        indexer.rebuild(full=True)
+
+        # Touch one file forward in time + change content.
+        target = paths[2]
+        import os
+        import time
+        new_mtime = time.time() + 10
+        target.write_text(target.read_text() + "\n\nupdated\n")
+        os.utime(target, (new_mtime, new_mtime))
+
+        # Count reads.
+        from pathlib import Path as _P
+        original_read_text = _P.read_text
+        read_calls: list[str] = []
+
+        def counting_read_text(self, *a, **kw):
+            if self.suffix == ".md":
+                read_calls.append(str(self))
+            return original_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(_P, "read_text", counting_read_text)
+
+        stats = indexer.rebuild(full=False)
+        assert stats["indexed"] == 1
+        assert stats["skipped"] == 4
+        # Exactly one read for the touched file
+        assert len(read_calls) == 1
+        assert str(target) in read_calls[0]
+
+
+class TestIndexPaths:
+    """Regression for P0-8 layer 2: targeted path indexing without rglob."""
+
+    def test_index_paths_only_processes_given_paths(
+        self, vault: VaultManager, indexer: Indexer, monkeypatch,
+    ):
+        a = vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
+        b = vault.create_note(NoteType.NOTE, "Note B", body="B", project="p")
+        c = vault.create_note(NoteType.NOTE, "Note C", body="C", project="p")
+        indexer.rebuild(full=True)
+
+        # rglob must NOT be called when using index_paths.
+        rglob_calls: list[str] = []
+        original_rglob = type(vault.root).rglob
+
+        def counting_rglob(self, pattern):
+            rglob_calls.append(pattern)
+            return original_rglob(self, pattern)
+
+        monkeypatch.setattr(type(vault.root), "rglob", counting_rglob)
+
+        # Modify only b — pass only b's path.
+        b.write_text(b.read_text() + "\n\nchanged\n")
+        import os
+        import time
+        new_mtime = time.time() + 10
+        os.utime(b, (new_mtime, new_mtime))
+
+        stats = indexer.index_paths([b])
+        assert stats["indexed"] == 1
+        assert stats["skipped"] == 0
+        # The vault-wide rglob in get_all_md_files() should not have run.
+        assert "*.md" not in rglob_calls
+
+    def test_index_paths_removes_missing(
+        self, vault: VaultManager, indexer: Indexer,
+    ):
+        a = vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
+        indexer.rebuild(full=True)
+        assert indexer.get_stats()["notes_total"] == 1
+
+        a.unlink()
+        stats = indexer.index_paths([a])
+        assert stats["removed"] == 1
+        assert indexer.get_stats()["notes_total"] == 0
+
+    def test_index_paths_handles_unchanged(
+        self, vault: VaultManager, indexer: Indexer,
+    ):
+        a = vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
+        indexer.rebuild(full=True)
+
+        # Re-passing unchanged path should skip.
+        stats = indexer.index_paths([a])
+        assert stats["indexed"] == 0
+        assert stats["skipped"] == 1
+        assert stats["removed"] == 0
+
+    def test_index_paths_ignores_outside_vault(
+        self, vault: VaultManager, indexer: Indexer, tmp_path: Path,
+    ):
+        outside = tmp_path / "elsewhere.md"
+        outside.write_text("# Foreign\n")
+        # Should not raise — just silently ignore.
+        stats = indexer.index_paths([outside])
+        assert stats["indexed"] == 0
+        assert stats["skipped"] == 0
+
+
 class TestSearch:
     def _populate_vault(self, vault: VaultManager, indexer: Indexer) -> None:
         vault.create_note(
