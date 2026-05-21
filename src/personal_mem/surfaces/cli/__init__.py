@@ -24,7 +24,6 @@ from personal_mem.surfaces.cli.hubs import (
     cmd_hubs,
 )
 from personal_mem.surfaces.cli.index import (
-    cmd_connect,
     cmd_doctor,
     cmd_enrich,
     cmd_import,
@@ -64,7 +63,6 @@ _DISPATCH = {
     "project": cmd_project,
     "prune-orphans": cmd_prune_orphans,
     "enrich": cmd_enrich,
-    "connect": cmd_connect,
     "search": cmd_search,
     "show": cmd_show,
     "link": cmd_link,

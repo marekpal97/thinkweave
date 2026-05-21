@@ -4,23 +4,34 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from personal_mem.core.config import load_config
-from personal_mem.surfaces.cli.hubs import _hubs_run
 
 
 def cmd_drain(args: argparse.Namespace) -> None:
     """Drain queues or backfill concept hubs.
 
-    Replaces ``mem hubs run`` (use ``--target hubs --via batch``) and the
-    legacy inline hub-backfill skill (use ``--target hubs --via inline``
-    to be pointed at the ``/drain`` Claude Code skill).
+    Canonical entry point for batch hub backfill (use ``--target hubs
+    --via batch``) and the inline hub-backfill skill (use ``--target
+    hubs --via inline``). Replaces the now-deleted ``mem hubs run``
+    alias.
     """
     cfg = load_config()
 
     if args.target == "hubs":
         if args.via == "batch":
-            _hubs_run(cfg, args)
+            from personal_mem.operations.drain import run_hubs_batch
+
+            run_hubs_batch(
+                cfg,
+                plan_path=Path(args.plan) if args.plan else None,
+                model=args.model,
+                max_tokens=args.max_tokens,
+                poll_interval=args.poll_interval,
+                max_input_tokens=args.max_input_tokens,
+                dry_run=args.dry_run,
+            )
             return
         print(
             "Inline hub drain runs as a Claude Code skill.\n"

@@ -154,51 +154,6 @@ def add_hubs_subparsers(sub) -> None:
         help="Cap total concepts in the plan (0 = no cap)",
     )
 
-    p_hubs_run = hubs_sub.add_parser(
-        "run",
-        help="Execute a backfill plan via the OpenAI SDK + Batches API",
-    )
-    p_hubs_run.add_argument(
-        "--plan", default="", help="Path to plan JSON (default: .mem/hubs_plan.json)"
-    )
-    p_hubs_run.add_argument(
-        "--model",
-        default="gpt-5-mini",
-        help="OpenAI model to use (default: gpt-5-mini)",
-    )
-    p_hubs_run.add_argument(
-        "--max-tokens",
-        type=int,
-        default=8192,
-        help=(
-            "Max output tokens per request (default: 8192). gpt-5-mini is a "
-            "reasoning model — visible JSON for per-note extraction is small "
-            "(~200 tokens) but hidden reasoning typically uses 2-5K. Smaller "
-            "caps starve the model and trigger finish_reason=length with empty content."
-        ),
-    )
-    p_hubs_run.add_argument(
-        "--poll-interval",
-        type=int,
-        default=30,
-        help="Seconds between batch status polls (default: 30)",
-    )
-    p_hubs_run.add_argument(
-        "--max-input-tokens",
-        type=int,
-        default=4_500_000,
-        help=(
-            "Cap enqueued input tokens per batch (default: 4,500,000, safely "
-            "under OpenAI's 5M gpt-5-mini org limit). 0 = no cap. Requests "
-            "past the cap are deferred to a subsequent run."
-        ),
-    )
-    p_hubs_run.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Build requests and print the first one, but don't submit to the API",
-    )
-
     p_hubs_status = hubs_sub.add_parser(
         "status",
         help="Show processed state per concept (cited vs total)",

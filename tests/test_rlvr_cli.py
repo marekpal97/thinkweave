@@ -193,8 +193,9 @@ class TestDispatchTable:
         assert "rlvr" in _DISPATCH
 
     def test_subcommand_count_bumped(self):
-        # 33 → 34 after this slice lands; if it slips, CLAUDE.md says 33
-        # and tests still see 34 — a deliberate test to catch doc drift.
+        # P1-4 dropped ``mem connect`` (deprecation alias): 34 → 33.
+        # CLAUDE.md §7 reflects the same count; if either slips, the
+        # other catches doc drift.
         from personal_mem.surfaces.cli import _DISPATCH
 
-        assert len(_DISPATCH) == 34
+        assert len(_DISPATCH) == 33

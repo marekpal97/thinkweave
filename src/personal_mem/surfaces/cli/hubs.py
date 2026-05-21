@@ -17,14 +17,17 @@ from personal_mem.surfaces.cli._hubs_link import hubs_link as _hubs_link
 
 
 def cmd_hubs(args: argparse.Namespace) -> None:
-    """Concept hub page management — plan, run, status."""
+    """Concept hub page management — plan, status, repair, link.
+
+    The ``run`` deprecation alias (folded into ``mem drain --target hubs
+    --via batch``) was removed 2026-05-21; agents should call the canonical
+    form directly.
+    """
     cfg = load_config()
     action = args.hubs_action or "status"
 
     if action == "plan":
         _hubs_plan(cfg, args)
-    elif action == "run":
-        _hubs_run(cfg, args)
     elif action == "status":
         _hubs_status(cfg, args)
     elif action == "repair":
@@ -64,27 +67,6 @@ def _hubs_plan(cfg, args: argparse.Namespace) -> None:
     for p in plans[:10]:
         dom = f" [{', '.join(p.domains)}]" if p.domains else ""
         print(f"    {len(p.unprocessed_notes):4d}  {p.concept}{dom}")
-
-
-def _hubs_run(cfg, args: argparse.Namespace) -> None:
-    """Thin CLI wrapper around operations/drain.py::run_hubs_batch."""
-    if getattr(args, "command", "") == "hubs":
-        print(
-            "deprecated: use `mem drain --target hubs --via batch` "
-            "(alias kept for one release)."
-        )
-
-    from personal_mem.operations.drain import run_hubs_batch
-
-    run_hubs_batch(
-        cfg,
-        plan_path=Path(args.plan) if args.plan else None,
-        model=args.model,
-        max_tokens=args.max_tokens,
-        poll_interval=args.poll_interval,
-        max_input_tokens=args.max_input_tokens,
-        dry_run=args.dry_run,
-    )
 
 
 def _hubs_status(cfg, args: argparse.Namespace) -> None:

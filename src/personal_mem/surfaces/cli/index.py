@@ -1,5 +1,9 @@
-"""``mem index`` / ``stats`` / ``doctor`` / ``connect`` (legacy alias) /
-``enrich`` / ``import``."""
+"""``mem index`` / ``stats`` / ``doctor`` / ``enrich`` / ``import``.
+
+The ``mem connect`` deprecation alias (folded into ``mem index
+--materialize-links``) was removed 2026-05-21; agents should call the
+canonical form directly.
+"""
 
 from __future__ import annotations
 
@@ -132,33 +136,6 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     if exit_code != 0:
         sys.exit(exit_code)
-
-
-def cmd_connect(args: argparse.Namespace) -> None:
-    """[DEPRECATED] Use `mem index --materialize-links` instead.
-
-    Phase 4 C: this command is folded into `mem index`. Alias kept for one
-    release; will be removed.
-    """
-    print(
-        "deprecated: use `mem index --materialize-links` "
-        "(alias kept for one release).",
-        file=sys.stderr,
-    )
-    from personal_mem.core.indexer import Indexer
-
-    cfg = load_config()
-    idx = Indexer(config=cfg)
-    stats = idx.materialize_links(max_links=args.max_links, dry_run=args.dry_run)
-    prefix = "[dry run] " if args.dry_run else ""
-    print(
-        f"{prefix}Updated: {stats['notes_updated']}, "
-        f"Skipped: {stats['notes_skipped']}, "
-        f"Links written: {stats['links_written']}"
-    )
-    if not args.dry_run:
-        print("Re-run `mem index` to update the index with new wikilinks.")
-    idx.close()
 
 
 def cmd_enrich(args: argparse.Namespace) -> None:

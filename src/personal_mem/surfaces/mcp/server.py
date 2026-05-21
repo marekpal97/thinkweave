@@ -6,8 +6,11 @@ Requires: ``pip install personal-mem[mcp]``
 
 This module is a thin shell. Tool schemas + handlers live under
 ``surfaces/mcp/tools/`` (one module per area); the dispatch table is
-assembled in ``tools/__init__.py``. The deprecation aliases live in
-``tools/deprecated.py``.
+assembled in ``tools/__init__.py``. The Phase-4-C deprecation aliases
+(``mem_concept_search``, ``mem_source_lens``, ``mem_decisions_for_file``,
+``mem_concepts_tighten``, ``mem_concepts_merge``,
+``mem_concept_source_counts``, ``mem_concepts_drift``) were deleted
+2026-05-21; calls to those names now return "Unknown tool".
 
 Back-compat: a handful of helpers (``_parse_candidate_insights``,
 ``_flush_insight``, ``_build_decision_body``) historically lived here
@@ -39,7 +42,6 @@ def main() -> None:
 
     from personal_mem.core.config import load_config
     from personal_mem.surfaces.mcp.tools import DISPATCH, all_schemas
-    from personal_mem.surfaces.mcp.tools.deprecated import fold
 
     server = Server("personal-mem")
     cfg = load_config()
@@ -50,7 +52,6 @@ def main() -> None:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        name, arguments = fold(name, arguments)
         handler = DISPATCH.get(name)
         if handler is None:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -77,7 +78,6 @@ def build_server():
 
     from personal_mem.core.config import load_config
     from personal_mem.surfaces.mcp.tools import DISPATCH, all_schemas
-    from personal_mem.surfaces.mcp.tools.deprecated import fold
 
     server = Server("personal-mem")
     cfg = load_config()
@@ -88,7 +88,6 @@ def build_server():
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        name, arguments = fold(name, arguments)
         handler = DISPATCH.get(name)
         if handler is None:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

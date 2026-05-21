@@ -11,7 +11,7 @@ Three modalities, plus compositions on top.
 - **FTS** — `mem_search(query, mode='fts')`. Keyword/phrase. Cheap. Empty `query` returns recent matches honouring filters (list mode).
 - **Similarity** — `mem_search(query, mode='similar')`. Concept-shaped query, no keyword. Soft-fails to FTS when embeddings unavailable.
 - **Hybrid** — `mem_search(query, mode='hybrid')`. Unsure → RRF fusion (k=60).
-- **Graph** — `mem_graph(id, depth, filter=…)`. Structural walk over typed edges. Filter dispatches the variant: `''` (default — walk from `id`), `'source_lens'` (was `mem_source_lens`), `'decisions_for_file'` (was `mem_decisions_for_file`), `'concept_walk'` (was `mem_concept_search`). The old standalone tools remain as deprecation aliases for one release.
+- **Graph** — `mem_graph(id, depth, filter=…)`. Structural walk over typed edges. Filter dispatches the variant: `''` (default — walk from `id`), `'source_lens'` (was `mem_source_lens`), `'decisions_for_file'` (was `mem_decisions_for_file`), `'concept_walk'` (was `mem_concept_search`). The legacy alias tools were deleted 2026-05-21 — call the canonical name.
 
 Compositions:
 
@@ -132,12 +132,14 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 
 ## 7. CLI reference (Bash)
 
-The CLI exposes **34 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
+The CLI exposes **33 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
 
-Consolidations to keep in mind: `mem connect` is folded into
-`mem index --materialize-links`; the `mem_concepts*` MCP tools are folded into
-`mem_concepts(action=...)`; `mem_source_lens` + `mem_decisions_for_file` are
-folded into `mem_graph(filter=...)`. Old names linger as deprecation aliases.
+Consolidations to keep in mind: wikilink materialisation lives under
+`mem index --materialize-links` (was `mem connect`, deleted 2026-05-21);
+the `mem_concepts*` MCP tools are folded into `mem_concepts(action=...)`;
+`mem_source_lens` + `mem_decisions_for_file` are folded into
+`mem_graph(filter=...)`. The Phase-4-C deprecation aliases for both CLI
+and MCP names were removed 2026-05-21 — call the canonical names.
 
 ```
 mem init                                    # initialize vault + .mem/sources.yaml
@@ -152,7 +154,7 @@ mem backlog [--project X]                   # todo notes + active queue items
 mem decisions [--file <path>] [--project X] # decision ledger lookup
 mem project {list|show|set-active}          # project registry on the vault
 mem concepts {list|merge|hubs|drift|notes|prune}
-mem hubs {status|plan|run|link|repair}      # concept-hub backfill (run = deprecation alias for `drain`)
+mem hubs {status|plan|link|repair}          # concept-hub backfill (use `mem drain --target hubs` to execute)
 mem themes {list|scan-candidates|archive-stale-candidates|promote-candidate}
 mem drain --target hubs --via {inline|batch}  # batch path replaces `mem hubs run`
 mem queue {list|inspect|peek}               # per-source-type acquisition queues
@@ -173,7 +175,6 @@ mem show <id>                               # render a single note
 mem link <src_id> <tgt_id> [--type X]       # add typed edge
 mem install [--vault PATH] [--yes]          # register MCP server in ~/.claude.json
 mem mcp                                     # invoke the MCP server (used by ~/.claude.json)
-mem connect                                 # deprecation alias → index --materialize-links
 ```
 
 **Agents shouldn't run** `mem doctor`, `mem stats`, `mem flow`, `mem intake`,
@@ -189,11 +190,6 @@ The MCP server exposes 18 tools:
 `mem_context`, `mem_graph` (filter-dispatched), `mem_concepts` (action-dispatched),
 `mem_extract`, `mem_judge`, `mem_landing`, `mem_enrich`, `mem_timeline`,
 `mem_project_snapshot`, `mem_queue`, `mem_sources_config`, `mem_prompts`.
-
-7 deprecation aliases (one release): `mem_concepts_tighten`, `mem_concepts_merge`,
-`mem_concept_search`, `mem_concept_source_counts`, `mem_concepts_drift`,
-`mem_source_lens`, `mem_decisions_for_file`. Calls work but log a deprecation
-warning to stderr.
 
 ## Environment
 

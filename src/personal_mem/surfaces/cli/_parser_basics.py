@@ -164,13 +164,6 @@ def add_index_subparsers(sub) -> None:
         help="Run vault coherence + MCP diagnostics together.",
     )
 
-    p_connect = sub.add_parser(
-        "connect",
-        help="Materialize SQLite edges as wikilinks (## See Also) for Obsidian graph",
-    )
-    p_connect.add_argument("--max-links", type=int, default=5, help="Max links per note (default: 5)")
-    p_connect.add_argument("--dry-run", action="store_true", help="Show stats without writing files")
-
     p_enrich = sub.add_parser(
         "enrich",
         help="LLM-assisted concept assignment for notes missing concepts (uses gpt-5-mini)",
@@ -193,7 +186,7 @@ def add_index_subparsers(sub) -> None:
     p_enrich.add_argument("--no-reindex", dest="reindex", action="store_false")
     p_enrich.add_argument(
         "--connect", action="store_true", default=True,
-        help="Re-run mem connect after reindex (default: true)",
+        help="Materialize SQLite edges as wikilinks after reindex (default: true)",
     )
     p_enrich.add_argument("--no-connect", dest="connect", action="store_false")
 
