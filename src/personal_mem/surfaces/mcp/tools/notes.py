@@ -1,9 +1,11 @@
 """``mem_create`` / ``mem_read`` / ``mem_update`` / ``mem_link`` / ``mem_unlink``.
 
-Note CRUD + edge management. Handlers are thin wrappers; the heavy
-lifting lives in ``personal_mem.core.vault`` (``VaultManager``) and
-``personal_mem.core.indexer`` (``Indexer``). Schemas are returned by
-:func:`tool_schemas` so the server can register them in one pass.
+Note CRUD + edge management. Handlers are thin wrappers over
+``personal_mem.operations.notes`` — the operations seam owns the
+``VaultManager`` / ``Indexer`` dance, the strict ontology gate, and
+the indexer-after-write invariants. This module's job is the MCP
+input shape (the JSON Schemas returned by :func:`tool_schemas`) and
+the MCP output shape (``TextContent`` envelopes). No business logic.
 """
 
 from __future__ import annotations
@@ -224,51 +226,24 @@ def tool_schemas() -> list:
 def handle_create(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from personal_mem.core.indexer import Indexer
-    from personal_mem.core.vault import VaultManager
-    from personal_mem.synthesis.concepts import split_concepts_by_ontology
+    from personal_mem.operations.notes import create_note
 
-    vm = VaultManager(config=cfg)
-    vm.ensure_dirs()
     note_type = NoteType(args["type"])
-
-    # Strict policy: anything in `concepts:` that isn't in the merged
-    # ontology gets routed to `proposed_concepts:`. Caller intent is
-    # preserved (proposed terms stay proposed; canonical-but-unknown
-    # terms move into the proposed queue for /mem-resolve-concepts).
-    extra_frontmatter = dict(args.get("frontmatter") or {})
-    if "concepts" in extra_frontmatter or "proposed_concepts" in extra_frontmatter:
-        canonical, proposed = split_concepts_by_ontology(
-            extra_frontmatter.get("concepts"),
-            proposed=extra_frontmatter.get("proposed_concepts"),
-        )
-        if canonical:
-            extra_frontmatter["concepts"] = canonical
-        else:
-            extra_frontmatter.pop("concepts", None)
-        if proposed:
-            extra_frontmatter["proposed_concepts"] = proposed
-        else:
-            extra_frontmatter.pop("proposed_concepts", None)
-
-    path = vm.create_note(
+    note = create_note(
+        cfg,
         note_type=note_type,
         title=args["title"],
         body=args.get("body", ""),
         project=args.get("project", ""),
         tags=args.get("tags"),
-        extra_frontmatter=extra_frontmatter or None,
+        extra_frontmatter=args.get("frontmatter") or None,
         session_id=args.get("session_id", ""),
     )
 
-    idx = Indexer(config=cfg)
-    idx.index_file(path)
-    idx.close()
-
-    note = vm.read_note(path)
     msg = f"Created {note.type.value} [{note.id}] at {note.path}"
     if note_type == NoteType.SOURCE:
-        msg += f"\nSource directory: {path.parent}"
+        # note.path is the relative path to source.md; parent is the bucket folder.
+        msg += f"\nSource directory: {(cfg.vault_root / note.path).parent}"
     return [TextContent(type="text", text=msg)]
 
 
@@ -298,55 +273,28 @@ def handle_read(cfg: Config, args: dict):
 def handle_link(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from personal_mem.core.indexer import EDGE_TYPE_TO_FIELD, Indexer
-    from personal_mem.core.vault import VaultManager
+    from personal_mem.operations.notes import link_notes
 
     source_id = args["source_id"]
     target_id = args["target_id"]
     edge_type = args["edge_type"]
 
-    idx = Indexer(config=cfg)
-    src = idx.db.execute("SELECT path FROM notes WHERE id = ?", (source_id,)).fetchone()
-    tgt = idx.db.execute("SELECT id FROM notes WHERE id = ?", (target_id,)).fetchone()
-
-    if not src:
-        idx.close()
-        return [TextContent(type="text", text=f"Source note {source_id} not found.")]
-    if not tgt:
-        idx.close()
+    try:
+        link_notes(cfg, source_id, target_id, edge_type)
+    except FileNotFoundError as e:
+        msg = str(e)
+        if "Source note" in msg:
+            return [TextContent(type="text", text=f"Source note {source_id} not found.")]
         return [TextContent(type="text", text=f"Target note {target_id} not found.")]
-
-    vm = VaultManager(config=cfg)
-    fm_field = EDGE_TYPE_TO_FIELD[edge_type]
-    source_path = vm.root / src["path"]
-    vm.update_note(source_path, frontmatter_updates={fm_field: [target_id]})
-
-    idx.index_file(source_path)
-    idx.close()
     return [TextContent(type="text", text=f"Linked {source_id} --{edge_type}--> {target_id}")]
 
 
 def handle_update(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from personal_mem.core.indexer import Indexer
-    from personal_mem.core.vault import VaultManager
-    from personal_mem.retrieval.search import Search
+    from personal_mem.operations.notes import update_note
 
     note_id = args["id"]
-    s = Search(config=cfg)
-    note = s.get_note_by_id(note_id)
-    s.close()
-
-    if not note:
-        return [TextContent(type="text", text=f"Note {note_id} not found.")]
-
-    vm = VaultManager(config=cfg)
-    full_path = vm.root / note["path"]
-
-    if not full_path.exists():
-        return [TextContent(type="text", text=f"File not found: {note['path']}")]
-
     fm_updates = args.get("frontmatter")
     body_append = args.get("body_append", "")
     remove_tags = args.get("remove_tags")
@@ -354,13 +302,22 @@ def handle_update(cfg: Config, args: dict):
     if not fm_updates and not body_append and not remove_tags:
         return [TextContent(type="text", text="Nothing to update. Provide frontmatter, body_append, or remove_tags.")]
 
-    vm.update_note(full_path, frontmatter_updates=fm_updates, body_append=body_append, remove_tags=remove_tags)
+    try:
+        updated = update_note(
+            cfg,
+            note_id,
+            frontmatter_updates=fm_updates,
+            body_append=body_append,
+            remove_tags=remove_tags,
+        )
+    except FileNotFoundError as e:
+        # operations raises either "Note <id> not found" or "File missing for ..."
+        # Map to the legacy MCP-text shapes for surface compatibility.
+        msg = str(e)
+        if msg.startswith("File missing for"):
+            return [TextContent(type="text", text=f"File not found: {msg.split(': ', 1)[-1]}")]
+        return [TextContent(type="text", text=f"Note {note_id} not found.")]
 
-    idx = Indexer(config=cfg)
-    idx.index_file(full_path)
-    idx.close()
-
-    updated = vm.read_note(full_path)
     parts = [f"Updated {updated.type.value} [{updated.id}]"]
     if fm_updates:
         parts.append(f"frontmatter: {list(fm_updates.keys())}")
@@ -374,43 +331,16 @@ def handle_update(cfg: Config, args: dict):
 def handle_unlink(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from personal_mem.core.indexer import EDGE_TYPE_TO_FIELD, Indexer
-    from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
+    from personal_mem.operations.notes import unlink_notes
 
     source_id = args["source_id"]
     target_id = args["target_id"]
     edge_type = args["edge_type"]
 
-    idx = Indexer(config=cfg)
-    src = idx.db.execute("SELECT path FROM notes WHERE id = ?", (source_id,)).fetchone()
-
-    if not src:
-        idx.close()
+    try:
+        removed = unlink_notes(cfg, source_id, target_id, edge_type)
+    except FileNotFoundError:
         return [TextContent(type="text", text=f"Source note {source_id} not found.")]
-
-    vm = VaultManager(config=cfg)
-    source_path = vm.root / src["path"]
-    note = vm.read_note(source_path)
-    fm_field = EDGE_TYPE_TO_FIELD[edge_type]
-
-    targets = note.frontmatter.get(fm_field, [])
-    if isinstance(targets, str):
-        targets = [targets] if targets else []
-
-    if target_id not in targets:
-        idx.close()
+    if not removed:
         return [TextContent(type="text", text="No matching edge found.")]
-
-    new_targets = [t for t in targets if t != target_id]
-    text = source_path.read_text(encoding="utf-8")
-    fm, body = parse_frontmatter(text)
-    if new_targets:
-        fm[fm_field] = new_targets
-    else:
-        fm.pop(fm_field, None)
-    content = render_frontmatter(fm) + "\n\n" + body
-    source_path.write_text(content, encoding="utf-8")
-
-    idx.index_file(source_path)
-    idx.close()
     return [TextContent(type="text", text=f"Removed edge: {source_id} --{edge_type}--> {target_id}")]

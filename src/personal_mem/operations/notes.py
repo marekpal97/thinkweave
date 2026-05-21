@@ -27,7 +27,33 @@ def create_note(
     session_id: str = "",
     output_dir: Path | None = None,
 ) -> NoteMeta:
-    """Create a note and incrementally index it. Returns the parsed NoteMeta."""
+    """Create a note and incrementally index it. Returns the parsed NoteMeta.
+
+    Strict ontology gating: any incoming ``concepts`` / ``proposed_concepts``
+    in ``extra_frontmatter`` are split through the merged ontology — canonical
+    terms stay in ``concepts:``, unrecognized ones get routed to
+    ``proposed_concepts:`` for later promotion via ``/mem-resolve-concepts``.
+    Both surfaces (CLI ``mem add`` and MCP ``mem_create``) get this gate
+    uniformly; ``mem_extract`` runs its own equivalent split before reaching
+    this function.
+    """
+    from personal_mem.synthesis.concepts import split_concepts_by_ontology
+
+    fm = dict(extra_frontmatter) if extra_frontmatter else {}
+    if "concepts" in fm or "proposed_concepts" in fm:
+        canonical, proposed = split_concepts_by_ontology(
+            fm.get("concepts"),
+            proposed=fm.get("proposed_concepts"),
+        )
+        if canonical:
+            fm["concepts"] = canonical
+        else:
+            fm.pop("concepts", None)
+        if proposed:
+            fm["proposed_concepts"] = proposed
+        else:
+            fm.pop("proposed_concepts", None)
+
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
 
@@ -37,7 +63,7 @@ def create_note(
         body=body,
         project=project,
         tags=tags,
-        extra_frontmatter=extra_frontmatter,
+        extra_frontmatter=fm or None,
         session_id=session_id,
         output_dir=output_dir,
     )
