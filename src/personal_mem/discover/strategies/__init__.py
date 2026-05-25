@@ -53,11 +53,21 @@ def names() -> list[str]:
 
 
 # Auto-register built-ins. Each module exposes a module-level
-# ``STRATEGY`` singleton.
+# ``STRATEGY`` singleton. Built-ins split into two flavors:
+#
+#   internal-state producers (observe vault, emit gap descriptors):
+#     concept_coverage, decision_review, theme_drift
+#
+#   external-trigger producers (observe outside world, emit queue items):
+#     rss_poll, mail_poll, external_tool_runner
+#
+# Both flavors implement the same ``run(vault, project, config)`` contract.
 from personal_mem.discover.strategies import (  # noqa: E402
     concept_coverage,
     decision_review,
     external_tool_runner,
+    mail_poll,
+    rss_poll,
     theme_drift,
 )
 
@@ -65,3 +75,5 @@ register(concept_coverage.STRATEGY)
 register(decision_review.STRATEGY)
 register(theme_drift.STRATEGY)
 register(external_tool_runner.STRATEGY)
+register(rss_poll.STRATEGY)
+register(mail_poll.STRATEGY)

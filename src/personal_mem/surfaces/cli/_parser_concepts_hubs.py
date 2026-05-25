@@ -376,6 +376,13 @@ def add_drain_subparsers(sub) -> None:
         help="Run a single named strategy instead of the project's configured list.",
     )
     p_discover.add_argument(
+        "--source-type", default="",
+        help=(
+            "Limit external-trigger strategies (rss_poll, mail_poll) to one "
+            "source type. Ignored by internal-state strategies."
+        ),
+    )
+    p_discover.add_argument(
         "--list", action="store_true",
         help="List registered strategies and exit.",
     )

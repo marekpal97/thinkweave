@@ -120,6 +120,14 @@ def cmd_discover(args: argparse.Namespace) -> None:
     user_cfg = load_user_config(cfg.vault_root)
     project = args.project or cfg.default_project or ""
 
+    # Surface CLI runtime params to strategies via a reserved config key.
+    # Strategies that care (rss_poll, mail_poll) read _runtime.source_type;
+    # the rest ignore it.
+    source_type_filter = getattr(args, "source_type", "") or ""
+    if source_type_filter:
+        user_cfg = dict(user_cfg)
+        user_cfg["_runtime"] = {"source_type": source_type_filter}
+
     if args.strategy:
         strategy_names = [args.strategy]
     else:

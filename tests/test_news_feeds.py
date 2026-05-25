@@ -1,53 +1,54 @@
-"""Tests for scripts/pull_news_feeds.py — RSS-pull → queue logic.
+"""Tests for the ``rss_poll`` discover strategy — news flavor.
+
+Replaces the old ``scripts/pull_news_feeds.py`` tests after the lift into
+``discover/strategies/rss_poll.py``. The strategy is generic over
+source_type; this file covers the **news flavor** (`feed_config:` →
+``vault/.mem/news_feeds.yaml`` outlets). YouTube flavor coverage lives in
+``test_rss_poll_youtube.py``.
 
 Mocks ``feedparser.parse`` so the suite is hermetic. Covers:
 
-  1. ``_build_item`` happy path + skips for missing link.
+  1. ``_build_news_item`` happy path + skips for missing link / id fallback.
   2. ``embedded_body`` is captured iff ``prefer_embedded`` is true and
      the feed entry actually carries ``content[0].value``.
-  3. ``main()`` enqueues new entries.
-  4. ``main()`` dedups against the active queue.
-  5. ``main()`` dedups against the indexer (URL already a source note).
+  3. Strategy run enqueues new entries.
+  4. Strategy run dedups against the active queue.
+  5. Strategy run dedups against the indexer (URL already a source note).
   6. Per-outlet daily cap stops further enqueues from that outlet.
   7. Bozo feed without entries is logged and skipped without crashing.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sqlite3
 import sys
+import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from personal_mem.discover.strategies import rss_poll
+from personal_mem.discover.strategies.rss_poll import (
+    RssPollStrategy,
+    _build_news_item,
+)
 
-@pytest.fixture
-def pull_module(tmp_path, monkeypatch):
-    """Load scripts/pull_news_feeds.py as a module rooted at tmp_path."""
-    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path))
-    repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "pull_news_feeds.py"
-    # Force a fresh load each call (the script keeps no global state, but
-    # the module cache could be stale between tests if reused).
-    if "pull_news_feeds" in sys.modules:
-        del sys.modules["pull_news_feeds"]
-    spec = importlib.util.spec_from_file_location(
-        "pull_news_feeds", script_path
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 class FakeParsed:
     """Tiny stand-in for the FeedParserDict we don't want to construct."""
 
-    def __init__(self, entries, bozo=False, bozo_exception=None):
+    def __init__(self, entries: list[Any], bozo: bool = False, bozo_exception: Any = None):
         self.entries = entries
         self.bozo = bozo
         self.bozo_exception = bozo_exception
+        self.feed = {}
 
 
 def _entry(
@@ -56,9 +57,9 @@ def _entry(
     summary: str = "",
     published: str = "",
     entry_id: str = "",
-    content=None,
+    content: Any = None,
 ) -> dict:
-    e: dict = {
+    e: dict[str, Any] = {
         "link": link,
         "title": title,
         "summary": summary,
@@ -71,7 +72,7 @@ def _entry(
     return e
 
 
-def _seed_feeds_yaml(vault_root: Path, outlets: dict) -> None:
+def _seed_feeds_yaml(vault_root: Path, outlets: dict[str, dict]) -> None:
     """Write a minimal news_feeds.yaml the tiny YAML parser accepts."""
     (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
     lines = ["outlets:"]
@@ -101,12 +102,55 @@ def _basic_outlet(daily_cap: int = 5, prefer_embedded: bool = False) -> dict:
     }
 
 
+def _fake_vault(vault_root: Path, db_path: Path | None = None) -> Any:
+    """Build a minimal vault-like object the strategy expects."""
+    cfg = types.SimpleNamespace(vault_root=vault_root, index_db=db_path)
+    return types.SimpleNamespace(config=cfg)
+
+
+def _run_news(
+    tmp_path: Path,
+    db_path: Path | None = None,
+    daily_cap: int = 5,
+    prefer_embedded: bool = False,
+    extra_outlets: dict | None = None,
+) -> tuple[list[dict], dict]:
+    """Run the strategy in news-flavor mode against tmp_path. Returns
+    (descriptors, summary_stats). Assumes feedparser already patched.
+    """
+    outlets = {"reuters": _basic_outlet(daily_cap=daily_cap, prefer_embedded=prefer_embedded)}
+    if extra_outlets:
+        outlets.update(extra_outlets)
+    _seed_feeds_yaml(tmp_path, outlets)
+    config = {
+        "sources": {
+            "news": {
+                "feed_config": ".mem/news_feeds.yaml",
+                "dedup_keys": ["url", "entry_id"],
+            }
+        }
+    }
+    descriptors = RssPollStrategy().run(_fake_vault(tmp_path, db_path), None, config)
+    summaries = [d for d in descriptors if d.get("kind") == "summary"]
+    stats = summaries[0]["stats"] if summaries else {}
+    return descriptors, stats
+
+
+@pytest.fixture
+def fake_feedparser(monkeypatch):
+    """Ensure feedparser is importable and patchable in the strategy."""
+    fp = types.ModuleType("feedparser")
+    fp.parse = lambda url: FakeParsed([])
+    monkeypatch.setitem(sys.modules, "feedparser", fp)
+    return fp
+
+
 # ---------------------------------------------------------------------------
-# _build_item
+# _build_news_item
 # ---------------------------------------------------------------------------
 
 
-def test_build_item_basic(pull_module):
+def test_build_news_item_basic() -> None:
     entry = _entry(
         link="https://reuters.com/x",
         title="Title",
@@ -114,8 +158,14 @@ def test_build_item_basic(pull_module):
         published="2026-05-09T13:00:00Z",
         entry_id="r-123",
     )
-    conf = {"name": "Reuters", "tier": 1, "region": "global", "language": "en"}
-    item = pull_module._build_item(entry, "reuters", conf, prefer_embedded=False)
+    conf = {
+        "name": "Reuters",
+        "tier": 1,
+        "region": "global",
+        "language": "en",
+        "prefer_embedded": False,
+    }
+    item = _build_news_item(entry, "reuters", conf)
     assert item["url"] == "https://reuters.com/x"
     assert item["outlet"] == "reuters"
     assert item["outlet_name"] == "Reuters"
@@ -124,54 +174,47 @@ def test_build_item_basic(pull_module):
     assert item["embedded_body"] is None
 
 
-def test_build_item_skips_missing_link(pull_module):
-    entry = _entry(link="")
-    assert pull_module._build_item(entry, "x", {}, prefer_embedded=False) is None
+def test_build_news_item_skips_missing_link() -> None:
+    assert _build_news_item(_entry(link=""), "x", {}) is None
 
 
-def test_build_item_falls_back_to_url_for_entry_id(pull_module):
-    entry = _entry(link="https://x.com/a")
-    item = pull_module._build_item(entry, "x", {}, prefer_embedded=False)
+def test_build_news_item_falls_back_to_url_for_entry_id() -> None:
+    item = _build_news_item(_entry(link="https://x.com/a"), "x", {})
+    assert item is not None
     assert item["entry_id"] == "https://x.com/a"
 
 
-def test_build_item_captures_embedded_when_prefer_embedded(pull_module):
+def test_build_news_item_captures_embedded_when_prefer_embedded() -> None:
     entry = _entry(
         link="https://x.com/a",
         content=[{"type": "text/html", "value": "<p>FULL BODY</p>"}],
     )
-    item = pull_module._build_item(entry, "x", {}, prefer_embedded=True)
+    item = _build_news_item(entry, "x", {"prefer_embedded": True})
     assert item["embedded_body"] == "<p>FULL BODY</p>"
 
 
-def test_build_item_no_embedded_when_prefer_embedded_false(pull_module):
+def test_build_news_item_no_embedded_when_prefer_embedded_false() -> None:
     entry = _entry(
         link="https://x.com/a",
         content=[{"type": "text/html", "value": "<p>FULL BODY</p>"}],
     )
-    item = pull_module._build_item(entry, "x", {}, prefer_embedded=False)
+    item = _build_news_item(entry, "x", {"prefer_embedded": False})
     assert item["embedded_body"] is None
 
 
 # ---------------------------------------------------------------------------
-# main() integration
+# Strategy.run() integration — news flavor
 # ---------------------------------------------------------------------------
 
 
-def test_main_enqueues_new_entries(pull_module, tmp_path, monkeypatch, capsys):
-    _seed_feeds_yaml(tmp_path, {"reuters": _basic_outlet()})
-
+def test_strategy_enqueues_new_entries(tmp_path, fake_feedparser, monkeypatch) -> None:
     fake_entries = [
         _entry(link="https://reuters.com/a", title="A", entry_id="r-1"),
         _entry(link="https://reuters.com/b", title="B", entry_id="r-2"),
     ]
-    import feedparser
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(fake_entries))
 
-    monkeypatch.setattr(feedparser, "parse", lambda url: FakeParsed(fake_entries))
-
-    rc = pull_module.main()
-    assert rc == 0
-    stats = json.loads(capsys.readouterr().out)
+    _, stats = _run_news(tmp_path)
     assert stats["enqueued"] == 2
     assert stats["entries_seen"] == 2
     assert stats["dup_queue"] == 0
@@ -183,9 +226,7 @@ def test_main_enqueues_new_entries(pull_module, tmp_path, monkeypatch, capsys):
     assert len(lines) == 2
 
 
-def test_main_dedups_against_queue(pull_module, tmp_path, monkeypatch, capsys):
-    _seed_feeds_yaml(tmp_path, {"reuters": _basic_outlet()})
-
+def test_strategy_dedups_against_queue(tmp_path, fake_feedparser, monkeypatch) -> None:
     from personal_mem.sources.queue import Queue
 
     q = Queue.for_source_type("news", tmp_path)
@@ -197,20 +238,15 @@ def test_main_dedups_against_queue(pull_module, tmp_path, monkeypatch, capsys):
         _entry(link="https://reuters.com/a", title="A", entry_id="r-1"),
         _entry(link="https://reuters.com/b", title="B", entry_id="r-2"),
     ]
-    import feedparser
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(fake_entries))
 
-    monkeypatch.setattr(feedparser, "parse", lambda url: FakeParsed(fake_entries))
-
-    pull_module.main()
-    stats = json.loads(capsys.readouterr().out)
+    _, stats = _run_news(tmp_path)
     assert stats["enqueued"] == 1
     assert stats["dup_queue"] == 1
 
 
-def test_main_dedups_against_indexer(pull_module, tmp_path, monkeypatch, capsys):
+def test_strategy_dedups_against_indexer(tmp_path, fake_feedparser, monkeypatch) -> None:
     """A URL already a source note in the indexer should not re-enqueue."""
-    _seed_feeds_yaml(tmp_path, {"x": _basic_outlet()})
-
     db_path = tmp_path / ".mem" / "index.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
@@ -226,60 +262,62 @@ def test_main_dedups_against_indexer(pull_module, tmp_path, monkeypatch, capsys)
         _entry(link="https://feed.test/already", title="Old", entry_id="x-1"),
         _entry(link="https://feed.test/new", title="New", entry_id="x-2"),
     ]
-    import feedparser
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(fake_entries))
 
-    monkeypatch.setattr(feedparser, "parse", lambda url: FakeParsed(fake_entries))
-
-    pull_module.main()
-    stats = json.loads(capsys.readouterr().out)
+    _, stats = _run_news(tmp_path, db_path=db_path)
     assert stats["enqueued"] == 1
     assert stats["dup_indexer"] == 1
 
 
-def test_main_respects_per_outlet_daily_cap(
-    pull_module, tmp_path, monkeypatch, capsys
-):
-    _seed_feeds_yaml(tmp_path, {"x": _basic_outlet(daily_cap=2)})
-
+def test_strategy_respects_per_outlet_daily_cap(tmp_path, fake_feedparser, monkeypatch) -> None:
     fake_entries = [
-        _entry(link=f"https://x.com/{i}", title=f"E{i}", entry_id=f"x-{i}")
+        _entry(link=f"https://reuters.com/{i}", title=f"E{i}", entry_id=f"r-{i}")
         for i in range(5)
     ]
-    import feedparser
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(fake_entries))
 
-    monkeypatch.setattr(feedparser, "parse", lambda url: FakeParsed(fake_entries))
-
-    pull_module.main()
-    stats = json.loads(capsys.readouterr().out)
+    _, stats = _run_news(tmp_path, daily_cap=2)
     assert stats["enqueued"] == 2
     assert stats["cap_hit"] == 3
 
 
-def test_main_bozo_feed_logged_and_skipped(
-    pull_module, tmp_path, monkeypatch, capsys
-):
-    _seed_feeds_yaml(tmp_path, {"broken": _basic_outlet()})
-
-    import feedparser
-
+def test_strategy_bozo_feed_logged_and_skipped(tmp_path, fake_feedparser, monkeypatch) -> None:
     monkeypatch.setattr(
-        feedparser,
+        fake_feedparser,
         "parse",
         lambda url: FakeParsed([], bozo=True, bozo_exception="parse error"),
     )
 
-    rc = pull_module.main()
-    assert rc == 0
-    stats = json.loads(capsys.readouterr().out)
+    _, stats = _run_news(tmp_path)
     assert stats["enqueued"] == 0
     assert stats["feed_errors"] == 1
 
 
-def test_main_no_outlets_returns_zero(pull_module, tmp_path, capsys):
-    """Empty outlets section — main() must exit cleanly without crashing."""
+def test_strategy_no_outlets_returns_empty(tmp_path, fake_feedparser) -> None:
+    """Empty outlets section — strategy should emit no descriptors for news."""
     (tmp_path / ".mem").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".mem" / "news_feeds.yaml").write_text(
-        "outlets:\n", encoding="utf-8"
-    )
-    rc = pull_module.main()
-    assert rc == 0
+    (tmp_path / ".mem" / "news_feeds.yaml").write_text("outlets:\n", encoding="utf-8")
+    config = {
+        "sources": {
+            "news": {"feed_config": ".mem/news_feeds.yaml", "dedup_keys": ["url"]}
+        }
+    }
+    descriptors = RssPollStrategy().run(_fake_vault(tmp_path), None, config)
+    # No outlets → no feeds → no source row processed → no descriptors.
+    assert descriptors == []
+
+
+def test_strategy_runtime_source_type_filters(tmp_path, fake_feedparser, monkeypatch) -> None:
+    """`_runtime.source_type` limits polling to one source type."""
+    _seed_feeds_yaml(tmp_path, {"reuters": _basic_outlet()})
+    fake_entries = [_entry(link="https://reuters.com/a", title="A", entry_id="r-1")]
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(fake_entries))
+    config = {
+        "_runtime": {"source_type": "paper"},  # not news → news skipped
+        "sources": {
+            "news": {"feed_config": ".mem/news_feeds.yaml", "dedup_keys": ["url"]},
+            "paper": {"queue": "ignored"},  # no feed config, no channels
+        },
+    }
+    descriptors = RssPollStrategy().run(_fake_vault(tmp_path), None, config)
+    assert descriptors == []
