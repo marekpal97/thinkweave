@@ -102,6 +102,13 @@ class DreamCycleScan:
     drift_pairs: list = field(default_factory=list)
     promotion_candidates: list = field(default_factory=list)
     theme_candidates: list = field(default_factory=list)
+    # Raw cluster signals — clusters of event-grain sources sharing
+    # concepts that aren't covered by any active theme and don't have a
+    # candidate stub on disk. The dream apply phase composes a real slug
+    # + essence from these (LLM naming step lives in the prompt, not in
+    # the SDK), then mints canonical themes directly via the new
+    # `theme_promotions_from_signal` plan key.
+    theme_cluster_signals: list = field(default_factory=list)
     dormant_themes: list = field(default_factory=list)
     resolved_themes: list = field(default_factory=list)
     timings: dict = field(default_factory=dict)
@@ -287,10 +294,42 @@ def scan(
     finally:
         result.timings["resolved"] = time.perf_counter() - _t
 
+    # 6. theme cluster signals -------------------------------------------
+    # Raw clusters of recent event-grain sources sharing concepts that
+    # aren't already covered by an active theme or represented by an
+    # existing candidate stub. These are the "fresh, name-able" clusters
+    # the LLM judgment phase composes slugs for.
+    _t = time.perf_counter()
+    try:
+        from personal_mem.synthesis.theme_candidates import detect_signals
+
+        for sig in detect_signals(cfg):
+            result.theme_cluster_signals.append(
+                {
+                    "source_type": sig.source_type,
+                    "shared_concepts": sig.shared_concepts,
+                    "cluster_source_ids": sig.cluster_source_ids,
+                    "cluster_source_titles": sig.cluster_source_titles,
+                    # Per-source proposed_theme votes — set when workers
+                    # stamped proposed_theme: <slug> at write time (the
+                    # structural analog of proposed_concepts: on the theme
+                    # side). voted_slug is the top vote-getter for this
+                    # cluster; None when no votes exist. /dream should
+                    # prefer voted_slug over composing a fresh slug.
+                    "voted_slug": sig.voted_slug,
+                    "slug_votes": sig.slug_votes,
+                }
+            )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_cluster_signals: {e}")
+    finally:
+        result.timings["theme_cluster_signals"] = time.perf_counter() - _t
+
     result.stats = {
         "drift_pairs": len(result.drift_pairs),
         "promotion_candidates": len(result.promotion_candidates),
         "theme_candidates": len(result.theme_candidates),
+        "theme_cluster_signals": len(result.theme_cluster_signals),
         "dormant_themes": len(result.dormant_themes),
         "resolved_themes": len(result.resolved_themes),
     }
@@ -388,8 +427,16 @@ def apply(
             ...
           ],
           "theme_promotions": [
-            {"candidate_id": "cand-abcd1234", "title": "AI capex unwind 2026",
+            {"candidate_id": "cand-abcd1234", "title": "ai-capex",
              "essence": "...", "parent": "thm-X" (optional), "project": ""},
+            ...
+          ],
+          "theme_promotions_from_signal": [
+            {"slug": "iran-war",
+             "essence": "1-sentence narrative description.",
+             "source_ids": ["src-A", "src-B", "src-C"],
+             "concepts": ["geopolitics", "oil"],
+             "project": "" (optional), "parent": "thm-X" (optional)},
             ...
           ],
           "candidates_archived": [
@@ -528,6 +575,44 @@ def apply(
         result.errors.append(f"theme_promotions: {e}")
     finally:
         result.timings["theme_promotions"] = time.perf_counter() - _t
+
+    # 3c. signal-direct theme mints --------------------------------------
+    # Plan items composed by /dream from raw `theme_cluster_signals`, where
+    # no `cand-*` stub exists yet. Each item is
+    # {slug, essence, source_ids, [concepts], [project], [parent]}.
+    _t = time.perf_counter()
+    try:
+        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
+
+        for ts in plan.get("theme_promotions_from_signal") or []:
+            try:
+                slug = ts.get("slug") or ""
+                source_ids = ts.get("source_ids") or []
+                if not slug or not source_ids:
+                    result.errors.append(
+                        f"theme_signal: missing slug/source_ids in {ts}"
+                    )
+                    continue
+                mint_theme_from_signal(
+                    cfg,
+                    slug=slug,
+                    essence=ts.get("essence") or "",
+                    cluster_source_ids=list(source_ids),
+                    cluster_concepts=list(ts.get("concepts") or []),
+                    candidacy=ts.get("candidacy") or "inferred-from-signal",
+                    project=ts.get("project") or "",
+                    parent=ts.get("parent") or "",
+                    rebuild_index=False,
+                )
+                result.candidates_promoted += 1
+            except Exception as e:  # noqa: BLE001
+                result.errors.append(
+                    f"theme_signal {ts.get('slug', '?')}: {e}"
+                )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_promotions_from_signal: {e}")
+    finally:
+        result.timings["theme_promotions_from_signal"] = time.perf_counter() - _t
 
     # 3b. candidate archivals --------------------------------------------
     _t = time.perf_counter()

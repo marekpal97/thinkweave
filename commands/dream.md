@@ -51,9 +51,17 @@ Returns a `DreamCycleScan` JSON payload with:
 - `drift_pairs`: `[{"from": "a", "to": "b", "reason": "..."}, ...]` —
   survivors of `filter_drift_candidates`. Conservative on this vault;
   most cycles see 0-5.
-- `theme_candidates`: cluster stubs in `vault/themes/_candidates/` with
-  `{candidate_id, cluster_concepts, cluster_sources, candidacy,
-  source_type}`.
+- `theme_candidates`: cluster stubs already on disk in
+  `vault/themes/_candidates/` with `{candidate_id, cluster_concepts,
+  cluster_sources, candidacy, source_type}`. (Mostly legacy — the
+  auto-write was removed 2026-05-25, so new stubs only appear from
+  explicit `mem themes scan-candidates` runs.)
+- `theme_cluster_signals`: raw clusters that have NO stub yet — recent
+  event-grain sources sharing ≥2 concepts, not covered by any active
+  theme. Shape `{source_type, shared_concepts, cluster_source_ids,
+  cluster_source_titles}`. This is the *primary* theme surface to act
+  on; you compose the slug and essence yourself rather than inheriting
+  a mechanical concept-pair slug.
 - `dormant_themes`: themes with no catalysts in ≥ 90 days (helpers are
   deterministic — confirm, don't re-decide).
 - `resolved_themes`: themes whose linked decisions are all terminal
@@ -86,7 +94,7 @@ shorter term is genuinely a typo / plural / alias of the longer.
 
 Add merges to `plan["merges"]` as `{"from": "x", "to": "y", "reason": "..."}`.
 
-**Theme candidates.** Apply the disambiguation test from CLAUDE.md §4:
+**Theme candidates (stubs on disk).** Apply the disambiguation test from CLAUDE.md §4:
 
 - Capability / technique / area-of-work → archive (not a theme).
 - Event / period / transition / campaign with time horizon → promote.
@@ -99,6 +107,45 @@ working thesis from `cluster_concepts` + `cluster_sources`). Add to
 
 For archivals, add to `plan["candidates_archived"]` as
 `{"candidate_id", "reason"}`.
+
+**Theme cluster signals (no stub yet).** Same disambiguation test, but here
+you also pick the slug — the cluster has no pre-written name to lean on
+(and that's deliberate: mechanical concept-pair slugs were the failure
+mode this surface replaces).
+
+**Symmetry with `proposed_concepts:`** Each signal now carries `voted_slug`
+(string or null) and `slug_votes` (int). When workers wrote a source and
+couldn't match an active theme but could name an arc, they stamped
+`proposed_theme: <slug>` on the source frontmatter — the structural analog
+of `proposed_concepts:` on the theme side. `aggregate_proposed_themes`
+tallied those stamps per cluster and attached the top vote-getter here.
+Prefer `voted_slug` when it's present; compose a fresh slug only when
+`voted_slug is None` (the cluster had no worker-level naming).
+
+For each signal in `theme_cluster_signals`:
+
+1. Apply the disambiguation test from CLAUDE.md §4. Capability/technique/
+   area-of-work → skip (do nothing; the signal will resurface next cycle
+   until concepts shift or a candidate is materialised manually).
+2. For genuine narrative arcs, compose:
+   - `slug` — **prefer `voted_slug` if non-null** (worker-voted name has
+     already passed the arc test at write time). Only compose fresh when
+     `voted_slug is None`. Fresh slug rules: 1–3 kebab words, label-shaped
+     like `iran-war`, `bond-vigilantes`, `memory-chip-supercycle`. No dates.
+     No parentheticals. Not a concatenation of the cluster's concepts.
+   - `essence` — 1-sentence narrative description. Always compose this
+     yourself — `voted_slug` names the arc but doesn't supply an essence.
+3. Check active themes first (`mem_search(type='theme')`). If the cluster
+   extends an existing theme rather than introducing a new arc, skip
+   here and instead add a `relates_to:` backfill to that theme's catalyst
+   log via `mem_link` (out of dream scope — usually right call is still
+   skip and let the next cycle's stub-based path handle the link).
+4. Add to `plan["theme_promotions_from_signal"]` as
+   `{"slug", "essence", "source_ids", "concepts" (top-3 from the
+   cluster), "project" (optional), "parent" (optional)}`. The apply
+   phase mints `thm-XXXX-{slug}.md` directly (no `cand-*`
+   intermediate) and backfills `relates_to: [thm-XXXX]` on each cluster
+   source.
 
 **Dormant / resolved themes.** Helpers are deterministic — confirm the
 verdict matches the theme's state and add a status change. Add to

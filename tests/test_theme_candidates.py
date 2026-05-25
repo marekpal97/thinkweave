@@ -14,9 +14,13 @@ from personal_mem.core.vault import VaultManager, parse_frontmatter
 from personal_mem.synthesis.theme_candidates import (
     CANDIDATES_ARCHIVE_NAME,
     CANDIDATES_DIR_NAME,
+    ProposedThemeVote,
+    aggregate_proposed_themes,
     archive_stale_candidates,
+    detect_signals,
     find_dormant_themes,
     find_resolved_themes,
+    mint_theme_from_signal,
     promote_candidate,
     scan_candidates,
 )
@@ -211,23 +215,133 @@ class TestScanCandidatesDeduplication:
     def test_existing_candidate_dedupes(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        # The 3rd substack create auto-fires _maybe_float_theme_candidate
-        # which writes the first stub. The explicit scan_candidates() call
-        # below must dedup against it.
+        # As of 2026-05-25, _maybe_float_theme_candidate no longer
+        # auto-writes stubs — it just keeps the index warm. Stub
+        # materialization is an explicit ``mem themes scan-candidates``
+        # action (or implicit via /dream's signal-direct mint). The
+        # dedup behaviour still matters: a second scan must not mint a
+        # duplicate of a stub from a first scan.
         for i in range(3):
             _make_substack_source(
                 vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
             )
         indexer.rebuild()
 
-        # Auto-fire created the stub already.
+        # First explicit scan mints the stub.
+        scan_candidates(config, source_type="substack")
         cdir = config.vault_root / "themes" / CANDIDATES_DIR_NAME
         assert len(list(cdir.glob("cand-*.md"))) == 1
 
-        # Explicit re-scan: active candidate dedupes, no new stub.
+        # Second explicit scan dedupes against the stub.
         outcome = scan_candidates(config, source_type="substack")
         assert outcome.candidates_created == []
         assert outcome.clusters_skipped_existing_candidate >= 1
+
+
+class TestDetectSignals:
+    """`detect_signals` is the signal-only twin of `scan_candidates` —
+    same filter chain, returns ThemeClusterSignal instead of writing
+    stubs. Used by /dream to compose real slugs from raw clusters."""
+
+    def test_empty_when_no_clusters(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        # Only two sources sharing concepts — below cluster threshold.
+        for i in range(2):
+            _make_substack_source(
+                vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
+            )
+        indexer.rebuild()
+        assert detect_signals(config) == []
+
+    def test_surfaces_uncovered_cluster(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        for i in range(3):
+            _make_substack_source(
+                vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
+            )
+        indexer.rebuild()
+        signals = detect_signals(config)
+        assert len(signals) == 1
+        s = signals[0]
+        assert s.source_type == "substack"
+        assert set(s.shared_concepts) == {"ai-capex", "hyperscaler"}
+        assert len(s.cluster_source_ids) == 3
+
+    def test_skips_clusters_covered_by_active_theme(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        for i in range(3):
+            _make_substack_source(
+                vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
+            )
+        # Active theme that covers the cluster's concepts.
+        vault.create_note(
+            note_type=NoteType.THEME,
+            title="AI capex unwind",
+            extra_frontmatter={
+                "concepts": ["ai-capex", "hyperscaler"],
+                "status": "active",
+            },
+        )
+        indexer.rebuild()
+        assert detect_signals(config) == []
+
+    def test_skips_clusters_with_existing_candidate(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        # First scan writes a stub. detect_signals must not re-emit
+        # the same cluster (the stub dedup also applies to signals).
+        for i in range(3):
+            _make_substack_source(
+                vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
+            )
+        indexer.rebuild()
+        scan_candidates(config, source_type="substack")
+        assert detect_signals(config) == []
+
+
+class TestMintThemeFromSignal:
+    def test_mints_theme_and_backfills_relates_to(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        paths = [
+            _make_substack_source(
+                vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
+            )
+            for i in range(3)
+        ]
+        indexer.rebuild()
+
+        src_ids: list[str] = []
+        for p in paths:
+            fm, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
+            src_ids.append(fm["id"])
+
+        theme_path = mint_theme_from_signal(
+            config,
+            slug="ai-capex",
+            essence="AI capex unwind: hyperscaler spend reversal.",
+            cluster_source_ids=src_ids,
+            cluster_concepts=["ai-capex", "hyperscaler"],
+        )
+
+        # Theme file created with the proposed slug.
+        assert theme_path.exists()
+        fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert fm["type"] == "theme"
+        assert fm["status"] == "active"
+        assert fm["title"] == "ai-capex"
+        assert set(fm["cites"]) == set(src_ids)
+        assert "ai-capex" in body.lower()
+        thm_id = fm["id"]
+
+        # Each source got `relates_to: [thm-XXX]` backfilled.
+        for p in paths:
+            sfm, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
+            rel = sfm.get("relates_to") or []
+            assert thm_id in rel
 
 
 class TestArchiveStaleCandidates:
@@ -502,3 +616,221 @@ class TestFindResolvedThemes:
 
         result = find_resolved_themes(config)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Helper — create event-grain source with optional proposed_theme stamp
+# ---------------------------------------------------------------------------
+
+
+def _make_event_source(
+    vault: VaultManager,
+    title: str,
+    *,
+    concepts: list[str],
+    proposed_theme: str = "",
+    source_type: str = "substack",
+) -> Path:
+    """Create an event-grain source note with optional proposed_theme stamp."""
+    extra: dict = {
+        "source_type": source_type,
+        "concepts": concepts,
+    }
+    if proposed_theme:
+        extra["proposed_theme"] = proposed_theme
+    return vault.create_note(
+        note_type=NoteType.SOURCE,
+        title=title,
+        body=f"# {title}\n",
+        extra_frontmatter=extra,
+    )
+
+
+class TestProposedThemeAggregation:
+    """``aggregate_proposed_themes`` tallies ``proposed_theme:`` stamps across
+    the recent event-grain window, grouped by concept cluster. Mirrors the
+    ``proposed_concepts:`` → ontology promotion pathway on the theme side.
+
+    ``detect_signals`` enriches each signal with the top-voted slug so
+    ``/dream`` can prefer it over composing a fresh name.
+    """
+
+    # ------------------------------------------------------------------
+    # aggregate_proposed_themes basic cases
+    # ------------------------------------------------------------------
+
+    def test_two_same_slug_votes_one_without(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Three sources share ≥2 concepts; two stamp the same proposed_theme.
+        Aggregation returns one vote entry with count=2."""
+        _make_event_source(
+            vault, "S0", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="ai-capex-unwind",
+        )
+        _make_event_source(
+            vault, "S1", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="ai-capex-unwind",
+        )
+        _make_event_source(
+            vault, "S2", concepts=["ai-capex", "hyperscaler"],
+            # no proposed_theme — contributes to cluster but not to votes
+        )
+        indexer.rebuild()
+
+        votes = aggregate_proposed_themes(config)
+
+        assert len(votes) == 1
+        v = votes[0]
+        assert isinstance(v, ProposedThemeVote)
+        assert v.slug == "ai-capex-unwind"
+        assert v.votes == 2
+        assert len(v.source_ids) == 2
+        assert set(v.concepts) == {"ai-capex", "hyperscaler"}
+
+    def test_all_different_slugs_three_single_votes(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Three sources each propose a different slug → three single-vote entries."""
+        _make_event_source(
+            vault, "S0", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="alpha-slug",
+        )
+        _make_event_source(
+            vault, "S1", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="beta-slug",
+        )
+        _make_event_source(
+            vault, "S2", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="gamma-slug",
+        )
+        indexer.rebuild()
+
+        votes = aggregate_proposed_themes(config)
+
+        assert len(votes) == 3
+        slugs = {v.slug for v in votes}
+        assert slugs == {"alpha-slug", "beta-slug", "gamma-slug"}
+        for v in votes:
+            assert v.votes == 1
+
+    def test_no_proposed_theme_anywhere(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Three sources form a cluster but none stamp proposed_theme →
+        aggregation returns empty list."""
+        for i in range(3):
+            _make_event_source(
+                vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
+            )
+        indexer.rebuild()
+
+        votes = aggregate_proposed_themes(config)
+
+        assert votes == []
+
+    def test_single_source_no_cluster(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Only one source — no cluster forms (below min_cluster_size=3) →
+        no aggregation entry, even if proposed_theme is set."""
+        _make_event_source(
+            vault, "Solo", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="some-arc",
+        )
+        indexer.rebuild()
+
+        votes = aggregate_proposed_themes(config)
+
+        assert votes == []
+
+    def test_returns_only_concept_grain_types_skipped(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Concept-grain source types (paper) are not scanned even if they
+        have proposed_theme stamps."""
+        for i in range(3):
+            _make_event_source(
+                vault, f"P{i}", concepts=["transformer", "attention"],
+                proposed_theme="some-arc",
+                source_type="paper",
+            )
+        indexer.rebuild()
+
+        votes = aggregate_proposed_themes(config)
+
+        assert votes == []
+
+    # ------------------------------------------------------------------
+    # detect_signals enrichment
+    # ------------------------------------------------------------------
+
+    def test_signal_carries_voted_slug_when_votes_exist(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """When ≥2 sources in a cluster vote for the same slug, the signal
+        gets voted_slug=<that slug> and slug_votes=<count>."""
+        _make_event_source(
+            vault, "S0", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="ai-capex-unwind",
+        )
+        _make_event_source(
+            vault, "S1", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="ai-capex-unwind",
+        )
+        _make_event_source(
+            vault, "S2", concepts=["ai-capex", "hyperscaler"],
+        )
+        indexer.rebuild()
+
+        signals = detect_signals(config)
+
+        assert len(signals) == 1
+        s = signals[0]
+        assert s.voted_slug == "ai-capex-unwind"
+        assert s.slug_votes == 2
+
+    def test_signal_voted_slug_none_when_no_votes(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """When no sources in the cluster stamped proposed_theme, the signal's
+        voted_slug is None and slug_votes is 0."""
+        for i in range(3):
+            _make_event_source(
+                vault, f"S{i}", concepts=["ai-capex", "hyperscaler"]
+            )
+        indexer.rebuild()
+
+        signals = detect_signals(config)
+
+        assert len(signals) == 1
+        s = signals[0]
+        assert s.voted_slug is None
+        assert s.slug_votes == 0
+
+    def test_signal_tiebreak_lex_first_slug(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """When multiple slugs tie on vote count, the lex-earlier (alphabetically
+        first) slug wins the voted_slug position on the signal."""
+        _make_event_source(
+            vault, "S0", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="zebra-arc",
+        )
+        _make_event_source(
+            vault, "S1", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="alpha-arc",
+        )
+        _make_event_source(
+            vault, "S2", concepts=["ai-capex", "hyperscaler"],
+            proposed_theme="mango-arc",
+        )
+        indexer.rebuild()
+
+        signals = detect_signals(config)
+
+        assert len(signals) == 1
+        s = signals[0]
+        # All three tie at 1 vote; lex-earliest wins.
+        assert s.voted_slug == "alpha-arc"
+        assert s.slug_votes == 1
