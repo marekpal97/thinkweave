@@ -455,3 +455,56 @@ def add_admin_subparsers(sub) -> None:
         choices=["all", "decisions", "backlog", "state", "themes"],
         help="Which document(s) to generate (default: all)",
     )
+
+    p_dream = sub.add_parser(
+        "dream",
+        help=(
+            "Periodic vault-hygiene cycle (the backbone of /dream). "
+            "Two actions: scan (read-only action plan) and apply "
+            "(execute an LLM-judged plan with one index rebuild + "
+            "maintenance.jsonl log)."
+        ),
+    )
+    dream_sub = p_dream.add_subparsers(dest="dream_action")
+
+    p_dream_scan = dream_sub.add_parser(
+        "scan",
+        help=(
+            "Read-only scan: drift, promotion candidates, theme "
+            "candidates, dormant/resolved themes. Emit as table or JSON."
+        ),
+    )
+    p_dream_scan.add_argument("--project", "-p", default="")
+    p_dream_scan.add_argument(
+        "--promotion-cap", type=int, default=20,
+        help="Max promotion candidates to surface per cycle (default: 20)",
+    )
+    p_dream_scan.add_argument(
+        "--promotion-threshold", type=int, default=5,
+        help="Min proposed-concept count for promotion eligibility (default: 5)",
+    )
+    p_dream_scan.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON for skill/headless consumption",
+    )
+
+    p_dream_apply = dream_sub.add_parser(
+        "apply",
+        help=(
+            "Execute a dream-cycle plan. Reads JSON from --plan path "
+            "(or '-' for stdin). One index rebuild + one log line."
+        ),
+    )
+    p_dream_apply.add_argument(
+        "--plan", required=True,
+        help="Path to JSON plan file, or '-' to read from stdin",
+    )
+    p_dream_apply.add_argument("--project", "-p", default="")
+    p_dream_apply.add_argument(
+        "--dry-run", action="store_true",
+        help="Parse and validate the plan; report what would apply; do not write.",
+    )
+    p_dream_apply.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON result on stdout",
+    )

@@ -14,6 +14,7 @@ import sys
 
 from personal_mem.surfaces.cli.concepts import cmd_concepts
 from personal_mem.surfaces.cli.drain import cmd_discover, cmd_drain
+from personal_mem.surfaces.cli.dream import cmd_dream
 from personal_mem.surfaces.cli.flows import cmd_flow
 from personal_mem.surfaces.cli.graph import cmd_graph
 from personal_mem.surfaces.cli.hooks import cmd_hooks
@@ -83,6 +84,7 @@ _DISPATCH = {
     "queue": cmd_queue,
     "drain": cmd_drain,
     "discover": cmd_discover,
+    "dream": cmd_dream,
     "themes": cmd_themes,
     "update": cmd_update,
     "wrap-finalize": cmd_wrap_finalize,

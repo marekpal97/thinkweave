@@ -421,6 +421,7 @@ def promote_candidate(
     essence: str = "",
     project: str = "",
     parent: str = "",
+    rebuild_index: bool = True,
 ) -> Path:
     """Mint a `thm-` ID, write a canonical theme file at
     ``vault/themes/{thm-XXXX}-{slug}.md`` from the candidate, delete the
@@ -434,6 +435,10 @@ def promote_candidate(
     theme is recorded as a child of that parent — reflected as a
     ``parent: thm-X`` frontmatter field. Two-tier hierarchy mirrors how
     the concept ontology nests broad → narrow.
+
+    Set ``rebuild_index=False`` when batching multiple promotions (the
+    dream cycle's apply phase rebuilds once at the end). Default
+    ``True`` preserves the standalone-call contract.
     """
     from personal_mem.core.indexer import Indexer
     from personal_mem.core.vault import parse_frontmatter
@@ -505,9 +510,10 @@ def promote_candidate(
     target_path.write_text("\n".join(body_lines) + "\n", encoding="utf-8")
     cand_path.unlink()
 
-    idx = Indexer(config=config)
-    idx.rebuild(full=False)
-    idx.close()
+    if rebuild_index:
+        idx = Indexer(config=config)
+        idx.rebuild(full=False)
+        idx.close()
 
     return target_path
 

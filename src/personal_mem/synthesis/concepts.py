@@ -781,6 +781,7 @@ def promote_proposed_concept(
     concept: str,
     *,
     domain: str,
+    rebuild_index: bool = True,
 ) -> dict:
     """Promote a proposed concept to canonical ontology status.
 
@@ -803,6 +804,10 @@ def promote_proposed_concept(
 
     Idempotent: re-running with a term already canonical is a no-op
     (zero modifications, ontology untouched, hub already present).
+
+    Set ``rebuild_index=False`` when batching multiple promotions in one
+    pass (e.g. the dream cycle's apply phase) and rebuild once at the
+    end. Default ``True`` preserves the standalone-call contract.
     """
     from personal_mem.core.indexer import Indexer
     from personal_mem.core.vault import parse_frontmatter, render_frontmatter
@@ -893,7 +898,7 @@ def promote_proposed_concept(
     hub_created = not hub_path.exists()
     ensure_concept_hub_skeleton(config, term, domains=[domain_key])
 
-    if notes_modified > 0 or ontology_updated:
+    if rebuild_index and (notes_modified > 0 or ontology_updated):
         idx = Indexer(config=config)
         idx.rebuild(full=True)
         idx.close()
