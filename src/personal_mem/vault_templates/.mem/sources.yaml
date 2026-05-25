@@ -1,0 +1,170 @@
+# personal_mem source-config overrides
+#
+# All keys are optional — anything you omit falls back to the in-code
+# defaults from src/personal_mem/sources/config.py:DEFAULT_CONFIG. Edit
+# this file to retarget queues, swap importers, change drain strategies,
+# or add new source-type entries without forking personal_mem.
+#
+# Adding a new source type (e.g. podcast):
+#   1. Add a SourceTypeSpec entry to src/personal_mem/sources/registry.py
+#   2. Add a `sources:` block here with `queue`, `research_skill`,
+#      `dedup_keys`, `url_patterns`, `drain_strategy` (defaults below).
+#   3. Drop a `commands/research/research-podcast.md` skill alongside.
+# No edits to vault.py, queue.py, or the CLI are required.
+
+sources:
+  paper:
+    queue: vault/.mem/queues/papers.jsonl
+    research_skill: research-paper
+    drain_strategy: anthropic_batch
+    intake_folder: ~/papers_inbox
+    summarize_format: technical_brief
+    dedup_keys: [arxiv_id, doi, url, title]
+    url_patterns: [arxiv.org, openreview.net]
+  repo:
+    queue: vault/.mem/queues/repos.jsonl
+    research_skill: research-repo
+    drain_strategy: inline
+    dedup_keys: [github_url, repo_url, slug, url]
+    url_patterns: [github.com, gitlab.com]
+  article:
+    queue: vault/.mem/queues/articles.jsonl
+    research_skill: research-article
+    drain_strategy: inline
+    dedup_keys: [url, title]
+  substack:
+    drain_strategy: inline
+    intake_folder: ~/substack_inbox
+    dedup_keys: [url, slug]
+  news:
+    queue: vault/.mem/queues/news.jsonl
+    feed_config: vault/.mem/news_feeds.yaml
+    # v2 admission: Haiku title-triage against the active-themes catalog
+    # rendered in vault/THEMES.md (## Catalog (active) section). The
+    # legacy focus_manifest path is no longer consulted; FOCUS.md is a
+    # deprecated stub.
+    triage_model: claude-haiku-4-5
+    themes_catalog: vault/THEMES.md
+    dedup_keys: [url, entry_id]
+    drain_strategy: subagent
+    drain_parallelism: 4
+    drain_batch_max: 20
+    subagent_type: research-news-worker
+    subagent_model: sonnet
+    # post_batch_hooks left empty — theme_scan now auto-fires from
+    # VaultManager.create_note for every event-grain source on create.
+    post_batch_hooks: []
+    # /research router dispatches news URLs to the one-off /news skill;
+    # cron drain takes the subagent path above. No `research-news`
+    # standalone skill exists by design.
+    research_skill: news
+    url_patterns: [reuters.com, ft.com, bloomberg.com, wsj.com, bankier.pl]
+    allowed_failure_prefixes: ["HTTP ", paywall, Cloudflare, "empty body", timeout, "mem_create:"]
+  newsletter-events:
+    # Event-grain email newsletters (markets / macro / dealflow). Theme
+    # candidate floater fires automatically on create. `processed_label`
+    # is applied at the end of /newsletter so the next run skips it.
+    # `lookback_days` bounds both backfill and ongoing drains.
+    queue: vault/.mem/queues/newsletter-events.jsonl
+    drain_strategy: subagent
+    subagent_type: research-newsletter-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    mail_connector: gmail              # swappable: gmail | outlook | imap
+    # Sender allowlist — fill in the addresses / domains of the
+    # newsletters you actually subscribe to. The skill composes
+    # `from:(s1 OR s2 OR ...)` for the connector. Use INLINE list syntax
+    # only (personal_mem's YAML loader doesn't read block-style `- item`
+    # lists — those parse as empty). Example:
+    #   senders: [newsletter@stratechery.com, matt@levine.com, bloombergmedia.com]
+    # Entries can be full addresses or bare domains (bare domain matches
+    # any sender at that host). An empty list + empty mail_query is a
+    # deliberate halt — the skill refuses to fan out across the inbox.
+    senders: []
+    # Optional extra filter ANDed on top (e.g. "is:unread"). Default empty.
+    mail_query: ""
+    processed_label: mem-processed
+    lookback_days: 30
+    dedup_keys: [message_id, url]
+    # post_batch_hooks left empty — /newsletter applies processed_label
+    # itself after /drain returns; no need to extend the drain hook table.
+  newsletter-concepts:
+    # Concept-grain sibling — technical / methodology / philosophy
+    # subscriptions. No theme floating; concepts flow to hubs via
+    # `concepts:` frontmatter just like papers/articles.
+    queue: vault/.mem/queues/newsletter-concepts.jsonl
+    drain_strategy: subagent
+    subagent_type: research-newsletter-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    mail_connector: gmail
+    senders: []
+    mail_query: ""
+    processed_label: mem-processed
+    lookback_days: 90
+    dedup_keys: [message_id, url]
+  youtube-events:
+    # Event-grain YouTube channels (tech-news, market recaps). Theme
+    # candidate floater fires on create. The skill polls each channel's
+    # RSS feed at https://www.youtube.com/feeds/videos.xml?channel_id=<id>
+    # and Gemini Flash handles transcript + summary natively from the
+    # video URL — no audio download, no separate transcription step.
+    # Requires GOOGLE_API_KEY and the [gemini] optional dep group.
+    queue: vault/.mem/queues/youtube-events.jsonl
+    drain_strategy: subagent
+    subagent_type: research-youtube-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    # Channel allowlist — fill in YouTube channel IDs (the UCxxx form)
+    # for the channels you actually watch. The skill polls each feed
+    # URL and enqueues new videos. Use INLINE list syntax only.
+    # Example:
+    #   channels: [UCBJycsmduvYEL83R_U4JriQ, UCsBjURrPoezykLs9EqgamOA]
+    # Empty list means the skill is URL-paste only (via /research).
+    channels: []
+    lookback_days: 7
+    dedup_keys: [video_id, url]
+    url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
+    research_skill: youtube
+    # No `triage_model` set — admission is the channel allowlist, not
+    # per-video triage. /drain Path B fans out workers directly.
+    allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "mem_create:"]
+  youtube-concepts:
+    # Concept-grain sibling — tutorials, lectures, explainers. Longer
+    # lookback than events because durable content is worth backfilling.
+    queue: vault/.mem/queues/youtube-concepts.jsonl
+    drain_strategy: subagent
+    subagent_type: research-youtube-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    channels: []
+    lookback_days: 30
+    dedup_keys: [video_id, url]
+    url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
+    research_skill: youtube
+    allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "mem_create:"]
+  conversation:
+    drain_strategy: inline
+    importer: chatgpt
+    dedup_keys: [conversation_id, title]
+  claude-history:
+    drain_strategy: inline
+    importer: claude_mem
+    dedup_keys: [session_uuid]
+
+projects:
+  default:
+    discover_strategies: [concept_coverage]
+
+landing_files:
+  state: STATE.md
+  backlog: BACKLOG.md
+  decisions: DECISIONS.md
+  themes: THEMES.md
+  research_focus: RESEARCH_FOCUS.md
+
+auto_todo_extraction: true

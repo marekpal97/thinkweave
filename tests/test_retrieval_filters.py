@@ -14,12 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.search import Search
-from personal_mem.themes import build_theme_frontmatter, render_theme_body_skeleton
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.retrieval.search import Search
+from personal_mem.synthesis.theme_hub import build_theme_frontmatter, render_theme_body_skeleton
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -289,7 +289,7 @@ class TestThemesInRetrieval:
     def test_project_snapshot_includes_active_themes(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.context import build_project_context
+        from personal_mem.retrieval.context import build_project_context
 
         vault.create_note(
             note_type=NoteType.THEME,

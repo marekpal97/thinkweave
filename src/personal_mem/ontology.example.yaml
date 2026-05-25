@@ -258,7 +258,6 @@ ai/agents:
   - orchestration
   - human-in-the-loop
   - crewai
-  - hive-swarm
   - agent-lens
 
 ai/tools:
@@ -283,7 +282,6 @@ ai/harness:
   - statusline
   - session-management
   - agent-lens
-  - hive-swarm
 
 ai/memory:
   - memory-system

@@ -1,13 +1,15 @@
 ---
 name: substack
+owns_mechanic: substack_inbox
 source_type: substack
 capabilities: [acquire]
+consumes: [mem_search, mem_concepts, mem_create, mem_update, mem_link]
+produces: [vault/sources/substack/**]
 tools:
   - Read
   - Bash
   - mem_search
   - mem_concepts
-  - mem_concept_search
   - mem_create
   - mem_update
   - mem_link
@@ -49,14 +51,17 @@ Before starting, confirm inbox path: `echo $SUBSTACK_INBOX || echo ~/substack_in
 ### 1. Enumerate the inbox
 
 ```
-Bash("ls -1 ~/substack_inbox/ 2>/dev/null")
+Bash("uv run mem intake enumerate ~/substack_inbox/")
 ```
 
-Each entry is either:
-- A flat `.md` file → single-file input
-- A directory → folder bundle (contains `index.md` or some `.md` file alongside image files)
+Uses `mem intake` so `/email` and other drop-folder importers share the same enumeration semantics (`_processed/` skipped, flat vs folder classified, `<stem>-images/`/`<stem>_assets/` companion resolved).
 
-Skip `_processed/` (that's the archive). If the inbox is empty, report "Nothing to drain." and stop.
+Output is JSON: `[{"path": "...", "kind": "flat"|"folder", "companion_dir": "..."|null}, ...]`. Already excludes `_processed/`, dotfiles, loose non-`.md` files, and folders without any markdown. If the array is empty, report "Nothing to drain." and stop.
+
+For each entry, dispatch on `kind`:
+
+- `flat` → `Read` the `path`. If `companion_dir` is non-null, `ls` it to discover sibling images.
+- `folder` → `ls` the `path`, prefer `index.md` else first `*.md` alphabetically; image candidates are siblings inside `path`.
 
 ### 2. Parse each input
 
@@ -86,16 +91,23 @@ If `url` can't be recovered, skip the item with an error logged — we won't ing
 ### 3. Load ontology + concept registry (once per batch)
 
 ```
-Read /home/marekpal97/python_projects/personal_mem/src/personal_mem/ontology.yaml
-mem_concepts(prefix="finance", min_count=1)
+Read src/personal_mem/ontology.yaml
+mem_concepts(min_count=1)
 ```
 
-Focus on the `finance/research`, `finance/quant`, `finance/markets`, `finance/options` branches — those are the investment-research vocabulary. The `finance/research` branch today only has 6 concepts (equity-research, fundamental-analysis, research-agent, deep-research, earnings-analysis, sec-filings). Expect to propose new ones for macro, thematic, sector, valuation, rates, credit, etc.
+Identify which ontology branches the publication you're draining
+maps to — substack is a generic newsletter platform, so the relevant
+vocabulary depends on what the user follows. (Examples: a
+finance-focused publication maps onto `finance/*` branches; an
+ML-focused publication onto `ml/*`; a politics newsletter onto
+whichever domain you've added for that subject.) If you spot a gap
+in the ontology, propose new concepts in `proposed_concepts` and let
+`/mem-resolve-concepts` canonicalise them later.
 
 ### 4. Search vault for connections
 
 ```
-mem_search(query="<key terms + tickers + themes from this post>", mode="hybrid", limit=5)
+mem_search(query="<key terms + named entities + themes from this post>", mode="hybrid", limit=5)
 mem_concept_search(concepts=["<concepts you're about to assign>"], match_mode="any", limit=5)
 ```
 
@@ -110,14 +122,14 @@ Images need to land inside the source note's directory so `raw.md` can reference
 
 Hold the list of local image paths (from step 2's bundle discovery) and the list of remote image URLs (extracted from the body during step 6) in memory until you reach step 9.
 
-### 6. Write the investment-research brief
+### 6. Write a dense brief
 
-**Not a summary — a dense brief.** You're writing something the user's future self will find useful 6 months from now when they've forgotten the post but need to remember what it argued and what it meant for positioning.
+**Not a summary — a dense brief.** You're writing something the user's future self will find useful 6 months from now when they've forgotten the post but need to remember what it argued.
 
 Use the body template at the bottom of this file. Key sections:
 - **Thesis** — the core argument, not the topic
 - **Claims & Evidence** — specific claims + what backs them, distinguishing data-backed from opinion
-- **Investable Implications** — tickers, sectors, asset classes, positioning advice, timeframe
+- **Implications** — what the post argues should follow from the thesis. (For investment-research publications this is positioning / tickers / sectors / asset classes / timeframe; for ML or policy publications this is whatever actionable take the author leaves behind. Pick the framing that matches the source.)
 - **Risks & Counterarguments** — what could invalidate the thesis
 - **Vault Connections** — prior notes/decisions this relates to
 
@@ -125,8 +137,8 @@ Write the brief from the text body. Images are archived in `assets/` for later i
 
 ### 7. Concept mapping
 
-- Map to existing `finance/` concepts wherever they fit.
-- Propose new concepts aggressively — lowercase, hyphenated, specific (e.g. `rate-cycles`, `sector-rotation`, `thematic-investing`, `private-credit`). Put new proposals in `proposed_concepts`.
+- Map to whatever ontology branches actually fit the publication.
+- Propose new concepts aggressively — lowercase, hyphenated, specific. Examples by domain: finance → `rate-cycles`, `sector-rotation`; ML → `chain-of-thought`, `kv-cache`; policy → `industrial-policy`, `permitting-reform`. Put new proposals in `proposed_concepts`.
 - **Do NOT edit `ontology.yaml` inline** — consolidation happens via `/mem-resolve-concepts` later.
 - Minimum 3 concepts per source (concepts are the primary linkage mechanism).
 
@@ -137,8 +149,8 @@ mem_create(
   type="source",
   title="<post title>",
   body="<structured brief from step 6>",
-  tags=["investment-research"],
-  concepts=["<mapped concepts from finance/ branches>"],
+  tags=["substack"],
+  concepts=["<mapped ontology concepts>"],
   frontmatter={
     "source_type": "substack",
     "url": "<post url>",
@@ -223,10 +235,16 @@ mem_link(source_id="<new-src-id>", target_id="<related-id>", edge_type="relates_
 Move the source from the inbox to a dated archive folder — never delete:
 
 ```
-Bash("mkdir -p ~/substack_inbox/_processed/$(date +%Y-%m-%d) && mv ~/substack_inbox/<entry> ~/substack_inbox/_processed/$(date +%Y-%m-%d)/")
+Bash("uv run mem intake archive '<entry-path>' --inbox ~/substack_inbox/")
 ```
 
-For folder bundles, `<entry>` is the directory. For flat files, it's the `.md` file plus any sibling `-images/` folder.
+Uses `mem intake archive` so the dated-folder + companion-dir + collision-suffix logic is shared with `/email` and other drop-folder importers (and is unit-tested), instead of being open-coded in every skill.
+
+`<entry-path>` is the `path` field returned by `mem intake enumerate` for this item. The command:
+- Creates `~/substack_inbox/_processed/<YYYY-MM-DD>/` on demand.
+- Moves the entry plus any companion dir (`<stem>-images/` or `<stem>_assets/`) for flat entries.
+- Appends `-1`, `-2`, … to the basename on same-day name collisions, so retries after a partial failure are safe.
+- Prints the final archive path on stdout. Exit code is non-zero on missing entry or entry-outside-inbox.
 
 ### 12. Loop or finish
 
@@ -276,17 +294,19 @@ Batch summary: N processed, M skipped, K errors, inbox remaining count. Suggeste
 ## Claims & Evidence
 - [specific claim + evidence: "argues X because Y", "cites Z data from source"]
 - [distinguish data-backed claims from opinion/framework/anecdote]
-- [quantitative findings: prices, rates, multiples, flows]
+- [quantitative findings — whatever metrics the post leans on (e.g.
+  benchmark scores for an ML post; prices/flows for a finance post;
+  poll numbers for a politics post)]
 - [note which claims reference figures — images are in `assets/` for later inspection]
 
-## Investable Implications
-- [tickers, sectors, asset classes, themes mentioned by name]
-- [what the author thinks you should do — buy/sell/avoid/watch, and the timeframe]
-- [positioning advice: sizing, hedges, catalysts to wait for]
+## Actionable Implications
+- [named entities, categories, themes the post calls out by name]
+- [what the author thinks the reader should do — try/avoid/watch — and the timeframe]
+- [practical guidance: prerequisites, caveats, signals to wait for]
 
 ## Risks & Counterarguments
 - [what the author acknowledges could invalidate the thesis]
-- [base rates, prior regime analogies, unknown unknowns called out]
+- [base rates, prior analogies, unknown unknowns called out]
 
 ## Vault Connections
 - Relates to [[note-title]] — [why: shared thesis, contradicts, prior iteration of the same theme]

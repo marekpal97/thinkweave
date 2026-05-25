@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.search import Search
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.retrieval.search import Search
+from personal_mem.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------

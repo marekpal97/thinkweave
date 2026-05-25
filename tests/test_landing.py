@@ -6,19 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.landing import (
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.synthesis.landing import (
+    DEFAULT_LANDING_FILENAMES,
     LANDING_FILENAMES,
     backlog_summary,
     decisions_ledger,
     generate_all,
+    landing_filename_set,
+    landing_filenames,
     state_of_play,
     state_of_play_context,
     write_landing_docs,
 )
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -260,7 +263,10 @@ class TestStateOfPlay:
         _index_all(vault, indexer)
 
         result = state_of_play(config, "test-proj")
-        assert "What You've Been Exploring" in result
+        # Phase 4 E renamed the heading from "What You've Been Exploring"
+        # to "Open Probes" when it merged manual `probe`-tagged notes
+        # with classified prompt events.
+        assert "Open Probes" in result
         assert "How does the recursive CTE work?" in result
 
     def test_concept_landscape(self, vault: VaultManager, indexer: Indexer, config: Config):
@@ -380,7 +386,7 @@ class TestIndexerExclusion:
         stats = indexer.rebuild(full=True)
 
         # Landing docs should NOT be in the index
-        from personal_mem.search import Search
+        from personal_mem.retrieval.search import Search
         s = Search(config=config)
         for fname in LANDING_FILENAMES:
             results = s.search(query=fname.replace(".md", ""), limit=10)
@@ -405,3 +411,110 @@ class TestIndexerExclusion:
             "SELECT COUNT(*) as cnt FROM notes WHERE path LIKE '%DECISIONS.md'"
         ).fetchone()
         assert row["cnt"] == 0
+
+
+# --- Config-driven landing filenames (Phase 4 H4) ---
+
+
+class TestLandingFilenamesConfig:
+    """Verify landing-doc filenames flow through sources.yaml overrides."""
+
+    def test_defaults_when_no_user_yaml(self, tmp_path: Path):
+        names = landing_filenames(tmp_path / "vault")
+        assert names == DEFAULT_LANDING_FILENAMES
+
+    def test_user_override_replaces_filename(self, tmp_path: Path):
+        vault_root = tmp_path / "vault"
+        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
+        (vault_root / ".mem" / "sources.yaml").write_text(
+            "landing_files:\n  state: STATUS.md\n  backlog: TODO.md\n",
+            encoding="utf-8",
+        )
+        names = landing_filenames(vault_root)
+        assert names["state"] == "STATUS.md"
+        assert names["backlog"] == "TODO.md"
+        # Untouched defaults remain
+        assert names["decisions"] == "DECISIONS.md"
+
+    def test_filename_set_picks_up_overrides(self, tmp_path: Path):
+        vault_root = tmp_path / "vault"
+        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
+        (vault_root / ".mem" / "sources.yaml").write_text(
+            "landing_files:\n  state: STATUS.md\n", encoding="utf-8",
+        )
+        s = landing_filename_set(vault_root)
+        assert "STATUS.md" in s
+        assert "STATE.md" not in s
+
+    def test_write_landing_docs_respects_override(
+        self, tmp_path: Path
+    ):
+        vault_root = tmp_path / "vault"
+        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
+        (vault_root / ".mem" / "sources.yaml").write_text(
+            "landing_files:\n  state: STATUS.md\n  decisions: ADR.md\n",
+            encoding="utf-8",
+        )
+        cfg = Config(vault_root=vault_root)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        idx = Indexer(config=cfg)
+        try:
+            idx.rebuild(full=True)
+        finally:
+            idx.close()
+
+        written = write_landing_docs(cfg, "any-proj", docs="all")
+        # The renamed names appear in the result; old defaults don't.
+        assert "STATUS.md" in written
+        assert "ADR.md" in written
+        assert "STATE.md" not in written
+        assert "DECISIONS.md" not in written
+
+    def test_legacy_constant_still_importable(self):
+        # Backwards-compat: the old set is still importable for callers
+        # that only need the in-code defaults.
+        assert "STATE.md" in LANDING_FILENAMES
+        assert "DECISIONS.md" in LANDING_FILENAMES
+
+    def test_write_landing_docs_explicit_override(
+        self, tmp_path: Path
+    ):
+        """Caller-passed ``landing_filenames_override`` wins over the
+        sources.yaml mapping AND the defaults."""
+        vault_root = tmp_path / "vault"
+        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
+        # User config sets one rename — the override should still beat it.
+        (vault_root / ".mem" / "sources.yaml").write_text(
+            "landing_files:\n  state: STATUS.md\n", encoding="utf-8",
+        )
+        cfg = Config(vault_root=vault_root)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        idx = Indexer(config=cfg)
+        try:
+            idx.rebuild(full=True)
+        finally:
+            idx.close()
+
+        written = write_landing_docs(
+            cfg,
+            "any-proj",
+            docs="all",
+            landing_filenames_override={
+                "state": "OVERVIEW.md",
+                "decisions": "ADR.md",
+            },
+        )
+        # Explicit override beats both defaults and sources.yaml entries
+        assert "OVERVIEW.md" in written
+        assert "ADR.md" in written
+        assert "STATUS.md" not in written  # sources.yaml value got beaten
+        assert "STATE.md" not in written
+        # Untouched keys still resolve via the resolved (sources.yaml ∪
+        # defaults) chain
+        assert "BACKLOG.md" in written
+        assert "THEMES.md" in written
+        # All overridden files exist on disk under the project dir
+        assert (vault_root / "projects" / "any-proj" / "OVERVIEW.md").exists()
+        assert (vault_root / "projects" / "any-proj" / "ADR.md").exists()

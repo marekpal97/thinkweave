@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.schemas import DecisionStatus, NoteType
-from personal_mem.vault import (
+from personal_mem.core.config import Config
+from personal_mem.core.schemas import DecisionStatus, NoteType
+from personal_mem.core.vault import (
     VaultManager,
     content_hash,
     extract_wikilinks,
@@ -111,20 +111,39 @@ class TestRenderFrontmatter:
         assert "prompt: do something" in rendered
         assert "plan: dec-123" in rendered
 
+    def test_list_of_dicts_roundtrip(self):
+        data = {
+            "id": "dec-test",
+            "prediction_history": [
+                {"match": "pending", "judged_at": "2026-05-25T16:21Z", "reason": "awaiting evidence"},
+                {"match": "confirmed", "judged_at": "2026-05-26T08:00Z", "reason": "drain produced 3/3 accepted"},
+            ],
+        }
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert isinstance(fm["prediction_history"], list)
+        assert all(isinstance(e, dict) for e in fm["prediction_history"])
+        assert fm["prediction_history"] == data["prediction_history"]
+
+    def test_list_of_dicts_uses_json_format(self):
+        data = {"entries": [{"k": "v", "n": 1}]}
+        rendered = render_frontmatter(data)
+        assert '- {"k": "v", "n": 1}' in rendered
+
 
 # --- Wikilinks ---
 
 
 class TestWikilinks:
     def test_extract_basic(self):
-        text = "See [[hive-swarm]] and [[sqlite-wal]] for details."
+        text = "See [[legacy-proj]] and [[sqlite-wal]] for details."
         links = extract_wikilinks(text)
-        assert links == ["hive-swarm", "sqlite-wal"]
+        assert links == ["legacy-proj", "sqlite-wal"]
 
     def test_extract_with_alias(self):
-        text = "Check [[hive-swarm|Hive Swarm Project]] docs."
+        text = "Check [[legacy-proj|Legacy Project]] docs."
         links = extract_wikilinks(text)
-        assert links == ["hive-swarm"]
+        assert links == ["legacy-proj"]
 
     def test_no_links(self):
         assert extract_wikilinks("No links here.") == []
@@ -187,7 +206,7 @@ class TestVaultManager:
         path = vault.create_note(
             NoteType.SESSION,
             "DAG refactor",
-            project="hive-swarm",
+            project="legacy-proj",
             extra_frontmatter={"source_session": "abc-123"},
         )
         assert path.exists()

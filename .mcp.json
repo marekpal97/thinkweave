@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "personal-mem": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", ".", "--extra", "mcp", "mem-mcp"],
+      "env": {}
+    }
+  }
+}

@@ -17,7 +17,18 @@ from personal_mem.sources import (
 
 def test_registry_has_expected_slugs():
     """Every slug documented in ARCHITECTURE.md must be registered."""
-    expected = {"paper", "repo", "article", "conversation", "substack"}
+    expected = {
+        "paper",
+        "repo",
+        "article",
+        "conversation",
+        "substack",
+        "news",
+        "newsletter-events",
+        "newsletter-concepts",
+        "youtube-events",
+        "youtube-concepts",
+    }
     assert set(REGISTRY.keys()) == expected
 
 
@@ -33,7 +44,18 @@ def test_every_spec_is_frozen_dataclass():
 
 def test_all_specs_returns_every_entry_in_insertion_order():
     specs = all_specs()
-    assert [s.slug for s in specs] == ["paper", "repo", "article", "conversation", "substack"]
+    assert [s.slug for s in specs] == [
+        "paper",
+        "repo",
+        "article",
+        "conversation",
+        "substack",
+        "news",
+        "newsletter-events",
+        "newsletter-concepts",
+        "youtube-events",
+        "youtube-concepts",
+    ]
 
 
 def test_layouts_cover_all_three_patterns():
@@ -110,3 +132,76 @@ def test_dataclass_direct_construction():
     assert spec.slug == "podcast"
     assert spec.aliases == ()
     assert spec.skills == ()
+
+
+# ---------------------------------------------------------------------------
+# Newsletter source-type pair — slug encodes the grain, not the topic.
+# Two specs, one pipeline (commands/newsletter.md + research-newsletter-worker).
+# ---------------------------------------------------------------------------
+
+
+def test_newsletter_events_is_event_grain():
+    """newsletter-events triggers the theme-candidate floater on create."""
+    spec = get_spec("newsletter-events")
+    assert spec is not None
+    assert spec.slug == "newsletter-events"
+    assert spec.layout == "author_folder"
+    assert spec.temporal_grain == "event"
+    assert "newsletter" in spec.skills
+
+
+def test_newsletter_concepts_is_concept_grain():
+    """newsletter-concepts uses concept hubs only — no theme floating."""
+    spec = get_spec("newsletter-concepts")
+    assert spec is not None
+    assert spec.slug == "newsletter-concepts"
+    assert spec.layout == "author_folder"
+    assert spec.temporal_grain == "concept"
+    assert "newsletter" in spec.skills
+
+
+def test_newsletter_pair_shares_layout_and_skill():
+    """The pair is intentionally symmetric except on temporal_grain."""
+    events = get_spec("newsletter-events")
+    concepts = get_spec("newsletter-concepts")
+    assert events is not None and concepts is not None
+    assert events.layout == concepts.layout == "author_folder"
+    assert set(events.skills) == set(concepts.skills)
+    # The whole point of the pair: only grain differs.
+    assert events.temporal_grain != concepts.temporal_grain
+
+
+# ---------------------------------------------------------------------------
+# YouTube source-type pair — same slug-encodes-grain pattern as newsletter.
+# Two specs, one pipeline (commands/youtube.md + research-youtube-worker).
+# ---------------------------------------------------------------------------
+
+
+def test_youtube_events_is_event_grain():
+    """youtube-events triggers the theme-candidate floater on create."""
+    spec = get_spec("youtube-events")
+    assert spec is not None
+    assert spec.slug == "youtube-events"
+    assert spec.layout == "author_folder"
+    assert spec.temporal_grain == "event"
+    assert "youtube" in spec.skills
+
+
+def test_youtube_concepts_is_concept_grain():
+    """youtube-concepts uses concept hubs only — no theme floating."""
+    spec = get_spec("youtube-concepts")
+    assert spec is not None
+    assert spec.slug == "youtube-concepts"
+    assert spec.layout == "author_folder"
+    assert spec.temporal_grain == "concept"
+    assert "youtube" in spec.skills
+
+
+def test_youtube_pair_shares_layout_and_skill():
+    """The pair is intentionally symmetric except on temporal_grain."""
+    events = get_spec("youtube-events")
+    concepts = get_spec("youtube-concepts")
+    assert events is not None and concepts is not None
+    assert events.layout == concepts.layout == "author_folder"
+    assert set(events.skills) == set(concepts.skills)
+    assert events.temporal_grain != concepts.temporal_grain

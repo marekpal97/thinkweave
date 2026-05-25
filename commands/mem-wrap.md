@@ -1,161 +1,145 @@
 ---
 name: mem-wrap
+owns_mechanic: session_extraction
+consumes: [mem_extract, mem_concepts, mem_project_snapshot, mem_wrap_finalize]
+produces: [session.md, DECISIONS.md, BACKLOG.md]
 tools:
   - Read
+  - Bash
   - mem_project_snapshot
   - mem_extract
-  - mem_judge
-  - mem_landing
   - mem_concepts
-  - mem_concepts_drift
-description: End-of-session memory extraction. Enriches the session with insights, decisions, and concept proposals; refreshes DECISIONS and BACKLOG landing docs.
+description: End-of-session memory extraction. Compose insights/decisions inline, call `mem_extract` once, then `mem wrap-finalize` (deterministic tail). Self-contained; never prompts the user.
 ---
 
 # /mem-wrap — Session-End Memory Extraction
 
-You are performing end-of-session memory extraction for the personal_mem vault. This runs inside the existing conversation at zero extra API cost.
+End-of-session memory extraction for the personal_mem vault. **Self-contained and headless-safe**: never prompt the user. You decide what's worth recording (which insights, which decisions, which todos); if the user gave direction earlier in *this* session about what to capture, honor it — but do not ask.
 
-**Note on context**: The SessionStart hook already fed you ~7–10k tokens of structured project context at the start of this session (recent wrapped sessions, STATE.md, BACKLOG, decisions, concept histogram, MCP tool manifest). You don't need to re-fetch that context here — extraction builds *new* knowledge from the current conversation, not a re-render of existing state. If you need to look something up mid-wrap, use `mem_project_snapshot(project=<name>)` for an on-demand refresh.
+**One inline pass.** Compose the session's insights and decisions yourself, call `mem_extract` once, then run `mem wrap-finalize` (one Bash call — prune → index → judge → landing → drift, zero model turns). For ≤5 notes the overhead of spawning a subagent exceeds the per-turn savings; do the writing inline. (An older revision of this skill spawned a Sonnet extraction subagent — that was reversed after measurement: 25 tool uses and ~8 min on a small wrap, dominated by spawn + over-verification.)
 
-## Steps
+Two minor variants:
+- **Live wrap** — running in-session before `/clear`. You have the conversation; that's the source.
+- **Catch-up wrap** — headless (e.g. `claude -p "/mem-wrap"`) over a session that already ended. There is no live conversation; you work from `events.jsonl` + the session note's auto-extract skeleton + `git log/diff`.
 
-### 1. Find or Identify the Current Session
-Look for the most recent session note in the vault for this project. Use the MCP tool `mem_search` or run:
+The steps below cover both. Step 1 + 2 differ in source material; everything from step 3 onward is identical.
+
+---
+
+## 1. Find the session note (or note its absence)
+
+**Live wrap with no prior session note** (the common case — hooks haven't yet created one, or this is a non-code conversation): skip this step. Mint an ID (`<slug>-<date>` or `CLAUDE_SESSION_ID`) and go to step 3; `mem_extract` auto-creates the note. No `mem search` round-trip.
+
+**Catch-up wrap** (headless, or you suspect an auto-extracted session note already exists):
 ```
 mem search --type session --project <project> --limit 1
 ```
+- **Session note exists** → read it. Frontmatter has `commits`, `files_touched`, sometimes `## Candidate Insights`. If `processed: true` and `auto_extracted: true` you're in catch-up mode by definition; pass `force=true` to `mem_extract` at step 3.
+- **No session note** → mint an ID and proceed.
 
-**If a session note exists**: Read it to see accumulated events and candidate insights.
+Optionally add a `## Summary` section to an existing session note (2–3 sentences) by editing the markdown directly. Skip for tiny non-code conversations — `mem_extract` will set the summary from its `summary=` argument.
 
-**If the session was auto-extracted** (`auto_extracted: true` in frontmatter): The Stop hook already created a skeleton summary. You can enrich it — read the `events.jsonl` file in the session folder for context, then proceed to step 3 with `force=true`.
+## 2. Gather your source material
 
-**If no session note exists** (non-code conversation): That's fine — `mem_extract` will auto-create one. Skip to step 3 using the current `CLAUDE_SESSION_ID` as the session_id.
+**Live mode** — the full conversation in this turn. That's the *narrative*; `events.jsonl` is only the skeleton (raw tool events). The narrative is what makes insights non-textbook and decisions have real Context/Decision/Consequences.
 
-### 2. Finalize the Session Note (if it exists)
-Add a `## Summary` section with 2-3 sentences describing what was accomplished in this session. Update the session note using the vault file directly.
+**Catch-up mode** — read the session folder's `events.jsonl` (raw tool events: files edited, bash commands, commit hashes, test results), the session note's auto-extracted `## Summary` skeleton, its `commits` and `files_touched` frontmatter, and `git log`/`git diff` for the window if a commit range is obvious. Accept the quality floor of working from events + git alone — this is the headless reality.
 
-### 2.5. Build concept vocabulary
+## 3. Call `mem_extract` once
 
-Before writing any insights or decisions, call `mem_concepts(min_count=2)` to load the existing concept vocabulary. You MUST reuse existing labels — do not invent new concepts when an existing one fits. Keep this list in working memory for steps 3-5.
+Apply the §C content rules below: load the concept vocabulary (`mem_concepts(min_count=5)`), then compose ≤3 insights + the decisions worth formalizing + the user's explicitly-stated future plans as `todo`-tagged insights. Then one call:
 
-### 3. Extract via mem_extract
-Call `mem_extract` with:
-- `session_id`: the session note ID (if found) or `CLAUDE_SESSION_ID` (if no session note)
-- `summary`: 2-3 sentence summary of the session
-- `insights`: key knowledge worth preserving (max 3, quality over quantity)
-- `decisions`: architectural/design decisions (both committed and abandoned)
-- `project`: the project name (required if no session note exists)
-- `force`: set to `true` if re-extracting an auto-extracted session
+```
+mem_extract(
+  session_id   = <ses-id or minted id>,
+  project      = <project>,                  # required if no session note exists
+  summary      = "<≤400 chars — see C0>",
+  insights     = [ {title, body, concepts, tags?}, ... ],   # max 3 total (todos count)
+  decisions    = [ {title, rationale, outcome, file_paths, concepts, summary?, predicted_outcome?, supersedes?, cites?}, ... ],
+  force        = <true if the session is already processed/auto-extracted>,
+)
+```
 
-For non-code conversations (discussions, brainstorming, design reviews), focus insights on ideas and conclusions that emerged from the discussion. `mem_extract` auto-creates a session note when one doesn't exist.
+`mem_extract` is pure Python — zero API cost, one tool round-trip. It writes the notes/decisions to the session folder, indexes them, and auto-extracts any `todo` items from the body.
 
-**CRITICAL — Concept assignment is mandatory on every insight and every decision.**
-Every insight and decision MUST include a `concepts` array with **minimum 2 concepts**. Notes with <2 concepts cannot auto-link in the knowledge graph and will cluster as isolated islands in Obsidian. This is non-negotiable.
+### Use the auto-extracted draft when it exists
 
-When assigning concepts:
-- Draw from the vocabulary loaded in step 2.5 — reuse existing labels
-- Pick concepts that connect this note to OTHER notes (thematic, not descriptive)
-- Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`)
-- Use domain-qualified paths when they exist (`ml/deep-learning` not `deep-learning`)
-- A good concept test: "would another note about this topic share this concept?"
+If the session note has a `## Candidate Insights` section (populated when hooks ran end-of-session auto-extract), **refine it; do not start from scratch.** The candidate section already names what the session produced; your job is to add the personal-experience framing (problem/surprise/gotcha), pick concepts, and decide which entries are insights vs decisions vs cut. Composing fresh when a draft exists is the biggest avoidable output-volume cost on a wrap.
 
-### Writing Good Insights
+## 4. Run `mem wrap-finalize` (one Bash call)
 
-Each insight should capture **personal experience**, not textbook facts. Include:
-- What problem or surprise led to this discovery?
-- What did you try that didn't work, and why?
-- What's the non-obvious implication or gotcha?
+```
+mem wrap-finalize <session_id> --project <project>
+```
+
+Does in one process, zero model turns:
+- prune orphan session folders (conservative GC; this session is protected)
+- incremental reindex (picks up freshly written notes, drops pruned rows)
+- `judge_and_writeback` on the new decisions (verdict + status from git evidence)
+- regenerate DECISIONS.md + BACKLOG.md
+- concept-drift advisory (read-only — proposes nothing, just reports)
+
+For any decision that carried a `predicted_outcome:` this wrap, `wrap-finalize` initializes `prediction_match: pending` (the pending initializer) — it does NOT evaluate the prediction itself. The `/judge-prediction` skill is the prediction judge; it runs live the next time a successor decision supersedes this one (via `/mem-wrap`'s composer) or via the cron drain (`claude -p "/judge-prediction --drain"`). If the manifestation pointer is *immediately* checkable from this session (e.g. the prediction said "after this commit, file X has property Y" and that's verifiable right now), you MAY tail-call `/judge-prediction --decision <new-id>` after `wrap-finalize`, but you are not required to — pending is a fine default.
+
+Add `--json` for headless flows. The CLI exits non-zero if any step errored.
+
+**Does NOT** touch STATE.md (see step 5) and does NOT run `/mem-resolve-concepts`. If drift surfaces a proposed concept at threshold the report mentions it; promotion is `/mem-resolve-concepts`'s job, run separately.
+
+## 5. STATE.md — only if the big picture changed (live mode only)
+
+If this session opened a new area, made a major architectural shift, or otherwise changed what someone needs to know first about the project:
+```
+mem landing --project <project> --doc state
+```
+Or use `mem_landing(project=..., doc="state", state_context=true)` to get raw data and write a narrative STATE.md yourself. Routine work in existing areas — skip. Catch-up mode — always skip (a headless pass doesn't have the context to judge a big-picture change).
+
+## 6. Done — emit nothing by default
+
+The CLI output of `mem_extract` and `mem wrap-finalize` IS the report: session note ID, notes/decisions created with IDs, judge verdicts, per-step timing line, drift advisory. The user sees that output. **Do not restate it.** Re-formatting it into a markdown bullet list adds 1–2 KB of model output (30–60s of pure generation time) for zero new information.
+
+Emit text only when there is something *not* in those CLI outputs that the user needs to know — an error you handled, a manual action they should take, a STATE.md change you wrote (step 5), or a wrap-flag they should know about (e.g. you noticed something during composition worth surfacing). A one-line acknowledgement is fine; anything resembling step 6 in the old skill is not.
+
+---
+
+## §C. Content rules
+
+### C0. Summary field — ≤ ~400 chars
+The `summary=` arg lands in the session note's frontmatter and shows up in `mem search` results, `mem_timeline` listings, and any retrieval that surfaces the session note. It's high-read, low-bandwidth. **Cap at ~400 chars (2–3 actual sentences, not five clauses each).** Name what was investigated and what changed; numbers if they fit. The decisions' rationales carry the detail — do not duplicate them here.
+
+### C1. Load the concept vocabulary
+`mem_concepts(min_count=5)` first. The lower-tail (1–4 occurrence) concepts are rarely the right pick for new notes — proposed_concepts catches anything missing automatically — and the `min_count=5` payload is roughly half the `min_count=2` payload, which compounds when wraps run many times a day. Reuse existing labels — don't invent a new concept when one fits.
+
+### C2. Write insights — `mem_extract` `insights=[...]`
+Max 3. Quality over quantity. **Body cap: ~1000 chars per insight (≈ 6 short lines).** Over-writing is the dominant model-turn latency cost in a small wrap — a 50%-overlong composition adds 30–90s of pure output time, and that's the *visible* part of `/mem-wrap` the wrap-finalize fix can't touch. If an insight won't fit in 1K it's two insights or a session-note narrative, not one insight.
+
+Each insight captures **personal experience**, not textbook facts:
+- what problem or surprise led to it; what was tried that didn't work, and why; the non-obvious implication or gotcha.
 
 **BAD**: "SQLite WAL mode allows concurrent readers while one writer holds the lock."
-**GOOD**: "WAL mode was the fix for index corruption when hooks and CLI ran simultaneously. The default rollback journal blocks concurrent readers, so the indexer failed silently when a hook was mid-write. Switching to WAL eliminated this entirely — but note that WAL doesn't help with concurrent writers, only concurrent reads during a write."
+**GOOD**: "WAL mode was the fix for index corruption when hooks and CLI ran simultaneously. The default rollback journal blocks concurrent readers, so the indexer failed silently when a hook was mid-write. Switching to WAL eliminated this — but WAL doesn't help with concurrent *writers*, only concurrent reads during a write."
 
-### Writing Good Decisions
+**Tags policy — minimal by default.** Only two tags are mechanical: `todo` (explicit future-plan tracking, never reflexive) and `probe` (insights prompted by a substantive user question). Everything else (`debugging`, `performance`, `refactor`, etc.) is optional and usually *not* worth adding — concepts already carry the semantic load, and each reflex tag adds payload across every wrap. Omit `tags=[]` entirely unless you have `todo` or `probe`.
 
-Decisions need real Context/Decision/Consequences — not just the conclusion:
-- **Context**: What problem forced this decision? What alternatives did you consider and reject?
-- **Decision**: What did you choose and WHY (not just WHAT)?
-- **Consequences**: What trade-offs did you accept? What became harder? What became easier?
+**Probes**: tag `probe`, title = the question, body = what was learned (not a textbook restatement). One probe per question — don't also make a separate insight for the same thing.
 
-**BAD**: "Use FTS5 for search index. Better performance, prefix queries, column filters."
-**GOOD**: Context explains that search needed to work across 4 note types with different vocabularies, that alternatives included external search (too heavy), FTS4 (no prefix queries needed for autocomplete), and raw LIKE queries (too slow at scale). FTS5 won because prefix queries enable autocomplete in the CLI and column filters let us scope by type without post-filtering.
+**Future plans**: things the user explicitly wants tracked → insights tagged `todo`. Never add `todo` otherwise. Todos count toward the max-3 cap.
 
-### 4. Extract Probes (Learning Artifacts)
-Review the conversation for **substantive questions the user asked** — "how does X work?", "why was Y done this way?", "what happens if Z?". These are signals of active learning.
+### C3. Write decisions — `mem_extract` `decisions=[...]`
+Real Context / Decision / Consequences, not just the conclusion:
+- **Context**: what problem forced this; alternatives considered and rejected.
+- **Decision**: what was chosen and WHY (not just WHAT).
+- **Consequences**: trade-offs accepted; what got harder, what got easier.
 
-For each substantive question (skip clarifications like "which file?" or "can you repeat that?"):
-- Include it as an insight in the `mem_extract` call
-- Tag it with `probe` (plus any relevant domain tags)
-- Title = the question itself
-- Body = the key insight or answer discovered — what the user learned, not a textbook restatement
+**Rationale cap: ~1500 chars** — one paragraph per C/D/C section. File paths and test references carry the rest; do not re-narrate the implementation in prose. The `file_paths` array points to the code; the rationale points to the *why*.
 
-**Probes vs regular insights**: If something would be a good insight AND was prompted by a user question, make it a probe (use the `probe` tag). Don't create both a probe and a separate insight for the same thing.
+Per decision dict: `title`, `rationale` (the C/D/C prose), `outcome` (`committed`/`abandoned`/`partial`), `file_paths` (relevant paths), `concepts` (≥2), optional `summary` (one sentence — powers DECISIONS.md), optional `supersedes`/`cites`, and **optional `predicted_outcome`** — a single prose sentence carrying BOTH a claim AND a manifestation pointer (where to look, when, what query verifies it). If you cannot articulate a checkable pointer in one sentence, **omit the field entirely**. Boilerplate like "tests will pass after this fix" or "this will land" has no pointer and will sit `unevaluable` forever; better to record nothing.
 
-### 5. Prompt for Decisions and Future Plans
-Review the session for any architectural or design decisions that were made, and any future plans or ideas that were discussed but not acted on. Ask the user:
+  - **GOOD**: `"After the transcript-first ladder ships, the next /drain on the 3 queued AI Engineer videos archives all 3 as accepted (0 gemini_refused). Check the youtube-events queue archive after the next drain run."` — concrete claim + named pointer (queue archive) + window (next drain).
+  - **GOOD**: `"Within a week, mem_search for 'wrap-finalize' returns ≥1 decision with verdict=kept and zero with verdict=reverted, indicating the deterministic tail held up under real wraps."` — concrete claim + checkable query + window.
+  - **BAD**: `"tests will pass after this fix"` — no pointer, no window, will never resolve past `unevaluable`.
+  - **BAD**: `"this should improve performance"` — no measurable claim, no manifestation pointer.
 
-"Were any decisions made in this session worth formalizing as decision records? Were any future plans or ideas discussed worth tracking?"
+  Do NOT also restate the prediction in the rationale — the field IS the prediction. `wrap-finalize` will initialize new predictions to `prediction_match: pending`; the `/judge-prediction` skill takes over from there (live during a future `/mem-wrap` that supersedes the decision, or via the cron drain).
 
-If yes, include decisions in the `mem_extract` call as usual. When creating decisions, include a one-sentence `summary` field for each — this powers the DECISIONS.md landing page. Future plans become insights tagged `todo` — they land in the session folder and surface via `mem backlog`. Never auto-add `todo`; only include plans the user explicitly confirms.
-
-### 6. Re-index
-```
-mem index
-```
-
-### 6.5. Judge Extracted Decisions
-If any decisions were extracted in step 3, evaluate them against git reality:
-```
-mem_judge(session_id=<session_id>)
-```
-
-This reconciles each decision with git evidence — catching commits made during or after the session. The judge writes `commit_refs` (list of git hashes) and `verdict` (kept/superseded/reverted/unknown) onto each decision. Even if commits happen after the session, re-running `mem_judge` later will discover and link them.
-
-If no decisions were extracted, skip this step.
-
-### 7. Refresh Landing Documents
-After extraction, refresh the project's landing documents:
-```
-mem_landing(project=<project>, doc="decisions")
-mem_landing(project=<project>, doc="backlog")
-```
-
-DECISIONS.md and BACKLOG.md are cheap to regenerate — always refresh them.
-
-**STATE.md**: Only update if this session genuinely changed the project's big picture — new major decisions, architectural shifts, new areas opened up. Routine work in existing areas doesn't warrant an update. If updating, use `mem_landing(project=<project>, doc="state", state_context=true)` to get raw data, then write a narrative STATE.md that tells the human what matters most.
-
-### 7.5. Ontology drift check (advisory)
-Call `mem_concepts_drift(project=<project>)` (or shell out to
-`mem concepts drift --project <project>`). This is **read-only and advisory**
-— it surfaces three kinds of drift:
-
-1. **Near-duplicate concepts** (e.g. `neural-network` ≈ `neural-networks`) —
-   suggests a merge command.
-2. **New concept candidates** — concepts that crossed count ≥ 5 but are
-   NOT listed in `ontology.yaml`. Worth considering as new domain members.
-3. **Ontology staleness** — `ontology.yaml` was edited after the last
-   `mem concepts hubs` run. Hub pages may be stale.
-
-**Do NOT auto-merge or auto-regenerate.** Surface the findings in the final
-report. If the user wants to act, they'll ask. This step should take under a
-second — it's a small read-only query.
-
-### 8. Prune orphan session folders
-Run `mem prune-orphans --project <project> --yes`. This deletes stub session
-folders that accumulated no derived content — no notes/decisions, tiny
-`events.jsonl` (< 500 bytes), no `files_touched`, no `commits`, older than
-1 hour, and NOT the session currently being wrapped. The 7-condition orphan
-definition is intentionally conservative; cleanup is safe to auto-run.
-
-After a real delete (not dry-run), the index is cleaned in-place so searches
-and landing docs stop surfacing the deleted sessions.
-
-Include the pruned count in the step 9 report.
-
-### 9. Report
-Print a summary of what was extracted:
-- Session note path and summary
-- Notes created (with IDs), including probes
-- Decisions created (if any)
-- Landing documents refreshed
-- Orphan folders pruned (count + freed bytes)
-- Total vault stats via `mem stats`
+### C4. Concepts are mandatory
+Every insight and every decision: a `concepts` array, **≥2**, from the vocabulary loaded in C1. Pick concepts that connect this note to *other* notes (thematic, not descriptive). Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`). Test: "would another note about this topic share this concept?" Terms not in the ontology are accepted automatically into `proposed_concepts:` by the server — you don't pre-canonicalise.

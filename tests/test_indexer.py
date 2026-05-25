@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.search import Search
-from personal_mem.vault import VaultManager
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.retrieval.search import Search
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -133,6 +133,153 @@ class TestIndexer:
         assert db_stats["notes_session"] == 1
         assert db_stats["notes_decision"] == 1
         assert db_stats["notes_source"] == 1
+
+
+class TestMtimeGate:
+    """Regression for P0-8: mtime-gated incremental rebuild.
+
+    On a no-op rebuild we must NOT call ``read_text`` for files whose
+    on-disk mtime matches the cached value. Slow-path readback dominated
+    no-op rebuild on a 6.5k-file vault (~25s wall on WSL→9P).
+    """
+
+    def test_noop_rebuild_does_not_read_unchanged_files(
+        self, vault: VaultManager, indexer: Indexer, tmp_path: Path,
+        monkeypatch,
+    ):
+        # Populate vault with 5 notes, full-index once.
+        paths = []
+        for i in range(5):
+            p = vault.create_note(NoteType.NOTE, f"Note {i}", body=f"Body {i}", project="p")
+            paths.append(p)
+        indexer.rebuild(full=True)
+
+        # Patch Path.read_text to count invocations across all md files.
+        from pathlib import Path as _P
+        original_read_text = _P.read_text
+        read_calls: list[str] = []
+
+        def counting_read_text(self, *a, **kw):
+            if self.suffix == ".md":
+                read_calls.append(str(self))
+            return original_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(_P, "read_text", counting_read_text)
+
+        # No-op incremental — nothing should be read.
+        stats = indexer.rebuild(full=False)
+        assert stats["indexed"] == 0
+        assert stats["removed"] == 0
+        assert stats["skipped"] == 5
+        assert len(read_calls) == 0, (
+            f"expected zero reads on no-op rebuild, got {len(read_calls)}: {read_calls}"
+        )
+
+    def test_one_changed_file_reads_only_that_file(
+        self, vault: VaultManager, indexer: Indexer, monkeypatch,
+    ):
+        # 5 notes, indexed once.
+        paths = []
+        for i in range(5):
+            p = vault.create_note(NoteType.NOTE, f"Note {i}", body=f"Body {i}", project="p")
+            paths.append(p)
+        indexer.rebuild(full=True)
+
+        # Touch one file forward in time + change content.
+        target = paths[2]
+        import os
+        import time
+        new_mtime = time.time() + 10
+        target.write_text(target.read_text() + "\n\nupdated\n")
+        os.utime(target, (new_mtime, new_mtime))
+
+        # Count reads.
+        from pathlib import Path as _P
+        original_read_text = _P.read_text
+        read_calls: list[str] = []
+
+        def counting_read_text(self, *a, **kw):
+            if self.suffix == ".md":
+                read_calls.append(str(self))
+            return original_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(_P, "read_text", counting_read_text)
+
+        stats = indexer.rebuild(full=False)
+        assert stats["indexed"] == 1
+        assert stats["skipped"] == 4
+        # Exactly one read for the touched file
+        assert len(read_calls) == 1
+        assert str(target) in read_calls[0]
+
+
+class TestIndexPaths:
+    """Regression for P0-8 layer 2: targeted path indexing without rglob."""
+
+    def test_index_paths_only_processes_given_paths(
+        self, vault: VaultManager, indexer: Indexer, monkeypatch,
+    ):
+        a = vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
+        b = vault.create_note(NoteType.NOTE, "Note B", body="B", project="p")
+        c = vault.create_note(NoteType.NOTE, "Note C", body="C", project="p")
+        indexer.rebuild(full=True)
+
+        # rglob must NOT be called when using index_paths.
+        rglob_calls: list[str] = []
+        original_rglob = type(vault.root).rglob
+
+        def counting_rglob(self, pattern):
+            rglob_calls.append(pattern)
+            return original_rglob(self, pattern)
+
+        monkeypatch.setattr(type(vault.root), "rglob", counting_rglob)
+
+        # Modify only b — pass only b's path.
+        b.write_text(b.read_text() + "\n\nchanged\n")
+        import os
+        import time
+        new_mtime = time.time() + 10
+        os.utime(b, (new_mtime, new_mtime))
+
+        stats = indexer.index_paths([b])
+        assert stats["indexed"] == 1
+        assert stats["skipped"] == 0
+        # The vault-wide rglob in get_all_md_files() should not have run.
+        assert "*.md" not in rglob_calls
+
+    def test_index_paths_removes_missing(
+        self, vault: VaultManager, indexer: Indexer,
+    ):
+        a = vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
+        indexer.rebuild(full=True)
+        assert indexer.get_stats()["notes_total"] == 1
+
+        a.unlink()
+        stats = indexer.index_paths([a])
+        assert stats["removed"] == 1
+        assert indexer.get_stats()["notes_total"] == 0
+
+    def test_index_paths_handles_unchanged(
+        self, vault: VaultManager, indexer: Indexer,
+    ):
+        a = vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
+        indexer.rebuild(full=True)
+
+        # Re-passing unchanged path should skip.
+        stats = indexer.index_paths([a])
+        assert stats["indexed"] == 0
+        assert stats["skipped"] == 1
+        assert stats["removed"] == 0
+
+    def test_index_paths_ignores_outside_vault(
+        self, vault: VaultManager, indexer: Indexer, tmp_path: Path,
+    ):
+        outside = tmp_path / "elsewhere.md"
+        outside.write_text("# Foreign\n")
+        # Should not raise — just silently ignore.
+        stats = indexer.index_paths([outside])
+        assert stats["indexed"] == 0
+        assert stats["skipped"] == 0
 
 
 class TestSearch:
@@ -701,3 +848,240 @@ class TestNoteTags:
         path.unlink()
         indexer.rebuild(full=False)
         assert indexer.db.execute("SELECT COUNT(*) FROM note_tags").fetchone()[0] == 0
+
+
+class TestIncrementalEdges:
+    """Tests for the incremental edge rebuild path (P1-11).
+
+    Equivalence: for any edge whose ``source`` is in the changed set, the
+    incremental path must produce the same row as a fresh full rebuild on
+    the same state. Global equality is NOT asserted — the documented B6
+    staleness (old unchanged note linking to a newly created note) is
+    expected and exercised in its own test.
+    """
+
+    @staticmethod
+    def _bump_mtime(path: Path) -> None:
+        """Force the mtime forward so the gate doesn't skip the file."""
+        import os
+        import time
+        new_mtime = time.time() + 10
+        os.utime(path, (new_mtime, new_mtime))
+
+    @staticmethod
+    def _edges_for_sources(indexer: Indexer, sources: set[str]) -> set[tuple]:
+        """Snapshot edges whose ``source`` is in the given set, normalized."""
+        if not sources:
+            return set()
+        placeholders = ",".join("?" * len(sources))
+        rows = indexer.db.execute(
+            f"SELECT source, target, edge_type, metadata FROM edges "
+            f"WHERE source IN ({placeholders})",
+            list(sources),
+        ).fetchall()
+        return {(r["source"], r["target"], r["edge_type"], r["metadata"]) for r in rows}
+
+    def test_equivalence_for_changed_source_set(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Edges whose source is in the changed set match a fresh full rebuild."""
+        a = vault.create_note(
+            NoteType.NOTE, "Note A", body="A.", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        vault.create_note(
+            NoteType.NOTE, "Note B", body="B.", project="p",
+            extra_frontmatter={"concepts": ["alpha", "gamma"]},
+        )
+        vault.create_note(
+            NoteType.NOTE, "Note C", body="C.", project="p",
+            extra_frontmatter={"concepts": ["beta", "gamma"]},
+        )
+        vault.create_note(
+            NoteType.NOTE, "Note D", body="D.", project="p",
+            tags=["sharedtag"],
+        )
+        vault.create_note(
+            NoteType.NOTE, "Note E", body="E.", project="p",
+            tags=["sharedtag"],
+        )
+        indexer.rebuild(full=True)
+
+        # Modify A's body — A is now the lone "changed" note.
+        a.write_text(a.read_text() + "\n\nMore about A.\n")
+        self._bump_mtime(a)
+
+        inc_stats = indexer.rebuild(full=False)
+        assert inc_stats["indexed"] == 1
+
+        a_id = indexer.db.execute(
+            "SELECT id FROM notes WHERE path = ?",
+            (str(a.relative_to(vault.root)),),
+        ).fetchone()["id"]
+        inc_edges_for_a = self._edges_for_sources(indexer, {a_id})
+
+        # Fresh full rebuild on a sibling DB for ground truth.
+        from personal_mem.core.indexer import Indexer as IndexerCls
+        full_idx = IndexerCls(config=config)
+        try:
+            full_idx.rebuild(full=True)
+            full_edges_for_a = self._edges_for_sources(full_idx, {a_id})
+        finally:
+            full_idx.close()
+
+        assert inc_edges_for_a == full_edges_for_a, (
+            f"Incremental and full disagree on edges from changed source A.\n"
+            f"  incremental only: {inc_edges_for_a - full_edges_for_a}\n"
+            f"  full only:        {full_edges_for_a - inc_edges_for_a}"
+        )
+
+    def test_pair_ordering_pk_collides_with_full(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        """Concept-pair edges from incremental are idempotent (sorted-pair PK collision)."""
+        vault.create_note(
+            NoteType.NOTE, "Note A", body="A.", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        b = vault.create_note(
+            NoteType.NOTE, "Note B", body="B.", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        indexer.rebuild(full=True)
+        baseline_count = indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges"
+        ).fetchone()["n"]
+
+        # Touch B and re-run incremental — concept edges between A and B should
+        # be deleted (target=B) and re-emitted with the same (a,b) ordering,
+        # PK-colliding into the same row, NOT duplicating.
+        b.write_text(b.read_text() + "\n\nchanged\n")
+        self._bump_mtime(b)
+        indexer.rebuild(full=False)
+
+        after_count = indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges"
+        ).fetchone()["n"]
+        assert after_count == baseline_count, (
+            f"Edge count drifted across incremental rebuild: "
+            f"baseline={baseline_count}, after={after_count}"
+        )
+
+    def test_inbound_staleness_b6_documented_gap(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        """Documented gap: old note wikilinking a NEW note misses the inbound edge.
+
+        The full path heals this on its periodic rebuild.
+        """
+        old = vault.create_note(
+            NoteType.NOTE,
+            "Old hub",
+            body="See [[Brand new note]] for details.",
+            project="p",
+        )
+        indexer.rebuild(full=True)
+        old_id = indexer.db.execute(
+            "SELECT id FROM notes WHERE path = ?",
+            (str(old.relative_to(vault.root)),),
+        ).fetchone()["id"]
+
+        # No edge yet — wikilink target didn't exist.
+        assert indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE source = ?", (old_id,)
+        ).fetchone()["n"] == 0
+
+        # Add a NEW note matching the wikilink target. Old's body is unchanged
+        # → its mtime doesn't move → incremental does NOT recompute its edges.
+        new_path = vault.create_note(
+            NoteType.NOTE, "Brand new note", body="Hi.", project="p"
+        )
+        indexer.rebuild(full=False)
+        new_id = indexer.db.execute(
+            "SELECT id FROM notes WHERE path = ?",
+            (str(new_path.relative_to(vault.root)),),
+        ).fetchone()["id"]
+
+        # B6: incremental misses the inbound edge.
+        inbound_after_incremental = indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE source = ? AND target = ?",
+            (old_id, new_id),
+        ).fetchone()["n"]
+        assert inbound_after_incremental == 0
+
+        # Full rebuild heals it.
+        indexer.rebuild(full=True)
+        inbound_after_full = indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE source = ? AND target = ?",
+            (old_id, new_id),
+        ).fetchone()["n"]
+        assert inbound_after_full == 1
+
+    def test_session_dir_edges_preserved_when_session_changes(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        """Re-extracting a session.md doesn't drop its siblings' derived_from edges."""
+        sess_path = vault.create_note(
+            NoteType.SESSION, "Work session", project="p"
+        )
+        session_dir = sess_path.parent
+        sibling_path = session_dir / "n-xyz.md"
+        sibling_path.write_text(
+            "---\ntype: note\nid: n-xyz\ndate: '2026-05-22'\nproject: p\n---\n"
+            "# Sibling\nHi.\n",
+            encoding="utf-8",
+        )
+        indexer.rebuild(full=True)
+
+        sess_id = indexer.db.execute(
+            "SELECT id FROM notes WHERE path = ?",
+            (str(sess_path.relative_to(vault.root)),),
+        ).fetchone()["id"]
+        edge_before = indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges "
+            "WHERE source = 'n-xyz' AND target = ? AND edge_type = 'derived_from'",
+            (sess_id,),
+        ).fetchone()["n"]
+        assert edge_before == 1
+
+        # Re-extract session.md (mem_extract rewrites it each wrap).
+        sess_path.write_text(sess_path.read_text() + "\n\n## More\n")
+        self._bump_mtime(sess_path)
+        indexer.rebuild(full=False)
+
+        # Section 3b in _rebuild_edges_incremental re-emits sibling→session edges.
+        edge_after = indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges "
+            "WHERE source = 'n-xyz' AND target = ? AND edge_type = 'derived_from'",
+            (sess_id,),
+        ).fetchone()["n"]
+        assert edge_after == 1, "Re-extracting session.md dropped sibling derived_from edges"
+
+    def test_freq_cap_respected_in_incremental(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Concepts exceeding the freq cap stay skipped on the incremental path."""
+        config.concept_edge_max_freq_pct = 0.50
+        # 3 notes sharing "ubiquitous" — cap is floor(3 * 0.5) = 1, 3 > 1 → skip.
+        for i in range(3):
+            vault.create_note(
+                NoteType.NOTE, f"Note {i}", body=f"{i}.", project="p",
+                extra_frontmatter={"concepts": ["ubiquitous"]},
+            )
+        indexer.rebuild(full=True)
+        assert indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE metadata LIKE '%ubiquitous%'"
+        ).fetchone()["n"] == 0
+
+        # Touch one note and re-run incremental — must also skip.
+        first_rel = indexer.db.execute(
+            "SELECT path FROM notes WHERE title = ?", ("Note 0",)
+        ).fetchone()["path"]
+        first = vault.root / first_rel
+        first.write_text(first.read_text() + "\n\nupdated\n")
+        self._bump_mtime(first)
+        indexer.rebuild(full=False)
+
+        assert indexer.db.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE metadata LIKE '%ubiquitous%'"
+        ).fetchone()["n"] == 0

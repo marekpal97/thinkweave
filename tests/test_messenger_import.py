@@ -306,7 +306,7 @@ class TestImportMessenger:
         )
         path = _write_export(tmp_path, data)
 
-        from personal_mem.config import Config
+        from personal_mem.core.config import Config
 
         cfg = Config(vault_root=tmp_path / "vault")
 
@@ -323,7 +323,7 @@ class TestImportMessenger:
         )
         path = _write_export(tmp_path, data)
 
-        from personal_mem.config import Config
+        from personal_mem.core.config import Config
 
         cfg = Config(vault_root=tmp_path / "vault")
         (tmp_path / "vault").mkdir()
@@ -336,7 +336,7 @@ class TestImportMessenger:
         data = _make_export("https://arxiv.org/abs/2301.12345")
         path = _write_export(tmp_path, data)
 
-        from personal_mem.config import Config
+        from personal_mem.core.config import Config
 
         cfg = Config(vault_root=tmp_path / "vault")
         (tmp_path / "vault").mkdir()
@@ -349,7 +349,7 @@ class TestImportMessenger:
         assert stats2["skipped"] == 1
 
     def test_file_not_found(self, tmp_path):
-        from personal_mem.config import Config
+        from personal_mem.core.config import Config
 
         cfg = Config(vault_root=tmp_path / "vault")
         stats = import_messenger(cfg, json_path=tmp_path / "nonexistent.json")
@@ -364,7 +364,7 @@ class TestImportMessenger:
         # Messages are 1 day apart starting from 2023-11-14
         path = _write_export(tmp_path, data)
 
-        from personal_mem.config import Config
+        from personal_mem.core.config import Config
 
         cfg = Config(vault_root=tmp_path / "vault")
         (tmp_path / "vault").mkdir()

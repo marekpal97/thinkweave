@@ -1,0 +1,179 @@
+# personal_mem news-feed registry
+#
+# Outlets are keyed by short slug. The slug becomes the author folder for
+# news notes (`vault/sources/news/<slug>/...`). Edit freely — `mem init`
+# only seeds this file once; from then on it's yours.
+#
+# Per-outlet fields:
+#   name             — display name (becomes `author` frontmatter on each note)
+#   feeds            — inline list of RSS / Atom URLs (single-string ok too)
+#   tier             — 1 (trusted: 1 concept-match passes FOCUS) or 2 (needs 2)
+#   region           — global / poland / europe / us / asia (free-form)
+#   language         — en / pl / ... (Polish triggers in-worker translation)
+#   prefer_embedded  — true if RSS provides full content via content:encoded
+#   daily_cap        — max items per outlet per UTC day
+#
+# Verify URLs on first install: `uv run python scripts/pull_news_feeds.py`.
+# Dead URLs print a warning and skip; nothing breaks.
+
+outlets:
+  # ─── Macro / global markets ───────────────────────────────────────────
+  zerohedge:
+    name: ZeroHedge
+    feeds: [https://feeds.feedburner.com/zerohedge/feed]
+    tier: 2
+    region: global
+    prefer_embedded: true
+    daily_cap: 10
+
+  cnbc:
+    name: CNBC Markets
+    feeds: [https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069]
+    # Demoted to tier 2 — half the items are non-watchlist analyst calls
+    # / single-name earnings previews; tier-2's 2-concept admission rule
+    # keeps the substantive macro/AI items, drops the noise.
+    tier: 2
+    region: global
+    prefer_embedded: false
+    daily_cap: 8
+
+  calculated-risk:
+    name: Calculated Risk
+    feeds: [https://feeds.feedburner.com/CalculatedRisk]
+    tier: 1
+    region: global
+    prefer_embedded: true
+    daily_cap: 4
+
+  wolf-street:
+    name: Wolf Street
+    feeds: [https://wolfstreet.com/feed/]
+    tier: 2
+    region: global
+    prefer_embedded: true
+    daily_cap: 4
+
+  naked-capitalism:
+    name: Naked Capitalism
+    feeds: [https://www.nakedcapitalism.com/feed]
+    tier: 2
+    region: global
+    prefer_embedded: true
+    daily_cap: 5
+
+  mish-talk:
+    name: Mish Talk
+    feeds: [https://mishtalk.com/feed/]
+    tier: 2
+    region: global
+    prefer_embedded: true
+    daily_cap: 4
+
+  pragmatic-capitalism:
+    name: Pragmatic Capitalism
+    feeds: [https://www.pragcap.com/feed/]
+    tier: 1
+    region: global
+    prefer_embedded: true
+    daily_cap: 3
+
+  the-big-picture:
+    name: The Big Picture (Ritholtz)
+    feeds: [https://ritholtz.com/feed/]
+    tier: 1
+    region: global
+    prefer_embedded: true
+    daily_cap: 4
+
+  # ─── Geopolitics / commentary ─────────────────────────────────────────
+  project-syndicate:
+    name: Project Syndicate
+    feeds: [https://www.project-syndicate.org/rss]
+    tier: 1
+    region: global
+    prefer_embedded: false
+    daily_cap: 4
+
+  voxeu:
+    name: VoxEU (CEPR)
+    feeds: [https://cepr.org/voxeu/columns/feed]
+    tier: 1
+    region: global
+    prefer_embedded: true
+    daily_cap: 3
+
+  moon-of-alabama:
+    name: Moon of Alabama
+    feeds: [https://www.moonofalabama.org/atom.xml]
+    tier: 2
+    region: global
+    prefer_embedded: true
+    daily_cap: 3
+
+  # ─── AI trade ─────────────────────────────────────────────────────────
+  the-register:
+    name: The Register
+    feeds: [https://www.theregister.com/headlines.atom]
+    tier: 1
+    region: global
+    prefer_embedded: true
+    daily_cap: 6
+
+  semianalysis:
+    name: SemiAnalysis (free posts)
+    feeds: [https://www.semianalysis.com/feed]
+    tier: 1
+    region: global
+    prefer_embedded: false
+    daily_cap: 3
+
+  # ─── Polish economy ───────────────────────────────────────────────────
+  bankier:
+    name: Bankier.pl
+    feeds: [https://www.bankier.pl/rss/wiadomosci.xml]
+    tier: 1
+    region: poland
+    language: pl
+    prefer_embedded: true
+    daily_cap: 8
+
+  money-pl:
+    name: Money.pl
+    feeds: [https://www.money.pl/rss/]
+    tier: 1
+    region: poland
+    language: pl
+    prefer_embedded: false
+    daily_cap: 6
+
+  # ── Disabled: feed URLs were broken at template-creation time
+  # ── (forsal.pl/rss.xml returned text/html, nbp.pl/rss/komunikaty.xml
+  # ── returned malformed XML). Find a current working endpoint or
+  # ── remove these stubs.
+  #
+  # forsal:
+  #   name: Forsal
+  #   feeds: [https://forsal.pl/rss.xml]
+  #   tier: 2
+  #   region: poland
+  #   language: pl
+  #   prefer_embedded: false
+  #   daily_cap: 4
+  #
+  # nbp-press:
+  #   name: NBP Press Releases
+  #   feeds: [https://nbp.pl/rss/komunikaty.xml]
+  #   tier: 1
+  #   region: poland
+  #   language: pl
+  #   prefer_embedded: true
+  #   daily_cap: 3
+
+  # ─── Macro releases / calendar ────────────────────────────────────────
+  forexlive:
+    name: ForexLive
+    feeds: [https://www.forexlive.com/feed/news/]
+    tier: 1
+    region: global
+    prefer_embedded: true
+    daily_cap: 8

@@ -1,5 +1,8 @@
 ---
 name: themes-resolve
+owns_mechanic: theme_synthesis
+consumes: [mem_search, mem_read, mem_update, mem_link]
+produces: [vault/themes/thm-*.md, THEMES.md]
 tools:
   - Read
   - Edit
@@ -33,19 +36,39 @@ That gets you all themes. Then for each one (or batch):
 You can also surface the redundant-hub Jaccard pre-filter for theme essences if the inventory is large:
 
 ```bash
-uv run python -c "from personal_mem.concepts import find_redundant_hub_candidates; from personal_mem.config import load_config; print(find_redundant_hub_candidates(load_config(), min_jaccard=0.4))"
+uv run python -c "from personal_mem.synthesis.concepts import find_redundant_hub_candidates; from personal_mem.core.config import load_config; print(find_redundant_hub_candidates(load_config(), min_jaccard=0.4))"
 ```
 
 (That helper was built for concept hubs but works on any text under `vault/concepts/topics/*.md`. For themes, fall back to LLM judgment over the theme essences.)
 
-### 2. Three judgments per theme
+### 2. Four judgments per theme — two deterministic, two LLM
 
-Apply LLM judgment (no thresholds) to each theme:
+**Deterministic** (Python helpers; no LLM judgment needed):
 
-- **Duplicate**: another theme covers materially the same narrative arc. Same target asset, same time horizon, same mechanism. Output: `merge: <thm-A> + <thm-B>`.
-- **Dormant**: catalyst log hasn't moved in months and the thesis no longer feels load-bearing. Output: `archive: <thm-X>` (status → `dormant`).
-- **Resolved**: the narrative played out — either confirmed (decisions implemented and exited) or invalidated (decisions stopped out, thesis broken). Output: `resolve: <thm-X>` (status → `resolved`).
-- **Stale essence**: the catalyst log has diverged from the essence — recent entries contradict or extend the working thesis. Output: `rewrite essence: <thm-X>`.
+```python
+from personal_mem.synthesis.theme_candidates import (
+    find_dormant_themes, find_resolved_themes,
+)
+dormant = find_dormant_themes(cfg, stale_days=90)   # [(path, last_catalyst_date_or_None)]
+resolved = find_resolved_themes(cfg)                # [(path, [linked_decision_ids])]
+```
+
+- **Dormant**: catalyst log hasn't moved in 90 days (or never had an
+  entry). The helper reads the log directly — no semantic check. Output:
+  `archive: <thm-X>` (status → `dormant`).
+- **Resolved**: every linked decision (`implements:` / `relates_to:`
+  edges) is in terminal status (`superseded` or `deprecated`). The helper
+  walks the index edge table — no narrative judgment. Output:
+  `resolve: <thm-X>` (status → `resolved`).
+
+**LLM judgment** (the genuinely semantic calls):
+
+- **Duplicate**: another theme covers materially the same narrative arc.
+  Same subject, same time horizon, same mechanism. Output:
+  `merge: <thm-A> + <thm-B>`.
+- **Stale essence**: the catalyst log has diverged from the essence —
+  recent entries contradict or extend the working thesis. Output:
+  `rewrite essence: <thm-X>`.
 
 These are observational, not prescriptive — surface, don't autofix.
 
@@ -105,9 +128,79 @@ uv run mem landing --doc themes
 
 THEMES.md will pick up the new statuses, merge sentinels, and dropped duplicates. Per-theme temporal DAGs render automatically when catalyst-log linkage exists.
 
-### 6. Report (3 lines)
+### 6. Candidate review (default step)
+
+Source-coupled theme floating writes candidate stubs to
+`vault/themes/_candidates/` whenever a cluster of event-grain sources
+(default: `substack`, future `news`) reaches the threshold. They carry
+`cand-XXXX` IDs, never `thm-`. This step decides which to promote and
+which to let age out.
+
+```bash
+uv run mem themes scan-candidates                  # incremental scan
+uv run mem themes scan-candidates --dry-run        # preview only
+uv run mem themes archive-stale-candidates --dry-run --stale-days 30
+```
+
+For each unprocessed candidate file in `vault/themes/_candidates/`
+(skip the `_archive/` subdir):
+
+1. Read the stub. Frontmatter has `cluster_size`, `cluster_sources`,
+   `cluster_concepts`, and `candidacy: inferred-from-<source-type>`.
+2. Apply the disambiguation test from CLAUDE.md §4 — does this name a
+   *narrative arc* with a time horizon, or just a *capability/topic*?
+   - If capability/topic → not a theme, skip (it'll age out).
+   - If event/period/transition/campaign with a time horizon → promote.
+3. On promote: write a one-line **title** (e.g. `AI capex unwind 2026`)
+   and a short **essence** (≤300w paragraph capturing the working
+   thesis). Optionally, declare a **parent theme** if the new theme is
+   a narrower arc inside an existing broad theme (mirrors how the
+   concept ontology nests broad → narrow). Then mint:
+
+   ```bash
+   # Top-level (no parent)
+   uv run mem themes promote-candidate cand-abcd1234 \
+       --title "AI capex unwind 2026" \
+       --essence "Hyperscalers pulled forward GPU spend in 2024-2025; sustained
+                  ROI hasn't materialized; 2026 is the year that thesis is
+                  re-tested. Watch capex revisions, hyperscaler margins, and
+                  whether enterprise spend backstops the consumer pullback."
+
+   # Child of an existing broad theme
+   uv run mem themes promote-candidate cand-efgh5678 \
+       --title "Memory chip supercycle 2026" \
+       --essence "..." \
+       --parent thm-abcd1234   # the AI capex unwind theme
+   ```
+
+   That mints a `thm-XXXX` ID, writes `vault/themes/{thm-X}-{slug}.md`
+   with `## Essence` (your text), `## Catalyst log` seeded from the
+   cluster sources, `## Open questions`, and a `parent: thm-X` field
+   if `--parent` was supplied. The candidate file is removed.
+
+   Hierarchy rule of thumb: only nest when the child is a genuine
+   sub-arc of the parent (the parent's essence still applies, the
+   child just narrows the focus). If two themes share concepts but
+   have independent narratives, leave both top-level and use
+   `relates_to:` for the cross-link.
+
+4. On reject: leave the file. `archive-stale-candidates` moves it to
+   `_archive/` after `--stale-days` (default 30). Manual delete is
+   also fine — candidates are vault state, not indexed.
+
+Present the round as a compact table:
+
+```
+### Candidate Promotion (N candidates)
+| Candidate | Cluster | Decision |
+|-----------|---------|----------|
+| cand-abcd1234 | 4 substack sources / ai-capex, hyperscaler | promote → "AI capex unwind 2026" |
+| cand-efgh5678 | 3 substack sources / fed-policy, employment | reject (capability-named, not arc) |
+```
+
+### 7. Report (3 lines)
 
 ```
 Done. Merged N pairs. M dormant, K resolved. R essence rewrites.
-THEMES.md refreshed. Active themes: before → after.
+P candidates promoted, A archived. THEMES.md refreshed. Active: before → after.
 ```

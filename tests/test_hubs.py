@@ -2,8 +2,8 @@
 
 These are the shared core both hub-execution paths rely on:
 
-- ``/backfill-hubs`` + ``/update-hubs`` skills — inline Claude Code path
-- ``mem hubs run`` — OpenAI Batches API path (gpt-5-mini)
+- ``/drain --target hubs --via inline`` + ``/update-hubs`` skills — inline Claude Code path
+- ``mem drain --target hubs --via batch`` — OpenAI Batches API path (gpt-5-mini)
 
 Both paths call ``append_log_entries`` / ``parse_concept_hub`` /
 ``unprocessed_notes_for_concept`` after producing LLM output, so a
@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.hubs import (
+from personal_mem.core.config import Config
+from personal_mem.synthesis.concept_hub import (
     LogEntry,
     _strip_inline_wikilinks,
     append_log_entries,
@@ -32,9 +32,9 @@ from personal_mem.hubs import (
     parse_llm_response,
     unprocessed_notes_for_concept,
 )
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -254,11 +254,11 @@ class TestLinkageHelpers:
     """
 
     def _build_prompt(self, concept, essence, entries):
-        from personal_mem.cli import _build_linkage_user_prompt
+        from personal_mem.surfaces.cli import _build_linkage_user_prompt
         return _build_linkage_user_prompt(concept, essence, entries)
 
     def _parse(self, raw):
-        from personal_mem.cli import _parse_linkage_response
+        from personal_mem.surfaces.cli import _parse_linkage_response
         return _parse_linkage_response(raw)
 
     def test_prompt_preserves_chronological_order(self):
@@ -319,64 +319,103 @@ class TestValidateLinkageRevision:
     """
 
     def _validate(self, entry_date, flag, ref):
-        from personal_mem.cli import _validate_linkage_revision
+        from personal_mem.surfaces.cli import _validate_linkage_revision
         return _validate_linkage_revision(entry_date, flag, ref)
 
     def test_unknown_flag_returns_none(self):
-        flag, ref = self._validate("2026-03-01", "weird", "")
+        flag, ref, quote = self._validate("2026-03-01", "weird", "")
         assert flag is None
         assert ref == ""
+        assert quote == ""
 
     def test_new_clears_any_ref(self):
-        flag, ref = self._validate("2026-03-01", "new", "2026-01-01")
+        flag, ref, quote = self._validate("2026-03-01", "new", "2026-01-01")
         assert flag == "new"
         assert ref == ""
+        assert quote == ""
 
     def test_valid_extends_with_earlier_ref_passes_through(self):
-        flag, ref = self._validate("2026-03-01", "extends", "2026-01-15")
+        flag, ref, _ = self._validate("2026-03-01", "extends", "2026-01-15")
+        # No by_date_texts passed → quote validation skipped, ref accepted.
         assert flag == "extends"
         assert ref == "2026-01-15"
 
-    def test_valid_agrees_with_empty_ref_passes_through(self):
-        flag, ref = self._validate("2026-03-01", "agrees", "")
-        assert flag == "agrees"
+    def test_agrees_with_empty_ref_now_downgrades(self):
+        # Strict ref-required policy: an agrees claim without a specific
+        # predecessor is structurally indistinguishable from `new` —
+        # demote so the DAG only carries verifiable edges.
+        flag, ref, _ = self._validate("2026-03-01", "agrees", "")
+        assert flag == "new"
         assert ref == ""
 
     def test_extends_with_future_ref_downgrades_to_new(self):
         # The exact inversion the LLM produced 51 times: entry-X cites
         # entry-Y where Y is later. Parser-side: invalid ref → drop ref.
         # Since extends REQUIRES a ref, the flag downgrades to new.
-        flag, ref = self._validate("2026-01-15", "extends", "2026-03-01")
+        flag, ref, _ = self._validate("2026-01-15", "extends", "2026-03-01")
         assert flag == "new"
         assert ref == ""
 
     def test_contradicts_with_future_ref_downgrades_to_new(self):
-        flag, ref = self._validate("2026-01-15", "contradicts", "2026-03-01")
+        flag, ref, _ = self._validate("2026-01-15", "contradicts", "2026-03-01")
         assert flag == "new"
         assert ref == ""
 
     def test_extends_with_same_day_ref_downgrades_to_new(self):
         # ref must be STRICTLY earlier — same-day is not a temporal edge.
-        flag, ref = self._validate("2026-03-01", "extends", "2026-03-01")
+        flag, ref, _ = self._validate("2026-03-01", "extends", "2026-03-01")
         assert flag == "new"
         assert ref == ""
 
-    def test_agrees_with_future_ref_keeps_flag_clears_ref(self):
-        # agrees doesn't require a ref, so we keep the flag and just
-        # drop the invalid pointer — the agreement is preserved
-        # qualitatively even if the cited entry isn't a valid earlier
-        # one.
-        flag, ref = self._validate("2026-01-15", "agrees", "2026-03-01")
-        assert flag == "agrees"
+    def test_agrees_with_future_ref_downgrades_to_new(self):
+        # Stricter than before: future ref → ref dropped → since `agrees`
+        # now requires a ref, the flag downgrades.
+        flag, ref, _ = self._validate("2026-01-15", "agrees", "2026-03-01")
+        assert flag == "new"
         assert ref == ""
 
     def test_malformed_ref_string_is_dropped(self):
-        flag, ref = self._validate("2026-03-01", "extends", "yesterday")
+        flag, ref, _ = self._validate("2026-03-01", "extends", "yesterday")
         # Invalid format → ref dropped → required-ref flag downgrades.
         assert flag == "new"
         assert ref == ""
 
     def test_empty_ref_with_required_flag_downgrades(self):
-        flag, ref = self._validate("2026-03-01", "extends", "")
+        flag, ref, _ = self._validate("2026-03-01", "extends", "")
+        assert flag == "new"
+        assert ref == ""
+
+    def test_quote_validation_passes_when_substring_matches(self):
+        from personal_mem.surfaces.cli import _validate_linkage_revision
+        flag, ref, quote = _validate_linkage_revision(
+            "2026-03-01", "extends", "2026-01-15",
+            ref_quote="pytest-bdd lets you write Gherkin scenarios",
+            by_date_texts={"2026-01-15": [
+                "pytest-bdd lets you write Gherkin scenarios as tests"
+            ]},
+        )
+        assert flag == "extends"
+        assert ref == "2026-01-15"
+        assert "pytest-bdd" in quote
+
+    def test_quote_validation_downgrades_when_quote_absent(self):
+        from personal_mem.surfaces.cli import _validate_linkage_revision
+        flag, ref, _ = _validate_linkage_revision(
+            "2026-03-01", "extends", "2026-01-15",
+            ref_quote="something the model invented out of thin air",
+            by_date_texts={"2026-01-15": [
+                "an unrelated artifact about a different topic entirely"
+            ]},
+        )
+        assert flag == "new"
+        assert ref == ""
+
+    def test_quote_validation_downgrades_when_quote_too_short(self):
+        from personal_mem.surfaces.cli import _validate_linkage_revision
+        flag, ref, _ = _validate_linkage_revision(
+            "2026-03-01", "extends", "2026-01-15",
+            ref_quote="pytest",  # < 20 chars, untrustworthy
+            by_date_texts={"2026-01-15": ["pytest is fine"]},
+        )
         assert flag == "new"
         assert ref == ""

@@ -22,11 +22,16 @@ build/
 # uv
 .python-version
 
-# Claude Code local state
-.claude/
+# Claude Code local state — but keep the plugin shell (it ships with the repo)
+.claude/*
+!.claude/plugins/
 
-# MCP config (may contain local paths)
-.mcp.json
+# MCP config — .mcp.json IS the plugin's MCP server declaration
+# (shipped at the repo root per Claude Code plugin spec). Local dev
+# overrides should go in .claude/settings.local.json, not here.
 
 # Vault data (user-specific)
 vault/
+
+# Stashed one-shot migrations (kept locally, not in git)
+_old/

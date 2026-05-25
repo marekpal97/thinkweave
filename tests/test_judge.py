@@ -6,17 +6,17 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.indexer import Indexer
-from personal_mem.judge import (
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import Indexer
+from personal_mem.synthesis.judge import (
     _check_blame_survival,
     _check_re_edited,
     _check_tested,
     evaluate_decision,
     find_decisions,
 )
-from personal_mem.schemas import NoteMeta, NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.schemas import NoteMeta, NoteType
+from personal_mem.core.vault import VaultManager
 
 
 def _make_decision(
@@ -140,7 +140,7 @@ class TestEvaluateDecision:
         assert result["verdict"] == "superseded"
         assert result["confidence"] == 0.7
 
-    @patch("personal_mem.judge._check_committed_via_git")
+    @patch("personal_mem.synthesis.judge._check_committed_via_git")
     def test_git_reconciliation(self, mock_git, tmp_path):
         """Decision starts as uncommitted but git shows it was committed later."""
         existing_file = tmp_path / "a.py"
@@ -187,7 +187,7 @@ class TestEvaluateDecision:
         dec_new = _make_decision("d2", date="2026-04-02", committed=True, file_paths=[fp])
         assert "commit_refs" in evaluate_decision(dec_old, [dec_old, dec_new])
 
-    @patch("personal_mem.judge._check_committed_via_git")
+    @patch("personal_mem.synthesis.judge._check_committed_via_git")
     def test_git_reconciliation_stores_multiple_refs(self, mock_git, tmp_path):
         """Judge stores all discovered commit hashes."""
         existing = tmp_path / "a.py"
@@ -198,7 +198,7 @@ class TestEvaluateDecision:
         result = evaluate_decision(dec, [dec])
         assert result["commit_refs"] == ["aaa1111", "bbb2222"]
 
-    @patch("personal_mem.judge._check_committed_via_git")
+    @patch("personal_mem.synthesis.judge._check_committed_via_git")
     def test_existing_commit_refs_merged(self, mock_git, tmp_path):
         """Existing commit_refs from frontmatter are merged with discovered refs."""
         existing = tmp_path / "a.py"
@@ -212,7 +212,7 @@ class TestEvaluateDecision:
         assert "old5678" in result["commit_refs"]
         assert "new1234" in result["commit_refs"]
 
-    @patch("personal_mem.judge._check_committed_via_git")
+    @patch("personal_mem.synthesis.judge._check_committed_via_git")
     def test_commit_refs_deduped(self, mock_git, tmp_path):
         """Duplicate refs from frontmatter and git discovery are deduplicated."""
         existing = tmp_path / "a.py"
@@ -247,8 +247,8 @@ class TestEvaluateDecision:
         assert "blame_lines" in result
         assert isinstance(result["blame_lines"], int)
 
-    @patch("personal_mem.judge._check_blame_survival", return_value=15)
-    @patch("personal_mem.judge._check_committed_via_git", return_value={})
+    @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=15)
+    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
     def test_superseded_with_surviving_lines_becomes_kept(self, mock_git, mock_blame, tmp_path):
         """Decision with surviving blame lines is co-contributor, not superseded."""
         existing = tmp_path / "a.py"
@@ -262,8 +262,8 @@ class TestEvaluateDecision:
         assert "15 lines survive" in result["evidence"]
         assert result["blame_lines"] == 15
 
-    @patch("personal_mem.judge._check_blame_survival", return_value=0)
-    @patch("personal_mem.judge._check_committed_via_git", return_value={})
+    @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=0)
+    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
     def test_superseded_with_zero_lines_stays_superseded(self, mock_git, mock_blame, tmp_path):
         """Decision with zero surviving lines is truly superseded."""
         existing = tmp_path / "a.py"
@@ -277,7 +277,7 @@ class TestEvaluateDecision:
 
 
 class TestCheckBlameSurvival:
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_counts_matching_lines(self, mock_run, tmp_path):
         existing = tmp_path / "a.py"
         existing.write_text("x = 1\ny = 2\n")
@@ -294,7 +294,7 @@ class TestCheckBlameSurvival:
         result = _check_blame_survival([str(existing)], ["abc1234"])
         assert result == 2
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_no_matching_lines(self, mock_run, tmp_path):
         existing = tmp_path / "a.py"
         existing.write_text("z = 3\n")
@@ -314,7 +314,7 @@ class TestCheckBlameSurvival:
         assert _check_blame_survival([], ["abc1234"]) == -1
         assert _check_blame_survival(["/some/file.py"], []) == -1
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_handles_subprocess_error(self, mock_run, tmp_path):
         existing = tmp_path / "a.py"
         existing.write_text("pass")
@@ -322,7 +322,7 @@ class TestCheckBlameSurvival:
         result = _check_blame_survival([str(existing)], ["abc1234"])
         assert result == -1
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_narrows_blame_to_relevant_files(self, mock_run, tmp_path):
         """With hash_to_files, blame only checks files that the commit touched."""
         a = tmp_path / "a.py"
@@ -349,7 +349,7 @@ class TestCheckBlameSurvival:
         )
         assert result == 2  # 1 line from a (abc) + 1 line from b (def)
 
-    @patch("personal_mem.judge.subprocess.run")
+    @patch("personal_mem.synthesis.judge.subprocess.run")
     def test_narrowing_skips_unrelated_file(self, mock_run, tmp_path):
         """Commit that didn't touch a file shouldn't count blame lines in it."""
         a = tmp_path / "a.py"
@@ -371,6 +371,170 @@ class TestCheckBlameSurvival:
         )
         # Only a.py counted, b.py skipped because abc1234 didn't touch it
         assert result == 1
+
+
+class TestBatchedGitLog:
+    """Regression for P0-9: single git log call, not per-file fanout.
+
+    _check_committed_via_git must issue ONE subprocess call regardless
+    of how many files the decision touches. Old impl looped over
+    file_paths and ran `git log` per file (45s worst case for 3 files
+    with 5+10s timeouts).
+    """
+
+    @patch("personal_mem.synthesis.judge.subprocess.run")
+    def test_single_subprocess_call_for_multiple_files(self, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = (
+            "abc1234\n"
+            "src/a.py\n"
+            "src/b.py\n"
+            "\n"
+            "def5678\n"
+            "src/c.py\n"
+        )
+        from personal_mem.synthesis.judge import _check_committed_via_git
+
+        result = _check_committed_via_git(
+            ["src/a.py", "src/b.py", "src/c.py"],
+            "2026-04-01",
+        )
+        assert mock_run.call_count == 1, (
+            f"expected exactly 1 subprocess call, got {mock_run.call_count}"
+        )
+        # First (and only) call: a single git log invocation, not per-file
+        args = mock_run.call_args[0][0]
+        assert args[0:2] == ["git", "log"]
+        assert "--name-only" in args
+        assert any(a.startswith("--since=") for a in args)
+        # No `--` separator with file paths appended (no per-file scoping)
+        assert "--" not in args
+
+    @patch("personal_mem.synthesis.judge.subprocess.run")
+    def test_parses_hash_to_files_map(self, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = (
+            "abc1234\n"
+            "src/a.py\n"
+            "src/b.py\n"
+            "\n"
+            "def5678\n"
+            "src/b.py\n"
+        )
+        from personal_mem.synthesis.judge import _check_committed_via_git
+        result = _check_committed_via_git(
+            ["src/a.py", "src/b.py"], "2026-04-01",
+        )
+        # abc1234 touched both a and b; def5678 touched only b
+        assert "abc1234" in result
+        assert set(result["abc1234"]) == {"src/a.py", "src/b.py"}
+        assert "def5678" in result
+        assert result["def5678"] == ["src/b.py"]
+
+    @patch("personal_mem.synthesis.judge.subprocess.run")
+    def test_filters_to_target_files(self, mock_run):
+        """Commit hashes with no overlap into file_paths should be dropped."""
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = (
+            "abc1234\n"
+            "src/a.py\n"
+            "\n"
+            "def5678\n"
+            "unrelated/x.py\n"
+        )
+        from personal_mem.synthesis.judge import _check_committed_via_git
+        result = _check_committed_via_git(["src/a.py"], "2026-04-01")
+        assert "abc1234" in result
+        # def5678 didn't touch any file in target set — excluded
+        assert "def5678" not in result
+
+    @patch("personal_mem.synthesis.judge.subprocess.run")
+    def test_empty_inputs_no_subprocess(self, mock_run):
+        from personal_mem.synthesis.judge import _check_committed_via_git
+        # No file_paths → no subprocess call needed
+        assert _check_committed_via_git([], "2026-04-01") == {}
+        assert mock_run.call_count == 0
+        # No since_date → no subprocess call
+        assert _check_committed_via_git(["a.py"], "") == {}
+        assert mock_run.call_count == 0
+
+    @patch("personal_mem.synthesis.judge.subprocess.run")
+    def test_handles_subprocess_failure(self, mock_run):
+        from personal_mem.synthesis.judge import _check_committed_via_git
+        mock_run.side_effect = FileNotFoundError("git not found")
+        assert _check_committed_via_git(["a.py"], "2026-04-01") == {}
+
+    @patch("personal_mem.synthesis.judge.subprocess.run")
+    def test_handles_timeout(self, mock_run):
+        from personal_mem.synthesis.judge import _check_committed_via_git
+        import subprocess as _sp
+        mock_run.side_effect = _sp.TimeoutExpired("git", 15)
+        assert _check_committed_via_git(["a.py"], "2026-04-01") == {}
+
+
+class TestBlameSkipWhenUncommitted:
+    """Regression for P0-9: skip blame when decision is uncommitted.
+
+    `_check_blame_survival` is expensive (per-file git blame). When the
+    decision isn't committed there's nothing to attribute blame against,
+    so we must not invoke it at all.
+    """
+
+    @patch("personal_mem.synthesis.judge._check_blame_survival")
+    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
+    def test_uncommitted_skips_blame(self, mock_git, mock_blame):
+        """Uncommitted decision must NOT trigger _check_blame_survival."""
+        dec = _make_decision(committed=False, file_paths=["a.py"])
+        result = evaluate_decision(dec, [dec])
+        assert result["verdict"] == "unknown"
+        # The whole point: blame must not be invoked.
+        mock_blame.assert_not_called()
+        assert result["blame_lines"] == -1
+
+    @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=3)
+    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
+    def test_committed_still_calls_blame(self, mock_git, mock_blame, tmp_path):
+        """Committed decisions still pay the blame cost — that's the design."""
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        dec = _make_decision(committed=True, file_paths=[str(existing)])
+        result = evaluate_decision(dec, [dec])
+        mock_blame.assert_called_once()
+        assert result["blame_lines"] == 3
+
+
+class TestJudgeSubprocessCount:
+    """Regression for P0-9: 3 decisions × 3 files should issue ≤ 3 git log
+    calls (one per decision), not 9 (one per file × decision)."""
+
+    @patch("personal_mem.synthesis.judge.subprocess.run")
+    def test_three_decisions_three_files_each_uses_one_git_call_per_decision(
+        self, mock_run, tmp_path,
+    ):
+        # Make blame return empty so we don't fan out into blame too.
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""  # no commits found
+        files = []
+        for name in ("a.py", "b.py", "c.py"):
+            p = tmp_path / name
+            p.write_text("pass")
+            files.append(str(p))
+
+        decisions = [
+            _make_decision(f"d{i}", committed=True, file_paths=files)
+            for i in range(3)
+        ]
+        for d in decisions:
+            evaluate_decision(d, decisions)
+
+        # 3 decisions × 1 git-log call each = 3.
+        # Blame is skipped because no commit_refs produced (committed=True
+        # in frontmatter, but git log returned nothing → commit_refs=[]).
+        # _check_blame_survival is still called (committed=True) but its
+        # internal early-return on empty refs costs zero subprocesses.
+        assert mock_run.call_count == 3, (
+            f"expected exactly 3 subprocess calls (1/decision), got {mock_run.call_count}"
+        )
 
 
 class TestFindDecisions:

@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook session_start || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook user_prompt_submit || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook post_tool_use || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook stop || true"
+          }
+        ]
+      }
+    ]
+  }
+}

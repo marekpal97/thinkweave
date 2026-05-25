@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.concepts import (
+from personal_mem.synthesis.concepts import (
     build_reverse_map,
     find_near_duplicates,
     load_aliases,
@@ -20,11 +20,11 @@ from personal_mem.concepts import (
     save_aliases,
     suggest_similar,
 )
-from personal_mem.config import Config
-from personal_mem.indexer import EDGE_TYPE_TO_FIELD, Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.search import Search
-from personal_mem.vault import VaultManager, parse_frontmatter
+from personal_mem.core.config import Config
+from personal_mem.core.indexer import EDGE_TYPE_TO_FIELD, Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.retrieval.search import Search
+from personal_mem.core.vault import VaultManager, parse_frontmatter
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ class TestLinkUnlinkMarkdown:
         text = path.read_text(encoding="utf-8")
         fm, body = parse_frontmatter(text)
         fm["related"] = new_targets
-        from personal_mem.vault import render_frontmatter
+        from personal_mem.core.vault import render_frontmatter
         path.write_text(render_frontmatter(fm) + "\n\n" + body, encoding="utf-8")
 
         updated = vault.read_note(path)
@@ -171,7 +171,7 @@ class TestLinkUnlinkMarkdown:
         text = path.read_text(encoding="utf-8")
         fm, body = parse_frontmatter(text)
         fm.pop("related", None)
-        from personal_mem.vault import render_frontmatter
+        from personal_mem.core.vault import render_frontmatter
         path.write_text(render_frontmatter(fm) + "\n\n" + body, encoding="utf-8")
 
         updated = vault.read_note(path)
@@ -461,8 +461,8 @@ class TestSearchEdgeCases:
 
 class TestJudgeEdgeCases:
     def test_decision_with_multiple_files(self, tmp_path: Path):
-        from personal_mem.judge import evaluate_decision
-        from personal_mem.schemas import NoteMeta
+        from personal_mem.synthesis.judge import evaluate_decision
+        from personal_mem.core.schemas import NoteMeta
 
         # All files exist
         files = []
@@ -481,8 +481,8 @@ class TestJudgeEdgeCases:
 
     def test_decision_partial_file_removal(self, tmp_path: Path):
         """Some files exist, some don't — should still count as kept if majority present."""
-        from personal_mem.judge import evaluate_decision
-        from personal_mem.schemas import NoteMeta
+        from personal_mem.synthesis.judge import evaluate_decision
+        from personal_mem.core.schemas import NoteMeta
 
         existing = tmp_path / "kept.py"
         existing.write_text("pass")
@@ -547,7 +547,7 @@ class TestMCPToolChainE2E:
         assert any(session.id in r.id for r in results)
 
         # ── Step 3: Agent extracts insights as notes ────────────────
-        from personal_mem.mcp.server import _parse_candidate_insights
+        from personal_mem.surfaces.mcp.server import _parse_candidate_insights
         insights = _parse_candidate_insights(session.body)
         assert len(insights) == 2
 
@@ -647,8 +647,8 @@ class TestMCPToolChainE2E:
         assert stats["edges"] >= 4
 
         # ── Step 8: Agent judges the decision ───────────────────────
-        from personal_mem.judge import evaluate_decision
-        from personal_mem.schemas import NoteMeta
+        from personal_mem.synthesis.judge import evaluate_decision
+        from personal_mem.core.schemas import NoteMeta
 
         all_decisions = [
             vault.read_note(p) for p in vault.root.rglob("*.md")
@@ -679,7 +679,7 @@ class TestMCPToolChainE2E:
             fm["implements"] = new_impl
         else:
             fm.pop("implements", None)
-        from personal_mem.vault import render_frontmatter
+        from personal_mem.core.vault import render_frontmatter
         first_note_path.write_text(
             render_frontmatter(fm) + "\n\n" + body, encoding="utf-8",
         )

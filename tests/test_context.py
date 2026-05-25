@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.context import (
+from personal_mem.core.config import Config
+from personal_mem.retrieval.context import (
     CHARS_PER_TOKEN,
     SECTIONS,
     build_project_context,
@@ -15,9 +15,9 @@ from personal_mem.context import (
     _extract_summary,
     _slice_markdown_section,
 )
-from personal_mem.indexer import Indexer
-from personal_mem.schemas import NoteType
-from personal_mem.vault import VaultManager
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.schemas import NoteType
+from personal_mem.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------
@@ -261,10 +261,11 @@ class TestBuildProjectContext:
             )
         indexer.rebuild(full=True)
 
-        # Budget tight enough to force drops. Tools manifest alone is ~2.4k chars,
-        # so 800 tokens = 3200 chars cannot fit sources + probes on top of it.
+        # Budget tight enough to force drops. Tools manifest alone is ~3.2k chars,
+        # so 1200 tokens = 4800 chars must drop the decorative sections (sources,
+        # probes) while leaving header / tools / sessions / footer intact.
         payload = build_project_context(
-            config, project="demo", budget_tokens=800
+            config, project="demo", budget_tokens=1200
         )
 
         # Sessions section is load-bearing — should survive.
@@ -301,3 +302,76 @@ class TestBuildProjectContext:
         assert "themes" in SECTIONS
         assert "footer" in SECTIONS
         assert len(SECTIONS) == 11
+
+
+class TestToolManifestConsolidation:
+    """The SessionStart payload advertises the consolidated MCP surface.
+
+    Regression for the audit finding that ``_build_tools_manifest`` and
+    ``_build_footer`` were still emitting deprecated tool names. The
+    canonical surface (18 tools) is documented in CLAUDE.md §7.
+
+    The deprecation aliases (``mem_concept_search``, ``mem_source_lens``,
+    ``mem_decisions_for_file``, ``mem_concepts_merge``,
+    ``mem_concepts_drift``, ``mem_concepts_tighten``) still resolve at
+    the MCP server, but they MUST NOT appear in the SessionStart payload
+    — that's what tells the agent which surface to call.
+    """
+
+    # The 18 canonical MCP tools — must all appear at least once in the
+    # rendered SessionStart payload.
+    CANONICAL_TOOLS = (
+        "mem_search",
+        "mem_create",
+        "mem_read",
+        "mem_update",
+        "mem_link",
+        "mem_unlink",
+        "mem_context",
+        "mem_graph",
+        "mem_concepts",
+        "mem_extract",
+        "mem_judge",
+        "mem_landing",
+        "mem_enrich",
+        "mem_timeline",
+        "mem_project_snapshot",
+        "mem_queue",
+        "mem_sources_config",
+        "mem_prompts",
+    )
+
+    # Deprecated names — folded into mem_concepts(action=...) and
+    # mem_graph(filter=...). Must not appear in the rendered payload.
+    DEPRECATED_TOOLS = (
+        "mem_concept_search",
+        "mem_source_lens",
+        "mem_decisions_for_file",
+        "mem_concepts_merge",
+        "mem_concepts_drift",
+        "mem_concepts_tighten",
+    )
+
+    def test_no_deprecated_tool_names(self, config: Config, vault: VaultManager):
+        payload = build_project_context(config, project="test", budget_tokens=10000)
+        for name in self.DEPRECATED_TOOLS:
+            assert name not in payload, (
+                f"deprecated tool name {name!r} still advertised in SessionStart payload"
+            )
+
+    def test_all_canonical_tools_present(self, config: Config, vault: VaultManager):
+        payload = build_project_context(config, project="test", budget_tokens=10000)
+        missing = [t for t in self.CANONICAL_TOOLS if t not in payload]
+        assert not missing, f"canonical MCP tools missing from manifest: {missing!r}"
+
+    def test_canonical_dispatch_keywords_present(
+        self, config: Config, vault: VaultManager
+    ):
+        """Surface the consolidation hints — mem_graph filter + mem_concepts action."""
+        payload = build_project_context(config, project="test", budget_tokens=10000)
+        # mem_graph dispatch — the four filter variants advertised in CLAUDE.md §2.
+        assert "source_lens" in payload
+        assert "decisions_for_file" in payload
+        assert "concept_walk" in payload
+        # mem_concepts dispatch — at least the new actions named explicitly.
+        assert "action" in payload

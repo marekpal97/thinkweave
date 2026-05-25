@@ -17,10 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from personal_mem.concepts import load_tag_vocabulary
-from personal_mem.config import load_config
-from personal_mem.indexer import Indexer
-from personal_mem.vault import VaultManager, parse_frontmatter, render_frontmatter
+from personal_mem.synthesis.concepts import load_tag_vocabulary
+from personal_mem.core.config import load_config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
 
 
 SKIP_DIRS = {"templates", ".obsidian", ".trash"}

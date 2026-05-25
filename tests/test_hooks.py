@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.config import Config
-from personal_mem.hooks.handler import (
+from personal_mem.core.config import Config
+from personal_mem.surfaces.hooks.handler import (
     _buffer_event,
     _build_auto_summary,
     _build_event,
@@ -31,7 +31,7 @@ from personal_mem.hooks.handler import (
     archive_buffer,
     cleanup_buffer,
 )
-from personal_mem.hooks.install import install_hooks, uninstall_hooks
+from personal_mem.surfaces.hooks.install import install_hooks, uninstall_hooks
 
 
 class TestHookHelpers:
@@ -94,29 +94,34 @@ class TestHookInstaller:
 
         settings = json.loads(settings_path.read_text())
         assert "hooks" in settings
-        assert "PreToolUse" in settings["hooks"]
+        # PreToolUse retired — fresh install must not register it.
+        assert "PreToolUse" not in settings["hooks"]
         assert "PostToolUse" in settings["hooks"]
 
-        # Verify hook structure
-        pre = settings["hooks"]["PreToolUse"][0]
-        assert pre["matcher"] == "Write|Edit"
-        assert pre["hooks"][0]["timeout"] == 5
-
-        post = settings["hooks"]["PostToolUse"][0]
-        assert post["matcher"] == "Write|Edit|Bash"
+        # Two PostToolUse entries: action-tool gate + MCP-tool gate.
+        matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
+        assert "Write|Edit|Bash" in matchers
+        assert "mcp__personal-mem__.*" in matchers
+        for entry in settings["hooks"]["PostToolUse"]:
+            assert entry["hooks"][0]["timeout"] == 5
 
     def test_install_preserves_existing(self, tmp_path: Path):
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
         claude_dir.mkdir(parents=True)
 
-        # Pre-existing settings
+        # Pre-existing settings: a foreign PreToolUse entry plus a foreign
+        # PostToolUse entry. The installer must leave both untouched while
+        # appending its own PostToolUse hook.
         existing = {
             "permissions": {"allow": ["Bash(ls)"]},
             "hooks": {
                 "PreToolUse": [
                     {"matcher": "SomeOther", "hooks": [{"type": "command", "command": "echo hi"}]}
-                ]
+                ],
+                "PostToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo post"}]}
+                ],
             },
         }
         (claude_dir / "settings.local.json").write_text(json.dumps(existing))
@@ -126,14 +131,24 @@ class TestHookInstaller:
         settings = json.loads((claude_dir / "settings.local.json").read_text())
         # Existing permission preserved
         assert "Bash(ls)" in settings["permissions"]["allow"]
-        # Existing hook preserved
-        assert len(settings["hooks"]["PreToolUse"]) == 2
-        # Our hook added — entry-point command is `mem-hook pre_tool_use`
-        assert any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
+        # Foreign PreToolUse hook left intact, no personal_mem entry added
+        assert len(settings["hooks"]["PreToolUse"]) == 1
+        assert not any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
+        # Foreign PostToolUse preserved + two personal_mem PostToolUse
+        # entries appended (action gate + MCP gate).
+        assert len(settings["hooks"]["PostToolUse"]) == 3
+        mem_entries = [
+            e for e in settings["hooks"]["PostToolUse"]
+            if "mem-hook" in str(e)
+        ]
+        assert len(mem_entries) == 2
+        mem_matchers = {e["matcher"] for e in mem_entries}
+        assert mem_matchers == {"Write|Edit|Bash", "mcp__personal-mem__.*"}
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
-        mem-hook) gets rewritten to the current absolute-path form."""
+        mem-hook) gets rewritten to the current absolute-path form for
+        retained phases. The retired PreToolUse phase is stripped instead."""
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
         claude_dir.mkdir(parents=True)
@@ -172,7 +187,7 @@ class TestHookInstaller:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "python3 -m personal_mem.hooks.handler stop",
+                                "command": "python3 -m personal_mem.surfaces.hooks.handler stop",
                                 "timeout": 5,
                             }
                         ],
@@ -187,19 +202,28 @@ class TestHookInstaller:
         settings = json.loads(
             (claude_dir / "settings.local.json").read_text()
         )
-        # All three legacy entries rewritten in place — no duplicates.
-        assert len(settings["hooks"]["PreToolUse"]) == 1
-        assert len(settings["hooks"]["PostToolUse"]) == 1
+        # PreToolUse: retired phase stripped entirely (no foreign hooks
+        # were present to retain, so the key disappears).
+        assert "PreToolUse" not in settings["hooks"]
+        # Retained phases rewritten in place — the legacy single-matcher
+        # PostToolUse entry stays at one and gets rewritten with the
+        # current absolute path; the second MCP-matcher entry is appended
+        # on top. Stop has no slot fan-out, so it stays at exactly one.
+        assert len(settings["hooks"]["PostToolUse"]) == 2
         assert len(settings["hooks"]["Stop"]) == 1
 
-        pre_cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        post_cmd = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        # Identify the action vs MCP PostToolUse entry by matcher.
+        post_entries = settings["hooks"]["PostToolUse"]
+        action_entry = next(e for e in post_entries if e["matcher"] == "Write|Edit|Bash")
+        mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__personal-mem__.*")
+        action_cmd = action_entry["hooks"][0]["command"]
+        mcp_cmd = mcp_entry["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
 
         # New form: absolute path ending in `mem-hook[.exe] <phase>`.
         for cmd, phase in [
-            (pre_cmd, "pre_tool_use"),
-            (post_cmd, "post_tool_use"),
+            (action_cmd, "post_tool_use"),
+            (mcp_cmd, "post_tool_use"),
             (stop_cmd, "stop"),
         ]:
             assert cmd.endswith(f" {phase}")
@@ -212,8 +236,49 @@ class TestHookInstaller:
             )
 
         # Legacy fragments fully replaced.
-        assert "run_hook.sh" not in pre_cmd
         assert "python3" not in stop_cmd
+
+    def test_install_strips_retired_pretooluse_but_keeps_foreign(self, tmp_path: Path):
+        """Re-running install must remove a stale personal_mem PreToolUse
+        entry without disturbing PreToolUse hooks owned by other tools."""
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+
+        legacy = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Write|Edit",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/abs/path/to/mem-hook pre_tool_use",
+                                "timeout": 5,
+                            }
+                        ],
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {"type": "command", "command": "echo other-tool"}
+                        ],
+                    },
+                ]
+            }
+        }
+        (claude_dir / "settings.local.json").write_text(json.dumps(legacy))
+
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (claude_dir / "settings.local.json").read_text()
+        )
+        pre = settings["hooks"]["PreToolUse"]
+        assert len(pre) == 1
+        # The personal_mem entry is gone; the foreign one is intact.
+        assert pre[0]["matcher"] == "Bash"
+        assert "mem-hook" not in str(pre)
 
     def test_install_writes_absolute_path(self, tmp_path: Path):
         """Fresh install writes an absolute path so /bin/sh can exec
@@ -225,16 +290,20 @@ class TestHookInstaller:
         settings = json.loads(
             (project_dir / ".claude" / "settings.local.json").read_text()
         )
-        for hook_type in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
-            cmd = settings["hooks"][hook_type][0]["hooks"][0]["command"]
-            head = cmd.rsplit(" ", 1)[0]
-            assert "mem-hook" in head
-            assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
-                f"{hook_type}: expected absolute path, got {head!r}"
-            )
-            # The resolved path should actually exist (we just installed
-            # the package in the dev environment running these tests).
-            assert Path(head).exists(), f"{hook_type}: {head} does not exist"
+        # PreToolUse retired — only the three retained phases get installed.
+        assert "PreToolUse" not in settings["hooks"]
+        for hook_type in ("SessionStart", "PostToolUse", "Stop"):
+            for entry in settings["hooks"][hook_type]:
+                cmd = entry["hooks"][0]["command"]
+                head = cmd.rsplit(" ", 1)[0]
+                assert "mem-hook" in head
+                assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
+                    f"{hook_type}: expected absolute path, got {head!r}"
+                )
+                # The resolved path should actually exist (we just
+                # installed the package in the dev environment running
+                # these tests).
+                assert Path(head).exists(), f"{hook_type}: {head} does not exist"
 
     def test_install_idempotent(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -245,9 +314,16 @@ class TestHookInstaller:
         settings = json.loads(
             (project_dir / ".claude" / "settings.local.json").read_text()
         )
-        # Should not duplicate
-        assert len(settings["hooks"]["PreToolUse"]) == 1
-        assert len(settings["hooks"]["PostToolUse"]) == 1
+        # PreToolUse retired — never installed; idempotent reinstall must
+        # not resurrect it.
+        assert "PreToolUse" not in settings["hooks"]
+        # PostToolUse owns two slots (action + MCP) — must not duplicate
+        # within slot. Single-matcher phases stay at exactly one.
+        assert len(settings["hooks"]["PostToolUse"]) == 2
+        post_matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
+        assert post_matchers == {"Write|Edit|Bash", "mcp__personal-mem__.*"}
+        assert len(settings["hooks"]["SessionStart"]) == 1
+        assert len(settings["hooks"]["Stop"]) == 1
 
     def test_install_includes_stop_hook(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -274,6 +350,58 @@ class TestHookInstaller:
         assert "session_start" in ss["hooks"][0]["command"]
         # No matcher is used for SessionStart
         assert ss["matcher"] == ""
+
+    def test_install_registers_mcp_post_tool_use_matcher(self, tmp_path: Path):
+        """RLVR context-served substrate depends on this matcher.
+
+        Claude Code matches PostToolUse entries against the dispatched
+        tool's ``tool_name`` string. MCP calls arrive with names like
+        ``mcp__personal-mem__mem_search`` — they don't match
+        ``Write|Edit|Bash``. Without a second matcher targeting
+        ``mcp__personal-mem__.*``, ``_handle_post``'s retrieval branch
+        (see operations/retrieval_log.RETRIEVAL_TOOLS) never fires and
+        ``retrieval_log.jsonl`` only contains the SessionStart entry.
+
+        Regression for the audit finding that the matcher was
+        action-tool-only — pinning the installed shape rather than just
+        the in-handler gate.
+        """
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        post_entries = settings["hooks"]["PostToolUse"]
+        # The MCP-matcher entry must be present.
+        mcp_entry = next(
+            (e for e in post_entries if e["matcher"] == "mcp__personal-mem__.*"),
+            None,
+        )
+        assert mcp_entry is not None, (
+            f"no MCP-matcher PostToolUse entry installed; got matchers "
+            f"{[e['matcher'] for e in post_entries]!r}"
+        )
+        # It must dispatch to the same handler entry point as the action gate.
+        assert "mem-hook" in mcp_entry["hooks"][0]["command"]
+        assert mcp_entry["hooks"][0]["command"].endswith(" post_tool_use")
+
+    def test_install_idempotent_for_mcp_matcher(self, tmp_path: Path):
+        """Re-installing must rewrite the MCP entry in place, not duplicate."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        mcp_entries = [
+            e for e in settings["hooks"]["PostToolUse"]
+            if e["matcher"] == "mcp__personal-mem__.*"
+        ]
+        assert len(mcp_entries) == 1
 
     def test_uninstall(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -403,7 +531,7 @@ class TestGitCommitDetection:
 
 
 class TestGetCommitFiles:
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_file_list(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "src/a.py\nsrc/b.py\n"
@@ -411,24 +539,24 @@ class TestGetCommitFiles:
         assert result == ["src/a.py", "src/b.py"]
         mock_run.assert_called_once()
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_error(self, mock_run):
         mock_run.side_effect = FileNotFoundError("git not found")
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_timeout(self, mock_run):
         import subprocess as sp
         mock_run.side_effect = sp.TimeoutExpired("git", 5)
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_nonzero_exit(self, mock_run):
         mock_run.return_value.returncode = 1
         mock_run.return_value.stdout = ""
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.hooks.handler.subprocess.run")
+    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
     def test_filters_blank_lines(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "src/a.py\n\n  \nsrc/b.py\n"
@@ -437,13 +565,13 @@ class TestGetCommitFiles:
 
 
 class TestBuildEventCommitFiles:
-    @patch("personal_mem.hooks.handler._get_commit_files", return_value=["src/a.py", "src/b.py"])
+    @patch("personal_mem.surfaces.hooks.handler._get_commit_files", return_value=["src/a.py", "src/b.py"])
     def test_commit_event_includes_files(self, mock_files):
         output = "[main abc1234] Fix bug\n 2 files changed\n"
         event = _build_event("Bash", {"command": "git commit -m 'Fix bug'"}, output, "14:00")
         assert event["commit"]["files"] == ["src/a.py", "src/b.py"]
 
-    @patch("personal_mem.hooks.handler._get_commit_files", return_value=[])
+    @patch("personal_mem.surfaces.hooks.handler._get_commit_files", return_value=[])
     def test_commit_event_no_files_key_when_empty(self, mock_files):
         output = "[main abc1234] Fix bug\n 2 files changed\n"
         event = _build_event("Bash", {"command": "git commit -m 'Fix bug'"}, output, "14:00")
@@ -645,7 +773,7 @@ class TestSummarizeEvents:
 class TestHookErrorLogging:
     def test_log_error_creates_file(self, tmp_path):
         cfg = Config(vault_root=tmp_path / "vault")
-        with patch("personal_mem.config.load_config", return_value=cfg):
+        with patch("personal_mem.core.config.load_config", return_value=cfg):
             _log_error("test_hook", ValueError("test error"))
 
         log_path = cfg.mem_dir / "hooks.log"
@@ -656,7 +784,7 @@ class TestHookErrorLogging:
 
     def test_log_error_appends(self, tmp_path):
         cfg = Config(vault_root=tmp_path / "vault")
-        with patch("personal_mem.config.load_config", return_value=cfg):
+        with patch("personal_mem.core.config.load_config", return_value=cfg):
             _log_error("hook1", ValueError("error1"))
             _log_error("hook2", RuntimeError("error2"))
 
@@ -667,7 +795,7 @@ class TestHookErrorLogging:
     def test_log_error_never_raises(self):
         # Even if everything fails inside, _log_error should not raise
         # Force a failure by making the import path invalid
-        with patch.dict("sys.modules", {"personal_mem.config": None}):
+        with patch.dict("sys.modules", {"personal_mem.core.config": None}):
             _log_error("test", ValueError("err"))  # Should not raise
 
 
@@ -704,16 +832,16 @@ class TestSessionStartHandler:
         """Invoke _handle_session_start with a stubbed config + project, capture stdout."""
         import io
 
-        from personal_mem.config import Config
-        from personal_mem.hooks import handler as handler_mod
+        from personal_mem.core.config import Config
+        from personal_mem.surfaces.hooks import handler as handler_mod
 
         cfg = Config(vault_root=vault_dir)
         # Force our config through load_config so the handler uses the tmp vault
         monkeypatch.setattr(
-            "personal_mem.config.load_config", lambda: cfg
+            "personal_mem.core.config.load_config", lambda: cfg
         )
         monkeypatch.setattr(
-            "personal_mem.hooks.handler._detect_project",
+            "personal_mem.surfaces.hooks.handler._detect_project",
             lambda hook_input: project,
         )
 
@@ -737,10 +865,10 @@ class TestSessionStartHandler:
     def test_populated_vault_emits_additional_context(
         self, tmp_path: Path, monkeypatch
     ):
-        from personal_mem.indexer import Indexer
-        from personal_mem.schemas import NoteType
-        from personal_mem.vault import VaultManager
-        from personal_mem.config import Config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.core.config import Config
 
         vault_dir = tmp_path / "vault"
         cfg = Config(vault_root=vault_dir)
@@ -779,13 +907,13 @@ class TestSessionStartHandler:
         """Hook must always exit cleanly, even if the payload builder raises."""
         import io
 
-        from personal_mem.hooks import handler as handler_mod
+        from personal_mem.surfaces.hooks import handler as handler_mod
 
         def boom(*args, **kwargs):
             raise RuntimeError("synthetic failure")
 
         monkeypatch.setattr(
-            "personal_mem.context.build_project_context", boom
+            "personal_mem.retrieval.context.build_project_context", boom
         )
         buf = io.StringIO()
         monkeypatch.setattr("sys.stdout", buf)
@@ -797,3 +925,97 @@ class TestSessionStartHandler:
         # Stdout should still be valid JSON (empty dict)
         result = json.loads(buf.getvalue() or "{}")
         assert isinstance(result, dict)
+
+
+class TestUserPromptSubmitHook:
+    """Phase 4 E1 — UserPromptSubmit captures every prompt to the JSONL buffer."""
+
+    def test_appends_prompt_event(self, tmp_path: Path, monkeypatch):
+        from personal_mem.core.config import Config
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+
+        # Avoid the eager session-note creation path (it indexes/writes to
+        # the vault) — for this unit test we only care about the JSONL line.
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._ensure_session",
+            lambda *a, **k: None,
+        )
+
+        handler_mod._handle_user_prompt_submit(
+            {
+                "session_id": "ses-cc-1",
+                "prompt": "What does the indexer skip?",
+                "cwd": "/some/where",
+            }
+        )
+
+        buf_file = cfg.mem_dir / "buffer" / "ses-cc-1.jsonl"
+        assert buf_file.exists()
+        lines = buf_file.read_text().splitlines()
+        assert len(lines) == 1
+        row = json.loads(lines[0])
+        assert row["type"] == "prompt"
+        assert row["text"] == "What does the indexer skip?"
+        assert row["session_id"] == "ses-cc-1"
+        assert row["cwd"] == "/some/where"
+        assert row["ts"]  # populated
+
+    def test_missing_text_skipped(self, tmp_path: Path, monkeypatch):
+        from personal_mem.core.config import Config
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._ensure_session",
+            lambda *a, **k: None,
+        )
+
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-cc-2", "prompt": ""}
+        )
+
+        # No buffer should have been created
+        assert not (cfg.mem_dir / "buffer" / "ses-cc-2.jsonl").exists()
+
+    def test_install_registers_user_prompt_submit(self, tmp_path: Path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert "UserPromptSubmit" in settings["hooks"]
+        ups = settings["hooks"]["UserPromptSubmit"][0]
+        assert "user_prompt_submit" in ups["hooks"][0]["command"]
+        assert "mem-hook" in ups["hooks"][0]["command"]
+
+    def test_install_idempotent_with_user_prompt_submit(self, tmp_path: Path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        install_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 1
+
+    def test_uninstall_removes_user_prompt_submit(self, tmp_path: Path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        uninstall_hooks(project_dir=str(project_dir))
+
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        assert "hooks" not in settings or "UserPromptSubmit" not in settings.get(
+            "hooks", {}
+        )

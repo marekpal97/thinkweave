@@ -19,9 +19,9 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from personal_mem.config import load_config
-from personal_mem.indexer import Indexer
-from personal_mem.vault import VaultManager, parse_frontmatter, render_frontmatter
+from personal_mem.core.config import load_config
+from personal_mem.core.indexer import Indexer
+from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
 
 # ── Concept keyword rules ───────────────────────────────────────────
 # Each rule: (concept_name, [keyword_patterns])

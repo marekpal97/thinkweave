@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from personal_mem.config import Config
+from personal_mem.core.config import Config
 
 
 OnError = Literal["continue", "abort"]
