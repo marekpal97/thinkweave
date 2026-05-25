@@ -12,18 +12,22 @@ tools:
   - mem_concepts
   - mem_create
   - mem_link
-description: One-off URL ingest for news articles, mid-conversation. Runs the same Haiku triage as `/drain --source-type news`, then dispatches a Sonnet writer for accepts. Supports `--force` to bypass triage when the user is sure.
+description: One-off URL ingest for news articles, mid-conversation. Dispatches a Sonnet writer directly; no triage gate (you've already decided this is worth briefing).
 ---
 
 # /news — One-off news URL ingest
 
-Use this when you've just read a news article and want to fold it into the vault now, without waiting for the next cron drain. Same admission gate as the cron path: Haiku title-triage against the active-themes catalog, then Sonnet writer if `keep` or `keep_unfiled`.
+Use this when you've just read a news article and want to fold it into the vault now, without waiting for the next cron drain.
+
+**No admission gate.** By typing `/news <url>` you're already saying "this is worth briefing." The Haiku title-triage that filters the cron firehose isn't relevant to a single user-decided URL — it would just add a model turn for no decision value. Triage stays in `/drain --source-type news` Path B Stage 1, where it's earning its keep filtering hundreds of items per drain.
+
+This is the same admission posture as `/research <paper-url>` / `/research <repo-url>` / `/research <article-url>` — the atomic ingest unit, no per-item filter. News, paper, repo, and article all behave the same way from a one-off URL.
 
 ## Argument
 
-`/news <url>` — single URL.
+`/news <url>` — single URL. Writer fires immediately.
 
-`/news <url> --force` — skip triage; treat as `keep_unfiled` and dispatch the writer directly. Use when the article is clearly substantive but the title doesn't telegraph it (e.g., paywalled outlet whose RSS title is uninformative).
+(`--force` is gone — there is no triage gate to override.)
 
 ## Steps
 
@@ -59,56 +63,29 @@ If no outlet matches the host: build a minimal stub — `outlet_name = <hostname
 }
 ```
 
-The `title` / `summary` / `published` are blank for now. Title-triage needs a real title — see step 3.
+The `title` / `summary` / `published` are blank — the writer fetches the article and extracts them.
 
-### 3. Resolve title (cheap)
-
-Triage works on the article *title*, not the URL. To get one without spinning up the full Sonnet writer:
-
-```bash
-curl -sL --max-time 15 -A 'personal-mem/1.0' '<url>' | grep -oP '(?<=<title>).*?(?=</title>)' | head -1
-```
-
-If that fails (paywall, JS-only page, Cloudflare), fall back to using the path slug as a degraded title. If `--force` is set, skip this step entirely and proceed to step 5 with an empty title.
-
-### 4. Triage
-
-Run the triage helper on the single item:
-
-```bash
-echo '[{"id":"manual-<hash>","title":"<resolved title>","outlet":"<slug>","tier":<n>}]' | \
-  uv run python -m personal_mem.operations.news_triage \
-    --themes <vault_root>/THEMES.md
-```
-
-Parse the verdict:
-
-- `drop` → report to the user: *"Triage rejected: `<reason>`. URL not ingested. Use `/news <url> --force` to override."* Done.
-- `keep` → record `theme_id`, proceed to step 5.
-- `keep_unfiled` → proceed to step 5 with `theme_id: null`.
-
-If `--force`, synthesise a `keep_unfiled` verdict with `theme_id: null` and `triage_reason: "user --force override"`.
-
-### 5. Dispatch to the writer subagent
+### 3. Dispatch to the writer subagent
 
 ```
 Task({
   subagent_type: "research-news-worker",
   model: "sonnet",
   description: "Write news brief: <hostname>",
-  prompt: "<the JSON item above>\n\ntriage_verdict: <keep|keep_unfiled>\ntheme_id: <thm-X|null>\ntriage_reason: <reason>\n\nProcess this single news item end-to-end. The vault root is <PERSONAL_MEM_VAULT — pass the absolute path>. Return your standard one-line JSON outcome as the final non-empty line of your response."
+  prompt: "<the JSON item above>\n\ntriage_verdict: keep_unfiled\ntheme_id: null\ntriage_reason: \"one-off user ingest\"\n\nProcess this single news item end-to-end. The vault root is <PERSONAL_MEM_VAULT — pass the absolute path>. Return your standard one-line JSON outcome as the final non-empty line of your response."
 })
 ```
 
-The writer fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note (filed under `relates_to: [theme_id]` if `keep`, or with `theme_unfiled: true` if `keep_unfiled`).
+The synthesized `triage_verdict: keep_unfiled` mirrors what the cron drain emits for items that didn't theme-match — the writer files the note with `theme_unfiled: true` so the periodic theme-review pass can pick it up. If the user wants to file the new note under an explicit theme later, that's a manual `mem_link source_id target_id --type relates_to` call after the writer returns.
 
-### 6. Report
+The writer fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note.
+
+### 4. Report
 
 Parse the writer's JSON outcome:
 
-- **`accepted`, `theme_id` set** → "Created `<src-id>` from `<outlet>`. Filed under `[[<theme_id>]]`. Concepts: `<list>`."
-- **`accepted`, `theme_id: null` (unfiled)** → "Created `<src-id>` from `<outlet>`. Filed as **theme-unfiled** for periodic review. Concepts: `<list>`."
-- **`fetch_failed`** → "Couldn't fetch the article — paywall, network failure, or bot wall. Try `/news <url> --force` if you have the body in clipboard / can manually add."
+- **`accepted`** → "Created `<src-id>` from `<outlet>`. Filed as **theme-unfiled** for periodic review. Concepts: `<list>`."
+- **`fetch_failed`** → "Couldn't fetch the article — paywall, network failure, or bot wall. Source URL: `<url>`. Try saving the page text manually and using `/capture`."
 
 If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `news_feeds.yaml`. Add it if you want this source pulled by cron."*
 
@@ -118,16 +95,14 @@ If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `news_feeds.ya
 
 | Path | Trigger |
 |---|---|
-| `/news <url>` | Just-read-it moment; one URL; want to process now. Triage decides admission. |
-| `/news <url> --force` | Same, but skip the triage gate — you've decided this is worth the brief regardless. |
-| `/drain --source-type news` | Periodic (cron); processes the queue from RSS pull. |
-| `/research <url>` | URL is from a known platform (paper/repo/article) and you're not sure which type. Router classifies; for news the router delegates here. |
+| `/news <url>` | Just-read-it moment; one URL; want to process now. No triage, no filter — you've decided. |
+| `/drain --source-type news` | Periodic (cron); processes the queue from RSS pull. Triage gate fires here against the title firehose. |
+| `/research <url>` | URL is from a known platform and you're not sure which type. Router classifies; for news the router delegates here. |
 
 ---
 
 ## Notes
 
-- The triage helper reads `vault/THEMES.md`'s `## Catalog (active)` section. If your active-theme catalog is empty (`mem themes scan-candidates` hasn't run, or you haven't promoted any candidates), every triage will return `keep_unfiled` — meaning everything substantive is admitted but nothing gets theme-attached. That's the intended behavior: the unfiled pile is where emerging arcs collect until you promote them.
 - For Polish-language URLs (`bankier.pl`, etc.): the writer translates inline and stashes the original in `<source_dir>/raw.md`. The user-facing brief is in English.
 - No queue archive — the synthetic item never enters the queue.
-- The writer subagent's `mem_create` call goes through `VaultManager.create_note`, which auto-fires `scan_candidates(source_type='news')` for event-grain sources. So even single-item ingest contributes to candidate floating — no separate `theme_scan` step needed. To force a fresh scan ignoring the per-create dedup, run `mem themes scan-candidates --source-type news` directly.
+- The writer subagent's `mem_create` call goes through `VaultManager.create_note`, which incrementally indexes the new event-grain source so `detect_signals` sees it on the next `/dream` scan. The 2026-05-25 refactor removed mechanical-stub auto-write; theme naming is `/dream`'s job, composed from the cluster + active themes via the `theme_promotions_from_signal` plan key.
