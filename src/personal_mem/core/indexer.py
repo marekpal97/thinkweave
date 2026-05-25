@@ -203,8 +203,18 @@ class Indexer:
         cached ``file_mtime`` in SQLite; unchanged files skip ``read_text`` +
         ``content_hash`` entirely. On a 6.5k-file vault on WSL→9P this drops
         no-op rebuild from ~25s to ~5s (still bottlenecked by rglob + stat).
+
+        Edge & context_served scope: in incremental mode the per-rebuild set
+        of *changed note IDs* is collected from ``_index_file`` and threaded
+        into :meth:`_rebuild_edges_incremental` (only edges touching changed
+        notes are recomputed, not the full 326K-edge teardown the full path
+        does) and :meth:`_rebuild_context_served` (only sessions whose
+        ``session.md`` was re-indexed re-project their retrieval log). See
+        ``_rebuild_edges_incremental`` for the documented staleness gap;
+        ``rebuild(full=True)`` / ``mem index --full`` heals it periodically.
         """
         stats = {"indexed": 0, "skipped": 0, "removed": 0, "edges": 0}
+        changed_ids: set[str] = set()
 
         if full:
             self.db.execute("DELETE FROM edges")
@@ -279,24 +289,34 @@ class Indexer:
                 stats["skipped"] += 1
                 continue
 
-            self._index_file(md_file, text, file_hash, rel_path)
+            changed_ids.add(self._index_file(md_file, text, file_hash, rel_path))
             stats["indexed"] += 1
 
-        # Remove stale entries
+        # Remove stale entries (their edges + concept/tag rows are cleared
+        # by _remove_by_path, so removed notes need no changed_ids tracking).
         if not full:
             for old_path in set(existing_hash.keys()) - indexed_paths:
                 self._remove_by_path(old_path)
                 stats["removed"] += 1
 
-        # Rebuild edges and FTS only when content changed
-        if full or stats["indexed"] > 0 or stats["removed"] > 0:
+        # Rebuild edges and FTS only when content changed.
+        if full:
             stats["edges"] = self._rebuild_edges()
             self._rebuild_fts()
+        elif stats["indexed"] > 0 or stats["removed"] > 0:
+            if changed_ids:
+                stats["edges"] = self._rebuild_edges_incremental(changed_ids)
+            self._rebuild_fts()
 
-        # Project retrieval_log.jsonl sidecars into context_served. Cheap walk
-        # — most session folders won't have a retrieval log yet (only ones
-        # that ran post-RLVR-slice-2). Idempotent via INSERT OR REPLACE.
-        self._rebuild_context_served()
+        # Project retrieval_log.jsonl sidecars into context_served. On the
+        # full path we walk every session; on incremental we only re-project
+        # sessions whose ``session.md`` was re-indexed this rebuild — the
+        # ``session.md`` is rewritten by ``mem_extract`` each wrap, so the
+        # current session lands in ``changed_ids`` naturally.
+        if full:
+            self._rebuild_context_served()
+        else:
+            self._rebuild_context_served(only_ids=changed_ids)
 
         self.db.commit()
         return stats
@@ -319,6 +339,7 @@ class Indexer:
             ``edges`` is set when a global rebuild was triggered.
         """
         stats = {"indexed": 0, "skipped": 0, "removed": 0, "edges": 0}
+        changed_ids: set[str] = set()
 
         # Pre-fetch existing hash + mtime for just the candidate paths.
         # Falling back to a per-path SELECT keeps this O(len(paths)).
@@ -379,11 +400,12 @@ class Indexer:
                 stats["skipped"] += 1
                 continue
 
-            self._index_file(p, text, file_hash, rel)
+            changed_ids.add(self._index_file(p, text, file_hash, rel))
             stats["indexed"] += 1
 
         if stats["indexed"] > 0 or stats["removed"] > 0:
-            stats["edges"] = self._rebuild_edges()
+            if changed_ids:
+                stats["edges"] = self._rebuild_edges_incremental(changed_ids)
             self._rebuild_fts()
 
         self.db.commit()
@@ -422,8 +444,8 @@ class Indexer:
         self._rebuild_fts()
         self.db.commit()
 
-    def _index_file(self, path: Path, text: str, file_hash: str, rel_path: str) -> None:
-        """Parse and upsert a single file into the index."""
+    def _index_file(self, path: Path, text: str, file_hash: str, rel_path: str) -> str:
+        """Parse and upsert a single file into the index. Returns the note_id."""
         fm, body = parse_frontmatter(text)
 
         note_id = fm.get("id", "")
@@ -477,6 +499,7 @@ class Indexer:
         self._sync_concepts(note_id, fm)
         self._sync_tags(note_id, tags)
         self._sync_decision_files(note_id, note_type, fm)
+        return note_id
 
     def _sync_decision_files(self, note_id: str, note_type: str, fm: dict) -> None:
         """Sync decision_files rows from a decision note's ``file_paths`` frontmatter.
@@ -696,6 +719,279 @@ class Indexer:
 
         return edge_count
 
+    def _rebuild_edges_incremental(self, changed_ids: set[str]) -> int:
+        """Rebuild ONLY the edges touching the given changed note IDs.
+
+        Used by the incremental rebuild path (``rebuild(full=False)`` and
+        ``index_paths``). Deletes all edges where ``source`` OR ``target``
+        is in ``changed_ids`` and recomputes them from current frontmatter,
+        body, concepts, and tags.
+
+        **Outbound** categories (frontmatter, wikilink, session-dir) are
+        recomputed per changed note — fully scoped.
+
+        **Pairwise** categories (concept, tag) pair each changed note only
+        against notes that share at least one of its concepts/tags. Pair
+        order is sorted so resulting edges PK-collide with full-rebuild
+        output (the full path uses ``combinations(sorted(...))`` and the
+        edges table PK is ``(source, target, edge_type)``).
+
+        **Staleness trade-off:** if an OLD unchanged note links (frontmatter
+        or wikilink) to a NEWLY created note, that old note's outbound
+        edges are not recomputed (its body never changed), so the inbound
+        edge is missed. The full path (``rebuild(full=True)`` /
+        ``mem index --full``) recomputes everything and heals this on its
+        periodic run. ``materialize_links`` reads edges live, so the impact
+        is brief under-linking of one note's ``## See Also``, never a wrong
+        edge. The freq-cap on concept/tag groups is also recomputed against
+        the current total — old surviving pair-edges may reflect a stale
+        cap, which the periodic full rebuild also heals.
+
+        Cost: O(|S| × avg_concepts × avg_group_size) for a typical wrap's
+        ~5 changed notes, vs the full path's global O(notes²) pair walk.
+
+        Returns the count of edges inserted during this call.
+        """
+        if not changed_ids:
+            return 0
+
+        now = datetime.now(timezone.utc).isoformat()
+        edge_count = 0
+        changed_list = list(changed_ids)
+        # SQLite's compile-time variable limit is 999 by default; chunk to be safe.
+        CHUNK = 500
+
+        # ── Delete edges incident to any changed note (both directions) ──
+        # Pairwise edges like (other, X) where X is changed-as-target must
+        # also be cleared so we can re-emit them with current shared concepts.
+        for i in range(0, len(changed_list), CHUNK):
+            chunk = changed_list[i:i + CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            self.db.execute(
+                f"DELETE FROM edges WHERE source IN ({placeholders}) "
+                f"OR target IN ({placeholders})",
+                chunk + chunk,
+            )
+
+        # ── Lookup maps (one cheap SELECT — same shape as full rebuild) ──
+        slug_to_id: dict[str, str] = {}
+        id_to_type: dict[str, str] = {}
+        id_to_path: dict[str, str] = {}
+        for row in self.db.execute("SELECT id, path, title, type FROM notes"):
+            stem = Path(row["path"]).stem
+            slug_to_id[stem] = row["id"]
+            slug_to_id[row["title"].lower()] = row["id"]
+            id_to_type[row["id"]] = row["type"]
+            id_to_path[row["id"]] = row["path"]
+        all_ids = set(slug_to_id.values())
+        total_notes = len(id_to_type)
+
+        # ── 1+2. Outbound frontmatter + wikilink edges (changed notes) ──
+        changed_rows: list = []
+        for i in range(0, len(changed_list), CHUNK):
+            chunk = changed_list[i:i + CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            changed_rows.extend(
+                self.db.execute(
+                    f"SELECT id, frontmatter, body_text FROM notes "
+                    f"WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+            )
+
+        for row in changed_rows:
+            note_id = row["id"]
+            try:
+                fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
+            except json.JSONDecodeError:
+                continue
+
+            for fm_field, edge_type in EDGE_FIELD_MAP.items():
+                targets = fm.get(fm_field, [])
+                if isinstance(targets, str):
+                    targets = [targets] if targets else []
+                for target in targets:
+                    target = str(target).strip()
+                    if not target:
+                        continue
+                    resolved = target if target in all_ids else slug_to_id.get(
+                        target.lower(), slug_to_id.get(target, "")
+                    )
+                    if resolved and resolved != note_id:
+                        self._insert_edge(note_id, resolved, edge_type, now)
+                        edge_count += 1
+
+            body = row["body_text"] or ""
+            for link in extract_wikilinks(body):
+                link_lower = link.lower().strip()
+                resolved = slug_to_id.get(link_lower, slug_to_id.get(link, ""))
+                if resolved and resolved != note_id:
+                    target_type = id_to_type.get(resolved, "note")
+                    if target_type == "source":
+                        wl_edge_type = "cites"
+                    elif target_type == "session":
+                        wl_edge_type = "derived_from"
+                    else:
+                        wl_edge_type = "relates_to"
+                    self._insert_edge(note_id, resolved, wl_edge_type, now)
+                    edge_count += 1
+
+        # ── 3. Session-directory inference ───────────────────────────────
+        session_dir_to_id: dict[str, str] = {}
+        for nid, path in id_to_path.items():
+            if path.endswith("/session.md") or path.endswith("\\session.md"):
+                session_dir_to_id[str(Path(path).parent)] = nid
+
+        # 3a. Each changed note → its session (outbound derived_from).
+        for nid in changed_ids:
+            path = id_to_path.get(nid)
+            if not path:
+                continue
+            sess_id = session_dir_to_id.get(str(Path(path).parent))
+            if sess_id and nid != sess_id:
+                meta = json.dumps({"via": "session_dir"})
+                self.db.execute(
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (nid, sess_id, "derived_from", meta, now),
+                )
+                edge_count += 1
+
+        # 3b. If a changed note IS itself a session.md, the DELETE wiped its
+        # siblings' inbound derived_from edges. Re-emit them.
+        for nid in changed_ids:
+            if id_to_type.get(nid) != "session":
+                continue
+            path = id_to_path.get(nid, "")
+            if not (path.endswith("/session.md") or path.endswith("\\session.md")):
+                continue
+            session_dir = str(Path(path).parent)
+            for sibling_id, sibling_path in id_to_path.items():
+                if sibling_id == nid:
+                    continue
+                if str(Path(sibling_path).parent) == session_dir:
+                    meta = json.dumps({"via": "session_dir"})
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO edges "
+                        "(source, target, edge_type, metadata, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (sibling_id, nid, "derived_from", meta, now),
+                    )
+                    edge_count += 1
+
+        # ── 4. Concept-based edges (changed × all-sharing-concept) ───────
+        cfg = self.config
+        concept_freq_cap = int(
+            total_notes * cfg.concept_edge_max_freq_pct
+        ) if total_notes else 0
+
+        # Fetch each changed note's concepts.
+        changed_concepts: dict[str, set[str]] = defaultdict(set)
+        for i in range(0, len(changed_list), CHUNK):
+            chunk = changed_list[i:i + CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for row in self.db.execute(
+                f"SELECT note_id, concept FROM note_concepts "
+                f"WHERE note_id IN ({placeholders})",
+                chunk,
+            ):
+                changed_concepts[row["note_id"]].add(row["concept"])
+
+        # Group cache so concepts shared by multiple changed notes only
+        # incur one note_concepts scan.
+        concept_group_cache: dict[str, list[str]] = {}
+
+        def _concept_group(c: str) -> list[str]:
+            if c not in concept_group_cache:
+                concept_group_cache[c] = sorted({
+                    r["note_id"] for r in self.db.execute(
+                        "SELECT note_id FROM note_concepts WHERE concept = ?", (c,)
+                    )
+                })
+            return concept_group_cache[c]
+
+        pair_shared: dict[tuple, list[str]] = defaultdict(list)
+        for nid, concepts in changed_concepts.items():
+            for c in concepts:
+                group = _concept_group(c)
+                if len(group) > concept_freq_cap > 0:
+                    continue
+                for other in group:
+                    if other == nid:
+                        continue
+                    a, b = (nid, other) if nid < other else (other, nid)
+                    pair_shared[(a, b)].append(c)
+
+        for (a, b), shared in pair_shared.items():
+            shared_unique = sorted(set(shared))
+            if len(shared_unique) >= cfg.concept_edge_threshold:
+                metadata = json.dumps({"via": "concept", "shared": shared_unique})
+                self.db.execute(
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now),
+                )
+                edge_count += 1
+
+        # ── 5. Tag-based edges (mirror of category 4) ────────────────────
+        tag_freq_cap = int(
+            total_notes * cfg.tag_edge_max_freq_pct
+        ) if total_notes else 0
+        excluded_tags = set(cfg.tag_edge_exclude)
+
+        changed_tags: dict[str, set[str]] = defaultdict(set)
+        for i in range(0, len(changed_list), CHUNK):
+            chunk = changed_list[i:i + CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for row in self.db.execute(
+                f"SELECT note_id, tag FROM note_tags "
+                f"WHERE note_id IN ({placeholders})",
+                chunk,
+            ):
+                tag = row["tag"]
+                if tag in excluded_tags:
+                    continue
+                changed_tags[row["note_id"]].add(tag)
+
+        tag_group_cache: dict[str, list[str]] = {}
+
+        def _tag_group(t: str) -> list[str]:
+            if t not in tag_group_cache:
+                tag_group_cache[t] = sorted({
+                    r["note_id"] for r in self.db.execute(
+                        "SELECT note_id FROM note_tags WHERE tag = ?", (t,)
+                    )
+                })
+            return tag_group_cache[t]
+
+        tag_pair_shared: dict[tuple, list[str]] = defaultdict(list)
+        for nid, tags in changed_tags.items():
+            for t in tags:
+                group = _tag_group(t)
+                if len(group) > tag_freq_cap > 0:
+                    continue
+                for other in group:
+                    if other == nid:
+                        continue
+                    a, b = (nid, other) if nid < other else (other, nid)
+                    tag_pair_shared[(a, b)].append(t)
+
+        for (a, b), shared in tag_pair_shared.items():
+            shared_unique = sorted(set(shared))
+            if len(shared_unique) >= cfg.tag_edge_threshold:
+                metadata = json.dumps({"via": "tag", "shared": shared_unique})
+                self.db.execute(
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now),
+                )
+                edge_count += 1
+
+        return edge_count
+
     def _insert_edge(self, source: str, target: str, edge_type: str, created_at: str) -> None:
         self.db.execute(
             "INSERT OR IGNORE INTO edges (source, target, edge_type, created_at) VALUES (?, ?, ?, ?)",
@@ -710,20 +1006,42 @@ class Indexer:
     # RLVR substrate: context_served projection (slice 3)
     # ------------------------------------------------------------------
 
-    def _rebuild_context_served(self) -> None:
-        """Project every session's ``retrieval_log.jsonl`` into ``context_served``.
+    def _rebuild_context_served(self, only_ids: set[str] | None = None) -> None:
+        """Project sessions' ``retrieval_log.jsonl`` into ``context_served``.
 
-        Called at the end of :meth:`rebuild`. Walks every indexed session note
-        (the `notes` table tells us which) and feeds its sibling
-        ``retrieval_log.jsonl`` through :meth:`_project_session_retrieval_log`.
+        Called at the end of :meth:`rebuild`. By default walks every indexed
+        session note (the `notes` table tells us which) and feeds each
+        sibling ``retrieval_log.jsonl`` through
+        :meth:`_project_session_retrieval_log`.
 
-        Cost: one extra `SELECT id, path FROM notes WHERE type='session'` plus
-        a stat-and-read per session folder. Most session folders won't have a
+        Args:
+            only_ids: When supplied, restrict the projection to session notes
+                whose id is in this set. The session-type filter in the SELECT
+                silently drops any non-session IDs in the set. Pass an empty
+                set to no-op; pass ``None`` (the default, used by full rebuild)
+                to walk every session. Used by ``rebuild(full=False)`` to skip
+                the all-sessions walk — the current session's ``session.md``
+                lands in ``changed_ids`` naturally (``mem_extract`` rewrites
+                it each wrap), so its retrieval log gets re-projected.
+
+        Cost: one ``SELECT id, path FROM notes WHERE type='session'`` plus a
+        stat-and-read per session folder. Most session folders won't have a
         retrieval log yet — pre-RLVR sessions skip silently. Idempotent.
         """
-        rows = self.db.execute(
-            "SELECT id, path FROM notes WHERE type = 'session'"
-        ).fetchall()
+        if only_ids is not None and not only_ids:
+            return
+        if only_ids:
+            chunk = list(only_ids)
+            placeholders = ",".join("?" * len(chunk))
+            rows = self.db.execute(
+                f"SELECT id, path FROM notes "
+                f"WHERE type = 'session' AND id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                "SELECT id, path FROM notes WHERE type = 'session'"
+            ).fetchall()
         for row in rows:
             sess_id = row["id"]
             rel_path = row["path"]
@@ -838,14 +1156,24 @@ class Indexer:
                 if edge["edge_type"] in STRUCTURAL_TYPES:
                     structural.append((other, edge["edge_type"]))
                 else:
-                    # Extract the first shared concept for grouping
+                    # Concept/tag edge. Only genuinely-related notes belong in
+                    # See Also: tag edges (news+finance etc.) are filter facets,
+                    # not real connections — excluded entirely. Concept edges
+                    # need >=2 shared concepts; a single shared concept bridges
+                    # unrelated domains (a macro note and a history note both
+                    # tagged `geopolitics`). The underlying graph edges are
+                    # untouched — this only gates the rendered See Also list.
                     meta = edge["metadata"] or "{}"
                     try:
-                        shared = json.loads(meta).get("shared", [])
-                    except (json.JSONDecodeError, AttributeError):
-                        shared = []
-                    group_key = shared[0] if shared else "_tag"
-                    concept_edges.append((other, edge["edge_type"], group_key))
+                        parsed = json.loads(meta)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = {}
+                    if parsed.get("via") == "tag":
+                        continue
+                    shared = parsed.get("shared", [])
+                    if len(shared) < 2:
+                        continue
+                    concept_edges.append((other, edge["edge_type"], shared[0]))
 
             # Build final link list with diversity
             linked: list[tuple[str, str]] = []
@@ -891,16 +1219,20 @@ class Indexer:
                 stats["notes_skipped"] += 1
                 continue
 
-            # Build the See Also section
+            # Build the See Also section. Link by note id (every note carries
+            # `aliases: [<id>]`, so `[[<id>]]` resolves in Obsidian) with the
+            # title as display text. Filename stems are unreliable — every
+            # folder-layout source note is named `source.md`.
             lines = [SEE_ALSO, ""]
             for target_id, edge_type in linked:
                 target = all_notes[target_id]
-                stem = Path(target["path"]).stem
+                title = (target["title"] or "").replace("|", " ").replace("]", " ").strip()
+                link = f"[[{target_id}|{title}]]" if title else f"[[{target_id}]]"
                 label = edge_type.replace("_", " ") if edge_type != "relates_to" else ""
                 if label:
-                    lines.append(f"- [[{stem}]] _{label}_")
+                    lines.append(f"- {link} _{label}_")
                 else:
-                    lines.append(f"- [[{stem}]]")
+                    lines.append(f"- {link}")
             see_also_text = "\n".join(lines) + "\n"
 
             if dry_run:
