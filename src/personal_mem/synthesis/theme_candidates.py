@@ -791,6 +791,25 @@ def promote_candidate(
     target_path.write_text("\n".join(body_lines) + "\n", encoding="utf-8")
     cand_path.unlink()
 
+    # Sync the theme registry — failure must not propagate (the canonical
+    # theme file already exists; registry sync is opportunistic).
+    try:
+        from personal_mem.synthesis import theme_registry
+
+        theme_registry.upsert(
+            config,
+            thm_id,
+            {
+                "slug": slug,
+                "status": "active",
+                "concepts": list(cluster_concepts),
+                "parent": parent or None,
+                "project": project or "",
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     if rebuild_index:
         idx = Indexer(config=config)
         idx.rebuild(full=False)
@@ -895,6 +914,24 @@ def mint_theme_from_signal(
             idx.rebuild(full=False)
     finally:
         idx.close()
+
+    # Sync the theme registry — failure must not propagate.
+    try:
+        from personal_mem.synthesis import theme_registry
+
+        theme_registry.upsert(
+            config,
+            thm_id,
+            {
+                "slug": slug,
+                "status": "active",
+                "concepts": list(cluster_concepts),
+                "parent": parent or None,
+                "project": project or "",
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     return target_path
 

@@ -55,17 +55,58 @@ def cmd_themes(args: argparse.Namespace) -> None:
             print(f"  {p.name}")
 
     elif action == "promote-candidate":
-        from personal_mem.synthesis.theme_candidates import promote_candidate
+        import re as _re
+
+        from personal_mem.core.vault import parse_frontmatter
+        from personal_mem.synthesis.theme_candidates import (
+            _candidates_dir,
+            promote_candidate,
+        )
+
+        title = args.title or ""
+        essence = args.essence or ""
+        # Auto-default title/essence from the stub when caller didn't pass
+        # them — lets LLM-named candidates (carrying `proposed_slug:` and
+        # `## Proposed essence`) promote with just the candidate id.
+        if not title or not essence:
+            cdir = _candidates_dir(cfg)
+            matches = list(cdir.glob(f"{args.candidate_id}-*.md"))
+            if matches:
+                stub_text = matches[0].read_text(encoding="utf-8")
+                fm, body = parse_frontmatter(stub_text)
+                if not title:
+                    title = str(fm.get("proposed_slug", "")).strip()
+                if not essence:
+                    m = _re.search(
+                        r"##\s*Proposed essence\s*\n+(.*?)(?=\n##\s|\Z)",
+                        body,
+                        _re.DOTALL,
+                    )
+                    if m:
+                        essence = m.group(1).strip()
+
+        if not title:
+            print(
+                f"error: --title required (stub {args.candidate_id} has no "
+                "`proposed_slug:` to default from)"
+            )
+            return
 
         path = promote_candidate(
             cfg,
             args.candidate_id,
-            title=args.title,
-            essence=args.essence or "",
+            title=title,
+            essence=essence,
             project=args.project or "",
             parent=getattr(args, "parent", "") or "",
         )
         print(f"Promoted {args.candidate_id} → {path}")
 
+    elif action == "rebuild-registry":
+        from personal_mem.synthesis.theme_registry import rebuild
+
+        n = rebuild(cfg)
+        print(f"Rebuilt themes.yaml with {n} entries.")
+
     else:
-        print("Usage: mem themes {scan-candidates|archive-stale-candidates|promote-candidate}")
+        print("Usage: mem themes {scan-candidates|archive-stale-candidates|promote-candidate|rebuild-registry}")

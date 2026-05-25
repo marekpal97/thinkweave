@@ -1,11 +1,17 @@
-"""Tests for the auto-fire theme-candidate floater hook in
-``VaultManager.create_note``.
+"""Tests for the event-grain post-create hook in
+``VaultManager.create_note`` and the ``detect_signals`` surface that
+``/dream`` reads.
 
-Closes the CLAUDE.md contract gap where event-grain sources only
-produced theme candidates when ``/drain`` ran the ``theme_scan``
-post-batch hook. Direct ``mem_create``, ``/news <url>``, ``/capture``,
-or any other path that calls ``VaultManager.create_note`` now triggers
-the floater unconditionally for ``temporal_grain='event'`` source types.
+Before 2026-05-25 the hook auto-wrote candidate stubs with mechanical
+concept-pair slugs (e.g. ``geopolitics-thematic-investing``). That
+naming doomed every cluster at /dream's disambiguation test — capability-
+shaped names get archived. The new contract: the hook keeps the SQLite
+index warm; ``detect_signals`` reads from the index and surfaces raw
+clusters as JSON for /dream to name from the cluster + active themes.
+
+These tests pin both halves: (1) creates still index the source so it's
+visible to ``mem_search`` immediately, and (2) ``detect_signals``
+surfaces the right clusters and skips the wrong ones.
 """
 
 from __future__ import annotations
@@ -17,9 +23,10 @@ import pytest
 
 from personal_mem.core.config import Config
 from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
+from personal_mem.core.vault import VaultManager
 from personal_mem.synthesis.theme_candidates import (
     CANDIDATES_DIR_NAME,
+    detect_signals,
 )
 
 
@@ -58,52 +65,56 @@ def _make_news_source(
     )
 
 
-def test_third_event_grain_create_floats_candidate(
+def test_third_event_grain_create_surfaces_signal(
     vault: VaultManager, config: Config
 ):
-    """Three news sources sharing ≥2 concepts: the auto-fire from the
-    third create writes a candidate stub. No explicit scan call needed."""
+    """Three news sources sharing ≥2 concepts produce one ``detect_signals``
+    cluster — and no stub on disk (the auto-write is gone)."""
     _make_news_source(vault, "Story A", concepts=["ai-policy", "regulation"])
     _make_news_source(vault, "Story B", concepts=["ai-policy", "regulation"])
 
     # Two creates: still below the cluster-size threshold.
-    cand_dir = _cand_dir(config)
-    assert not cand_dir.exists() or list(cand_dir.glob("cand-*.md")) == []
+    assert detect_signals(config) == []
 
     _make_news_source(vault, "Story C", concepts=["ai-policy", "regulation"])
 
-    # The third create's auto-fire writes the candidate.
-    cand_files = list(_cand_dir(config).glob("cand-*.md"))
-    assert len(cand_files) == 1
-    fm, _ = parse_frontmatter(cand_files[0].read_text(encoding="utf-8"))
-    assert fm["source_type"] == "news"
-    assert fm["status"] == "candidate"
-    assert "ai-policy" in fm.get("cluster_concepts", [])
-    assert "regulation" in fm.get("cluster_concepts", [])
+    # The third create indexes the source; detect_signals surfaces one
+    # cluster. No stub on disk.
+    cand_dir = _cand_dir(config)
+    assert not cand_dir.exists() or list(cand_dir.glob("cand-*.md")) == []
+
+    signals = detect_signals(config)
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.source_type == "news"
+    assert set(s.shared_concepts) == {"ai-policy", "regulation"}
+    assert len(s.cluster_source_ids) == 3
 
 
-def test_auto_fire_idempotent_no_duplicate_candidates(
+def test_signal_resurfaces_until_resolved(
     vault: VaultManager, config: Config
 ):
-    """Adding a 4th matching source must not produce a second candidate
-    stub — the existing-candidate dedup in scan_candidates catches it."""
+    """A cluster signal isn't a one-shot — ``detect_signals`` re-emits it
+    on every scan until either a covering theme exists or a candidate
+    stub exists. This is the property that lets /dream catch up
+    asynchronously even if a particular cycle drops a signal."""
     for i in range(4):
         _make_news_source(
             vault, f"Story {i}", concepts=["ai-policy", "regulation"]
         )
 
-    cand_files = list(_cand_dir(config).glob("cand-*.md"))
-    assert len(cand_files) == 1, (
-        f"Expected exactly one candidate after 4 creates; got "
-        f"{[p.name for p in cand_files]}"
-    )
+    first = detect_signals(config)
+    second = detect_signals(config)
+    assert len(first) == 1
+    assert len(second) == 1
+    assert first[0].cluster_source_ids == second[0].cluster_source_ids
 
 
-def test_concept_grain_source_does_not_float(
+def test_concept_grain_source_does_not_surface(
     vault: VaultManager, config: Config
 ):
-    """Papers are temporal_grain='concept' — three matching ones must
-    NOT produce a candidate, even though the cluster shape matches."""
+    """Papers are ``temporal_grain='concept'`` — three matching ones must
+    NOT produce a signal, even though the cluster shape matches."""
     for i in range(3):
         vault.create_note(
             note_type=NoteType.SOURCE,
@@ -114,50 +125,49 @@ def test_concept_grain_source_does_not_float(
             },
         )
 
-    assert not _cand_dir(config).exists() or list(
-        _cand_dir(config).glob("cand-*.md")
-    ) == []
+    assert detect_signals(config) == []
 
 
-def test_non_source_notes_skip_floater(vault: VaultManager, config: Config):
-    """Note / decision creates must not trigger the floater — the hook
-    short-circuits before the spec lookup. (Sanity check on the
-    NoteType.SOURCE guard.)"""
+def test_non_source_notes_skip_hook(vault: VaultManager, config: Config):
+    """Note / decision creates must not affect the theme-signal surface —
+    the hook short-circuits before the spec lookup. (Sanity check on
+    the NoteType.SOURCE guard.)"""
     vault.create_note(
         note_type=NoteType.NOTE,
         title="Random observation",
         extra_frontmatter={"concepts": ["ai-policy", "regulation"]},
     )
-    assert not _cand_dir(config).exists() or list(
-        _cand_dir(config).glob("cand-*.md")
-    ) == []
+    assert detect_signals(config) == []
 
 
-def test_failure_does_not_block_create(
+def test_indexer_failure_does_not_block_create(
     vault: VaultManager, config: Config, monkeypatch
 ):
-    """If scan_candidates raises, the create itself must still succeed.
-    The floater is opportunistic — write contract is sacred."""
-    from personal_mem.synthesis import theme_candidates
+    """If the incremental indexer raises, the create itself must still
+    succeed. The hook is opportunistic — write contract is sacred."""
+    from personal_mem.core import indexer as indexer_module
 
-    def _explode(*_args, **_kwargs):
-        raise RuntimeError("simulated indexer failure")
+    real_indexer = indexer_module.Indexer
 
-    monkeypatch.setattr(theme_candidates, "scan_candidates", _explode)
+    class _ExplodingIndexer(real_indexer):  # type: ignore[misc, valid-type]
+        def index_file(self, *_args, **_kwargs):  # type: ignore[override]
+            raise RuntimeError("simulated indexer failure")
 
-    # The create must still produce a file at the expected path.
-    path = _make_news_source(vault, "Story X", concepts=["ai-policy", "regulation"])
+    monkeypatch.setattr(indexer_module, "Indexer", _ExplodingIndexer)
+
+    path = _make_news_source(
+        vault, "Story X", concepts=["ai-policy", "regulation"]
+    )
     assert path.exists()
     assert path.read_text(encoding="utf-8")  # non-empty
 
 
-def test_auto_fire_latency_is_acceptable(
+def test_post_create_latency_is_acceptable(
     vault: VaultManager, config: Config
 ):
-    """Profile sanity: the auto-fire path should complete in well under
-    a second on a tiny vault. Latency budget here is 2s (generous to
-    avoid CI flakiness); a regression that pushes this above the budget
-    deserves attention via debouncing or async deferral."""
+    """The post-create hook should complete in well under a second on a
+    tiny vault. Generous 2s budget to absorb CI flakiness; a regression
+    past this deserves debouncing or async deferral."""
     _make_news_source(vault, "A", concepts=["ai-policy", "regulation"])
     _make_news_source(vault, "B", concepts=["ai-policy", "regulation"])
 
@@ -165,8 +175,7 @@ def test_auto_fire_latency_is_acceptable(
     _make_news_source(vault, "C", concepts=["ai-policy", "regulation"])
     elapsed = time.monotonic() - t0
 
-    # Generous budget — the test vault has 3 notes; <500ms is realistic.
     assert elapsed < 2.0, (
-        f"auto-fire create took {elapsed:.3f}s — investigate before "
-        "shipping (CLAUDE.md flags >500ms as the debounce trigger)."
+        f"post-create hook took {elapsed:.3f}s — investigate before "
+        "shipping."
     )

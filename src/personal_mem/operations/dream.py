@@ -686,6 +686,14 @@ def apply(
                     render_frontmatter(fm) + "\n" + body, encoding="utf-8"
                 )
                 result.theme_status_changes += 1
+
+                # Keep registry in sync — failure must not cascade.
+                try:
+                    from personal_mem.synthesis import theme_registry
+
+                    theme_registry.upsert(cfg, theme_id, {"status": new_status})
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception as e:  # noqa: BLE001
                 result.errors.append(
                     f"theme_status {tsc.get('theme_id', '?')}: {e}"

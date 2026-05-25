@@ -510,15 +510,22 @@ class VaultManager:
         return filepath
 
     def _maybe_float_theme_candidate(self, filepath: Path, fm: dict) -> None:
-        """Run the theme-candidate floater if this source's spec has
-        ``temporal_grain='event'``. Wraps the call in a defensive
-        try/except — a failure here must not surface as a create failure.
+        """Index the new event-grain source so ``detect_signals`` can see
+        it on the next ``/dream`` scan.
 
-        The floater is itself idempotent (it reads existing candidates
-        before writing and skips duplicates), so re-firing for the same
-        source is harmless. Cost: one indexer instantiation + one SQL
-        scan over recent sources of the same type; sub-100ms on a
-        single-digit-thousands-of-notes vault.
+        Before 2026-05-25 this also auto-fired ``scan_candidates``, which
+        materialised candidate stubs with mechanical concept-pair slugs
+        (e.g. ``geopolitics-thematic-investing``). That naming doomed
+        every cluster at /dream's disambiguation test — capability-shaped
+        names get archived. The auto-write is gone; cluster detection
+        and LLM naming now happen together inside ``/dream`` (or the
+        seed-once script), which composes a real label from the cluster
+        + active themes. The reindex stays — without it the new source
+        wouldn't be visible to ``mem_search`` or the next /dream cycle
+        until the next bulk ``mem index`` run.
+
+        Defensive try/except — a failure here must not surface as a
+        create failure.
         """
         import logging
 
@@ -530,23 +537,17 @@ class VaultManager:
             return
 
         try:
-            # Reindex the new file so scan_candidates sees it. The scan
-            # reads from the SQLite index, not the filesystem.
             from personal_mem.core.indexer import Indexer
-            from personal_mem.synthesis.theme_candidates import scan_candidates
 
             idx = Indexer(config=self.config)
             try:
                 idx.index_file(filepath)
             finally:
                 idx.close()
-
-            scan_candidates(self.config, source_type=spec.slug)
         except Exception:
-            # Log but don't propagate — create succeeded; theme floating
-            # is opportunistic, not load-bearing for the write contract.
             logging.getLogger(__name__).exception(
-                "theme_candidate floater failed for %s; create succeeded",
+                "incremental index after event-grain source create failed "
+                "for %s; create succeeded",
                 filepath,
             )
 

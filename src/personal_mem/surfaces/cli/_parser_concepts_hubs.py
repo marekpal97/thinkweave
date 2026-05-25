@@ -286,12 +286,18 @@ def add_themes_subparsers(sub) -> None:
     )
     p_promote.add_argument("candidate_id", help="Candidate ID (e.g. cand-abcd1234).")
     p_promote.add_argument(
-        "--title", required=True,
-        help="Theme title (used for filename slug and `## Essence` heading).",
+        "--title", default="",
+        help=(
+            "Theme title (used for filename slug and `## Essence` heading). "
+            "Defaults to the stub's `proposed_slug:` frontmatter when present."
+        ),
     )
     p_promote.add_argument(
         "--essence", default="",
-        help="Initial essence paragraph (≤500 words).",
+        help=(
+            "Initial essence paragraph (≤500 words). Defaults to the "
+            "stub's `## Proposed essence` block when present."
+        ),
     )
     p_promote.add_argument("--project", default="", help="Optional project tag.")
     p_promote.add_argument(
@@ -299,6 +305,14 @@ def add_themes_subparsers(sub) -> None:
         help=(
             "Parent theme id (thm-XXXXXXXX). Establishes a child relation "
             "in the two-tier theme hierarchy. Empty = top-level."
+        ),
+    )
+
+    themes_sub.add_parser(
+        "rebuild-registry",
+        help=(
+            "Rebuild vault/.mem/themes.yaml from vault/themes/*.md. "
+            "One-off backfill or recovery when the registry drifts."
         ),
     )
 
