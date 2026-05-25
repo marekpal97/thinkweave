@@ -59,6 +59,14 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         print("  drift (advisory):")
         for line in result.drift_text.splitlines():
             print(f"    {line}")
+    if result.timings:
+        parts = " · ".join(
+            f"{k} {result.timings[k]:.1f}s"
+            for k in ("prune", "index", "judge", "landing", "drift")
+            if k in result.timings
+        )
+        if parts:
+            print(f"  timing:  {parts}")
     if result.errors:
         print("  errors:")
         for e in result.errors:

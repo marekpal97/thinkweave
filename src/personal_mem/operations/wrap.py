@@ -19,6 +19,7 @@ Imports ``core/`` / ``operations/`` / ``synthesis/`` only — never ``surfaces/`
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from personal_mem.core.config import Config
@@ -40,6 +41,9 @@ class WrapFinalizeResult:
     landing_written: list[str] = field(default_factory=list)
     drift_text: str = ""
     errors: list[str] = field(default_factory=list)
+    # Per-step wall time (seconds) — keys: prune, index, judge, landing, drift.
+    # Populated even when a step errors, so a slow failure is visible.
+    timings: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -55,6 +59,7 @@ class WrapFinalizeResult:
             "landing_written": self.landing_written,
             "drift_text": self.drift_text,
             "errors": self.errors,
+            "timings": self.timings,
         }
 
 
@@ -88,6 +93,7 @@ def finalize_wrap(
 
     # 1. prune orphan session folders -------------------------------------
     if prune:
+        _t = time.perf_counter()
         try:
             from personal_mem.prune import find_orphans, prune_orphans
 
@@ -100,8 +106,11 @@ def finalize_wrap(
                 result.orphans_freed_bytes = pr.freed_bytes
         except Exception as e:  # noqa: BLE001 — best-effort GC
             result.errors.append(f"prune: {e}")
+        finally:
+            result.timings["prune"] = time.perf_counter() - _t
 
     # 2. reindex ----------------------------------------------------------
+    _t = time.perf_counter()
     try:
         from personal_mem.core.indexer import Indexer
         from personal_mem.core.vault import VaultManager
@@ -117,8 +126,11 @@ def finalize_wrap(
         result.edges = stats.get("edges", 0)
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"index: {e}")
+    finally:
+        result.timings["index"] = time.perf_counter() - _t
 
     # 3. judge extracted decisions + write back verdict/status ------------
+    _t = time.perf_counter()
     try:
         from personal_mem.operations.decisions import judge_and_writeback
 
@@ -129,8 +141,14 @@ def finalize_wrap(
             result.verdicts[verdict] = result.verdicts.get(verdict, 0) + 1
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"judge: {e}")
+    finally:
+        result.timings["judge"] = time.perf_counter() - _t
 
     # 4. refresh DECISIONS + BACKLOG landing docs -------------------------
+    # Two cheap SQL renders, not collapsible: ``write_landing_docs`` has no
+    # project-scoped ``all`` value — ``docs="all"`` would wrongly regenerate
+    # STATE.md (LLM-owned) and THEMES.md (global). Timings confirm sub-second.
+    _t = time.perf_counter()
     if project:
         try:
             from personal_mem.synthesis.landing import write_landing_docs
@@ -142,8 +160,10 @@ def finalize_wrap(
             result.errors.append(f"landing: {e}")
     else:
         result.errors.append("landing: skipped (no project)")
+    result.timings["landing"] = time.perf_counter() - _t
 
     # 5. concept-drift advisory (read-only) -------------------------------
+    _t = time.perf_counter()
     try:
         from personal_mem.operations.concepts import drift as concept_drift
 
@@ -151,5 +171,7 @@ def finalize_wrap(
         result.drift_text = (d.get("text") or "").strip()
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"drift: {e}")
+    finally:
+        result.timings["drift"] = time.perf_counter() - _t
 
     return result
