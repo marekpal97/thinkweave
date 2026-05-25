@@ -59,6 +59,7 @@ sources:
     # standalone skill exists by design.
     research_skill: news
     url_patterns: [reuters.com, ft.com, bloomberg.com, wsj.com, bankier.pl]
+    allowed_failure_prefixes: ["HTTP ", paywall, Cloudflare, "empty body", timeout, "mem_create:"]
   newsletter-events:
     # Event-grain email newsletters (markets / macro / dealflow). Theme
     # candidate floater fires automatically on create. `processed_label`
@@ -128,6 +129,9 @@ sources:
     dedup_keys: [video_id, url]
     url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
     research_skill: youtube
+    # No `triage_model` set — admission is the channel allowlist, not
+    # per-video triage. /drain Path B fans out workers directly.
+    allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "mem_create:"]
   youtube-concepts:
     # Concept-grain sibling — tutorials, lectures, explainers. Longer
     # lookback than events because durable content is worth backfilling.
@@ -142,6 +146,7 @@ sources:
     dedup_keys: [video_id, url]
     url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
     research_skill: youtube
+    allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "mem_create:"]
   conversation:
     drain_strategy: inline
     importer: chatgpt
