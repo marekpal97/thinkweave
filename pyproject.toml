@@ -3,7 +3,7 @@ name = "personal-mem"
 version = "0.1.0"
 description = "Obsidian-native universal memory layer for agentic systems"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["pyyaml>=6.0"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0"]
@@ -11,8 +11,11 @@ embeddings = ["httpx"]
 hubs = ["openai>=1.50"]
 seed = ["anthropic>=0.40"]
 news = ["feedparser>=6.0", "readability-lxml>=0.8.1", "httpx"]
-gemini = ["google-generativeai>=0.8"]
-all = ["personal-mem[mcp,embeddings,hubs,seed,news,gemini]"]
+gemini = ["google-genai>=1.0"]
+youtube = [
+    "youtube-transcript-api>=1.0",
+]
+all = ["personal-mem[mcp,embeddings,hubs,seed,news,gemini,youtube]"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
@@ -39,4 +42,9 @@ line-length = 100
 testpaths = ["tests"]
 markers = [
     "perf: performance regression assertion (may be skipped on slow CI hosts)",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]

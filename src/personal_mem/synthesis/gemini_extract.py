@@ -24,8 +24,11 @@ Requires ``GOOGLE_API_KEY`` and the ``[gemini]`` optional dep group::
     export GOOGLE_API_KEY=...
 
 The SDK import is lazy so the rest of personal_mem stays usable when
-``google-generativeai`` is not installed — ``extract_youtube`` returns
-a structured ``missing_sdk`` failure rather than raising at import time.
+``google-genai`` is not installed — ``extract_youtube`` returns a
+structured ``missing_sdk`` failure rather than raising at import time.
+
+The binding targets ``google-genai >= 1.0`` (the unified SDK that
+replaced the deprecated ``google-generativeai`` package in late 2025).
 
 PR 2 (podcasts) will add ``extract_audio(file_path)`` to this same
 module — same Gemini binding, same wrapper shape, different input type.
@@ -37,9 +40,15 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 DEFAULT_MODEL = "gemini-2.5-flash"
+# Flash supports 65536 output tokens; we ask for a structured summary
+# (no verbatim transcript) so typical responses are 2-5K tokens. The
+# generous cap protects against unusually-long structured outputs
+# (e.g. 3hr panel discussions with 40+ key moments) without truncation.
+MAX_OUTPUT_TOKENS = 16384
 
 # Error classes returned in failure payloads. Workers branch on this
 # field to choose a `fetch_failed.reason` for their JSON outcome line.
@@ -69,24 +78,43 @@ _REFUSAL_MARKERS = (
 )
 
 YOUTUBE_EXTRACT_PROMPT = """\
-Extract structured information from this YouTube video.
+You are extracting a structured brief from a YouTube video. Watch the \
+video and reason directly over its content — do NOT return a verbatim \
+transcript. Produce summary-grade output that's ready to drop into a \
+research note.
 
 Return ONLY a JSON object with these exact fields:
 
-- "transcript": the full spoken transcript, dialog-only, with light \
-cleanup (filler words removed, sentence boundaries restored) but no \
-edits that change meaning. If captions are available use them; \
-otherwise transcribe from audio.
-- "summary": a 3-5 paragraph summary of the video's argument, \
-evidence, and conclusions. Dense and evidence-rich. Do not use \
-hedging language like "the video discusses" or "the speaker \
-talks about" — state the substance directly.
-- "key_moments": list of 5-10 objects, each with \
-{"timestamp": "MM:SS", "description": "..."}, marking the most \
-informative points in the video.
+- "summary": 3-5 dense paragraphs covering the video's argument, \
+evidence, and conclusions. Evidence-rich. State substance directly; \
+do not use hedging language like "the video discusses" or "the \
+speaker talks about". Reads like a smart colleague summarising what \
+they just watched.
+
+- "key_developments": list of 4-8 objects, each \
+{"point": "<one-sentence assertion the video makes>", "evidence": \
+"<the specific quote, data, citation, or demonstration the video \
+uses to support it — quote verbatim where possible>"}. Capture \
+distinct claims, not paraphrases of one claim.
+
+- "key_moments": list of 5-10 objects, each \
+{"timestamp": "MM:SS", "description": "<what happens at this \
+timestamp>"}, marking the most informative points in the video. \
+Use HH:MM:SS for videos over an hour.
+
+- "mentioned_links": list of objects \
+{"url": "<URL>", "context": "<one-line: why the speaker brought \
+this up>"}, capturing every URL the speaker cites verbally or shows \
+on screen. Empty list if none.
+
+- "topic_tags": list of 5-10 short kebab-case tags describing the \
+video's subject matter (e.g. "transformer-architecture", \
+"federal-reserve", "post-training-rl"). These are hints for \
+downstream concept extraction — favour specificity over breadth.
+
 - "duration_sec": video length in seconds, as an integer.
 
-Output only the JSON object — no markdown fences, no preamble."""
+Output only the JSON object — no preamble, no commentary."""
 
 
 def extract_youtube(
@@ -102,8 +130,11 @@ def extract_youtube(
 
     On success::
 
-        {"ok": True, "transcript": str, "summary": str,
-         "key_moments": list[dict], "duration_sec": int,
+        {"ok": True, "summary": str,
+         "key_developments": list[{point, evidence}],
+         "key_moments": list[{timestamp, description}],
+         "mentioned_links": list[{url, context}],
+         "topic_tags": list[str], "duration_sec": int,
          "model": str}
 
     On failure::
@@ -123,12 +154,14 @@ def extract_youtube(
     - ``invalid_response`` — Gemini returned non-JSON or malformed
       JSON. Includes ``raw`` field with first 500 chars for debug.
     """
+    if not api_key and not os.environ.get("GOOGLE_API_KEY"):
+        _maybe_load_env_file()
     key = api_key or os.environ.get("GOOGLE_API_KEY")
     if not key:
         return {
             "ok": False,
             "error": ERR_MISSING_API_KEY,
-            "reason": "GOOGLE_API_KEY env var not set",
+            "reason": "GOOGLE_API_KEY env var not set (checked env + .env in PERSONAL_MEM_VAULT and CWD)",
         }
 
     try:
@@ -159,9 +192,11 @@ def extract_youtube(
 
     return {
         "ok": True,
-        "transcript": str(parsed.get("transcript", "") or ""),
         "summary": str(parsed.get("summary", "") or ""),
+        "key_developments": _coerce_key_developments(parsed.get("key_developments")),
         "key_moments": _coerce_key_moments(parsed.get("key_moments")),
+        "mentioned_links": _coerce_mentioned_links(parsed.get("mentioned_links")),
+        "topic_tags": _coerce_str_list(parsed.get("topic_tags")),
         "duration_sec": _coerce_int(parsed.get("duration_sec")),
         "model": model,
     }
@@ -174,24 +209,74 @@ def _call_gemini_for_youtube(api_key: str, model: str, url: str) -> str:
     call (skipping both the lazy SDK import and the network round-trip)
     without touching the structured-result logic in ``extract_youtube``.
 
-    The shape here targets ``google-generativeai >= 0.8`` — YouTube URLs
-    are passed as a ``file_data`` part with the URL as ``file_uri``.
-    Gemini 2.5 Flash handles transcript extraction natively from the URL.
+    The shape here targets ``google-genai >= 1.0`` — YouTube URLs are
+    passed as a ``file_data`` part with the URL as ``file_uri``. Gemini
+    2.5 Flash handles transcript extraction natively from the URL.
 
-    Raises ``ImportError`` when ``google-generativeai`` is not installed;
+    Three production-critical settings:
+    - ``response_mime_type='application/json'`` — Gemini guarantees
+      well-formed JSON output; no need to strip code fences.
+    - ``max_output_tokens=65536`` — Flash's actual max; the SDK default
+      (8K) truncates real-world transcripts mid-string.
+    - ``temperature=0.2`` — keep transcript faithful to source.
+
+    Raises ``ImportError`` when ``google-genai`` is not installed;
     ``extract_youtube`` catches this and maps to ``missing_sdk``.
     """
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    genai.configure(api_key=api_key)
-    client = genai.GenerativeModel(model)
-    response = client.generate_content(
-        [
-            {"file_data": {"file_uri": url, "mime_type": "video/*"}},
-            YOUTUBE_EXTRACT_PROMPT,
-        ]
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=types.Content(
+            parts=[
+                types.Part(file_data=types.FileData(file_uri=url)),
+                types.Part(text=YOUTUBE_EXTRACT_PROMPT),
+            ]
+        ),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            temperature=0.2,
+        ),
     )
     return getattr(response, "text", "") or ""
+
+
+def _maybe_load_env_file() -> None:
+    """Best-effort .env loader — populates os.environ from .env files in
+    well-known locations if the key isn't already exported. Called only
+    when GOOGLE_API_KEY is missing from the live environment, so the
+    common case (CI, properly-exported shell) pays nothing.
+
+    Looks for ``.env`` at, in order:
+      1. ``$PERSONAL_MEM_VAULT/.env`` — vault-scoped secrets
+      2. ``Path.cwd() / '.env'`` — project-local development
+
+    Silently ignores parse errors and missing files. Does not overwrite
+    keys already set in the environment.
+    """
+    candidates: list[Path] = []
+    vault = os.environ.get("PERSONAL_MEM_VAULT")
+    if vault:
+        candidates.append(Path(vault) / ".env")
+    candidates.append(Path.cwd() / ".env")
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+        except OSError:
+            continue
 
 
 def _looks_like_refusal(msg: str) -> bool:
@@ -233,6 +318,42 @@ def _coerce_key_moments(value: Any) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _coerce_key_developments(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "point": str(item.get("point", "") or ""),
+                "evidence": str(item.get("evidence", "") or ""),
+            }
+        )
+    return out
+
+
+def _coerce_mentioned_links(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url", "") or "").strip()
+        if not url:
+            continue
+        out.append({"url": url, "context": str(item.get("context", "") or "")})
+    return out
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if isinstance(v, (str, int, float)) and str(v).strip()]
 
 
 def _coerce_int(value: Any) -> int:
