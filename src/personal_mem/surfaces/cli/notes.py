@@ -17,12 +17,14 @@ def cmd_add(args: argparse.Namespace) -> None:
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
     fm_kvs = getattr(args, "frontmatter", []) or []
     extra_fm = dict(_parse_fm_token(kv) for kv in fm_kvs) if fm_kvs else None
-    note = create_note(
+    result = create_note(
         cfg, note_type=NoteType(args.type), title=args.title, body=body,
         project=args.project or cfg.default_project, tags=tags, session_id=args.session,
         extra_frontmatter=extra_fm,
     )
-    print(f"Created {note.type.value} [{note.id}] at {(cfg.vault_root / note.path).relative_to(cfg.vault_root)}")
+    note = result.note
+    verb = "Exists" if result.existed else "Created"
+    print(f"{verb} {note.type.value} [{note.id}] at {(cfg.vault_root / note.path).relative_to(cfg.vault_root)}")
 
 
 def cmd_search(args: argparse.Namespace) -> None:

@@ -109,3 +109,86 @@ def test_extract_session_enqueues_supersedes(
     # New decision's id is encoded in the reason for successor lookup later.
     assert out.created_decisions[0].id in items[0]["reason"]
 
+
+def test_create_note_enqueues_supersedes(cfg: Config, vault: VaultManager) -> None:
+    """`mem_create` (operations.notes.create_note) with supersedes enqueues."""
+    pred_id = _seed_predecessor(vault)
+    _index(cfg)
+
+    result = ops_notes.create_note(
+        cfg,
+        note_type=NoteType.DECISION,
+        title="Headless replacement",
+        body="## Context\n\n## Decision\n",
+        project="t",
+        extra_frontmatter={
+            "status": "accepted",
+            "committed": True,
+            "supersedes": [pred_id],
+        },
+    )
+    assert result.existed is False
+
+    items = rejudge_queue.peek(cfg)
+    assert len(items) == 1
+    assert items[0]["decision_id"] == pred_id
+    assert items[0]["source"] == "supersession"
+    assert result.note.id in items[0]["reason"]
+
+
+def test_update_note_adding_supersedes_enqueues(
+    cfg: Config, vault: VaultManager
+) -> None:
+    """`mem_update` extending supersedes:[] enqueues the newly-added entry."""
+    pred_id = _seed_predecessor(vault)
+
+    # Create a decision *without* supersedes, then add it via update.
+    result = ops_notes.create_note(
+        cfg,
+        note_type=NoteType.DECISION,
+        title="Later decision",
+        body="## Context\n\n## Decision\n",
+        project="t",
+        extra_frontmatter={"status": "accepted", "committed": True},
+    )
+    # Pre-state: queue should be empty (no supersedes at create time).
+    assert rejudge_queue.peek(cfg) == []
+
+    ops_notes.update_note(
+        cfg, result.note.id,
+        frontmatter_updates={"supersedes": [pred_id]},
+    )
+
+    items = rejudge_queue.peek(cfg)
+    assert len(items) == 1
+    assert items[0]["decision_id"] == pred_id
+    assert items[0]["source"] == "supersession"
+
+
+def test_supersession_idempotent_across_writes(
+    cfg: Config, vault: VaultManager
+) -> None:
+    """Two create+update calls naming the same predecessor → one queue entry."""
+    pred_id = _seed_predecessor(vault)
+    _index(cfg)
+
+    ops_notes.create_note(
+        cfg,
+        note_type=NoteType.DECISION,
+        title="First successor",
+        body="## Context\n\n## Decision\n",
+        project="t",
+        extra_frontmatter={"status": "accepted", "supersedes": [pred_id]},
+    )
+    # Second successor naming the same predecessor — queue dedup wins.
+    ops_notes.create_note(
+        cfg,
+        note_type=NoteType.DECISION,
+        title="Second successor",
+        body="## Context\n\n## Decision\n",
+        project="t",
+        extra_frontmatter={"status": "accepted", "supersedes": [pred_id]},
+    )
+    items = rejudge_queue.peek(cfg)
+    assert len(items) == 1
+    assert items[0]["decision_id"] == pred_id

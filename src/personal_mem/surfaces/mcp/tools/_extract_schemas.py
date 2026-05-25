@@ -109,12 +109,16 @@ def tool_schemas() -> list:
                                 "predicted_outcome": {
                                     "type": "string",
                                     "description": (
-                                        "OPTIONAL forward-looking prediction about what should happen "
-                                        "if this decision is right (e.g. 'tests will pass on next run', "
-                                        "'this will land in one commit'). Judged later by mem_judge — "
-                                        "narrow deterministic rules promote it to confirmed/contradicted, "
-                                        "otherwise unevaluable. Feeds the RLVR export. Leave empty "
-                                        "when the session has no clear prediction; never invent one."
+                                        "OPTIONAL forward-looking prediction. Prose string carrying "
+                                        "the claim plus a manifestation pointer — where/when/what "
+                                        "query verifies it (e.g. 'next CI run on this branch will "
+                                        "show all judge tests green', 'this lands in a single commit "
+                                        "touching only synthesis/judge.py'). The decision file is "
+                                        "seeded with prediction_match=pending; later the "
+                                        "/judge-prediction skill maps it against evidence to "
+                                        "confirmed/contradicted/unevaluable/stale. Feeds the RLVR "
+                                        "export. Leave empty when the session has no clear "
+                                        "prediction; never invent one."
                                     ),
                                 },
                             },
@@ -147,7 +151,9 @@ def tool_schemas() -> list:
                 "Evaluate decision notes based on downstream evidence.\n\n"
                 "Updates verdict (kept/superseded/reverted/unknown) and confidence "
                 "score on decision frontmatter. No LLM — pure graph traversal and "
-                "git state checks.\n\n"
+                "git state checks. STRUCTURAL VERDICTS ONLY: prediction verdicts "
+                "(confirmed/contradicted/unevaluable/stale on predicted_outcome) "
+                "are emitted by the /judge-prediction skill, not this tool.\n\n"
                 "Use after extraction to assess which decisions held up, or any time "
                 "later to reconcile with post-session events (commits that happened "
                 "after the session, files that were reverted, etc.).\n\n"

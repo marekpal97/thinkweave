@@ -528,3 +528,195 @@ class TestDreamApplyRegistrySync:
         # Registry upsert was called (even though it raised)
         assert call_count["n"] >= 1
 
+
+# ---------------------------------------------------------------------------
+# create_note soft validation gate
+# ---------------------------------------------------------------------------
+
+
+class TestCreateNoteThemeRefGate:
+    def test_unknown_thm_ref_dropped_and_warns(
+        self, config: Config, vault: VaultManager, caplog
+    ):
+        from personal_mem.operations.notes import create_note
+
+        # Registry is empty — any thm- ref is unknown.
+        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+            note = create_note(
+                config,
+                note_type=NoteType.NOTE,
+                title="Test note",
+                extra_frontmatter={
+                    "relates_to": ["thm-ghost"],
+                    "concepts": [],
+                },
+            ).note
+
+        # The unknown ref should be dropped.
+        fm = note.frontmatter
+        relates = fm.get("relates_to") or []
+        assert "thm-ghost" not in relates, (
+            "Unknown thm- ref must be dropped from relates_to"
+        )
+        # A warning was logged.
+        assert any("thm-ghost" in r.message for r in caplog.records), (
+            "Expected a warning about the unknown thm- ref"
+        )
+
+    def test_known_thm_ref_preserved(
+        self, config: Config, vault: VaultManager
+    ):
+        from personal_mem.operations.notes import create_note
+
+        # Register a theme first.
+        upsert(config, "thm-real1234", {"slug": "real-theme", "status": "active"})
+
+        note = create_note(
+            config,
+            note_type=NoteType.NOTE,
+            title="Note with valid ref",
+            extra_frontmatter={
+                "relates_to": ["thm-real1234"],
+                "concepts": [],
+            },
+        ).note
+
+        fm = note.frontmatter
+        relates = fm.get("relates_to") or []
+        assert "thm-real1234" in relates, (
+            "Known thm- ref must survive the gate"
+        )
+
+    def test_empty_relates_to_no_warning(
+        self, config: Config, vault: VaultManager, caplog
+    ):
+        from personal_mem.operations.notes import create_note
+
+        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+            create_note(
+                config,
+                note_type=NoteType.NOTE,
+                title="Note without relates_to",
+                extra_frontmatter={"concepts": []},
+            )
+
+        thm_warnings = [
+            r for r in caplog.records
+            if "relates_to" in r.message.lower() or "thm-" in r.message
+        ]
+        assert thm_warnings == [], "No warning expected for missing relates_to"
+
+    def test_missing_relates_to_no_crash(
+        self, config: Config, vault: VaultManager
+    ):
+        from personal_mem.operations.notes import create_note
+
+        # Should not crash — no relates_to key at all.
+        note = create_note(
+            config,
+            note_type=NoteType.NOTE,
+            title="Plain note",
+            extra_frontmatter=None,
+        ).note
+        assert note.title == "Plain note"
+
+    def test_non_thm_relates_to_not_filtered(
+        self, config: Config, vault: VaultManager, caplog
+    ):
+        """Non-thm- refs (e.g. plain note IDs) pass through unfiltered."""
+        from personal_mem.operations.notes import create_note
+
+        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+            note = create_note(
+                config,
+                note_type=NoteType.NOTE,
+                title="Note with non-theme ref",
+                extra_frontmatter={"relates_to": ["n-somenoteid"], "concepts": []},
+            ).note
+
+        fm = note.frontmatter
+        relates = fm.get("relates_to") or []
+        assert "n-somenoteid" in relates
+
+    def test_mixed_refs_partial_filter(
+        self, config: Config, vault: VaultManager, caplog
+    ):
+        """Known thm- survives; unknown thm- is dropped; non-thm- passes through."""
+        from personal_mem.operations.notes import create_note
+
+        upsert(config, "thm-known0001", {"slug": "known", "status": "active"})
+
+        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+            note = create_note(
+                config,
+                note_type=NoteType.NOTE,
+                title="Mixed refs",
+                extra_frontmatter={
+                    "relates_to": ["thm-known0001", "thm-ghost", "n-regular"],
+                    "concepts": [],
+                },
+            ).note
+
+        relates = note.frontmatter.get("relates_to") or []
+        assert "thm-known0001" in relates
+        assert "thm-ghost" not in relates
+        assert "n-regular" in relates
+
+
+# ---------------------------------------------------------------------------
+# Integration test: fresh vault → mint → registry → create_note
+# ---------------------------------------------------------------------------
+
+
+class TestIntegrationFreshVault:
+    def test_mint_then_create_note_with_valid_ref(
+        self, config: Config, vault: VaultManager
+    ):
+        """End-to-end: mint a theme via promote_candidate, confirm it enters
+        the registry, then create a note that relates_to that theme and
+        verify the ref survives the gate."""
+        from personal_mem.synthesis.theme_candidates import (
+            promote_candidate,
+            scan_candidates,
+        )
+        from personal_mem.operations.notes import create_note
+        from personal_mem.core.vault import parse_frontmatter
+
+        # 1. Seed enough sources for a candidate.
+        for i in range(3):
+            _make_substack_source(vault, f"SRC{i}")
+        _index(config)
+        scan_candidates(config, source_type="substack")
+
+        # 2. Promote the candidate → canonical theme.
+        cdir = config.vault_root / "themes" / "_candidates"
+        cand_path = next(cdir.glob("cand-*.md"))
+        cand_id = cand_path.stem.split("-")[0] + "-" + cand_path.stem.split("-")[1]
+        theme_path = promote_candidate(
+            config, cand_id, title="AI Capex Unwind 2026"
+        )
+        assert theme_path.exists()
+
+        # 3. Verify the registry was updated.
+        fm, _ = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        thm_id = fm["id"]
+        assert is_canonical(config, thm_id), (
+            f"Registry must contain {thm_id} after promote_candidate"
+        )
+
+        # 4. Create a note with relates_to the canonical theme.
+        note = create_note(
+            config,
+            note_type=NoteType.NOTE,
+            title="Citing the theme",
+            extra_frontmatter={
+                "relates_to": [thm_id],
+                "concepts": [],
+            },
+        ).note
+
+        # 5. The ref must survive.
+        relates = note.frontmatter.get("relates_to") or []
+        assert thm_id in relates, (
+            f"{thm_id} should survive the create_note gate (it's registered)"
+        )

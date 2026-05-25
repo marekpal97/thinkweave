@@ -229,7 +229,7 @@ def handle_create(cfg: Config, args: dict):
     from personal_mem.operations.notes import create_note
 
     note_type = NoteType(args["type"])
-    note = create_note(
+    result = create_note(
         cfg,
         note_type=note_type,
         title=args["title"],
@@ -239,6 +239,18 @@ def handle_create(cfg: Config, args: dict):
         extra_frontmatter=args.get("frontmatter") or None,
         session_id=args.get("session_id", ""),
     )
+    note = result.note
+
+    if result.existed:
+        # Dedup gate hit — caller (worker, importer, /research direct) gets
+        # the existing note id back instead of a fresh duplicate. Phrasing
+        # is explicit so workers can branch on it: "idempotent_skip" mirrors
+        # the worker outcome vocabulary in the research-* skill specs.
+        msg = (
+            f"idempotent_skip: source already exists as [{note.id}] at {note.path} "
+            f"(matched on configured dedup_keys)"
+        )
+        return [TextContent(type="text", text=msg)]
 
     msg = f"Created {note.type.value} [{note.id}] at {note.path}"
     if note_type == NoteType.SOURCE:

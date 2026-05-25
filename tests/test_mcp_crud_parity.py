@@ -89,7 +89,7 @@ class TestCreateParity:
             body="Content tables enable snippet generation.",
             project="test",
             tags=["sqlite", "fts"],
-        )
+        ).note
 
         # Same type / project / tags / body
         assert mcp_note.type == ops_note.type == NoteType.NOTE
@@ -137,7 +137,7 @@ class TestCreateParity:
             body="x",
             project="test",
             extra_frontmatter=dict(fm),
-        )
+        ).note
 
         # Both notes should expose the same proposed_concepts set.
         assert set(mcp_note.frontmatter.get("proposed_concepts", [])) == set(
@@ -167,11 +167,11 @@ class TestCreateParity:
 
 class TestUpdateParity:
     def _make_note(self, cfg: Config) -> str:
-        note = ops.create_note(
+        result = ops.create_note(
             cfg, note_type=NoteType.NOTE, title="Updateable", body="Original.",
             project="test", tags=["a"],
         )
-        return note.id
+        return result.note.id
 
     def test_frontmatter_update_via_mcp(self, cfg: Config) -> None:
         note_id = self._make_note(cfg)
@@ -226,8 +226,8 @@ class TestUpdateParity:
 
 class TestLinkUnlinkParity:
     def _two_notes(self, cfg: Config) -> tuple[str, str]:
-        a = ops.create_note(cfg, note_type=NoteType.NOTE, title="A", project="test")
-        b = ops.create_note(cfg, note_type=NoteType.NOTE, title="B", project="test")
+        a = ops.create_note(cfg, note_type=NoteType.NOTE, title="A", project="test").note
+        b = ops.create_note(cfg, note_type=NoteType.NOTE, title="B", project="test").note
         return a.id, b.id
 
     def test_link_then_unlink_matches_operations(self, cfg: Config) -> None:
