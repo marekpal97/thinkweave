@@ -194,8 +194,10 @@ class TestDispatchTable:
 
     def test_subcommand_count_bumped(self):
         # P1-4 dropped ``mem connect`` (deprecation alias): 34 → 33.
+        # `mem dream` (vault-hygiene cycle) and `mem news-stats`
+        # (per-outlet drain stats) added later: 33 → 35.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
         from personal_mem.surfaces.cli import _DISPATCH
 
-        assert len(_DISPATCH) == 33
+        assert len(_DISPATCH) == 35

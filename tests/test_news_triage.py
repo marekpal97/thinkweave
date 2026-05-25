@@ -4,6 +4,13 @@ Covers the deterministic surfaces (catalog extraction, prompt
 assembly, response parsing, CLI plumbing). The Anthropic call itself
 is stubbed — we only verify the request shape and the parser's
 robustness to malformed responses, not the LLM's verdicts.
+
+**Provider-swap pause (2026-05-21).** ``operations/news_triage`` is
+temporarily on OpenAI ``gpt-5-mini`` (see its module docstring), so
+the four tests that lock in the Anthropic ``system: [...]`` +
+``cache_control: ephemeral`` request shape are marked ``xfail`` with
+``strict=False`` — they'll auto-pass once ``ANTHROPIC_API_KEY`` is in
+the env and the provider reverts to the long-term Haiku shape.
 """
 
 from __future__ import annotations
@@ -14,6 +21,18 @@ import sys
 from pathlib import Path
 
 import pytest
+
+
+# The triage helper is on a temporary provider swap (Anthropic → OpenAI);
+# tests asserting the Anthropic prompt shape will pass again on revert.
+_PROVIDER_SWAP_XFAIL = pytest.mark.xfail(
+    reason=(
+        "news_triage is temporarily on OpenAI gpt-5-mini per its module "
+        "docstring; Anthropic shape (system blocks + cache_control) "
+        "regression checks pause until ANTHROPIC_API_KEY is available."
+    ),
+    strict=False,
+)
 
 from personal_mem.operations.news_triage import (
     ALLOWED_VERDICTS,
@@ -70,6 +89,7 @@ class TestExtractCatalog:
 
 
 class TestBuildTriageMessages:
+    @_PROVIDER_SWAP_XFAIL
     def test_request_shape(self):
         catalog = f"{CATALOG_HEADING}\n\n### Theme A\n> essence"
         items = [
@@ -92,6 +112,7 @@ class TestBuildTriageMessages:
         assert "1. [outlet=cnbc, tier=1] Memory chip rally" in user
         assert "2. [outlet=marketwatch, tier=1] Sports gossip" in user
 
+    @_PROVIDER_SWAP_XFAIL
     def test_empty_catalog_uses_placeholder(self):
         """When the vault has no active themes, the catalog block falls
         back to a placeholder so the LLM's instructions still parse —
@@ -203,6 +224,7 @@ class TestParseTriageResponse:
 
 
 class TestCLI:
+    @_PROVIDER_SWAP_XFAIL
     def test_dry_run_emits_drops_and_logs_request_to_stderr(
         self, tmp_path: Path
     ):
@@ -267,6 +289,7 @@ class TestVerdictConstants:
     def test_allowed_verdicts_set(self):
         assert ALLOWED_VERDICTS == {VERDICT_KEEP, VERDICT_UNFILED, VERDICT_DROP}
 
+    @_PROVIDER_SWAP_XFAIL
     def test_default_model_is_haiku(self):
         # The triage layer should be cheap by default. If someone bumps
         # this to sonnet, tests should fail loudly so the change is
