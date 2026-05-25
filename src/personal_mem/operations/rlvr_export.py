@@ -16,13 +16,20 @@ The row schema is locked by ``project_decision_context_rl``::
 
     {
       "decision_id", "project", "session_id", "created_at",
-      "prediction": {"text", "match"},
+      "prediction": {"text", "match", "history"},
       "outcome": {"verdict", "committed", "blame_lines", "days_alive"},
       "context": {
         "n_retrievals_onthefly", "cited_onthefly_ids",
         "cited_startup_only_ids", "startup_token_est",
       }
     }
+
+``prediction.history`` is the append-only list of
+``{match, judged_at, reason}`` entries from the decision's
+``prediction_history:`` frontmatter; ``prediction.match`` is the denormalized
+tail entry's match (derived from history rather than from the legacy
+``prediction_match`` field, so legacy decisions still produce a correct
+shortcut via :func:`read_history`'s back-compat coercion).
 
 Single-row use: ``assemble_row(cfg, decision_id)``.
 Batch export: ``export_rows(cfg, project=..., since=..., until=...,
@@ -42,6 +49,7 @@ from typing import Iterator
 from personal_mem.core.config import Config
 from personal_mem.core.indexer import Indexer
 from personal_mem.core.vault import VaultManager, extract_wikilinks
+from personal_mem.synthesis.prediction import read_history
 
 # Same prefix family as operations/retrieval_log.py:_ID_RE. `fullmatch` here —
 # the wikilink target must BE an id, not just contain one. `[[some-title]]`
@@ -238,6 +246,13 @@ def _assemble_with_indexer(
         except (ValueError, TypeError):
             blame_lines = -1
 
+    # Prediction history — full append-only list. Tail entry's match is the
+    # denormalized shortcut (derived from history, NOT from the legacy
+    # `prediction_match` field — keeps things honest when a decision was
+    # judged multiple times and the fm shortcut is stale).
+    history = read_history(fm)
+    tail_match = history[-1]["match"] if history else ""
+
     return RLVRRow(
         decision_id=decision_id,
         project=fm.get("project", "") or "",
@@ -245,7 +260,8 @@ def _assemble_with_indexer(
         created_at=created_at,
         prediction={
             "text": fm.get("predicted_outcome", "") or "",
-            "match": fm.get("prediction_match", "") or "",
+            "match": tail_match,
+            "history": history,
         },
         outcome={
             "verdict": fm.get("verdict", "") or "",

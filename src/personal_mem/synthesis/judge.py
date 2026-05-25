@@ -14,7 +14,6 @@ The three-stage temporal model:
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -84,10 +83,10 @@ def evaluate_decision(
 ) -> dict:
     """Evaluate a decision based on downstream evidence. Pure data, no LLM.
 
-    Returns dict with verdict, confidence (0.0-1.0), and evidence string.
-    If the decision carries a ``predicted_outcome`` field, the result also
-    carries ``prediction_match`` ∈ {confirmed, partial, contradicted,
-    unevaluable} — see :func:`_evaluate_prediction_match`.
+    Returns dict with verdict (``kept``/``superseded``/``reverted``/``unknown``),
+    confidence (0.0-1.0), and evidence string. Prediction verdicts live in
+    the ``/judge-prediction`` skill now — this evaluator only emits the
+    structural verdict.
     """
     judged_at = datetime.now(timezone.utc).isoformat()
 
@@ -177,262 +176,12 @@ def evaluate_decision(
             "unknown", 0.0, f"Not committed{plan_note}",
         )
 
-    result = {
+    return {
         **base,
         "verdict": verdict,
         "confidence": confidence,
         "evidence": evidence,
     }
-
-    # Prediction match — only emitted when the decision carries a prediction.
-    # Pure deterministic keyword + structural-evidence match; the memo says
-    # `unevaluable` is a legit common terminal value and a semantic upgrade
-    # pass is out of MVP scope.
-    predicted = fm.get("predicted_outcome")
-    if predicted:
-        result["prediction_match"] = _evaluate_prediction_match(
-            predicted,
-            verdict=verdict,
-            committed=committed,
-            tested=tested,
-            session_meta=session_meta,
-        )
-    return result
-
-
-# Keyword families for prediction-match dispatch on the LEGACY bare-string
-# shape. Word-boundary matched (not bare substring) so prose like
-# "pass the buffer" no longer hits the test family. Negative-polarity cues
-# downgrade to `unevaluable` rather than risk a polarity inversion bug.
-#
-# The CANONICAL shape is the structured dict — ``{family, text, polarity}``;
-# this regex table only runs when the legacy bare string is detected (with a
-# deprecation log). Widening these is still a deliberate decision.
-_TEST_FAMILY_RE = re.compile(
-    r"\b(test|tests|testing|ci|green|red|passes|passing|fails|failing)\b",
-    re.IGNORECASE,
-)
-_COMMIT_FAMILY_RE = re.compile(
-    r"\b(commit|commits|committed|land|lands|landed|ship|ships|shipped|"
-    r"merge|merges|merged|deploy|deploys|deployed)\b",
-    re.IGNORECASE,
-)
-
-# Polarity cues — same word-boundary discipline. ``negative`` here means
-# "the prediction asserts a NEGATIVE outcome" (e.g. "tests will fail",
-# "this won't land"). A negative prediction confirmed by failing tests is
-# `confirmed`, not `contradicted` — the bug the polarity flag fixes.
-_NEGATIVE_POLARITY_RE = re.compile(
-    r"\b(won't|will\s+not|shouldn't|should\s+not|expect(?:ed)?\s+to\s+fail|"
-    r"fail|fails|failing|abandon|abandoned|revert|reverted)\b",
-    re.IGNORECASE,
-)
-
-# Valid family values for the structured shape.
-_FAMILIES = ("test", "commit")
-# Valid polarity values for the structured shape.
-_POLARITIES = ("positive", "negative", None)
-
-
-def _coerce_prediction(predicted) -> dict | None:
-    """Normalise the ``predicted_outcome`` frontmatter value into a dict.
-
-    The canonical shape is::
-
-        {"family": "test"|"commit", "text": "...", "polarity": "positive"|"negative"|None}
-
-    Legacy bare strings are accepted for one release: the family is sniffed
-    from the regex tables above, polarity is inferred from negative cues,
-    and a deprecation warning is logged. Returns ``None`` for empty inputs
-    or shapes that cannot be coerced (e.g. an unknown ``family`` value).
-    """
-    if predicted is None:
-        return None
-
-    # Structured shape — explicit family always wins.
-    if isinstance(predicted, dict):
-        family = (predicted.get("family") or "").strip().lower() or None
-        text = (predicted.get("text") or "").strip()
-        polarity = predicted.get("polarity")
-        if isinstance(polarity, str):
-            polarity = polarity.strip().lower() or None
-        if family not in _FAMILIES:
-            # Unknown family → unevaluable terminus, but keep `text` available
-            # for the legacy sniff path so users mid-migration still get a
-            # signal.
-            family = None
-        if polarity not in _POLARITIES:
-            polarity = None
-        if not family and not text:
-            return None
-        return {
-            "family": family,
-            "text": text,
-            "polarity": polarity,
-            "_legacy_string": False,
-        }
-
-    # Legacy bare-string shape — sniff family + polarity from regex tables.
-    text = str(predicted).strip()
-    if not text:
-        return None
-    log.warning(
-        "predicted_outcome bare-string form is deprecated; pass a dict "
-        "{family, text, polarity} instead. Got: %r",
-        text[:80],
-    )
-    # First-match-wins dispatch — test family takes precedence (legacy
-    # contract pinned by the unit tests).
-    family: str | None = None
-    if _TEST_FAMILY_RE.search(text):
-        family = "test"
-    elif _COMMIT_FAMILY_RE.search(text):
-        family = "commit"
-    # Polarity sniff is intentionally conservative — if any negative cue
-    # fires, treat the whole prediction as ambiguous (polarity=None) so
-    # the evaluator stays on `unevaluable` instead of risking a flip.
-    polarity: str | None = "positive"
-    if _NEGATIVE_POLARITY_RE.search(text):
-        polarity = None
-    # Legacy flag — the test-family evaluator collapses mixed-result test
-    # runs to `contradicted` (rather than `partial`) when the prediction
-    # came in as a bare string. Polarity was sniffed, not asserted, so we
-    # don't trust it enough to surface `partial`.
-    return {
-        "family": family,
-        "text": text,
-        "polarity": polarity,
-        "_legacy_string": True,
-    }
-
-
-def _evaluate_prediction_match(
-    predicted,
-    *,
-    verdict: str,
-    committed: bool,
-    tested: bool,
-    session_meta: NoteMeta | None,
-) -> str:
-    """Map (predicted_outcome, structural evidence) → prediction_match.
-
-    Returns one of ``confirmed`` / ``partial`` / ``contradicted`` /
-    ``unevaluable``. The default is ``unevaluable`` — only narrow,
-    deterministic rules can promote off it. No LLM, no embedding compare.
-
-    Accepts either the canonical structured form
-    ``{"family": "test"|"commit", "text": "...", "polarity": ...}`` or a
-    legacy bare string (with one-release deprecation warning).
-
-    Polarity semantics:
-    - ``polarity="positive"`` (default for structured form) — prediction
-      asserts the family-positive outcome (tests pass / will land).
-    - ``polarity="negative"`` — prediction asserts the family-negative
-      outcome (tests fail / won't land); evidence flips the verdict.
-    - ``polarity=None`` — ambiguous; conservatively stays unevaluable.
-
-    Partial semantics (test family only): if some tests pass AND some fail,
-    a positive-polarity prediction maps to ``partial``. The legacy bare
-    string preserves the old "any failure → contradicted" rule because
-    polarity is unknown.
-    """
-    coerced = _coerce_prediction(predicted)
-    if coerced is None:
-        return "unevaluable"
-
-    family = coerced.get("family")
-    polarity = coerced.get("polarity")
-    legacy = bool(coerced.get("_legacy_string"))
-
-    # No family → no rule fires.
-    if family is None:
-        return "unevaluable"
-
-    # Ambiguous polarity is a terminal "unknown sign" — refuse to map.
-    if polarity is None:
-        return "unevaluable"
-
-    if family == "test":
-        return _evaluate_test_family(
-            polarity=polarity,
-            tested=tested,
-            session_meta=session_meta,
-            legacy=legacy,
-        )
-    if family == "commit":
-        return _evaluate_commit_family(
-            polarity=polarity,
-            verdict=verdict,
-            committed=committed,
-        )
-    return "unevaluable"
-
-
-def _evaluate_test_family(
-    *,
-    polarity: str,
-    tested: bool,
-    session_meta: NoteMeta | None,
-    legacy: bool,
-) -> str:
-    """Test-prediction family evaluator (split out for readability)."""
-    if session_meta is None:
-        # No session evidence at all.
-        return "confirmed" if (polarity == "positive" and tested) else "unevaluable"
-
-    runs = session_meta.frontmatter.get("test_runs", []) or []
-    # Defensive: render_frontmatter stringifies dicts inside lists, so
-    # test_runs can roundtrip as str. Skip non-dict entries rather than
-    # crashing — same pattern keeps _check_tested honest.
-    typed_runs = [r for r in runs if isinstance(r, dict)]
-    any_failed = any((r.get("failed", 0) or 0) > 0 for r in typed_runs)
-    any_passed = any((r.get("passed", 0) or 0) > 0 for r in typed_runs)
-
-    if polarity == "positive":
-        # "Tests will pass" — positive prediction.
-        if any_failed and any_passed and not legacy:
-            # Mixed result — partial confirmation. Only fires on the
-            # structured form; the legacy string form preserves the old
-            # "any-failure → contradicted" contract because polarity was
-            # sniffed, not asserted.
-            return "partial"
-        if any_failed:
-            return "contradicted"
-        if tested or any_passed:
-            return "confirmed"
-        return "unevaluable"
-
-    # polarity == "negative" — "tests will fail"
-    if any_failed and any_passed and not legacy:
-        return "partial"
-    if any_failed:
-        return "confirmed"
-    if tested or any_passed:
-        return "contradicted"
-    return "unevaluable"
-
-
-def _evaluate_commit_family(
-    *,
-    polarity: str,
-    verdict: str,
-    committed: bool,
-) -> str:
-    """Commit-prediction family evaluator (split out for readability)."""
-    if polarity == "positive":
-        # "This will land" — positive prediction.
-        if verdict == "reverted":
-            return "contradicted"
-        if committed:
-            return "confirmed"
-        return "unevaluable"
-
-    # polarity == "negative" — "this won't land / will revert"
-    if verdict == "reverted":
-        return "confirmed"
-    if committed:
-        return "contradicted"
-    return "unevaluable"
 
 
 def _check_re_edited(

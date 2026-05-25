@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -16,6 +17,24 @@ from personal_mem.core.config import Config
 from personal_mem.core.indexer import Indexer
 from personal_mem.core.schemas import NoteType
 from personal_mem.core.vault import VaultManager
+
+
+def _patch_fm(decision_id: str, fm_updates: dict):
+    """Patch ``VaultManager.read_note`` to inject fm fields for a decision.
+
+    Needed for tests that exercise the list-of-dict ``prediction_history``
+    shape — the homegrown YAML renderer/parser doesn't round-trip nested
+    structures, so we inject the structured payload directly.
+    """
+    original = VaultManager.read_note
+
+    def patched(self, path):
+        note = original(self, path)
+        if note.id == decision_id:
+            note.frontmatter.update(fm_updates)
+        return note
+
+    return patch.object(VaultManager, "read_note", patched)
 
 
 @pytest.fixture
@@ -69,6 +88,7 @@ def _index(config: Config) -> None:
 def _run_export(*, vault: Path, project: str = "",
                 committed_only: bool = False, since: str = "",
                 until: str = "", verbose: bool = False,
+                explode_history: bool = False,
                 monkeypatch=None, capsys=None) -> tuple[str, str]:
     """Invoke ``mem rlvr export`` and return (stdout, stderr)."""
     from personal_mem.surfaces.cli.rlvr import cmd_rlvr
@@ -81,10 +101,51 @@ def _run_export(*, vault: Path, project: str = "",
         "until": until,
         "committed_only": committed_only,
         "verbose": verbose,
+        "explode_history": explode_history,
     })()
     cmd_rlvr(args)
     out = capsys.readouterr()
     return out.out, out.err
+
+
+def _seed_decision_with_history(
+    vault: VaultManager, *, history: list[dict] | None,
+    predicted_outcome: str = "it will land", project: str = "t",
+) -> str:
+    """Seed a single session + decision; attach the denormalized prediction
+    fields to frontmatter.
+
+    NOTE: ``history`` itself is NOT written to disk here — the homegrown YAML
+    renderer doesn't round-trip list-of-dicts. The caller is expected to wrap
+    the test body in :func:`_patch_fm` to inject the structured list at read
+    time. Pass ``history=None`` for a decision lacking ``predicted_outcome``
+    entirely.
+    """
+    sess_path = vault.create_note(
+        NoteType.SESSION, "S0", body="## Summary\n", project=project,
+    )
+    sess_id = vault.read_note(sess_path).id
+    fm = {
+        "status": "accepted",
+        "committed": True,
+        "source_session": sess_id,
+        "derived_from": [sess_id],
+        "concepts": ["a", "b"],
+        "date": "2026-05-10",
+    }
+    if history is not None:
+        fm["predicted_outcome"] = predicted_outcome
+        if history:
+            fm["prediction_match"] = history[-1]["match"]
+            fm["judged_at"] = history[-1]["judged_at"]
+    dec_path = vault.create_note(
+        NoteType.DECISION, "D0",
+        body="## Context\n\n## Decision\n",
+        project=project,
+        extra_frontmatter=fm,
+        output_dir=sess_path.parent,
+    )
+    return vault.read_note(dec_path).id
 
 
 class TestRLVRExportCLI:
@@ -183,6 +244,84 @@ class TestRLVRExportCLI:
         rows = [json.loads(l) for l in stdout.splitlines() if l]
         assert len(rows) == 2
 
+    def test_default_mode_unchanged(
+        self, config: Config, vault: VaultManager, monkeypatch, capsys
+    ):
+        # Default mode (no --explode-history flag): one row per decision,
+        # and prediction.history is present on each row.
+        history = [
+            {"match": "pending", "judged_at": "2026-05-10T00:00:00Z",
+             "reason": "r1"},
+            {"match": "confirmed", "judged_at": "2026-05-12T00:00:00Z",
+             "reason": "r2"},
+        ]
+        dec_id = _seed_decision_with_history(vault, history=history)
+        _index(config)
+        with _patch_fm(dec_id, {"prediction_history": history}):
+            stdout, _ = _run_export(
+                vault=config.vault_root,
+                monkeypatch=monkeypatch, capsys=capsys,
+            )
+        rows = [json.loads(l) for l in stdout.splitlines() if l]
+        assert len(rows) == 1
+        assert rows[0]["prediction"]["history"] == history
+        assert rows[0]["prediction"]["match"] == "confirmed"
+
+    def test_explode_history_flag(
+        self, config: Config, vault: VaultManager, monkeypatch, capsys
+    ):
+        # 3 history entries → 3 lines, each carrying per-entry fields and
+        # a running entry_index.
+        history = [
+            {"match": "pending", "judged_at": "2026-05-10T00:00:00Z",
+             "reason": "first judge"},
+            {"match": "unevaluable", "judged_at": "2026-05-12T00:00:00Z",
+             "reason": "still unclear"},
+            {"match": "confirmed", "judged_at": "2026-05-14T00:00:00Z",
+             "reason": "tests passed"},
+        ]
+        dec_id = _seed_decision_with_history(vault, history=history)
+        _index(config)
+
+        with _patch_fm(dec_id, {"prediction_history": history}):
+            stdout, _ = _run_export(
+                vault=config.vault_root, explode_history=True,
+                monkeypatch=monkeypatch, capsys=capsys,
+            )
+        rows = [json.loads(l) for l in stdout.splitlines() if l]
+        assert len(rows) == 3
+        # All rows share the same decision_id (denormalized).
+        assert all(r["decision_id"] == dec_id for r in rows)
+        # Per-entry match / judged_at / reason / entry_index.
+        for i, (row, entry) in enumerate(zip(rows, history)):
+            assert row["prediction"]["match"] == entry["match"]
+            assert row["prediction"]["judged_at"] == entry["judged_at"]
+            assert row["prediction"]["reason"] == entry["reason"]
+            assert row["prediction"]["entry_index"] == i
+            # history is OMITTED in exploded mode (redundant).
+            assert "history" not in row["prediction"]
+
+    def test_explode_history_no_prediction(
+        self, config: Config, vault: VaultManager, monkeypatch, capsys
+    ):
+        # Decision lacking predicted_outcome entirely. Invariant: exactly one
+        # row emitted (one decision = at least one row), with empty fields.
+        _seed_decision_with_history(vault, history=None)
+        _index(config)
+
+        stdout, _ = _run_export(
+            vault=config.vault_root, explode_history=True,
+            monkeypatch=monkeypatch, capsys=capsys,
+        )
+        rows = [json.loads(l) for l in stdout.splitlines() if l]
+        assert len(rows) == 1
+        pred = rows[0]["prediction"]
+        assert pred["text"] == ""
+        assert pred["match"] == ""
+        assert pred["judged_at"] == ""
+        assert pred["reason"] == ""
+        assert pred["entry_index"] == 0
+
 
 class TestDispatchTable:
     def test_rlvr_in_dispatch(self):
@@ -196,8 +335,9 @@ class TestDispatchTable:
         # P1-4 dropped ``mem connect`` (deprecation alias): 34 → 33.
         # `mem dream` (vault-hygiene cycle) and `mem news-stats`
         # (per-outlet drain stats) added later: 33 → 35.
+        # Phase-3 prediction-judge rework adds `mem judge`: 35 → 36.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
         from personal_mem.surfaces.cli import _DISPATCH
 
-        assert len(_DISPATCH) == 35
+        assert len(_DISPATCH) == 36

@@ -33,6 +33,7 @@ from personal_mem.surfaces.cli.index import (
 )
 from personal_mem.surfaces.cli.install import cmd_install
 from personal_mem.surfaces.cli.intake import cmd_intake
+from personal_mem.surfaces.cli.judge import cmd_judge
 from personal_mem.surfaces.cli.landing import cmd_landing
 from personal_mem.surfaces.cli.news import cmd_news_stats
 from personal_mem.surfaces.cli.notes import (
@@ -91,6 +92,7 @@ _DISPATCH = {
     "update": cmd_update,
     "wrap-finalize": cmd_wrap_finalize,
     "rlvr": cmd_rlvr,
+    "judge": cmd_judge,
 }
 
 

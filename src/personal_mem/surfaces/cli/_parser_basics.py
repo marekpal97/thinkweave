@@ -360,6 +360,50 @@ def add_admin_subparsers(sub) -> None:
         help="Skip the orphan-prune step",
     )
 
+    p_judge = sub.add_parser(
+        "judge",
+        help=(
+            "Prediction-verdict pipeline. Drain the rejudge queue (emit "
+            "JSON worklist for /judge-prediction), list pending decisions, "
+            "or manually rejudge a single decision."
+        ),
+    )
+    judge_actions = p_judge.add_mutually_exclusive_group(required=False)
+    judge_actions.add_argument(
+        "--drain", action="store_true",
+        help=(
+            "Drain the supersession-triggered rejudge queue, merge in "
+            "cron-style pending_due stragglers, emit a JSON worklist on "
+            "stdout for /judge-prediction to consume."
+        ),
+    )
+    judge_actions.add_argument(
+        "--rejudge", metavar="DEC_ID", default="",
+        help=(
+            "Enqueue DEC_ID for re-judgment (source=manual) and shell to "
+            "`claude -p \"/judge-prediction --decision DEC_ID\"`. Inherits "
+            "stdio; exits with the subprocess's return code."
+        ),
+    )
+    judge_actions.add_argument(
+        "--list-pending", action="store_true",
+        help=(
+            "Read-only: print decision ids whose prediction_match == "
+            "'pending', one per line on stdout. Use --json for a JSON array."
+        ),
+    )
+    p_judge.add_argument(
+        "--max", type=int, default=20,
+        help="Cap worklist size for --drain (default: 20)",
+    )
+    p_judge.add_argument(
+        "--json", action="store_true",
+        help=(
+            "Emit JSON output. Implied by --drain (always JSON). Optional "
+            "for --list-pending (default is plain text, one id per line)."
+        ),
+    )
+
     p_rlvr = sub.add_parser(
         "rlvr",
         help=(
@@ -388,6 +432,15 @@ def add_admin_subparsers(sub) -> None:
     p_rlvr_export.add_argument(
         "--committed-only", action="store_true",
         help="Skip rows whose decision was not committed.",
+    )
+    p_rlvr_export.add_argument(
+        "--explode-history", action="store_true",
+        help=(
+            "Emit one row per prediction-history entry instead of one row "
+            "per decision. Each row carries per-entry match/judged_at/reason "
+            "and a 0-based entry_index. Decisions without history still emit "
+            "exactly one row."
+        ),
     )
     p_rlvr_export.add_argument(
         "--verbose", "-v", action="store_true",

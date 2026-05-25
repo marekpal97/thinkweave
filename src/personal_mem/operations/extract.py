@@ -33,6 +33,8 @@ from personal_mem.synthesis.concepts import (
     load_ontology,
     split_concepts_by_ontology,
 )
+from personal_mem.operations import rejudge_queue
+from personal_mem.synthesis.prediction import append_verdict
 
 
 @dataclass
@@ -319,16 +321,25 @@ def extract_session(
             extra_fm["summary"] = dec["summary"]
         if dec.get("predicted_outcome"):
             # Optional forward-looking text the wrap composer (or caller)
-            # writes when recording the decision. Judged later by
-            # synthesis/judge.py:_evaluate_prediction_match — feeds the
-            # `prediction.match` column in the RLVR export.
+            # writes when recording the decision. Judged later by the
+            # ``/judge-prediction`` skill — feeds the `prediction.match`
+            # column in the RLVR export.
             #
-            # Canonical shape (since P1-1): a dict
-            #   {"family": "test"|"commit", "text": "...", "polarity": ...}
-            # The legacy bare-string form still roundtrips for back-compat —
-            # the judge sniffs the family with word-boundary regexes and
-            # logs a deprecation warning. New code should pass the dict.
+            # Canonical shape: a prose string carrying claim + manifestation
+            # pointer (where/when/what query verifies it). Structured-dict
+            # callers (the legacy ``{family, text, polarity}`` form) still
+            # roundtrip through the passthrough below for back-compat, but
+            # will be deprecated in a future phase — new callers should
+            # always pass a string.
             extra_fm["predicted_outcome"] = dec["predicted_outcome"]
+            # Seed an initial ``pending`` history entry so the cron drain
+            # has something to find. Only when no prior history exists —
+            # if the caller passed their own ``prediction_history``,
+            # respect it.
+            if not extra_fm.get("prediction_history"):
+                extra_fm.update(
+                    append_verdict({}, match="pending", reason="awaiting evidence")
+                )
         dec_body = _build_decision_body(
             dec.get("rationale", ""), dec["title"], outcome_value
         )
@@ -344,7 +355,27 @@ def extract_session(
         idx.index_file(path)
         outcome.created_decisions.append(vm.read_note(path))
 
+        # New decision's canonical id (from the freshly-indexed note frontmatter).
+        # Used both for the status writeback below and for the rejudge-queue
+        # entry — the judge skill threads ``successor_decision_id`` through to
+        # the LLM via the worklist payload.
+        new_decision_id = outcome.created_decisions[-1].id
+
         for target_id in dec.get("supersedes", []) or []:
+            # Always enqueue first — the judge skill's worklist is what
+            # actually drives re-judgment, and we want it populated even if
+            # the structural status-flip below fails (missing file, stale
+            # indexer row, etc.). Idempotent on decision_id, so re-extracts
+            # of the same session don't pile up entries.
+            try:
+                rejudge_queue.enqueue(
+                    cfg,
+                    decision_id=target_id,
+                    reason=f"superseded by {new_decision_id}",
+                    source="supersession",
+                )
+            except Exception:
+                pass
             try:
                 row = idx.db.execute(
                     "SELECT path FROM notes WHERE id = ?", (target_id,)

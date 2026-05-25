@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -30,6 +31,26 @@ from personal_mem.operations.rlvr_export import (
     export_rows,
     extract_cited_ids,
 )
+
+
+def _patch_fm(decision_id: str, fm_updates: dict):
+    """Context manager: patch ``VaultManager.read_note`` to inject fm fields.
+
+    The homegrown YAML renderer/parser doesn't round-trip list-of-dict
+    structures like ``prediction_history`` (it stringifies dict items and
+    flattens nested keys on read). Patching ``read_note`` for the decision
+    note lets us inject the structured dict the way Phase 2/3 writers will
+    eventually persist them once the renderer is upgraded.
+    """
+    original = VaultManager.read_note
+
+    def patched(self, path):
+        note = original(self, path)
+        if note.id == decision_id:
+            note.frontmatter.update(fm_updates)
+        return note
+
+    return patch.object(VaultManager, "read_note", patched)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +189,7 @@ class TestAssembleRow:
         assert d["session_id"] == sess_id
         assert d["project"] == "t"
         # Sub-dicts have the expected shape too.
-        assert set(d["prediction"].keys()) == {"text", "match"}
+        assert set(d["prediction"].keys()) == {"text", "match", "history"}
         assert set(d["outcome"].keys()) == {
             "verdict", "committed", "blame_lines", "days_alive",
         }
@@ -286,19 +307,89 @@ class TestAssembleRow:
     def test_predicted_outcome_and_match_flow_through(
         self, config: Config, vault: VaultManager
     ):
+        # Legacy frontmatter: only `prediction_match` (no `prediction_history`).
+        # `read_history` synthesizes a single-entry list for back-compat.
         _, dec_id, _ = _seed(
             vault,
             extra_dec_fm={
                 "predicted_outcome": "this will land in one commit",
                 "prediction_match": "confirmed",
+                "judged_at": "2026-05-14T00:00:00Z",
             },
         )
         _index(config)
         row = assemble_row(config, dec_id).as_dict()
-        assert row["prediction"] == {
-            "text": "this will land in one commit",
-            "match": "confirmed",
-        }
+        assert row["prediction"]["text"] == "this will land in one commit"
+        # Tail-derived match — and the legacy denormalized field still works
+        # because read_history coerces it into a one-entry synthetic history.
+        assert row["prediction"]["match"] == "confirmed"
+        # Synthetic single-entry history from the legacy field.
+        assert len(row["prediction"]["history"]) == 1
+        assert row["prediction"]["history"][0]["match"] == "confirmed"
+        assert row["prediction"]["history"][0]["reason"] == "legacy"
+
+    def test_rlvr_export_history_field_present(
+        self, config: Config, vault: VaultManager
+    ):
+        # Multi-entry prediction_history round-trips into prediction.history,
+        # preserving order. Uses a read_note patch because the homegrown
+        # renderer/parser doesn't round-trip list-of-dicts.
+        history = [
+            {"match": "pending", "judged_at": "2026-05-10T00:00:00Z",
+             "reason": "first judge"},
+            {"match": "unevaluable", "judged_at": "2026-05-12T00:00:00Z",
+             "reason": "still unclear"},
+            {"match": "confirmed", "judged_at": "2026-05-14T00:00:00Z",
+             "reason": "tests passed"},
+        ]
+        _, dec_id, _ = _seed(
+            vault,
+            extra_dec_fm={
+                "predicted_outcome": "tests will go green",
+                "prediction_match": "confirmed",
+                "judged_at": "2026-05-14T00:00:00Z",
+            },
+        )
+        _index(config)
+        with _patch_fm(dec_id, {"prediction_history": history}):
+            row = assemble_row(config, dec_id).as_dict()
+        assert row["prediction"]["history"] == history
+
+    def test_rlvr_export_match_derived_from_history(
+        self, config: Config, vault: VaultManager
+    ):
+        # Even with a stale/missing fm `prediction_match`, the row's match
+        # comes from history[-1].match. Pin the contract.
+        history = [
+            {"match": "pending", "judged_at": "2026-05-10T00:00:00Z",
+             "reason": "r1"},
+            {"match": "contradicted", "judged_at": "2026-05-12T00:00:00Z",
+             "reason": "r2"},
+        ]
+        _, dec_id, _ = _seed(
+            vault,
+            extra_dec_fm={
+                "predicted_outcome": "it will land",
+                # Deliberately stale denormalized field — must be ignored.
+                "prediction_match": "confirmed",
+            },
+        )
+        _index(config)
+        with _patch_fm(dec_id, {"prediction_history": history}):
+            row = assemble_row(config, dec_id).as_dict()
+        assert row["prediction"]["match"] == "contradicted"
+        assert row["prediction"]["match"] == row["prediction"]["history"][-1]["match"]
+
+    def test_rlvr_export_no_prediction_decision(
+        self, config: Config, vault: VaultManager
+    ):
+        # Decision with no predicted_outcome at all — empty prediction block.
+        _, dec_id, _ = _seed(vault)
+        _index(config)
+        row = assemble_row(config, dec_id).as_dict()
+        assert row["prediction"]["text"] == ""
+        assert row["prediction"]["match"] == ""
+        assert row["prediction"]["history"] == []
 
     def test_outcome_fields_from_frontmatter(
         self, config: Config, vault: VaultManager
