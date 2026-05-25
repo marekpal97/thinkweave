@@ -111,6 +111,25 @@ class TestRenderFrontmatter:
         assert "prompt: do something" in rendered
         assert "plan: dec-123" in rendered
 
+    def test_list_of_dicts_roundtrip(self):
+        data = {
+            "id": "dec-test",
+            "prediction_history": [
+                {"match": "pending", "judged_at": "2026-05-25T16:21Z", "reason": "awaiting evidence"},
+                {"match": "confirmed", "judged_at": "2026-05-26T08:00Z", "reason": "drain produced 3/3 accepted"},
+            ],
+        }
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert isinstance(fm["prediction_history"], list)
+        assert all(isinstance(e, dict) for e in fm["prediction_history"])
+        assert fm["prediction_history"] == data["prediction_history"]
+
+    def test_list_of_dicts_uses_json_format(self):
+        data = {"entries": [{"k": "v", "n": 1}]}
+        rendered = render_frontmatter(data)
+        assert '- {"k": "v", "n": 1}' in rendered
+
 
 # --- Wikilinks ---
 

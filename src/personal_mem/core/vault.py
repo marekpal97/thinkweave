@@ -7,6 +7,7 @@ This module handles reading, writing, and querying notes at the file level.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from datetime import date, datetime, timezone
@@ -44,8 +45,14 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
         # List item continuation
         if stripped.startswith("- ") and current_key is not None and current_list is not None:
-            val = stripped[2:].strip().strip("\"'")
-            current_list.append(val)
+            raw_item = stripped[2:].strip()
+            if raw_item.startswith("{") and raw_item.endswith("}"):
+                try:
+                    current_list.append(json.loads(raw_item))
+                except json.JSONDecodeError:
+                    current_list.append(raw_item.strip("\"'"))
+            else:
+                current_list.append(raw_item.strip("\"'"))
             result[current_key] = current_list
             continue
 
@@ -121,7 +128,10 @@ def render_frontmatter(data: dict) -> str:
             else:
                 lines.append(f"{key}:")
                 for item in value:
-                    lines.append(f"  - {item}")
+                    if isinstance(item, dict):
+                        lines.append(f"  - {json.dumps(item, separators=(', ', ': '))}")
+                    else:
+                        lines.append(f"  - {item}")
         elif isinstance(value, bool):
             lines.append(f"{key}: {'true' if value else 'false'}")
         elif isinstance(value, dict):
