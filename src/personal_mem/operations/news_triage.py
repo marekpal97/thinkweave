@@ -1,25 +1,28 @@
 """News-item triage against the active-themes catalog.
 
 Stage-1 of the news pipeline (replaces the per-worker FOCUS gate). One
-Haiku call per drain batch decides for each title whether it (a) fits
-an active theme, (b) is substantive but theme-unmatched, or (c) is
-noise. Stage-2 (the Sonnet writer) only runs on (a) and (b) — (c) is
-archived with reason.
+cheap LLM call per drain batch decides for each title whether it (a)
+fits an active theme, (b) is substantive but theme-unmatched, or (c) is
+noise. Stage-2 (the Sonnet writer subagent) only runs on (a) and (b) —
+(c) is archived with reason.
+
+**TEMPORARY: provider swap (2026-05-21).** This module was originally
+written against Anthropic's Messages API (Haiku) with explicit
+``cache_control={"type":"ephemeral"}`` on the catalog block. Until
+``ANTHROPIC_API_KEY`` is available in the env, the triage runs against
+the OpenAI Chat Completions API (``gpt-5-mini``) using the same httpx
+pattern as ``enrich.py`` and ``mem hubs run``. Prompt caching becomes
+implicit (OpenAI auto-caches prefixes ≥1024 tokens) rather than
+explicit. To revert: ``git diff`` against the prior commit — the
+Anthropic shape is preserved in history and is the long-term home.
 
 Architecture choices worth flagging:
 
 - **Title-only triage.** The classifier sees the title + outlet/tier,
   not the body. Cost: misclassified clickbait headlines. Benefit: cheap
   enough to run on every queued item; no curl, no fetch_failed. False
-  accepts are caught downstream (Sonnet writer produces a thin note);
-  false rejects are caught by periodic review of the rejection archive.
-
-- **Catalog-as-system-message with prompt caching.** The active-theme
-  catalog (~5KB) goes into the system block with
-  ``cache_control={"type": "ephemeral"}``. Subsequent triage calls in
-  the same drain reuse the cached context — meaningful when the
-  orchestrator runs more than one batch back-to-back. The user message
-  carries only the per-batch item list.
+  accepts are caught downstream (writer produces a thin note); false
+  rejects are caught by periodic review of the rejection archive.
 
 - **THEMES.md is the single source of truth.** The triage helper reads
   the rendered ``## Catalog (active)`` section from THEMES.md rather
@@ -28,10 +31,10 @@ Architecture choices worth flagging:
   excluded by ``themes_ledger``); (2) the section structure is stable
   and human-edited additions there flow into triage automatically.
 
-- **Strict JSON output.** Haiku is instructed to emit a single JSON
-  object keyed by item index. The parser tolerates code-fenced JSON
-  but otherwise refuses to guess — items missing from the response are
-  flagged ``drop`` with a "no verdict" reason so nothing silently
+- **Strict JSON output.** The classifier is instructed to emit a single
+  JSON object keyed by item index. The parser tolerates code-fenced
+  JSON but otherwise refuses to guess — items missing from the response
+  are flagged ``drop`` with a "no verdict" reason so nothing silently
   slips through the gate.
 """
 
@@ -45,7 +48,8 @@ from pathlib import Path
 from typing import Iterable
 
 CATALOG_HEADING = "## Catalog (active)"
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "gpt-5-mini"
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
 VERDICT_KEEP = "keep"
 VERDICT_UNFILED = "keep_unfiled"
@@ -65,8 +69,6 @@ def extract_catalog_section(themes_md_text: str) -> str:
     start = themes_md_text.find(needle)
     if start < 0:
         return ""
-    # Find the next sibling H2 heading after `start`. The slice ends
-    # there (exclusive). If no later H2 exists, take to EOF.
     end = themes_md_text.find("\n## ", start + len(needle))
     return themes_md_text[start:] if end < 0 else themes_md_text[start:end]
 
@@ -76,85 +78,102 @@ def build_triage_messages(
     items: list[dict],
     *,
     model: str = DEFAULT_MODEL,
-    max_tokens: int = 2048,
 ) -> dict:
-    """Build the Anthropic ``messages.create`` kwargs dict.
+    """Build the OpenAI ``chat.completions`` request body dict.
 
-    Returns a dict ready to splat into ``client.messages.create(**...)``.
-    The catalog is placed in the system block with cache_control so
-    repeat invocations within the cache TTL pay the cached input price.
+    Returns a dict ready to JSON-encode into the httpx POST body. The
+    catalog is folded into the system message; OpenAI prompt caching
+    is implicit for prefixes ≥1024 tokens, so no explicit cache
+    directive is needed.
 
     Each item must carry: ``id`` (queue id), ``title``, ``outlet``
     (slug), ``tier`` (int). Missing fields are tolerated — they default
     to empty/0 — but the LLM uses them all when present.
     """
     system_text = (
-        "You are a news triage classifier for a personal vault. The vault "
-        "tracks a small set of active narrative themes; news items are "
-        "admitted only if they fit a theme or are substantive enough to be "
-        "filed for later theme-creation review.\n\n"
-        "For each news title, output ONE of three verdicts:\n"
-        "- \"keep\": clearly fits an active theme. Set theme_id to the "
-        "matching `thm-XXXXXXXX`.\n"
-        "- \"keep_unfiled\": the title carries genuine macro / market / "
-        "geopolitics / AI-infrastructure / Polish-economy signal but does "
-        "not cleanly match any current theme. Set theme_id to null. "
-        "These items go to a periodic-review pile so emerging arcs can "
-        "be promoted to themes.\n"
-        "- \"drop\": noise. Sports, celebrity, lifestyle, personal-finance "
-        "Q&A, single-name corporate drama with no macro angle, generic "
-        "'AI is going to change everything' think pieces, US partisan-"
-        "politics horse-race coverage, non-watchlist single-name earnings "
-        "previews. Set theme_id to null.\n\n"
-        "Bias: when in genuine doubt between drop and keep_unfiled, "
-        "prefer keep_unfiled — the unfiled review pile catches emerging "
-        "patterns; an over-aggressive drop loses signal silently.\n\n"
-        "Tier signal: tier-1 outlets (e.g. Reuters, FT preview, "
-        "Calculated Risk) carry editorial filtering — a tier-1 title on "
-        "a substantive macro topic is more likely keep/keep_unfiled. "
-        "Tier-2 (e.g. ZeroHedge, Wolf Street, Moon of Alabama) is "
-        "opinionated and clickbait-prone — require a clearer signal.\n\n"
+        "You are a news triage classifier for the personal vault of a "
+        "generalist quantamental analyst — someone who combines fundamental "
+        "and quantitative analysis across ALL equity sectors and also follows "
+        "macro closely. The vault tracks a set of active narrative themes; "
+        "each news item is either attached to a theme, filed unfiled for "
+        "later theme-creation review, or dropped as noise.\n\n"
+        "WHAT IS IN SCOPE — admit (keep or keep_unfiled):\n"
+        "- Single-name equity news with a fundamental or quantitative angle: "
+        "earnings surprises, guidance changes, margin / cost shifts, capital "
+        "allocation, M&A, management or strategy changes, unusual price / "
+        "volume moves with a stated cause. A quantamental analyst cares about "
+        "single names — do NOT drop these for being single-name.\n"
+        "- Sector and industry dynamics in ANY sector: demand cycles, "
+        "pricing, supply chains, capacity, regulation, competitive shifts.\n"
+        "- Macro: growth, inflation, labour, central banks, rates, credit, "
+        "FX, commodities, fiscal policy, housing.\n"
+        "- Market structure and flows: positioning, fund flows, factor / "
+        "style rotation, liquidity, volatility, breadth.\n"
+        "- AI infrastructure and the semiconductor / datacenter / power "
+        "complex.\n"
+        "- Polish economy and markets (a standing interest of the analyst).\n"
+        "- Geopolitics WHEN it has a clear market or economic transmission "
+        "channel (energy supply, trade routes, sanctions, defense spending).\n"
+        "\n"
+        "VERDICTS:\n"
+        "- \"keep\": fits an active theme. Set theme_id to the matching "
+        "`thm-XXXXXXXX`.\n"
+        "- \"keep_unfiled\": in scope per the list above and substantive, but "
+        "no active theme matches. theme_id null. Goes to the periodic-review "
+        "pile so emerging arcs can be promoted to themes.\n"
+        "- \"drop\": out of scope or noise. theme_id null.\n\n"
+        "WHAT TO DROP — be strict, these waste the analyst's attention:\n"
+        "- Non-financial content: sports, celebrity, lifestyle, "
+        "entertainment, movie / TV reviews, true-crime, human-interest.\n"
+        "- Link-roundup / open-thread / 'Links 5/10' aggregation posts with "
+        "no single story.\n"
+        "- Site-meta posts: blog announcements, schedule changes, newsletter "
+        "housekeeping ('This is the End and a New Beginning').\n"
+        "- Personal-finance advice columns and reader Q&A.\n"
+        "- Partisan political horse-race coverage with no economic / market "
+        "channel.\n"
+        "- Pure clickbait listicles and stock-tip promotions ('1500% gains').\n"
+        "- Generic 'AI will change everything' think-pieces with no specific "
+        "company, number, or mechanism.\n\n"
+        "BORDERLINE: when an item is genuinely ambiguous between keep_unfiled "
+        "and drop, prefer keep_unfiled — the review pile catches emerging "
+        "patterns and an over-aggressive drop loses signal silently. But "
+        "'borderline' means the item is plausibly in scope; it does NOT "
+        "rescue clearly out-of-scope content.\n\n"
+        "OUTLET TIER: tier-1 outlets carry editorial filtering; tier-2 are "
+        "opinionated and clickbait-prone. Tier is a TIE-BREAKER on genuinely "
+        "borderline items ONLY — a borderline tier-1 item leans keep_unfiled, "
+        "a borderline tier-2 item leans drop. Tier NEVER overrides an obvious "
+        "call: a clearly out-of-scope item from a tier-1 outlet is still a "
+        "drop, and a clearly substantive item from a tier-2 outlet is still "
+        "admitted.\n\n"
         "Output format: a SINGLE JSON object. Keys are item indices "
         "(\"1\"..\"N\" as strings). Values are objects with fields: "
         "verdict (one of keep, keep_unfiled, drop), theme_id (string or "
-        "null), reason (one short sentence, ≤120 chars). Output the JSON "
-        "object only — no preamble, no code fence."
+        "null), reason (one short sentence, ≤120 chars)."
     )
     catalog_text = catalog.strip() or (
         f"{CATALOG_HEADING}\n\n_(no active themes — every substantive "
         "item should be keep_unfiled)_"
     )
+    system_full = f"{system_text}\n\nActive themes catalog:\n\n{catalog_text}"
     items_text = _render_items(items)
     user_text = (
-        f"Active themes catalog:\n\n{catalog_text}\n\n"
-        f"---\n\nTriage these {len(items)} news items:\n\n{items_text}\n\n"
+        f"Triage these {len(items)} news items:\n\n{items_text}\n\n"
         "Emit the JSON object now."
     )
     return {
         "model": model,
-        "max_tokens": max_tokens,
-        "system": [
-            {"type": "text", "text": system_text},
-            {
-                "type": "text",
-                "text": f"\n\nActive themes catalog:\n\n{catalog_text}",
-                "cache_control": {"type": "ephemeral"},
-            },
-        ],
+        "response_format": {"type": "json_object"},
         "messages": [
-            {
-                "role": "user",
-                "content": (
-                    f"Triage these {len(items)} news items:\n\n"
-                    f"{items_text}\n\nEmit the JSON object now."
-                ),
-            }
+            {"role": "system", "content": system_full},
+            {"role": "user", "content": user_text},
         ],
     }
 
 
 def parse_triage_response(raw: str, items: list[dict]) -> list[dict]:
-    """Parse Haiku's JSON output into a list of verdict dicts (one per item).
+    """Parse the LLM's JSON output into a list of verdict dicts.
 
     Output shape:
         [{"id": "q-XXXX", "verdict": "keep|keep_unfiled|drop",
@@ -170,7 +189,6 @@ def parse_triage_response(raw: str, items: list[dict]) -> list[dict]:
     """
     text = raw.strip()
     if text.startswith("```"):
-        # Strip first fence + optional language tag, drop trailing fence.
         text = text.split("\n", 1)[1] if "\n" in text else ""
         if text.endswith("```"):
             text = text.rsplit("```", 1)[0]
@@ -237,38 +255,49 @@ def triage_items(
     model: str = DEFAULT_MODEL,
     api_key: str | None = None,
 ) -> list[dict]:
-    """End-to-end triage: build messages, call Anthropic, parse response.
+    """End-to-end triage: build request, call OpenAI, parse response.
 
     Returns the verdict list. Caller archives each item per verdict
     (drop → archive rejected; keep / keep_unfiled → dispatch to writer).
 
-    The Anthropic SDK is imported lazily so importing this module
-    doesn't require the SDK installed — only the actual call does.
-    Missing SDK or API key both raise RuntimeError so the caller can
-    surface a clear failure rather than crashing mid-batch.
+    Reads ``OPENAI_API_KEY`` from env or the project ``.env`` via
+    ``personal_mem.enrich.load_openai_api_key``. Uses httpx for the
+    POST — no ``openai`` SDK import needed, matching the pattern in
+    ``enrich.py`` and ``surfaces/cli/_hubs_link.py``.
     """
     if not items:
         return []
     try:
-        import anthropic
+        import httpx
     except ImportError as e:
         raise RuntimeError(
-            "anthropic SDK is required for news triage. "
-            "Install with: uv add anthropic"
+            "httpx is required for news triage. "
+            "Install with: uv add --optional embeddings httpx"
         ) from e
 
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        key = api_key
+    else:
+        from personal_mem.enrich import load_openai_api_key
+        key = load_openai_api_key() or os.environ.get("OPENAI_API_KEY", "")
     if not key:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Export it or pass api_key=..."
+            "OPENAI_API_KEY is not set. Export it, add it to .env, "
+            "or pass api_key=..."
         )
 
-    client = anthropic.Anthropic(api_key=key)
     request = build_triage_messages(catalog, items, model=model)
-    response = client.messages.create(**request)
-    raw = "".join(
-        block.text for block in response.content if block.type == "text"
+    response = httpx.post(
+        OPENAI_API_URL,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json=request,
+        timeout=60.0,
     )
+    response.raise_for_status()
+    raw = response.json()["choices"][0]["message"]["content"]
     return parse_triage_response(raw, items)
 
 
@@ -305,15 +334,15 @@ def main() -> int:
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help=f"Anthropic model id. Default: {DEFAULT_MODEL}",
+        help=f"OpenAI model id. Default: {DEFAULT_MODEL}",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
             "Build the request and print the prompt + items to stderr "
-            "without calling Anthropic. Verdicts on stdout default to "
-            "drop. Useful for inspecting the cache key."
+            "without calling the LLM. Verdicts on stdout default to "
+            "drop. Useful for inspecting the prompt."
         ),
     )
     args = parser.parse_args()
@@ -337,7 +366,6 @@ def main() -> int:
     if args.dry_run:
         request = build_triage_messages(catalog, items, model=args.model)
         print(json.dumps(request, indent=2), file=sys.stderr)
-        # Stub verdicts — every item drops with reason "dry-run".
         verdicts = [
             {
                 "id": item["id"],

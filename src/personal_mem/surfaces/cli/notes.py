@@ -15,9 +15,12 @@ def cmd_add(args: argparse.Namespace) -> None:
     cfg = load_config()
     body = args.body or (sys.stdin.read() if not sys.stdin.isatty() else "")
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+    fm_kvs = getattr(args, "frontmatter", []) or []
+    extra_fm = dict(_parse_fm_token(kv) for kv in fm_kvs) if fm_kvs else None
     note = create_note(
         cfg, note_type=NoteType(args.type), title=args.title, body=body,
         project=args.project or cfg.default_project, tags=tags, session_id=args.session,
+        extra_frontmatter=extra_fm,
     )
     print(f"Created {note.type.value} [{note.id}] at {(cfg.vault_root / note.path).relative_to(cfg.vault_root)}")
 

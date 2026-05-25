@@ -19,6 +19,16 @@ def add_note_subparsers(sub) -> None:
     p_add.add_argument("--tags", default="", help="Comma-separated tags")
     p_add.add_argument("--body", "-b", default="", help="Note body (or pipe via stdin)")
     p_add.add_argument("--session", "-s", default="", help="Session ID to place note in")
+    p_add.add_argument(
+        "--frontmatter", "-f", action="append", default=[],
+        help=(
+            "Extra frontmatter key=value (repeatable). For source notes, set "
+            "source_type and outlet here so SourceTypeSpec layout routing "
+            "applies — e.g. -f source_type=news -f outlet=wolf-street. "
+            "Without this, source notes land at sources/<slug>/source.md "
+            "instead of sources/<bucket>/<author>/<slug>/source.md."
+        ),
+    )
 
     p_search = sub.add_parser("search", help="Search the vault")
     p_search.add_argument("query", nargs="?", default="")
@@ -444,6 +454,23 @@ def add_admin_subparsers(sub) -> None:
     skill_sub.add_parser("list", help="List all skills with their frontmatter")
     p_skill_show = skill_sub.add_parser("show", help="Show a skill's frontmatter + head")
     p_skill_show.add_argument("name", help="Skill name (without .md)")
+
+    p_news_stats = sub.add_parser(
+        "news-stats",
+        help=(
+            "Per-outlet drain stats from vault/.mem/queues/_processed/. "
+            "Surfaces drop/accept/fail rates so you can prune the "
+            "news_feeds.yaml registry on evidence."
+        ),
+    )
+    p_news_stats.add_argument(
+        "--days", type=int, default=30,
+        help="Window size in days (default: 30)",
+    )
+    p_news_stats.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of the formatted table.",
+    )
 
     p_landing = sub.add_parser("landing", help="Generate landing documents")
     p_landing.add_argument(

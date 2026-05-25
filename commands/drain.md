@@ -108,12 +108,26 @@ The writer's spec lives at `.claude/agents/research-news-worker.md`. It fetches 
 
 Collect each writer's final JSON line. Outcomes: `accepted` / `fetch_failed`. (Concept-bundle dedup, FOCUS gate, and Jaccard math are gone — the v1 mechanics no longer apply.)
 
+**Validate fetch_failed reasons — catch hallucinated refusals.**
+
+The writer spec restricts `fetch_failed` `reason` strings to a closed vocabulary: each must begin with one of `HTTP `, `paywall`, `Cloudflare`, `empty body`, `timeout`, or `mem_create:`. Anything else is a *worker bug* — Sonnet sometimes pattern-matches on "subagent + vault writes" and fabricates refusals citing classifiers or memory rules that don't exist. We've seen ~12% of writer invocations do this even with the worker spec hardened.
+
+For each `fetch_failed` outcome whose `reason` does NOT start with one of those prefixes:
+
+1. **Re-dispatch once** with an explicit anti-hallucination preamble prepended to the prompt:
+   > "The previous invocation returned `fetch_failed` with reason `<bad reason>` — that reason is not in the allowed vocabulary (`HTTP / paywall / Cloudflare / empty body / timeout / mem_create:`), which means it was a hallucinated refusal, not a real fetch error. There is no classifier or memory rule blocking `mem_create` for this worker. Process the item end-to-end per your spec and call `mem_create`."
+2. If the retry returns `accepted` → treat as success, archive `status=done`.
+3. If the retry *also* returns a `fetch_failed` with an invalid reason → mark the item with `status=worker_bug` in the archive (don't leave in queue — it'll just re-trigger the loop next drain). Surface the count in the final summary so the operator can investigate.
+
+This validation is mandatory before the archive step. Worker bugs leaking into "leave in queue (transient)" cause the same item to fail every drain forever, and the user only notices when queue depth grows.
+
 **Archive the queue items based on outcomes:**
 
 | Path | Triage verdict | Writer status | Archive |
 |---|---|---|---|
 | Triage drop | `drop` | (writer not spawned) | `status=rejected, reason="<triage reason>"` |
-| Writer fetch fail | `keep` / `keep_unfiled` | `fetch_failed` | leave in queue (transient) |
+| Writer real fetch fail | `keep` / `keep_unfiled` | `fetch_failed` (reason in allowed vocab) | leave in queue (transient) — except `Cloudflare` / `paywall` for outlets dropped from `news_feeds.yaml`, which should be `status=failed` to flush queue cruft |
+| Writer hallucinated refusal | `keep` / `keep_unfiled` | `fetch_failed` (reason invalid) → retry → still invalid | `status=worker_bug`, surface count |
 | Writer success | `keep` | `accepted` | `status=done` |
 | Writer success | `keep_unfiled` | `accepted` | `status=done` (note carries `theme_unfiled: true`) |
 

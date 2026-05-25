@@ -34,6 +34,7 @@ from personal_mem.surfaces.cli.index import (
 from personal_mem.surfaces.cli.install import cmd_install
 from personal_mem.surfaces.cli.intake import cmd_intake
 from personal_mem.surfaces.cli.landing import cmd_landing
+from personal_mem.surfaces.cli.news import cmd_news_stats
 from personal_mem.surfaces.cli.notes import (
     cmd_add,
     cmd_backlog,
@@ -85,6 +86,7 @@ _DISPATCH = {
     "drain": cmd_drain,
     "discover": cmd_discover,
     "dream": cmd_dream,
+    "news-stats": cmd_news_stats,
     "themes": cmd_themes,
     "update": cmd_update,
     "wrap-finalize": cmd_wrap_finalize,
