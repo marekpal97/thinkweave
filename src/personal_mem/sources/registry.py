@@ -135,6 +135,70 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         ),
         temporal_grain="event",
     ),
+    "newsletter-events": SourceTypeSpec(
+        slug="newsletter-events",
+        bucket="newsletter-events",
+        layout="author_folder",
+        # Email-newsletter ingestion. The slug encodes the *grain*, not a
+        # topic — `newsletter-events` is the event-grain sibling, used for
+        # markets/macro/dealflow subscriptions where theme-floating fires.
+        # See commands/newsletter.md and .claude/agents/research-newsletter-worker.md.
+        skills=("newsletter", "drain"),
+        description=(
+            "Email newsletters with event-shaped content (markets, macro, "
+            "deal-flow). Mail-connector intake (gmail/outlook/imap), "
+            "subagent drain, publication drives author folder."
+        ),
+        temporal_grain="event",
+    ),
+    "newsletter-concepts": SourceTypeSpec(
+        slug="newsletter-concepts",
+        bucket="newsletter-concepts",
+        layout="author_folder",
+        # Concept-grain sibling of `newsletter-events`. Used for technical /
+        # methodology / philosophy subscriptions whose value is durable
+        # vocabulary rather than time-anchored signal; concept hubs handle
+        # synthesis, no theme floating.
+        skills=("newsletter", "drain"),
+        description=(
+            "Email newsletters with concept-shaped content (technical, "
+            "methodology, philosophy). Mail-connector intake, subagent "
+            "drain, publication drives author folder."
+        ),
+        temporal_grain="concept",
+    ),
+    "youtube-events": SourceTypeSpec(
+        slug="youtube-events",
+        bucket="youtube-events",
+        layout="author_folder",
+        # YouTube videos with event-shaped content (tech-news channels,
+        # markets/macro recaps). Channel RSS poll + URL paste intake;
+        # Gemini Flash extracts transcript + summary natively from the
+        # video URL. Channel name drives the author_folder layout.
+        # See commands/youtube.md and .claude/agents/research-youtube-worker.md.
+        skills=("youtube", "drain"),
+        description=(
+            "YouTube videos with event-shaped content (tech-news, market "
+            "recaps). RSS-poll + URL paste intake, Gemini Flash extraction, "
+            "channel drives author folder."
+        ),
+        temporal_grain="event",
+    ),
+    "youtube-concepts": SourceTypeSpec(
+        slug="youtube-concepts",
+        bucket="youtube-concepts",
+        layout="author_folder",
+        # Concept-grain sibling — tutorials, lectures, technical explainers.
+        # Same Gemini Flash extraction, concept hubs handle synthesis,
+        # no theme floating.
+        skills=("youtube", "drain"),
+        description=(
+            "YouTube videos with concept-shaped content (tutorials, "
+            "lectures, explainers). RSS-poll + URL paste intake, Gemini "
+            "Flash extraction, channel drives author folder."
+        ),
+        temporal_grain="concept",
+    ),
 }
 
 

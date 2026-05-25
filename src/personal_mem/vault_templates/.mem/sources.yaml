@@ -59,6 +59,89 @@ sources:
     # standalone skill exists by design.
     research_skill: news
     url_patterns: [reuters.com, ft.com, bloomberg.com, wsj.com, bankier.pl]
+  newsletter-events:
+    # Event-grain email newsletters (markets / macro / dealflow). Theme
+    # candidate floater fires automatically on create. `processed_label`
+    # is applied at the end of /newsletter so the next run skips it.
+    # `lookback_days` bounds both backfill and ongoing drains.
+    queue: vault/.mem/queues/newsletter-events.jsonl
+    drain_strategy: subagent
+    subagent_type: research-newsletter-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    mail_connector: gmail              # swappable: gmail | outlook | imap
+    # Sender allowlist — fill in the addresses / domains of the
+    # newsletters you actually subscribe to. The skill composes
+    # `from:(s1 OR s2 OR ...)` for the connector. Use INLINE list syntax
+    # only (personal_mem's YAML loader doesn't read block-style `- item`
+    # lists — those parse as empty). Example:
+    #   senders: [newsletter@stratechery.com, matt@levine.com, bloombergmedia.com]
+    # Entries can be full addresses or bare domains (bare domain matches
+    # any sender at that host). An empty list + empty mail_query is a
+    # deliberate halt — the skill refuses to fan out across the inbox.
+    senders: []
+    # Optional extra filter ANDed on top (e.g. "is:unread"). Default empty.
+    mail_query: ""
+    processed_label: mem-processed
+    lookback_days: 30
+    dedup_keys: [message_id, url]
+    # post_batch_hooks left empty — /newsletter applies processed_label
+    # itself after /drain returns; no need to extend the drain hook table.
+  newsletter-concepts:
+    # Concept-grain sibling — technical / methodology / philosophy
+    # subscriptions. No theme floating; concepts flow to hubs via
+    # `concepts:` frontmatter just like papers/articles.
+    queue: vault/.mem/queues/newsletter-concepts.jsonl
+    drain_strategy: subagent
+    subagent_type: research-newsletter-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    mail_connector: gmail
+    senders: []
+    mail_query: ""
+    processed_label: mem-processed
+    lookback_days: 90
+    dedup_keys: [message_id, url]
+  youtube-events:
+    # Event-grain YouTube channels (tech-news, market recaps). Theme
+    # candidate floater fires on create. The skill polls each channel's
+    # RSS feed at https://www.youtube.com/feeds/videos.xml?channel_id=<id>
+    # and Gemini Flash handles transcript + summary natively from the
+    # video URL — no audio download, no separate transcription step.
+    # Requires GOOGLE_API_KEY and the [gemini] optional dep group.
+    queue: vault/.mem/queues/youtube-events.jsonl
+    drain_strategy: subagent
+    subagent_type: research-youtube-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    # Channel allowlist — fill in YouTube channel IDs (the UCxxx form)
+    # for the channels you actually watch. The skill polls each feed
+    # URL and enqueues new videos. Use INLINE list syntax only.
+    # Example:
+    #   channels: [UCBJycsmduvYEL83R_U4JriQ, UCsBjURrPoezykLs9EqgamOA]
+    # Empty list means the skill is URL-paste only (via /research).
+    channels: []
+    lookback_days: 7
+    dedup_keys: [video_id, url]
+    url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
+    research_skill: youtube
+  youtube-concepts:
+    # Concept-grain sibling — tutorials, lectures, explainers. Longer
+    # lookback than events because durable content is worth backfilling.
+    queue: vault/.mem/queues/youtube-concepts.jsonl
+    drain_strategy: subagent
+    subagent_type: research-youtube-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    channels: []
+    lookback_days: 30
+    dedup_keys: [video_id, url]
+    url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
+    research_skill: youtube
   conversation:
     drain_strategy: inline
     importer: chatgpt

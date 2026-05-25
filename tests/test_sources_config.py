@@ -115,3 +115,79 @@ sources:
    bad: line
 """
         )
+
+
+# ---------------------------------------------------------------------------
+# Newsletter source-type config — pins the per-type shape in DEFAULT_CONFIG
+# and proves the shipped vault_templates/.mem/sources.yaml still parses with
+# the two newsletter blocks in place.
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_has_newsletter_events() -> None:
+    cfg = DEFAULT_CONFIG["sources"]["newsletter-events"]
+    assert cfg["drain_strategy"] == "subagent"
+    assert cfg["subagent_type"] == "research-newsletter-worker"
+    assert cfg["mail_connector"] == "gmail"
+    assert cfg["processed_label"] == "mem-processed"
+    assert cfg["lookback_days"] == 30
+    assert "message_id" in cfg["dedup_keys"]
+    # senders: [] is the canonical allowlist — must exist as an empty list
+    # so the skill's halt guard ("no senders + no mail_query → refuse to
+    # fetch") works without a KeyError on a fresh config.
+    assert cfg["senders"] == []
+    assert cfg["mail_query"] == ""
+
+
+def test_default_config_has_newsletter_concepts() -> None:
+    cfg = DEFAULT_CONFIG["sources"]["newsletter-concepts"]
+    assert cfg["drain_strategy"] == "subagent"
+    assert cfg["subagent_type"] == "research-newsletter-worker"
+    assert cfg["mail_connector"] == "gmail"
+    # Concept-grain newsletters get a longer lookback — technical posts age slower.
+    assert cfg["lookback_days"] == 90
+    assert "message_id" in cfg["dedup_keys"]
+    assert cfg["senders"] == []
+    assert cfg["mail_query"] == ""
+
+
+def test_shipped_template_parses_with_newsletter_blocks() -> None:
+    """The shipped vault_templates/.mem/sources.yaml must still load — and
+    contain both newsletter blocks with the canonical `senders` field.
+    Guards against accidental YAML breakage when the template is hand-edited."""
+    import personal_mem
+
+    pkg_root = Path(personal_mem.__file__).parent
+    template = pkg_root / "vault_templates" / ".mem" / "sources.yaml"
+    parsed = _parse_simple_yaml(template.read_text(encoding="utf-8"))
+    sources = parsed["sources"]
+    assert "newsletter-events" in sources
+    assert "newsletter-concepts" in sources
+    assert sources["newsletter-events"]["subagent_type"] == "research-newsletter-worker"
+    assert sources["newsletter-concepts"]["lookback_days"] == 90
+    # Pin the senders allowlist contract: ships empty by design (deliberate
+    # halt until the user populates it).
+    assert sources["newsletter-events"]["senders"] == []
+    assert sources["newsletter-concepts"]["senders"] == []
+
+
+def test_user_override_can_populate_senders(tmp_path: Path) -> None:
+    """Round-trip: a user file populating `senders:` merges cleanly with
+    the shipped empty default."""
+    mem = tmp_path / ".mem"
+    mem.mkdir()
+    (mem / "sources.yaml").write_text(
+        """
+sources:
+  newsletter-events:
+    senders: [alerts@bloomberg.com, levine@bloomberg.net, stratechery.com]
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_user_config(tmp_path)
+    senders = cfg["sources"]["newsletter-events"]["senders"]
+    assert senders == ["alerts@bloomberg.com", "levine@bloomberg.net", "stratechery.com"]
+    # Other defaults preserved.
+    assert cfg["sources"]["newsletter-events"]["mail_connector"] == "gmail"
+    assert cfg["sources"]["newsletter-events"]["processed_label"] == "mem-processed"

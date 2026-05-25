@@ -84,6 +84,88 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "bankier.pl",
             ],
         },
+        "newsletter-events": {
+            # Event-grain email newsletters. Theme-candidate floater fires
+            # on create via VaultManager. Mail connector is swappable;
+            # gmail is the only one implemented today. See commands/newsletter.md.
+            "queue": "vault/.mem/queues/newsletter-events.jsonl",
+            "drain_strategy": "subagent",
+            "subagent_type": "research-newsletter-worker",
+            "subagent_model": "sonnet",
+            "drain_parallelism": 4,
+            "drain_batch_max": 20,
+            "mail_connector": "gmail",
+            # `senders` is the canonical allowlist. Each entry is an email
+            # address (alice@example.com) or a bare domain (example.com);
+            # the skill composes `from:(...)` for the connector's query.
+            # Empty allowlist + empty mail_query → deliberate halt in the
+            # skill (guards against an accidental whole-inbox fan-out).
+            "senders": [],
+            # Optional extra filter (e.g. "is:unread", "has:attachment").
+            # The skill ANDs this with the `from:` clause built from senders.
+            "mail_query": "",
+            "processed_label": "mem-processed",
+            "lookback_days": 30,
+            "dedup_keys": ["message_id", "url"],
+            # post_batch_hooks empty — /newsletter applies processed_label
+            # itself after /drain returns; no /drain hook needed.
+            "post_batch_hooks": [],
+        },
+        "newsletter-concepts": {
+            # Concept-grain sibling — technical / methodology / philosophy
+            # newsletters. No theme floating; concepts populate hubs.
+            "queue": "vault/.mem/queues/newsletter-concepts.jsonl",
+            "drain_strategy": "subagent",
+            "subagent_type": "research-newsletter-worker",
+            "subagent_model": "sonnet",
+            "drain_parallelism": 4,
+            "drain_batch_max": 20,
+            "mail_connector": "gmail",
+            "senders": [],
+            "mail_query": "",
+            "processed_label": "mem-processed",
+            "lookback_days": 90,
+            "dedup_keys": ["message_id", "url"],
+            "post_batch_hooks": [],
+        },
+        "youtube-events": {
+            # Event-grain YouTube channels (tech-news, market recaps).
+            # `channels` is the canonical subscription allowlist; the skill
+            # polls each channel's RSS feed at
+            # https://www.youtube.com/feeds/videos.xml?channel_id=<id>.
+            # Empty list + no URL paste = nothing to do.
+            # Gemini Flash handles transcript + summary from the video URL
+            # directly; no audio download or transcription needed.
+            "queue": "vault/.mem/queues/youtube-events.jsonl",
+            "drain_strategy": "subagent",
+            "subagent_type": "research-youtube-worker",
+            "subagent_model": "sonnet",
+            "drain_parallelism": 4,
+            "drain_batch_max": 20,
+            "channels": [],
+            "lookback_days": 7,
+            "dedup_keys": ["video_id", "url"],
+            "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
+            "research_skill": "youtube",
+            "post_batch_hooks": [],
+        },
+        "youtube-concepts": {
+            # Concept-grain sibling — tutorials, lectures, explainers.
+            # Longer lookback than events since durable content is worth
+            # backfilling further.
+            "queue": "vault/.mem/queues/youtube-concepts.jsonl",
+            "drain_strategy": "subagent",
+            "subagent_type": "research-youtube-worker",
+            "subagent_model": "sonnet",
+            "drain_parallelism": 4,
+            "drain_batch_max": 20,
+            "channels": [],
+            "lookback_days": 30,
+            "dedup_keys": ["video_id", "url"],
+            "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
+            "research_skill": "youtube",
+            "post_batch_hooks": [],
+        },
         "conversation": {
             "drain_strategy": "inline",
             "importer": "chatgpt",

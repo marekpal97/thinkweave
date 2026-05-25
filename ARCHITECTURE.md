@@ -128,13 +128,17 @@ Current mapping:
 | `repo`         | `/research → /research-repo`    | `/drain --source-type repo`    | `/discover` |
 | `article`      | `/research → /research-article` | `/drain --source-type article` | `/discover` |
 | `substack`     | —                              | `/substack`                    | —           |
+| `news`         | `/news <url>`                  | `/drain --source-type news` (RSS+cron → JSONL → Haiku triage → Sonnet writers) | — |
+| `newsletter-events` | —                         | `/newsletter` (Gmail label → JSONL → Sonnet writers; event-grain) | — |
+| `newsletter-concepts` | —                       | `/newsletter` (Gmail label → JSONL → Sonnet writers; concept-grain) | — |
 | `conversation` | `mem import chatgpt` (CLI)     | —                              | —           |
 | `claude-history` | —                            | `/onboard` (one-shot retroactive import; CLI: `mem drain --source claude-history`) | — |
 
-Two distinct acquisition patterns coexist — on purpose, because the inputs differ:
+Three acquisition patterns coexist — on purpose, because the inputs differ:
 
 - **JSONL queue** — `/drain --source-type <slug>` drains items from `vault/.mem/queues/<slug>.jsonl`. The Queue primitive (see §"Queue primitive") supports claim/dedup/archive. Items live outside the note graph until they become source notes.
 - **Disk inbox** — `/substack` drains files from `~/substack_inbox/` (outside the vault) and moves them to `_processed/<date>/` on success. Nothing mutates vault state until `mem_create` lands a source note.
+- **Mail connector** — `/newsletter` queries the user's mailbox via a swappable connector (`gmail` today, `outlook`/`imap` slot in behind the same `senders` / `lookback_days` / `processed_label` contract). The canonical inbound filter is the per-type `senders:` allowlist in `sources.yaml` — addresses or bare domains, composed into `from:(...)` for the connector. Empty allowlist + empty `mail_query` is a deliberate halt (no whole-inbox fan-out). The skill enqueues each new message to JSONL with `embedded_body`, fans out `research-newsletter-worker` subagents, then applies `processed_label` on the mail server to every successfully-written message. Three re-read guards stack: the label (primary, server-side), queue `dedup_keys: [message_id, url]` (secondary, at enqueue), and a worker `mem_search(message_id)` (tertiary, at write).
 
 Legacy `todo+research` notes are migrated into the matching JSONL queue by `mem doctor --migrate` (see `operations/migrations.py`).
 
