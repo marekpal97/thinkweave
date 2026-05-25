@@ -79,6 +79,8 @@ Does in one process, zero model turns:
 - regenerate DECISIONS.md + BACKLOG.md
 - concept-drift advisory (read-only — proposes nothing, just reports)
 
+For any decision that carried a `predicted_outcome:` this wrap, `wrap-finalize` initializes `prediction_match: pending` (the pending initializer) — it does NOT evaluate the prediction itself. The `/judge-prediction` skill is the prediction judge; it runs live the next time a successor decision supersedes this one (via `/mem-wrap`'s composer) or via the cron drain (`claude -p "/judge-prediction --drain"`). If the manifestation pointer is *immediately* checkable from this session (e.g. the prediction said "after this commit, file X has property Y" and that's verifiable right now), you MAY tail-call `/judge-prediction --decision <new-id>` after `wrap-finalize`, but you are not required to — pending is a fine default.
+
 Add `--json` for headless flows. The CLI exits non-zero if any step errored.
 
 **Does NOT** touch STATE.md (see step 5) and does NOT run `/mem-resolve-concepts`. If drift surfaces a proposed concept at threshold the report mentions it; promotion is `/mem-resolve-concepts`'s job, run separately.
@@ -130,7 +132,14 @@ Real Context / Decision / Consequences, not just the conclusion:
 
 **Rationale cap: ~1500 chars** — one paragraph per C/D/C section. File paths and test references carry the rest; do not re-narrate the implementation in prose. The `file_paths` array points to the code; the rationale points to the *why*.
 
-Per decision dict: `title`, `rationale` (the C/D/C prose), `outcome` (`committed`/`abandoned`/`partial`), `file_paths` (relevant paths), `concepts` (≥2), optional `summary` (one sentence — powers DECISIONS.md), optional `supersedes`/`cites`, and **optional `predicted_outcome`** — canonical shape is the dict `{family: "test"|"commit", text: "...", polarity: "positive"|"negative"}` for a verifiable forward-looking claim (bare strings still roundtrip for one release but trigger a deprecation warning). Omit it rather than fabricate, and do NOT also restate the prediction in the rationale — the field IS the prediction.
+Per decision dict: `title`, `rationale` (the C/D/C prose), `outcome` (`committed`/`abandoned`/`partial`), `file_paths` (relevant paths), `concepts` (≥2), optional `summary` (one sentence — powers DECISIONS.md), optional `supersedes`/`cites`, and **optional `predicted_outcome`** — a single prose sentence carrying BOTH a claim AND a manifestation pointer (where to look, when, what query verifies it). If you cannot articulate a checkable pointer in one sentence, **omit the field entirely**. Boilerplate like "tests will pass after this fix" or "this will land" has no pointer and will sit `unevaluable` forever; better to record nothing.
+
+  - **GOOD**: `"After the transcript-first ladder ships, the next /drain on the 3 queued AI Engineer videos archives all 3 as accepted (0 gemini_refused). Check the youtube-events queue archive after the next drain run."` — concrete claim + named pointer (queue archive) + window (next drain).
+  - **GOOD**: `"Within a week, mem_search for 'wrap-finalize' returns ≥1 decision with verdict=kept and zero with verdict=reverted, indicating the deterministic tail held up under real wraps."` — concrete claim + checkable query + window.
+  - **BAD**: `"tests will pass after this fix"` — no pointer, no window, will never resolve past `unevaluable`.
+  - **BAD**: `"this should improve performance"` — no measurable claim, no manifestation pointer.
+
+  Do NOT also restate the prediction in the rationale — the field IS the prediction. `wrap-finalize` will initialize new predictions to `prediction_match: pending`; the `/judge-prediction` skill takes over from there (live during a future `/mem-wrap` that supersedes the decision, or via the cron drain).
 
 ### C4. Concepts are mandatory
 Every insight and every decision: a `concepts` array, **≥2**, from the vocabulary loaded in C1. Pick concepts that connect this note to *other* notes (thematic, not descriptive). Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`). Test: "would another note about this topic share this concept?" Terms not in the ontology are accepted automatically into `proposed_concepts:` by the server — you don't pre-canonicalise.
