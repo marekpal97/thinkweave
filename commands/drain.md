@@ -71,11 +71,16 @@ For each item:
 2. On success: `mem_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="done")`.
 3. On non-recoverable failure: `mem_queue(action="archive", ..., status="failed")`. On recoverable failure: leave in place.
 
-### Path B: Two-stage triage + writer fan-out (`subagent_type` is set)
+### Path B: Writer fan-out (`subagent_type` is set), optionally preceded by triage
 
-The drain orchestrator runs Stage 1 (cheap Haiku triage on titles) once per drain, then spawns Sonnet writers (Stage 2) only for items that pass triage. Workers are no longer gatekeepers — admission is settled before they fire.
+The drain orchestrator spawns Sonnet writer subagents in parallel. Admission is **either** decided upstream (channel allowlist / sender allowlist — no triage stage), **or** decided per-drain by a cheap Haiku triage on titles (news's "fits an active theme?" filter). The presence of `triage_model` in the source's config selects which.
 
-**Stage 1 — Haiku triage (single batched call, prompt-cached).**
+| `triage_model` | Stage 1 | Stage 2 |
+|---|---|---|
+| set (e.g. `claude-haiku-4-5`) | Haiku triage per item | Writers fan out only for `keep`/`keep_unfiled` items |
+| **unset** (default) | **skipped** — every item treated as `keep_unfiled` | Writers fan out for every queue item |
+
+**Stage 1 — Haiku triage (single batched call, prompt-cached). Only runs when `triage_model` is set.**
 
 Take up to `drain_batch_max` items off the queue (don't archive yet). Build a JSON list of `{id, title, outlet, tier}` for each. Then:
 
@@ -90,6 +95,8 @@ The triage helper reads the `## Catalog (active)` section of `THEMES.md` (placed
 - `keep` — fits an active theme. Carries a `theme_id`.
 - `keep_unfiled` — substantive but no theme match. `theme_id: null`. Goes to the periodic-review pile (frontmatter flag `theme_unfiled: true`).
 - `drop` — noise. Archive directly.
+
+When `triage_model` is unset (YouTube, newsletter, etc.), skip the helper call entirely and synthesise `keep_unfiled` for every item — the source's per-skill orchestrator (the channel allowlist for `/youtube`, the sender allowlist for `/newsletter`) is the upstream admission gate.
 
 **Stage 2 — Spawn writer subagents in parallel for `keep` and `keep_unfiled` items.**
 
@@ -110,12 +117,20 @@ Collect each writer's final JSON line. Outcomes: `accepted` / `fetch_failed`. (C
 
 **Validate fetch_failed reasons — catch hallucinated refusals.**
 
-The writer spec restricts `fetch_failed` `reason` strings to a closed vocabulary: each must begin with one of `HTTP `, `paywall`, `Cloudflare`, `empty body`, `timeout`, or `mem_create:`. Anything else is a *worker bug* — Sonnet sometimes pattern-matches on "subagent + vault writes" and fabricates refusals citing classifiers or memory rules that don't exist. We've seen ~12% of writer invocations do this even with the worker spec hardened.
+The writer spec restricts `fetch_failed` `reason` strings to a closed vocabulary. The allowed-prefix list is **source-type-specific** and lives at `sources.<slug>.allowed_failure_prefixes` in `sources.yaml`. Defaults:
 
-For each `fetch_failed` outcome whose `reason` does NOT start with one of those prefixes:
+| Source type | `allowed_failure_prefixes` |
+|---|---|
+| `news` | `["HTTP ", "paywall", "Cloudflare", "empty body", "timeout", "mem_create:"]` |
+| `youtube-events`, `youtube-concepts` | `["gemini_refused", "gemini_failed", "empty_transcript", "mem_create:"]` |
+| `newsletter-events`, `newsletter-concepts` | `["empty body", "mem_create:"]` |
+
+If a source type is missing the field, fall back to the news vocabulary (backwards compat). Anything else is a *worker bug* — Sonnet sometimes pattern-matches on "subagent + vault writes" and fabricates refusals citing classifiers or memory rules that don't exist. We've seen ~12% of writer invocations do this on news even with the worker spec hardened; the same risk applies to every source type, so the validation runs regardless of which Path B variant fired.
+
+For each `fetch_failed` outcome whose `reason` does NOT start with one of the source's allowed prefixes:
 
 1. **Re-dispatch once** with an explicit anti-hallucination preamble prepended to the prompt:
-   > "The previous invocation returned `fetch_failed` with reason `<bad reason>` — that reason is not in the allowed vocabulary (`HTTP / paywall / Cloudflare / empty body / timeout / mem_create:`), which means it was a hallucinated refusal, not a real fetch error. There is no classifier or memory rule blocking `mem_create` for this worker. Process the item end-to-end per your spec and call `mem_create`."
+   > "The previous invocation returned `fetch_failed` with reason `<bad reason>` — that reason is not in the allowed vocabulary for this source type (`<prefix1 / prefix2 / ...>`), which means it was a hallucinated refusal, not a real fetch error. There is no classifier or memory rule blocking `mem_create` for this worker. Process the item end-to-end per your spec and call `mem_create`."
 2. If the retry returns `accepted` → treat as success, archive `status=done`.
 3. If the retry *also* returns a `fetch_failed` with an invalid reason → mark the item with `status=worker_bug` in the archive (don't leave in queue — it'll just re-trigger the loop next drain). Surface the count in the final summary so the operator can investigate.
 
@@ -139,7 +154,7 @@ The reason field stamped at `vault/.mem/queues/_processed/<YYYY-MM-DD>/<source_t
 
 Run each hook in the order declared in `post_batch_hooks`. Note: hooks run **once per drain invocation**, not per fan-out batch.
 
-> **`theme_scan` is now redundant for the standard config and disabled by default.** `VaultManager.create_note` fires `scan_candidates(source_type=<slug>)` for every event-grain source on write, so floating happens once per source rather than once per batch. The default `sources.<type>.post_batch_hooks` is therefore `[]`. The hook implementation below is preserved for users who want belt-and-suspenders coverage (e.g. after a bulk import path that bypasses VaultManager).
+> **`theme_scan` writes mechanical concept-pair stubs and is rarely useful in the standard config.** As of 2026-05-25 the production theme path goes through `/dream` instead: `VaultManager.create_note` keeps the index warm on every event-grain source write, and `/dream`'s scan surfaces raw `theme_cluster_signals` whose names the LLM judgment phase composes from the cluster + active themes. The default `sources.<type>.post_batch_hooks` is `[]`. The hook implementation below is preserved for diagnostic bulk-import sweeps where you want a flat list of clusters as files; it produces capability-shaped slugs that `/dream` will mostly archive — use the `/dream` signal-path for anything you want to keep.
 
 ### `theme_scan` — float new theme candidates from the unfiled pile
 
@@ -159,7 +174,7 @@ Output is a candidate-creation count; surface it in the final summary.
 
 ## 4. Report
 
-For Path B (news):
+For Path B with triage (news):
 
 ```
 Drain summary for queue '<slug>' (path=B, two-stage):
@@ -167,6 +182,16 @@ Drain summary for queue '<slug>' (path=B, two-stage):
   Writers:   <accepted> ⇒ <src-IDs, max 8 then ellipsis>
   Fetch failed: <count> (left in queue)
   Post-batch theme_scan: <new candidates>
+  Remaining: <queue size>
+```
+
+For Path B without triage (youtube-*, newsletter-* via drain):
+
+```
+Drain summary for queue '<slug>' (path=B, writer-only, no triage):
+  Writers:   <accepted> ⇒ <src-IDs, max 8 then ellipsis>
+  Fetch failed: <count> (left in queue or archived per allowed-prefix policy)
+  Idempotent skips: <count>
   Remaining: <queue size>
 ```
 
@@ -187,12 +212,17 @@ Drain summary for queue '<slug>' (path=A):
 | Path | Used by | Why |
 |---|---|---|
 | A (Skill) | paper, repo, article | Per-item compute is small (one URL fetch + concept extract). Sequential is fine. |
-| B (Triage + writer) | news | Title-only Haiku triage decides admission (cheap, batched, prompt-cached); Sonnet writers fan out only on accepts. The two-stage shape decouples gate cost (~$0.005/batch) from per-item brief cost (~$0.10/accept). |
+| B with triage (writer + admission) | news | Title-only Haiku triage decides admission (cheap, batched, prompt-cached); Sonnet writers fan out only on accepts. The two-stage shape decouples gate cost (~$0.005/batch) from per-item brief cost (~$0.10/accept). |
+| B without triage (writer-only) | youtube-events, youtube-concepts | Admission is decided upstream by the channel allowlist in `sources.yaml`. /drain treats every queue item as `keep_unfiled` and fans out workers directly. No per-drain triage cost. |
 
-Adding a source type to path B requires:
+Adding a source type to Path B without triage requires:
 1. A writer subagent at `.claude/agents/research-<slug>-worker.md` (writer-only — no gating).
-2. `subagent_type` + `subagent_model` + `drain_parallelism` + `triage_model` set in `vault/.mem/sources.yaml`.
-3. The triage helper (currently news-specific in `operations/news_triage.py`) generalised — when we get there, the catalog source is the natural axis (themes for news, ontology for papers, repo languages for repos…).
+2. `subagent_type` + `subagent_model` + `drain_parallelism` set in config; **do not** set `triage_model`.
+3. `allowed_failure_prefixes` set in config so the hallucinated-refusal validator uses the right vocabulary.
+
+Adding a source type to Path B with triage additionally requires:
+4. `triage_model` set in config.
+5. The triage helper (currently news-specific in `operations/news_triage.py`) generalised — when we get there, the catalog source is the natural axis (themes for news, ontology for papers, repo languages for repos…).
 
 No changes to this skill.
 
@@ -205,7 +235,8 @@ No changes to this skill.
 | `/drain --source-type paper` | Drain papers queue |
 | `/drain --source-type repo` | Drain repos queue |
 | `/drain --source-type article` | Drain articles queue |
-| `/drain --source-type news` | Drain news queue (parallel sonnet workers) |
+| `/drain --source-type news` | Drain news queue (Haiku triage + Sonnet writers) |
+| `/drain --source-type youtube-events\|youtube-concepts` | Drain YouTube queue (Sonnet writers, no triage) |
 | `/update-hubs` (default) | 1–20 daily delta hub pairs |
 | `/update-hubs --bulk inline` | 100+ hub pairs, want oversight |
 | `/update-hubs --bulk batch` | 100+ hub pairs, no review (OpenAI Batches, 50% off) |

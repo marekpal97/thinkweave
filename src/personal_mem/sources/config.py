@@ -66,10 +66,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "drain_batch_max": 20,
             "subagent_type": "research-news-worker",
             "subagent_model": "sonnet",
-            # post_batch_hooks no longer needs ["theme_scan"] here —
-            # VaultManager.create_note fires scan_candidates for every
-            # event-grain source on create. Kept empty so drain reports
-            # don't show a redundant hook.
+            # post_batch_hooks stays empty for the standard config: theme
+            # naming happens in /dream (signal-based, agent-composed) not
+            # in drain (which can only mint mechanical concept-pair slugs
+            # via the legacy theme_scan hook).
             "post_batch_hooks": [],
             # /research router dispatches news URLs to /news (the one-off
             # ingest skill). The cron-driven drain uses the subagent path
@@ -82,6 +82,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "bloomberg.com",
                 "wsj.com",
                 "bankier.pl",
+            ],
+            "allowed_failure_prefixes": [
+                "HTTP ",
+                "paywall",
+                "Cloudflare",
+                "empty body",
+                "timeout",
+                "mem_create:",
             ],
         },
         "newsletter-events": {
@@ -148,6 +156,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
             "research_skill": "youtube",
             "post_batch_hooks": [],
+            # No `triage_model` — admission is the channel allowlist.
+            # /drain Path B treats every queue item as keep_unfiled.
+            "allowed_failure_prefixes": [
+                "transcripts_disabled",
+                "no_transcripts",
+                "video_unavailable",
+                "empty_transcript",
+                "transcript_api_failed",
+                "mem_create:",
+            ],
         },
         "youtube-concepts": {
             # Concept-grain sibling — tutorials, lectures, explainers.
@@ -165,6 +183,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
             "research_skill": "youtube",
             "post_batch_hooks": [],
+            "allowed_failure_prefixes": [
+                "transcripts_disabled",
+                "no_transcripts",
+                "video_unavailable",
+                "empty_transcript",
+                "transcript_api_failed",
+                "mem_create:",
+            ],
         },
         "conversation": {
             "drain_strategy": "inline",
