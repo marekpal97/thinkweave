@@ -3,7 +3,11 @@
 Replaces the standalone ``scripts/pull_news_feeds.py`` and ``/youtube``
 step 1. The strategy discovers pollable source types from ``sources.yaml``:
 
-- Types with ``feed_config: <path>`` use the **news flavor**
+- Types with ``feed_config: <path>`` AND slug starting with ``podcast-``
+  use the **podcast flavor** (outlets-yaml-driven like news, but each
+  entry carries an ``<enclosure>`` audio URL; items get ``audio_url``,
+  ``duration_sec``, ``episode_number`` for the worker).
+- Other types with ``feed_config: <path>`` use the **news flavor**
   (outlets-yaml-driven, per-outlet daily caps, ``content:encoded``
   capture when ``prefer_embedded: true``).
 - Types with ``channels: [...]`` use the **youtube flavor** (one feed
@@ -121,7 +125,15 @@ class RssPollStrategy:
         """
         feed_config = spec.get("feed_config")
         if feed_config:
-            return self._load_news_feeds(vault_root / feed_config)
+            # Strip the leading ``vault/`` prefix that appears in DEFAULT_CONFIG
+            # for visual clarity (e.g. ``vault/.mem/news_feeds.yaml``). The
+            # rest of the codebase treats these as vault-rooted paths and
+            # ignores the prefix (Queue.for_source_type doesn't even read
+            # the config's ``queue:`` field). Keeping the prefix here would
+            # produce a doubled ``<vault>/vault/.mem/...`` path that never
+            # resolves — pre-existing bug surfaced when wiring podcasts.
+            cleaned = feed_config[len("vault/"):] if feed_config.startswith("vault/") else feed_config
+            return self._load_news_feeds(vault_root / cleaned)
         channels = spec.get("channels") or []
         if channels:
             return [
@@ -175,9 +187,13 @@ class RssPollStrategy:
     ) -> list[dict[str, Any]]:
         queue = Queue.for_source_type(slug, vault_root)
         dedup_keys = list(spec.get("dedup_keys") or ["url"])
-        flavor = "news" if spec.get("feed_config") else "youtube"
+        if spec.get("feed_config"):
+            flavor = "podcast" if slug.startswith("podcast-") else "news"
+        else:
+            flavor = "youtube"
+        # Both news and podcasts honour per-outlet daily caps.
         enqueue_counts_today: dict[str, int] = (
-            _count_today_per_outlet(queue, slug) if flavor == "news" else {}
+            _count_today_per_outlet(queue, slug) if flavor in ("news", "podcast") else {}
         )
         lookback_days = int(spec.get("lookback_days") or 0)
         cutoff_dt: datetime | None = None
@@ -212,6 +228,23 @@ class RssPollStrategy:
                         stats["cap_hit"] += 1
                         continue
                     item = _build_news_item(entry, outlet_slug, outlet_conf)
+                elif flavor == "podcast":
+                    outlet_slug = meta["outlet_slug"]
+                    outlet_conf = meta["outlet_conf"]
+                    cap = int(outlet_conf.get("daily_cap", 5))
+                    if enqueue_counts_today.get(outlet_slug, 0) >= cap:
+                        stats["cap_hit"] += 1
+                        continue
+                    item = _build_podcast_item(
+                        entry, outlet_slug, outlet_conf, cutoff_dt
+                    )
+                    if item is None and cutoff_dt is not None:
+                        # _build_podcast_item returns None for both
+                        # missing-enclosure and stale-pub-date; the
+                        # latter is the more common reason when a
+                        # cutoff is set, so account for it explicitly.
+                        stats["stale_lookback"] += 1
+                        continue
                 else:
                     item = _build_youtube_item(
                         entry,
@@ -232,7 +265,7 @@ class RssPollStrategy:
                     continue
                 item_id = queue.enqueue(item)
                 stats["enqueued"] += 1
-                if flavor == "news":
+                if flavor in ("news", "podcast"):
                     enqueue_counts_today[outlet_slug] = (
                         enqueue_counts_today.get(outlet_slug, 0) + 1
                     )
@@ -307,6 +340,122 @@ def _build_news_item(
         "prefer_embedded": prefer_embedded,
         "embedded_body": embedded_body,
     }
+
+
+def _build_podcast_item(
+    entry: Any,
+    outlet_slug: str,
+    outlet_conf: dict[str, Any],
+    cutoff_dt: datetime | None,
+) -> dict[str, Any] | None:
+    """Build a queue item from a single podcast RSS ``<item>`` entry.
+
+    Pulls:
+    - the canonical episode landing page (``link``) for ``url`` — used
+      as the human-clickable URL on the source note and for the indexer
+      dedup check;
+    - the ``<enclosure>`` audio URL for ``audio_url`` — what the worker
+      sends to Gemini;
+    - ``<itunes:duration>`` and ``<itunes:episode>`` when present;
+    - ``<guid>`` for ``entry_id`` (the most stable dedup key, since
+      ``audio_url`` can change on CDN migrations).
+
+    Returns ``None`` if there is no enclosure (a podcast feed item with
+    no audio is malformed and not worth queuing) or if the published
+    date is older than ``cutoff_dt``.
+    """
+    pub = entry.get("published_parsed")
+    if pub:
+        pub_dt = datetime(*pub[:6], tzinfo=timezone.utc)
+        if cutoff_dt is not None and pub_dt < cutoff_dt:
+            return None
+        published_iso = pub_dt.isoformat()
+    else:
+        published_iso = entry.get("published", "") or ""
+
+    audio_url = ""
+    audio_type = ""
+    audio_length = 0
+    enclosures = entry.get("enclosures") or []
+    # feedparser exposes enclosures as a list of dicts with keys
+    # ``href``, ``type``, ``length``. Prefer the first audio/* entry.
+    for enc in enclosures:
+        if not isinstance(enc, dict):
+            continue
+        etype = (enc.get("type") or "").lower()
+        href = (enc.get("href") or "").strip()
+        if href and (etype.startswith("audio/") or not etype):
+            audio_url = href
+            audio_type = etype or "audio/mpeg"
+            try:
+                audio_length = int(enc.get("length") or 0)
+            except (TypeError, ValueError):
+                audio_length = 0
+            break
+    if not audio_url:
+        return None
+
+    link = (entry.get("link") or "").strip()
+    title = (entry.get("title") or "").strip()
+    summary = (entry.get("summary") or "").strip()
+    entry_id = (entry.get("id") or link or audio_url).strip()
+    duration_sec = _parse_itunes_duration(entry.get("itunes_duration"))
+    episode_number = _coerce_int_or_none(entry.get("itunes_episode"))
+
+    return {
+        "url": link or audio_url,
+        "audio_url": audio_url,
+        "audio_type": audio_type,
+        "audio_length_bytes": audio_length,
+        "title": title,
+        "summary": summary,
+        "published": published_iso,
+        "entry_id": entry_id,
+        "duration_sec": duration_sec,
+        "episode_number": episode_number,
+        "outlet": outlet_slug,
+        "outlet_name": outlet_conf.get("name", outlet_slug),
+        "tier": int(outlet_conf.get("tier", 2)),
+        "language": outlet_conf.get("language", "en"),
+    }
+
+
+def _parse_itunes_duration(value: Any) -> int:
+    """Parse <itunes:duration> into seconds.
+
+    The spec allows three forms: ``HH:MM:SS``, ``MM:SS``, or bare
+    seconds. Returns 0 for unparseable input — duration is informational
+    on the queue item, not load-bearing.
+    """
+    if value is None:
+        return 0
+    s = str(value).strip()
+    if not s:
+        return 0
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            nums = [int(p) for p in parts]
+        except ValueError:
+            return 0
+        if len(nums) == 3:
+            return nums[0] * 3600 + nums[1] * 60 + nums[2]
+        if len(nums) == 2:
+            return nums[0] * 60 + nums[1]
+        return 0
+    try:
+        return int(float(s))
+    except ValueError:
+        return 0
+
+
+def _coerce_int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _build_youtube_item(
