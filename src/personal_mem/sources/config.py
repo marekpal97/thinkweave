@@ -192,6 +192,90 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "mem_create:",
             ],
         },
+        "podcast-events": {
+            # Event-grain podcasts (markets, macro, interview shows).
+            # Each show is one outlet entry in podcast_events_feeds.yaml;
+            # the rss_poll strategy pulls the <enclosure> audio URL per
+            # episode, and the worker hands the MP3 to Gemini Flash via
+            # the Files API. Theme candidate floater fires on create.
+            # See commands/podcast.md and
+            # .claude/agents/research-podcast-worker.md.
+            "queue": "vault/.mem/queues/podcast-events.jsonl",
+            "feed_config": "vault/.mem/podcast_events_feeds.yaml",
+            "drain_strategy": "subagent",
+            "subagent_type": "research-podcast-worker",
+            "subagent_model": "sonnet",
+            # Parallelism 2 (not 4 like news/newsletter): each worker
+            # downloads a 20-100MB MP3 and uploads to Gemini before
+            # generation — bandwidth-bound, higher parallelism rarely
+            # improves wall-clock. Override per-vault in sources.yaml.
+            "drain_parallelism": 2,
+            "drain_batch_max": 10,
+            "lookback_days": 7,
+            "dedup_keys": ["entry_id", "audio_url", "url"],
+            "url_patterns": [
+                "feeds.megaphone.fm",
+                "feeds.libsyn.com",
+                "feeds.transistor.fm",
+                "feeds.simplecast.com",
+                "anchor.fm",
+                "omny.fm",
+                "rss.art19.com",
+                "spreaker.com",
+            ],
+            "research_skill": "podcast",
+            "post_batch_hooks": [],
+            # No `triage_model` — admission is the per-show subscription
+            # decision (an outlet in podcast_events_feeds.yaml), not
+            # per-episode triage. /drain Path B fans out directly.
+            "allowed_failure_prefixes": [
+                "audio_fetch_failed",
+                "audio_too_large",
+                "audio_upload_failed",
+                "audio_processing_failed",
+                "gemini_refused",
+                "api_error",
+                "invalid_response",
+                "mem_create:",
+            ],
+        },
+        "podcast-concepts": {
+            # Concept-grain sibling — deep-dives, lecture-style shows,
+            # technical explainer pods. Same Gemini audio extraction;
+            # no theme floating. Longer lookback than events because
+            # durable content is worth backfilling further.
+            "queue": "vault/.mem/queues/podcast-concepts.jsonl",
+            "feed_config": "vault/.mem/podcast_concepts_feeds.yaml",
+            "drain_strategy": "subagent",
+            "subagent_type": "research-podcast-worker",
+            "subagent_model": "sonnet",
+            "drain_parallelism": 2,
+            "drain_batch_max": 10,
+            "lookback_days": 30,
+            "dedup_keys": ["entry_id", "audio_url", "url"],
+            "url_patterns": [
+                "feeds.megaphone.fm",
+                "feeds.libsyn.com",
+                "feeds.transistor.fm",
+                "feeds.simplecast.com",
+                "anchor.fm",
+                "omny.fm",
+                "rss.art19.com",
+                "spreaker.com",
+            ],
+            "research_skill": "podcast",
+            "post_batch_hooks": [],
+            "allowed_failure_prefixes": [
+                "audio_fetch_failed",
+                "audio_too_large",
+                "audio_upload_failed",
+                "audio_processing_failed",
+                "gemini_refused",
+                "api_error",
+                "invalid_response",
+                "mem_create:",
+            ],
+        },
         "conversation": {
             "drain_strategy": "inline",
             "importer": "chatgpt",

@@ -249,6 +249,22 @@ def test_looks_like_refusal_misses_unrelated_errors():
     assert not ge._looks_like_refusal("")
 
 
+def test_looks_like_refusal_skips_transport_status_codes():
+    """Google's 5xx / 429 messages include "UNAVAILABLE" which would
+    otherwise false-positive the ``unavailable`` refusal marker (added
+    originally for YouTube-side "video unavailable" responses). Transport
+    errors must stay classified as api_error so the orchestrator retries.
+    """
+    assert not ge._looks_like_refusal(
+        "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'high demand'}}"
+    )
+    assert not ge._looks_like_refusal("429 RESOURCE_EXHAUSTED")
+    assert not ge._looks_like_refusal("502 Bad Gateway")
+    assert not ge._looks_like_refusal("500 Internal error")
+    # But a real refusal containing the phrase should still match.
+    assert ge._looks_like_refusal("Video unavailable in your region")
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------

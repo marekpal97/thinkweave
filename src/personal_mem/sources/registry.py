@@ -199,6 +199,39 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         ),
         temporal_grain="concept",
     ),
+    "podcast-events": SourceTypeSpec(
+        slug="podcast-events",
+        bucket="podcast-events",
+        layout="author_folder",
+        # Podcasts with event-shaped content (markets / macro / interview
+        # shows where the per-episode signal matters). Per-show RSS feed
+        # in podcast_feeds.yaml; rss_poll picks the <enclosure> audio URL
+        # off each item and the worker hands the MP3 to Gemini Flash
+        # via the Files API. Show name drives the author_folder layout.
+        # See commands/podcast.md and .claude/agents/research-podcast-worker.md.
+        skills=("podcast", "drain"),
+        description=(
+            "Podcasts with event-shaped content (markets, macro, "
+            "interview shows). RSS-poll + URL paste intake, Gemini "
+            "Flash audio extraction, show drives author folder."
+        ),
+        temporal_grain="event",
+    ),
+    "podcast-concepts": SourceTypeSpec(
+        slug="podcast-concepts",
+        bucket="podcast-concepts",
+        layout="author_folder",
+        # Concept-grain sibling — deep-dives, lecture-style shows,
+        # technical explainer pods. Same Gemini audio extraction,
+        # concept hubs handle synthesis, no theme floating.
+        skills=("podcast", "drain"),
+        description=(
+            "Podcasts with concept-shaped content (deep-dives, lectures, "
+            "technical explainers). RSS-poll + URL paste intake, Gemini "
+            "Flash audio extraction, show drives author folder."
+        ),
+        temporal_grain="concept",
+    ),
 }
 
 

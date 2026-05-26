@@ -28,6 +28,8 @@ def test_registry_has_expected_slugs():
         "newsletter-concepts",
         "youtube-events",
         "youtube-concepts",
+        "podcast-events",
+        "podcast-concepts",
     }
     assert set(REGISTRY.keys()) == expected
 
@@ -55,6 +57,8 @@ def test_all_specs_returns_every_entry_in_insertion_order():
         "newsletter-concepts",
         "youtube-events",
         "youtube-concepts",
+        "podcast-events",
+        "podcast-concepts",
     ]
 
 
