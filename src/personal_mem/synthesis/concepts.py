@@ -1881,6 +1881,43 @@ def find_phantom_note_files(vault_root: Path) -> list[Path]:
     return phantoms
 
 
+# Threshold for the keep-warm advisory. The embeddings DB picks up new
+# notes on a cron schedule (see scripts/example-crontab "Embeddings
+# keep-warm"); a 7-day gap is the point where similarity/hybrid retrieval
+# starts noticeably degrading on recent content.
+STALE_EMBEDDINGS_DAYS = 7
+
+
+def find_stale_embeddings_db(config: Config, *, max_age_days: int = STALE_EMBEDDINGS_DAYS) -> dict | None:
+    """Return a payload describing the embeddings DB if it's stale, else None.
+
+    "Stale" = ``embeddings.db`` mtime older than ``max_age_days``. Only
+    advisory when ``OPENAI_API_KEY`` is set in the environment, because
+    without an API key the keep-warm cron can't run regardless. Skips
+    the check when the DB doesn't exist at all (similarity retrieval is
+    not in use; not the doctor's job to nag).
+
+    Payload shape: ``{path, age_days, max_age_days}``.
+    """
+    import os
+    import time
+
+    db_path = config.embeddings_db
+    if not db_path.exists():
+        return None
+    if not os.environ.get("OPENAI_API_KEY", ""):
+        return None
+    age_seconds = time.time() - db_path.stat().st_mtime
+    age_days = age_seconds / 86400.0
+    if age_days <= max_age_days:
+        return None
+    return {
+        "path": db_path,
+        "age_days": age_days,
+        "max_age_days": max_age_days,
+    }
+
+
 def doctor_report(config: Config) -> dict:
     """Run all coherence checks and return a structured report.
 
@@ -1895,6 +1932,9 @@ def doctor_report(config: Config) -> dict:
       (0 = linting disabled because no vocabulary is declared)
     - ``phantom_note_files``: list of Path — zero-byte n-*/dec-*/src-*
       files at vault root, residue of unresolved wikilink clicks
+    - ``stale_embeddings_db``: dict | None — set when ``embeddings.db``
+      mtime is older than STALE_EMBEDDINGS_DAYS AND ``OPENAI_API_KEY``
+      is set (cron hasn't run; similarity retrieval is degrading).
     """
     import sqlite3
 
@@ -1904,9 +1944,11 @@ def doctor_report(config: Config) -> dict:
         "dead_vocabulary": [],
         "vocabulary_size": 0,
         "phantom_note_files": [],
+        "stale_embeddings_db": None,
     }
 
     result["phantom_note_files"] = find_phantom_note_files(config.vault_root)
+    result["stale_embeddings_db"] = find_stale_embeddings_db(config)
 
     if not config.index_db.exists():
         return result
@@ -1976,6 +2018,18 @@ def format_doctor_report(report: dict) -> str:
             lines.append(f"  {path}")
         if len(phantoms) > 20:
             lines.append(f"  … and {len(phantoms) - 20} more")
+        lines.append("")
+
+    stale = report.get("stale_embeddings_db")
+    if stale:
+        lines.append(
+            f"Stale embeddings DB (last refreshed {stale['age_days']:.1f}d "
+            f"ago; threshold {stale['max_age_days']}d). Similarity/hybrid "
+            "retrieval is degrading on recent content. Set up the "
+            "keep-warm cron — see scripts/example-crontab "
+            "\"Embeddings keep-warm\". One-shot refresh:"
+        )
+        lines.append("  mem index --embed --only-new")
         lines.append("")
 
     if not lines:

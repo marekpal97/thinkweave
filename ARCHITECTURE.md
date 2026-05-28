@@ -546,6 +546,8 @@ Six distinct dedup mechanisms, each scoped to a different kind of overlap:
 
 Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), silently sidesteps (slug auto-increment, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
 
+**Embeddings freshness.** Hybrid and similarity retrieval read from `<vault>/.mem/embeddings.db` (a derived index, rebuildable from markdown). Without an external trigger nothing repopulates it as new sessions / decisions / sources land, so similarity silently degrades to FTS-only on recent content. The "keep-warm" contract is a cron line (`mem index --embed --only-new`) that filters notes whose `updated_at` exceeds the most recent `embeddings.created_at` and re-embeds only that delta. `mem doctor` advisories on a stale DB (`embeddings.db` mtime > 7 days) when `OPENAI_API_KEY` is in the environment. See `scripts/example-crontab` for the canonical block.
+
 ## Invocation surface
 
 The framework's *internal* contracts (layer dependencies, operations seam,
