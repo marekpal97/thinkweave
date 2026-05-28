@@ -654,6 +654,106 @@ class TestHandlePostCommitCapture:
         assert commits[0]["message"] == "E2E commit"
 
 
+class TestStopHookOpportunisticEmbed:
+    """A6 follow-up: Stop hook calls EmbeddingSearch.compute_all(only_new=True)
+    after the session note is indexed, gated on OPENAI_API_KEY presence.
+
+    The cron line ships as the durable refresh path; this opportunistic call
+    just shortens the time-to-first-embed for a freshly-archived session note
+    from "next cron tick" to "end of session." Failures must not break Stop.
+    """
+
+    def _stage_archived_session(self, tmp_path, monkeypatch):
+        """Materialise enough vault state that _handle_stop runs to the embed step."""
+        from personal_mem.core.config import Config
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        vm.create_note(
+            NoteType.SESSION,
+            "Session embed-test",
+            project="alpha",
+            extra_frontmatter={"source_session": "ses-embed-test"},
+        )
+
+        # One Bash event in the buffer so _handle_stop has something to extract.
+        buf = cfg.mem_dir / "buffer" / "ses-embed-test.jsonl"
+        buf.parent.mkdir(parents=True, exist_ok=True)
+        buf.write_text(
+            json.dumps({
+                "ts": "2026-05-29T00:00:00Z",
+                "tool": "Bash",
+                "command": "ls",
+                "session_id": "ses-embed-test",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return handler_mod
+
+    def test_embed_fires_when_api_key_set(self, tmp_path: Path, monkeypatch):
+        handler_mod = self._stage_archived_session(tmp_path, monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        calls: list[dict] = []
+
+        class _Stub:
+            def __init__(self, config=None):
+                pass
+
+            def compute_all(self, *, only_new=False, since=""):
+                calls.append({"only_new": only_new, "since": since})
+                return {"computed": 0, "skipped": 0, "errors": 0, "scanned": 0, "cutoff": ""}
+
+        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Stub)
+
+        handler_mod._handle_stop({"session_id": "ses-embed-test"})
+
+        assert len(calls) == 1, "Stop hook must call compute_all exactly once"
+        assert calls[0]["only_new"] is True, "must use incremental mode"
+
+    def test_embed_skipped_without_api_key(self, tmp_path: Path, monkeypatch):
+        handler_mod = self._stage_archived_session(tmp_path, monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        called = []
+
+        class _Stub:
+            def __init__(self, config=None):
+                pass
+
+            def compute_all(self, **kw):
+                called.append(kw)
+                return {}
+
+        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Stub)
+
+        handler_mod._handle_stop({"session_id": "ses-embed-test"})
+
+        assert called == [], "no API key → no embed attempt"
+
+    def test_embed_failure_does_not_break_stop(self, tmp_path: Path, monkeypatch):
+        handler_mod = self._stage_archived_session(tmp_path, monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        class _Boom:
+            def __init__(self, config=None):
+                pass
+
+            def compute_all(self, **kw):
+                raise RuntimeError("embedding provider down")
+
+        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Boom)
+
+        # Must not raise — embedding is best-effort.
+        handler_mod._handle_stop({"session_id": "ses-embed-test"})
+
+
 class TestDiffContext:
     def test_edit_context(self):
         ctx = _diff_context("Edit", {"old_string": "foo = 1", "new_string": "foo = 2"})

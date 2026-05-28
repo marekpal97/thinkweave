@@ -160,6 +160,25 @@ class TestBuildRetrievalEvent:
         )
         assert out["returned_ids"] == []
 
+    def test_tool_output_dict_shape_extracts_ids(self):
+        # Claude Code's PostToolUse delivers Bash output as a dict with
+        # stdout/stderr; non-hook callers (tests, headless catch-up flows)
+        # sometimes hand that raw shape to build_retrieval_event without
+        # going through the hook handler's _extract_tool_output_text
+        # normaliser. Defensive in-function normalisation keeps the parse
+        # working regardless.
+        out = build_retrieval_event(
+            "mcp__personal-mem__mem_search",
+            {"query": "x"},
+            {
+                "stdout": "[note] Hit (n-abc123de) [tag]\n",
+                "stderr": "",
+                "interrupted": False,
+            },
+            "ts",
+        )
+        assert out["returned_ids"] == ["n-abc123de"]
+
 
 # ---------------------------------------------------------------------------
 # RETRIEVAL_TOOLS — names match the dash-form server name from install.py

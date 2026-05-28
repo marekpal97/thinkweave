@@ -793,6 +793,19 @@ def _handle_stop(hook_input: dict) -> None:
         except Exception as e:
             _log_error("stop/index", e)
 
+        # Opportunistic embed: A6 ships a cron-driven embedding refresh,
+        # but a freshly-archived session note shouldn't have to wait up to
+        # four hours for similarity retrieval to see it. Gated on the API
+        # key being present so machines without it stay silent. Failures
+        # never break the Stop hook — the cron path is the durable fallback.
+        if os.environ.get("OPENAI_API_KEY"):
+            try:
+                from personal_mem.core.embeddings import EmbeddingSearch
+
+                EmbeddingSearch(config=cfg).compute_all(only_new=True)
+            except Exception as e:
+                _log_error("stop/embed", e)
+
         _output()
     except Exception as e:
         _log_error("stop", e)

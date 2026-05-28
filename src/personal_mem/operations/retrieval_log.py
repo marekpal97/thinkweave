@@ -134,7 +134,17 @@ def build_retrieval_event(
         rid = (tool_input or {}).get("id", "")
         returned_ids = [rid] if rid else []
     else:
-        text = tool_output if isinstance(tool_output, str) else ""
+        # Defensive normalisation: hook handlers normalise via
+        # ``_extract_tool_output_text`` before calling, but headless and
+        # test callers sometimes pass the raw Claude Code ``tool_response``
+        # object ({stdout, stderr, ...}). Concatenate both stream fields
+        # so the regex parser sees the rendered text in either shape.
+        if isinstance(tool_output, str):
+            text = tool_output
+        elif isinstance(tool_output, dict):
+            text = (tool_output.get("stdout") or "") + (tool_output.get("stderr") or "")
+        else:
+            text = ""
         returned_ids = parse_returned_ids(text)
 
     return {
