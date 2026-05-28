@@ -38,8 +38,21 @@ def cmd_index(args: argparse.Namespace) -> None:
         try:
             from personal_mem.core.embeddings import EmbeddingSearch
             es = EmbeddingSearch(config=cfg)
-            embed_stats = es.compute_all()
-            print(f"Embeddings: {embed_stats['computed']} computed, {embed_stats['skipped']} cached")
+            only_new = bool(getattr(args, "only_new", False))
+            since = getattr(args, "since", "") or ""
+            embed_stats = es.compute_all(only_new=only_new, since=since)
+            if embed_stats.get("cutoff"):
+                print(
+                    f"Embeddings (incremental — cutoff {embed_stats['cutoff']}): "
+                    f"{embed_stats['computed']} computed, "
+                    f"{embed_stats['skipped']} cached, "
+                    f"{embed_stats['scanned']} scanned"
+                )
+            else:
+                print(
+                    f"Embeddings: {embed_stats['computed']} computed, "
+                    f"{embed_stats['skipped']} cached"
+                )
         except ImportError:
             print("Embeddings require: pip install personal-mem[embeddings]")
 

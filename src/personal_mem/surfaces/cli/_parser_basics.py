@@ -117,6 +117,24 @@ def add_index_subparsers(sub) -> None:
     p_index.add_argument("--full", action="store_true", help="Full rebuild (drop and recreate)")
     p_index.add_argument("--embed", action="store_true", help="Compute embeddings via API")
     p_index.add_argument(
+        "--only-new",
+        action="store_true",
+        help=(
+            "With --embed: only embed notes whose updated_at is newer than "
+            "the most recent cached embedding (the keep-warm cron path). "
+            "Falls back to a full scan on an empty embeddings table."
+        ),
+    )
+    p_index.add_argument(
+        "--since",
+        default="",
+        help=(
+            "With --embed: alternative cutoff for --only-new — embed notes "
+            "whose updated_at > <ISO timestamp> (e.g. 2026-05-01). "
+            "Overrides the derived cutoff when both are passed."
+        ),
+    )
+    p_index.add_argument(
         "--materialize-links",
         action="store_true",
         help="After indexing, write SQLite edges as wikilinks (## See Also) for Obsidian.",
