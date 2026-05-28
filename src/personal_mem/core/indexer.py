@@ -129,9 +129,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     body_text,
     tags,
     content='notes',
-    content_rowid='rowid'
+    content_rowid='rowid',
+    tokenize="unicode61 remove_diacritics 2 tokenchars '-_'"
 );
 """
+
+# Marker matched in the `sql` column of ``sqlite_master`` to detect whether the
+# live ``notes_fts`` table was created with the explicit tokenizer above. Older
+# vaults (pre-A4) created the table with the SQLite default (unicode61, which
+# splits on `-` and `_`); on first connect we detect that, drop the table, and
+# let ``executescript`` recreate it with the correct tokenizer. Index content
+# is rebuilt by ``_rebuild_fts`` the next time it's called — full rebuilds
+# call it unconditionally, and `_index_file` triggers an FTS sync on every
+# touched note. Existing data is safe; only the FTS index itself is regenerated.
+_FTS_TOKENIZER_MARKER = "tokenchars '-_'"
 
 # Frontmatter fields that map to typed edges
 EDGE_FIELD_MAP: dict[str, str] = {
@@ -176,6 +187,27 @@ class Indexer:
 
     def _init_schema(self) -> None:
         self.db.executescript(SCHEMA_SQL)
+        # FTS5 tokenizer migration (A4). Earlier vaults created `notes_fts`
+        # with the default tokenizer (`unicode61` only), which splits dash-
+        # and underscore-form concepts (`write-ahead-log` → 3 tokens). Detect
+        # the absence of the explicit tokenizer marker in the live DDL and
+        # drop the virtual table so the executescript below recreates it
+        # with the new tokenizer. Repopulation happens on the next
+        # `_rebuild_fts()` call (always run by `rebuild(full=True)` and by
+        # every `_index_file` touch); the underlying `notes` table is
+        # untouched, so a fresh `mem index --full` after upgrade is enough
+        # to bring queries back online with whole-token matching for
+        # dash/underscore concepts.
+        existing_fts_sql_row = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes_fts'"
+        ).fetchone()
+        existing_fts_sql = (
+            existing_fts_sql_row[0] if existing_fts_sql_row else None
+        )
+        if existing_fts_sql and _FTS_TOKENIZER_MARKER not in existing_fts_sql:
+            # Drop the *_fts shadow tables FTS5 creates alongside the virtual
+            # table; CREATE VIRTUAL TABLE will regenerate them.
+            self.db.execute("DROP TABLE IF EXISTS notes_fts")
         self.db.executescript(FTS_SCHEMA_SQL)
         # Defensive ALTER for databases created before the file_mtime column
         # was added (P0-8 mtime gate). CREATE TABLE IF NOT EXISTS won't add
