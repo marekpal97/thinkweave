@@ -304,6 +304,39 @@ def update_note(
             raw = [raw]
         pre_supersedes = {str(s) for s in raw if s}
 
+    # Strict ontology gate on `concepts:` writes. Without this, a caller
+    # passing ``frontmatter_updates={"concepts": [...]}`` could land arbitrary
+    # strings as canonical concepts, bypassing the gate that ``create_note``
+    # enforces. Only the ``concepts`` field is gated — every other key
+    # (``tags``, ``status``, ``commit_refs``, ...) passes through untouched.
+    # Non-canonical terms get merged into ``proposed_concepts:`` alongside any
+    # already present on the note (de-duped, lowercased, stripped via
+    # ``split_concepts_by_ontology``).
+    if frontmatter_updates and "concepts" in frontmatter_updates:
+        from personal_mem.synthesis.concepts import split_concepts_by_ontology
+
+        frontmatter_updates = dict(frontmatter_updates)
+        incoming_proposed = frontmatter_updates.get("proposed_concepts")
+        if incoming_proposed is None:
+            # Merge against the note's existing proposed_concepts so we don't
+            # drop entries the caller didn't touch.
+            existing_proposed = existing_pre.frontmatter.get("proposed_concepts") or []
+            if isinstance(existing_proposed, str):
+                existing_proposed = [existing_proposed]
+            incoming_proposed = list(existing_proposed)
+        canonical, proposed = split_concepts_by_ontology(
+            frontmatter_updates.get("concepts"),
+            proposed=incoming_proposed,
+        )
+        if canonical:
+            frontmatter_updates["concepts"] = canonical
+        else:
+            frontmatter_updates.pop("concepts", None)
+        if proposed:
+            frontmatter_updates["proposed_concepts"] = proposed
+        else:
+            frontmatter_updates.pop("proposed_concepts", None)
+
     vm.update_note(
         path,
         frontmatter_updates=frontmatter_updates,
