@@ -169,7 +169,11 @@ and MCP names were removed 2026-05-21 — call the canonical names.
 ```
 mem init                                    # initialize vault + .mem/sources.yaml
 mem add --type {note|theme|...} "Title"     # create a note
-mem index [--full] [--embed] [--materialize-links]   # rebuild SQLite index (+ wikilinks)
+mem index [--full] [--embed] [--only-new|--since DATE] [--materialize-links]
+                                            # rebuild SQLite index (+ wikilinks).
+                                            # --embed --only-new is the keep-warm
+                                            # cron path: re-embed only notes whose
+                                            # updated_at > last cached embedding.
 mem search "q" [--type X] [--concept Y]     # FTS / similarity / hybrid
 mem graph <id>                              # local graph
 mem context "q" [--type X]                  # 3-layer retrieval (FTS → concept → recency)
