@@ -16,6 +16,7 @@ from personal_mem.surfaces.hooks.handler import (
     _detect_project,
     _diff_context,
     _extract_insight_blocks,
+    _extract_tool_output_text,
     _first_meaningful_line,
     _get_commit_files,
     _is_git_commit,
@@ -467,6 +468,190 @@ class TestBuildEventEnrichment:
         event = _build_event("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"}, "", "14:00")
         assert event is not None
         assert "insights" not in event
+
+
+class TestExtractToolOutputText:
+    """Audit item A1 — Claude Code's PostToolUse payload uses ``tool_response``,
+    not ``tool_output``, and for the Bash tool that key is an *object* with
+    ``stdout`` / ``stderr`` / ``interrupted`` / ``isImage`` fields. The
+    handler used to read ``tool_output`` directly and got ``""`` for every
+    real Bash invocation — which silently dropped commit / test / insight
+    capture across the whole hook pipeline. This test class pins the
+    normalisation contract.
+    """
+
+    def test_reads_tool_response_dict_for_bash(self):
+        """The current Claude Code shape — ``tool_response`` is a dict."""
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit -m 'fix'"},
+            "tool_response": {
+                "stdout": "[main abc1234] fix\n 2 files changed\n",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            },
+        }
+        assert "[main abc1234] fix" in _extract_tool_output_text(payload)
+
+    def test_concatenates_stdout_and_stderr(self):
+        """``pytest`` writes warnings to stderr alongside the summary line."""
+        payload = {
+            "tool_response": {"stdout": "12 passed\n", "stderr": "warn: x\n"},
+        }
+        out = _extract_tool_output_text(payload)
+        assert "12 passed" in out
+        assert "warn: x" in out
+
+    def test_falls_back_to_stderr_when_stdout_empty(self):
+        payload = {"tool_response": {"stdout": "", "stderr": "boom\n"}}
+        assert _extract_tool_output_text(payload) == "boom\n"
+
+    def test_legacy_tool_output_string_still_works(self):
+        """Pre-A1 fixtures used ``tool_output`` as a string. Keep them green."""
+        payload = {"tool_output": "[main abc1234] msg\n 1 file changed\n"}
+        assert "[main abc1234]" in _extract_tool_output_text(payload)
+
+    def test_tool_response_takes_precedence_over_tool_output(self):
+        """When Claude Code sends both, prefer the canonical key."""
+        payload = {
+            "tool_response": {"stdout": "from-response"},
+            "tool_output": "from-output",
+        }
+        assert _extract_tool_output_text(payload) == "from-response"
+
+    def test_tool_response_string_form(self):
+        """Some tools send a bare string under ``tool_response`` — use as-is."""
+        assert _extract_tool_output_text({"tool_response": "plain text"}) == "plain text"
+
+    def test_missing_both_yields_empty(self):
+        assert _extract_tool_output_text({}) == ""
+
+    def test_dict_with_no_text_yields_empty(self):
+        assert _extract_tool_output_text(
+            {"tool_response": {"interrupted": False, "isImage": False}}
+        ) == ""
+
+
+class TestHandlePostCommitCapture:
+    """End-to-end regression for the A1 fix.
+
+    Drives ``_handle_post`` with the exact Claude Code PostToolUse shape
+    (``tool_response`` as a dict carrying ``stdout``) and verifies that
+    the resulting buffer line carries the ``commit`` subfield. Mirrors
+    the failure mode the audit caught empirically: 0/405 native sessions
+    had ``commits[]`` because the handler was reading ``tool_output``.
+    """
+
+    def test_bash_commit_lands_in_buffer(self, tmp_path: Path, monkeypatch):
+        from personal_mem.core.config import Config
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+
+        # Avoid the eager session-note creation path; A1 lives in the buffer
+        # write, not in the session note materialisation.
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._ensure_session",
+            lambda *a, **k: None,
+        )
+        # Don't shell out to git for the file list — return a stable fixture.
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._get_commit_files",
+            lambda h: ["src/a.py", "src/b.py"],
+        )
+
+        payload = {
+            "session_id": "ses-cc-a1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit -m 'A1 fix'"},
+            # Real Claude Code shape — dict, not string, under tool_response.
+            "tool_response": {
+                "stdout": "[podcasts abc1234] A1 fix\n 2 files changed, 10 insertions(+)\n",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            },
+        }
+        handler_mod._handle_post("Bash", payload)
+
+        buf_file = cfg.mem_dir / "buffer" / "ses-cc-a1.jsonl"
+        assert buf_file.exists(), "expected a buffer line for the Bash event"
+        rows = [json.loads(l) for l in buf_file.read_text().splitlines() if l.strip()]
+        assert len(rows) == 1
+        ev = rows[0]
+        assert "commit" in ev, (
+            "PostToolUse hook must carry commit subfield (A1 regression)"
+        )
+        assert ev["commit"]["hash"] == "abc1234"
+        assert ev["commit"]["message"] == "A1 fix"
+        assert ev["commit"]["files"] == ["src/a.py", "src/b.py"]
+
+    def test_session_archive_lands_commits_in_frontmatter(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """End-to-end: PostToolUse → buffer → Stop hook → ``fm['commits']``.
+
+        Pins the full pipeline from the audit's empirical finding all the
+        way to the session note frontmatter.
+        """
+        from personal_mem.core.config import Config
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._get_commit_files",
+            lambda h: ["src/a.py", "src/b.py", "src/c.py"],
+        )
+
+        # Pre-create the session note so _ensure_session is a no-op (the
+        # find function just needs to locate it by source_session).
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        vm.create_note(
+            NoteType.SESSION,
+            "Session A1",
+            project="alpha",
+            extra_frontmatter={"source_session": "ses-cc-a1-e2e"},
+        )
+
+        # Drive a PostToolUse with a real Bash commit shape.
+        handler_mod._handle_post(
+            "Bash",
+            {
+                "session_id": "ses-cc-a1-e2e",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit -m 'E2E commit'"},
+                "tool_response": {
+                    "stdout": "[main def5678] E2E commit\n 3 files changed\n",
+                    "stderr": "",
+                    "interrupted": False,
+                    "isImage": False,
+                },
+            },
+        )
+
+        # Then drive Stop to archive the buffer into the session note.
+        handler_mod._handle_stop({"session_id": "ses-cc-a1-e2e"})
+
+        # The session note must now carry commits[] in its frontmatter.
+        from personal_mem.core.schemas import NoteType as _NT
+
+        ses = next(
+            n for n in vm.list_notes(note_type=_NT.SESSION, limit=10)
+            if n.frontmatter.get("source_session") == "ses-cc-a1-e2e"
+        )
+        assert ses.frontmatter.get("processed") is True
+        commits = ses.frontmatter.get("commits") or []
+        assert commits, "Stop hook must write commits[] to session frontmatter"
+        assert commits[0]["hash"] == "def5678"
+        assert commits[0]["message"] == "E2E commit"
 
 
 class TestDiffContext:
