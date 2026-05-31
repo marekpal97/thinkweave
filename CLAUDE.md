@@ -159,7 +159,7 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 
 ## 7. CLI reference (Bash)
 
-The CLI exposes **35 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
+The CLI exposes **40 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
 
 Consolidations to keep in mind: wikilink materialisation lives under
 `mem index --materialize-links` (was `mem connect`, deleted 2026-05-21);

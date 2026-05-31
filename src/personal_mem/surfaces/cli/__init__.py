@@ -47,6 +47,12 @@ from personal_mem.surfaces.cli.notes import (
     cmd_show,
     cmd_update,
 )
+from personal_mem.surfaces.cli.parity import (
+    cmd_project_snapshot,
+    cmd_prompts,
+    cmd_timeline,
+    cmd_unlink,
+)
 from personal_mem.surfaces.cli.parser import build_parser
 from personal_mem.surfaces.cli.queue import cmd_queue
 from personal_mem.surfaces.cli.rlvr import cmd_rlvr
@@ -93,6 +99,10 @@ _DISPATCH = {
     "wrap-finalize": cmd_wrap_finalize,
     "rlvr": cmd_rlvr,
     "judge": cmd_judge,
+    "unlink": cmd_unlink,
+    "timeline": cmd_timeline,
+    "project-snapshot": cmd_project_snapshot,
+    "prompts": cmd_prompts,
 }
 
 

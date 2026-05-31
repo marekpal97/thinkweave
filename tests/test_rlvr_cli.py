@@ -336,8 +336,10 @@ class TestDispatchTable:
         # `mem dream` (vault-hygiene cycle) and `mem news-stats`
         # (per-outlet drain stats) added later: 33 → 35.
         # Phase-3 prediction-judge rework adds `mem judge`: 35 → 36.
+        # C24 CLI parity (Slice 4) adds unlink, timeline,
+        # project-snapshot, prompts: 36 → 40.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
         from personal_mem.surfaces.cli import _DISPATCH
 
-        assert len(_DISPATCH) == 36
+        assert len(_DISPATCH) == 40

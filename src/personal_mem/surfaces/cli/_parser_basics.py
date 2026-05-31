@@ -616,3 +616,62 @@ def add_admin_subparsers(sub) -> None:
         "--json", action="store_true",
         help="Emit raw JSON result on stdout",
     )
+
+    # --- C24: CLI parity for MCP-only tools -------------------------------
+    p_unlink = sub.add_parser(
+        "unlink",
+        help="Remove a typed edge between two notes (CLI parity for mem_unlink).",
+    )
+    p_unlink.add_argument("source", help="Source note ID")
+    p_unlink.add_argument("target", help="Target note ID")
+    p_unlink.add_argument(
+        "--type", "-t", default="relates_to",
+        choices=[e.value for e in EdgeType],
+    )
+
+    p_timeline = sub.add_parser(
+        "timeline",
+        help=(
+            "Chronological session+decision window (CLI parity for mem_timeline). "
+            "Without --project: cross-project ranking by activity."
+        ),
+    )
+    p_timeline.add_argument("--project", "-p", default="")
+    p_timeline.add_argument("--days", "-d", type=int, default=7)
+    p_timeline.add_argument("--json", action="store_true")
+
+    p_snap = sub.add_parser(
+        "project-snapshot",
+        help=(
+            "Re-fetch the SessionStart context payload for a project "
+            "(CLI parity for mem_project_snapshot)."
+        ),
+    )
+    p_snap.add_argument("project", help="Project name")
+    p_snap.add_argument(
+        "--sections", default="",
+        help="Comma-separated section names to include (omit for default).",
+    )
+    p_snap.add_argument(
+        "--budget-tokens", type=int, default=0,
+        help="Token budget (0 = default).",
+    )
+
+    p_prompts = sub.add_parser(
+        "prompts",
+        help=(
+            "List user prompts captured by the UserPromptSubmit hook "
+            "(CLI parity for mem_prompts)."
+        ),
+    )
+    p_prompts.add_argument("--project", "-p", default="")
+    p_prompts.add_argument(
+        "--since", default="",
+        help="Earliest ISO date/datetime (YYYY-MM-DD).",
+    )
+    p_prompts.add_argument("--limit", "-n", type=int, default=50)
+    p_prompts.add_argument(
+        "--classified-as", default="",
+        help="Filter by classification (e.g. 'probe').",
+    )
+    p_prompts.add_argument("--json", action="store_true")
