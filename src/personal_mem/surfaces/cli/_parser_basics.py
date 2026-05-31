@@ -191,6 +191,16 @@ def add_index_subparsers(sub) -> None:
         action="store_true",
         help="Run vault coherence + MCP diagnostics together.",
     )
+    p_doctor.add_argument(
+        "--isolation",
+        action="store_true",
+        help=(
+            "Append an isolation diagnostic: notes with no graph edges, "
+            "broken down by type / concept-count bucket / project, plus "
+            "10 examples. Opt-in because output is verbose; useful before "
+            "running `mem enrich` to characterise what's reachable."
+        ),
+    )
 
     p_enrich = sub.add_parser(
         "enrich",

@@ -1392,9 +1392,9 @@ HUB_ARCHIVE_DIRNAME = "_archive"
 def hub_archive_dir(config: Config) -> Path:
     """Directory holding archived (formerly canonical, now orphan) concept hubs.
 
-    Mirrors ``themes/_candidates/_archive/``. Lives *inside* ``topics/`` so
-    non-recursive ``topics.glob('*.md')`` scans (status, link, repair) skip
-    archived files automatically — no filter logic required.
+    Lives *inside* ``topics/`` so non-recursive ``topics.glob('*.md')`` scans
+    (status, link, repair) skip archived files automatically — no filter
+    logic required.
     """
     from personal_mem.synthesis.concept_hub import topics_dir
 
@@ -1888,6 +1888,74 @@ def find_phantom_note_files(vault_root: Path) -> list[Path]:
 STALE_EMBEDDINGS_DAYS = 7
 
 
+def find_isolated_notes(db) -> dict:
+    """Notes with no incoming or outgoing edges.
+
+    Isolated notes can't be reached via ``mem_graph`` walks and don't
+    surface in concept-shared retrieval. They typically have 0 concepts
+    (the auto-edge floor is shared concepts, default ≥1) or are imports
+    whose concept lists didn't survive the strict ontology gate.
+
+    One indexed query (``NOT IN`` over ``edges.source ∪ edges.target``,
+    both indexed) plus a Python-side grouping. Cheap.
+
+    Returns::
+
+        {
+            'total': int,
+            'by_type': [(type, count), ...],         # sorted desc
+            'by_concept_count': [('0', n), ('1', n), ('2+', n)],
+            'by_project': [(project, count), ...],   # sorted desc, top 10
+            'examples': [{id, type, title, concept_count, project}],
+        }
+    """
+    rows = list(db.execute(
+        """
+        SELECT n.id, n.type, n.title, n.project,
+               COALESCE(
+                   (SELECT COUNT(*) FROM note_concepts nc WHERE nc.note_id = n.id),
+                   0
+               ) AS concept_count
+        FROM notes n
+        WHERE n.id NOT IN (
+            SELECT source FROM edges UNION SELECT target FROM edges
+        )
+        ORDER BY n.type, n.updated_at DESC
+        """
+    ))
+
+    by_type: dict[str, int] = {}
+    bucket_counts: dict[str, int] = {"0": 0, "1": 0, "2+": 0}
+    by_project: dict[str, int] = {}
+
+    for r in rows:
+        by_type[r["type"]] = by_type.get(r["type"], 0) + 1
+        cc = r["concept_count"]
+        bucket = "0" if cc == 0 else "1" if cc == 1 else "2+"
+        bucket_counts[bucket] += 1
+        proj = r["project"] or "(none)"
+        by_project[proj] = by_project.get(proj, 0) + 1
+
+    examples = [
+        {
+            "id": r["id"],
+            "type": r["type"],
+            "title": r["title"],
+            "concept_count": r["concept_count"],
+            "project": r["project"] or "(none)",
+        }
+        for r in rows[:10]
+    ]
+
+    return {
+        "total": len(rows),
+        "by_type": sorted(by_type.items(), key=lambda kv: -kv[1]),
+        "by_concept_count": [(b, bucket_counts[b]) for b in ("0", "1", "2+")],
+        "by_project": sorted(by_project.items(), key=lambda kv: -kv[1])[:10],
+        "examples": examples,
+    }
+
+
 def find_stale_embeddings_db(config: Config, *, max_age_days: int = STALE_EMBEDDINGS_DAYS) -> dict | None:
     """Return a payload describing the embeddings DB if it's stale, else None.
 
@@ -1918,7 +1986,7 @@ def find_stale_embeddings_db(config: Config, *, max_age_days: int = STALE_EMBEDD
     }
 
 
-def doctor_report(config: Config) -> dict:
+def doctor_report(config: Config, *, include_isolation: bool = False) -> dict:
     """Run all coherence checks and return a structured report.
 
     Read-only. Never modifies anything. Returns a dict with keys:
@@ -1935,6 +2003,10 @@ def doctor_report(config: Config) -> dict:
     - ``stale_embeddings_db``: dict | None — set when ``embeddings.db``
       mtime is older than STALE_EMBEDDINGS_DAYS AND ``OPENAI_API_KEY``
       is set (cron hasn't run; similarity retrieval is degrading).
+    - ``isolated_notes``: dict | None — set only when ``include_isolation``
+      is True. Breakdown of notes with zero graph edges (by type, concept
+      count bucket, project) plus a first-10 example list. Diagnostic
+      surface: the audit found 964/6805 (14%) isolated in the live vault.
     """
     import sqlite3
 
@@ -1945,6 +2017,7 @@ def doctor_report(config: Config) -> dict:
         "vocabulary_size": 0,
         "phantom_note_files": [],
         "stale_embeddings_db": None,
+        "isolated_notes": None,
     }
 
     result["phantom_note_files"] = find_phantom_note_files(config.vault_root)
@@ -1963,6 +2036,8 @@ def doctor_report(config: Config) -> dict:
         result["tag_concept_overlap"] = find_tag_concept_overlap(db)
         result["unknown_tags"] = find_unknown_tags(db, vocabulary)
         result["dead_vocabulary"] = find_dead_vocabulary(db, ontology)
+        if include_isolation:
+            result["isolated_notes"] = find_isolated_notes(db)
     finally:
         db.close()
 
@@ -2031,6 +2106,47 @@ def format_doctor_report(report: dict) -> str:
         )
         lines.append("  mem index --embed --only-new")
         lines.append("")
+
+    isolated = report.get("isolated_notes")
+    if isolated is not None:
+        total = isolated["total"]
+        if total == 0:
+            lines.append("Isolated notes: 0 — graph fully connected.")
+            lines.append("")
+        else:
+            lines.append(
+                f"Isolated notes ({total} — no incoming or outgoing edges; "
+                "unreachable via mem_graph and absent from concept-shared "
+                "retrieval):"
+            )
+            lines.append("  By type:")
+            for ntype, cnt in isolated["by_type"]:
+                lines.append(f"    {ntype}: {cnt}")
+            lines.append(
+                "  By concept count (≥1 shared concept is the auto-edge floor):"
+            )
+            for bucket, cnt in isolated["by_concept_count"]:
+                lines.append(f"    {bucket} concept(s): {cnt}")
+            if isolated["by_project"]:
+                lines.append("  By project (top 10):")
+                for proj, cnt in isolated["by_project"]:
+                    lines.append(f"    {proj}: {cnt}")
+            if isolated["examples"]:
+                lines.append("  Examples (first 10):")
+                for ex in isolated["examples"]:
+                    title = (ex["title"] or "")[:50]
+                    lines.append(
+                        f"    {ex['id']}  {ex['type']:<10}  "
+                        f"concepts={ex['concept_count']}  "
+                        f"project={ex['project']}  {title}"
+                    )
+            lines.append(
+                "  Likely fix: `mem enrich` on the 0-1 concept bucket "
+                "(strict gate may have dropped imported concepts), or "
+                "document an 'intentionally isolated' stance for these "
+                "note types."
+            )
+            lines.append("")
 
     if not lines:
         return "No coherence issues detected."

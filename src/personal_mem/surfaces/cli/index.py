@@ -125,7 +125,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             moved = migrate_todo_research_to_queue(cfg.vault_root)
             print(f"migrate_todo_research_to_queue: {moved} note(s) moved to queues")
 
-        report = doctor_report(cfg)
+        include_isolation = bool(getattr(args, "isolation", False))
+        report = doctor_report(cfg, include_isolation=include_isolation)
 
         if getattr(args, "fix_phantoms", False):
             phantoms = report.get("phantom_note_files", [])
@@ -136,7 +137,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                     print(f"  ! could not delete {path}: {exc}")
             print(f"fix-phantoms: deleted {len(phantoms)} zero-byte file(s)")
             # Re-run after deletion so the printed report reflects the new state.
-            report = doctor_report(cfg)
+            report = doctor_report(cfg, include_isolation=include_isolation)
 
         print(format_doctor_report(report))
 

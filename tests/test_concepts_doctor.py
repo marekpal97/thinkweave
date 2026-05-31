@@ -15,6 +15,7 @@ from personal_mem.synthesis.concepts import (
     demote_non_ontology_concepts,
     doctor_report,
     find_dead_vocabulary,
+    find_isolated_notes,
     find_orphan_hubs,
     find_redundant_hub_candidates,
     find_tag_concept_overlap,
@@ -758,6 +759,123 @@ class TestDoctorReportDirtyVault:
         assert "finance" in text
         assert "randomtag" in text
         assert "dead" in text
+
+
+# ---------------------------------------------------------------------------
+# find_isolated_notes + doctor `--isolation` opt-in
+# ---------------------------------------------------------------------------
+
+
+def _open_index(config: Config):
+    import sqlite3
+
+    db = sqlite3.connect(str(config.index_db))
+    db.row_factory = sqlite3.Row
+    return db
+
+
+class TestFindIsolatedNotes:
+    """find_isolated_notes returns notes with zero graph edges, bucketed."""
+
+    def test_empty_vault_returns_zero(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        indexer.rebuild()
+        db = _open_index(config)
+        try:
+            result = find_isolated_notes(db)
+        finally:
+            db.close()
+        assert result["total"] == 0
+        assert result["by_type"] == []
+        assert result["examples"] == []
+
+    def test_zero_concept_note_is_isolated(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(note_type=NoteType.NOTE, title="Lonely")
+        indexer.rebuild()
+        db = _open_index(config)
+        try:
+            result = find_isolated_notes(db)
+        finally:
+            db.close()
+
+        assert result["total"] == 1
+        buckets = dict(result["by_concept_count"])
+        assert buckets["0"] == 1
+        assert buckets["1"] == 0
+        assert buckets["2+"] == 0
+        assert len(result["examples"]) == 1
+        assert result["examples"][0]["title"] == "Lonely"
+        assert result["examples"][0]["concept_count"] == 0
+
+    def test_two_notes_sharing_concept_are_not_isolated(
+        self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
+    ):
+        _write_ontology(monkeypatch, "swe-python:\n  - python\n  - asyncio\n")
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            extra_frontmatter={"concepts": ["python", "asyncio"]},
+        )
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="B",
+            extra_frontmatter={"concepts": ["python", "asyncio"]},
+        )
+        indexer.rebuild()
+        db = _open_index(config)
+        try:
+            result = find_isolated_notes(db)
+        finally:
+            db.close()
+        assert result["total"] == 0
+
+
+class TestDoctorReportIsolation:
+    """Doctor's --isolation surface — opt-in by design."""
+
+    def test_isolation_omitted_by_default(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(note_type=NoteType.NOTE, title="Lonely")
+        indexer.rebuild()
+        report = doctor_report(config)
+        assert report["isolated_notes"] is None
+        assert "Isolated notes" not in format_doctor_report(report)
+
+    def test_isolation_present_when_requested(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        vault.create_note(note_type=NoteType.NOTE, title="Lonely")
+        indexer.rebuild()
+        report = doctor_report(config, include_isolation=True)
+        assert report["isolated_notes"] is not None
+        assert report["isolated_notes"]["total"] == 1
+
+        text = format_doctor_report(report)
+        assert "Isolated notes" in text
+        assert "Lonely" in text
+
+    def test_isolation_zero_message_when_graph_fully_connected(
+        self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
+    ):
+        _write_ontology(monkeypatch, "swe-python:\n  - python\n")
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="A",
+            extra_frontmatter={"concepts": ["python"]},
+        )
+        vault.create_note(
+            note_type=NoteType.NOTE,
+            title="B",
+            extra_frontmatter={"concepts": ["python"]},
+        )
+        indexer.rebuild()
+        report = doctor_report(config, include_isolation=True)
+        assert report["isolated_notes"]["total"] == 0
+        assert "Isolated notes: 0" in format_doctor_report(report)
 
 
 # ---------------------------------------------------------------------------
