@@ -1,206 +1,62 @@
 ---
 name: themes-resolve
 owns_mechanic: theme_synthesis
-consumes: [mem_search, mem_read, mem_update, mem_link]
-produces: [vault/themes/thm-*.md, THEMES.md]
-tools:
-  - Read
-  - Edit
-  - Bash
-  - mem_search
-  - mem_read
-  - mem_update
-  - mem_link
-description: Periodic theme hygiene — find duplicates, dormant narratives, and rewrite stale essences. Mirrors /mem-resolve-concepts for the global theme set.
+description: Periodic theme hygiene — merge near-duplicate themes and rewrite stale essences. Mirrors /mem-resolve-concepts for the global theme set.
+tools: [Read, Edit, Bash, mem_search, mem_read, mem_update, mem_link]
 ---
 
-# /themes-resolve — Theme Hygiene
+# /themes-resolve — Theme synthesis & hygiene
 
-Periodic maintenance of the global theme set at `vault/themes/`. Themes accumulate as catalysts come in; over time you accrue near-duplicate themes, themes whose essence has drifted from their catalyst log, and themes that have resolved or gone dormant. This skill surfaces those and writes the user-approved fixes.
+The periodic *manual* theme-maintenance pass. Two jobs:
 
-Designed to run in under 2 minutes. Same posture as `/mem-resolve-concepts`: advisory first, structural changes only on approval.
+1. **Dedup** — find near-duplicate themes (same arc, two IDs) and merge.
+2. **Essence refresh** — rewrite stale `## Essence` sections so the thesis
+   still matches the recent catalyst log.
 
-## Steps
+Both are genuinely-semantic calls, so they stay in the LLM turn. Theme
+*minting* and *extending* (linking newly-arrived sources to an arc) are
+**not** this skill's job — `/dream` owns those from `theme_cluster_signals`.
 
-### 1. Scan
+> **No lifecycle.** As of the 2026-05-30 teardown there is no dormancy or
+> resolution detection, and no `cand-*` candidate-promotion step. A theme's
+> `status` changes only when the user decides — never on a timer, never from
+> linked-decision state. (`find_dormant_themes` / `find_resolved_themes` /
+> the candidate-stub CLI were removed.) Merging a duplicate is the one status
+> change this skill makes, and only on an explicit same-arc judgment.
+
+## Step 1 — Dedup
+
+List the canonical theme set and look for two themes that are really the
+same arc:
 
 ```
 mem_search(query="", type="theme", limit=100)
 ```
 
-That gets you all themes. Then for each one (or batch):
+For each suspected pair, read both (`mem_read`) and confirm they describe
+the *same* unfolding event (not merely overlapping concepts — two distinct
+arcs can share `geopolitics`). When they are the same arc:
 
-- Read its `## Essence` and the most recent ~5 `## Catalyst log` entries.
-- Note its `status`, `project`, `concepts`, and `relates_to` from frontmatter.
+- Pick the survivor (the better slug / richer essence / earlier id).
+- Move any unique catalyst-log entries and `cites:` from the loser into the
+  survivor (`Edit`).
+- Set the loser's `status: merged-into:thm-<survivor>` via `mem_update`.
+- Repoint sources that `relates_to:` the loser at the survivor
+  (`mem_link` / `mem_unlink`).
 
-You can also surface the redundant-hub Jaccard pre-filter for theme essences if the inventory is large:
+## Step 2 — Essence refresh
 
-```bash
-uv run python -c "from personal_mem.synthesis.concepts import find_redundant_hub_candidates; from personal_mem.core.config import load_config; print(find_redundant_hub_candidates(load_config(), min_jaccard=0.4))"
-```
+For each active theme whose recent catalysts (read the last ~10 log entries)
+have drifted from its `## Essence`, rewrite the essence in place with `Edit`
+— keep it ≤500 words, slow-moving, citing concepts not named events. Touch
+only essences that are genuinely stale; leave the rest.
 
-(That helper was built for concept hubs but works on any text under `vault/concepts/topics/*.md`. For themes, fall back to LLM judgment over the theme essences.)
+## Notes
 
-### 2. Four judgments per theme — two deterministic, two LLM
-
-**Deterministic** (Python helpers; no LLM judgment needed):
-
-```python
-from personal_mem.synthesis.theme_candidates import (
-    find_dormant_themes, find_resolved_themes,
-)
-dormant = find_dormant_themes(cfg, stale_days=90)   # [(path, last_catalyst_date_or_None)]
-resolved = find_resolved_themes(cfg)                # [(path, [linked_decision_ids])]
-```
-
-- **Dormant**: catalyst log hasn't moved in 90 days (or never had an
-  entry). The helper reads the log directly — no semantic check. Output:
-  `archive: <thm-X>` (status → `dormant`).
-- **Resolved**: every linked decision (`implements:` / `relates_to:`
-  edges) is in terminal status (`superseded` or `deprecated`). The helper
-  walks the index edge table — no narrative judgment. Output:
-  `resolve: <thm-X>` (status → `resolved`).
-
-**LLM judgment** (the genuinely semantic calls):
-
-- **Duplicate**: another theme covers materially the same narrative arc.
-  Same subject, same time horizon, same mechanism. Output:
-  `merge: <thm-A> + <thm-B>`.
-- **Stale essence**: the catalyst log has diverged from the essence —
-  recent entries contradict or extend the working thesis. Output:
-  `rewrite essence: <thm-X>`.
-
-These are observational, not prescriptive — surface, don't autofix.
-
-### 3. Compact action plan
-
-```
-## Theme Hygiene — Action Plan
-
-Stats: T total themes, A active, D dormant, R resolved
-
-### Merges (N pairs)
-| From → Into | Reason |
-|-------------|--------|
-| `thm-aaaa1111` → `thm-bbbb2222` | same AI capex narrative; aaaa's catalysts are absorbed |
-
-### Status changes (N)
-| Theme | New status | Reason |
-|-------|------------|--------|
-| `thm-cccc3333` | dormant | no catalysts since 2026-01 |
-
-### Essence rewrites (N)
-| Theme | Reason |
-|-------|--------|
-| `thm-dddd4444` | last 4 catalysts contradict the original thesis |
-
-Approve all and go, or list exceptions.
-```
-
-### 4. Execute on approval
-
-**Merges**:
-- Read both themes. Append catalyst entries from the from-theme into the into-theme's `## Catalyst log` (preserve dates + linkage).
-- Set the from-theme's status to `merged-into:thm-XXXX` (sentinel form). Optionally add a body note.
-- Update any decision frontmatter that has `implements: [thm-old]` to `implements: [thm-new]`.
-
-```python
-# Pattern: read both, edit both, refresh THEMES.md last.
-mem_update(thm_old, frontmatter_updates={"status": "merged-into:thm-new"})
-# append catalysts to thm-new via Edit on the file
-```
-
-**Status changes**:
-```python
-mem_update(thm_id, frontmatter_updates={"status": "dormant"})
-```
-
-**Essence rewrites** — Edit the theme file directly. Read the last ~10 catalyst log entries, rewrite the `## Essence` section to reflect current understanding, keep ≤500 words. Don't touch `## Catalyst log` or `## Open questions`.
-
-### 5. Refresh THEMES.md
-
-After all edits:
-
-```bash
-uv run mem index
-uv run mem landing --doc themes
-```
-
-THEMES.md will pick up the new statuses, merge sentinels, and dropped duplicates. Per-theme temporal DAGs render automatically when catalyst-log linkage exists.
-
-### 6. Candidate review (default step)
-
-Source-coupled theme floating writes candidate stubs to
-`vault/themes/_candidates/` whenever a cluster of event-grain sources
-(default: `substack`, future `news`) reaches the threshold. They carry
-`cand-XXXX` IDs, never `thm-`. This step decides which to promote and
-which to let age out.
-
-```bash
-uv run mem themes scan-candidates                  # incremental scan
-uv run mem themes scan-candidates --dry-run        # preview only
-uv run mem themes archive-stale-candidates --dry-run --stale-days 30
-```
-
-For each unprocessed candidate file in `vault/themes/_candidates/`
-(skip the `_archive/` subdir):
-
-1. Read the stub. Frontmatter has `cluster_size`, `cluster_sources`,
-   `cluster_concepts`, and `candidacy: inferred-from-<source-type>`.
-2. Apply the disambiguation test from CLAUDE.md §4 — does this name a
-   *narrative arc* with a time horizon, or just a *capability/topic*?
-   - If capability/topic → not a theme, skip (it'll age out).
-   - If event/period/transition/campaign with a time horizon → promote.
-3. On promote: write a one-line **title** (e.g. `AI capex unwind 2026`)
-   and a short **essence** (≤300w paragraph capturing the working
-   thesis). Optionally, declare a **parent theme** if the new theme is
-   a narrower arc inside an existing broad theme (mirrors how the
-   concept ontology nests broad → narrow). Then mint:
-
-   ```bash
-   # Top-level (no parent)
-   uv run mem themes promote-candidate cand-abcd1234 \
-       --title "AI capex unwind 2026" \
-       --essence "Hyperscalers pulled forward GPU spend in 2024-2025; sustained
-                  ROI hasn't materialized; 2026 is the year that thesis is
-                  re-tested. Watch capex revisions, hyperscaler margins, and
-                  whether enterprise spend backstops the consumer pullback."
-
-   # Child of an existing broad theme
-   uv run mem themes promote-candidate cand-efgh5678 \
-       --title "Memory chip supercycle 2026" \
-       --essence "..." \
-       --parent thm-abcd1234   # the AI capex unwind theme
-   ```
-
-   That mints a `thm-XXXX` ID, writes `vault/themes/{thm-X}-{slug}.md`
-   with `## Essence` (your text), `## Catalyst log` seeded from the
-   cluster sources, `## Open questions`, and a `parent: thm-X` field
-   if `--parent` was supplied. The candidate file is removed.
-
-   Hierarchy rule of thumb: only nest when the child is a genuine
-   sub-arc of the parent (the parent's essence still applies, the
-   child just narrows the focus). If two themes share concepts but
-   have independent narratives, leave both top-level and use
-   `relates_to:` for the cross-link.
-
-4. On reject: leave the file. `archive-stale-candidates` moves it to
-   `_archive/` after `--stale-days` (default 30). Manual delete is
-   also fine — candidates are vault state, not indexed.
-
-Present the round as a compact table:
-
-```
-### Candidate Promotion (N candidates)
-| Candidate | Cluster | Decision |
-|-----------|---------|----------|
-| cand-abcd1234 | 4 substack sources / ai-capex, hyperscaler | promote → "AI capex unwind 2026" |
-| cand-efgh5678 | 3 substack sources / fed-policy, employment | reject (capability-named, not arc) |
-```
-
-### 7. Report (3 lines)
-
-```
-Done. Merged N pairs. M dormant, K resolved. R essence rewrites.
-P candidates promoted, A archived. THEMES.md refreshed. Active: before → after.
-```
+- **Manual skill.** Run it when theme hygiene is due; it is not on the
+  `/dream` cron path. `/dream` keeps themes *current* (mint/extend); this
+  skill keeps them *clean* (merge dups, tighten essences).
+- **No prompts mid-flow.** Decide, apply, report — same posture as
+  `/mem-resolve-concepts`.
+- **Registry.** After merges, run `uv run mem themes rebuild-registry` so
+  `vault/.mem/themes.yaml` reflects the surviving set.

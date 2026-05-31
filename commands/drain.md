@@ -154,19 +154,18 @@ The reason field stamped at `vault/.mem/queues/_processed/<YYYY-MM-DD>/<source_t
 
 Run each hook in the order declared in `post_batch_hooks`. Note: hooks run **once per drain invocation**, not per fan-out batch.
 
-> **`theme_scan` writes mechanical concept-pair stubs and is rarely useful in the standard config.** As of 2026-05-25 the production theme path goes through `/dream` instead: `VaultManager.create_note` keeps the index warm on every event-grain source write, and `/dream`'s scan surfaces raw `theme_cluster_signals` whose names the LLM judgment phase composes from the cluster + active themes. The default `sources.<type>.post_batch_hooks` is `[]`. The hook implementation below is preserved for diagnostic bulk-import sweeps where you want a flat list of clusters as files; it produces capability-shaped slugs that `/dream` will mostly archive — use the `/dream` signal-path for anything you want to keep.
+> **The `theme_scan` post-batch hook was removed in the 2026-05-30 teardown.** The production theme path goes through `/dream`: `VaultManager.create_note` keeps the index warm on every event-grain source write, and `/dream`'s scan surfaces enriched `theme_cluster_signals` (raw `proposed_theme:` tally + overlapping active themes) that the LLM judgment phase mints or extends from. The default `sources.<type>.post_batch_hooks` is `[]`; there is no candidate-stub writer to call.
 
-### `theme_scan` — float new theme candidates from the unfiled pile
+### `theme_scan` — removed (2026-05-30 teardown)
 
-The triage stage emits `keep_unfiled` for items with substantive signal but no theme match. Those notes carry `theme_unfiled: true` in frontmatter. After the batch closes, scan for clusters across the unfiled pile (≥3 notes sharing ≥2 concepts) — the same deterministic clustering used elsewhere, restricted to unfiled news:
-
-```
-Bash("uv run mem themes scan-candidates --source-type <slug>")
-```
-
-The scan is deterministic, fast, and idempotent — running it after the per-create auto-fire is a no-op (existing candidates dedupe). Candidates land at `vault/themes/_candidates/cand-XXXX-*.md` and are promoted via `/themes-resolve --promote <cand-id> [--parent thm-Y]`. Once promoted, a follow-up step links accumulated unfiled notes whose concept overlap matches the new theme's `concepts:`.
-
-Output is a candidate-creation count; surface it in the final summary.
+The candidate-stub writer (`mem themes scan-candidates`) and the whole
+`cand-*` flow were removed. Event-grain sources are still indexed at
+write time (`VaultManager.create_note`), and `/dream` reads enriched
+`theme_cluster_signals` off the index — raw `proposed_theme:` tally plus
+overlapping active themes — and either mints a new theme or extends an
+existing one. There is no per-drain theme step; keep the index warm with
+`uv run mem index --only-new` if you want the next `/dream` cycle to see
+the batch immediately.
 
 > **Removed: `dedup_sweep`.** v1 had a Jaccard-based within-batch dedup hook to catch race-condition near-dupes from parallel workers all calling `mem_search` at the same instant. v2's writers don't dedup at all — duplicate news on an unfolding event is itself signal (multiple sources confirming the same arc). Cross-source repetition lands in a single theme's catalyst log; the user reads breadth there, not in dedup-marked supersedes.
 

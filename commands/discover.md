@@ -25,7 +25,7 @@ description: Strategy-driven discovery. Runs the configured strategy list; strat
 
 | Flavor | Trigger | Examples | Side effect |
 |---|---|---|---|
-| **Internal-state** | Observe vault | `concept_coverage`, `decision_review`, `theme_drift` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
+| **Internal-state** | Observe vault | `concept_coverage`, `decision_review` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
 | **External-trigger** | Observe outside world | `rss_poll`, `mail_poll`, `external_tool_runner` | Strategy enqueues directly (rss_poll) or emits a plan (mail_poll) |
 
 Both flavors share the same `run(vault, project, config)` contract.
@@ -36,7 +36,6 @@ Both flavors share the same `run(vault, project, config)` contract.
 |---|---|---|
 | `concept_coverage` | internal-state | Load-bearing concepts with thin source coverage |
 | `decision_review` | internal-state | `proposed`/`accepted` decisions stalled past N days |
-| `theme_drift` | internal-state | `active` themes whose Catalyst log has gone silent |
 | `external_tool_runner` | external-trigger | User-provided scripts emit JSONL queue items |
 | `rss_poll` | external-trigger | RSS/Atom polling for any source type with `feed_config:` or `channels:` configured. Enqueues directly into the matching queue. |
 | `mail_poll` | external-trigger | Composes the effective Gmail query (sender allowlist + `processed_label` exclusion + lookback). Emits a `mail_fetch_needed` plan that `/newsletter` executes via Gmail MCP. |
@@ -82,8 +81,6 @@ Dispatch on `kind`:
 - **`kind: gap` (concept_coverage)** — run a WebSearch for the concept, dedup against existing sources / queue items via `mem_concepts(action="source_counts", concepts=[<name>])`, and create up to 3 queue items via `mem_queue`. Each new item carries `Gap: [[<concept>]]` in its body and the gap concept(s) in its `concepts` frontmatter (ontology terms — load `Read src/personal_mem/ontology.yaml` plus `mem_concepts(min_count=2)` for the live distribution).
 
 - **`kind: review` (decision_review)** — surface the decision in the run report; do not auto-queue. The user inspects via `mem show <decision_id>` and decides whether to flip status or schedule a re-discussion.
-
-- **`kind: drift` (theme_drift)** — list the silent themes; suggest flipping status to `dormant` via `/themes-resolve`. Do not write.
 
 - **`kind: external` (external_tool_runner)** — payloads are user-shaped. If they look like queue items (have `url` / `title` fields), enqueue via `mem_queue`. Otherwise pass through to the run report.
 

@@ -12,7 +12,6 @@ The v1 news pipeline used this file as a concept-set admission gate. v2 retired 
 
 If you want to broaden or narrow what news the pipeline admits, **edit themes**, not this file:
 
-- Promote candidates with `mem themes promote-candidate cand-XXXX --title "..." [--parent thm-Y]`
 - Edit the `## Essence` section of an active theme — the triage helper passes essences as cached system context, so a tighter or broader essence directly reshapes admission
 - Mark a theme `dormant` or `resolved` — it drops out of the catalog and stops admitting items
 

@@ -126,9 +126,7 @@ The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap inte
 | `/youtube youtube-events` | Same, limited to one source type |
 | `mem discover --strategy rss_poll --source-type youtube-events` | Discover only (no drain) — useful in cron flows that drain separately |
 | `/drain --source-type youtube-events` | Drain only (the queue was already filled) |
-| `/research <yt-url>` | One-off URL paste — enqueue + drain one video |
-| `/themes-resolve --promote <cand-id>` | Promote a floated candidate stub into a canonical `thm-` theme |
-| `/source-fit` | Diagnose whether a new channel shape fits the existing two types |
+| `/research <yt-url>` | One-off URL paste — enqueue + drain one video || `/source-fit` | Diagnose whether a new channel shape fits the existing two types |
 
 ---
 

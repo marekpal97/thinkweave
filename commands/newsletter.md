@@ -214,9 +214,7 @@ In normal operation guard 1 stops every re-read at the mail layer; 2 and 3 cover
 | `/newsletter` | Plan + fetch + drain + label all `newsletter-*` queues in one shot |
 | `/newsletter newsletter-events` | Same, limited to one source type |
 | `mem discover --strategy mail_poll --source-type newsletter-events` | Inspect the effective Gmail query for one type (read-only) |
-| `/drain --source-type newsletter-events` | Drain only (when the queue was already filled, e.g. after a crash mid-run) |
-| `/themes-resolve --promote <cand-id>` | Promote a floated candidate stub into a canonical `thm-` theme |
-| `/source-fit` | Diagnose whether a new newsletter shape fits the existing two types |
+| `/drain --source-type newsletter-events` | Drain only (when the queue was already filled, e.g. after a crash mid-run) || `/source-fit` | Diagnose whether a new newsletter shape fits the existing two types |
 
 ---
 

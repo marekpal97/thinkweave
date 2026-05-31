@@ -136,9 +136,7 @@ The `url_patterns` for both `podcast-events` and `podcast-concepts` overlap inte
 | `/podcast podcast-events` | Same, limited to one source type |
 | `mem discover --strategy rss_poll --source-type podcast-events` | Discover only (no drain) — useful in cron flows that drain separately |
 | `/drain --source-type podcast-events` | Drain only (queue was already filled) |
-| `/research <rss-url>` | One-off URL paste — enqueue + drain one episode |
-| `/themes-resolve --promote <cand-id>` | Promote a floated candidate stub into a canonical `thm-` theme |
-| `/source-fit` | Diagnose whether a new show shape fits the existing two types |
+| `/research <rss-url>` | One-off URL paste — enqueue + drain one episode || `/source-fit` | Diagnose whether a new show shape fits the existing two types |
 
 ---
 
