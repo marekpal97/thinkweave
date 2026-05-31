@@ -25,10 +25,19 @@ description: Strategy-driven discovery. Runs the configured strategy list; strat
 
 | Flavor | Trigger | Examples | Side effect |
 |---|---|---|---|
-| **Internal-state** | Observe vault | `concept_coverage`, `decision_review` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
+| **Internal-state** | Observe vault | `concept_coverage`, `decision_review`, `prompt_gap` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
 | **External-trigger** | Observe outside world | `rss_poll`, `mail_poll`, `external_tool_runner` | Strategy enqueues directly (rss_poll) or emits a plan (mail_poll) |
 
 Both flavors share the same `run(vault, project, config)` contract.
+
+### Gap-emitters vs enqueue-emitters: an intentional dual (C20)
+
+The two flavors are **not** a TODO to merge. Gap-emitters scan vault state and report what's missing; enqueue-emitters observe outside signals and write the queue directly. Each emits a fundamentally different shape:
+
+- Gap-emitter output (`kind: "gap"`) carries concept/decision metadata and *describes* a need. The skill decides what to do about it (WebSearch + `mem_queue`, or surfacing in the report). Forcing gap-emitters to enqueue would conflate "scan and report" with "decide what to do" — the strategies would need synthesis logic that legitimately lives in this skill.
+- Enqueue-emitter output (`kind: "enqueued"` / `kind: "mail_fetch_needed"`) is already a queue item or a plan for one. The skill just records what happened.
+
+Future strategies that emit gap descriptors stay gap-emitters; future strategies that observe external signals enqueue directly. The split is healthy separation of concerns, not duplication.
 
 ## Built-in strategies
 
