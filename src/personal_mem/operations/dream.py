@@ -119,6 +119,11 @@ class DreamCycleScan:
     # existing one (`theme_extensions`). No candidate stubs, no vote, no
     # lifecycle — themes change status only by hand.
     theme_cluster_signals: list = field(default_factory=list)
+    # Probe-pressure aggregate (Slice 1.5) — ``{concept: probe_count}``
+    # over the lookback window. Seeds the LLM judgment phase's
+    # ``priority_signals`` plan key: concepts the user has been
+    # probing about that the cycle should surface (enqueue or log).
+    recent_probes: dict = field(default_factory=dict)
     timings: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
 
@@ -248,10 +253,28 @@ def scan(
     finally:
         result.timings["theme_cluster_signals"] = time.perf_counter() - _t
 
+    # 4. probe pressure ---------------------------------------------------
+    # Aggregate probe-classified prompts into per-concept pressure over
+    # a 14-day window. The LLM judgment phase reads this to compose
+    # ``priority_signals`` — concepts the user has been asking about
+    # that warrant attention (enqueue or log).
+    _t = time.perf_counter()
+    try:
+        from personal_mem.operations.prompts import recent_probe_pressure
+
+        result.recent_probes = recent_probe_pressure(
+            cfg, project=project, window_days=14
+        )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"recent_probes: {e}")
+    finally:
+        result.timings["recent_probes"] = time.perf_counter() - _t
+
     result.stats = {
         "drift_pairs": len(result.drift_pairs),
         "promotion_candidates": len(result.promotion_candidates),
         "theme_cluster_signals": len(result.theme_cluster_signals),
+        "recent_probes": len(result.recent_probes),
     }
 
     return result
@@ -283,6 +306,13 @@ class DreamCycleResult:
     themes_minted: int = 0
     themes_extended: int = 0
     essence_rewrites_logged: int = 0  # body edits done by the skill, logged here
+    # Priority signals (Slice 1.5) — split on action.
+    # ``enqueued`` rises when ``dream_enqueue_priority_signals`` is
+    # True AND the signal's action is ``enqueue`` AND the queue write
+    # succeeded. Everything else counts as ``logged`` (gate disabled,
+    # action explicitly ``log``, or a missing/malformed queue_item).
+    priority_signals_enqueued: int = 0
+    priority_signals_logged: int = 0
     ontology_grew: bool = False
     indexed: int = 0
     removed: int = 0
@@ -312,6 +342,8 @@ class DreamCycleResult:
                 "themes_minted": self.themes_minted,
                 "themes_extended": self.themes_extended,
                 "essence_rewrites": self.essence_rewrites_logged,
+                "priority_signals_enqueued": self.priority_signals_enqueued,
+                "priority_signals_logged": self.priority_signals_logged,
                 "ontology_grew": self.ontology_grew,
             },
             "index": {
@@ -361,6 +393,24 @@ def apply(
           "essence_rewrites": [
             {"theme_id": "thm-X", "reason": "..."},  # log-only; the skill
                                                      # already Edit'd the file
+            ...
+          ],
+          "priority_signals": [
+            # Composed by the LLM judgment phase from
+            # ``scan().recent_probes``. The ``action`` field is the LLM's
+            # call; ``enqueue`` only actually writes when
+            # ``cfg.dream_enqueue_priority_signals`` is True, otherwise
+            # the entry counts as logged.
+            {"concept": "dynamic-batching", "probe_count": 4,
+             "action": "enqueue",
+             "queue_item": {"source_type": "article",
+                            "title": "Survey: dynamic-batching",
+                            "concept": "dynamic-batching",
+                            "source": "dream-priority-signal"},
+             "reason": "User asked 4× in 14d; vault has no source coverage."},
+            {"concept": "embeddings", "probe_count": 6,
+             "action": "log",
+             "reason": "Asked repeatedly but already well-sourced — note for the user."},
             ...
           ],
         }
@@ -533,6 +583,51 @@ def apply(
     # 3c. essence rewrites — log-only (the skill already Edit'd files) ----
     result.essence_rewrites_logged = len(plan.get("essence_rewrites") or [])
 
+    # 3d. priority signals — log-or-enqueue per LLM judgment + cfg gate --
+    # Composed from ``scan().recent_probes`` upstream. Each signal either
+    # writes a queue_item (when ``action='enqueue'`` AND
+    # ``cfg.dream_enqueue_priority_signals`` is True) or just contributes
+    # to the cycle's log counter. Errors are per-entry and don't cascade.
+    _t = time.perf_counter()
+    try:
+        from personal_mem.sources.queue import Queue
+
+        signals = plan.get("priority_signals") or []
+        enqueue_gate = bool(
+            getattr(cfg, "dream_enqueue_priority_signals", False)
+        )
+        for sig in signals:
+            try:
+                if not isinstance(sig, dict):
+                    result.errors.append(f"priority_signal: not a dict ({sig!r})")
+                    continue
+                action = (sig.get("action") or "log").lower()
+                if action == "enqueue" and enqueue_gate:
+                    queue_item = sig.get("queue_item") or {}
+                    source_type = (queue_item.get("source_type") or "").strip()
+                    if not source_type:
+                        result.errors.append(
+                            "priority_signal(enqueue): missing "
+                            f"queue_item.source_type in {sig}"
+                        )
+                        result.priority_signals_logged += 1
+                        continue
+                    Queue.for_source_type(
+                        source_type, cfg.vault_root
+                    ).enqueue(queue_item)
+                    result.priority_signals_enqueued += 1
+                else:
+                    # Either action='log' OR gate disabled — log only.
+                    result.priority_signals_logged += 1
+            except Exception as e:  # noqa: BLE001
+                result.errors.append(
+                    f"priority_signal {sig.get('concept', '?')}: {e}"
+                )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"priority_signals: {e}")
+    finally:
+        result.timings["priority_signals"] = time.perf_counter() - _t
+
     # 4. one index rebuild + concept-hub maintenance ----------------------
     _t = time.perf_counter()
     structural_changes = (
@@ -541,6 +636,7 @@ def apply(
         + result.themes_minted
         + result.themes_extended
         + result.essence_rewrites_logged
+        + result.priority_signals_enqueued
     )
     if structural_changes:
         try:
@@ -652,6 +748,12 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
     lines.append(f"| Themes minted | {result.themes_minted} |")
     lines.append(f"| Themes extended | {result.themes_extended} |")
     lines.append(f"| Essence rewrites logged | {result.essence_rewrites_logged} |")
+    lines.append(
+        f"| Priority signals enqueued | {result.priority_signals_enqueued} |"
+    )
+    lines.append(
+        f"| Priority signals logged | {result.priority_signals_logged} |"
+    )
     lines.append(f"| Ontology grew? | {'yes' if result.ontology_grew else 'no'} |")
     lines.append(f"| Notes indexed | {result.indexed} |")
     lines.append(f"| Edges rebuilt | {result.edges} |")
@@ -725,6 +827,51 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
             reason = r.get("reason") or "(no reason given)"
             lines.append(f"- `{tid}` — {reason}")
         lines.append("")
+
+    # --- Priority signals (Slice 1.5) ------------------------------------
+    # Splits into "What I queued" (action=enqueue + gate hot) and
+    # "What I noted" (everything else). Each list shows the concept,
+    # the probe count that drove it, and the LLM's reason — so the user
+    # can read this section and understand exactly why dream surfaced
+    # each signal.
+    signals = plan.get("priority_signals") or []
+    if signals:
+        enqueued = [
+            s for s in signals
+            if isinstance(s, dict)
+            and (s.get("action") or "log").lower() == "enqueue"
+            and s.get("queue_item", {}).get("source_type")
+        ]
+        logged = [s for s in signals if s not in enqueued]
+
+        if enqueued:
+            lines.append(f"## What I queued ({len(enqueued)})")
+            lines.append("")
+            for s in enqueued:
+                concept = s.get("concept", "?")
+                count = s.get("probe_count", 0)
+                qi = s.get("queue_item") or {}
+                source_type = qi.get("source_type", "?")
+                title = qi.get("title") or concept
+                reason = s.get("reason") or "(no reason given)"
+                lines.append(
+                    f"- **{concept}** ({count} probe{'s' if count != 1 else ''}) "
+                    f"→ `{source_type}` queue — {title}"
+                )
+                lines.append(f"  - Reason: {reason}")
+            lines.append("")
+        if logged:
+            lines.append(f"## What I noted ({len(logged)})")
+            lines.append("")
+            for s in logged:
+                concept = s.get("concept", "?")
+                count = s.get("probe_count", 0)
+                reason = s.get("reason") or "(no reason given)"
+                lines.append(
+                    f"- **{concept}** ({count} probe{'s' if count != 1 else ''}) "
+                    f"— {reason}"
+                )
+            lines.append("")
 
     # --- Errors (if any) ------------------------------------------------
     if result.errors:

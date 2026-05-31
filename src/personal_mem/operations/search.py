@@ -116,6 +116,7 @@ def _serialize_prompt(p) -> dict:
         "session_id": p.session_id,
         "project": p.project,
         "cwd": p.cwd,
+        "classification": p.classification,
     }
 
 
@@ -166,6 +167,7 @@ def query_prompts(
     project: str,
     since: str | None = None,
     limit: int = 50,
+    classified_as: str | None = None,
 ) -> list[dict]:
     """Return user prompts captured for ``project`` as serialized dicts.
 
@@ -180,11 +182,14 @@ def query_prompts(
         project: project to scope to. Required.
         since: optional ISO date / datetime cutoff (inclusive).
         limit: max items returned after sorting by recency.
+        classified_as: optional classification filter (e.g. ``"probe"``);
+            keeps only prompts whose ``Prompt.classification`` matches.
 
     Returns:
         List of dicts with ``ts``, ``text``, ``session_id``, ``project``,
-        ``cwd``. Read-only. Phase 4 H's ``/discover`` consumes this to
-        prioritise gap-analysis on what the user has actually been asking.
+        ``cwd``, ``classification``. Read-only. Phase 4 H's ``/discover``
+        consumes this to prioritise gap-analysis on what the user has
+        actually been asking.
     """
     from personal_mem.extract import extract_prompts
 
@@ -204,6 +209,8 @@ def query_prompts(
             for prompt in extract_prompts(events_file):
                 if not _passes_since(prompt, since):
                     continue
+                if classified_as and prompt.classification != classified_as:
+                    continue
                 if prompt.project is None:
                     prompt.project = project
                 out.append(prompt)
@@ -216,6 +223,8 @@ def query_prompts(
                 continue
             for prompt in extract_prompts(buf_file):
                 if not _passes_since(prompt, since):
+                    continue
+                if classified_as and prompt.classification != classified_as:
                     continue
                 if prompt.project is None:
                     prompt.project = project

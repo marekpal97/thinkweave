@@ -587,3 +587,174 @@ class TestDreamCLI:
         assert payload["dry_run"] is True
         assert payload["would_apply"]["promotions"] == 1
         assert not maintenance_log_path(config).exists()
+
+
+# --- Priority signals (Slice 1.5) -------------------------------------------
+
+
+def _seed_probe(config: Config, project: str, text: str) -> None:
+    """Write a single probe-classified prompt event in ``project``'s
+    session JSONL. Uses a recent timestamp so the 14-day window catches it."""
+    import datetime as _dt
+    sess_dir = config.vault_root / "projects" / project / "sessions" / "ses-ps"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    now = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)
+    (sess_dir / "events.jsonl").write_text(
+        json.dumps({
+            "type": "prompt", "text": text,
+            "session_id": "cc-ps", "ts": now.isoformat(),
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+
+class TestPrioritySignalsScan:
+    def test_scan_attaches_recent_probes(
+        self, config: Config, vault: VaultManager
+    ):
+        # llm is canonical in the shipped ontology — a probe touching
+        # it lands in recent_probes.
+        _index(config)
+        _seed_probe(config, "t", "How does the llm choose?")
+        result = scan(config, project="t", promotion_cap=20)
+        assert result.recent_probes.get("llm", 0) == 1
+        assert result.stats.get("recent_probes", 0) == 1
+
+
+class TestPrioritySignalsApply:
+    """Apply phase's 3d step: split on action + gate. Errors don't
+    cascade — a bad signal logs an error and the next ones still run."""
+
+    def test_log_action_counts_logged(
+        self, config: Config, vault: VaultManager
+    ):
+        plan = {
+            "priority_signals": [
+                {"concept": "llm", "probe_count": 3,
+                 "action": "log", "reason": "well sourced"},
+            ],
+        }
+        r = apply(config, plan=plan, project="t")
+        assert r.priority_signals_enqueued == 0
+        assert r.priority_signals_logged == 1
+        assert r.errors == []
+
+    def test_enqueue_with_gate_disabled_counts_logged(
+        self, config: Config, vault: VaultManager
+    ):
+        # Default config: dream_enqueue_priority_signals is False.
+        assert config.dream_enqueue_priority_signals is False
+        plan = {
+            "priority_signals": [
+                {"concept": "dynamic-batching", "probe_count": 3,
+                 "action": "enqueue",
+                 "queue_item": {
+                     "source_type": "article",
+                     "title": "Survey", "concept": "dynamic-batching",
+                 },
+                 "reason": "asked 3x, no coverage"},
+            ],
+        }
+        r = apply(config, plan=plan, project="t")
+        # Gate disabled → counts as logged, no queue mutation.
+        assert r.priority_signals_enqueued == 0
+        assert r.priority_signals_logged == 1
+        queue_file = config.vault_root / ".mem" / "queues" / "article.jsonl"
+        assert not queue_file.exists()
+
+    def test_enqueue_with_gate_hot_writes_queue(
+        self, config: Config, vault: VaultManager
+    ):
+        config.dream_enqueue_priority_signals = True
+        plan = {
+            "priority_signals": [
+                {"concept": "dynamic-batching", "probe_count": 4,
+                 "action": "enqueue",
+                 "queue_item": {
+                     "source_type": "article",
+                     "title": "Survey on dynamic-batching",
+                     "concept": "dynamic-batching",
+                     "source": "dream-priority-signal",
+                 },
+                 "reason": "asked 4x, no coverage"},
+            ],
+        }
+        r = apply(config, plan=plan, project="t")
+        assert r.priority_signals_enqueued == 1
+        assert r.priority_signals_logged == 0
+        queue_file = config.vault_root / ".mem" / "queues" / "article.jsonl"
+        assert queue_file.exists()
+        lines = [
+            json.loads(line)
+            for line in queue_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1
+        assert lines[0]["title"] == "Survey on dynamic-batching"
+        assert lines[0]["concept"] == "dynamic-batching"
+
+    def test_enqueue_missing_source_type_logs_error(
+        self, config: Config, vault: VaultManager
+    ):
+        config.dream_enqueue_priority_signals = True
+        plan = {
+            "priority_signals": [
+                {"concept": "x", "probe_count": 2,
+                 "action": "enqueue",
+                 "queue_item": {"title": "no source_type"},
+                 "reason": "x"},
+            ],
+        }
+        r = apply(config, plan=plan, project="t")
+        assert r.priority_signals_enqueued == 0
+        assert r.priority_signals_logged == 1
+        assert any("source_type" in e for e in r.errors)
+
+    def test_log_entry_carries_both_counters(
+        self, config: Config, vault: VaultManager
+    ):
+        config.dream_enqueue_priority_signals = True
+        plan = {
+            "priority_signals": [
+                {"concept": "llm", "probe_count": 3, "action": "log",
+                 "reason": "well sourced"},
+                {"concept": "dynamic-batching", "probe_count": 4,
+                 "action": "enqueue",
+                 "queue_item": {"source_type": "article",
+                                "title": "Survey", "concept": "dynamic-batching"},
+                 "reason": "asked 4x"},
+            ],
+        }
+        r = apply(config, plan=plan, project="t")
+        entry = r.log_entry(plan)
+        assert entry["summary"]["priority_signals_enqueued"] == 1
+        assert entry["summary"]["priority_signals_logged"] == 1
+
+
+class TestPrioritySignalsReport:
+    def test_renders_what_i_queued_and_noted(
+        self, config: Config, vault: VaultManager
+    ):
+        config.dream_enqueue_priority_signals = True
+        plan = {
+            "priority_signals": [
+                {"concept": "llm", "probe_count": 3, "action": "log",
+                 "reason": "well sourced"},
+                {"concept": "dynamic-batching", "probe_count": 4,
+                 "action": "enqueue",
+                 "queue_item": {"source_type": "article",
+                                "title": "Survey on dynamic-batching",
+                                "concept": "dynamic-batching"},
+                 "reason": "asked 4x"},
+            ],
+        }
+        r = apply(config, plan=plan, project="t")
+        report = (config.vault_root / ".mem" / "dream_reports"
+                  / f"{r.cycle_id}.md").read_text(encoding="utf-8")
+        assert "What I queued" in report
+        assert "dynamic-batching" in report
+        assert "Survey on dynamic-batching" in report
+        assert "What I noted" in report
+        assert "llm" in report
+        assert "| Priority signals enqueued | 1 |" in report
+        assert "| Priority signals logged | 1 |" in report

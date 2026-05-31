@@ -37,10 +37,23 @@ class DecisionReviewStrategy:
 
         cutoff = (date.today() - timedelta(days=params["stale_days"])).isoformat()
 
+        # Probe-pressure bias (Slice 1.3): decisions touching concepts
+        # the user has been probing about float to the top of the
+        # stale-decision list. Fail-open to {} preserves pre-bias order
+        # on missing ontology / unindexed vault / etc.
+        try:
+            from personal_mem.operations.prompts import recent_probe_pressure
+
+            pressure = recent_probe_pressure(
+                cfg, project=project, window_days=14
+            )
+        except Exception:
+            pressure = {}
+
         db = sqlite3.connect(str(db_path))
         db.row_factory = sqlite3.Row
         try:
-            return self._gather(db, project, cutoff, params)
+            return self._gather(db, project, cutoff, params, pressure)
         finally:
             db.close()
 
@@ -61,6 +74,7 @@ class DecisionReviewStrategy:
         project: str | None,
         cutoff: str,
         params: dict[str, Any],
+        pressure: dict[str, int],
     ) -> list[dict[str, Any]]:
         if project:
             sql = (
@@ -85,6 +99,14 @@ class DecisionReviewStrategy:
             status = fm.get("status", "proposed")
             if status not in ("proposed", "accepted"):
                 continue
+            decision_concepts: list[str] = []
+            for key in ("concepts", "proposed_concepts"):
+                values = fm.get(key) or []
+                if isinstance(values, list):
+                    decision_concepts.extend(str(c) for c in values)
+            probe_pressure = sum(
+                pressure.get(c.lower(), 0) for c in decision_concepts
+            )
             out.append(
                 {
                     "strategy": self.name,
@@ -92,13 +114,16 @@ class DecisionReviewStrategy:
                     "title": f"Re-review {row['title']} ({status}, {row['date']})",
                     "decision_status": status,
                     "decision_date": row["date"] or "",
+                    "probe_pressure": probe_pressure,
                     "kind": "review",
                     "queue": "backlog",
                 }
             )
-            if len(out) >= params["limit"]:
-                break
-        return out
+        # Pressure-first, then stalest-first (existing tie-break). The
+        # SQL already returned rows by date ASC; sorted is stable in
+        # CPython, so equal-pressure entries keep date-asc ordering.
+        out.sort(key=lambda d: d["probe_pressure"], reverse=True)
+        return out[: params["limit"]]
 
 
 STRATEGY = DecisionReviewStrategy()

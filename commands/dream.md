@@ -150,6 +150,33 @@ theme file — keep ≤500 words. Then log the rewrite by adding
 `{"theme_id", "reason"}` to `plan["essence_rewrites"]` (log-only — the
 apply phase does not re-edit; this entry just records what you did).
 
+**Priority signals (Slice 1.5).** Read `scan().recent_probes` — a
+`{concept: probe_count}` dict over the last 14 days of probe-classified
+prompts. For each concept the user has been asking about that warrants
+attention, decide one action:
+
+- `enqueue` — the user has been probing about a concept with little
+  source coverage / no theme / a stale hub, AND a concrete piece of
+  research / read / source ingest would help. Compose `queue_item`:
+  `{"source_type": "<one of vault's source-type slugs>", "title": "<one
+  line>", "concept": "<concept>", "source": "dream-priority-signal", ...}`
+  The apply phase only writes the queue item when the config flag
+  `dream_enqueue_priority_signals` is True; otherwise the entry is
+  counted as logged. This keeps the first cycle observable before any
+  external mutation.
+- `log` — the user has been probing about something already
+  well-sourced / structurally fine, but the pressure is high enough to
+  note in the report. No queue write; just shows up under "What I
+  noted" in the report.
+
+Add to `plan["priority_signals"]` as `{"concept", "probe_count",
+"action": "enqueue"|"log", "queue_item"?, "reason"}`. Each `reason`
+should be the one-line *why* — the user reads these to understand
+exactly why dream surfaced each signal.
+
+Cap at 5 priority signals per cycle. Skip concepts the user has only
+probed once (signal is too thin).
+
 ### 3. Apply (one Bash call)
 
 Write the plan to `/tmp/dream-plan-<cycle_id>.json` and run:

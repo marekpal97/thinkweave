@@ -201,3 +201,81 @@ class TestStateOpenProbes:
             # If present, it must actually contain a bullet
             section = out.split("Open Probes", 1)[1]
             assert "- " in section
+
+
+class TestPromptClassification:
+    """``extract_prompts`` must populate ``Prompt.classification`` inline,
+    and ``query_prompts`` must surface it + accept a ``classified_as``
+    filter. This is the substrate every C16-bias consumer reads."""
+
+    def test_extract_prompts_populates_classification(
+        self, cfg: Config, tmp_path: Path
+    ):
+        from personal_mem.extract import extract_prompts
+
+        events_file = tmp_path / "events.jsonl"
+        # Lookahead window is 3 events. Probe goes LAST so its lookahead
+        # is empty — that's the canonical "no follow-up code change" shape
+        # the heuristic actually catches.
+        _write_events(
+            events_file,
+            [
+                # Not a probe: instruction (no question mark)
+                {"type": "prompt", "text": "Refactor the indexer",
+                 "session_id": "cc-1", "ts": "2026-05-02T15:00:00+00:00"},
+                # Not a probe: question with Edit right after
+                {"type": "prompt", "text": "Why is this slow?",
+                 "session_id": "cc-1", "ts": "2026-05-02T15:05:00+00:00"},
+                {"tool": "Edit", "file": "main.py",
+                 "ts": "2026-05-02T15:06:00+00:00"},
+                # Probe: question, nothing follows
+                {"type": "prompt", "text": "How does FTS5 tokenize?",
+                 "session_id": "cc-1", "ts": "2026-05-02T15:10:00+00:00"},
+            ],
+        )
+
+        prompts = extract_prompts(events_file)
+        by_text = {p.text: p.classification for p in prompts}
+        assert by_text["How does FTS5 tokenize?"] == "probe"
+        assert by_text["Why is this slow?"] is None
+        assert by_text["Refactor the indexer"] is None
+
+    def test_query_prompts_surfaces_classification(
+        self, cfg: Config, vault: VaultManager
+    ):
+        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        _write_events(
+            sess_dir / "events.jsonl",
+            [
+                {"type": "prompt", "text": "What does dream do?",
+                 "session_id": "cc-1", "ts": "2026-05-02T15:00:00+00:00"},
+                {"type": "prompt", "text": "Refactor the indexer",
+                 "session_id": "cc-1", "ts": "2026-05-02T15:10:00+00:00"},
+            ],
+        )
+
+        rows = query_prompts(cfg, project="proj-a")
+        by_text = {r["text"]: r["classification"] for r in rows}
+        assert by_text["What does dream do?"] == "probe"
+        assert by_text["Refactor the indexer"] is None
+
+    def test_query_prompts_classified_as_filter(
+        self, cfg: Config, vault: VaultManager
+    ):
+        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        _write_events(
+            sess_dir / "events.jsonl",
+            [
+                {"type": "prompt", "text": "What is FTS5?",
+                 "session_id": "cc-1", "ts": "2026-05-02T15:00:00+00:00"},
+                {"type": "prompt", "text": "Fix the bug",
+                 "session_id": "cc-1", "ts": "2026-05-02T15:10:00+00:00"},
+            ],
+        )
+
+        probes_only = query_prompts(cfg, project="proj-a", classified_as="probe")
+        assert len(probes_only) == 1
+        assert probes_only[0]["text"] == "What is FTS5?"
+
+        none_match = query_prompts(cfg, project="proj-a", classified_as="instruction")
+        assert none_match == []
