@@ -36,6 +36,14 @@ class Config:
     # report has been reviewed.
     dream_enqueue_priority_signals: bool = False
 
+    # C19b — per-concept PageRank. When True, the dream apply phase
+    # computes per-concept-induced-subgraph PageRank after each
+    # rebuild. Stored in the ``graph_ranks`` table; consumed by
+    # ``mem_concepts(action='canonical_for', concept=X)``. Adds ~1s
+    # per 100 active concepts on a typical vault (pure-Python power
+    # iteration), so off by default until the user opts in.
+    dream_compute_pagerank: bool = False
+
     @property
     def mem_dir(self) -> Path:
         return self.vault_root / ".mem"
@@ -102,6 +110,8 @@ def load_config() -> Config:
             cfg.dream_enqueue_priority_signals = bool(
                 dream_cfg["enqueue_priority_signals"]
             )
+        if "compute_pagerank" in dream_cfg:
+            cfg.dream_compute_pagerank = bool(dream_cfg["compute_pagerank"])
 
     # Per-field env overrides
     if os.environ.get("PERSONAL_MEM_PROJECT"):

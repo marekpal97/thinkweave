@@ -672,6 +672,19 @@ def apply(
             idx = Indexer(config=cfg)
             try:
                 stats = idx.rebuild(full=False)
+                # C19b: per-concept PageRank — gated on config.
+                # Runs against the freshly-rebuilt edges + note_concepts
+                # tables, so scores reflect this cycle's structural
+                # changes (merges, promotions, theme mints).
+                if getattr(cfg, "dream_compute_pagerank", False):
+                    try:
+                        from personal_mem.synthesis.centrality import (
+                            compute_all_concept_pageranks,
+                        )
+
+                        compute_all_concept_pageranks(idx.db)
+                    except Exception as e:  # noqa: BLE001
+                        result.errors.append(f"pagerank: {e}")
             finally:
                 idx.close()
             result.indexed = stats.get("indexed", 0)

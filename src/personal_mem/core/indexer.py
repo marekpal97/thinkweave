@@ -125,6 +125,22 @@ CREATE TABLE IF NOT EXISTS context_served (
 
 CREATE INDEX IF NOT EXISTS idx_cs_session ON context_served(session_id);
 CREATE INDEX IF NOT EXISTS idx_cs_note ON context_served(note_id);
+
+-- C19b: per-concept-induced-subgraph PageRank scores.
+-- rank_type is keyed by 'pagerank:{concept}' so multiple ranking schemes
+-- can co-exist (e.g. future global PageRank, betweenness centrality).
+-- Computed during the dream apply phase when dream_compute_pagerank is on;
+-- consumed by mem_concepts(action='canonical_for', concept=X).
+CREATE TABLE IF NOT EXISTS graph_ranks (
+    note_id     TEXT NOT NULL,
+    rank_type   TEXT NOT NULL,
+    score       REAL NOT NULL,
+    computed_at TEXT NOT NULL,
+    PRIMARY KEY (note_id, rank_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gr_type ON graph_ranks(rank_type);
+CREATE INDEX IF NOT EXISTS idx_gr_score ON graph_ranks(score DESC);
 """
 
 FTS_SCHEMA_SQL = """
@@ -297,6 +313,7 @@ class Indexer:
             self.db.execute("DELETE FROM decision_files")
             self.db.execute("DELETE FROM concept_hierarchy")
             self.db.execute("DELETE FROM context_served")
+            self.db.execute("DELETE FROM graph_ranks")
             self.db.execute("DELETE FROM notes")
             self._rebuild_fts()
 
