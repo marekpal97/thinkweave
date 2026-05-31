@@ -27,13 +27,106 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TypedDict
 
 # Where active queues live, relative to the vault root.
 _QUEUES_DIR = ".mem/queues"
 _PROCESSED_DIR = "_processed"
 # Days of archive history scanned by ``dedup_check``.
 _DEDUP_LOOKBACK_DAYS = 30
+
+
+class QueueItem(TypedDict, total=False):
+    """Schema of a single queue record (per-source-type subsets, total=False).
+
+    A queue file is JSONL where each line is one of these dicts. Because the
+    union spans every source type, every field is optional at the type
+    level — readers should branch on ``source_type`` and check field presence.
+
+    **Lifecycle spine** (always populated after enqueue):
+
+    - ``id`` — auto-assigned ``q-<8hex>``; the record's stable handle.
+    - ``enqueued_at`` — ISO-8601 UTC timestamp written by :meth:`Queue.enqueue`.
+    - ``source_type`` — routing slug; matches a key in ``vault/.mem/sources.yaml``.
+
+    **Universal content pointers** (most strategies populate; dedup keys for
+    most types read from these):
+
+    - ``url`` — canonical human URL (item landing page).
+    - ``title`` — display title for the triage UI / archive log.
+    - ``entry_id`` — RSS ``<guid>`` or feed-stable id; the most reliable
+      dedup key when present (survives URL canonicalization changes).
+    - ``message_id`` — RFC 5322 Message-ID for email-grain types; the
+      primary dedup key for ``newsletter-*``.
+
+    **Per-source-type extensions** (set by the producing strategy; read by
+    the worker skill — kept as ``str`` / ``int`` / ``bool`` so JSON
+    round-trips cleanly):
+
+    - News / podcast / youtube common: ``summary``, ``published``,
+      ``outlet``, ``outlet_name``, ``tier``, ``language``, ``region``.
+    - Podcast only: ``audio_url``, ``audio_type``, ``audio_length_bytes``,
+      ``duration_sec``, ``episode_number``.
+    - News-prefer-embedded: ``prefer_embedded``, ``embedded_body``.
+    - Newsletter (per-thread): ``thread_id``, ``sender``.
+
+    **Lifecycle state** (mutated in place by :meth:`Queue.claim` /
+    :meth:`Queue.archive`):
+
+    - ``claimed``, ``claimed_at`` — set by :meth:`Queue.claim`.
+    - ``status`` — set by :meth:`Queue.archive` (``done`` / ``failed`` /
+      ``rejected`` / ``duplicate`` / …).
+    - ``reason`` — optional human/worker explanation paired with ``status``.
+    - ``archived_at`` — ISO-8601 set by :meth:`Queue.archive`.
+
+    Per-type strategies are free to add additional keys beyond this set
+    (the worker reads what it knows). The TypedDict documents the *common*
+    surface; it does not restrict it. ``total=False`` reflects that
+    every field is optional at the schema level — presence is gated by
+    source type, not by the type system.
+    """
+
+    # Lifecycle spine
+    id: str
+    enqueued_at: str
+    source_type: str
+
+    # Universal content pointers
+    url: str
+    title: str
+    entry_id: str
+    message_id: str
+
+    # News / podcast / youtube common
+    summary: str
+    published: str
+    outlet: str
+    outlet_name: str
+    tier: int
+    language: str
+    region: str
+
+    # Podcast only
+    audio_url: str
+    audio_type: str
+    audio_length_bytes: int
+    duration_sec: int
+    episode_number: int
+
+    # News prefer-embedded
+    prefer_embedded: bool
+    embedded_body: str | None
+
+    # Newsletter (per-thread)
+    thread_id: str
+    sender: str
+
+    # Lifecycle state
+    claimed: bool
+    claimed_at: str
+    status: str
+    reason: str
+    archived_at: str
 
 
 @dataclass
@@ -75,14 +168,14 @@ class Queue:
     # core ops
     # ------------------------------------------------------------------
 
-    def enqueue(self, item: dict[str, Any]) -> str:
+    def enqueue(self, item: QueueItem | dict[str, Any]) -> str:
         """Append an item to the queue. Returns its ``id``.
 
         The item gets a UUID-based ``id`` and an ``enqueued_at`` ISO-8601
         timestamp if those keys are absent. The original ``item`` dict is
         not mutated.
         """
-        record = dict(item)
+        record: QueueItem = dict(item)  # type: ignore[assignment]
         if not record.get("id"):
             record["id"] = f"q-{uuid.uuid4().hex[:8]}"
         if not record.get("enqueued_at"):
@@ -94,7 +187,7 @@ class Queue:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         return record["id"]
 
-    def dequeue(self) -> dict[str, Any] | None:
+    def dequeue(self) -> QueueItem | None:
         """Pop and return the oldest unclaimed item, or ``None`` if empty.
 
         ``dequeue`` is implemented as a one-shot peek-then-rewrite: we
@@ -112,7 +205,7 @@ class Queue:
             return item
         return None
 
-    def peek(self, n: int) -> list[dict[str, Any]]:
+    def peek(self, n: int) -> list[QueueItem]:
         """Return up to ``n`` items from the head of the queue (no mutation)."""
         if n <= 0:
             return []
@@ -149,8 +242,8 @@ class Queue:
         defensively without a pre-check).
         """
         items = self._read_all()
-        target: dict[str, Any] | None = None
-        remaining: list[dict[str, Any]] = []
+        target: QueueItem | None = None
+        remaining: list[QueueItem] = []
         for item in items:
             if target is None and item.get("id") == item_id:
                 target = item
@@ -179,7 +272,7 @@ class Queue:
     # ------------------------------------------------------------------
 
     def dedup_check(
-        self, item: dict[str, Any], keys: list[str]
+        self, item: QueueItem | dict[str, Any], keys: list[str]
     ) -> str | None:
         """Return the conflicting item id if ``item`` collides on any of
         ``keys`` with an active or recently-archived item. ``None`` otherwise.
@@ -193,7 +286,7 @@ class Queue:
         """
         if not keys:
             return None
-        candidates: list[dict[str, Any]] = list(self._read_all())
+        candidates: list[QueueItem] = list(self._read_all())
         candidates.extend(self._recent_archive_items(_DEDUP_LOOKBACK_DAYS))
         for other in candidates:
             if other.get("id") == item.get("id"):
@@ -211,10 +304,10 @@ class Queue:
     # internals
     # ------------------------------------------------------------------
 
-    def _read_all(self) -> list[dict[str, Any]]:
+    def _read_all(self) -> list[QueueItem]:
         if not self.path.exists():
             return []
-        out: list[dict[str, Any]] = []
+        out: list[QueueItem] = []
         for line in self.path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -227,7 +320,7 @@ class Queue:
                 out.append(row)
         return out
 
-    def _write_all(self, items: list[dict[str, Any]]) -> None:
+    def _write_all(self, items: list[QueueItem]) -> None:
         """Atomic rewrite via tempfile + rename in the same directory."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not items:
@@ -251,12 +344,12 @@ class Queue:
                     pass
             raise
 
-    def _recent_archive_items(self, days: int) -> Iterable[dict[str, Any]]:
+    def _recent_archive_items(self, days: int) -> Iterable[QueueItem]:
         """Yield archived items from the last ``days`` (inclusive of today)."""
         if not self.archive_root.exists():
             return []
         today = datetime.now(timezone.utc).date()
-        out: list[dict[str, Any]] = []
+        out: list[QueueItem] = []
         for delta in range(days + 1):
             day = (today - timedelta(days=delta)).isoformat()
             archive_file = self.archive_root / day / f"{self.source_type}.jsonl"
