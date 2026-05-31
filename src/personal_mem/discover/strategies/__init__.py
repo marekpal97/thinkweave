@@ -56,7 +56,7 @@ def names() -> list[str]:
 # ``STRATEGY`` singleton. Built-ins split into two flavors:
 #
 #   internal-state producers (observe vault, emit gap descriptors):
-#     concept_coverage, decision_review, theme_drift
+#     concept_coverage, decision_review
 #
 #   external-trigger producers (observe outside world, emit queue items):
 #     rss_poll, mail_poll, external_tool_runner
@@ -68,12 +68,10 @@ from personal_mem.discover.strategies import (  # noqa: E402
     external_tool_runner,
     mail_poll,
     rss_poll,
-    theme_drift,
 )
 
 register(concept_coverage.STRATEGY)
 register(decision_review.STRATEGY)
-register(theme_drift.STRATEGY)
 register(external_tool_runner.STRATEGY)
 register(rss_poll.STRATEGY)
 register(mail_poll.STRATEGY)

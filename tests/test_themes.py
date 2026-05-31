@@ -432,94 +432,59 @@ class TestThemeHierarchy:
                 assert "↳" not in line
 
 
-class TestPromoteCandidateWithParent:
-    """`promote_candidate(parent=...)` writes parent into the new theme's
-    frontmatter so the hierarchy is established at promotion time."""
+class TestThemeMintParent:
+    """`mint_theme_from_signal(parent=...)` writes parent into the new
+    theme's frontmatter; omitting it leaves the field absent."""
 
-    def test_promote_with_parent_writes_field(
-        self, vault: VaultManager, config: Config, tmp_path
-    ):
-        from personal_mem.synthesis.theme_candidates import (
-            _candidates_dir,
-            promote_candidate,
+    def _cluster_ids(self, config, vault):
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.vault import parse_frontmatter
+
+        paths = []
+        for n in range(3):
+            paths.append(
+                vault.create_note(
+                    note_type=NoteType.SOURCE,
+                    title=f"S{n}",
+                    extra_frontmatter={
+                        "source_type": "substack",
+                        "concepts": ["finance-regime", "liquidity"],
+                    },
+                )
+            )
+        idx = Indexer(config=config)
+        idx.rebuild()
+        idx.close()
+        ids = []
+        for p in paths:
+            fm, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
+            ids.append(fm["id"])
+        return ids
+
+    def test_parent_written(self, config, vault):
+        from personal_mem.core.vault import parse_frontmatter
+        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
+
+        ids = self._cluster_ids(config, vault)
+        path = mint_theme_from_signal(
+            config, slug="child", essence="x",
+            cluster_source_ids=ids, cluster_concepts=["finance-regime"],
+            parent="thm-aaaa1111",
         )
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fm["parent"] == "thm-aaaa1111"
 
-        # Hand-write a minimal candidate stub.
-        cdir = _candidates_dir(config)
-        cdir.mkdir(parents=True, exist_ok=True)
-        cand_path = cdir / "cand-test1234-supercycle.md"
-        cand_path.write_text(
-            "---\n"
-            "type: theme\n"
-            "id: cand-test1234\n"
-            "date: \"2026-05-10T00:00:00+00:00\"\n"
-            "source_type: news\n"
-            "candidacy: inferred-from-news\n"
-            "status: candidate\n"
-            "cluster_size: 3\n"
-            "cluster_sources: [src-aaa, src-bbb, src-ccc]\n"
-            "cluster_concepts: [semiconductors, thematic-investing]\n"
-            "aliases: [cand-test1234]\n"
-            "---\n\n"
-            "# Candidate: semiconductors / thematic-investing\n",
-            encoding="utf-8",
+    def test_parent_omitted(self, config, vault):
+        from personal_mem.core.vault import parse_frontmatter
+        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
+
+        ids = self._cluster_ids(config, vault)
+        path = mint_theme_from_signal(
+            config, slug="orphan", essence="x",
+            cluster_source_ids=ids, cluster_concepts=["finance-regime"],
         )
-
-        # Promote with --parent set.
-        new_path = promote_candidate(
-            config,
-            "cand-test1234",
-            title="Memory chip supercycle 2026",
-            essence="Test essence.",
-            parent="thm-parent01",
-        )
-
-        text = new_path.read_text(encoding="utf-8")
-        assert "parent: thm-parent01" in text
-        # Candidate stub gone.
-        assert not cand_path.exists()
-
-    def test_promote_without_parent_omits_field(
-        self, vault: VaultManager, config: Config, tmp_path
-    ):
-        from personal_mem.synthesis.theme_candidates import (
-            _candidates_dir,
-            promote_candidate,
-        )
-
-        cdir = _candidates_dir(config)
-        cdir.mkdir(parents=True, exist_ok=True)
-        cand_path = cdir / "cand-test5678-toplevel.md"
-        cand_path.write_text(
-            "---\n"
-            "type: theme\n"
-            "id: cand-test5678\n"
-            "date: \"2026-05-10T00:00:00+00:00\"\n"
-            "source_type: news\n"
-            "candidacy: inferred-from-news\n"
-            "status: candidate\n"
-            "cluster_size: 3\n"
-            "cluster_sources: [src-x, src-y, src-z]\n"
-            "cluster_concepts: [interest-rates, risk-off]\n"
-            "aliases: [cand-test5678]\n"
-            "---\n",
-            encoding="utf-8",
-        )
-
-        new_path = promote_candidate(
-            config,
-            "cand-test5678",
-            title="Top-level theme",
-            essence="No parent.",
-        )
-
-        text = new_path.read_text(encoding="utf-8")
-        assert "parent:" not in text
-
-
-# ---------------------------------------------------------------------------
-# Catalyst log parsing + temporal DAG integration
-# ---------------------------------------------------------------------------
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert "parent" not in fm
 
 
 class TestCatalystLogParsing:

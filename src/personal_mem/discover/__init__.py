@@ -12,8 +12,6 @@ Built-in strategies:
   coverage. Default behaviour of the original ``/discover``.
 - ``decision_review`` — surface stalled ``proposed``/``accepted``
   decisions that haven't seen activity in N days.
-- ``theme_drift`` — flag themes whose ``## Catalyst log`` has gone
-  silent for M days.
 - ``external_tool_runner`` — shell out to user-provided scripts and
   parse their JSONL stdout into queue items.
 

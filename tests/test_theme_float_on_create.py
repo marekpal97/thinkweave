@@ -24,10 +24,7 @@ import pytest
 from personal_mem.core.config import Config
 from personal_mem.core.schemas import NoteType
 from personal_mem.core.vault import VaultManager
-from personal_mem.synthesis.theme_candidates import (
-    CANDIDATES_DIR_NAME,
-    detect_signals,
-)
+from personal_mem.synthesis.theme_candidates import detect_signals
 
 
 @pytest.fixture
@@ -45,10 +42,6 @@ def vault(config: Config) -> VaultManager:
     vm = VaultManager(config=config)
     vm.ensure_dirs()
     return vm
-
-
-def _cand_dir(config: Config) -> Path:
-    return config.vault_root / "themes" / CANDIDATES_DIR_NAME
 
 
 def _make_news_source(
@@ -78,11 +71,7 @@ def test_third_event_grain_create_surfaces_signal(
 
     _make_news_source(vault, "Story C", concepts=["ai-policy", "regulation"])
 
-    # The third create indexes the source; detect_signals surfaces one
-    # cluster. No stub on disk.
-    cand_dir = _cand_dir(config)
-    assert not cand_dir.exists() or list(cand_dir.glob("cand-*.md")) == []
-
+    # The third create indexes the source; detect_signals surfaces one cluster.
     signals = detect_signals(config)
     assert len(signals) == 1
     s = signals[0]

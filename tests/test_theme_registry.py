@@ -7,8 +7,7 @@ Covers:
 - upsert() updates existing entry (status change)
 - is_canonical() True for registry entries, False otherwise
 - remove() returns True/False correctly; YAML reflects deletion
-- promote_candidate integration: new thm- appears in themes.yaml
-- dream.apply theme_status_changes updates registry
+- mint_theme_from_signal integration: new thm- upserts a row in themes.yaml
 - create_note: unknown thm- refs dropped + warning logged
 - create_note: known thm- ref preserved
 - create_note: empty/missing relates_to → no-op
@@ -393,145 +392,78 @@ class TestRemove:
 
 
 # ---------------------------------------------------------------------------
-# promote_candidate integration
+# mint_theme_from_signal registry integration
 # ---------------------------------------------------------------------------
 
 
-class TestPromoteCandidateIntegration:
-    def test_promote_creates_registry_entry(
-        self, config: Config, vault: VaultManager
-    ):
-        from personal_mem.synthesis.theme_candidates import (
-            promote_candidate,
-            scan_candidates,
-        )
+class TestMintRegistryIntegration:
+    def _cluster_ids(self, config, vault):
+        from personal_mem.synthesis.theme_candidates import detect_signals
 
         for i in range(3):
             _make_substack_source(vault, f"S{i}")
         _index(config)
-        scan_candidates(config, source_type="substack")
+        return list(detect_signals(config)[0].cluster_source_ids)
 
-        cdir = config.vault_root / "themes" / "_candidates"
-        cand_path = next(cdir.glob("cand-*.md"))
-        cand_id = cand_path.stem.split("-")[0] + "-" + cand_path.stem.split("-")[1]
-
-        target_path = promote_candidate(
-            config,
-            cand_id,
-            title="AI Capex Unwind 2026",
-        )
-
-        assert target_path.exists()
-        reg = load(config)
-        # Extract the thm-id from the generated file's frontmatter
+    def test_mint_creates_registry_entry(self, config: Config, vault: VaultManager):
         from personal_mem.core.vault import parse_frontmatter
-        fm, _ = parse_frontmatter(target_path.read_text(encoding="utf-8"))
-        thm_id = fm["id"]
+        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
 
-        assert thm_id in reg, (
-            f"{thm_id} not found in registry after promote_candidate"
+        ids = self._cluster_ids(config, vault)
+        path = mint_theme_from_signal(
+            config, slug="ai-capex-unwind", essence="x",
+            cluster_source_ids=ids, cluster_concepts=["ai-capex", "hyperscaler"],
         )
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        thm_id = fm["id"]
+        reg = load(config)
+        assert thm_id in reg
         assert reg[thm_id]["status"] == "active"
 
-    def test_promote_registry_failure_does_not_raise(
+    def test_mint_registry_failure_does_not_raise(
         self, config: Config, vault: VaultManager, monkeypatch
     ):
-        """Registry update failures must not propagate from promote_candidate."""
-        from personal_mem.synthesis.theme_candidates import (
-            promote_candidate,
-            scan_candidates,
-        )
         import personal_mem.synthesis.theme_registry as tr
+        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
 
         def _bad_upsert(*a, **kw):
             raise RuntimeError("simulated registry failure")
 
         monkeypatch.setattr(tr, "upsert", _bad_upsert)
-
-        for i in range(3):
-            _make_substack_source(vault, f"T{i}")
-        _index(config)
-        scan_candidates(config, source_type="substack")
-
-        cdir = config.vault_root / "themes" / "_candidates"
-        cand_path = next(cdir.glob("cand-*.md"))
-        cand_id = cand_path.stem.split("-")[0] + "-" + cand_path.stem.split("-")[1]
-
-        # Should not raise even though registry is broken.
-        result_path = promote_candidate(config, cand_id, title="Safe Theme")
-        assert result_path.exists()
+        ids = self._cluster_ids(config, vault)
+        path = mint_theme_from_signal(
+            config, slug="safe-theme", essence="x",
+            cluster_source_ids=ids, cluster_concepts=["ai-capex"],
+        )
+        assert path.exists()
 
 
 # ---------------------------------------------------------------------------
-# dream.apply theme_status_changes
+# dream.apply theme_mints registry sync
 # ---------------------------------------------------------------------------
 
 
-class TestDreamApplyRegistrySync:
-    def test_theme_status_change_updates_registry(
+class TestDreamApplyMintRegistry:
+    def test_theme_mint_via_apply_registers(
         self, config: Config, vault: VaultManager
     ):
         from personal_mem.operations.dream import apply
+        from personal_mem.synthesis.theme_candidates import detect_signals
 
-        _write_canonical_theme(
-            config, "thm-feed1234", "test-theme", concepts=["finance-regime"]
-        )
-        upsert(config, "thm-feed1234", {"status": "active", "slug": "test-theme"})
+        for i in range(3):
+            _make_substack_source(vault, f"S{i}")
         _index(config)
-
+        ids = list(detect_signals(config)[0].cluster_source_ids)
         plan = {
-            "theme_status_changes": [
-                {
-                    "theme_id": "thm-feed1234",
-                    "new_status": "dormant",
-                    "reason": "no catalysts",
-                }
+            "theme_mints": [
+                {"slug": "ai-capex-unwind", "essence": "x",
+                 "source_ids": ids, "concepts": ["ai-capex", "hyperscaler"]}
             ]
         }
-        result = apply(config, plan=plan, project="")
-
-        assert result.theme_status_changes == 1
+        result = apply(config, plan=plan, project="t")
+        assert result.themes_minted == 1
         reg = load(config)
-        assert reg["thm-feed1234"]["status"] == "dormant"
-
-    def test_theme_status_change_registry_failure_does_not_cascade(
-        self, config: Config, vault: VaultManager, monkeypatch
-    ):
-        from personal_mem.operations.dream import apply
-        import personal_mem.synthesis.theme_registry as tr
-
-        call_count = {"n": 0}
-
-        def _bad_upsert(*a, **kw):
-            call_count["n"] += 1
-            raise RuntimeError("simulated registry failure")
-
-        monkeypatch.setattr(tr, "upsert", _bad_upsert)
-
-        _write_canonical_theme(
-            config, "thm-feed5678", "fragile-theme", concepts=["finance-regime"]
-        )
-        _index(config)
-
-        plan = {
-            "theme_status_changes": [
-                {"theme_id": "thm-feed5678", "new_status": "dormant"}
-            ]
-        }
-        result = apply(config, plan=plan, project="")
-
-        # The status change still succeeded even though registry update failed.
-        assert result.theme_status_changes == 1
-        assert result.errors == [] or not any(
-            "registry" in e.lower() for e in result.errors
-        )
-        # Registry upsert was called (even though it raised)
-        assert call_count["n"] >= 1
-
-
-# ---------------------------------------------------------------------------
-# create_note soft validation gate
-# ---------------------------------------------------------------------------
+        assert any(v.get("status") == "active" for v in reg.values())
 
 
 class TestCreateNoteThemeRefGate:
@@ -672,51 +604,33 @@ class TestIntegrationFreshVault:
     def test_mint_then_create_note_with_valid_ref(
         self, config: Config, vault: VaultManager
     ):
-        """End-to-end: mint a theme via promote_candidate, confirm it enters
-        the registry, then create a note that relates_to that theme and
-        verify the ref survives the gate."""
-        from personal_mem.synthesis.theme_candidates import (
-            promote_candidate,
-            scan_candidates,
-        )
-        from personal_mem.operations.notes import create_note
+        """End-to-end: mint a theme via mint_theme_from_signal, confirm it
+        enters the registry, then create a note that relates_to it and
+        verify the ref survives the create_note gate."""
         from personal_mem.core.vault import parse_frontmatter
+        from personal_mem.operations.notes import create_note
+        from personal_mem.synthesis.theme_candidates import (
+            detect_signals,
+            mint_theme_from_signal,
+        )
 
-        # 1. Seed enough sources for a candidate.
         for i in range(3):
             _make_substack_source(vault, f"SRC{i}")
         _index(config)
-        scan_candidates(config, source_type="substack")
-
-        # 2. Promote the candidate → canonical theme.
-        cdir = config.vault_root / "themes" / "_candidates"
-        cand_path = next(cdir.glob("cand-*.md"))
-        cand_id = cand_path.stem.split("-")[0] + "-" + cand_path.stem.split("-")[1]
-        theme_path = promote_candidate(
-            config, cand_id, title="AI Capex Unwind 2026"
+        ids = list(detect_signals(config)[0].cluster_source_ids)
+        theme_path = mint_theme_from_signal(
+            config, slug="ai-capex-unwind", essence="x",
+            cluster_source_ids=ids, cluster_concepts=["ai-capex", "hyperscaler"],
         )
-        assert theme_path.exists()
-
-        # 3. Verify the registry was updated.
         fm, _ = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
         thm_id = fm["id"]
-        assert is_canonical(config, thm_id), (
-            f"Registry must contain {thm_id} after promote_candidate"
-        )
+        assert is_canonical(config, thm_id)
 
-        # 4. Create a note with relates_to the canonical theme.
         note = create_note(
             config,
             note_type=NoteType.NOTE,
             title="Citing the theme",
-            extra_frontmatter={
-                "relates_to": [thm_id],
-                "concepts": [],
-            },
+            extra_frontmatter={"relates_to": [thm_id], "concepts": []},
         ).note
-
-        # 5. The ref must survive.
         relates = note.frontmatter.get("relates_to") or []
-        assert thm_id in relates, (
-            f"{thm_id} should survive the create_note gate (it's registered)"
-        )
+        assert thm_id in relates

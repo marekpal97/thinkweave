@@ -779,6 +779,23 @@ def state_of_play(config: Config, project: str) -> str:
         lines.append(", ".join(concept_strs))
         lines.append("")
 
+    # Section 5: Recent Maintenance — links to the latest dream-cycle
+    # reports so a user can see exactly what each autonomous cycle did.
+    from personal_mem.operations.dream import recent_dream_reports
+
+    reports = recent_dream_reports(config, n=3)
+    if reports:
+        lines.append("## Recent Maintenance")
+        lines.append(
+            "Per-cycle dream reports — concept/theme promotions, "
+            "candidates archived, status changes, essence rewrites."
+        )
+        lines.append("")
+        for r in reports:
+            rel = Path(r["path"]).relative_to(config.vault_root)
+            lines.append(f"- [{r['cycle_id']}]({rel})")
+        lines.append("")
+
     return "\n".join(lines) + "\n"
 
 
@@ -855,6 +872,21 @@ def state_of_play_context(config: Config, project: str) -> str:
         sections.append("\n## Concept Frequency")
         for c, n in sorted(ctx["concept_counts"].items(), key=lambda x: -x[1])[:20]:
             sections.append(f"  {n:3d}  {c}")
+
+    # Recent maintenance (dream reports). Surfaces the latest 3 cycles so
+    # the user can click through to see exactly what each one did.
+    from personal_mem.operations.dream import recent_dream_reports
+
+    reports = recent_dream_reports(config, n=3)
+    if reports:
+        sections.append("\n## Recent Maintenance")
+        sections.append(
+            "Per-cycle dream reports — concept/theme promotions, "
+            "candidates archived, status changes, essence rewrites."
+        )
+        for r in reports:
+            rel = Path(r["path"]).relative_to(config.vault_root)
+            sections.append(f"- [{r['cycle_id']}]({rel})")
 
     return "\n".join(sections) + "\n"
 

@@ -22,7 +22,6 @@ from personal_mem.discover.strategies import (
     concept_coverage,
     decision_review,
     external_tool_runner,
-    theme_drift,
 )
 
 
@@ -33,7 +32,6 @@ class TestRegistry:
     def test_built_ins_register_on_import(self) -> None:
         assert "concept_coverage" in REGISTRY
         assert "decision_review" in REGISTRY
-        assert "theme_drift" in REGISTRY
         assert "external_tool_runner" in REGISTRY
 
     def test_get_returns_strategy(self) -> None:
@@ -249,77 +247,6 @@ class TestDecisionReview:
         result = decision_review.STRATEGY.run(config, "test", {})
         for item in result:
             assert "Old superseded" not in item["title"]
-
-
-# --- theme_drift ------------------------------------------------------------
-
-
-class TestThemeDrift:
-    def test_flags_silent_theme(
-        self, vault: VaultManager, indexer: Indexer, config: Config
-    ) -> None:
-        old = (date.today() - timedelta(days=120)).isoformat()
-        vault.create_note(
-            NoteType.THEME,
-            "Stale Theme",
-            body="## Essence\nFoo.\n\n## Catalyst log\n- 2024-01-01 · *new* — old.\n",
-            project="test",
-            extra_frontmatter={
-                "status": "active",
-                "date": old,
-                "concepts": ["x", "y"],
-            },
-        )
-        _index(vault, indexer)
-
-        result = theme_drift.STRATEGY.run(config, None, {})
-        titles = [item["title"] for item in result]
-        assert any("Stale Theme" in t for t in titles)
-
-    def test_skips_active_recent_theme(
-        self, vault: VaultManager, indexer: Indexer, config: Config
-    ) -> None:
-        recent = date.today().isoformat()
-        vault.create_note(
-            NoteType.THEME,
-            "Hot Theme",
-            body=(
-                "## Essence\nFresh.\n\n"
-                f"## Catalyst log\n- {recent} · *new* — yes.\n"
-            ),
-            project="test",
-            extra_frontmatter={
-                "status": "active",
-                "date": recent,
-                "concepts": ["x", "y"],
-            },
-        )
-        _index(vault, indexer)
-
-        result = theme_drift.STRATEGY.run(config, None, {})
-        for item in result:
-            assert "Hot Theme" not in item["title"]
-
-    def test_skips_dormant_status(
-        self, vault: VaultManager, indexer: Indexer, config: Config
-    ) -> None:
-        old = (date.today() - timedelta(days=120)).isoformat()
-        vault.create_note(
-            NoteType.THEME,
-            "Sleeping",
-            body="## Essence\nx.\n## Catalyst log\n",
-            project="test",
-            extra_frontmatter={
-                "status": "dormant",
-                "date": old,
-                "concepts": ["x", "y"],
-            },
-        )
-        _index(vault, indexer)
-
-        result = theme_drift.STRATEGY.run(config, None, {})
-        for item in result:
-            assert "Sleeping" not in item["title"]
 
 
 # --- external_tool_runner ---------------------------------------------------
