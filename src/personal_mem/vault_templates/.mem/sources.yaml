@@ -71,7 +71,7 @@ sources:
     subagent_model: sonnet
     drain_parallelism: 4
     drain_batch_max: 20
-    mail_connector: gmail              # swappable: gmail | outlook | imap
+    mail_provider: gmail               # v1: gmail-only (outlook/imap deferred). Old `mail_connector:` still accepted.
     # Sender allowlist — fill in the addresses / domains of the
     # newsletters you actually subscribe to. The skill composes
     # `from:(s1 OR s2 OR ...)` for the connector. Use INLINE list syntax
@@ -99,7 +99,7 @@ sources:
     subagent_model: sonnet
     drain_parallelism: 4
     drain_batch_max: 20
-    mail_connector: gmail
+    mail_provider: gmail
     senders: []
     mail_query: ""
     processed_label: mem-processed

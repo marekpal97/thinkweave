@@ -65,7 +65,7 @@ ToolSearch(query="select:mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Gma
 
 If the names differ in your connector version, search by keyword and adapt. If thread-search isn't discoverable, stop with `"Gmail MCP is connected but I can't find a thread-search tool. Confirm the Gmail connector is up to date and re-run."`.
 
-For `mail_connector: outlook` or `imap`: not implemented yet. Stop with `"Connector '<value>' not implemented yet — only gmail is wired."`.
+For `mail_provider: outlook` or `imap` (formerly `mail_connector:`; both names accepted): not implemented in v1. Stop with `"Provider '<value>' not implemented yet — only gmail is wired."`.
 
 ---
 

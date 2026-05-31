@@ -82,6 +82,29 @@ def test_outlook_connector_emits_not_implemented() -> None:
     assert out[0]["reason"] == "connector_not_implemented"
 
 
+def test_mail_provider_alias_takes_precedence() -> None:
+    """C21 rename: ``mail_provider`` is the new canonical name and
+    overrides ``mail_connector`` when both are present. ``mail_connector``
+    remains the back-compat fallback for vault configs predating the
+    rename."""
+    out = MailPollStrategy().run(
+        None, None, _cfg(mail_provider="gmail", mail_connector="outlook")
+    )
+    # mail_provider wins → gmail path emits a fetch plan.
+    assert out[0]["kind"] == "mail_fetch_needed"
+    assert out[0]["connector"] == "gmail"
+
+
+def test_back_compat_mail_connector_still_works() -> None:
+    """Pre-C21 configs (``mail_connector:`` only, no ``mail_provider:``)
+    continue to work without migration."""
+    # _cfg already uses mail_connector — confirm the existing test
+    # signal that pre-rename configs still produce fetch plans.
+    out = MailPollStrategy().run(None, None, _cfg())
+    assert out[0]["kind"] == "mail_fetch_needed"
+    assert out[0]["connector"] == "gmail"
+
+
 def test_skips_sources_without_mail_connector() -> None:
     """Non-mail sources (paper, repo, etc.) are skipped silently."""
     cfg = {

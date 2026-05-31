@@ -102,7 +102,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "subagent_model": "sonnet",
             "drain_parallelism": 4,
             "drain_batch_max": 20,
-            "mail_connector": "gmail",
+            "mail_provider": "gmail",
             # `senders` is the canonical allowlist. Each entry is an email
             # address (alice@example.com) or a bare domain (example.com);
             # the skill composes `from:(...)` for the connector's query.
@@ -128,7 +128,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "subagent_model": "sonnet",
             "drain_parallelism": 4,
             "drain_batch_max": 20,
-            "mail_connector": "gmail",
+            "mail_provider": "gmail",
             "senders": [],
             "mail_query": "",
             "processed_label": "mem-processed",
