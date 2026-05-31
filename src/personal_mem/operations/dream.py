@@ -12,10 +12,9 @@
    dict. This phase lives in the skill, not here.
 3. **apply** — execute the structural changes the LLM decided on with
    **one** index rebuild at the end and append a single line to
-   ``vault/.mem/maintenance.jsonl``. This is the speed win — the existing
-   ``mem concepts promote`` / ``mem themes promote-candidate`` paths each
-   rebuild the index per call, which would be 20× full rebuilds at the
-   per-cycle cap.
+   ``vault/.mem/maintenance.jsonl``. This is the speed win — rebuilding the
+   index once per mutation would be 20× full rebuilds at the per-cycle cap,
+   so apply defers every index touch to a single rebuild at the tail.
 
 The architecture mirrors ``operations/wrap.py`` (the ``mem wrap-finalize``
 backbone): structured-result dataclasses, per-step timings, errors recorded
@@ -46,6 +45,7 @@ from personal_mem.core.config import Config
 # ---------------------------------------------------------------------------
 
 MAINTENANCE_LOG_RELPATH = Path(".mem") / "maintenance.jsonl"
+DREAM_REPORTS_RELDIR = Path(".mem") / "dream_reports"
 
 
 def maintenance_log_path(cfg: Config) -> Path:
@@ -69,6 +69,16 @@ def append_maintenance_log(cfg: Config, entry: dict) -> Path:
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, sort_keys=True) + "\n")
     return path
+
+
+def dream_reports_dir(cfg: Config) -> Path:
+    """Directory holding per-cycle human-readable dream reports."""
+    return cfg.vault_root / DREAM_REPORTS_RELDIR
+
+
+def dream_report_path(cfg: Config, cycle_id: str) -> Path:
+    """Path of the markdown report for ``cycle_id``."""
+    return dream_reports_dir(cfg) / f"{cycle_id}.md"
 
 
 def _new_cycle_id() -> str:
@@ -101,16 +111,14 @@ class DreamCycleScan:
     stats: dict = field(default_factory=dict)
     drift_pairs: list = field(default_factory=list)
     promotion_candidates: list = field(default_factory=list)
-    theme_candidates: list = field(default_factory=list)
-    # Raw cluster signals — clusters of event-grain sources sharing
-    # concepts that aren't covered by any active theme and don't have a
-    # candidate stub on disk. The dream apply phase composes a real slug
-    # + essence from these (LLM naming step lives in the prompt, not in
-    # the SDK), then mints canonical themes directly via the new
-    # `theme_promotions_from_signal` plan key.
+    # Enriched cluster signals — clusters of recent event-grain sources
+    # sharing concepts. Each carries the raw per-source `proposed_theme:`
+    # stamps (`proposed_names`) plus any active theme whose concepts
+    # overlap (`covering_themes`). The dream apply phase reads these and
+    # either MINTS a new theme (`theme_mints` plan key) or EXTENDS an
+    # existing one (`theme_extensions`). No candidate stubs, no vote, no
+    # lifecycle — themes change status only by hand.
     theme_cluster_signals: list = field(default_factory=list)
-    dormant_themes: list = field(default_factory=list)
-    resolved_themes: list = field(default_factory=list)
     timings: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
 
@@ -125,7 +133,7 @@ def scan(
     promotion_cap: int = 20,
     promotion_threshold: int = 5,
 ) -> DreamCycleScan:
-    """Compose a read-only action plan from five vault-global scans.
+    """Compose a read-only action plan from three vault-global scans.
 
     1. **drift pairs** — ``operations.concepts.drift`` filtered through
        ``filter_drift_candidates`` (drops the substring/short-name noise
@@ -135,13 +143,13 @@ def scan(
        ``filter_promotion_candidates`` (drops domain-paths, generic
        process terms, underscore-bearing leakage), sorted by count desc,
        capped at ``promotion_cap``.
-    3. **theme candidates** — stubs in ``vault/themes/_candidates/`` with
-       their cluster frontmatter so the LLM can apply the disambiguation
-       test (capability vs narrative arc).
-    4. **dormant themes** — ``find_dormant_themes`` (90-day rule;
-       deterministic).
-    5. **resolved themes** — ``find_resolved_themes`` (all linked
-       decisions in terminal status; deterministic).
+    3. **theme cluster signals** — ``detect_signals``: clusters of recent
+       event-grain sources sharing concepts, each enriched with raw
+       ``proposed_theme:`` stamps and overlapping active themes so the
+       LLM turn can mint or extend.
+
+    Theme *lifecycle* is intentionally absent — no dormant/resolved
+    detection, no status changes. Themes change status only by hand.
 
     Steps are wrapped: a failure in one is recorded in ``errors``; the
     rest still run. Returns :class:`DreamCycleScan`.
@@ -212,93 +220,11 @@ def scan(
     finally:
         result.timings["promotion"] = time.perf_counter() - _t
 
-    # 3. theme candidates -------------------------------------------------
-    _t = time.perf_counter()
-    try:
-        from personal_mem.core.vault import parse_frontmatter
-
-        cand_dir = cfg.vault_root / "themes" / "_candidates"
-        if cand_dir.exists():
-            for path in sorted(cand_dir.glob("cand-*.md")):
-                try:
-                    text = path.read_text(encoding="utf-8")
-                    fm, _body = parse_frontmatter(text)
-                except Exception:  # noqa: BLE001 — skip unreadable stubs
-                    continue
-                # Filename shape: `cand-XXXXXXXX-<slug>.md`. The candidate
-                # id is the first two dash-segments.
-                parts = path.stem.split("-", 2)
-                cand_id = "-".join(parts[:2]) if len(parts) >= 2 else path.stem
-                result.theme_candidates.append(
-                    {
-                        "candidate_id": cand_id,
-                        "path": str(path.relative_to(cfg.vault_root)),
-                        "title": fm.get("title", path.stem),
-                        "cluster_size": fm.get("cluster_size"),
-                        "cluster_concepts": fm.get("cluster_concepts") or [],
-                        "cluster_sources": fm.get("cluster_sources") or [],
-                        "candidacy": fm.get("candidacy", ""),
-                        "source_type": fm.get("source_type", ""),
-                    }
-                )
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"theme_candidates: {e}")
-    finally:
-        result.timings["theme_candidates"] = time.perf_counter() - _t
-
-    # 4. dormant themes ---------------------------------------------------
-    _t = time.perf_counter()
-    try:
-        from personal_mem.core.vault import parse_frontmatter
-        from personal_mem.synthesis.theme_candidates import find_dormant_themes
-
-        for path, last in find_dormant_themes(cfg):
-            try:
-                fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                fm = {}
-            result.dormant_themes.append(
-                {
-                    "theme_id": fm.get("id", ""),
-                    "path": str(path.relative_to(cfg.vault_root)),
-                    "title": fm.get("title", path.stem),
-                    "last_catalyst": last.isoformat() if last else None,
-                }
-            )
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"dormant: {e}")
-    finally:
-        result.timings["dormant"] = time.perf_counter() - _t
-
-    # 5. resolved themes --------------------------------------------------
-    _t = time.perf_counter()
-    try:
-        from personal_mem.core.vault import parse_frontmatter
-        from personal_mem.synthesis.theme_candidates import find_resolved_themes
-
-        for path, dec_ids in find_resolved_themes(cfg):
-            try:
-                fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                fm = {}
-            result.resolved_themes.append(
-                {
-                    "theme_id": fm.get("id", ""),
-                    "path": str(path.relative_to(cfg.vault_root)),
-                    "title": fm.get("title", path.stem),
-                    "linked_decisions": dec_ids,
-                }
-            )
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"resolved: {e}")
-    finally:
-        result.timings["resolved"] = time.perf_counter() - _t
-
-    # 6. theme cluster signals -------------------------------------------
-    # Raw clusters of recent event-grain sources sharing concepts that
-    # aren't already covered by an active theme or represented by an
-    # existing candidate stub. These are the "fresh, name-able" clusters
-    # the LLM judgment phase composes slugs for.
+    # 3. theme cluster signals -------------------------------------------
+    # Clusters of recent event-grain sources sharing concepts, each
+    # enriched with the raw per-source `proposed_theme:` tally and any
+    # active theme whose concepts overlap. The LLM turn reads these and
+    # decides MINT (new arc) or EXTEND (covering_themes non-empty).
     _t = time.perf_counter()
     try:
         from personal_mem.synthesis.theme_candidates import detect_signals
@@ -307,17 +233,14 @@ def scan(
             result.theme_cluster_signals.append(
                 {
                     "source_type": sig.source_type,
+                    "cluster_kind": sig.cluster_kind,
+                    "label": sig.label,
                     "shared_concepts": sig.shared_concepts,
-                    "cluster_source_ids": sig.cluster_source_ids,
-                    "cluster_source_titles": sig.cluster_source_titles,
-                    # Per-source proposed_theme votes — set when workers
-                    # stamped proposed_theme: <slug> at write time (the
-                    # structural analog of proposed_concepts: on the theme
-                    # side). voted_slug is the top vote-getter for this
-                    # cluster; None when no votes exist. /dream should
-                    # prefer voted_slug over composing a fresh slug.
-                    "voted_slug": sig.voted_slug,
-                    "slug_votes": sig.slug_votes,
+                    "source_count": len(sig.sources),
+                    "sources": sig.sources,
+                    "proposed_names": sig.proposed_names,
+                    "related_names": sig.related_names,
+                    "covering_themes": sig.covering_themes,
                 }
             )
     except Exception as e:  # noqa: BLE001
@@ -328,10 +251,7 @@ def scan(
     result.stats = {
         "drift_pairs": len(result.drift_pairs),
         "promotion_candidates": len(result.promotion_candidates),
-        "theme_candidates": len(result.theme_candidates),
         "theme_cluster_signals": len(result.theme_cluster_signals),
-        "dormant_themes": len(result.dormant_themes),
-        "resolved_themes": len(result.resolved_themes),
     }
 
     return result
@@ -360,9 +280,8 @@ class DreamCycleResult:
     project: str = ""
     merges_applied: int = 0
     promotions_applied: int = 0
-    candidates_promoted: int = 0
-    candidates_archived: int = 0
-    theme_status_changes: int = 0
+    themes_minted: int = 0
+    themes_extended: int = 0
     essence_rewrites_logged: int = 0  # body edits done by the skill, logged here
     ontology_grew: bool = False
     indexed: int = 0
@@ -371,6 +290,7 @@ class DreamCycleResult:
     timings: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     log_path: str = ""
+    report_path: str = ""  # markdown report at vault/.mem/dream_reports/<cycle_id>.md
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -389,9 +309,8 @@ class DreamCycleResult:
             "summary": {
                 "merges": self.merges_applied,
                 "promotions": self.promotions_applied,
-                "candidates_promoted": self.candidates_promoted,
-                "candidates_archived": self.candidates_archived,
-                "theme_status_changes": self.theme_status_changes,
+                "themes_minted": self.themes_minted,
+                "themes_extended": self.themes_extended,
                 "essence_rewrites": self.essence_rewrites_logged,
                 "ontology_grew": self.ontology_grew,
             },
@@ -426,12 +345,7 @@ def apply(
             {"concept": "diagnostics", "domain": "swe", "reason": "..."},
             ...
           ],
-          "theme_promotions": [
-            {"candidate_id": "cand-abcd1234", "title": "ai-capex",
-             "essence": "...", "parent": "thm-X" (optional), "project": ""},
-            ...
-          ],
-          "theme_promotions_from_signal": [
+          "theme_mints": [
             {"slug": "iran-war",
              "essence": "1-sentence narrative description.",
              "source_ids": ["src-A", "src-B", "src-C"],
@@ -439,12 +353,9 @@ def apply(
              "project": "" (optional), "parent": "thm-X" (optional)},
             ...
           ],
-          "candidates_archived": [
-            {"candidate_id": "cand-X", "reason": "capability-named"},
-            ...
-          ],
-          "theme_status_changes": [
-            {"theme_id": "thm-X", "new_status": "dormant", "reason": "..."},
+          "theme_extensions": [
+            {"theme_id": "thm-X", "source_ids": ["src-D", "src-E"],
+             "reason": "..."},
             ...
           ],
           "essence_rewrites": [
@@ -454,9 +365,13 @@ def apply(
           ],
         }
 
-    Order matters: merges → promotions → theme operations → ONE index
-    rebuild → maintenance.jsonl append. Each step is wrapped; failure in
-    one is recorded in ``errors`` and the rest still run.
+    Order matters: merges → promotions → theme mints → theme extensions →
+    ONE index rebuild → maintenance.jsonl append. Each step is wrapped;
+    failure in one is recorded in ``errors`` and the rest still run.
+
+    There is deliberately no theme-status / candidate-archival surface:
+    theme lifecycle is hand-driven, and the candidate-stub path was
+    removed in the 2026-05-30 teardown.
 
     Returns :class:`DreamCycleResult` carrying counts, per-step wall
     times, and the path to the appended maintenance-log line.
@@ -543,167 +458,79 @@ def apply(
     finally:
         result.timings["promotions"] = time.perf_counter() - _t
 
-    # 3a. theme candidate promotions --------------------------------------
-    _t = time.perf_counter()
-    try:
-        from personal_mem.synthesis.theme_candidates import promote_candidate
-
-        for tp in plan.get("theme_promotions") or []:
-            try:
-                cand_id = tp.get("candidate_id") or ""
-                title = tp.get("title") or ""
-                if not cand_id or not title:
-                    result.errors.append(
-                        f"theme_promote: missing candidate_id/title in {tp}"
-                    )
-                    continue
-                promote_candidate(
-                    cfg,
-                    cand_id,
-                    title=title,
-                    essence=tp.get("essence") or "",
-                    project=tp.get("project") or "",
-                    parent=tp.get("parent") or "",
-                    rebuild_index=False,
-                )
-                result.candidates_promoted += 1
-            except Exception as e:  # noqa: BLE001
-                result.errors.append(
-                    f"theme_promote {tp.get('candidate_id', '?')}: {e}"
-                )
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"theme_promotions: {e}")
-    finally:
-        result.timings["theme_promotions"] = time.perf_counter() - _t
-
-    # 3c. signal-direct theme mints --------------------------------------
-    # Plan items composed by /dream from raw `theme_cluster_signals`, where
-    # no `cand-*` stub exists yet. Each item is
+    # 3a. theme mints ----------------------------------------------------
+    # Plan items composed by /dream from `theme_cluster_signals` with no
+    # on-topic covering theme. Each item is
     # {slug, essence, source_ids, [concepts], [project], [parent]}.
     _t = time.perf_counter()
     try:
         from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
 
-        for ts in plan.get("theme_promotions_from_signal") or []:
+        for tm in plan.get("theme_mints") or []:
             try:
-                slug = ts.get("slug") or ""
-                source_ids = ts.get("source_ids") or []
+                slug = tm.get("slug") or ""
+                source_ids = tm.get("source_ids") or []
                 if not slug or not source_ids:
                     result.errors.append(
-                        f"theme_signal: missing slug/source_ids in {ts}"
+                        f"theme_mint: missing slug/source_ids in {tm}"
                     )
                     continue
                 mint_theme_from_signal(
                     cfg,
                     slug=slug,
-                    essence=ts.get("essence") or "",
+                    essence=tm.get("essence") or "",
                     cluster_source_ids=list(source_ids),
-                    cluster_concepts=list(ts.get("concepts") or []),
-                    candidacy=ts.get("candidacy") or "inferred-from-signal",
-                    project=ts.get("project") or "",
-                    parent=ts.get("parent") or "",
+                    cluster_concepts=list(tm.get("concepts") or []),
+                    candidacy=tm.get("candidacy") or "inferred-from-signal",
+                    project=tm.get("project") or "",
+                    parent=tm.get("parent") or "",
                     rebuild_index=False,
                 )
-                result.candidates_promoted += 1
+                result.themes_minted += 1
             except Exception as e:  # noqa: BLE001
-                result.errors.append(
-                    f"theme_signal {ts.get('slug', '?')}: {e}"
-                )
+                result.errors.append(f"theme_mint {tm.get('slug', '?')}: {e}")
     except Exception as e:  # noqa: BLE001
-        result.errors.append(f"theme_promotions_from_signal: {e}")
+        result.errors.append(f"theme_mints: {e}")
     finally:
-        result.timings["theme_promotions_from_signal"] = time.perf_counter() - _t
+        result.timings["theme_mints"] = time.perf_counter() - _t
 
-    # 3b. candidate archivals --------------------------------------------
+    # 3b. theme extensions -----------------------------------------------
+    # The steady-state case: new event-grain sources landed on an arc a
+    # theme already tracks. Link them and append catalyst lines. Each item
+    # is {theme_id, source_ids, [reason]}.
     _t = time.perf_counter()
     try:
-        import shutil
+        from personal_mem.synthesis.theme_candidates import (
+            extend_theme_with_sources,
+        )
 
-        cand_dir = cfg.vault_root / "themes" / "_candidates"
-        archive_dir = cand_dir / "_archive"
-        for ca in plan.get("candidates_archived") or []:
+        for tx in plan.get("theme_extensions") or []:
             try:
-                cand_id = ca.get("candidate_id") or ""
-                if not cand_id:
-                    continue
-                matches = list(cand_dir.glob(f"{cand_id}-*.md"))
-                if not matches:
+                theme_id = tx.get("theme_id") or ""
+                source_ids = tx.get("source_ids") or []
+                if not theme_id or not source_ids:
                     result.errors.append(
-                        f"archive {cand_id}: no matching stub"
+                        f"theme_extend: missing theme_id/source_ids in {tx}"
                     )
                     continue
-                archive_dir.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(matches[0]), archive_dir / matches[0].name)
-                result.candidates_archived += 1
+                n = extend_theme_with_sources(
+                    cfg,
+                    theme_id=theme_id,
+                    source_ids=list(source_ids),
+                    rebuild_index=False,
+                )
+                if n:
+                    result.themes_extended += 1
             except Exception as e:  # noqa: BLE001
                 result.errors.append(
-                    f"archive {ca.get('candidate_id', '?')}: {e}"
+                    f"theme_extend {tx.get('theme_id', '?')}: {e}"
                 )
     except Exception as e:  # noqa: BLE001
-        result.errors.append(f"candidates_archived: {e}")
+        result.errors.append(f"theme_extensions: {e}")
     finally:
-        result.timings["candidates_archived"] = time.perf_counter() - _t
+        result.timings["theme_extensions"] = time.perf_counter() - _t
 
-    # 3c. theme status changes -------------------------------------------
-    # Frontmatter updates only; no body changes here. The deterministic
-    # helpers (find_dormant_themes / find_resolved_themes) drive the scan;
-    # the LLM confirms; we write status.
-    _t = time.perf_counter()
-    try:
-        from personal_mem.core.vault import parse_frontmatter, render_frontmatter
-
-        for tsc in plan.get("theme_status_changes") or []:
-            try:
-                theme_id = tsc.get("theme_id") or ""
-                new_status = tsc.get("new_status") or ""
-                if not theme_id or not new_status:
-                    result.errors.append(
-                        f"theme_status: missing fields in {tsc}"
-                    )
-                    continue
-                # Locate the theme file by scanning canonical themes/.
-                themes_dir = cfg.vault_root / "themes"
-                target: Path | None = None
-                for path in themes_dir.glob("*.md"):
-                    try:
-                        fm, _ = parse_frontmatter(
-                            path.read_text(encoding="utf-8")
-                        )
-                    except Exception:  # noqa: BLE001
-                        continue
-                    if fm.get("id") == theme_id:
-                        target = path
-                        break
-                if target is None:
-                    result.errors.append(
-                        f"theme_status {theme_id}: not found"
-                    )
-                    continue
-                text = target.read_text(encoding="utf-8")
-                fm, body = parse_frontmatter(text)
-                fm["status"] = new_status
-                target.write_text(
-                    render_frontmatter(fm) + "\n" + body, encoding="utf-8"
-                )
-                result.theme_status_changes += 1
-
-                # Keep registry in sync — failure must not cascade.
-                try:
-                    from personal_mem.synthesis import theme_registry
-
-                    theme_registry.upsert(cfg, theme_id, {"status": new_status})
-                except Exception:  # noqa: BLE001
-                    pass
-            except Exception as e:  # noqa: BLE001
-                result.errors.append(
-                    f"theme_status {tsc.get('theme_id', '?')}: {e}"
-                )
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"theme_status_changes: {e}")
-    finally:
-        result.timings["theme_status_changes"] = time.perf_counter() - _t
-
-    # 3d. essence rewrites — log-only (the skill already Edit'd files) ----
+    # 3c. essence rewrites — log-only (the skill already Edit'd files) ----
     result.essence_rewrites_logged = len(plan.get("essence_rewrites") or [])
 
     # 4. one index rebuild + concept-hub maintenance ----------------------
@@ -711,9 +538,8 @@ def apply(
     structural_changes = (
         result.merges_applied
         + result.promotions_applied
-        + result.candidates_promoted
-        + result.candidates_archived
-        + result.theme_status_changes
+        + result.themes_minted
+        + result.themes_extended
         + result.essence_rewrites_logged
     )
     if structural_changes:
@@ -768,4 +594,182 @@ def apply(
         result.errors.append(f"log: {e}")
     result.timings["log"] = time.perf_counter() - _t
 
+    # 6. human-readable markdown report ----------------------------------
+    _t = time.perf_counter()
+    try:
+        report_path = write_dream_report(cfg, result, plan)
+        result.report_path = str(report_path)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"report: {e}")
+    result.timings["report"] = time.perf_counter() - _t
+
     return result
+
+
+# ---------------------------------------------------------------------------
+# Markdown report — the human-trust artifact
+# ---------------------------------------------------------------------------
+
+
+def write_dream_report(cfg: Config, result: DreamCycleResult, plan: dict) -> Path:
+    """Write the per-cycle markdown report and return its path.
+
+    The maintenance.jsonl line is the machine-readable record; this
+    markdown file is the human-trust artifact — `state_of_play` links to
+    the most recent reports under "Recent Maintenance" so a user can
+    open one and see exactly what the cycle did without parsing JSON.
+
+    Empty sections are skipped; the summary table is always rendered.
+    Idempotent overwrite — re-running the same cycle_id replaces the file
+    (cycle_ids are timestamped, so this only matters in tests).
+    """
+    path = dream_report_path(cfg, result.cycle_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_render_dream_report(result, plan), encoding="utf-8")
+    return path
+
+
+def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
+    """Render a DreamCycleResult + plan into a markdown report string."""
+    lines: list[str] = []
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    project = result.project or "(global)"
+
+    lines.append(f"# Dream cycle `{result.cycle_id}`")
+    lines.append("")
+    lines.append(f"- **Timestamp**: {ts}")
+    lines.append(f"- **Project**: {project}")
+    lines.append(f"- **Maintenance log**: `vault/.mem/maintenance.jsonl`")
+    lines.append("")
+
+    # --- Summary table ---------------------------------------------------
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Action | Count |")
+    lines.append("|---|---|")
+    lines.append(f"| Concept merges | {result.merges_applied} |")
+    lines.append(f"| Concept promotions | {result.promotions_applied} |")
+    lines.append(f"| Themes minted | {result.themes_minted} |")
+    lines.append(f"| Themes extended | {result.themes_extended} |")
+    lines.append(f"| Essence rewrites logged | {result.essence_rewrites_logged} |")
+    lines.append(f"| Ontology grew? | {'yes' if result.ontology_grew else 'no'} |")
+    lines.append(f"| Notes indexed | {result.indexed} |")
+    lines.append(f"| Edges rebuilt | {result.edges} |")
+    lines.append(f"| Errors | {len(result.errors)} |")
+    lines.append("")
+
+    # --- Per-action sections (skip empty) -------------------------------
+    merges = plan.get("merges") or []
+    if merges:
+        lines.append(f"## Concept merges ({len(merges)})")
+        lines.append("")
+        for m in merges:
+            reason = m.get("reason") or "(no reason given)"
+            lines.append(f"- **{m.get('from', '?')} → {m.get('to', '?')}** — {reason}")
+        lines.append("")
+
+    promotions = plan.get("promotions") or []
+    if promotions:
+        lines.append(f"## Concept promotions ({len(promotions)})")
+        lines.append("")
+        for p in promotions:
+            concept = p.get("concept", "?")
+            domain = p.get("domain") or "(no domain)"
+            reason = p.get("reason") or "(no reason given)"
+            lines.append(f"- **{concept}** (domain: {domain}) — {reason}")
+        lines.append("")
+
+    theme_mints = plan.get("theme_mints") or []
+    if theme_mints:
+        lines.append(f"## Themes minted ({len(theme_mints)})")
+        lines.append("")
+        for t in theme_mints:
+            slug = t.get("slug", "?")
+            essence = (t.get("essence") or "").strip()
+            srcs = t.get("source_ids") or []
+            concepts = t.get("concepts") or []
+            lines.append(f"- **{slug}**")
+            if essence:
+                lines.append(f"  - Essence: {essence}")
+            if concepts:
+                lines.append(f"  - Concepts: {', '.join(concepts)}")
+            if srcs:
+                lines.append(f"  - Sources ({len(srcs)}): {', '.join(srcs[:5])}")
+        lines.append("")
+
+    theme_exts = plan.get("theme_extensions") or []
+    if theme_exts:
+        lines.append(f"## Themes extended ({len(theme_exts)})")
+        lines.append("")
+        for t in theme_exts:
+            tid = t.get("theme_id", "?")
+            srcs = t.get("source_ids") or []
+            reason = (t.get("reason") or "").strip()
+            line = f"- `{tid}` — +{len(srcs)} source(s)"
+            if reason:
+                line += f" — {reason}"
+            lines.append(line)
+        lines.append("")
+
+    rewrites = plan.get("essence_rewrites") or []
+    if rewrites:
+        lines.append(f"## Essence rewrites ({len(rewrites)})")
+        lines.append("")
+        lines.append(
+            "_Body edits were made by the skill before apply; see the "
+            "theme file's git history for the diff._"
+        )
+        lines.append("")
+        for r in rewrites:
+            tid = r.get("theme_id", "?")
+            reason = r.get("reason") or "(no reason given)"
+            lines.append(f"- `{tid}` — {reason}")
+        lines.append("")
+
+    # --- Errors (if any) ------------------------------------------------
+    if result.errors:
+        lines.append(f"## Errors ({len(result.errors)})")
+        lines.append("")
+        for e in result.errors:
+            lines.append(f"- {e}")
+        lines.append("")
+
+    # --- Timings --------------------------------------------------------
+    if result.timings:
+        lines.append("## Timings")
+        lines.append("")
+        lines.append("| Step | Duration (s) |")
+        lines.append("|---|---|")
+        for step, secs in result.timings.items():
+            lines.append(f"| {step} | {secs:.3f} |")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def recent_dream_reports(cfg: Config, n: int = 3) -> list[dict]:
+    """Return up to ``n`` most recent dream-report descriptors (newest first).
+
+    Each entry: ``{cycle_id, path, mtime}``. Sorted by file mtime
+    descending. Used by ``state_of_play`` to surface "Recent Maintenance"
+    links — the user clicks through to read what the cycle did.
+
+    Returns ``[]`` if the reports directory doesn't exist (dream has
+    never run on this vault).
+    """
+    reports_dir = dream_reports_dir(cfg)
+    if not reports_dir.exists():
+        return []
+    rows: list[dict] = []
+    for path in reports_dir.glob("dream-*.md"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        rows.append({
+            "cycle_id": path.stem,
+            "path": str(path),
+            "mtime": mtime,
+        })
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return rows[:n]

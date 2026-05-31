@@ -57,9 +57,7 @@ def _cmd_scan(args: argparse.Namespace) -> None:
         f"  found: {s.get('drift_pairs', 0)} drift · "
         f"{s.get('promotion_candidates', 0)} promotions "
         f"(cap {result.promotion_cap}) · "
-        f"{s.get('theme_candidates', 0)} theme-candidates · "
-        f"{s.get('dormant_themes', 0)} dormant · "
-        f"{s.get('resolved_themes', 0)} resolved"
+        f"{s.get('theme_cluster_signals', 0)} theme-signals"
     )
     if result.promotion_candidates:
         print("  promotion candidates:")
@@ -69,19 +67,16 @@ def _cmd_scan(args: argparse.Namespace) -> None:
         print("  drift pairs (post-filter):")
         for d in result.drift_pairs:
             print(f"    {d['from']} → {d['to']}  ({d.get('reason', '')})")
-    if result.theme_candidates:
-        print(f"  theme candidates: {len(result.theme_candidates)}")
-        for tc in result.theme_candidates[:10]:
-            concepts = ", ".join(tc.get("cluster_concepts") or [])
-            print(f"    {tc['candidate_id']}: {concepts}")
-    if result.dormant_themes:
-        print("  dormant themes:")
-        for dt in result.dormant_themes:
-            print(f"    {dt['theme_id']}: {dt.get('title', '')}")
-    if result.resolved_themes:
-        print("  resolved themes:")
-        for rt in result.resolved_themes:
-            print(f"    {rt['theme_id']}: {rt.get('title', '')}")
+    if result.theme_cluster_signals:
+        print(f"  theme cluster signals: {len(result.theme_cluster_signals)}")
+        for sig in result.theme_cluster_signals[:10]:
+            concepts = ", ".join(sig.get("shared_concepts") or [])
+            cov = sig.get("covering_themes") or []
+            tag = f" → extend {cov[0]['slug']}" if cov else " → mint"
+            names = ", ".join((sig.get("proposed_names") or {}).keys())
+            print(f"    [{concepts}]{tag}  ({sig.get('source_count', 0)} src)")
+            if names:
+                print(f"      proposed: {names}")
     if result.timings:
         parts = " · ".join(
             f"{k} {v:.2f}s" for k, v in sorted(result.timings.items())
@@ -118,9 +113,8 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         summary = {
             "merges": len(plan.get("merges") or []),
             "promotions": len(plan.get("promotions") or []),
-            "theme_promotions": len(plan.get("theme_promotions") or []),
-            "candidates_archived": len(plan.get("candidates_archived") or []),
-            "theme_status_changes": len(plan.get("theme_status_changes") or []),
+            "theme_mints": len(plan.get("theme_mints") or []),
+            "theme_extensions": len(plan.get("theme_extensions") or []),
             "essence_rewrites": len(plan.get("essence_rewrites") or []),
         }
         if args.json:
@@ -145,9 +139,8 @@ def _cmd_apply(args: argparse.Namespace) -> None:
     print(
         f"  applied: {result.merges_applied} merges · "
         f"{result.promotions_applied} promotions · "
-        f"{result.candidates_promoted} theme-promotions · "
-        f"{result.candidates_archived} candidates-archived · "
-        f"{result.theme_status_changes} theme-status · "
+        f"{result.themes_minted} themes-minted · "
+        f"{result.themes_extended} themes-extended · "
         f"{result.essence_rewrites_logged} essence-rewrites (log-only)"
     )
     print(

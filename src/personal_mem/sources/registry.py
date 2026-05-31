@@ -52,8 +52,9 @@ class SourceTypeSpec:
         description: one-liner shown by ``mem sources list``.
         temporal_grain: how the source type relates to time-ordered narrative.
             ``event`` — emits temporally-anchored signals (substack, news);
-            theme-candidate floater runs at post-ingest and may write stubs
-            to ``vault/themes/_candidates/``.
+            workers stamp ``proposed_theme:`` and ``/dream`` clusters recent
+            stamps into themes (no candidate stubs — that flow was removed
+            in the 2026-05-30 teardown).
             ``concept`` — emits domain knowledge with no inherent time arc
             (paper, repo, article); concept hubs handle synthesis, no theme
             floating.
