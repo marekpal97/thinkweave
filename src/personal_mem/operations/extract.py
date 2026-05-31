@@ -289,13 +289,15 @@ def extract_session(
 
     for dec in decisions_in:
         outcome_value = dec.get("outcome", "committed")
-        status = {
-            "committed": "accepted",
-            "abandoned": "proposed",
-            "partial": "proposed",
-        }.get(outcome_value, "proposed")
+        # Tightened semantics (B8, 2026-05-29): every decision lands as
+        # `proposed` regardless of outcome. The commit_refs-matching pass
+        # below flips up to `accepted` ONLY when at least one matching
+        # commit hash is found on the session. This guarantees every
+        # `accepted` decision carries commit evidence — the status badge
+        # becomes load-bearing again. The user-asserted classification
+        # remains visible via the `committed: bool` field below.
         extra_fm = {
-            "status": status,
+            "status": "proposed",
             "committed": outcome_value == "committed",
             "source_session": session_id,
             "derived_from": [session_id],
@@ -410,9 +412,16 @@ def extract_session(
                 if dec_basenames & commit_basenames:
                     matched_hashes.append(commit_hash)
             if matched_hashes:
+                # Tightened semantics (B8): the up-flip to `accepted`
+                # happens here, gated on real commit evidence. Decisions
+                # whose outcome was `committed` but whose file_paths
+                # don't intersect any session commit stay `proposed`.
+                fm_update: dict = {"commit_refs": matched_hashes}
+                if dec_note.frontmatter.get("committed"):
+                    fm_update["status"] = "accepted"
                 vm.update_note(
                     vm.root / dec_note.path,
-                    frontmatter_updates={"commit_refs": matched_hashes},
+                    frontmatter_updates=fm_update,
                 )
 
     try:
