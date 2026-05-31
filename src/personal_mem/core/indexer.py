@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS edges (
     edge_type  TEXT NOT NULL,
     metadata   TEXT,
     created_at TEXT NOT NULL,
+    -- C19a: edge weight. For concept/tag edges this is len(metadata["shared"]) —
+    -- the count of shared concepts/tags driving the edge — so the graph walk
+    -- can rank neighbours by tie-strength. Structural edges (supersedes,
+    -- derived_from, session_dir, etc.) default to 1.0.
+    weight     REAL NOT NULL DEFAULT 1.0,
     PRIMARY KEY (source, target, edge_type)
 );
 
@@ -215,6 +220,43 @@ class Indexer:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(notes)")}
         if "file_mtime" not in cols:
             self.db.execute("ALTER TABLE notes ADD COLUMN file_mtime REAL")
+
+        # C19a: edge weights. Older vaults created `edges` without the
+        # weight column. Add it now and backfill from `metadata` — for
+        # concept/tag edges weight = len(metadata["shared"]); structural
+        # edges keep the DEFAULT 1.0. The backfill is idempotent: a
+        # subsequent migration call sees the column present and skips.
+        edge_cols = {r[1] for r in self.db.execute("PRAGMA table_info(edges)")}
+        if "weight" not in edge_cols:
+            self.db.execute(
+                "ALTER TABLE edges ADD COLUMN weight REAL NOT NULL DEFAULT 1.0"
+            )
+            for row in self.db.execute(
+                "SELECT source, target, edge_type, metadata FROM edges"
+            ):
+                meta_raw = row["metadata"] or "{}"
+                try:
+                    meta = json.loads(meta_raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+                if meta.get("via") not in ("concept", "tag"):
+                    continue
+                shared = meta.get("shared") or []
+                if not isinstance(shared, list) or not shared:
+                    continue
+                self.db.execute(
+                    "UPDATE edges SET weight = ? WHERE source = ? "
+                    "AND target = ? AND edge_type = ?",
+                    (
+                        float(len(shared)),
+                        row["source"],
+                        row["target"],
+                        row["edge_type"],
+                    ),
+                )
+            self.db.commit()
 
     def close(self) -> None:
         if self._db:
@@ -688,9 +730,10 @@ class Indexer:
             if session_id and nid != session_id:
                 meta = json.dumps({"via": "session_dir"})
                 self.db.execute(
-                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (nid, session_id, "derived_from", meta, now),
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, session_id, "derived_from", meta, now, 1.0),
                 )
                 edge_count += 1
 
@@ -715,9 +758,10 @@ class Indexer:
             if len(shared) >= cfg.concept_edge_threshold:
                 metadata = json.dumps({"via": "concept", "shared": shared})
                 self.db.execute(
-                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared))),
                 )
                 edge_count += 1
 
@@ -743,9 +787,10 @@ class Indexer:
             if len(shared) >= cfg.tag_edge_threshold:
                 metadata = json.dumps({"via": "tag", "shared": shared})
                 self.db.execute(
-                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared))),
                 )
                 edge_count += 1
 
@@ -884,9 +929,9 @@ class Indexer:
                 meta = json.dumps({"via": "session_dir"})
                 self.db.execute(
                     "INSERT OR IGNORE INTO edges "
-                    "(source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (nid, sess_id, "derived_from", meta, now),
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, sess_id, "derived_from", meta, now, 1.0),
                 )
                 edge_count += 1
 
@@ -906,9 +951,9 @@ class Indexer:
                     meta = json.dumps({"via": "session_dir"})
                     self.db.execute(
                         "INSERT OR IGNORE INTO edges "
-                        "(source, target, edge_type, metadata, created_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (sibling_id, nid, "derived_from", meta, now),
+                        "(source, target, edge_type, metadata, created_at, weight) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (sibling_id, nid, "derived_from", meta, now, 1.0),
                     )
                     edge_count += 1
 
@@ -961,9 +1006,9 @@ class Indexer:
                 metadata = json.dumps({"via": "concept", "shared": shared_unique})
                 self.db.execute(
                     "INSERT OR IGNORE INTO edges "
-                    "(source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared_unique))),
                 )
                 edge_count += 1
 
@@ -1016,18 +1061,27 @@ class Indexer:
                 metadata = json.dumps({"via": "tag", "shared": shared_unique})
                 self.db.execute(
                     "INSERT OR IGNORE INTO edges "
-                    "(source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared_unique))),
                 )
                 edge_count += 1
 
         return edge_count
 
-    def _insert_edge(self, source: str, target: str, edge_type: str, created_at: str) -> None:
+    def _insert_edge(
+        self,
+        source: str,
+        target: str,
+        edge_type: str,
+        created_at: str,
+        weight: float = 1.0,
+    ) -> None:
         self.db.execute(
-            "INSERT OR IGNORE INTO edges (source, target, edge_type, created_at) VALUES (?, ?, ?, ?)",
-            (source, target, edge_type, created_at),
+            "INSERT OR IGNORE INTO edges "
+            "(source, target, edge_type, created_at, weight) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (source, target, edge_type, created_at, float(weight)),
         )
 
     def _rebuild_fts(self) -> None:

@@ -382,6 +382,83 @@ class TestSearch:
         assert results == []
 
 
+class TestPathRankWalk:
+    """C19e — get_related(rank=True) returns neighbours sorted by
+    Σ(edge_weight). Default rank=False preserves legacy order
+    (covered by existing tests above)."""
+
+    def test_rank_orders_by_path_score(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        # Hub note A. Two satellites: B shares 3 concepts (weight 3),
+        # C shares 1 concept (weight 1). With rank=True, B must come
+        # before C.
+        a = vault.create_note(
+            NoteType.NOTE, "A", body="x", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        c = vault.create_note(
+            NoteType.NOTE, "C", body="z", project="p",
+            extra_frontmatter={"concepts": ["alpha", "delta"]},
+        )
+        indexer.rebuild(full=True)
+
+        results = search.search("A", note_type="note")
+        a_id = next(r.id for r in results if r.title == "A")
+
+        ranked = search.get_related(a_id, depth=1, rank=True)
+        ids = [n.id for n in ranked]
+        b_id = next(r.id for r in search.search("B") if r.title == "B")
+        c_id = next(r.id for r in search.search("C") if r.title == "C")
+        assert b_id in ids and c_id in ids
+        assert ids.index(b_id) < ids.index(c_id)
+
+        # path_score reflects the heavier edge.
+        b_node = next(n for n in ranked if n.id == b_id)
+        c_node = next(n for n in ranked if n.id == c_id)
+        assert b_node.path_score > c_node.path_score
+
+    def test_rank_false_does_not_change_legacy_behaviour(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        """Default rank=False keeps path_score = 0 on every node."""
+        a = vault.create_note(
+            NoteType.NOTE, "A", body="x", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        indexer.rebuild(full=True)
+        a_id = next(r.id for r in search.search("A") if r.title == "A")
+        default = search.get_related(a_id, depth=1)
+        assert all(n.path_score == 0.0 for n in default)
+
+    def test_edges_carry_weight_when_walked(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        a = vault.create_note(
+            NoteType.NOTE, "A", body="x", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        indexer.rebuild(full=True)
+        a_id = next(r.id for r in search.search("A") if r.title == "A")
+        results = search.get_related(a_id, depth=1)
+        # There's exactly one edge between A and B (the concept edge),
+        # weight = 2 (shared concepts = alpha + beta).
+        edges = [e for n in results for e in n.edges if e.edge_type == "relates_to"]
+        assert any(e.weight == 2.0 for e in edges)
+
+
 class TestNoteConceptsTable:
     """Tests for the materialized note_concepts table."""
 
@@ -769,6 +846,71 @@ class TestConceptEdges:
             "SELECT COUNT(*) as cnt FROM edges WHERE metadata IS NOT NULL"
         ).fetchone()
         assert row["cnt"] == 0
+
+
+class TestEdgeWeights:
+    """C19a — edges carry a ``weight`` column. Concept/tag edges set
+    weight = len(metadata['shared']); structural edges default to 1.0."""
+
+    def test_concept_edge_weight_matches_shared_count(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        vault.create_note(
+            NoteType.NOTE, "A", body="x", project="test",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        vault.create_note(
+            NoteType.NOTE, "B", body="y", project="test",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        indexer.rebuild(full=True)
+        row = indexer.db.execute(
+            "SELECT weight, metadata FROM edges "
+            "WHERE edge_type = 'relates_to' AND metadata LIKE '%concept%'"
+        ).fetchone()
+        assert row is not None
+        import json
+        meta = json.loads(row["metadata"])
+        assert row["weight"] == float(len(meta["shared"]))
+        assert row["weight"] == 3.0
+
+    def test_tag_edge_weight_matches_shared_count(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        # Need ≥ 2 shared tags (tag_edge_threshold default 2). Use
+        # non-excluded, non-broad tags.
+        vault.create_note(
+            NoteType.NOTE, "A", body="x", project="test",
+            extra_frontmatter={"tags": ["alpha-tag", "beta-tag"]},
+        )
+        vault.create_note(
+            NoteType.NOTE, "B", body="y", project="test",
+            extra_frontmatter={"tags": ["alpha-tag", "beta-tag"]},
+        )
+        indexer.rebuild(full=True)
+        row = indexer.db.execute(
+            "SELECT weight, metadata FROM edges "
+            "WHERE edge_type = 'relates_to' AND metadata LIKE '%tag%'"
+        ).fetchone()
+        assert row is not None
+        assert row["weight"] == 2.0
+
+    def test_structural_edge_defaults_to_weight_one(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        a = vault.create_note(NoteType.NOTE, "A", body="x", project="test")
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="test",
+            extra_frontmatter={"supersedes": ["n-aaaaaaaa"]},  # bogus but indexed
+        )
+        # Use the helper directly to ensure weight=1.0 for structural edges
+        # written via _insert_edge.
+        indexer._insert_edge("n-x1", "n-x2", "cites", "2026-05-31T00:00:00")
+        row = indexer.db.execute(
+            "SELECT weight FROM edges WHERE source='n-x1' AND target='n-x2'"
+        ).fetchone()
+        assert row is not None
+        assert row["weight"] == 1.0
 
 
 class TestSessionDirectoryEdges:
