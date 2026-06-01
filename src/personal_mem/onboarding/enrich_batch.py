@@ -340,6 +340,8 @@ def run_enrichment_batch(
         time.sleep(poll_interval)
 
     print("Streaming results...")
+    _spend_in = _spend_out = _spend_cr = _spend_cw = 0
+    _spend_model = ""
     for result in client.messages.batches.results(batch_id):
         custom_id = result.custom_id
         note_id = id_to_note.get(custom_id, "")
@@ -349,6 +351,13 @@ def run_enrichment_batch(
             stats["errors"].append(f"{custom_id}: {result.result.type}")
             continue
         message = result.result.message
+        _mu = getattr(message, "usage", None)
+        if _mu is not None:
+            _spend_in += getattr(_mu, "input_tokens", 0) or 0
+            _spend_out += getattr(_mu, "output_tokens", 0) or 0
+            _spend_cr += getattr(_mu, "cache_read_input_tokens", 0) or 0
+            _spend_cw += getattr(_mu, "cache_creation_input_tokens", 0) or 0
+            _spend_model = getattr(message, "model", "") or _spend_model
         text = ""
         for block in message.content:
             if getattr(block, "type", "") == "text":
@@ -362,6 +371,16 @@ def run_enrichment_batch(
         stats["enriched"] += 1
         stats["decisions_created"] += wb_counts["decisions_created"]
         stats["insights_appended"] += wb_counts["insights_appended"]
+
+    if _spend_in or _spend_out:
+        from personal_mem.core.spend import record_spend
+
+        record_spend(
+            "anthropic", _spend_model or "claude-opus-4", "onboard_enrich",
+            _spend_in, _spend_out,
+            tokens_cache_read=_spend_cr, tokens_cache_write=_spend_cw,
+            mode="cli",
+        )
 
     print(
         f"\nEnriched {stats['enriched']} session(s); "

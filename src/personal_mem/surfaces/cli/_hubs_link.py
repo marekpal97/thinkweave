@@ -183,6 +183,8 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
 
     applied_hubs = 0
     applied_entries = 0
+    _spend_in = _spend_out = 0
+    _spend_model = ""
     for line in output_content.splitlines():
         if not line.strip():
             continue
@@ -197,8 +199,13 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
         response = result.get("response", {})
         if response.get("status_code") != 200:
             continue
+        _body = response.get("body", {})
+        _u = _body.get("usage") or {}
+        _spend_in += _u.get("prompt_tokens", 0) or 0
+        _spend_out += _u.get("completion_tokens", 0) or 0
+        _spend_model = _body.get("model") or _spend_model
         raw = (
-            response.get("body", {})
+            _body
             .get("choices", [{}])[0]
             .get("message", {})
             .get("content", "")
@@ -252,6 +259,14 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
             hub.log_entries = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
             write_concept_hub(hub)
             applied_hubs += 1
+
+    if _spend_in or _spend_out:
+        from personal_mem.core.spend import record_spend
+
+        record_spend(
+            "openai", _spend_model or "gpt-5-mini", "hubs_link",
+            _spend_in, _spend_out, mode="cron",
+        )
 
     print(f"\nApplied linkage revisions to {applied_hubs} hub(s), {applied_entries} entries updated.")
 

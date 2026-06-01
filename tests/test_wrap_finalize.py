@@ -89,7 +89,10 @@ class TestFinalizeWrap:
         assert any("BACKLOG" in name.upper() for name in result.landing_written)
         # P1-9 — every step contributes a timing entry (even if the step is a
         # no-op or errors out; the `finally` blocks stamp wall time regardless).
-        assert set(result.timings) == {"prune", "index", "judge", "landing", "drift"}
+        # Cost-tracking adds a read-only `spend` rollup step.
+        assert set(result.timings) == {
+            "prune", "index", "judge", "landing", "drift", "spend",
+        }
         assert all(v >= 0.0 for v in result.timings.values())
 
     def test_judge_writes_verdict_to_decision_frontmatter(

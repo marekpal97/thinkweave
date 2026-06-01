@@ -272,5 +272,17 @@ class EmbeddingSearch:
         response.raise_for_status()
         data = response.json()
 
+        _usage = data.get("usage") or {}
+        from personal_mem.core.spend import record_spend
+
+        record_spend(
+            "openai",
+            self.config.embedding_model,
+            "embed",
+            _usage.get("prompt_tokens", 0),
+            0,
+            mode="cron",
+        )
+
         # OpenAI-compatible response format
         return [item["embedding"] for item in data["data"]]

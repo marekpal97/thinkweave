@@ -162,7 +162,20 @@ def _call_openai(
     )
     response.raise_for_status()
 
-    raw = response.json()["choices"][0]["message"]["content"].strip()
+    data = response.json()
+    _usage = data.get("usage") or {}
+    from personal_mem.core.spend import record_spend
+
+    record_spend(
+        "openai",
+        ENRICH_MODEL,
+        "enrich",
+        _usage.get("prompt_tokens", 0),
+        _usage.get("completion_tokens", 0),
+        mode="cli",
+    )
+
+    raw = data["choices"][0]["message"]["content"].strip()
 
     # Strip markdown code fences if present
     if raw.startswith("```"):

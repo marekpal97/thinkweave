@@ -594,6 +594,7 @@ def _call_gemini_for_audio(api_key: str, model: str, audio_path: Path) -> str:
             temperature=0.2,
         ),
     )
+    _record_gemini_spend(response, model, "gemini_extract")
     return getattr(response, "text", "") or ""
 
 
@@ -636,7 +637,26 @@ def _call_gemini_for_youtube(api_key: str, model: str, url: str) -> str:
             temperature=0.2,
         ),
     )
+    _record_gemini_spend(response, model, "gemini_extract")
     return getattr(response, "text", "") or ""
+
+
+def _record_gemini_spend(response, model: str, op: str) -> None:
+    """Best-effort Layer-B spend capture from a Gemini response's
+    ``usage_metadata`` (``prompt_token_count`` / ``candidates_token_count``)."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return
+    from personal_mem.core.spend import record_spend
+
+    record_spend(
+        "gemini",
+        model,
+        op,
+        getattr(meta, "prompt_token_count", 0) or 0,
+        getattr(meta, "candidates_token_count", 0) or 0,
+        mode="mcp",
+    )
 
 
 def _maybe_load_env_file() -> None:

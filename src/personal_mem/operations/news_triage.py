@@ -297,7 +297,19 @@ def triage_items(
         timeout=60.0,
     )
     response.raise_for_status()
-    raw = response.json()["choices"][0]["message"]["content"]
+    data = response.json()
+    _usage = data.get("usage") or {}
+    from personal_mem.core.spend import record_spend
+
+    record_spend(
+        "openai",
+        model,
+        "news_triage",
+        _usage.get("prompt_tokens", 0),
+        _usage.get("completion_tokens", 0),
+        mode="cron",
+    )
+    raw = data["choices"][0]["message"]["content"]
     return parse_triage_response(raw, items)
 
 

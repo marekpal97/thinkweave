@@ -159,7 +159,7 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 
 ## 7. CLI reference (Bash)
 
-The CLI exposes **40 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
+The CLI exposes **41 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
 
 Consolidations to keep in mind: wikilink materialisation lives under
 `mem index --materialize-links` (was `mem connect`, deleted 2026-05-21);
@@ -195,7 +195,8 @@ mem flow {list|show|run}                    # named workflow pipelines
 mem skill {list|show <name>}                # inspect commands/*.md frontmatter
 mem sources {list|show <slug>}              # inspect source-type registry
 mem prune-orphans [--yes]                   # delete abandoned session folders (used by /mem-wrap)
-mem wrap-finalize <ses-id> [--project X]    # deterministic tail of /mem-wrap: prune→index→judge→landing→drift (--json for headless)
+mem wrap-finalize <ses-id> [--project X]    # deterministic tail of /mem-wrap: prune→index→judge→landing→drift→spend (--json for headless)
+mem spend [<ses-id>] [--since] [--until] [--project X] [--json]  # two-layer cost ledger: Layer A (Claude turns, read from native transcript) + Layer B (mem internal ops). Session report or date-range rollup.
 mem rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (one per decision)
 mem update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
 mem enrich [--project X]                    # LLM concept enrichment (gpt-5-mini)

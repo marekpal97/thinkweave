@@ -338,8 +338,9 @@ class TestDispatchTable:
         # Phase-3 prediction-judge rework adds `mem judge`: 35 → 36.
         # C24 CLI parity (Slice 4) adds unlink, timeline,
         # project-snapshot, prompts: 36 → 40.
+        # Cost-tracking adds `mem spend` (two-layer ledger report): 40 → 41.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
         from personal_mem.surfaces.cli import _DISPATCH
 
-        assert len(_DISPATCH) == 40
+        assert len(_DISPATCH) == 41

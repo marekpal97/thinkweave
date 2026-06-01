@@ -231,6 +231,8 @@ def run_hubs_batch(
 
     applied = 0
     essence_flagged: set[str] = set()
+    _spend_in = _spend_out = 0
+    _spend_model = ""
     for line in output_content.splitlines():
         if not line.strip():
             continue
@@ -248,6 +250,10 @@ def run_hubs_batch(
         if response.get("status_code") != 200:
             continue
         body = response.get("body", {})
+        _u = body.get("usage") or {}
+        _spend_in += _u.get("prompt_tokens", 0) or 0
+        _spend_out += _u.get("completion_tokens", 0) or 0
+        _spend_model = body.get("model") or _spend_model
         choices = body.get("choices", [])
         if not choices:
             continue
@@ -262,6 +268,14 @@ def run_hubs_batch(
             applied += len(entries)
         if needs_essence:
             essence_flagged.add(concept)
+
+    if _spend_in or _spend_out:
+        from personal_mem.core.spend import record_spend
+
+        record_spend(
+            "openai", _spend_model or "gpt-5-mini", "hubs_backfill",
+            _spend_in, _spend_out, mode="cron",
+        )
 
     print(f"\nApplied {applied} new log entries.")
     if essence_flagged:
