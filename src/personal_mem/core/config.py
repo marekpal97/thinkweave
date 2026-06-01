@@ -29,6 +29,21 @@ class Config:
     tag_edge_max_freq_pct: float = 0.10  # skip tags in >10% of notes
     tag_edge_exclude: tuple[str, ...] = ("todo", "probe", "parked", "til")
 
+    # Dream apply-phase gates (Slice 1.5)
+    # When False (default), priority_signals with action='enqueue' are
+    # counted as logged-only — the LLM's intent is preserved on disk
+    # but no queue write happens. Flip to True after the first cycle's
+    # report has been reviewed.
+    dream_enqueue_priority_signals: bool = False
+
+    # C19b — per-concept PageRank. When True, the dream apply phase
+    # computes per-concept-induced-subgraph PageRank after each
+    # rebuild. Stored in the ``graph_ranks`` table; consumed by
+    # ``mem_concepts(action='canonical_for', concept=X)``. Adds ~1s
+    # per 100 active concepts on a typical vault (pure-Python power
+    # iteration), so off by default until the user opts in.
+    dream_compute_pagerank: bool = False
+
     @property
     def mem_dir(self) -> Path:
         return self.vault_root / ".mem"
@@ -88,6 +103,15 @@ def load_config() -> Config:
             cfg.tag_edge_max_freq_pct = float(edges["tag_max_freq_pct"])
         if "tag_exclude" in edges:
             cfg.tag_edge_exclude = tuple(edges["tag_exclude"])
+
+        # Dream apply-phase gates
+        dream_cfg = data.get("dream", {})
+        if "enqueue_priority_signals" in dream_cfg:
+            cfg.dream_enqueue_priority_signals = bool(
+                dream_cfg["enqueue_priority_signals"]
+            )
+        if "compute_pagerank" in dream_cfg:
+            cfg.dream_compute_pagerank = bool(dream_cfg["compute_pagerank"])
 
     # Per-field env overrides
     if os.environ.get("PERSONAL_MEM_PROJECT"):

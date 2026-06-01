@@ -71,18 +71,64 @@ class EmbeddingSearch:
             self._db.close()
             self._db = None
 
-    def compute_all(self) -> dict:
-        """Compute embeddings for all notes in the index.
+    def latest_embedded_at(self) -> str | None:
+        """Return the ISO timestamp of the most-recently-cached embedding.
 
-        Skips notes whose content_hash hasn't changed.
-        Returns stats dict.
+        Returns ``None`` when the embeddings table is empty. Used by
+        ``compute_all(only_new=True)`` and ``mem doctor`` to drive the
+        keep-warm story — a cheap signal that the embed cron hasn't run.
         """
-        # Read all notes from the main index
+        row = self.db.execute("SELECT MAX(created_at) FROM embeddings").fetchone()
+        if row is None:
+            return None
+        # sqlite returns a Row; index by 0 to get the scalar.
+        return row[0]
+
+    def compute_all(self, *, only_new: bool = False, since: str = "") -> dict:
+        """Compute embeddings for notes in the index.
+
+        Skips notes whose content_hash hasn't changed (so re-runs are
+        idempotent even over the full set). The ``only_new`` /  ``since``
+        knobs let cron drive a cheap nightly refresh that doesn't pull
+        every note's body into Python.
+
+        Args:
+            only_new: When True, restrict the candidate set to notes
+                whose ``updated_at`` is strictly greater than the most
+                recent ``embeddings.created_at`` (i.e. the
+                "everything embedded before the last embed run is
+                trusted"  contract). On an empty embeddings table this
+                degrades to a full scan.
+            since: ISO timestamp; alternative cutoff for the
+                ``updated_at`` filter. Overrides ``only_new``'s
+                derived cutoff when both are passed. Pass to backfill
+                a known window (e.g. ``--since 2026-05-01``).
+
+        Returns stats dict ``{computed, skipped, errors, scanned, cutoff}``.
+        ``scanned`` is the number of rows pulled from the index;
+        ``cutoff`` is the ISO timestamp actually applied (or "" when
+        none).
+        """
+        # Decide the cutoff. Explicit `since` wins; otherwise derive
+        # from the embeddings table when only_new is set.
+        cutoff = since or ""
+        if not cutoff and only_new:
+            cutoff = self.latest_embedded_at() or ""
+
+        # Read candidate notes from the main index, restricted by cutoff
+        # when one is set.
         index_db = sqlite3.connect(str(self.config.index_db))
         index_db.row_factory = sqlite3.Row
-        notes = index_db.execute(
-            "SELECT id, title, body_text, content_hash FROM notes"
-        ).fetchall()
+        if cutoff:
+            notes = index_db.execute(
+                "SELECT id, title, body_text, content_hash FROM notes "
+                "WHERE updated_at > ?",
+                (cutoff,),
+            ).fetchall()
+        else:
+            notes = index_db.execute(
+                "SELECT id, title, body_text, content_hash FROM notes"
+            ).fetchall()
         index_db.close()
 
         # Get existing cached hashes
@@ -90,7 +136,13 @@ class EmbeddingSearch:
         for row in self.db.execute("SELECT note_id, content_hash FROM embeddings"):
             cached[row["note_id"]] = row["content_hash"]
 
-        stats = {"computed": 0, "skipped": 0, "errors": 0}
+        stats = {
+            "computed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "scanned": len(notes),
+            "cutoff": cutoff,
+        }
         batch_texts: list[tuple[str, str, str]] = []  # (note_id, text, content_hash)
 
         for note in notes:
@@ -219,6 +271,18 @@ class EmbeddingSearch:
         )
         response.raise_for_status()
         data = response.json()
+
+        _usage = data.get("usage") or {}
+        from personal_mem.core.spend import record_spend
+
+        record_spend(
+            "openai",
+            self.config.embedding_model,
+            "embed",
+            _usage.get("prompt_tokens", 0),
+            0,
+            mode="cron",
+        )
 
         # OpenAI-compatible response format
         return [item["embedding"] for item in data["data"]]

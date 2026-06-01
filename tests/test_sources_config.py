@@ -128,7 +128,7 @@ def test_default_config_has_newsletter_events() -> None:
     cfg = DEFAULT_CONFIG["sources"]["newsletter-events"]
     assert cfg["drain_strategy"] == "subagent"
     assert cfg["subagent_type"] == "research-newsletter-worker"
-    assert cfg["mail_connector"] == "gmail"
+    assert cfg["mail_provider"] == "gmail"
     assert cfg["processed_label"] == "mem-processed"
     assert cfg["lookback_days"] == 30
     assert "message_id" in cfg["dedup_keys"]
@@ -143,7 +143,7 @@ def test_default_config_has_newsletter_concepts() -> None:
     cfg = DEFAULT_CONFIG["sources"]["newsletter-concepts"]
     assert cfg["drain_strategy"] == "subagent"
     assert cfg["subagent_type"] == "research-newsletter-worker"
-    assert cfg["mail_connector"] == "gmail"
+    assert cfg["mail_provider"] == "gmail"
     # Concept-grain newsletters get a longer lookback — technical posts age slower.
     assert cfg["lookback_days"] == 90
     assert "message_id" in cfg["dedup_keys"]
@@ -189,5 +189,5 @@ sources:
     senders = cfg["sources"]["newsletter-events"]["senders"]
     assert senders == ["alerts@bloomberg.com", "levine@bloomberg.net", "stratechery.com"]
     # Other defaults preserved.
-    assert cfg["sources"]["newsletter-events"]["mail_connector"] == "gmail"
+    assert cfg["sources"]["newsletter-events"]["mail_provider"] == "gmail"
     assert cfg["sources"]["newsletter-events"]["processed_label"] == "mem-processed"

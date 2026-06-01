@@ -226,97 +226,15 @@ def add_hubs_subparsers(sub) -> None:
 def add_themes_subparsers(sub) -> None:
     p_themes = sub.add_parser(
         "themes",
-        help=(
-            "Theme candidate scan / archive / promotion — backs the "
-            "/themes-resolve skill's source-coupled floating mechanism."
-        ),
+        help="Theme registry maintenance.",
     )
     themes_sub = p_themes.add_subparsers(dest="themes_action")
 
-    p_scan = themes_sub.add_parser(
-        "scan-candidates",
-        help=(
-            "Scan recent event-grain sources for clusters; write candidate "
-            "stubs to vault/themes/_candidates/. Deterministic, no LLM."
-        ),
-    )
-    p_scan.add_argument(
-        "--source-type", default="",
-        help="Restrict to one source type (default: all event-grain types).",
-    )
-    p_scan.add_argument(
-        "--recent-days", type=int, default=0,
-        help="Window for 'recent' sources (default: 30).",
-    )
-    p_scan.add_argument(
-        "--min-cluster-size", type=int, default=0,
-        help="Minimum sources in a cluster to trigger a candidate (default: 3).",
-    )
-    p_scan.add_argument(
-        "--min-shared-concepts", type=int, default=0,
-        help="Minimum concept overlap between cluster sources (default: 2).",
-    )
-    p_scan.add_argument(
-        "--dry-run", action="store_true",
-        help="Report what would be created without writing files.",
-    )
-
-    p_archive = themes_sub.add_parser(
-        "archive-stale-candidates",
-        help=(
-            "Move candidates older than --stale-days into "
-            "vault/themes/_candidates/_archive/."
-        ),
-    )
-    p_archive.add_argument(
-        "--stale-days", type=int, default=0,
-        help="Age threshold in days (default: 30).",
-    )
-    p_archive.add_argument(
-        "--dry-run", action="store_true",
-        help="Report what would be archived without moving files.",
-    )
-
-    p_promote = themes_sub.add_parser(
-        "promote-candidate",
-        help=(
-            "Mint a thm- ID from a candidate stub, write the canonical "
-            "theme file, delete the candidate."
-        ),
-    )
-    p_promote.add_argument("candidate_id", help="Candidate ID (e.g. cand-abcd1234).")
-    p_promote.add_argument(
-        "--title", default="",
-        help=(
-            "Theme title (used for filename slug and `## Essence` heading). "
-            "Defaults to the stub's `proposed_slug:` frontmatter when present."
-        ),
-    )
-    p_promote.add_argument(
-        "--essence", default="",
-        help=(
-            "Initial essence paragraph (≤500 words). Defaults to the "
-            "stub's `## Proposed essence` block when present."
-        ),
-    )
-    p_promote.add_argument("--project", default="", help="Optional project tag.")
-    p_promote.add_argument(
-        "--parent", default="",
-        help=(
-            "Parent theme id (thm-XXXXXXXX). Establishes a child relation "
-            "in the two-tier theme hierarchy. Empty = top-level."
-        ),
-    )
-
-    themes_sub.add_parser(
+    rebuild = themes_sub.add_parser(
         "rebuild-registry",
-        help=(
-            "Rebuild vault/.mem/themes.yaml from vault/themes/*.md. "
-            "One-off backfill or recovery when the registry drifts."
-        ),
+        help="Rebuild themes.yaml from canonical theme markdown files.",
     )
-
-
+    rebuild.add_argument("--project", default="")
 def add_drain_subparsers(sub) -> None:
     p_queue = sub.add_parser(
         "queue",
@@ -364,7 +282,8 @@ def add_drain_subparsers(sub) -> None:
         "discover",
         help=(
             "Run discovery strategies (concept_coverage, decision_review, "
-            "theme_drift, external_tool_runner). Returns gap descriptors as JSON."
+            "external_tool_runner, rss_poll, mail_poll). Returns gap "
+            "descriptors as JSON."
         ),
     )
     p_discover.add_argument(

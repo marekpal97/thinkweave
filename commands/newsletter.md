@@ -65,7 +65,7 @@ ToolSearch(query="select:mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Gma
 
 If the names differ in your connector version, search by keyword and adapt. If thread-search isn't discoverable, stop with `"Gmail MCP is connected but I can't find a thread-search tool. Confirm the Gmail connector is up to date and re-run."`.
 
-For `mail_connector: outlook` or `imap`: not implemented yet. Stop with `"Connector '<value>' not implemented yet — only gmail is wired."`.
+For `mail_provider: outlook` or `imap` (formerly `mail_connector:`; both names accepted): not implemented in v1. Stop with `"Provider '<value>' not implemented yet — only gmail is wired."`.
 
 ---
 
@@ -214,9 +214,7 @@ In normal operation guard 1 stops every re-read at the mail layer; 2 and 3 cover
 | `/newsletter` | Plan + fetch + drain + label all `newsletter-*` queues in one shot |
 | `/newsletter newsletter-events` | Same, limited to one source type |
 | `mem discover --strategy mail_poll --source-type newsletter-events` | Inspect the effective Gmail query for one type (read-only) |
-| `/drain --source-type newsletter-events` | Drain only (when the queue was already filled, e.g. after a crash mid-run) |
-| `/themes-resolve --promote <cand-id>` | Promote a floated candidate stub into a canonical `thm-` theme |
-| `/source-fit` | Diagnose whether a new newsletter shape fits the existing two types |
+| `/drain --source-type newsletter-events` | Drain only (when the queue was already filled, e.g. after a crash mid-run) || `/source-fit` | Diagnose whether a new newsletter shape fits the existing two types |
 
 ---
 

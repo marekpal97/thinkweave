@@ -152,6 +152,29 @@ pipx inject personal-mem feedparser readability-lxml httpx
 One-off ingest stays available via `/news <url>` (in-conversation) —
 runs the same triage as the cron path.
 
+### Embeddings keep-warm
+
+Similarity (`mem_search mode=similar`) and hybrid (`mode=hybrid`)
+retrieval both read from `<vault>/.mem/embeddings.db`. As you add
+sessions, decisions, and sources, fresh notes have no cached embedding
+until you re-run `mem index --embed` — so hybrid retrieval silently
+degrades to FTS-only on the most recent (most relevant) content.
+
+Add a cron line that refreshes incrementally. The `--only-new` flag
+filters to notes whose `updated_at` exceeds the most recent
+`embeddings.created_at`, so each run only embeds new / changed notes
+— cheap enough to schedule every few hours even on a 10k-note vault.
+
+```cron
+# Embeddings keep-warm — see scripts/example-crontab for the canonical block.
+15 */4 * * * cd /path/to/personal_mem && OPENAI_API_KEY="${OPENAI_API_KEY}" uv run mem index --embed --only-new >> ~/.cache/personal_mem/embed-warm.log 2>&1
+```
+
+Verify it's running: `ls -la $PERSONAL_MEM_VAULT/.mem/embeddings.db`
+— the mtime should advance every refresh cycle. `mem doctor` warns
+when the DB is stale (> 7 days) AND `OPENAI_API_KEY` is set, so a
+stalled cron surfaces in the standard health check.
+
 ## Architecture
 
 - **Three retrieval modalities**: FTS, similarity, graph.

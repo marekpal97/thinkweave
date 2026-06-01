@@ -106,18 +106,20 @@ mem_create(
     "proposed_concepts": [<new ones>],
     # Theme attachment ↓
     # triage_verdict == "keep": theme was matched upstream by triage.
-    # triage_verdict == "keep_unfiled": no theme matched. If you can name
-    #   the arc this article represents (coherent narrative, not just
-    #   concept co-occurrence), set proposed_theme: <slug> instead of
-    #   (or in addition to) theme_unfiled: true. Apply the disambiguation
-    #   test from CLAUDE.md §4 before setting it. This is the per-source
-    #   analog of proposed_concepts: — /dream tallies proposed_theme:
-    #   stamps across the recent event-grain window and uses the top-voted
-    #   slug when naming new themes. Slug rules: 1-3 kebab words, no dates,
-    #   no parentheticals (e.g. iran-war / bond-vigilantes). When in doubt,
-    #   leave proposed_theme: unset and let theme_unfiled: true stand alone.
+    # triage_verdict == "keep_unfiled": no theme matched. DEFAULT to
+    #   naming the arc — set proposed_theme: <slug> to the most specific
+    #   coherent narrative this article belongs to. This is the per-source
+    #   analog of proposed_concepts:; /dream clusters recent proposed_theme
+    #   stamps into arc families (folding variant slugs) and mints or
+    #   extends a theme from each, so an un-stamped unfiled item is a lost
+    #   vote and falls back to noisy concept clustering. Apply the
+    #   disambiguation test from CLAUDE.md §4 (narrative arc, not just
+    #   concept co-occurrence). Slug rules: 1-3 kebab words, no dates, no
+    #   parentheticals (e.g. iran-war / bond-vigilantes). Only leave it
+    #   unset for a genuine one-off with no conceivable arc — theme_unfiled:
+    #   true stands either way.
     "relates_to": ["<theme_id>"] if triage_verdict == "keep" else [],
-    "proposed_theme": "<slug>" if keep_unfiled_and_arc_named else "",  # omit if empty
+    "proposed_theme": "<slug>",  # keep_unfiled: name the arc by default; "" only for a true one-off
     "theme_unfiled": true if triage_verdict == "keep_unfiled" else false,
     "triage_reason": "<the orchestrator's triage_reason>",
   }

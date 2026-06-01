@@ -138,7 +138,7 @@ Three acquisition patterns coexist — on purpose, because the inputs differ:
 
 - **JSONL queue** — `/drain --source-type <slug>` drains items from `vault/.mem/queues/<slug>.jsonl`. The Queue primitive (see §"Queue primitive") supports claim/dedup/archive. Items live outside the note graph until they become source notes.
 - **Disk inbox** — `/substack` drains files from `~/substack_inbox/` (outside the vault) and moves them to `_processed/<date>/` on success. Nothing mutates vault state until `mem_create` lands a source note.
-- **Mail connector** — `/newsletter` queries the user's mailbox via a swappable connector (`gmail` today, `outlook`/`imap` slot in behind the same `senders` / `lookback_days` / `processed_label` contract). The canonical inbound filter is the per-type `senders:` allowlist in `sources.yaml` — addresses or bare domains, composed into `from:(...)` for the connector. Empty allowlist + empty `mail_query` is a deliberate halt (no whole-inbox fan-out). The skill enqueues each new message to JSONL with `embedded_body`, fans out `research-newsletter-worker` subagents, then applies `processed_label` on the mail server to every successfully-written message. Three re-read guards stack: the label (primary, server-side), queue `dedup_keys: [message_id, url]` (secondary, at enqueue), and a worker `mem_search(message_id)` (tertiary, at write).
+- **Mail provider** (formerly `mail_connector`; C21 rename, 2026-05-31 — both names accepted at read time) — `/newsletter` queries the user's mailbox via a swappable provider. **v1 ships gmail-only**; `outlook` and `imap` are reserved slots, not wired. The per-type `mail_provider:` field in `sources.yaml` chooses the provider; `senders:` allowlist + `lookback_days` + `processed_label` form the provider-agnostic contract. Empty allowlist + empty `mail_query` is a deliberate halt (no whole-inbox fan-out). The skill enqueues each new message to JSONL with `embedded_body`, fans out `research-newsletter-worker` subagents, then applies `processed_label` on the mail server to every successfully-written message. Three re-read guards stack: the label (primary, server-side), queue `dedup_keys: [message_id, url]` (secondary, at enqueue), and a worker `mem_search(message_id)` (tertiary, at write).
 
 Legacy `todo+research` notes are migrated into the matching JSONL queue by `mem doctor --migrate` (see `operations/migrations.py`).
 
@@ -545,6 +545,8 @@ Six distinct dedup mechanisms, each scoped to a different kind of overlap:
 | Queue item dedup | `dedup_keys` from `sources.yaml` | `Queue.dedup_check` |
 
 Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), silently sidesteps (slug auto-increment, hash skip), or defers to a human-in-the-loop skill (`merge`, `/themes-resolve`).
+
+**Embeddings freshness.** Hybrid and similarity retrieval read from `<vault>/.mem/embeddings.db` (a derived index, rebuildable from markdown). Without an external trigger nothing repopulates it as new sessions / decisions / sources land, so similarity silently degrades to FTS-only on recent content. The "keep-warm" contract is a cron line (`mem index --embed --only-new`) that filters notes whose `updated_at` exceeds the most recent `embeddings.created_at` and re-embeds only that delta. `mem doctor` advisories on a stale DB (`embeddings.db` mtime > 7 days) when `OPENAI_API_KEY` is in the environment. See `scripts/example-crontab` for the canonical block.
 
 ## Invocation surface
 

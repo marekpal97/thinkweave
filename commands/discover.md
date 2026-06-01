@@ -25,10 +25,19 @@ description: Strategy-driven discovery. Runs the configured strategy list; strat
 
 | Flavor | Trigger | Examples | Side effect |
 |---|---|---|---|
-| **Internal-state** | Observe vault | `concept_coverage`, `decision_review`, `theme_drift` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
+| **Internal-state** | Observe vault | `concept_coverage`, `decision_review`, `prompt_gap` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
 | **External-trigger** | Observe outside world | `rss_poll`, `mail_poll`, `external_tool_runner` | Strategy enqueues directly (rss_poll) or emits a plan (mail_poll) |
 
 Both flavors share the same `run(vault, project, config)` contract.
+
+### Gap-emitters vs enqueue-emitters: an intentional dual (C20)
+
+The two flavors are **not** a TODO to merge. Gap-emitters scan vault state and report what's missing; enqueue-emitters observe outside signals and write the queue directly. Each emits a fundamentally different shape:
+
+- Gap-emitter output (`kind: "gap"`) carries concept/decision metadata and *describes* a need. The skill decides what to do about it (WebSearch + `mem_queue`, or surfacing in the report). Forcing gap-emitters to enqueue would conflate "scan and report" with "decide what to do" — the strategies would need synthesis logic that legitimately lives in this skill.
+- Enqueue-emitter output (`kind: "enqueued"` / `kind: "mail_fetch_needed"`) is already a queue item or a plan for one. The skill just records what happened.
+
+Future strategies that emit gap descriptors stay gap-emitters; future strategies that observe external signals enqueue directly. The split is healthy separation of concerns, not duplication.
 
 ## Built-in strategies
 
@@ -36,7 +45,6 @@ Both flavors share the same `run(vault, project, config)` contract.
 |---|---|---|
 | `concept_coverage` | internal-state | Load-bearing concepts with thin source coverage |
 | `decision_review` | internal-state | `proposed`/`accepted` decisions stalled past N days |
-| `theme_drift` | internal-state | `active` themes whose Catalyst log has gone silent |
 | `external_tool_runner` | external-trigger | User-provided scripts emit JSONL queue items |
 | `rss_poll` | external-trigger | RSS/Atom polling for any source type with `feed_config:` or `channels:` configured. Enqueues directly into the matching queue. |
 | `mail_poll` | external-trigger | Composes the effective Gmail query (sender allowlist + `processed_label` exclusion + lookback). Emits a `mail_fetch_needed` plan that `/newsletter` executes via Gmail MCP. |
@@ -82,8 +90,6 @@ Dispatch on `kind`:
 - **`kind: gap` (concept_coverage)** — run a WebSearch for the concept, dedup against existing sources / queue items via `mem_concepts(action="source_counts", concepts=[<name>])`, and create up to 3 queue items via `mem_queue`. Each new item carries `Gap: [[<concept>]]` in its body and the gap concept(s) in its `concepts` frontmatter (ontology terms — load `Read src/personal_mem/ontology.yaml` plus `mem_concepts(min_count=2)` for the live distribution).
 
 - **`kind: review` (decision_review)** — surface the decision in the run report; do not auto-queue. The user inspects via `mem show <decision_id>` and decides whether to flip status or schedule a re-discussion.
-
-- **`kind: drift` (theme_drift)** — list the silent themes; suggest flipping status to `dormant` via `/themes-resolve`. Do not write.
 
 - **`kind: external` (external_tool_runner)** — payloads are user-shaped. If they look like queue items (have `url` / `title` fields), enqueue via `mem_queue`. Otherwise pass through to the run report.
 

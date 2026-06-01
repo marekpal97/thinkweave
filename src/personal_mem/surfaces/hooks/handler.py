@@ -91,6 +91,17 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
     Gated to Write/Edit/Bash (file/command activity) plus the closed set
     of personal_mem MCP retrieval tools. Retrieval events feed the RLVR
     decision-context substrate — see ``operations/retrieval_log.py``.
+
+    Performance note: on retrieval-tool calls (``mcp__personal-mem__mem_search``
+    etc.) we deliberately *skip* the ``_ensure_session`` materialisation that
+    action tools trigger. The session note will be lazily created by the
+    next action/prompt event (already cheap there), or by the Stop hook's
+    fallback path for retrieval-only sessions. Without this skip, every
+    MCP retrieval call would pay an ``rglob(*.md)`` scan over the entire
+    vault — for large vaults that blows past Claude Code's 5s hook timeout
+    and the hook is cancelled before the buffer write lands, dropping the
+    retrieval event entirely. Measured 2026-05-26 against a ~1.5k-note
+    vault on WSL→9P: every ``mem_search`` PostToolUse hook was cancelled.
     """
     from personal_mem.operations.retrieval_log import RETRIEVAL_TOOLS
 
@@ -101,7 +112,12 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         return
 
     tool_input = hook_input.get("tool_input", {})
-    tool_output = hook_input.get("tool_output", "")
+    # Claude Code's PostToolUse payload uses ``tool_response`` (newer, an
+    # object with stdout/stderr) or ``tool_output`` (older string form).
+    # _extract_tool_output_text normalises both to a single string so
+    # downstream parsers (_parse_commit_from_output, build_retrieval_event,
+    # etc.) don't need provider-version awareness.
+    tool_output = _extract_tool_output_text(hook_input)
 
     try:
         from personal_mem.core.config import load_config
@@ -123,10 +139,12 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         if event:
             _buffer_event(cfg.mem_dir, session_id, event)
 
-        # Ensure session note exists (creates + indexes once on first event).
-        # Retrieval-only sessions (e.g. agent doing pure research) still get
-        # a session note materialised here.
-        _ensure_session(cfg, session_id, hook_input)
+        # Action-tool path materialises the session note (so MCP tools can
+        # discover it mid-conversation). Retrieval path defers — Stop hook
+        # creates one from the buffer if nothing else does. Keeps the
+        # retrieval hook latency O(buffer-append) rather than O(vault-scan).
+        if is_action_tool:
+            _ensure_session(cfg, session_id, hook_input)
 
         _output()
     except Exception as e:
@@ -182,9 +200,48 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
 
 
 def _find_session_note(vm, session_id: str) -> Path | None:
-    """Find an existing session note for this Claude Code session."""
+    """Find an existing session note for this Claude Code session.
+
+    Fast path: SQL probe against the indexer's ``notes`` table for any
+    ``type='session'`` row whose ``frontmatter`` blob contains
+    ``"source_session": "<id>"``. O(rows-with-type-session) substring
+    match, no markdown reads, no rglob.
+
+    Slow path: ``vm.list_notes`` rglob scan. Only reached if the index
+    DB is missing, locked, or stale (session note was just created and
+    hasn't been indexed yet). Cap at 20 to bound the scan.
+    """
     if not session_id:
         return None
+
+    # Fast path — SQLite probe. Substring LIKE on frontmatter is fine here:
+    # ``type='session'`` filter is selective (sessions are a tiny fraction
+    # of the notes table) and ``source_session`` values are UUIDs, so the
+    # match is unambiguous. We open a read-only connection so a contended
+    # write lock (e.g. ``mem index`` running concurrently) never blocks us.
+    try:
+        import sqlite3
+
+        cfg = vm.config
+        if cfg.index_db.exists():
+            uri = f"file:{cfg.index_db}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=1.0) as db:
+                row = db.execute(
+                    "SELECT path FROM notes "
+                    "WHERE type='session' AND frontmatter LIKE ? "
+                    "LIMIT 1",
+                    (f'%"source_session": "{session_id}"%',),
+                ).fetchone()
+                if row and row[0]:
+                    p = Path(row[0])
+                    abs_p = p if p.is_absolute() else vm.root / p
+                    if abs_p.exists():
+                        return abs_p
+    except Exception:
+        # Fall through to vault scan on any DB issue.
+        pass
+
+    # Slow path — vault scan. Kept as a correctness backstop.
     from personal_mem.core.schemas import NoteType
 
     for note in vm.list_notes(note_type=NoteType.SESSION, limit=20):
@@ -274,6 +331,57 @@ def _buffer_event(mem_dir: Path, session_id: str, event: dict) -> None:
     buf_dir.mkdir(parents=True, exist_ok=True)
     with open(buf_dir / f"{session_id}.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(event) + "\n")
+
+
+def _extract_tool_output_text(hook_input: dict) -> str:
+    """Pull the tool's output as a text string from a PostToolUse payload.
+
+    Claude Code's PostToolUse hook delivers the tool result under the
+    ``tool_response`` key (not ``tool_output``). For the ``Bash`` tool
+    specifically, ``tool_response`` is an *object* shaped like::
+
+        {"stdout": "...", "stderr": "...", "interrupted": false, "isImage": false}
+
+    For other tools (Write/Edit/MCP) it can be a string or an object with
+    tool-specific fields. This helper normalises any of those into a single
+    text blob the downstream parsers (``_parse_commit_from_output``,
+    ``_parse_test_result``, ``_extract_insight_blocks``, retrieval-event
+    builder) can scan with regex.
+
+    Order of preference:
+
+    1. ``tool_response`` — current Claude Code key. When a dict, concatenate
+       ``stdout`` + ``stderr`` (``git commit`` prints to stdout; ``pytest``
+       splits between the two; both regexes are fine on the concatenation).
+       When a string, use as-is.
+    2. ``tool_output`` — legacy key, kept for back-compat with any older
+       harness build or test fixture that still uses it.
+
+    Returns an empty string when nothing usable is present, which downstream
+    parsers already treat as a clean no-op.
+
+    Root-cause note: until this normalisation landed, ``_handle_post`` read
+    ``tool_output`` and got ``""`` for every Bash invocation — which meant
+    ``_parse_commit_from_output`` returned ``None`` and the ``commit``
+    subfield was never written. Empirically 0/405 native hook-emitted
+    sessions ever carried ``commits[]``. Audit item A1.
+    """
+    raw = hook_input.get("tool_response")
+    if raw is None:
+        raw = hook_input.get("tool_output", "")
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        stdout = raw.get("stdout", "") or ""
+        stderr = raw.get("stderr", "") or ""
+        if not isinstance(stdout, str):
+            stdout = str(stdout)
+        if not isinstance(stderr, str):
+            stderr = str(stderr)
+        if stdout and stderr:
+            return stdout + "\n" + stderr
+        return stdout or stderr or ""
+    return ""
 
 
 def _build_event(tool_name: str, tool_input: dict, tool_output, now: str) -> dict | None:
@@ -599,8 +707,18 @@ def _handle_stop(hook_input: dict) -> None:
 
         session_path = _find_session_note(vm, session_id)
         if not session_path:
-            _output()
-            return
+            # Retrieval-only fallback: there's a buffer (e.g. just retrieval
+            # events from an MCP-only agent turn) but no session note yet.
+            # Materialise one so ``archive_buffer`` has somewhere to land
+            # the retrieval log — without this the buffer would be orphaned
+            # and ``context_served`` would never receive an ``onthefly`` row.
+            buf_file = cfg.mem_dir / "buffer" / f"{session_id}.jsonl"
+            if buf_file.exists() and buf_file.stat().st_size > 0:
+                _ensure_session(cfg, session_id, hook_input)
+                session_path = _find_session_note(vm, session_id)
+            if not session_path:
+                _output()
+                return
 
         note = vm.read_note(session_path)
 
@@ -674,6 +792,19 @@ def _handle_stop(hook_input: dict) -> None:
             idx.close()
         except Exception as e:
             _log_error("stop/index", e)
+
+        # Opportunistic embed: A6 ships a cron-driven embedding refresh,
+        # but a freshly-archived session note shouldn't have to wait up to
+        # four hours for similarity retrieval to see it. Gated on the API
+        # key being present so machines without it stay silent. Failures
+        # never break the Stop hook — the cron path is the durable fallback.
+        if os.environ.get("OPENAI_API_KEY"):
+            try:
+                from personal_mem.core.embeddings import EmbeddingSearch
+
+                EmbeddingSearch(config=cfg).compute_all(only_new=True)
+            except Exception as e:
+                _log_error("stop/embed", e)
 
         _output()
     except Exception as e:

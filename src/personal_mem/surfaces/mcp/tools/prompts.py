@@ -33,12 +33,13 @@ def tool_schemas() -> list:
                 "UserPromptSubmit hook (Phase 4 E).\n\n"
                 "Returns prompts captured for a project, ordered by "
                 "recency. Each entry has `ts`, `text`, `session_id`, "
-                "`project`, and `cwd`. Source data lives in per-session "
-                "JSONL buffers, not the SQLite index — it's append-only "
-                "event data.\n\n"
+                "`project`, `cwd`, and `classification` (``\"probe\"`` "
+                "for exploratory user questions, ``null`` otherwise). "
+                "Source data lives in per-session JSONL buffers, not "
+                "the SQLite index — it's append-only event data.\n\n"
                 "Use to ground gap analysis in what the user has "
                 "actually been asking (e.g. /discover prioritises "
-                "concepts mentioned in recent prompts)."
+                "concepts mentioned in recent probe-classified prompts)."
             ),
             inputSchema={
                 "type": "object",
@@ -58,6 +59,14 @@ def tool_schemas() -> list:
                         "type": "integer",
                         "default": 50,
                         "description": "Max prompts to return.",
+                    },
+                    "classified_as": {
+                        "type": "string",
+                        "description": (
+                            "Optional classification filter (e.g. "
+                            "``\"probe\"`` to keep only exploratory "
+                            "questions). Skipped when omitted."
+                        ),
                     },
                 },
                 "required": ["project"],
@@ -86,11 +95,18 @@ def handle(cfg: Config, args: dict) -> str:
     project = args.get("project", "") or cfg.default_project
     since = args.get("since") or None
     limit = int(args.get("limit", 50))
+    classified_as = args.get("classified_as") or None
 
     if not project:
         return json.dumps({"error": "project required"})
 
-    rows = query_prompts(cfg, project=project, since=since, limit=limit)
+    rows = query_prompts(
+        cfg,
+        project=project,
+        since=since,
+        limit=limit,
+        classified_as=classified_as,
+    )
     return json.dumps(rows, indent=2)
 
 

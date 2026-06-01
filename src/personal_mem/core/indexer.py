@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS edges (
     edge_type  TEXT NOT NULL,
     metadata   TEXT,
     created_at TEXT NOT NULL,
+    -- C19a: edge weight. For concept/tag edges this is len(metadata["shared"]) —
+    -- the count of shared concepts/tags driving the edge — so the graph walk
+    -- can rank neighbours by tie-strength. Structural edges (supersedes,
+    -- derived_from, session_dir, etc.) default to 1.0.
+    weight     REAL NOT NULL DEFAULT 1.0,
     PRIMARY KEY (source, target, edge_type)
 );
 
@@ -120,6 +125,22 @@ CREATE TABLE IF NOT EXISTS context_served (
 
 CREATE INDEX IF NOT EXISTS idx_cs_session ON context_served(session_id);
 CREATE INDEX IF NOT EXISTS idx_cs_note ON context_served(note_id);
+
+-- C19b: per-concept-induced-subgraph PageRank scores.
+-- rank_type is keyed by 'pagerank:{concept}' so multiple ranking schemes
+-- can co-exist (e.g. future global PageRank, betweenness centrality).
+-- Computed during the dream apply phase when dream_compute_pagerank is on;
+-- consumed by mem_concepts(action='canonical_for', concept=X).
+CREATE TABLE IF NOT EXISTS graph_ranks (
+    note_id     TEXT NOT NULL,
+    rank_type   TEXT NOT NULL,
+    score       REAL NOT NULL,
+    computed_at TEXT NOT NULL,
+    PRIMARY KEY (note_id, rank_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gr_type ON graph_ranks(rank_type);
+CREATE INDEX IF NOT EXISTS idx_gr_score ON graph_ranks(score DESC);
 """
 
 FTS_SCHEMA_SQL = """
@@ -129,9 +150,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     body_text,
     tags,
     content='notes',
-    content_rowid='rowid'
+    content_rowid='rowid',
+    tokenize="unicode61 remove_diacritics 2 tokenchars '-_'"
 );
 """
+
+# Marker matched in the `sql` column of ``sqlite_master`` to detect whether the
+# live ``notes_fts`` table was created with the explicit tokenizer above. Older
+# vaults (pre-A4) created the table with the SQLite default (unicode61, which
+# splits on `-` and `_`); on first connect we detect that, drop the table, and
+# let ``executescript`` recreate it with the correct tokenizer. Index content
+# is rebuilt by ``_rebuild_fts`` the next time it's called — full rebuilds
+# call it unconditionally, and `_index_file` triggers an FTS sync on every
+# touched note. Existing data is safe; only the FTS index itself is regenerated.
+_FTS_TOKENIZER_MARKER = "tokenchars '-_'"
 
 # Frontmatter fields that map to typed edges
 EDGE_FIELD_MAP: dict[str, str] = {
@@ -176,6 +208,27 @@ class Indexer:
 
     def _init_schema(self) -> None:
         self.db.executescript(SCHEMA_SQL)
+        # FTS5 tokenizer migration (A4). Earlier vaults created `notes_fts`
+        # with the default tokenizer (`unicode61` only), which splits dash-
+        # and underscore-form concepts (`write-ahead-log` → 3 tokens). Detect
+        # the absence of the explicit tokenizer marker in the live DDL and
+        # drop the virtual table so the executescript below recreates it
+        # with the new tokenizer. Repopulation happens on the next
+        # `_rebuild_fts()` call (always run by `rebuild(full=True)` and by
+        # every `_index_file` touch); the underlying `notes` table is
+        # untouched, so a fresh `mem index --full` after upgrade is enough
+        # to bring queries back online with whole-token matching for
+        # dash/underscore concepts.
+        existing_fts_sql_row = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes_fts'"
+        ).fetchone()
+        existing_fts_sql = (
+            existing_fts_sql_row[0] if existing_fts_sql_row else None
+        )
+        if existing_fts_sql and _FTS_TOKENIZER_MARKER not in existing_fts_sql:
+            # Drop the *_fts shadow tables FTS5 creates alongside the virtual
+            # table; CREATE VIRTUAL TABLE will regenerate them.
+            self.db.execute("DROP TABLE IF EXISTS notes_fts")
         self.db.executescript(FTS_SCHEMA_SQL)
         # Defensive ALTER for databases created before the file_mtime column
         # was added (P0-8 mtime gate). CREATE TABLE IF NOT EXISTS won't add
@@ -183,6 +236,43 @@ class Indexer:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(notes)")}
         if "file_mtime" not in cols:
             self.db.execute("ALTER TABLE notes ADD COLUMN file_mtime REAL")
+
+        # C19a: edge weights. Older vaults created `edges` without the
+        # weight column. Add it now and backfill from `metadata` — for
+        # concept/tag edges weight = len(metadata["shared"]); structural
+        # edges keep the DEFAULT 1.0. The backfill is idempotent: a
+        # subsequent migration call sees the column present and skips.
+        edge_cols = {r[1] for r in self.db.execute("PRAGMA table_info(edges)")}
+        if "weight" not in edge_cols:
+            self.db.execute(
+                "ALTER TABLE edges ADD COLUMN weight REAL NOT NULL DEFAULT 1.0"
+            )
+            for row in self.db.execute(
+                "SELECT source, target, edge_type, metadata FROM edges"
+            ):
+                meta_raw = row["metadata"] or "{}"
+                try:
+                    meta = json.loads(meta_raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+                if meta.get("via") not in ("concept", "tag"):
+                    continue
+                shared = meta.get("shared") or []
+                if not isinstance(shared, list) or not shared:
+                    continue
+                self.db.execute(
+                    "UPDATE edges SET weight = ? WHERE source = ? "
+                    "AND target = ? AND edge_type = ?",
+                    (
+                        float(len(shared)),
+                        row["source"],
+                        row["target"],
+                        row["edge_type"],
+                    ),
+                )
+            self.db.commit()
 
     def close(self) -> None:
         if self._db:
@@ -223,6 +313,7 @@ class Indexer:
             self.db.execute("DELETE FROM decision_files")
             self.db.execute("DELETE FROM concept_hierarchy")
             self.db.execute("DELETE FROM context_served")
+            self.db.execute("DELETE FROM graph_ranks")
             self.db.execute("DELETE FROM notes")
             self._rebuild_fts()
 
@@ -656,9 +747,10 @@ class Indexer:
             if session_id and nid != session_id:
                 meta = json.dumps({"via": "session_dir"})
                 self.db.execute(
-                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (nid, session_id, "derived_from", meta, now),
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, session_id, "derived_from", meta, now, 1.0),
                 )
                 edge_count += 1
 
@@ -683,9 +775,10 @@ class Indexer:
             if len(shared) >= cfg.concept_edge_threshold:
                 metadata = json.dumps({"via": "concept", "shared": shared})
                 self.db.execute(
-                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared))),
                 )
                 edge_count += 1
 
@@ -711,9 +804,10 @@ class Indexer:
             if len(shared) >= cfg.tag_edge_threshold:
                 metadata = json.dumps({"via": "tag", "shared": shared})
                 self.db.execute(
-                    "INSERT OR IGNORE INTO edges (source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared))),
                 )
                 edge_count += 1
 
@@ -852,9 +946,9 @@ class Indexer:
                 meta = json.dumps({"via": "session_dir"})
                 self.db.execute(
                     "INSERT OR IGNORE INTO edges "
-                    "(source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (nid, sess_id, "derived_from", meta, now),
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, sess_id, "derived_from", meta, now, 1.0),
                 )
                 edge_count += 1
 
@@ -874,9 +968,9 @@ class Indexer:
                     meta = json.dumps({"via": "session_dir"})
                     self.db.execute(
                         "INSERT OR IGNORE INTO edges "
-                        "(source, target, edge_type, metadata, created_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (sibling_id, nid, "derived_from", meta, now),
+                        "(source, target, edge_type, metadata, created_at, weight) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (sibling_id, nid, "derived_from", meta, now, 1.0),
                     )
                     edge_count += 1
 
@@ -929,9 +1023,9 @@ class Indexer:
                 metadata = json.dumps({"via": "concept", "shared": shared_unique})
                 self.db.execute(
                     "INSERT OR IGNORE INTO edges "
-                    "(source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared_unique))),
                 )
                 edge_count += 1
 
@@ -984,18 +1078,27 @@ class Indexer:
                 metadata = json.dumps({"via": "tag", "shared": shared_unique})
                 self.db.execute(
                     "INSERT OR IGNORE INTO edges "
-                    "(source, target, edge_type, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (a, b, "relates_to", metadata, now),
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (a, b, "relates_to", metadata, now, float(len(shared_unique))),
                 )
                 edge_count += 1
 
         return edge_count
 
-    def _insert_edge(self, source: str, target: str, edge_type: str, created_at: str) -> None:
+    def _insert_edge(
+        self,
+        source: str,
+        target: str,
+        edge_type: str,
+        created_at: str,
+        weight: float = 1.0,
+    ) -> None:
         self.db.execute(
-            "INSERT OR IGNORE INTO edges (source, target, edge_type, created_at) VALUES (?, ?, ?, ?)",
-            (source, target, edge_type, created_at),
+            "INSERT OR IGNORE INTO edges "
+            "(source, target, edge_type, created_at, weight) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (source, target, edge_type, created_at, float(weight)),
         )
 
     def _rebuild_fts(self) -> None:

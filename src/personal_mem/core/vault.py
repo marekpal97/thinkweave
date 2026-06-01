@@ -492,18 +492,13 @@ class VaultManager:
 
         # Post-write hook: event-grain sources auto-float theme candidates.
         #
-        # The CLAUDE.md contract — "Event-shaped types … post-ingest path
-        # runs a deterministic cluster check (≥3 recent sources sharing
-        # ≥2 concepts, no covering theme) and writes a candidate stub."
-        # — was previously honoured only when `/drain` invoked the
-        # `theme_scan` post-batch hook. Direct `mem_create` / `mem_extract`
-        # / `/news` / `/capture` paths all bypassed it. This block closes
-        # that gap.
-        #
+        # Event-grain sources must be visible to ``/dream``'s
+        # ``detect_signals`` on the next cycle, so we keep the SQLite
+        # index warm on every source write (direct ``mem_create`` /
+        # ``mem_extract`` / ``/news`` / ``/capture`` paths all land here).
         # Conservative scope: only fires for NoteType.SOURCE with an
-        # event-grain spec (substack, news). Failure must never poison
-        # the create — scan_candidates touches the index and theme
-        # filesystem; either can be transient.
+        # event-grain spec. Failure must never poison the create — the
+        # reindex can be transient.
         if note_type == NoteType.SOURCE:
             self._maybe_float_theme_candidate(filepath, fm)
 
@@ -513,16 +508,13 @@ class VaultManager:
         """Index the new event-grain source so ``detect_signals`` can see
         it on the next ``/dream`` scan.
 
-        Before 2026-05-25 this also auto-fired ``scan_candidates``, which
-        materialised candidate stubs with mechanical concept-pair slugs
-        (e.g. ``geopolitics-thematic-investing``). That naming doomed
-        every cluster at /dream's disambiguation test — capability-shaped
-        names get archived. The auto-write is gone; cluster detection
-        and LLM naming now happen together inside ``/dream`` (or the
-        seed-once script), which composes a real label from the cluster
-        + active themes. The reindex stays — without it the new source
-        wouldn't be visible to ``mem_search`` or the next /dream cycle
-        until the next bulk ``mem index`` run.
+        The hook only keeps the SQLite index warm — without the reindex the
+        new source wouldn't be visible to ``mem_search`` or the next /dream
+        cycle until the next bulk ``mem index`` run. Cluster detection and
+        LLM naming both live in ``/dream``: it reads ``detect_signals``
+        (enriched cluster signals — raw ``proposed_theme:`` tally + any
+        overlapping active themes) and either mints a new theme or extends
+        an existing one. No candidate stubs are ever written here.
 
         Defensive try/except — a failure here must not surface as a
         create failure.

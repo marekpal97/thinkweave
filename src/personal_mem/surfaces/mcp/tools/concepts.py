@@ -23,7 +23,10 @@ def tool_schemas() -> list:
                 "project_concepts, cooccurrence, since, until, limit.\n"
                 "- `action='source_counts'`: bulk source-count for concepts. Args: concepts.\n"
                 "- `action='drift'`: drift report (near-dupes + ontology candidates + "
-                "optional redundant-hub pairs). Args: project, threshold, max_items, hubs, hub_jaccard.\n\n"
+                "optional redundant-hub pairs). Args: project, threshold, max_items, hubs, hub_jaccard.\n"
+                "- `action='canonical_for'` (C19b): top-PageRank notes for a concept's "
+                "induced subgraph — the canonical/most-central notes on a topic. Requires "
+                "dream cycle with `dream_compute_pagerank=true`. Args: concept, limit (default 5).\n\n"
                 "Concepts are domain-specific terms (e.g. write-ahead-log) — distinct from "
                 "tags which are broad categories. Use action='list' BEFORE assigning concepts "
                 "to new notes."
@@ -33,7 +36,10 @@ def tool_schemas() -> list:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "tighten", "merge", "search", "source_counts", "drift"],
+                        "enum": [
+                            "list", "tighten", "merge", "search",
+                            "source_counts", "drift", "canonical_for",
+                        ],
                         "default": "list",
                     },
                     "prefix": {"type": "string"},
@@ -73,7 +79,47 @@ def handle_dispatch(cfg: Config, args: dict):
         return _handle_source_counts(cfg, args)
     if action == "drift":
         return _handle_drift(cfg, args)
+    if action == "canonical_for":
+        return _handle_canonical_for(cfg, args)
     return _handle_list(cfg, args)
+
+
+def _handle_canonical_for(cfg: Config, args: dict):
+    """C19b — top-PageRank notes for the concept's induced subgraph.
+
+    Returns the most central notes on a topic per PageRank computed
+    during the last dream cycle (requires ``dream_compute_pagerank=true``
+    config flag). Empty result when no PageRank has been computed yet
+    or when the concept subgraph is too small/large/edgeless.
+    """
+    from mcp.types import TextContent
+
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.synthesis.centrality import canonical_for
+
+    concept = (args.get("concept") or "").strip().lower()
+    if not concept:
+        return [TextContent(type="text", text="concept required")]
+    limit = int(args.get("limit", 5))
+
+    idx = Indexer(config=cfg)
+    try:
+        rows = canonical_for(idx.db, concept, limit=limit)
+    finally:
+        idx.close()
+
+    if not rows:
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    f"No PageRank scores for '{concept}'. Either the "
+                    "dream cycle hasn't run with dream_compute_pagerank "
+                    "enabled, or the concept subgraph is too small/large."
+                ),
+            )
+        ]
+    return [TextContent(type="text", text=json.dumps(rows, indent=2))]
 
 
 def _handle_list(cfg: Config, args: dict):

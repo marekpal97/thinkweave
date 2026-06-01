@@ -51,22 +51,35 @@ Returns a `DreamCycleScan` JSON payload with:
 - `drift_pairs`: `[{"from": "a", "to": "b", "reason": "..."}, ...]` —
   survivors of `filter_drift_candidates`. Conservative on this vault;
   most cycles see 0-5.
-- `theme_candidates`: cluster stubs already on disk in
-  `vault/themes/_candidates/` with `{candidate_id, cluster_concepts,
-  cluster_sources, candidacy, source_type}`. (Mostly legacy — the
-  auto-write was removed 2026-05-25, so new stubs only appear from
-  explicit `mem themes scan-candidates` runs.)
-- `theme_cluster_signals`: raw clusters that have NO stub yet — recent
-  event-grain sources sharing ≥2 concepts, not covered by any active
-  theme. Shape `{source_type, shared_concepts, cluster_source_ids,
-  cluster_source_titles}`. This is the *primary* theme surface to act
-  on; you compose the slug and essence yourself rather than inheriting
-  a mechanical concept-pair slug.
-- `dormant_themes`: themes with no catalysts in ≥ 90 days (helpers are
-  deterministic — confirm, don't re-decide).
-- `resolved_themes`: themes whose linked decisions are all terminal
-  (deterministic — confirm).
+- `theme_cluster_signals`: the **only** theme surface. Each entry is a
+  cluster of recent event-grain sources, enriched for the mint-vs-extend
+  decision:
+  ```
+  {source_type, cluster_kind, label, shared_concepts, source_count,
+   sources: [{id, title, proposed_theme, date}, ...],   # newest first
+   proposed_names: {slug: n_sources, ...},              # distinct-source counts
+   related_names: {slug: n_sources, ...},               # variant slugs folded into this arc
+   covering_themes: [{theme_id, slug, concepts, overlap, name_match, score, status}, ...]}
+  ```
+  - `cluster_kind` is `"name"` (the **primary** path — sources grouped on
+    their `proposed_theme:` stamp, with near-variant slugs already folded
+    into one arc) or `"concept"` (the **fallback** — *unstamped* sources
+    grouped on shared concepts; `label` and `proposed_names` are empty).
+  - `label` (name clusters) is the arc's working name — the most-supported
+    variant; `related_names` are the other variants folded in (e.g. label
+    `iran-war` with `related_names: {iran-war-resolution: 1, ...}`). Use
+    `label` as the slug directly unless it reads badly.
+  - `proposed_names` counts **distinct sources** per slug — the honest
+    support, not appearances-across-clusters.
+  - `covering_themes` is ranked: a non-zero `name_match` (label↔slug token
+    overlap) is a **strong** extend signal that outranks any concept-only
+    overlap; concept-only candidates (`name_match: 0`) only appear when ≥2
+    *non-generic* concepts agree. Empty `covering_themes` → mint territory.
 - `stats`: count summary for the report.
+
+There is **no** theme lifecycle surface — dream never marks themes
+dormant/resolved and never archives candidates. Theme status changes are
+the user's call, by hand.
 
 ### 2. Apply LLM judgment (inline, in this turn)
 
@@ -94,62 +107,41 @@ shorter term is genuinely a typo / plural / alias of the longer.
 
 Add merges to `plan["merges"]` as `{"from": "x", "to": "y", "reason": "..."}`.
 
-**Theme candidates (stubs on disk).** Apply the disambiguation test from CLAUDE.md §4:
+**Theme cluster signals (mint vs extend).** For each signal in
+`theme_cluster_signals`, decide one of three actions:
 
-- Capability / technique / area-of-work → archive (not a theme).
-- Event / period / transition / campaign with time horizon → promote.
-- Year-bearing names (`AI capex unwind 2026`) → promote.
+1. **Extend** — `covering_themes` is non-empty and the top one is genuinely
+   the same arc. A non-zero `name_match` on the top covering theme is
+   near-decisive (the label and theme slug share tokens); for concept-only
+   matches (`name_match: 0`), confirm with `sources` titles before
+   trusting it. Link the new sources to it. Add to
+   `plan["theme_extensions"]` as
+   `{"theme_id", "source_ids", "reason"}`. This is the common steady-state
+   case — new drops landing on an arc you already track. The apply phase
+   backfills `relates_to:` on each source and appends catalyst lines.
+2. **Mint** — empty (or only weak, off-topic) `covering_themes`, and the
+   cluster passes the disambiguation test from CLAUDE.md §4 (event /
+   period / transition / campaign with a time horizon — not a capability
+   or area-of-work). Compose:
+   - `slug` — for a **name** cluster, use `label` directly (variants are
+     already folded; `related_names` shows them). For a **concept**
+     cluster (`label` empty), compose a fresh name from the `sources`
+     titles. Rules: 1–3 kebab words, label-shaped (`iran-war`,
+     `bond-vigilantes`, `memory-chip-supercycle`). No dates, no
+     parentheticals, not a concatenation of the cluster's concepts.
+   - `essence` — a 1-sentence narrative description (always compose this).
+   Add to `plan["theme_mints"]` as `{"slug", "essence", "source_ids",
+   "concepts" (top-3 from the cluster), "project" (optional), "parent"
+   (optional)}`. The apply phase mints `thm-XXXX-{slug}.md` and backfills
+   `relates_to: [thm-XXXX]` on each cluster source.
+3. **Skip** — capability/technique/area-of-work, or too thin to name (a
+   2-source name cluster you're unsure about is fine to leave). Do
+   nothing; once an arc is minted/extended its sources are filed and stop
+   resurfacing, so skipping costs nothing.
 
-For promotions, compose a short `essence` (≤300w paragraph capturing the
-working thesis from `cluster_concepts` + `cluster_sources`). Add to
-`plan["theme_promotions"]` as
-`{"candidate_id", "title", "essence", "parent" (optional), "project"}`.
-
-For archivals, add to `plan["candidates_archived"]` as
-`{"candidate_id", "reason"}`.
-
-**Theme cluster signals (no stub yet).** Same disambiguation test, but here
-you also pick the slug — the cluster has no pre-written name to lean on
-(and that's deliberate: mechanical concept-pair slugs were the failure
-mode this surface replaces).
-
-**Symmetry with `proposed_concepts:`** Each signal now carries `voted_slug`
-(string or null) and `slug_votes` (int). When workers wrote a source and
-couldn't match an active theme but could name an arc, they stamped
-`proposed_theme: <slug>` on the source frontmatter — the structural analog
-of `proposed_concepts:` on the theme side. `aggregate_proposed_themes`
-tallied those stamps per cluster and attached the top vote-getter here.
-Prefer `voted_slug` when it's present; compose a fresh slug only when
-`voted_slug is None` (the cluster had no worker-level naming).
-
-For each signal in `theme_cluster_signals`:
-
-1. Apply the disambiguation test from CLAUDE.md §4. Capability/technique/
-   area-of-work → skip (do nothing; the signal will resurface next cycle
-   until concepts shift or a candidate is materialised manually).
-2. For genuine narrative arcs, compose:
-   - `slug` — **prefer `voted_slug` if non-null** (worker-voted name has
-     already passed the arc test at write time). Only compose fresh when
-     `voted_slug is None`. Fresh slug rules: 1–3 kebab words, label-shaped
-     like `iran-war`, `bond-vigilantes`, `memory-chip-supercycle`. No dates.
-     No parentheticals. Not a concatenation of the cluster's concepts.
-   - `essence` — 1-sentence narrative description. Always compose this
-     yourself — `voted_slug` names the arc but doesn't supply an essence.
-3. Check active themes first (`mem_search(type='theme')`). If the cluster
-   extends an existing theme rather than introducing a new arc, skip
-   here and instead add a `relates_to:` backfill to that theme's catalyst
-   log via `mem_link` (out of dream scope — usually right call is still
-   skip and let the next cycle's stub-based path handle the link).
-4. Add to `plan["theme_promotions_from_signal"]` as
-   `{"slug", "essence", "source_ids", "concepts" (top-3 from the
-   cluster), "project" (optional), "parent" (optional)}`. The apply
-   phase mints `thm-XXXX-{slug}.md` directly (no `cand-*`
-   intermediate) and backfills `relates_to: [thm-XXXX]` on each cluster
-   source.
-
-**Dormant / resolved themes.** Helpers are deterministic — confirm the
-verdict matches the theme's state and add a status change. Add to
-`plan["theme_status_changes"]` as `{"theme_id", "new_status", "reason"}`.
+**No theme lifecycle.** Dream never marks themes dormant or resolved and
+never changes a theme's `status`. That is the user's call, by hand — do
+not emit any status-change plan key.
 
 **Essence rewrites.** For any canonical theme whose recent catalysts
 contradict its essence (read the last ~10 catalyst entries via
@@ -157,6 +149,33 @@ contradict its essence (read the last ~10 catalyst entries via
 theme file — keep ≤500 words. Then log the rewrite by adding
 `{"theme_id", "reason"}` to `plan["essence_rewrites"]` (log-only — the
 apply phase does not re-edit; this entry just records what you did).
+
+**Priority signals (Slice 1.5).** Read `scan().recent_probes` — a
+`{concept: probe_count}` dict over the last 14 days of probe-classified
+prompts. For each concept the user has been asking about that warrants
+attention, decide one action:
+
+- `enqueue` — the user has been probing about a concept with little
+  source coverage / no theme / a stale hub, AND a concrete piece of
+  research / read / source ingest would help. Compose `queue_item`:
+  `{"source_type": "<one of vault's source-type slugs>", "title": "<one
+  line>", "concept": "<concept>", "source": "dream-priority-signal", ...}`
+  The apply phase only writes the queue item when the config flag
+  `dream_enqueue_priority_signals` is True; otherwise the entry is
+  counted as logged. This keeps the first cycle observable before any
+  external mutation.
+- `log` — the user has been probing about something already
+  well-sourced / structurally fine, but the pressure is high enough to
+  note in the report. No queue write; just shows up under "What I
+  noted" in the report.
+
+Add to `plan["priority_signals"]` as `{"concept", "probe_count",
+"action": "enqueue"|"log", "queue_item"?, "reason"}`. Each `reason`
+should be the one-line *why* — the user reads these to understand
+exactly why dream surfaced each signal.
+
+Cap at 5 priority signals per cycle. Skip concepts the user has only
+probed once (signal is too thin).
 
 ### 3. Apply (one Bash call)
 

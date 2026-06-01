@@ -32,6 +32,10 @@ class GraphNode:
     type: str
     title: str
     edges: list[GraphEdge] = field(default_factory=list)
+    # C19e: best path_score from the walk origin (Σ edge weights along
+    # the highest-weighted path). Default 0.0 for the origin and for
+    # callers that don't request ranking.
+    path_score: float = 0.0
 
 
 @dataclass
@@ -39,6 +43,10 @@ class GraphEdge:
     source: str
     target: str
     edge_type: str
+    # C19a: edge weight. Concept/tag edges carry len(shared); structural
+    # edges default to 1.0. Walks may sort neighbours by Σ weight when
+    # ``rank=True`` is passed to :meth:`Search.get_related`.
+    weight: float = 1.0
 
 
 class Search:
@@ -188,6 +196,7 @@ class Search:
         edge_types: list[str] | None = None,
         note_type: str | list[str] = "",
         project: str = "",
+        rank: bool = False,
     ) -> list[GraphNode]:
         """Graph traversal from a note using recursive CTE.
 
@@ -197,6 +206,12 @@ class Search:
         type — but only matching nodes are returned. This keeps "show
         me the source notes connected to this decision" simple without
         rewriting the recursive CTE.
+
+        When ``rank=True`` (C19e), the CTE carries a ``path_score``
+        column = Σ(edge_weight) along the walk. Nodes are returned in
+        ``path_score DESC, depth ASC`` order — strongest-tie neighbours
+        first. With ``rank=False`` the legacy DISTINCT-by-id ordering
+        is preserved (sqlite_master row order).
         """
         edge_filter = ""
         params: list = [note_id, depth]
@@ -220,38 +235,72 @@ class Search:
 
         outer_where = " AND ".join(outer_filters)
 
-        sql = f"""
-            WITH RECURSIVE reachable(id, depth) AS (
-                SELECT ?, 0
-                UNION
-                SELECT CASE
-                    WHEN e.source = reachable.id THEN e.target
-                    ELSE e.source
-                END, reachable.depth + 1
-                FROM reachable
-                JOIN edges e ON (e.source = reachable.id OR e.target = reachable.id)
-                    {edge_filter}
-                WHERE reachable.depth < ?
-            )
-            SELECT DISTINCT n.id, n.type, n.title
-            FROM reachable r
-            JOIN notes n ON n.id = r.id
-            WHERE {outer_where}
-        """
+        # Path-score CTE — always computed (cheap), only used for sorting
+        # when rank=True. Aggregation collapses multi-path duplicates
+        # (UNION keeps distinct (id, depth, path_score) triples; without
+        # the GROUP BY a node reachable via two paths would render twice).
+        if rank:
+            sql = f"""
+                WITH RECURSIVE reachable(id, depth, path_score) AS (
+                    SELECT ?, 0, 0.0
+                    UNION
+                    SELECT CASE
+                        WHEN e.source = reachable.id THEN e.target
+                        ELSE e.source
+                    END, reachable.depth + 1, reachable.path_score + e.weight
+                    FROM reachable
+                    JOIN edges e ON (e.source = reachable.id OR e.target = reachable.id)
+                        {edge_filter}
+                    WHERE reachable.depth < ?
+                )
+                SELECT n.id, n.type, n.title,
+                       MAX(r.path_score) AS path_score,
+                       MIN(r.depth) AS depth
+                FROM reachable r
+                JOIN notes n ON n.id = r.id
+                WHERE {outer_where}
+                GROUP BY n.id, n.type, n.title
+                ORDER BY path_score DESC, depth ASC
+            """
+        else:
+            sql = f"""
+                WITH RECURSIVE reachable(id, depth) AS (
+                    SELECT ?, 0
+                    UNION
+                    SELECT CASE
+                        WHEN e.source = reachable.id THEN e.target
+                        ELSE e.source
+                    END, reachable.depth + 1
+                    FROM reachable
+                    JOIN edges e ON (e.source = reachable.id OR e.target = reachable.id)
+                        {edge_filter}
+                    WHERE reachable.depth < ?
+                )
+                SELECT DISTINCT n.id, n.type, n.title
+                FROM reachable r
+                JOIN notes n ON n.id = r.id
+                WHERE {outer_where}
+            """
         params.extend(outer_params)
 
         nodes: dict[str, GraphNode] = {}
+        ordered_ids: list[str] = []
         for row in self.db.execute(sql, params):
+            score = float(row["path_score"]) if rank else 0.0
             nodes[row["id"]] = GraphNode(
-                id=row["id"], type=row["type"], title=row["title"]
+                id=row["id"],
+                type=row["type"],
+                title=row["title"],
+                path_score=score,
             )
+            ordered_ids.append(row["id"])
 
-        # Fetch edges between these nodes
+        # Fetch edges between these nodes (with weight for C19a downstream).
         if nodes:
             all_ids = list(nodes.keys()) + [note_id]
             placeholders = ",".join("?" for _ in all_ids)
             edge_sql = f"""
-                SELECT source, target, edge_type FROM edges
+                SELECT source, target, edge_type, weight FROM edges
                 WHERE source IN ({placeholders}) AND target IN ({placeholders})
             """
             for row in self.db.execute(edge_sql, all_ids + all_ids):
@@ -259,13 +308,18 @@ class Search:
                     source=row["source"],
                     target=row["target"],
                     edge_type=row["edge_type"],
+                    weight=float(row["weight"] or 1.0),
                 )
                 if row["source"] in nodes:
                     nodes[row["source"]].edges.append(edge)
                 if row["target"] in nodes:
                     nodes[row["target"]].edges.append(edge)
 
-        return list(nodes.values())
+        # Preserve SQL-returned order (rank=True → score-desc; else
+        # legacy DISTINCT-order). dict insertion order in CPython is
+        # stable, so iterating nodes.values() already does this — but
+        # being explicit is cheap and documents intent.
+        return [nodes[i] for i in ordered_ids]
 
     def get_context(
         self,

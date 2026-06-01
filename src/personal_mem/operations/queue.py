@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from personal_mem.core.config import Config
 from personal_mem.sources import all_specs, load_user_config
-from personal_mem.sources.queue import Queue
+from personal_mem.sources.queue import Queue, QueueItem
 
 
 def list_queues(cfg: Config) -> list[dict]:
@@ -29,19 +29,21 @@ def list_queues(cfg: Config) -> list[dict]:
     return out
 
 
-def peek(cfg: Config, source_type: str, n: int = 5) -> list[dict]:
+def peek(cfg: Config, source_type: str, n: int = 5) -> list[QueueItem]:
     q = Queue.for_source_type(source_type, cfg.vault_root)
     return q.peek(n)
 
 
-def inspect(cfg: Config, source_type: str) -> list[dict]:
+def inspect(cfg: Config, source_type: str) -> list[QueueItem]:
     return peek(cfg, source_type, n=10_000)
 
 
-def enqueue(cfg: Config, source_type: str, item: dict) -> dict:
+def enqueue(cfg: Config, source_type: str, item: QueueItem | dict) -> dict:
     """Enqueue with auto dedup-check from sources.yaml::sources.<type>.dedup_keys.
 
-    Returns {"id": ..., "deduped": bool, "conflict": str|None}.
+    Returns {"id": ..., "deduped": bool, "conflict": str|None}. The ``item``
+    is a :class:`QueueItem`-shaped dict — see ``sources/queue.py`` for the
+    documented field set.
     """
     sources_cfg = load_user_config(cfg.vault_root).get("sources", {})
     keys = sources_cfg.get(source_type, {}).get("dedup_keys") or []

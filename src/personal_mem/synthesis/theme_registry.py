@@ -2,7 +2,7 @@
 
 Structural symmetry with the concept ontology (``vault/.mem/ontology.yaml``):
 a machine-maintained manifest of every canonical theme, kept in sync by
-mutation hooks in ``promote_candidate``, ``mint_theme_from_signal``, and
+mutation hooks in ``mint_theme_from_signal`` and
 the ``dream`` apply step (status changes). The registry enables an O(1)
 ``is_canonical`` lookup at note-create time so that ``relates_to: [thm-X]``
 references can be soft-validated without a vault scan.

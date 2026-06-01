@@ -55,6 +55,18 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     else:
         print("  judge:   no decisions to judge")
     print(f"  landing: {', '.join(result.landing_written) or '(none)'}")
+    if result.spend:
+        s = result.spend
+        if s.get("unknown") and not s.get("ops_usd"):
+            print("  spend:   (Claude transcript not found — cost unknown)")
+        else:
+            claude = "$?" if s.get("unknown") else f"${s.get('claude_usd', 0):.2f}"
+            line = (
+                f"  spend:   ${s.get('total_usd', 0):.2f} "
+                f"(Claude {claude} · ops ${s.get('ops_usd', 0):.2f}) · "
+                f"{s.get('n_turns', 0)} turns · {s.get('cache_pct', 0):.0f}% cache"
+            )
+            print(line)
     if result.drift_text:
         print("  drift (advisory):")
         for line in result.drift_text.splitlines():
@@ -72,3 +84,45 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         for e in result.errors:
             print(f"    ! {e}")
         sys.exit(1)
+
+
+def cmd_spend(args: argparse.Namespace) -> None:
+    """``mem spend`` — session report or date-range rollup of LLM spend."""
+    from personal_mem.core.spend import read_range_spend, read_session_spend
+
+    cfg = load_config()
+    project = args.project or cfg.default_project or ""
+
+    if args.session_id:
+        summary = read_session_spend(args.session_id, project=project, cfg=cfg)
+        scope = f"session {args.session_id}"
+    else:
+        summary = read_range_spend(args.since, args.until, cfg=cfg)
+        window = " ".join(p for p in (args.since, args.until) if p) or "all time"
+        scope = f"range {window}"
+
+    s = summary.as_dict()
+    if args.json:
+        print(json.dumps(s, indent=2))
+        return
+
+    print(f"spend · {scope}")
+    if s["unknown"] and not s["ops_usd"]:
+        print("  Claude transcript not found — cost unknown.")
+    claude = "$?" if s["unknown"] else f"${s['claude_usd']:.4f}"
+    print(
+        f"  total:  ${s['total_usd']:.4f}  "
+        f"(Claude {claude} · ops ${s['ops_usd']:.4f})"
+    )
+    print(
+        f"  tokens: {s['tokens_input']:,} in · {s['tokens_output']:,} out · "
+        f"{s['cache_pct']:.0f}% cache · {s['n_turns']} Claude turns"
+    )
+    if s["by_op"]:
+        print("  by op:")
+        for op, usd in sorted(s["by_op"].items(), key=lambda kv: -kv[1]):
+            print(f"    {op:<16} ${usd:.4f}")
+    if s["by_model"]:
+        print("  by model:")
+        for model, usd in sorted(s["by_model"].items(), key=lambda kv: -kv[1]):
+            print(f"    {model:<28} ${usd:.4f}")

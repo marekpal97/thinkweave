@@ -14,12 +14,17 @@ needed) while preserving the rule that "discover produces queue items".
 
 Config shape (``sources.yaml: sources.<slug>``):
 
-    mail_connector: gmail              # required — gmail is the only one wired today
+    mail_provider: gmail               # required — v1 is gmail-only; outlook/imap deferred
     senders: [a@b.com, example.com]    # required — empty allowlist halts (no whole-inbox fan-out)
     mail_query: ""                     # optional extra filter (e.g. "is:unread")
     processed_label: mem-processed     # required — excluded from query, applied after write
     lookback_days: 30                  # required — translated to provider syntax
     dedup_keys: [message_id, url]
+
+The field was previously ``mail_connector`` (C21 rename, 2026-05-31).
+Both names are accepted at read time — ``mail_provider`` takes
+precedence; ``mail_connector`` is the back-compat fallback so existing
+vault configs keep working.
 
 Optional ``_runtime.source_type`` (set by ``mem discover --source-type``)
 limits planning to one source type.
@@ -51,7 +56,9 @@ class MailPollStrategy:
                 continue
             if not isinstance(spec, dict):
                 continue
-            if not spec.get("mail_connector"):
+            # C21: prefer mail_provider; fall back to mail_connector
+            # for pre-rename vault configs.
+            if not (spec.get("mail_provider") or spec.get("mail_connector")):
                 continue
             plan = self._plan_for(slug, spec)
             out.append(plan)
@@ -59,7 +66,9 @@ class MailPollStrategy:
 
     @staticmethod
     def _plan_for(slug: str, spec: dict[str, Any]) -> dict[str, Any]:
-        connector = str(spec.get("mail_connector") or "")
+        connector = str(
+            spec.get("mail_provider") or spec.get("mail_connector") or ""
+        )
         senders = list(spec.get("senders") or [])
         mail_query = str(spec.get("mail_query") or "").strip()
         processed_label = str(spec.get("processed_label") or "mem-processed")
@@ -103,7 +112,7 @@ class MailPollStrategy:
                 "status": "error",
                 "source_type": slug,
                 "reason": "connector_not_implemented",
-                "hint": f"mail_connector '{connector}' is reserved; only 'gmail' is wired today.",
+                "hint": f"mail_provider '{connector}' is reserved; only 'gmail' is wired in v1 (outlook/imap deferred).",
             }
 
         return {

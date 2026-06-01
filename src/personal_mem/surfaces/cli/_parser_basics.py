@@ -117,6 +117,24 @@ def add_index_subparsers(sub) -> None:
     p_index.add_argument("--full", action="store_true", help="Full rebuild (drop and recreate)")
     p_index.add_argument("--embed", action="store_true", help="Compute embeddings via API")
     p_index.add_argument(
+        "--only-new",
+        action="store_true",
+        help=(
+            "With --embed: only embed notes whose updated_at is newer than "
+            "the most recent cached embedding (the keep-warm cron path). "
+            "Falls back to a full scan on an empty embeddings table."
+        ),
+    )
+    p_index.add_argument(
+        "--since",
+        default="",
+        help=(
+            "With --embed: alternative cutoff for --only-new — embed notes "
+            "whose updated_at > <ISO timestamp> (e.g. 2026-05-01). "
+            "Overrides the derived cutoff when both are passed."
+        ),
+    )
+    p_index.add_argument(
         "--materialize-links",
         action="store_true",
         help="After indexing, write SQLite edges as wikilinks (## See Also) for Obsidian.",
@@ -172,6 +190,16 @@ def add_index_subparsers(sub) -> None:
         "--all",
         action="store_true",
         help="Run vault coherence + MCP diagnostics together.",
+    )
+    p_doctor.add_argument(
+        "--isolation",
+        action="store_true",
+        help=(
+            "Append an isolation diagnostic: notes with no graph edges, "
+            "broken down by type / concept-count bucket / project, plus "
+            "10 examples. Opt-in because output is verbose; useful before "
+            "running `mem enrich` to characterise what's reachable."
+        ),
     )
 
     p_enrich = sub.add_parser(
@@ -358,6 +386,28 @@ def add_admin_subparsers(sub) -> None:
     p_wrap_finalize.add_argument(
         "--no-prune", action="store_true",
         help="Skip the orphan-prune step",
+    )
+
+    p_spend = sub.add_parser(
+        "spend",
+        help=(
+            "Report LLM spend. With a session id: Layer A (Claude turns, read "
+            "from the native transcript) + Layer B (mem internal ops). With "
+            "--since/--until: a date-range rollup over all runs + headless ops."
+        ),
+    )
+    p_spend.add_argument(
+        "session_id", nargs="?", default="",
+        help="Session id (ses-… / Claude UUID) for a single-session report",
+    )
+    p_spend.add_argument(
+        "--project", "-p", default="",
+        help="Project (defaults to PERSONAL_MEM_PROJECT) — locates Layer-B events",
+    )
+    p_spend.add_argument("--since", default="", help="Range start (YYYY-MM-DD)")
+    p_spend.add_argument("--until", default="", help="Range end (YYYY-MM-DD)")
+    p_spend.add_argument(
+        "--json", action="store_true", help="Emit the summary as JSON"
     )
 
     p_judge = sub.add_parser(
@@ -588,3 +638,62 @@ def add_admin_subparsers(sub) -> None:
         "--json", action="store_true",
         help="Emit raw JSON result on stdout",
     )
+
+    # --- C24: CLI parity for MCP-only tools -------------------------------
+    p_unlink = sub.add_parser(
+        "unlink",
+        help="Remove a typed edge between two notes (CLI parity for mem_unlink).",
+    )
+    p_unlink.add_argument("source", help="Source note ID")
+    p_unlink.add_argument("target", help="Target note ID")
+    p_unlink.add_argument(
+        "--type", "-t", default="relates_to",
+        choices=[e.value for e in EdgeType],
+    )
+
+    p_timeline = sub.add_parser(
+        "timeline",
+        help=(
+            "Chronological session+decision window (CLI parity for mem_timeline). "
+            "Without --project: cross-project ranking by activity."
+        ),
+    )
+    p_timeline.add_argument("--project", "-p", default="")
+    p_timeline.add_argument("--days", "-d", type=int, default=7)
+    p_timeline.add_argument("--json", action="store_true")
+
+    p_snap = sub.add_parser(
+        "project-snapshot",
+        help=(
+            "Re-fetch the SessionStart context payload for a project "
+            "(CLI parity for mem_project_snapshot)."
+        ),
+    )
+    p_snap.add_argument("project", help="Project name")
+    p_snap.add_argument(
+        "--sections", default="",
+        help="Comma-separated section names to include (omit for default).",
+    )
+    p_snap.add_argument(
+        "--budget-tokens", type=int, default=0,
+        help="Token budget (0 = default).",
+    )
+
+    p_prompts = sub.add_parser(
+        "prompts",
+        help=(
+            "List user prompts captured by the UserPromptSubmit hook "
+            "(CLI parity for mem_prompts)."
+        ),
+    )
+    p_prompts.add_argument("--project", "-p", default="")
+    p_prompts.add_argument(
+        "--since", default="",
+        help="Earliest ISO date/datetime (YYYY-MM-DD).",
+    )
+    p_prompts.add_argument("--limit", "-n", type=int, default=50)
+    p_prompts.add_argument(
+        "--classified-as", default="",
+        help="Filter by classification (e.g. 'probe').",
+    )
+    p_prompts.add_argument("--json", action="store_true")

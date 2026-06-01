@@ -160,6 +160,25 @@ class TestBuildRetrievalEvent:
         )
         assert out["returned_ids"] == []
 
+    def test_tool_output_dict_shape_extracts_ids(self):
+        # Claude Code's PostToolUse delivers Bash output as a dict with
+        # stdout/stderr; non-hook callers (tests, headless catch-up flows)
+        # sometimes hand that raw shape to build_retrieval_event without
+        # going through the hook handler's _extract_tool_output_text
+        # normaliser. Defensive in-function normalisation keeps the parse
+        # working regardless.
+        out = build_retrieval_event(
+            "mcp__personal-mem__mem_search",
+            {"query": "x"},
+            {
+                "stdout": "[note] Hit (n-abc123de) [tag]\n",
+                "stderr": "",
+                "interrupted": False,
+            },
+            "ts",
+        )
+        assert out["returned_ids"] == ["n-abc123de"]
+
 
 # ---------------------------------------------------------------------------
 # RETRIEVAL_TOOLS — names match the dash-form server name from install.py
@@ -262,3 +281,321 @@ class TestHandlerIntegration:
             {"session_id": "ses-yy", "tool_input": {"title": "x"}, "tool_output": ""},
         )
         assert called == []
+
+    def test_handle_post_retrieval_defers_session_materialisation(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Retrieval-tool PostToolUse must not invoke ``_ensure_session``.
+
+        Regression-pin for the 2026-05-26 finding: on a populated vault,
+        ``_ensure_session`` rgloss the entire vault to find the active
+        session note. For retrieval calls (mem_search etc.) that scan
+        blew Claude Code's 5s hook timeout, the hook was cancelled, and
+        the buffer write never landed — empirical symptom on disk was
+        zero ``retrieval_log.jsonl`` files and zero ``onthefly`` rows in
+        ``context_served``.
+        """
+        vault = tmp_path / "vault"
+        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+
+        from personal_mem.surfaces.hooks import handler as h
+
+        ensure_calls = []
+        monkeypatch.setattr(
+            h,
+            "_ensure_session",
+            lambda *a, **kw: ensure_calls.append(a),
+        )
+        monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
+
+        h._handle_post(
+            "mcp__personal-mem__mem_search",
+            {
+                "session_id": "ses-aaaa1111",
+                "tool_input": {"query": "x"},
+                "tool_output": "[note] hit (n-bbbbcccc)",
+            },
+        )
+        # Buffer line still landed.
+        from personal_mem.core.config import load_config
+
+        cfg = load_config()
+        buf_path = cfg.mem_dir / "buffer" / "ses-aaaa1111.jsonl"
+        assert buf_path.exists()
+        assert ensure_calls == []  # The hot-path skip we depend on.
+
+    def test_handle_post_action_tool_still_materialises_session(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Action-tool path (Write/Edit/Bash) keeps materialising the session.
+
+        Symmetric counterpart of the retrieval-defer test — action tools
+        still own session-note creation so MCP retrievals can discover
+        the note mid-conversation.
+        """
+        vault = tmp_path / "vault"
+        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+
+        from personal_mem.surfaces.hooks import handler as h
+
+        ensure_calls = []
+        monkeypatch.setattr(
+            h, "_ensure_session", lambda *a, **kw: ensure_calls.append(a)
+        )
+        monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
+
+        h._handle_post(
+            "Bash",
+            {
+                "session_id": "ses-cccc2222",
+                "tool_input": {"command": "git commit -m 'x'"},
+                "tool_output": "[main abcd123] x",
+            },
+        )
+        assert len(ensure_calls) == 1
+
+    def test_handle_post_accepts_tool_response_alias(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Newer Claude Code payloads use ``tool_response`` not ``tool_output``.
+
+        The handler must accept either so the capture path doesn't silently
+        drop returned IDs across harness versions.
+        """
+        vault = tmp_path / "vault"
+        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+
+        from personal_mem.surfaces.hooks import handler as h
+
+        monkeypatch.setattr(h, "_ensure_session", lambda *a, **kw: None)
+        monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
+
+        h._handle_post(
+            "mcp__personal-mem__mem_search",
+            {
+                "session_id": "ses-dddd3333",
+                "tool_input": {"query": "x"},
+                # ``tool_response``, not ``tool_output`` — the new shape.
+                "tool_response": "[note] hit (n-eeee4444)",
+            },
+        )
+        from personal_mem.core.config import load_config
+
+        cfg = load_config()
+        buf_path = cfg.mem_dir / "buffer" / "ses-dddd3333.jsonl"
+        assert buf_path.exists()
+        event = json.loads(buf_path.read_text(encoding="utf-8").splitlines()[0])
+        assert event["returned_ids"] == ["n-eeee4444"]
+
+
+# ---------------------------------------------------------------------------
+# Fast session-note lookup via SQLite index
+# ---------------------------------------------------------------------------
+
+
+class TestFindSessionNoteFast:
+    """``_find_session_note`` must answer from SQLite, not an rglob scan.
+
+    Cheapness here is load-bearing for the retrieval-capture pipeline —
+    every PostToolUse hook walks this path, and a vault-wide rglob blows
+    Claude Code's 5s hook timeout for retrieval calls.
+    """
+
+    def _build_vault_with_session(self, tmp_path: Path, source_session: str):
+        from personal_mem.core.config import Config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        vm.create_note(
+            NoteType.SESSION,
+            "Test session",
+            project="t",
+            extra_frontmatter={"source_session": source_session},
+        )
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+        return cfg, vm
+
+    def test_indexed_session_found_via_sql(self, tmp_path: Path):
+        from personal_mem.surfaces.hooks.handler import _find_session_note
+
+        cfg, vm = self._build_vault_with_session(tmp_path, "ses-cc-abc123")
+        found = _find_session_note(vm, "ses-cc-abc123")
+        assert found is not None
+        assert found.exists()
+
+    def test_missing_session_returns_none(self, tmp_path: Path):
+        from personal_mem.surfaces.hooks.handler import _find_session_note
+
+        cfg, vm = self._build_vault_with_session(tmp_path, "ses-cc-abc123")
+        assert _find_session_note(vm, "ses-cc-nope-nope") is None
+
+    def test_empty_session_id_returns_none(self, tmp_path: Path):
+        from personal_mem.surfaces.hooks.handler import _find_session_note
+
+        cfg, vm = self._build_vault_with_session(tmp_path, "ses-cc-abc123")
+        assert _find_session_note(vm, "") is None
+
+    def test_falls_back_to_vault_scan_when_db_missing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """If the index DB doesn't exist yet, the slow path still works.
+
+        First-PostToolUse-of-a-fresh-vault edge case — the note exists on
+        disk but hasn't been indexed yet. The vault-scan fallback covers it.
+        """
+        from personal_mem.core.config import Config
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.surfaces.hooks.handler import _find_session_note
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        vm.create_note(
+            NoteType.SESSION,
+            "Unindexed session",
+            project="t",
+            extra_frontmatter={"source_session": "ses-no-index"},
+        )
+        # Deliberately do NOT rebuild the index. ``index_db`` may not even exist.
+        if cfg.index_db.exists():
+            cfg.index_db.unlink()
+
+        assert _find_session_note(vm, "ses-no-index") is not None
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: retrieval event → events.jsonl partition → context_served
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievalPipelineEndToEnd:
+    """Walk the full chain on a tmp vault.
+
+    Buffer write → ``archive_buffer`` partition → ``Indexer._rebuild_context_served``
+    → ``context_served`` row with ``source='onthefly'``. Catches gaps in
+    any of the three stages.
+    """
+
+    def test_retrieval_event_projects_onthefly_row(self, tmp_path: Path, monkeypatch):
+        from personal_mem.core.buffer import archive_buffer
+        from personal_mem.core.config import Config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        session_path = vm.create_note(
+            NoteType.SESSION,
+            "E2E session",
+            project="t",
+            extra_frontmatter={"source_session": "ses-e2e-aaaa"},
+        )
+
+        # Stage 1: write a retrieval event to the buffer (simulates the
+        # PostToolUse hook's _buffer_event call).
+        from personal_mem.operations.retrieval_log import (
+            append_event,
+            build_retrieval_event,
+        )
+
+        buf_path = cfg.mem_dir / "buffer" / "ses-e2e-aaaa.jsonl"
+        ev = build_retrieval_event(
+            "mcp__personal-mem__mem_search",
+            {"query": "topic"},
+            "[note] topic note (n-aaaaaaaa)",
+            "2026-05-26T00:00:00+00:00",
+        )
+        append_event(buf_path, ev)
+
+        # Stage 2: archive_buffer partitions retrieval events into the
+        # sibling retrieval_log.jsonl.
+        archive_buffer(cfg.mem_dir, "ses-e2e-aaaa", session_path.parent)
+        retrieval_log = session_path.parent / "retrieval_log.jsonl"
+        assert retrieval_log.exists()
+        lines = retrieval_log.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["type"] == "retrieval"
+
+        # Stage 3: indexer projects the retrieval log into context_served.
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        rows = idx.db.execute(
+            "SELECT note_id, source FROM context_served "
+            "WHERE session_id = ? ORDER BY source, note_id",
+            (idx.db.execute(
+                "SELECT id FROM notes WHERE path = ?",
+                (str(session_path.relative_to(vault)),),
+            ).fetchone()[0],),
+        ).fetchall()
+        idx.close()
+
+        # The note returned by the retrieval event lands as onthefly.
+        sources = {(r[0], r[1]) for r in rows}
+        assert ("n-aaaaaaaa", "onthefly") in sources
+
+    def test_stop_hook_materialises_session_for_retrieval_only_buffer(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Retrieval-only sessions still get a session note + archived log.
+
+        Defends the Stop-hook fallback path: when no Write/Edit/Bash
+        events fired, no session note was materialised mid-session
+        (deferred by the retrieval-defer fix). Stop must notice the
+        buffer and create one, otherwise the retrieval log is orphaned.
+        """
+        from personal_mem.core.config import Config
+        from personal_mem.operations.retrieval_log import (
+            append_event,
+            build_retrieval_event,
+        )
+        from personal_mem.surfaces.hooks import handler as h
+
+        vault = tmp_path / "vault"
+        cfg = Config(vault_root=vault)
+        # Drop a retrieval event into the buffer without ever creating a
+        # session note (simulates a session that only ran mem_search).
+        (cfg.mem_dir / "buffer").mkdir(parents=True, exist_ok=True)
+        ev = build_retrieval_event(
+            "mcp__personal-mem__mem_search",
+            {"query": "x"},
+            "(n-zzzz9999)",
+            "2026-05-26T00:00:00+00:00",
+        )
+        append_event(cfg.mem_dir / "buffer" / "ses-retrieval-only.jsonl", ev)
+
+        monkeypatch.setattr(
+            "personal_mem.core.config.load_config", lambda: cfg
+        )
+        monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
+        monkeypatch.setattr(h, "_detect_project", lambda hi: "t")
+
+        h._handle_stop({"session_id": "ses-retrieval-only", "cwd": str(vault)})
+
+        # Stop created a session note + archived the retrieval log.
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.core.schemas import NoteType
+
+        vm = VaultManager(config=cfg)
+        sessions = [
+            n
+            for n in vm.list_notes(note_type=NoteType.SESSION, limit=20)
+            if n.frontmatter.get("source_session") == "ses-retrieval-only"
+        ]
+        assert len(sessions) == 1
+        session_dir = (vault / sessions[0].path).parent
+        assert (session_dir / "retrieval_log.jsonl").exists()

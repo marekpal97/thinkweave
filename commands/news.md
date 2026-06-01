@@ -105,4 +105,4 @@ If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `news_feeds.ya
 
 - For Polish-language URLs (`bankier.pl`, etc.): the writer translates inline and stashes the original in `<source_dir>/raw.md`. The user-facing brief is in English.
 - No queue archive — the synthetic item never enters the queue.
-- The writer subagent's `mem_create` call goes through `VaultManager.create_note`, which incrementally indexes the new event-grain source so `detect_signals` sees it on the next `/dream` scan. The 2026-05-25 refactor removed mechanical-stub auto-write; theme naming is `/dream`'s job, composed from the cluster + active themes via the `theme_promotions_from_signal` plan key.
+- The writer subagent's `mem_create` call goes through `VaultManager.create_note`, which incrementally indexes the new event-grain source so `detect_signals` sees it on the next `/dream` scan. Theme naming is `/dream`'s job: it reads the enriched cluster signal (raw `proposed_theme:` tally + overlapping active themes) and either mints a new theme (`theme_mints`) or extends an existing one (`theme_extensions`).

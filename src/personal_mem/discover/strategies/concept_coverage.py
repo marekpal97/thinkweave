@@ -48,10 +48,24 @@ class ConceptCoverageStrategy:
         if db_path is None or not db_path.exists():
             return []
 
+        # Probe-pressure bias (Slice 1.3): "what the user has actually
+        # been asking" reorders gap descriptors so concepts the user has
+        # probed about float to the top of the limit cut. Fail-open: a
+        # pressure helper that errors out (missing ontology, unindexed
+        # vault, etc.) collapses to {} and behaviour matches pre-bias.
+        try:
+            from personal_mem.operations.prompts import recent_probe_pressure
+
+            pressure = recent_probe_pressure(
+                cfg, project=project, window_days=14
+            )
+        except Exception:
+            pressure = {}
+
         db = sqlite3.connect(str(db_path))
         db.row_factory = sqlite3.Row
         try:
-            return self._gather(db, project, params)
+            return self._gather(db, project, params, pressure)
         finally:
             db.close()
 
@@ -72,6 +86,7 @@ class ConceptCoverageStrategy:
         db: sqlite3.Connection,
         project: str | None,
         params: dict[str, Any],
+        pressure: dict[str, int],
     ) -> list[dict[str, Any]]:
         # Mention counts — restrict to project if given.
         if project:
@@ -106,6 +121,7 @@ class ConceptCoverageStrategy:
             if source_count >= params["min_sources"]:
                 continue
             domains = [row["domain"]] if row["domain"] else []
+            probe_pressure = pressure.get(concept.lower(), 0) if concept else 0
             candidates.append(
                 {
                     "strategy": self.name,
@@ -113,6 +129,7 @@ class ConceptCoverageStrategy:
                     "domains": domains,
                     "mention_count": mentions,
                     "source_count": source_count,
+                    "probe_pressure": probe_pressure,
                     "title": (
                         f"Gap: {concept} "
                         f"({source_count} source / {mentions} mentions)"
@@ -121,9 +138,15 @@ class ConceptCoverageStrategy:
                     "queue": "research",
                 }
             )
-            if len(candidates) >= params["limit"]:
-                break
-        return candidates
+        # Pressure-first ordering: probed concepts surface even when
+        # their mention count would normally rank below the limit cut.
+        # Tie-break on existing mention_count ordering keeps the
+        # zero-pressure behaviour identical to pre-bias.
+        candidates.sort(
+            key=lambda c: (c["probe_pressure"], c["mention_count"]),
+            reverse=True,
+        )
+        return candidates[: params["limit"]]
 
     @staticmethod
     def _count_sources(db: sqlite3.Connection, concept: str) -> int:

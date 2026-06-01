@@ -249,6 +249,7 @@ class Prompt:
     session_id: str
     project: str | None = None
     cwd: str | None = None
+    classification: str | None = None
 
 
 def _parse_ts(raw: str) -> datetime:
@@ -275,10 +276,17 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
     abort an extraction over a single bad row — the buffer is append-only
     and can be killed mid-write). Returns an empty list when the file
     doesn't exist.
+
+    Each returned ``Prompt`` carries a populated ``classification``
+    field: ``"probe"`` when :func:`classify_probe` flags it, ``None``
+    otherwise. The classifier needs the surrounding event stream
+    (to peek at follow-up tool calls), so we read every event row here
+    instead of filtering early.
     """
     if not events_jsonl.exists():
         return []
 
+    events: list[dict] = []
     out: list[Prompt] = []
     for line in events_jsonl.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -287,7 +295,10 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(row, dict) or row.get("type") != "prompt":
+        if not isinstance(row, dict):
+            continue
+        events.append(row)
+        if row.get("type") != "prompt":
             continue
         text = row.get("text", "")
         session_id = row.get("session_id", "")
@@ -302,6 +313,11 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
                 cwd=row.get("cwd"),
             )
         )
+
+    for prompt in out:
+        if classify_probe(prompt, events):
+            prompt.classification = "probe"
+
     return out
 
 

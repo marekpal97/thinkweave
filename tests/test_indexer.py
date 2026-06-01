@@ -382,6 +382,83 @@ class TestSearch:
         assert results == []
 
 
+class TestPathRankWalk:
+    """C19e — get_related(rank=True) returns neighbours sorted by
+    Σ(edge_weight). Default rank=False preserves legacy order
+    (covered by existing tests above)."""
+
+    def test_rank_orders_by_path_score(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        # Hub note A. Two satellites: B shares 3 concepts (weight 3),
+        # C shares 1 concept (weight 1). With rank=True, B must come
+        # before C.
+        a = vault.create_note(
+            NoteType.NOTE, "A", body="x", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        c = vault.create_note(
+            NoteType.NOTE, "C", body="z", project="p",
+            extra_frontmatter={"concepts": ["alpha", "delta"]},
+        )
+        indexer.rebuild(full=True)
+
+        results = search.search("A", note_type="note")
+        a_id = next(r.id for r in results if r.title == "A")
+
+        ranked = search.get_related(a_id, depth=1, rank=True)
+        ids = [n.id for n in ranked]
+        b_id = next(r.id for r in search.search("B") if r.title == "B")
+        c_id = next(r.id for r in search.search("C") if r.title == "C")
+        assert b_id in ids and c_id in ids
+        assert ids.index(b_id) < ids.index(c_id)
+
+        # path_score reflects the heavier edge.
+        b_node = next(n for n in ranked if n.id == b_id)
+        c_node = next(n for n in ranked if n.id == c_id)
+        assert b_node.path_score > c_node.path_score
+
+    def test_rank_false_does_not_change_legacy_behaviour(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        """Default rank=False keeps path_score = 0 on every node."""
+        a = vault.create_note(
+            NoteType.NOTE, "A", body="x", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        indexer.rebuild(full=True)
+        a_id = next(r.id for r in search.search("A") if r.title == "A")
+        default = search.get_related(a_id, depth=1)
+        assert all(n.path_score == 0.0 for n in default)
+
+    def test_edges_carry_weight_when_walked(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        a = vault.create_note(
+            NoteType.NOTE, "A", body="x", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="p",
+            extra_frontmatter={"concepts": ["alpha", "beta"]},
+        )
+        indexer.rebuild(full=True)
+        a_id = next(r.id for r in search.search("A") if r.title == "A")
+        results = search.get_related(a_id, depth=1)
+        # There's exactly one edge between A and B (the concept edge),
+        # weight = 2 (shared concepts = alpha + beta).
+        edges = [e for n in results for e in n.edges if e.edge_type == "relates_to"]
+        assert any(e.weight == 2.0 for e in edges)
+
+
 class TestNoteConceptsTable:
     """Tests for the materialized note_concepts table."""
 
@@ -416,6 +493,134 @@ class TestNoteConceptsTable:
         path.unlink()
         indexer.rebuild(full=False)
         assert indexer.db.execute("SELECT COUNT(*) as cnt FROM note_concepts").fetchone()["cnt"] == 0
+
+
+class TestFtsTokenizer:
+    """FTS5 tokenizer migration (A4).
+
+    The default ``unicode61`` tokenizer treats ``-`` and ``_`` as separators,
+    fragmenting dash-form concepts (``write-ahead-log`` → 3 tokens). The fix
+    sets ``tokenchars '-_'`` so they stay whole. Both fresh-init and
+    migration-from-old-DDL paths must produce a working whole-token match.
+    """
+
+    def test_dash_concept_matches_whole_token(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        vault.create_note(
+            NoteType.NOTE,
+            "Write Ahead Log Note",
+            body="Discussion of write-ahead-log durability in SQLite.",
+            tags=["sqlite"],
+            project="infra",
+        )
+        indexer.rebuild(full=True)
+
+        results = search.search("write-ahead-log")
+        assert len(results) >= 1
+        assert any("Write Ahead Log" in r.title for r in results)
+
+    def test_underscore_concept_matches_whole_token(
+        self, vault: VaultManager, indexer: Indexer, search: Search
+    ):
+        vault.create_note(
+            NoteType.NOTE,
+            "Snake Case Term",
+            body="A concept like context_served lives here.",
+            project="infra",
+        )
+        indexer.rebuild(full=True)
+
+        results = search.search("context_served")
+        assert len(results) >= 1
+        assert any("Snake Case Term" in r.title for r in results)
+
+    def test_fresh_db_uses_explicit_tokenizer(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        """The CREATE statement persisted in sqlite_master carries the
+        explicit tokenizer string."""
+        # Force schema init by touching the property.
+        _ = indexer.db
+        row = indexer.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes_fts'"
+        ).fetchone()
+        assert row is not None
+        assert "tokenchars '-_'" in row[0]
+
+    def test_legacy_default_tokenizer_db_is_migrated(
+        self, config: Config, tmp_path: Path
+    ):
+        """Pre-A4 vaults created `notes_fts` with the default tokenizer.
+        Opening such a DB through `Indexer` drops + recreates the FTS
+        table with the new tokenizer, no manual `mem index --full`
+        required for the tokenizer change to take effect (though a
+        rebuild is still needed to repopulate the index)."""
+        import sqlite3
+
+        # Hand-build a DB with the OLD (pre-A4) FTS schema, no tokenize=.
+        config.mem_dir.mkdir(parents=True, exist_ok=True)
+        legacy = sqlite3.connect(str(config.index_db))
+        legacy.execute(
+            """CREATE TABLE notes (
+                id TEXT PRIMARY KEY,
+                type TEXT,
+                title TEXT,
+                path TEXT,
+                project TEXT,
+                date TEXT,
+                tags TEXT,
+                content_hash TEXT,
+                frontmatter TEXT,
+                body_text TEXT,
+                updated_at TEXT
+            )"""
+        )
+        legacy.execute(
+            """CREATE VIRTUAL TABLE notes_fts USING fts5(
+                id UNINDEXED,
+                title,
+                body_text,
+                tags,
+                content='notes',
+                content_rowid='rowid'
+            )"""
+        )
+        legacy.commit()
+        legacy.close()
+
+        # Now open via Indexer — migration runs in _init_schema.
+        idx = Indexer(config=config)
+        try:
+            row = idx.db.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='notes_fts'"
+            ).fetchone()
+            assert row is not None
+            assert "tokenchars '-_'" in row[0]
+        finally:
+            idx.close()
+
+        # Sanity: a write-ahead-log note added after migration matches whole.
+        vm = VaultManager(config=config)
+        vm.ensure_dirs()
+        vm.create_note(
+            NoteType.NOTE,
+            "WAL Detail",
+            body="The write-ahead-log enables fast concurrent reads.",
+            project="t",
+        )
+        idx2 = Indexer(config=config)
+        try:
+            idx2.rebuild(full=True)
+        finally:
+            idx2.close()
+        s = Search(config=config)
+        try:
+            results = s.search("write-ahead-log")
+            assert any("WAL Detail" in r.title for r in results)
+        finally:
+            s.close()
 
     def test_concepts_cleaned_on_full_rebuild(
         self, vault: VaultManager, indexer: Indexer
@@ -641,6 +846,71 @@ class TestConceptEdges:
             "SELECT COUNT(*) as cnt FROM edges WHERE metadata IS NOT NULL"
         ).fetchone()
         assert row["cnt"] == 0
+
+
+class TestEdgeWeights:
+    """C19a — edges carry a ``weight`` column. Concept/tag edges set
+    weight = len(metadata['shared']); structural edges default to 1.0."""
+
+    def test_concept_edge_weight_matches_shared_count(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        vault.create_note(
+            NoteType.NOTE, "A", body="x", project="test",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        vault.create_note(
+            NoteType.NOTE, "B", body="y", project="test",
+            extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
+        )
+        indexer.rebuild(full=True)
+        row = indexer.db.execute(
+            "SELECT weight, metadata FROM edges "
+            "WHERE edge_type = 'relates_to' AND metadata LIKE '%concept%'"
+        ).fetchone()
+        assert row is not None
+        import json
+        meta = json.loads(row["metadata"])
+        assert row["weight"] == float(len(meta["shared"]))
+        assert row["weight"] == 3.0
+
+    def test_tag_edge_weight_matches_shared_count(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        # Need ≥ 2 shared tags (tag_edge_threshold default 2). Use
+        # non-excluded, non-broad tags.
+        vault.create_note(
+            NoteType.NOTE, "A", body="x", project="test",
+            extra_frontmatter={"tags": ["alpha-tag", "beta-tag"]},
+        )
+        vault.create_note(
+            NoteType.NOTE, "B", body="y", project="test",
+            extra_frontmatter={"tags": ["alpha-tag", "beta-tag"]},
+        )
+        indexer.rebuild(full=True)
+        row = indexer.db.execute(
+            "SELECT weight, metadata FROM edges "
+            "WHERE edge_type = 'relates_to' AND metadata LIKE '%tag%'"
+        ).fetchone()
+        assert row is not None
+        assert row["weight"] == 2.0
+
+    def test_structural_edge_defaults_to_weight_one(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        a = vault.create_note(NoteType.NOTE, "A", body="x", project="test")
+        b = vault.create_note(
+            NoteType.NOTE, "B", body="y", project="test",
+            extra_frontmatter={"supersedes": ["n-aaaaaaaa"]},  # bogus but indexed
+        )
+        # Use the helper directly to ensure weight=1.0 for structural edges
+        # written via _insert_edge.
+        indexer._insert_edge("n-x1", "n-x2", "cites", "2026-05-31T00:00:00")
+        row = indexer.db.execute(
+            "SELECT weight FROM edges WHERE source='n-x1' AND target='n-x2'"
+        ).fetchone()
+        assert row is not None
+        assert row["weight"] == 1.0
 
 
 class TestSessionDirectoryEdges:

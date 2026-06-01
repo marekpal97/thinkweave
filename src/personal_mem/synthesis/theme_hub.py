@@ -29,9 +29,6 @@ The theme-hub *specialisation* (vs concept hubs):
 
 from __future__ import annotations
 
-from datetime import date
-from pathlib import Path
-
 from personal_mem.synthesis.hub import (
     CATALYST_LOG_HEADING,
     Hub,
@@ -150,24 +147,3 @@ def parse_theme(path) -> Hub:
     grammar lives in ``Hub.parse``.
     """
     return Hub.parse(path)
-
-
-def last_catalyst_date(theme_path: Path) -> date | None:
-    """Return the most recent ISO date from a theme's ``## Catalyst log``.
-
-    Used by ``/themes-resolve`` to flag dormant themes deterministically
-    instead of asking the LLM to read the log and judge "no catalysts in
-    months" semantically. Returns ``None`` when the theme has no entries
-    or the file can't be parsed.
-    """
-    try:
-        hub = Hub.parse(theme_path)
-    except Exception:
-        return None
-    dates: list[date] = []
-    for entry in hub.log:
-        try:
-            dates.append(date.fromisoformat(entry.date))
-        except (TypeError, ValueError):
-            continue
-    return max(dates) if dates else None

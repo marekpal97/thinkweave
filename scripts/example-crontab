@@ -25,6 +25,29 @@
 # queue accumulates a useful batch before Haiku triage runs.
 30 */6 * * * cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run news-cycle >> ~/.cache/personal_mem/cron.log 2>&1
 
+# Embeddings keep-warm + SQLite index refresh: every 4h. `mem index`
+# always rebuilds the SQLite index incrementally (mtime-gated, so
+# out-of-band Obsidian edits land here too), then `--embed --only-new`
+# embeds notes whose updated_at is newer than the most recent cached
+# embedding. Cheap — one SQL window query plus N OpenAI embed calls
+# (where N is just the new/changed notes since the last run). Without
+# this, similarity and hybrid retrieval silently degrade to FTS-only
+# on recent content as the vault grows, AND retrieval misses any
+# Obsidian-side edits made between Claude Code sessions. Requires
+# OPENAI_API_KEY in the cron environment.
+15 */4 * * * cd /home/marekpal97/python_projects/personal_mem && OPENAI_API_KEY="${OPENAI_API_KEY}" uv run mem index --embed --only-new >> ~/.cache/personal_mem/embed-warm.log 2>&1
+
+# Dream cycle: nightly autonomous vault hygiene. Scans for concept
+# promotion candidates, theme lifecycle changes, drift pairs, and
+# essence-rewrite candidates; the LLM judgment phase emits a plan; the
+# apply phase batches every structural change with one final index
+# rebuild and one line to maintenance.jsonl. Self-deciding — never
+# prompts. Caps work per-cycle (20 candidates) so latency stays
+# bounded. Requires a Claude Code install with the personal_mem MCP
+# wired (see `mem install`); ANTHROPIC_API_KEY in the cron environment
+# for the headless `claude -p` invocation.
+0 3 * * * cd /home/marekpal97/python_projects/personal_mem && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude -p "/dream" >> ~/.cache/personal_mem/dream.log 2>&1
+
 # To run a flow ad-hoc:
 #   uv run mem flow list
 #   uv run mem flow show daily-research
