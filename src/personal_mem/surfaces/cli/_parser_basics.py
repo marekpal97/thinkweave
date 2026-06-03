@@ -610,7 +610,8 @@ def add_admin_subparsers(sub) -> None:
         "scan",
         help=(
             "Read-only scan: drift, promotion candidates, theme "
-            "candidates, dormant/resolved themes. Emit as table or JSON."
+            "cluster signals (mint/extend), recent probe pressure. "
+            "Emit as table or JSON."
         ),
     )
     p_dream_scan.add_argument("--project", "-p", default="")

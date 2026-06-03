@@ -1,15 +1,25 @@
-"""Periodic vault-hygiene cycle — the deterministic backbone of ``/dream``.
+"""Periodic vault synthesis + hygiene cycle — the deterministic backbone of ``/dream``.
 
 ``/dream`` is the cron-friendly successor to ``/mem-resolve-concepts`` and
-``/themes-resolve``. It runs in three phases:
+``/themes-resolve``, but its scope has grown beyond hygiene: it now mints
+new themes from event-grain source clusters, extends existing themes with
+fresh sources, surfaces priority signals from recent probe-classified
+prompts, and (when ``dream_compute_pagerank`` is set) regenerates concept
+hub centrality scores. Hygiene (drift merges, proposed-concept promotion)
+remains the deterministic spine; synthesis (theme mint/extend, priority
+signals, essence rewrites) is the load-bearing recent addition.
+
+It runs in three phases:
 
 1. **scan** — read-only sweep. Composes drift candidates, promotion-eligible
-   proposed concepts, theme candidate stubs, and dormant/resolved themes
-   into a structured action plan. Cheap; ~1s on a 6500-note vault.
+   proposed concepts, theme cluster signals (with covering-theme rankings
+   for the mint-vs-extend decision), and recent probe pressure into a
+   structured action plan. Cheap; ~1s on a 6500-note vault.
 2. **LLM judgment** — the ``/dream`` skill applies semantic judgment to the
    scan output (which drift pairs are real, which candidates deserve
-   canonicalisation, which themes have stale essences) and emits a plan
-   dict. This phase lives in the skill, not here.
+   canonicalisation, which clusters are arcs worth minting, which themes
+   have stale essences, which probes warrant queueing research) and emits
+   a plan dict. This phase lives in the skill, not here.
 3. **apply** — execute the structural changes the LLM decided on with
    **one** index rebuild at the end and append a single line to
    ``vault/.mem/maintenance.jsonl``. This is the speed win — rebuilding the

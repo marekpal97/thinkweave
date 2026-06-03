@@ -11,13 +11,14 @@ tools:
   - mem_search
   - mem_read
   - mem_update
-description: Periodic dream cycle — autonomous vault hygiene (concept promotion, theme lifecycle, drift review). Single Bash scan → LLM judgment → single Bash apply. Self-deciding, headless-safe, logs every cycle to maintenance.jsonl.
+description: Periodic dream cycle — autonomous vault synthesis + hygiene (concept promotion, theme mint/extend, drift review, priority signals from recent probes). Single Bash scan → LLM judgment → single Bash apply. Self-deciding, headless-safe, logs every cycle to maintenance.jsonl.
 ---
 
-# /dream — Periodic vault-hygiene cycle
+# /dream — Periodic vault synthesis + hygiene cycle
 
-The cron-friendly successor to `/mem-resolve-concepts` and `/themes-resolve`.
-One skill, three phases, two Bash calls bracketing one LLM judgment pass.
+The cron-friendly successor to `/mem-resolve-concepts` and `/themes-resolve`,
+extended with theme mint/extend and priority-signal surfacing. One skill,
+three phases, two Bash calls bracketing one LLM judgment pass.
 
 Self-deciding. **Never prompts the user.** Designed for `claude -p
 "/dream"` cron use; works the same interactively.
@@ -204,8 +205,8 @@ the cycle is partially successful, not failed.
 ### 4. Report (3 lines)
 
 ```
-Dream cycle <id>. Promoted N concepts. Promoted T themes (A archived).
-Marked D dormant, R resolved. E essence rewrites.
+Dream cycle <id>. Promoted N concepts. Minted T themes, extended X.
+M drift merges. E essence rewrites. P priority signals (Q enqueued).
 Logged to vault/.mem/maintenance.jsonl. Cycle took <wall-time>s.
 ```
 
