@@ -1,6 +1,6 @@
 """Anthropic Batches enrichment for materialized claude-code sessions.
 
-Sibling to ``operations.drain.run_hubs_batch`` (which uses OpenAI
+Sibling to ``operations.hubs_batch.run_hubs_batch`` (which uses OpenAI
 Batches for concept-hub backfill). Same shape — build per-item
 requests, submit, poll, write back — but the work item is a
 materialized session whose ``enrichment_status: pending``, and the

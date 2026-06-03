@@ -21,7 +21,7 @@ def cmd_drain(args: argparse.Namespace) -> None:
 
     if args.target == "hubs":
         if args.via == "batch":
-            from personal_mem.operations.drain import run_hubs_batch
+            from personal_mem.operations.hubs_batch import run_hubs_batch
 
             run_hubs_batch(
                 cfg,

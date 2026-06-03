@@ -47,7 +47,7 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
 
     print(f"Building linkage requests for {len(work)} hub(s)...")
 
-    from personal_mem.operations.drain import (
+    from personal_mem.operations.hubs_batch import (
         HUB_LINKAGE_SYSTEM,
         build_linkage_user_prompt,
         parse_linkage_response,

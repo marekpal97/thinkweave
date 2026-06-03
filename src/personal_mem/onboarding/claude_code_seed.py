@@ -9,7 +9,7 @@ This module does **not** call any LLM. Materialisation is pure
 file-walk + frontmatter assembly. Optional enrichment (LLM extraction
 of decisions and concepts) is a separate pass — inline via
 ``/mem-wrap`` per-session, or in bulk via Anthropic Batches (see
-``operations.drain.run_claude_code_batch``).
+``operations.hubs_batch.run_claude_code_batch``).
 
 Idempotency: tracked via ``vault/.mem/onboarding/claude_code.json``
 (maps Claude Code session UUID → vault note id + project + import ts).

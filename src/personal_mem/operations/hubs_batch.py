@@ -1,8 +1,10 @@
-"""Drain orchestration — the OpenAI Batches API path for concept-hub backfill.
+"""Hub-backfill batch orchestration — the OpenAI Batches API path for concept hubs.
 
+Renamed from ``operations/drain.py`` to disambiguate from the ``/drain`` skill,
+which drains per-source-type acquisition queues — a different object entirely.
 This module holds the 250-LOC monolith previously inlined as ``_hubs_run`` in
-``surfaces/cli/__init__.py``. CLI ``mem drain --target hubs --via batch`` (and
-its deprecated alias ``mem hubs run``) both call into ``run_hubs_batch``.
+``surfaces/cli/__init__.py``. CLI ``mem drain --target hubs --via batch`` calls
+into ``run_hubs_batch``.
 """
 
 from __future__ import annotations

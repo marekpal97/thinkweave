@@ -2,7 +2,7 @@
 
 Wraps the concept-hub primitives in `synthesis/concept_hub.py` behind narrow
 operation-level functions consumable by both the CLI and any future MCP path.
-The OpenAI Batches execution paths live in ``operations/drain.py``.
+The OpenAI Batches execution paths live in ``operations/hubs_batch.py``.
 """
 
 from __future__ import annotations

@@ -452,7 +452,9 @@ The framework ships with a deliberately small set: `paper`, `repo`, `article`, `
 
 The shipped `src/personal_mem/ontology.yaml` is a minimal seed. The example file `ontology.example.yaml` shows what the original author's vault looks like after months of use — a mix of ML, AI tooling, finance, and SWE concepts — but **no domain hierarchy is privileged by the framework**. A vault that only ever imports cooking recipes will grow a `cuisine/`, `technique/`, `ingredient/` tree; a security-research vault will grow `cve/`, `exploit-class/`, `mitigation/`. The framework's only opinion is that concepts belong to a top-level domain (so the domain hub at `vault/concepts/<domain>.md` stays meaningful) and that new terms enter via `proposed_concepts` for canonicalisation through `/mem-resolve-concepts`.
 
-## Acquisition triad — research / drain / discover
+## Acquisition triad — `/research` / `/drain` / `/discover`
+
+(The bare word *research* in casual prose elsewhere always refers to the `/research` skill — the capability axis it sits on is `import` per the §"Capability lanes" table below. Bare *drain* means the `/drain` skill; the analogous backfill orchestration for concept hubs lives in `operations/hubs_batch.py`, deliberately disambiguated by name.)
 
 ```
 ┌─────────────┐     ┌────────────┐     ┌───────────┐
@@ -599,7 +601,7 @@ surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
       hubs.py         plan / status / repair
       decisions.py    list_by_file / judge (read-only)
       queue.py        list_queues / peek / inspect / enqueue (auto-dedup)
-      drain.py        run_hubs_batch — OpenAI Batches monolith for hub backfill
+      hubs_batch.py   run_hubs_batch — OpenAI Batches monolith for hub backfill
       migrations.py   registry of one-shot vault data migrations
               ▼
    core/, retrieval/, synthesis/, sources/   ← knowledge layer

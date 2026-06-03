@@ -1,7 +1,7 @@
 """``mem hubs {plan,run,status,repair,link}`` — concept-hub backfill orchestration.
 
 Heavy lifting (per-batch backfill loop, linkage builders) lives in
-``operations/drain.py``. The ``link`` action's OpenAI Batches loop is
+``operations/hubs_batch.py``. The ``link`` action's OpenAI Batches loop is
 extracted into ``_hubs_link.py`` because it's long and stateful.
 """
 
@@ -187,10 +187,11 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
         )
 
 
-# Backwards-compatibility shims — these helpers moved to operations/drain.py
-# in Phase 4 C. Tests still import them under their underscore-prefixed names.
+# Backwards-compatibility shims — these helpers moved to operations/hubs_batch.py
+# (formerly operations/drain.py). Tests still import them under their
+# underscore-prefixed names.
 def _validate_linkage_revision(entry_date: str, flag: str, ref: str, **kwargs):
-    from personal_mem.operations.drain import validate_linkage_revision
+    from personal_mem.operations.hubs_batch import validate_linkage_revision
 
     return validate_linkage_revision(entry_date, flag, ref, **kwargs)
 
@@ -198,12 +199,12 @@ def _validate_linkage_revision(entry_date: str, flag: str, ref: str, **kwargs):
 def _build_linkage_user_prompt(
     concept: str, essence: str, entries: list, **kwargs
 ) -> str:
-    from personal_mem.operations.drain import build_linkage_user_prompt
+    from personal_mem.operations.hubs_batch import build_linkage_user_prompt
 
     return build_linkage_user_prompt(concept, essence, entries, **kwargs)
 
 
 def _parse_linkage_response(raw: str) -> list[dict]:
-    from personal_mem.operations.drain import parse_linkage_response
+    from personal_mem.operations.hubs_batch import parse_linkage_response
 
     return parse_linkage_response(raw)
