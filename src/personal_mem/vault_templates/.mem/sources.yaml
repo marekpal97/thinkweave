@@ -39,6 +39,11 @@ sources:
   news:
     queue: vault/.mem/queues/news.jsonl
     feed_config: vault/.mem/news_feeds.yaml
+    # rss_poll clips entries published more than this many days ago, so
+    # stale headlines never enter the queue. Drain workers honour the same
+    # window — anything older than 7 days is too cold to be worth a writer
+    # call.
+    lookback_days: 7
     # v2 admission: Haiku title-triage against the active-themes catalog
     # rendered in vault/THEMES.md (## Catalog (active) section). The
     # legacy focus_manifest path is no longer consulted; FOCUS.md is a

@@ -32,8 +32,11 @@ from typing import Any, Iterable, TypedDict
 # Where active queues live, relative to the vault root.
 _QUEUES_DIR = ".mem/queues"
 _PROCESSED_DIR = "_processed"
-# Days of archive history scanned by ``dedup_check``.
-_DEDUP_LOOKBACK_DAYS = 30
+# Days of archive history scanned by ``dedup_check``. Tuned for fast-moving
+# event-grain types (news/youtube/podcast) where items >7 days old are
+# already stale; slower types (paper/article/repo) still get URL/title
+# dedup on the active queue + the worker's ``mem_search`` backstop.
+_DEDUP_LOOKBACK_DAYS = 7
 
 
 class QueueItem(TypedDict, total=False):
