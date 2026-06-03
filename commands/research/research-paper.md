@@ -9,7 +9,7 @@ tools:
   - Bash
   - mem_search
   - mem_concepts
-  - mem_concept_search
+  - mem_graph
   - mem_create
   - mem_update
   - mem_link
@@ -47,7 +47,7 @@ mem_concepts(min_count=2)
 
 ```
 mem_search(query="<key terms from abstract>", mode="hybrid", limit=5)
-mem_concept_search(concepts=["<best-fit concept>", …], match_mode="any", limit=5)
+mem_graph(filter="concept_walk", concepts=["<best-fit concept>", …], match_mode="any", limit=5)
 ```
 
 Note related notes for the **Vault Connections** section.

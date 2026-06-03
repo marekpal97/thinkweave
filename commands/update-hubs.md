@@ -37,7 +37,7 @@ isn't worth it for a handful of items.
 Each concept in the ontology has a hub page at `vault/concepts/topics/{concept}.md` with two sections:
 
 - **Essence** — ≤500w working mental model, slow-moving
-- **Learning log** — append-only list of learning artifacts extracted from vault notes, each citing its source via `[[note-id]]`
+- **Catalyst log** — append-only list of learning artifacts extracted from vault notes, each citing its source via `[[note-id]]` (was `## Learning log` pre-rename; `migrate_hub_log_heading` rewrites on `mem index --full`)
 
 The hub page *is* the processed ledger: notes already cited in the log are done, notes tagged with the concept but not yet cited are unprocessed. No frontmatter markers on source notes.
 
@@ -96,13 +96,13 @@ For each `(concept, note)` pair in the plan, do the extraction inline via your o
 
 ### 4. Write back
 
-For each hub page that gained entries, use `Edit` to insert the new log entries just before the next `## ` heading after `## Learning log`, or at the end of the log section if there's no following heading. Preserve:
+For each hub page that gained entries, use `Edit` to insert the new log entries just before the next `## ` heading after `## Catalyst log` (or the legacy `## Learning log` on unmigrated hubs), or at the end of the log section if there's no following heading. Preserve:
 
 - Frontmatter (all of it)
 - `# {concept}` title line
 - Domain link line (if present)
 - `## Essence` section body (never rewrite during daily sync — flag to user if you think it needs rewriting, and let them run `/mem-resolve-concepts` to handle it)
-- Existing `## Learning log` entries
+- Existing log entries
 
 If the hub page has `*No entries yet.*` as its log content, replace that line with the first entry you're adding.
 

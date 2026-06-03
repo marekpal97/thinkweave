@@ -27,7 +27,7 @@ Designed to run in under 2 minutes. Steps below correspond to phases.
 
 Two discovery calls cover everything:
 
-- `mem_concepts_drift(threshold=5, max_items=30)` — near-duplicate concepts and ontology candidates (string-similarity-based; filtered below).
+- `mem_concepts(action='drift', threshold=5, max_items=30)` — near-duplicate concepts and ontology candidates (string-similarity-based; filtered below).
 - `uv run mem doctor` — coherence linter: tag/concept overlap, unknown tags, and **dead vocabulary** (ontology concepts assigned to <2 notes). The dead-vocab list feeds Phase 3's ontology pruning step.
 
 Optionally surface redundant-hub candidates with `uv run mem concepts drift --hubs` — pre-filtered hub pairs whose Essence content overlaps (Jaccard ≥ 0.4). The pair list is structural; semantic judgment lives in Phase 3.

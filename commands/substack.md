@@ -108,7 +108,7 @@ in the ontology, propose new concepts in `proposed_concepts` and let
 
 ```
 mem_search(query="<key terms + named entities + themes from this post>", mode="hybrid", limit=5)
-mem_concept_search(concepts=["<concepts you're about to assign>"], match_mode="any", limit=5)
+mem_graph(filter="concept_walk", concepts=["<concepts you're about to assign>"], match_mode="any", limit=5)
 ```
 
 Note which existing sources/notes/decisions relate. These feed the **Vault Connections** section.

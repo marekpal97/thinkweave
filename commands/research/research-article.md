@@ -9,7 +9,7 @@ tools:
   - WebSearch
   - mem_search
   - mem_concepts
-  - mem_concept_search
+  - mem_graph
   - mem_create
   - mem_update
   - mem_link
@@ -43,7 +43,7 @@ republished elsewhere). If still nothing useful, skip — log the URL.
 Read src/personal_mem/ontology.yaml
 mem_concepts(min_count=2)
 mem_search(query="<key terms>", mode="hybrid", limit=5)
-mem_concept_search(concepts=["<best-fit>"], match_mode="any", limit=5)
+mem_graph(filter="concept_walk", concepts=["<best-fit>"], match_mode="any", limit=5)
 ```
 
 ### 3. Write the source note
