@@ -735,7 +735,7 @@ def _handle_stop(hook_input: dict) -> None:
             _output()
             return
 
-        from personal_mem.extract import extract_deterministic
+        from personal_mem.core.events import extract_deterministic
 
         result = extract_deterministic(events)
 

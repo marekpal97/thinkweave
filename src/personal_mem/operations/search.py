@@ -191,7 +191,7 @@ def query_prompts(
         consumes this to prioritise gap-analysis on what the user has
         actually been asking.
     """
-    from personal_mem.extract import extract_prompts
+    from personal_mem.core.events import extract_prompts
 
     if not project:
         return []

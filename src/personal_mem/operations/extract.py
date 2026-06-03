@@ -6,8 +6,8 @@ emits dedup suggestions, and finally archives the JSONL event buffer into
 the session folder. Pure business logic — returns a structured result; the
 MCP / CLI surfaces format the human-readable report.
 
-Imports `core/`, `retrieval/`, `synthesis/`, `sources/`, and the root-level
-``personal_mem.extract`` module — never `surfaces/`.
+Imports `core/`, `retrieval/`, `synthesis/`, `sources/`, and the
+``personal_mem.core.events`` module — never `surfaces/`.
 """
 
 from __future__ import annotations
@@ -462,7 +462,7 @@ def extract_session(
 
         cfg_merged = load_user_config(cfg.vault_root)
         if cfg_merged.get("auto_todo_extraction", True):
-            from personal_mem.extract import extract_todos
+            from personal_mem.core.events import extract_todos
 
             scan_chunks = [session_note.body]
             for ins in insights_in:

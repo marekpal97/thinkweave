@@ -420,7 +420,7 @@ def _gather_prompt_probes(
     This deliberately does no SQL query — prompt events live in JSONL,
     not the index. Failures (missing dirs, bad JSON) degrade silently.
     """
-    from personal_mem.extract import classify_probe, extract_prompts
+    from personal_mem.core.events import classify_probe, extract_prompts
 
     project_root = config.vault_root / "projects" / project
     sessions_root = project_root / "sessions"

@@ -211,7 +211,7 @@ class TestPromptClassification:
     def test_extract_prompts_populates_classification(
         self, cfg: Config, tmp_path: Path
     ):
-        from personal_mem.extract import extract_prompts
+        from personal_mem.core.events import extract_prompts
 
         events_file = tmp_path / "events.jsonl"
         # Lookahead window is 3 events. Probe goes LAST so its lookahead

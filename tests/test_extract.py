@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.extract import (
+from personal_mem.core.events import (
     ExtractResult,
     Prompt,
     Todo,
