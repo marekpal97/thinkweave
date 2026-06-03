@@ -41,7 +41,7 @@ def main() -> None:
     import asyncio
 
     from personal_mem.core.config import load_config
-    from personal_mem.surfaces.mcp.tools import DISPATCH, all_schemas
+    from personal_mem.surfaces.mcp.tools import all_schemas, dispatch
 
     server = Server("personal-mem")
     cfg = load_config()
@@ -52,10 +52,9 @@ def main() -> None:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        handler = DISPATCH.get(name)
-        if handler is None:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
-        return handler(cfg, arguments)
+        # ``dispatch`` exports PERSONAL_MEM_SESSION_ID from the call's args so
+        # nested Layer-B spend attributes to the session (see tools/__init__).
+        return dispatch(cfg, name, arguments)
 
     async def run():
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
@@ -77,7 +76,7 @@ def build_server():
         raise RuntimeError("MCP server requires: pip install personal-mem[mcp]") from exc
 
     from personal_mem.core.config import load_config
-    from personal_mem.surfaces.mcp.tools import DISPATCH, all_schemas
+    from personal_mem.surfaces.mcp.tools import all_schemas, dispatch
 
     server = Server("personal-mem")
     cfg = load_config()
@@ -88,10 +87,7 @@ def build_server():
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        handler = DISPATCH.get(name)
-        if handler is None:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
-        return handler(cfg, arguments)
+        return dispatch(cfg, name, arguments)
 
     return server
 

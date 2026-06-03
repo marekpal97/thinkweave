@@ -16,10 +16,11 @@ ledger and mesh them with the context/quality signals it already records:
   embeddings keep-warm, hub Batches) spend money that no Claude turn records and
   that the provider dashboards can only show as an undifferentiated per-key lump
   sum. :func:`record_spend` captures it at the call site with an ``op`` label and
-  emits a ``type:"spend"`` event into the *existing* per-session buffer
-  (``buffer/<session_id>.jsonl`` → ``events.jsonl`` via ``archive_buffer``), or,
-  when no session is in scope, into a dated headless log. That per-operation
-  attribution is the thing neither other source can give.
+  emits a ``type:"spend"`` event into a *dedicated per-session ledger*
+  (``.mem/spend/<session_id>.jsonl``) — a sink decoupled from the action buffer
+  so it never races the Stop-hook archive — or, when no session is in scope, into
+  a dated headless log. That per-operation attribution is the thing neither other
+  source can give.
 
 The two layers never overlap (A = Claude turns, B = non-Claude LLM calls), so a
 session's total is simply A + B. Tokens are stored; dollars are derived on read
@@ -44,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +53,9 @@ from pathlib import Path
 from personal_mem.core.config import Config, load_config
 
 logger = logging.getLogger(__name__)
+
+# A raw Claude Code session UUID (transcript filename + session-folder prefix).
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 # --------------------------------------------------------------------------- #
@@ -60,26 +65,33 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ModelRate:
-    """USD per 1M tokens, by token kind. ``cache_write`` is Anthropic's 5-minute
-    cache-creation surcharge; providers without a cache concept leave it 0."""
+    """USD per 1M tokens, by token kind.
+
+    Anthropic distinguishes two cache-creation TTLs (the native transcript
+    carries the split under ``usage.cache_creation``): 5-minute writes bill at
+    1.25× input, 1-hour writes at 2× input. ``cache_read`` is 0.1× input.
+    Providers without a cache concept leave these 0.
+    """
 
     input: float
     output: float
     cache_read: float = 0.0
-    cache_write: float = 0.0
+    cache_write_5m: float = 0.0
+    cache_write_1h: float = 0.0
 
 
 # Flat rate table — the one place to edit when prices move (USD / 1M tokens).
-# Keys are matched as *prefixes* of the model string, longest wins, so a single
+# Keys match as *prefixes* of the model string, longest wins, so a single
 # ``claude-opus-4`` entry covers ``claude-opus-4-7``, ``-4-8``, ``-4-20250514``.
-# Sanity-check against codeburn's published numbers when updating.
+# Verified 2026-06-02 against published Anthropic / OpenAI / Google pricing.
+# Anthropic cache rows are the derived 0.1× / 1.25× / 2× multiples of input.
 RATES: dict[str, ModelRate] = {
-    # --- Anthropic (Layer A — Claude agent turns) ---
-    "claude-opus-4": ModelRate(15.0, 75.0, 1.50, 18.75),
-    "claude-sonnet-4": ModelRate(3.0, 15.0, 0.30, 3.75),
-    "claude-haiku-4": ModelRate(1.0, 5.0, 0.10, 1.25),
-    "claude-3-5-haiku": ModelRate(0.80, 4.0, 0.08, 1.0),
-    # --- OpenAI (Layer B) ---
+    # --- Anthropic (Layer A — Claude agent turns; output = 5× input) ---
+    "claude-opus-4": ModelRate(5.0, 25.0, 0.50, 6.25, 10.0),
+    "claude-sonnet-4": ModelRate(3.0, 15.0, 0.30, 3.75, 6.0),
+    "claude-haiku-4": ModelRate(1.0, 5.0, 0.10, 1.25, 2.0),
+    "claude-3-5-haiku": ModelRate(0.80, 4.0, 0.08, 1.0, 1.6),
+    # --- OpenAI (Layer B; cached input ~0.1× via auto-caching, no write fee) ---
     "gpt-5-mini": ModelRate(0.25, 2.0, 0.025),
     "gpt-4o-mini": ModelRate(0.15, 0.60, 0.075),
     "text-embedding-3-small": ModelRate(0.02, 0.0),
@@ -106,25 +118,37 @@ def _resolve_rate(model: str) -> ModelRate | None:
     return RATES[best_key] if best_key else None
 
 
-def cost_of_turn(usage: dict, model: str) -> float:
+def cost_of_turn(usage: dict, model: str) -> float | None:
     """USD cost of one turn's ``usage`` block against the model's rate card.
 
     Accepts the Anthropic shape (``input_tokens`` / ``output_tokens`` /
-    ``cache_read_input_tokens`` / ``cache_creation_input_tokens``). Unknown
-    model → 0.0 with a logged warning (graceful — never raises)."""
+    ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` and the
+    optional ``cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens`` split).
+
+    Returns **None** for an unpriced model (no rate card) so callers can surface
+    the gap instead of silently booking $0. Never raises.
+    """
     rate = _resolve_rate(model)
     if rate is None:
-        logger.warning("spend: no rate card for model %r — counted as $0", model)
-        return 0.0
+        logger.warning("spend: no rate card for model %r — surfaced as unpriced", model)
+        return None
     ti = int(usage.get("input_tokens") or 0)
     to = int(usage.get("output_tokens") or 0)
     tcr = int(usage.get("cache_read_input_tokens") or 0)
-    tcw = int(usage.get("cache_creation_input_tokens") or 0)
+    # Cache-creation TTL split (Anthropic native transcript carries it); fall
+    # back to booking the whole creation total at the 5-minute rate.
+    cc = usage.get("cache_creation") or {}
+    tcw5 = cc.get("ephemeral_5m_input_tokens")
+    tcw1 = cc.get("ephemeral_1h_input_tokens")
+    if tcw5 is None and tcw1 is None:
+        tcw5 = int(usage.get("cache_creation_input_tokens") or 0)
+        tcw1 = 0
     return (
         ti * rate.input
         + to * rate.output
         + tcr * rate.cache_read
-        + tcw * rate.cache_write
+        + int(tcw5 or 0) * rate.cache_write_5m
+        + int(tcw1 or 0) * rate.cache_write_1h
     ) / 1_000_000
 
 
@@ -154,6 +178,11 @@ class SpendSummary:
     subagent_usd: float = 0.0  # Layer A, isSidechain
     n_spend_events: int = 0  # Layer B
     unknown: bool = False
+    # Turns/events whose model has no rate card — surfaced, not silently $0.
+    unpriced_turns: int = 0
+    unpriced_ops: int = 0
+    unpriced_tokens: int = 0
+    unpriced_models: set[str] = field(default_factory=set)
 
     @property
     def cache_pct(self) -> float:
@@ -180,6 +209,20 @@ class SpendSummary:
         self.by_model[model] = self.by_model.get(model, 0.0) + usd
         self.by_op[op] = self.by_op.get(op, 0.0) + usd
 
+    def _add_unpriced_turn(self, model: str, usage: dict) -> None:
+        self.n_turns += 1
+        self.unpriced_turns += 1
+        self.unpriced_tokens += int(usage.get("input_tokens") or 0) + int(
+            usage.get("output_tokens") or 0
+        )
+        self.unpriced_models.add(model or "?")
+
+    def _add_unpriced_op(self, model: str, ti: int, to: int) -> None:
+        self.n_spend_events += 1
+        self.unpriced_ops += 1
+        self.unpriced_tokens += int(ti or 0) + int(to or 0)
+        self.unpriced_models.add(model or "?")
+
     def as_dict(self) -> dict:
         return {
             "total_usd": round(self.total_usd, 6),
@@ -196,6 +239,10 @@ class SpendSummary:
             "n_spend_events": self.n_spend_events,
             "cache_pct": round(self.cache_pct, 1),
             "unknown": self.unknown,
+            "unpriced_turns": self.unpriced_turns,
+            "unpriced_ops": self.unpriced_ops,
+            "unpriced_tokens": self.unpriced_tokens,
+            "unpriced_models": sorted(self.unpriced_models),
         }
 
 
@@ -218,6 +265,16 @@ def _headless_log_path() -> Path:
     return _cache_root() / "headless" / f"{day}.spend.jsonl"
 
 
+def _session_ledger_path(cfg: Config, sid: str) -> Path:
+    """The dedicated Route-B ledger for one session: ``.mem/spend/<sid>.jsonl``.
+
+    Keyed by the Claude session UUID (the same key Layer A joins on), so a
+    session's total is just ``transcript + this ledger``. Lives under ``.mem``
+    rather than the session folder because that folder is minted only at archive
+    time — this path is always writable, even mid-live-session."""
+    return cfg.mem_dir / "spend" / f"{sid}.jsonl"
+
+
 def record_spend(
     provider: str,
     model: str,
@@ -238,9 +295,12 @@ def record_spend(
 
     Routing: if a Claude ``session_id`` is known (argument, else the
     ``PERSONAL_MEM_SESSION_ID`` env var set by the hook/MCP entry) the event is
-    appended to that session's buffer — ``archive_buffer`` later folds it into
-    ``events.jsonl`` next to the action/retrieval stream. With no session in
-    scope (pure-CLI / cron) it lands in a dated headless log under the cache dir.
+    appended to that session's **dedicated spend ledger**
+    (``.mem/spend/<sid>.jsonl``) — a sink decoupled from the action/retrieval
+    buffer, so spend never races the Stop-hook archive nor orphans a
+    post-archive buffer. With no session in scope (pure-CLI / cron) it lands in a
+    dated headless log under the cache dir. The contract stays literal:
+    transcript = Layer A, spend ledger = Layer B, joined on the session UUID.
     """
     try:
         event = {
@@ -258,7 +318,8 @@ def record_spend(
         # Session routing: explicit arg > the contract env var > the session id
         # Claude Code exports to Bash-tool subprocesses. The last is a free win
         # for CLI ops run mid-session (e.g. a /drain skill shelling out to
-        # `mem`); a long-lived MCP server without it simply falls back headless.
+        # `mem`); a long-lived MCP server sets PERSONAL_MEM_SESSION_ID per call
+        # when the tool args carry one, else this falls back headless.
         sid = (
             session_id
             or os.environ.get("PERSONAL_MEM_SESSION_ID")
@@ -268,7 +329,7 @@ def record_spend(
         if sid:
             event["session_id"] = sid
             cfg = cfg or load_config()
-            dest = cfg.mem_dir / "buffer" / f"{sid}.jsonl"
+            dest = _session_ledger_path(cfg, sid)
         else:
             dest = _headless_log_path()
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -283,8 +344,105 @@ def record_spend(
 # --------------------------------------------------------------------------- #
 
 
+def resolve_native_session_id(session_id: str, project: str, cfg: Config) -> str:
+    """Map a personal_mem session-note id (``ses-…``) to the Claude UUID that
+    names its native transcript and session folder.
+
+    The native jsonl and the vault session folder are both keyed by the Claude
+    UUID (stored as ``source_session`` in the session note), while ``/mem-wrap``
+    — like the judge — hands us the ``ses-…`` id. A raw UUID is returned
+    unchanged. On any failure we return the input verbatim (callers then degrade
+    to ``unknown``). Mirrors how ``find_decisions`` resolves the same alias.
+    """
+    if not session_id or _UUID_RE.match(session_id):
+        return session_id
+    from personal_mem.core.vault import parse_frontmatter
+
+    roots = []
+    base = cfg.vault_root / "projects"
+    if project:
+        roots.append(base / project / "sessions")
+    else:
+        roots.extend(p / "sessions" for p in base.glob("*") if p.is_dir())
+    for sessions_dir in roots:
+        for note in sessions_dir.glob("*/session.md"):
+            try:
+                fm, _ = parse_frontmatter(note.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            if fm.get("id") == session_id or session_id in (fm.get("aliases") or []):
+                src = fm.get("source_session")
+                if src:
+                    return str(src)
+                # Fall back to the folder-name prefix (``<uuid>-<date>``).
+                return note.parent.name.rsplit("-", 1)[0]
+    return session_id
+
+
+# Slash-command slugs that mark a transcript as personal_mem *operating* cost
+# (running the framework's own machinery) rather than the user's coding work.
+# Matched against the first user prompt's leading ``/<slug>``.
+_MEM_OP_SLUGS: frozenset[str] = frozenset({
+    "mem-wrap", "mem-resolve-concepts", "themes-resolve", "dream", "discover",
+    "drain", "update-hubs", "newsletter", "youtube", "podcast", "research",
+    "news", "substack", "capture", "ingest", "ingest-paper-file", "onboard",
+    "source-fit", "source-scaffold", "judge-prediction",
+})
+
+
 def _native_projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
+
+
+def _first_user_text(path: Path) -> str | None:
+    """The first non-empty user-turn text in a native transcript.
+
+    Skips tool-result user rows (their content blocks carry no ``text``) so the
+    value returned is the human/headless prompt that opened the run. Best-effort:
+    returns None on any read/parse trouble."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("type") != "user":
+                    continue
+                content = (row.get("message") or {}).get("content")
+                text = None
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    for blk in content:
+                        if isinstance(blk, str):
+                            text = blk
+                            break
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            text = blk.get("text")
+                            break
+                if text and text.strip():
+                    return text.strip()
+    except OSError:
+        return None
+    return None
+
+
+def _transcript_op_label(path: Path) -> str | None:
+    """The mem-op label for a transcript whose first prompt is a ``/<mem-skill>``
+    invocation (e.g. ``/dream`` → ``dream``), else None.
+
+    A headless ``claude -p "/dream"`` run opens its own transcript whose first
+    user turn is the slash command — that is the signal that the whole transcript
+    is mem-operating cost. An interactive coding session (first prompt is prose)
+    returns None and is excluded from the ``--ops-only`` view. Limit: a mem skill
+    invoked *inside* an interactive session blends its Claude turns with the
+    user's and is not separable here (only its Layer-B portion is)."""
+    text = _first_user_text(path)
+    if not text or not text.startswith("/"):
+        return None
+    slug = text[1:].split(maxsplit=1)[0].strip().lower()
+    return slug if slug in _MEM_OP_SLUGS else None
 
 
 def find_native_jsonl(session_id: str) -> Path | None:
@@ -298,11 +456,16 @@ def find_native_jsonl(session_id: str) -> Path | None:
     return matches[0] if matches else None
 
 
-def _accumulate_native_turns(path: Path, summary: SpendSummary, *, since=None, until=None) -> None:
+def _accumulate_native_turns(
+    path: Path, summary: SpendSummary, *, since=None, until=None, op_label: str | None = None
+) -> None:
     """Sum Layer-A assistant turns from one native jsonl into ``summary``.
 
     Best-effort per line: a malformed or usage-less line is skipped, not fatal.
-    ``since`` / ``until`` are ``date`` objects (inclusive) or None.
+    ``since`` / ``until`` are ``date`` objects (inclusive) or None. When
+    ``op_label`` is given (the transcript is a mem-operating run, e.g. ``dream``)
+    each turn's cost is *also* bucketed under ``by_op[op_label]`` so the
+    ``--ops-only`` view can sum Layer-A op cost next to native Layer-B ops.
     """
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -329,9 +492,14 @@ def _accumulate_native_turns(path: Path, summary: SpendSummary, *, since=None, u
             if not isinstance(usage, dict):
                 continue
             usd = cost_of_turn(usage, model)
-            summary._add_claude(
-                model, usd, usage, sidechain=bool(row.get("isSidechain"))
-            )
+            if usd is None:
+                summary._add_unpriced_turn(model, usage)
+            else:
+                summary._add_claude(
+                    model, usd, usage, sidechain=bool(row.get("isSidechain"))
+                )
+                if op_label:
+                    summary.by_op[op_label] = summary.by_op.get(op_label, 0.0) + usd
 
 
 def _row_date(ts: str | None):
@@ -378,19 +546,30 @@ def _accumulate_spend_events(path: Path, summary: SpendSummary, *, since=None, u
                 "cache_read_input_tokens": ev.get("tokens_cache_read"),
                 "cache_creation_input_tokens": ev.get("tokens_cache_write"),
             }
-            summary._add_op(model, ev.get("op") or "unknown", cost_of_turn(usage, model))
+            usd = cost_of_turn(usage, model)
+            if usd is None:
+                summary._add_unpriced_op(model, ev.get("tokens_input"), ev.get("tokens_output"))
+            else:
+                summary._add_op(model, ev.get("op") or "unknown", usd)
 
 
 def _session_event_paths(cfg: Config, project: str, session_id: str) -> list[Path]:
-    """Where this session's Layer-B spend events may live: the archived
-    ``events.jsonl`` (post-extract) and the live buffer (pre-archive). Reading
-    both is safe — ``archive_buffer`` deletes the buffer when it writes
-    ``events.jsonl``, so they never double-count."""
+    """Where this session's Layer-B spend events may live.
+
+    Current sink: the dedicated ledger ``.mem/spend/<sid>.jsonl``. The legacy
+    locations — the live buffer (pre-archive) and the archived ``events.jsonl``
+    (where spend was meshed before the sink was decoupled) — are still read so
+    historical sessions keep their Layer-B numbers. The three are disjoint
+    namespaces (a given event is written to exactly one), so reading all three
+    never double-counts."""
     paths: list[Path] = []
-    buf = cfg.mem_dir / "buffer" / f"{session_id}.jsonl"
+    ledger = _session_ledger_path(cfg, session_id)
+    if ledger.exists():
+        paths.append(ledger)
+    buf = cfg.mem_dir / "buffer" / f"{session_id}.jsonl"  # legacy pre-archive
     if buf.exists():
         paths.append(buf)
-    if project:
+    if project:  # legacy meshed-into-events.jsonl
         sessions = cfg.vault_root / "projects" / project / "sessions"
         paths.extend(sorted(sessions.glob(f"{session_id}-*/events.jsonl")))
     return paths
@@ -412,7 +591,11 @@ def read_session_spend(
     cfg = cfg or load_config()
     summary = SpendSummary()
 
-    native = find_native_jsonl(session_id)
+    # ``ses-…`` (what /mem-wrap passes) → Claude UUID (what names the transcript
+    # and the session folder). A raw UUID resolves to itself.
+    uuid = resolve_native_session_id(session_id, project, cfg)
+
+    native = find_native_jsonl(uuid)
     if native is None:
         summary.unknown = True
     else:
@@ -422,7 +605,7 @@ def read_session_spend(
             logger.debug("native parse failed for %s", native, exc_info=True)
             summary.unknown = True
 
-    for p in _session_event_paths(cfg, project, session_id):
+    for p in _session_event_paths(cfg, project, uuid):
         try:
             _accumulate_spend_events(p, summary)
         except Exception:  # noqa: BLE001
@@ -435,6 +618,7 @@ def read_range_spend(
     since: str = "",
     until: str = "",
     *,
+    ops_only: bool = False,
     cfg: Config | None = None,
 ) -> SpendSummary:
     """Spend across a date window (inclusive ``YYYY-MM-DD`` bounds, both optional).
@@ -443,16 +627,28 @@ def read_range_spend(
     turn timestamp. Layer B: the dated headless logs (cron/CLI ops). In-session
     Layer-B events are surfaced per-session via :func:`read_session_spend`; the
     range view covers headless ops, which are the recurring spend worth trending.
+
+    ``ops_only=True`` answers "what does running personal_mem's own machinery
+    cost", distinct from the user's coding work: Layer A is restricted to
+    transcripts whose first prompt is a ``/<mem-skill>`` invocation (each bucketed
+    under ``by_op`` by its skill), and interactive coding transcripts are dropped.
+    Layer B is already per-op, so all of it is mem-operating cost and is kept.
     """
     cfg = cfg or load_config()
     summary = SpendSummary()
     since_d = _parse_date(since)
     until_d = _parse_date(until)
 
-    # Layer A — all native transcripts.
+    # Layer A — native transcripts. In --ops-only, keep only the mem-skill runs,
+    # labelled by op; otherwise every transcript counts.
     for jsonl in _native_projects_dir().glob("*/*.jsonl"):
+        label = _transcript_op_label(jsonl) if ops_only else None
+        if ops_only and label is None:
+            continue
         try:
-            _accumulate_native_turns(jsonl, summary, since=since_d, until=until_d)
+            _accumulate_native_turns(
+                jsonl, summary, since=since_d, until=until_d, op_label=label
+            )
         except Exception:  # noqa: BLE001
             logger.debug("native parse failed for %s", jsonl, exc_info=True)
 

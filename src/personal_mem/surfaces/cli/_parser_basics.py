@@ -407,6 +407,15 @@ def add_admin_subparsers(sub) -> None:
     p_spend.add_argument("--since", default="", help="Range start (YYYY-MM-DD)")
     p_spend.add_argument("--until", default="", help="Range end (YYYY-MM-DD)")
     p_spend.add_argument(
+        "--ops-only",
+        action="store_true",
+        help=(
+            "Range mode only: report just personal_mem's own operating cost — "
+            "all Layer-B internal ops plus Layer-A turns of mem-skill runs "
+            "(/dream, /drain, /mem-wrap, …), excluding interactive coding."
+        ),
+    )
+    p_spend.add_argument(
         "--json", action="store_true", help="Emit the summary as JSON"
     )
 

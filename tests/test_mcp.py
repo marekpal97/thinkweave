@@ -460,3 +460,67 @@ class TestBuildDecisionBody:
         out = _build_decision_body(rationale, "My Title", "committed")
         assert out.count("## Context") + out.count("## context") == 1
         assert "lowercase header" in out
+
+
+# --------------------------------------------------------------------------- #
+# dispatch — per-call PERSONAL_MEM_SESSION_ID export (cost attribution)        #
+# --------------------------------------------------------------------------- #
+
+
+class TestDispatchSessionEnv:
+    """The MCP dispatch wrapper exports the call's session_id so nested Layer-B
+    spend (record_spend) attributes to the right session, then restores env."""
+
+    def _probe(self, monkeypatch):
+        """Install a handler that records the env var it sees, return seen-dict."""
+        import os
+
+        from personal_mem.surfaces.mcp.tools import DISPATCH
+
+        seen: dict = {}
+
+        def handler(cfg, args):
+            seen["sid"] = os.environ.get("PERSONAL_MEM_SESSION_ID")
+            return [("text", "ok")]
+
+        monkeypatch.setitem(DISPATCH, "_probe_tool", handler)
+        return seen
+
+    def test_session_id_exported_during_handler(self, monkeypatch):
+        import os
+
+        from personal_mem.surfaces.mcp.tools import dispatch
+
+        monkeypatch.delenv("PERSONAL_MEM_SESSION_ID", raising=False)
+        seen = self._probe(monkeypatch)
+        dispatch(None, "_probe_tool", {"session_id": "abc-uuid", "title": "x"})
+        assert seen["sid"] == "abc-uuid"
+        # Restored (cleared) once the handler returns.
+        assert "PERSONAL_MEM_SESSION_ID" not in os.environ
+
+    def test_no_session_id_leaves_env_untouched(self, monkeypatch):
+        import os
+
+        from personal_mem.surfaces.mcp.tools import dispatch
+
+        monkeypatch.setenv("PERSONAL_MEM_SESSION_ID", "outer")
+        seen = self._probe(monkeypatch)
+        dispatch(None, "_probe_tool", {"title": "x"})  # no session_id
+        assert seen["sid"] == "outer"  # inherited, not overwritten
+        assert os.environ["PERSONAL_MEM_SESSION_ID"] == "outer"  # preserved
+
+    def test_prior_env_restored_after_handler(self, monkeypatch):
+        import os
+
+        from personal_mem.surfaces.mcp.tools import dispatch
+
+        monkeypatch.setenv("PERSONAL_MEM_SESSION_ID", "outer")
+        self._probe(monkeypatch)
+        dispatch(None, "_probe_tool", {"session_id": "inner"})
+        assert os.environ["PERSONAL_MEM_SESSION_ID"] == "outer"  # not clobbered
+
+    def test_unknown_tool_sentinel(self):
+        from personal_mem.surfaces.mcp.tools import dispatch
+
+        out = dispatch(None, "_nope", {})
+        assert "Unknown tool" in out[0].text

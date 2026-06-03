@@ -14,6 +14,7 @@ those two structures.
 
 from __future__ import annotations
 
+import os
 from typing import Callable
 
 from personal_mem.core.config import Config
@@ -72,4 +73,43 @@ DISPATCH: dict[str, Callable[[Config, dict], list]] = {
 }
 
 
-__all__ = ["all_schemas", "DISPATCH"]
+def dispatch(cfg: Config, name: str, arguments: dict) -> list:
+    """Resolve ``name`` to its handler and run it, exporting the call's session
+    id so nested Layer-B spend attributes to the right session.
+
+    The long-lived MCP server process serves many Claude sessions and the MCP
+    request envelope carries no session id of its own — the only session id
+    available is the one a tool explicitly takes as an argument (``mem_create`` /
+    ``mem_extract`` / ``mem_judge``). When present, we set
+    ``PERSONAL_MEM_SESSION_ID`` for the duration of the handler so any
+    ``record_spend`` fired deep inside (e.g. the OpenAI enrich call inside an
+    extract path) lands in that session's ledger instead of the headless log.
+    This is best-effort by design: tools that take no ``session_id`` still
+    attribute their internal spend to the headless log — the one unavoidable
+    limit of capturing spend in a session-agnostic server process.
+
+    Returns the "Unknown tool" sentinel (matching the server's own contract)
+    when ``name`` is not registered.
+    """
+    from mcp.types import TextContent
+
+    handler = DISPATCH.get(name)
+    if handler is None:
+        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+    sid = (arguments or {}).get("session_id")
+    if not sid:
+        return handler(cfg, arguments)
+
+    prev = os.environ.get("PERSONAL_MEM_SESSION_ID")
+    os.environ["PERSONAL_MEM_SESSION_ID"] = str(sid)
+    try:
+        return handler(cfg, arguments)
+    finally:
+        if prev is None:
+            os.environ.pop("PERSONAL_MEM_SESSION_ID", None)
+        else:
+            os.environ["PERSONAL_MEM_SESSION_ID"] = prev
+
+
+__all__ = ["all_schemas", "DISPATCH", "dispatch"]

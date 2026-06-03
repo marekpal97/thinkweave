@@ -66,6 +66,9 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
                 f"(Claude {claude} · ops ${s.get('ops_usd', 0):.2f}) · "
                 f"{s.get('n_turns', 0)} turns · {s.get('cache_pct', 0):.0f}% cache"
             )
+            unpriced = s.get("unpriced_turns", 0) + s.get("unpriced_ops", 0)
+            if unpriced:
+                line += f" · ⚠ {unpriced} unpriced ({', '.join(s.get('unpriced_models', []))})"
             print(line)
     if result.drift_text:
         print("  drift (advisory):")
@@ -93,13 +96,14 @@ def cmd_spend(args: argparse.Namespace) -> None:
     cfg = load_config()
     project = args.project or cfg.default_project or ""
 
+    ops_only = getattr(args, "ops_only", False)
     if args.session_id:
         summary = read_session_spend(args.session_id, project=project, cfg=cfg)
         scope = f"session {args.session_id}"
     else:
-        summary = read_range_spend(args.since, args.until, cfg=cfg)
+        summary = read_range_spend(args.since, args.until, ops_only=ops_only, cfg=cfg)
         window = " ".join(p for p in (args.since, args.until) if p) or "all time"
-        scope = f"range {window}"
+        scope = f"range {window}" + (" · ops-only" if ops_only else "")
 
     s = summary.as_dict()
     if args.json:
@@ -126,3 +130,9 @@ def cmd_spend(args: argparse.Namespace) -> None:
         print("  by model:")
         for model, usd in sorted(s["by_model"].items(), key=lambda kv: -kv[1]):
             print(f"    {model:<28} ${usd:.4f}")
+    if s["unpriced_turns"] or s["unpriced_ops"]:
+        print(
+            f"  unpriced: {s['unpriced_turns']} turn(s) + {s['unpriced_ops']} op(s), "
+            f"{s['unpriced_tokens']:,} tokens — no rate card for: "
+            f"{', '.join(s['unpriced_models'])}"
+        )

@@ -649,12 +649,16 @@ def _record_gemini_spend(response, model: str, op: str) -> None:
         return
     from personal_mem.core.spend import record_spend
 
+    # Thinking tokens (``thoughts_token_count``) bill as output on 2.5 models.
+    output = (getattr(meta, "candidates_token_count", 0) or 0) + (
+        getattr(meta, "thoughts_token_count", 0) or 0
+    )
     record_spend(
         "gemini",
         model,
         op,
         getattr(meta, "prompt_token_count", 0) or 0,
-        getattr(meta, "candidates_token_count", 0) or 0,
+        output,
         mode="mcp",
     )
 
