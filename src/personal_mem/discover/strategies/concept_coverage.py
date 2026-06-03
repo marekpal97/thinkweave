@@ -2,7 +2,8 @@
 
 Walks the ``note_concepts`` index, ranks load-bearing concepts by
 mention count, and surfaces concepts where the source-note coverage
-falls below a configurable threshold (``min_sources``, default 2).
+falls below a configurable threshold (``min_sources``, default 3 — two
+sources is too thin a coverage floor for a load-bearing concept).
 
 This strategy emits **gap descriptors**, not finished search hits — the
 companion ``/discover`` skill reads the descriptors and runs WebSearch
@@ -77,7 +78,7 @@ class ConceptCoverageStrategy:
         )
         return {
             "min_mentions": int(strategies_cfg.get("min_mentions", 3)),
-            "min_sources": int(strategies_cfg.get("min_sources", 2)),
+            "min_sources": int(strategies_cfg.get("min_sources", 3)),
             "limit": int(strategies_cfg.get("limit", 5)),
         }
 

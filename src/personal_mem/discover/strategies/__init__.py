@@ -20,12 +20,36 @@ That's it — no surface change, no plumbing edits.
 
 from __future__ import annotations
 
-from typing import Any
-
-REGISTRY: dict[str, Any] = {}
+from typing import Any, Protocol, runtime_checkable
 
 
-def register(strategy: Any) -> None:
+@runtime_checkable
+class Strategy(Protocol):
+    """Discovery-strategy contract.
+
+    Two flavors implement this in practice: internal-state producers
+    (``concept_coverage``, ``decision_review``, ``prompt_gap``) emit
+    *gap descriptors* the ``/discover`` skill turns into search queries;
+    external-trigger producers (``rss_poll``, ``mail_poll``,
+    ``external_tool_runner``) emit *queue items* (or, for ``mail_poll``,
+    a plan a skill executes against MCP). Both flavors share this
+    ``run`` signature; the return shape is a plain list of dicts.
+    """
+
+    name: str
+
+    def run(
+        self,
+        vault: Any,
+        project: str | None,
+        config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+
+REGISTRY: dict[str, Strategy] = {}
+
+
+def register(strategy: Strategy) -> None:
     """Register a strategy by its ``name`` attribute.
 
     Re-registering the same name overwrites the previous instance —
@@ -37,7 +61,7 @@ def register(strategy: Any) -> None:
     REGISTRY[name] = strategy
 
 
-def get(name: str) -> Any:
+def get(name: str) -> Strategy:
     """Look up a strategy by name. Raises ``KeyError`` if missing."""
     if name not in REGISTRY:
         raise KeyError(
