@@ -271,13 +271,13 @@ def cmd_import(args: argparse.Namespace) -> None:
             print("\n(Dry run — re-run without --dry-run to materialize.)")
         return
 
-    if args.source == "claude-mem":
+    if args.source == "claude-history":
         from pathlib import Path as _Path
 
-        from personal_mem.importers.claude_mem import import_claude_mem
+        from personal_mem.importers.claude_history import import_claude_history
 
         db_path = _Path(args.db_path) if args.db_path else None
-        stats = import_claude_mem(
+        stats = import_claude_history(
             cfg,
             db_path=db_path,
             project_filter=args.project,

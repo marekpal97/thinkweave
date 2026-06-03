@@ -68,9 +68,9 @@ def cmd_drain(args: argparse.Namespace) -> None:
         return
 
     if args.source == "claude-history":
-        from personal_mem.importers.claude_mem import import_claude_mem
+        from personal_mem.importers.claude_history import import_claude_history
 
-        stats = import_claude_mem(
+        stats = import_claude_history(
             cfg, db_path=None, project_filter="", dry_run=args.dry_run
         )
         if "error" in stats:

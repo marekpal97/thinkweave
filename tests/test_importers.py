@@ -1,4 +1,4 @@
-"""Tests for claude-mem importer — type mapping, body generation, project normalization, idempotency."""
+"""Tests for claude-history importer — type mapping, body generation, project normalization, idempotency."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from personal_mem.core.config import Config
-from personal_mem.importers.claude_mem import (
+from personal_mem.importers.claude_history import (
     META_CONCEPT_TO_TAG,
     PROJECT_MAP,
     _build_session_map,
@@ -25,7 +25,7 @@ from personal_mem.importers.claude_mem import (
     build_decision_body,
     build_observation_body,
     build_session_body,
-    import_claude_mem,
+    import_claude_history,
     normalize_project,
 )
 from personal_mem.core.schemas import NoteType
@@ -442,7 +442,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats = import_claude_mem(config, db_path=claude_mem_db)
+        stats = import_claude_history(config, db_path=claude_mem_db)
 
         # 4 sessions: aaa (obs+summary), bbb (obs only), ccc (obs only), ddd (summary only)
         assert stats["sessions"] == 4
@@ -468,8 +468,8 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats1 = import_claude_mem(config, db_path=claude_mem_db)
-        stats2 = import_claude_mem(config, db_path=claude_mem_db)
+        stats1 = import_claude_history(config, db_path=claude_mem_db)
+        stats2 = import_claude_history(config, db_path=claude_mem_db)
 
         assert stats1["sessions"] == 4
         assert stats2["sessions"] == 0
@@ -480,7 +480,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats = import_claude_mem(
+        stats = import_claude_history(
             config, db_path=claude_mem_db, project_filter="legacy_proj"
         )
 
@@ -493,7 +493,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats = import_claude_mem(config, db_path=claude_mem_db, dry_run=True)
+        stats = import_claude_history(config, db_path=claude_mem_db, dry_run=True)
 
         assert stats["sessions"] == 4
         assert stats["notes"] == 3
@@ -508,7 +508,7 @@ class TestImportClaudeMem:
 
     def test_missing_db(self, config: Config, tmp_path: Path):
         """Should return error for missing database."""
-        stats = import_claude_mem(config, db_path=tmp_path / "nonexistent.db")
+        stats = import_claude_history(config, db_path=tmp_path / "nonexistent.db")
         assert "error" in stats
 
     def test_decision_frontmatter(self, config: Config, claude_mem_db: Path):
@@ -516,7 +516,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         # Find the decision note
         decision_files = list(config.vault_root.rglob("use-three-layer-architecture*.md"))
@@ -536,7 +536,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         # Find a session.md for options_engine (has observations with files)
         session_files = list(
@@ -554,7 +554,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         # The discovery note should be in the same folder as its session
         discovery_files = list(config.vault_root.rglob("options-engine-architecture*.md"))
@@ -571,7 +571,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         discovery_files = list(config.vault_root.rglob("options-engine-architecture*.md"))
         fm, _ = parse_frontmatter(discovery_files[0].read_text(encoding="utf-8"))

@@ -190,7 +190,7 @@ sources:
     dedup_keys: [conversation_id, title]
   claude-history:
     drain_strategy: inline
-    importer: claude_mem
+    importer: claude_history
     dedup_keys: [session_uuid]
 
 projects:

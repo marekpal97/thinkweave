@@ -283,7 +283,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "claude-history": {
             "drain_strategy": "inline",
-            "importer": "claude_mem",
+            "importer": "claude_history",
             "dedup_keys": ["session_uuid"],
         },
     },

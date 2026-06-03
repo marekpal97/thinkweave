@@ -315,7 +315,7 @@ def _save_manifest(mem_dir: Path, manifest: dict) -> None:
 # ── Main import ─────────────────────────────────────────────────────
 
 
-def import_claude_mem(
+def import_claude_history(
     config: Config | None = None,
     db_path: Path | None = None,
     project_filter: str = "",
