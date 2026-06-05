@@ -52,11 +52,22 @@ from personal_mem.core.config import Config
 
 logger = logging.getLogger(__name__)
 
-_REGISTRY_RELPATH = Path(".mem") / "themes.yaml"
+_REGISTRY_FILENAME = "themes.yaml"
 
 
 def _registry_path(config: Config) -> Path:
-    return config.vault_root / _REGISTRY_RELPATH
+    from personal_mem.core.config import resolve_config_file
+
+    return resolve_config_file(config.vault_root, _REGISTRY_FILENAME)
+
+
+def _registry_write_path(config: Config) -> Path:
+    """Path used for *writes* — always the canonical ``vault/config/`` location.
+
+    Symmetric with ``_registry_path``: both resolve to ``vault/config/``
+    after the Phase 3.1B legacy-fallback retirement.
+    """
+    return config.config_dir / _REGISTRY_FILENAME
 
 
 def _themes_dir(config: Config) -> Path:
@@ -130,7 +141,7 @@ def rebuild(config: Config) -> int:
 
             entries.append(_entry_from_fm(fm))
 
-    registry_path = _registry_path(config)
+    registry_path = _registry_write_path(config)
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {"themes": entries}
     registry_path.write_text(
@@ -200,7 +211,7 @@ def upsert(config: Config, thm_id: str, fields: dict) -> None:
 
     registry[thm_id] = entry
 
-    registry_path = _registry_path(config)
+    registry_path = _registry_write_path(config)
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {"themes": list(registry.values())}
     registry_path.write_text(
@@ -222,7 +233,7 @@ def remove(config: Config, thm_id: str) -> bool:
         return False
 
     del registry[thm_id]
-    registry_path = _registry_path(config)
+    registry_path = _registry_write_path(config)
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {"themes": list(registry.values())}
     registry_path.write_text(

@@ -1241,7 +1241,7 @@ class TestPromoteProposedConcept:
     def test_shifts_proposed_to_canonical_and_creates_hub(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        vault_yaml_path = self._seed_separate_paths(
+        self._seed_separate_paths(
             monkeypatch, "swe-python:\n  - python\n"
         )
         note = vault.create_note(
@@ -1265,8 +1265,11 @@ class TestPromoteProposedConcept:
         assert "emerging-term" in fm["concepts"]
         assert "proposed_concepts" not in fm
 
-        # Vault ontology override now contains the term under the domain.
-        body = vault_yaml_path.read_text(encoding="utf-8")
+        # Phase 3.1: promote writes the ontology override to the canonical
+        # vault/config/ontology.yaml, regardless of where it was read from.
+        canonical_path = config.config_dir / "ontology.yaml"
+        assert canonical_path.exists()
+        body = canonical_path.read_text(encoding="utf-8")
         assert "ml-training" in body
         assert "emerging-term" in body
 

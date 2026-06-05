@@ -529,7 +529,7 @@ class TestMCPToolChainE2E:
                 "EDGE_TYPE_TO_FIELD enables markdown-first linking\n"
                 "This keeps SQLite as a derived index\n"
             ),
-            project="test-project",
+            project="test_project",
             extra_frontmatter={
                 "files_touched": ["src/server.py"],
                 "commits": [],
@@ -540,7 +540,7 @@ class TestMCPToolChainE2E:
         session = vault.read_note(session_path)
 
         assert session.type == NoteType.SESSION
-        assert session.project == "test-project"
+        assert session.project == "test_project"
 
         # ── Step 2: Agent searches to avoid duplicates ──────────────
         results = search.search("stdio_server")
@@ -591,7 +591,7 @@ class TestMCPToolChainE2E:
                 "## Decision\nWrite edges to markdown frontmatter.\n\n"
                 "## Consequences\nEdges survive index --full rebuild."
             ),
-            project="test-project",
+            project="test_project",
             tags=["architecture"],
             extra_frontmatter={
                 "concepts": ["markdown-first", "sqlite"],
@@ -623,7 +623,7 @@ class TestMCPToolChainE2E:
         # ── Step 7: Agent runs concept management ───────────────────
         # Add a note with a near-duplicate concept
         typo_path = vault.create_note(
-            NoteType.NOTE, "Typo concept note", body=".", project="test-project",
+            NoteType.NOTE, "Typo concept note", body=".", project="test_project",
             extra_frontmatter={"concepts": ["mark-down-first", "sqlite"]},
         )
         indexer.index_file(typo_path)

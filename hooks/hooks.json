@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook session_start || true"
+            "command": "mem-hook session_start"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook user_prompt_submit || true"
+            "command": "mem-hook user_prompt_submit"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook post_tool_use || true"
+            "command": "mem-hook post_tool_use"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml\" && mem-hook stop || true"
+            "command": "mem-hook stop"
           }
         ]
       }

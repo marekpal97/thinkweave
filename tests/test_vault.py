@@ -136,14 +136,14 @@ class TestRenderFrontmatter:
 
 class TestWikilinks:
     def test_extract_basic(self):
-        text = "See [[legacy-proj]] and [[sqlite-wal]] for details."
+        text = "See [[legacy_proj]] and [[sqlite-wal]] for details."
         links = extract_wikilinks(text)
-        assert links == ["legacy-proj", "sqlite-wal"]
+        assert links == ["legacy_proj", "sqlite-wal"]
 
     def test_extract_with_alias(self):
-        text = "Check [[legacy-proj|Legacy Project]] docs."
+        text = "Check [[legacy_proj|Legacy Project]] docs."
         links = extract_wikilinks(text)
-        assert links == ["legacy-proj"]
+        assert links == ["legacy_proj"]
 
     def test_no_links(self):
         assert extract_wikilinks("No links here.") == []
@@ -188,7 +188,7 @@ class TestVaultManager:
             "SQLite WAL Gotcha",
             body="WAL mode requires exclusive lock for checkpointing.",
             tags=["gotcha", "sqlite"],
-            project="personal-mem",
+            project="personal_mem",
         )
         assert path.exists()
         assert path.suffix == ".md"
@@ -199,14 +199,25 @@ class TestVaultManager:
         assert note.title == "SQLite WAL Gotcha"
         assert "gotcha" in note.tags
         assert "sqlite" in note.tags
-        assert note.project == "personal-mem"
+        assert note.project == "personal_mem"
         assert "exclusive lock" in note.body
+
+    def test_create_note_normalizes_project(self, vault: VaultManager):
+        """A dash/case project name is canonicalized so `trade-ideas` and
+        `trade_ideas` can never become two separate project folders."""
+        path = vault.create_note(
+            NoteType.NOTE, "X", project="Trade-Ideas",
+        )
+        assert "projects/trade_ideas/" in str(path).replace("\\", "/")
+        assert "trade-ideas" not in str(path).lower()
+        note = vault.read_note(path)
+        assert note.project == "trade_ideas"
 
     def test_create_session(self, vault: VaultManager):
         path = vault.create_note(
             NoteType.SESSION,
             "DAG refactor",
-            project="legacy-proj",
+            project="legacy_proj",
             extra_frontmatter={"source_session": "abc-123"},
         )
         assert path.exists()
@@ -220,7 +231,7 @@ class TestVaultManager:
             NoteType.DECISION,
             "Use markdown-first storage",
             body="## Context\nNeed portable storage.\n\n## Decision\nMarkdown + SQLite.",
-            project="personal-mem",
+            project="personal_mem",
             tags=["architecture"],
         )
         note = vault.read_note(path)
@@ -297,14 +308,20 @@ class TestVaultManager:
         assert path.name == "source.md"
         assert path.parent.name == "global-article"
 
-    def test_source_project_scoped(self, vault: VaultManager):
-        """Sources with project go to vault/projects/{project}/sources/{slug}/source.md."""
+    def test_source_global_despite_project(self, vault: VaultManager):
+        """Sources are global: a `project:` never routes them under projects/.
+
+        Source notes file strictly by the registry bucket under
+        vault/sources/<bucket>/, exactly like themes. The project frontmatter
+        is informational only.
+        """
         path = vault.create_note(
             NoteType.SOURCE, "ML Paper",
-            project="ml-study",
+            project="ml_study",
             extra_frontmatter={"source_type": "paper", "url": "https://arxiv.org/123"},
         )
-        assert "projects/ml-study/sources" in str(path)
+        assert "projects" not in str(path)
+        assert "sources/papers" in str(path)
         assert path.name == "source.md"
         assert path.parent.name == "ml-paper"
         assert path.exists()
@@ -490,3 +507,21 @@ class TestDirectoryStructure:
         )
         assert p1.parent.parent == p2.parent.parent
         assert p1.parent.parent.name == "citrini"
+
+
+class TestSeedVaultTemplates:
+    """`_seed_vault_templates` must copy every shipped config template into the vault."""
+
+    def test_all_shipped_templates_seeded(self, tmp_path: Path):
+        from personal_mem.surfaces.cli.util import _seed_vault_templates
+
+        _seed_vault_templates(tmp_path)
+        config_dir = tmp_path / "config"
+        for filename in (
+            "sources.yaml",
+            "news_feeds.yaml",
+            "PRIORITIES.yaml",
+            "podcast_events_feeds.yaml",
+            "podcast_concepts_feeds.yaml",
+        ):
+            assert (config_dir / filename).exists(), f"{filename} not seeded"

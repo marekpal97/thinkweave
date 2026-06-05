@@ -62,6 +62,22 @@ def main() -> None:
     hook_input = _read_stdin()
     tool_name = hook_input.get("tool_name", "")
 
+    # Early-return gate: if the vault hasn't been initialised yet, every
+    # hook is a no-op. Replaces the bash gate in hooks/hooks.json — that
+    # gate (a) checked a stale Phase-3.1 path and (b) used bash idioms
+    # that don't parse under cmd.exe. Matches the "fail-silent, exit 0"
+    # posture of the existing try/except below.
+    try:
+        from personal_mem.core.config import is_vault_initialized, load_config
+
+        if not is_vault_initialized(load_config()):
+            _output()
+            return
+    except Exception as e:
+        _log_error(hook_type, e)
+        _output()
+        return
+
     try:
         if hook_type == "post_tool_use":
             _handle_post(tool_name, hook_input)

@@ -13,7 +13,7 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from personal_mem.core.config import Config, load_config
+from personal_mem.core.config import Config, load_config, normalize_project_name
 from personal_mem.core.schemas import NOTE_ID_PREFIXES, DecisionStatus, NoteMeta, NoteType
 from personal_mem.sources import registry as source_registry
 
@@ -226,10 +226,13 @@ class VaultManager:
             return output_dir
 
         if note_type == NoteType.SOURCE:
-            if project:
-                d = self.root / "projects" / project / "sources"
-                d.mkdir(parents=True, exist_ok=True)
-                return d
+            # Source notes are global, filed strictly by the registry bucket
+            # under vault/sources/<bucket>/ (the bucket is appended in
+            # create_note). The `project:` frontmatter field is informational
+            # only — it never controls filing, exactly like themes. (A prior
+            # `if project:` branch mis-routed sources to
+            # projects/<project>/sources/, leaking them out of their type
+            # folders.)
             return self.root / "sources"
 
         if note_type == NoteType.THEME:
@@ -383,7 +386,10 @@ class VaultManager:
         """
         note_id = self.generate_id(note_type)
         today = datetime.now(timezone.utc).isoformat()
-        project = project or self.config.default_project
+        # Canonicalize so `trade-ideas` and `trade_ideas` can't become two
+        # separate project folders. The config default is already
+        # normalized at load; normalize the caller-supplied value too.
+        project = normalize_project_name(project or self.config.default_project)
 
         # Resolve session_id to output_dir if provided
         if session_id and not output_dir and project:
@@ -485,8 +491,22 @@ class VaultManager:
                 filepath = target_dir / f"{slug}-{counter}.md"
                 counter += 1
 
+        # A theme created with no body gets the shared hub skeleton — the
+        # same ## Essence / ## Catalyst log / ## Open questions backbone
+        # concept hubs use — so it never lands as a bare H1 husk. The
+        # skeleton carries its own H1, so suppress the prepended header.
+        theme_skeleton_injected = False
+        if note_type == NoteType.THEME and not body.strip():
+            from personal_mem.synthesis.theme_hub import render_theme_body_skeleton
+
+            body = render_theme_body_skeleton(title)
+            theme_skeleton_injected = True
+
         # Render and write
-        header = f"# {title}\n\n" if note_type != NoteType.SOURCE else ""
+        if note_type == NoteType.SOURCE or theme_skeleton_injected:
+            header = ""
+        else:
+            header = f"# {title}\n\n"
         content = render_frontmatter(fm) + "\n\n" + header + body
         filepath.write_text(content, encoding="utf-8")
 

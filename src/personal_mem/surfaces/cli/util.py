@@ -32,16 +32,28 @@ def cmd_mcp(args: argparse.Namespace) -> None:
 
 
 def _seed_vault_templates(vault_root: Path) -> None:
-    """Copy any default files from the package-bundled `vault_templates/`
-    into the vault if they don't already exist. Currently seeds
-    `.mem/sources.yaml`."""
+    """Copy any default files from the package-bundled ``vault_templates/``
+    into the vault if they don't already exist.
+
+    Seeds ``vault/config/`` with the four shipped templates: sources.yaml,
+    PRIORITIES.yaml, and the two podcast-feeds stubs. The legacy
+    ``vault/.mem/`` location is no longer seeded as of Phase 3.1.
+    """
     pkg_root = Path(__file__).resolve().parents[1].parent  # → .../src/personal_mem
-    sources_template = pkg_root / "vault_templates" / ".mem" / "sources.yaml"
-    if sources_template.exists():
-        target = Path(vault_root) / ".mem" / "sources.yaml"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
-            shutil.copyfile(sources_template, target)
+    templates_dir = pkg_root / "vault_templates" / "config"
+    target_dir = Path(vault_root) / "config"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for filename in (
+        "sources.yaml",
+        "news_feeds.yaml",
+        "PRIORITIES.yaml",
+        "podcast_events_feeds.yaml",
+        "podcast_concepts_feeds.yaml",
+    ):
+        source = templates_dir / filename
+        target = target_dir / filename
+        if source.exists() and not target.exists():
+            shutil.copyfile(source, target)
 
 
 def cmd_prune_orphans(args: argparse.Namespace) -> None:
@@ -196,9 +208,9 @@ def _cmd_sources_scaffold(
     """Register a new source type via the vault-side YAML overlay.
 
     Writes three artifacts and refuses on collisions:
-      1. SourceTypeSpec entry → <vault>/.mem/source_types.yaml
+      1. SourceTypeSpec entry → <vault>/config/source_types.yaml
       2. Skill file → commands/<slug>.md  (from the parametrized template)
-      3. Default config block → vault_templates/.mem/sources.yaml (only if
+      3. Default config block → vault_templates/config/sources.yaml (only if
          not already present for the slug)
     """
     slug = args.slug.strip()
@@ -218,7 +230,7 @@ def _cmd_sources_scaffold(
     if slug in existing_user:
         print(
             f"error: '{slug}' is already declared in "
-            f"{vault_root}/.mem/source_types.yaml. Edit that file directly to change it.",
+            f"{vault_root}/config/source_types.yaml. Edit that file directly to change it.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -235,8 +247,8 @@ def _cmd_sources_scaffold(
 
     written: list[Path] = []
 
-    # --- artifact 1: <vault>/.mem/source_types.yaml ---
-    user_yaml = Path(vault_root) / ".mem" / "source_types.yaml"
+    # --- artifact 1: <vault>/config/source_types.yaml ---
+    user_yaml = Path(vault_root) / "config" / "source_types.yaml"
     user_yaml.parent.mkdir(parents=True, exist_ok=True)
     block_lines = [
         f"{slug}:",
@@ -281,7 +293,7 @@ def _cmd_sources_scaffold(
         if skill_path.exists():
             print(
                 f"error: {skill_path} already exists. Refusing to overwrite. "
-                f"(The .mem/source_types.yaml entry was still written.)",
+                f"(The config/source_types.yaml entry was still written.)",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -296,8 +308,8 @@ def _cmd_sources_scaffold(
         skill_path.write_text(rendered, encoding="utf-8")
         written.append(skill_path)
 
-    # --- artifact 3: vault_templates/.mem/sources.yaml default block ---
-    template_sources = pkg_root / "vault_templates" / ".mem" / "sources.yaml"
+    # --- artifact 3: vault_templates/config/sources.yaml default block ---
+    template_sources = pkg_root / "vault_templates" / "config" / "sources.yaml"
     if template_sources.exists():
         existing = template_sources.read_text(encoding="utf-8")
         marker = f"\n  {slug}:\n"

@@ -111,7 +111,7 @@ def test_scaffold_writes_all_three_artifacts(
     assert "Scaffolded source type 'demo'" in out
 
     # 1. user-side YAML overlay
-    user_yaml = vault / ".mem" / "source_types.yaml"
+    user_yaml = vault / "config" / "source_types.yaml"
     assert user_yaml.exists(), "source_types.yaml should be created"
     body = user_yaml.read_text(encoding="utf-8")
     assert "demo:" in body
@@ -135,10 +135,10 @@ def test_scaffold_writes_all_three_artifacts(
     assert "frontmatter={" in skill_text
     assert 'frontmatter={{' not in skill_text
 
-    # 3. default config block in vault_templates/.mem/sources.yaml
+    # 3. default config block in vault_templates/config/sources.yaml
     template_sources = (
         isolated_commands_dir / "src" / "personal_mem" / "vault_templates"
-        / ".mem" / "sources.yaml"
+        / "config" / "sources.yaml"
     )
     assert template_sources.exists()
     template_text = template_sources.read_text(encoding="utf-8")
@@ -206,7 +206,7 @@ def test_scaffold_refuses_in_code_registry_collision(
     err = capsys.readouterr().err
     assert "built-in source type" in err
     # And nothing should have been written.
-    assert not (vault / ".mem" / "source_types.yaml").exists()
+    assert not (vault / "config" / "source_types.yaml").exists()
 
 
 def test_get_spec_without_vault_root_unchanged_for_in_code_specs() -> None:

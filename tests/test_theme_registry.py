@@ -154,7 +154,7 @@ class TestRebuild:
         n = rebuild(config)
 
         assert n == 2
-        reg_path = config.vault_root / ".mem" / "themes.yaml"
+        reg_path = config.vault_root / "config" / "themes.yaml"
         assert reg_path.exists()
         data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
         ids = {e["id"] for e in data["themes"]}
@@ -168,7 +168,7 @@ class TestRebuild:
 
         assert n == 1
         data = yaml.safe_load(
-            (config.vault_root / ".mem" / "themes.yaml").read_text(encoding="utf-8")
+            (config.vault_root / "config" / "themes.yaml").read_text(encoding="utf-8")
         )
         ids = [e["id"] for e in data["themes"]]
         assert "cand-deadbeef" not in ids
@@ -185,7 +185,7 @@ class TestRebuild:
         n = rebuild(config)
         assert n == 0
         data = yaml.safe_load(
-            (config.vault_root / ".mem" / "themes.yaml").read_text(encoding="utf-8")
+            (config.vault_root / "config" / "themes.yaml").read_text(encoding="utf-8")
         )
         assert data["themes"] == []
 
@@ -244,7 +244,7 @@ class TestLoad:
     def test_returns_empty_dict_on_empty_file(
         self, config: Config, vault: VaultManager
     ):
-        reg_path = config.vault_root / ".mem" / "themes.yaml"
+        reg_path = config.vault_root / "config" / "themes.yaml"
         reg_path.parent.mkdir(parents=True, exist_ok=True)
         reg_path.write_text("", encoding="utf-8")
         assert load(config) == {}
@@ -266,12 +266,12 @@ class TestUpsert:
         }
         upsert(config, "thm-aaaa1111", fields)
         yaml_text_first = (
-            config.vault_root / ".mem" / "themes.yaml"
+            config.vault_root / "config" / "themes.yaml"
         ).read_text(encoding="utf-8")
 
         upsert(config, "thm-aaaa1111", fields)
         yaml_text_second = (
-            config.vault_root / ".mem" / "themes.yaml"
+            config.vault_root / "config" / "themes.yaml"
         ).read_text(encoding="utf-8")
 
         assert yaml_text_first == yaml_text_second
@@ -386,7 +386,7 @@ class TestRemove:
         remove(config, "thm-aaaa1111")
 
         data = yaml.safe_load(
-            (config.vault_root / ".mem" / "themes.yaml").read_text(encoding="utf-8")
+            (config.vault_root / "config" / "themes.yaml").read_text(encoding="utf-8")
         )
         assert all(e["id"] != "thm-aaaa1111" for e in data["themes"])
 

@@ -118,7 +118,7 @@ class TestLoadFlows:
         assert load_flows(config) == {}
 
     def test_loads_from_disk(self, config: Config):
-        config.mem_dir.mkdir(parents=True, exist_ok=True)
+        config.config_dir.mkdir(parents=True, exist_ok=True)
         flows_path(config).write_text(
             "flows:\n"
             "  smoke:\n"

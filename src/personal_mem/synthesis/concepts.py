@@ -17,7 +17,9 @@ from personal_mem.core.config import Config
 
 
 def _aliases_path(config: Config) -> Path:
-    return config.mem_dir / "concept_aliases.yaml"
+    from personal_mem.core.config import resolve_config_file
+
+    return resolve_config_file(config.vault_root, "concept_aliases.yaml")
 
 
 def load_aliases(config: Config) -> dict[str, list[str]]:
@@ -55,8 +57,11 @@ def load_aliases(config: Config) -> dict[str, list[str]]:
 
 
 def save_aliases(config: Config, aliases: dict[str, list[str]]) -> Path:
-    """Save aliases to the YAML file. Returns the file path."""
-    path = _aliases_path(config)
+    """Save aliases to the YAML file. Returns the file path.
+
+    Always writes to ``vault/config/concept_aliases.yaml`` (canonical).
+    """
+    path = config.config_dir / "concept_aliases.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = ["# Concept aliases: canonical → [aliases]",
@@ -307,11 +312,16 @@ def _seed_ontology_path() -> Path:
 
 
 def _vault_ontology_path() -> Path | None:
-    """Path to the vault-local override, or None if no vault is configured."""
-    try:
-        from personal_mem.core.config import load_config
+    """Path to the vault-local override, or None if no vault is configured.
 
-        return load_config().mem_dir / "ontology.yaml"
+    Resolved under ``<vault_root>/config/ontology.yaml`` (canonical).
+    A file still at ``<vault_root>/.mem/ontology.yaml`` raises
+    :class:`LegacyConfigLocationError` (caught here and returns None).
+    """
+    try:
+        from personal_mem.core.config import load_config, resolve_config_file
+
+        return resolve_config_file(load_config().vault_root, "ontology.yaml")
     except Exception:
         return None
 
@@ -829,13 +839,17 @@ def promote_proposed_concept(
     if term not in build_keep_set(ontology):
         # Add to vault override (the user-editable layer). Don't touch
         # the shipped seed.
-        override_path = _vault_ontology_path()
-        if override_path is None:
-            raise RuntimeError("Vault override path is unavailable; cannot promote.")
+        #
+        # Read from the fallback-resolved path (which tolerates legacy
+        # vault/.mem/ontology.yaml), but write to the canonical
+        # vault/config/ontology.yaml location — that migrates the file
+        # forward on first promote.
+        read_path = _vault_ontology_path()
+        override_path = config.config_dir / "ontology.yaml"
         override_path.parent.mkdir(parents=True, exist_ok=True)
 
         existing = (
-            _parse_yaml_file(override_path) if override_path.exists() else {}
+            _parse_yaml_file(read_path) if read_path and read_path.exists() else {}
         )
         existing.setdefault(domain_key, [])
         if term not in [c.lower() for c in existing[domain_key]]:

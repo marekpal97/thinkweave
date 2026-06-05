@@ -289,7 +289,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "projects": {
         "default": {
-            "discover_strategies": ["concept_coverage"],
+            "discover_strategies": [],
         },
     },
     "landing_files": {
@@ -306,13 +306,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
 def load_user_config(vault_root: Path | None) -> dict[str, Any]:
     """Return the merged source config: defaults overlaid with user file.
 
-    Reads ``<vault_root>/.mem/sources.yaml`` if present and merges it on
-    top of ``DEFAULT_CONFIG``. Missing or empty file → defaults.
+    Reads ``<vault_root>/config/sources.yaml`` (canonical location).
+    A file still sitting at ``<vault_root>/.mem/sources.yaml`` raises
+    :class:`LegacyConfigLocationError` (the fallback shim was retired in
+    Phase 3.1B, 2026-06-05). Missing or empty file → defaults.
     """
+    from personal_mem.core.config import resolve_config_file
+
     merged: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
     if vault_root is None:
         return merged
-    user_path = Path(vault_root) / ".mem" / "sources.yaml"
+    user_path = resolve_config_file(Path(vault_root), "sources.yaml")
     if not user_path.exists():
         return merged
     try:

@@ -30,9 +30,9 @@ def test_returns_deep_copy(tmp_path: Path) -> None:
 
 
 def test_user_override_merges_with_defaults(tmp_path: Path) -> None:
-    mem = tmp_path / ".mem"
-    mem.mkdir()
-    (mem / "sources.yaml").write_text(
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "sources.yaml").write_text(
         """
 sources:
   paper:
@@ -52,9 +52,9 @@ auto_todo_extraction: false
 
 
 def test_list_overwrites_wholesale(tmp_path: Path) -> None:
-    mem = tmp_path / ".mem"
-    mem.mkdir()
-    (mem / "sources.yaml").write_text(
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "sources.yaml").write_text(
         """
 sources:
   paper:
@@ -68,10 +68,10 @@ sources:
 
 
 def test_malformed_falls_back_to_defaults(tmp_path: Path) -> None:
-    mem = tmp_path / ".mem"
-    mem.mkdir()
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
     # Tab-indented + missing colon — definitely fails parsing.
-    (mem / "sources.yaml").write_text("not valid yaml here\n", encoding="utf-8")
+    (cfg_dir / "sources.yaml").write_text("not valid yaml here\n", encoding="utf-8")
 
     cfg = load_user_config(tmp_path)
     assert cfg["sources"]["paper"]["queue"] == "vault/.mem/queues/papers.jsonl"
@@ -152,31 +152,33 @@ def test_default_config_has_newsletter_concepts() -> None:
 
 
 def test_shipped_template_parses_with_newsletter_blocks() -> None:
-    """The shipped vault_templates/.mem/sources.yaml must still load — and
-    contain both newsletter blocks with the canonical `senders` field.
-    Guards against accidental YAML breakage when the template is hand-edited."""
+    """The shipped vault_templates/config/sources.yaml must still load — and
+    contain both newsletter blocks. Phase 3.1: senders list moved out of
+    this file into PRIORITIES.yaml — assertion narrows to the processing
+    knobs that still live here. Guards against accidental YAML breakage
+    when the template is hand-edited."""
     import personal_mem
 
     pkg_root = Path(personal_mem.__file__).parent
-    template = pkg_root / "vault_templates" / ".mem" / "sources.yaml"
+    template = pkg_root / "vault_templates" / "config" / "sources.yaml"
     parsed = _parse_simple_yaml(template.read_text(encoding="utf-8"))
     sources = parsed["sources"]
     assert "newsletter-events" in sources
     assert "newsletter-concepts" in sources
     assert sources["newsletter-events"]["subagent_type"] == "research-newsletter-worker"
     assert sources["newsletter-concepts"]["lookback_days"] == 90
-    # Pin the senders allowlist contract: ships empty by design (deliberate
-    # halt until the user populates it).
-    assert sources["newsletter-events"]["senders"] == []
-    assert sources["newsletter-concepts"]["senders"] == []
+    # Senders allowlist now lives in PRIORITIES.yaml::intake.newsletter_*.senders,
+    # not in this file. Confirm it's *not* present (would be a config-drift bug).
+    assert "senders" not in sources["newsletter-events"]
+    assert "senders" not in sources["newsletter-concepts"]
 
 
 def test_user_override_can_populate_senders(tmp_path: Path) -> None:
     """Round-trip: a user file populating `senders:` merges cleanly with
     the shipped empty default."""
-    mem = tmp_path / ".mem"
-    mem.mkdir()
-    (mem / "sources.yaml").write_text(
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "sources.yaml").write_text(
         """
 sources:
   newsletter-events:

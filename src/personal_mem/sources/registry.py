@@ -322,9 +322,10 @@ def load_user_specs(vault_root: Path) -> dict[str, SourceTypeSpec]:
     framework should stay alive when a half-edited overlay is in flight;
     ``mem doctor`` is where the real surfacing happens).
     """
+    from personal_mem.core.config import resolve_config_file
     from personal_mem.sources.config import _parse_simple_yaml
 
-    user_path = Path(vault_root) / ".mem" / "source_types.yaml"
+    user_path = resolve_config_file(Path(vault_root), "source_types.yaml")
     if not user_path.exists():
         return {}
     try:

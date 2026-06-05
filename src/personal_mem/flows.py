@@ -61,8 +61,14 @@ class FlowSpec:
 
 
 def flows_path(config: Config) -> Path:
-    """Vault-local config file. Same dir as concept_aliases.yaml etc."""
-    return config.mem_dir / "flows.yaml"
+    """Vault-local config file. Same dir as concept_aliases.yaml etc.
+
+    Resolved under ``vault/config/flows.yaml`` (canonical). A file still
+    at ``vault/.mem/flows.yaml`` raises :class:`LegacyConfigLocationError`.
+    """
+    from personal_mem.core.config import resolve_config_file
+
+    return resolve_config_file(config.vault_root, "flows.yaml")
 
 
 def load_flows(config: Config, *, path: Path | None = None) -> dict[str, FlowSpec]:

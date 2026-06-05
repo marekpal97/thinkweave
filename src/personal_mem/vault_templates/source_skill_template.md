@@ -18,7 +18,7 @@ description: {description}
 
   This skill was created from the parametrized template at
   src/personal_mem/vault_templates/source_skill_template.md. The
-  source-type spec lives in your vault at .mem/source_types.yaml — edit
+  source-type spec lives in your vault at config/source_types.yaml — edit
   there to change bucket, layout, aliases, or skills binding.
 
   bucket: {bucket}
@@ -97,7 +97,7 @@ mem_create(
 )
 ```
 
-The `source_type` field routes the file into `vault/sources/{bucket}/` via the spec stored in `<vault_root>/.mem/source_types.yaml`. Routing is handled automatically by `VaultManager.create_note`.
+The `source_type` field routes the file into `vault/sources/{bucket}/` via the spec stored in `<vault_root>/config/source_types.yaml`. Routing is handled automatically by `VaultManager.create_note`.
 
 ### 4. Save raw companion content
 
