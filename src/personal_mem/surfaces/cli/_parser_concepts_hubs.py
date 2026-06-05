@@ -281,7 +281,7 @@ def add_drain_subparsers(sub) -> None:
     p_discover = sub.add_parser(
         "discover",
         help=(
-            "Run discovery strategies (concept_coverage, decision_review, "
+            "Run discovery strategies (decision_review, prompt_gap, "
             "external_tool_runner, rss_poll, mail_poll). Returns gap "
             "descriptors as JSON."
         ),

@@ -8,10 +8,12 @@ thin shell over this registry: it loads the strategies named in
 
 Built-in strategies:
 
-- ``concept_coverage`` — find load-bearing concepts with thin source
-  coverage. Default behaviour of the original ``/discover``.
 - ``decision_review`` — surface stalled ``proposed``/``accepted``
   decisions that haven't seen activity in N days.
+- ``prompt_gap`` — surface hyphenated-compound terms the user has
+  probed about that aren't in the ontology (canonical or proposed).
+- ``rss_poll`` / ``mail_poll`` — external-trigger producers that
+  enqueue queue items (or emit a fetch plan) from RSS feeds and Gmail.
 - ``external_tool_runner`` — shell out to user-provided scripts and
   parse their JSONL stdout into queue items.
 

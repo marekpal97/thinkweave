@@ -1,9 +1,9 @@
 """Probe-pressure helper — aggregates probe-classified prompts into
 per-concept pressure scores.
 
-Output is consumed as an additive bias by every existing discover
-strategy (``concept_coverage``, ``decision_review``, ``theme_drift``),
-plus ``/dream``'s scan phase to seed ``priority_signals``. Concept
+Output is consumed as an additive bias by gap-emitting discover
+strategies (``decision_review``, ``prompt_gap``), plus ``/dream``'s
+scan phase to seed ``priority_signals``. Concept
 substrate stays the same; the helper turns "what the user has been
 asking about" into a dict the downstream consumers can multiply
 against their existing scoring.

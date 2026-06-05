@@ -1,8 +1,8 @@
 """Slice 1.2 — recent_probe_pressure helper tests.
 
 The helper turns probe-classified prompts into per-concept pressure
-that every discover strategy (concept_coverage, decision_review,
-theme_drift) reads as an additive bias.
+that gap-emitter discover strategies (decision_review, prompt_gap)
+read as an additive bias.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def _seed_session(cfg: Config, vm: VaultManager, project: str, ts_iso: str) -> P
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> Config:
-    return Config(vault_root=tmp_path / "vault", default_project="proj-a")
+    return Config(vault_root=tmp_path / "vault", default_project="proj_a")
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ class TestRecentProbePressure:
         """A single probe mentioning a canonical-ontology concept
         pressures that concept by 1. Uses ``llm`` which the shipped
         ontology guarantees as a canonical leaf."""
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -70,7 +70,7 @@ class TestRecentProbePressure:
             ],
         )
 
-        pressure = recent_probe_pressure(cfg, project="proj-a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
         assert pressure.get("llm", 0) == 1
 
     def test_one_probe_pressures_multiple_matched_concepts(
@@ -78,7 +78,7 @@ class TestRecentProbePressure:
     ):
         """A probe touching two distinct concept slugs (substring match)
         contributes +1 to each — not double-counted per occurrence."""
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -87,7 +87,7 @@ class TestRecentProbePressure:
                  "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
             ],
         )
-        pressure = recent_probe_pressure(cfg, project="proj-a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
         # Both ``llm`` and ``training`` are canonical leaves in the
         # shipped ontology. Both should pressure by exactly 1 from a
         # single matching probe.
@@ -99,7 +99,7 @@ class TestRecentProbePressure:
     ):
         """Instructions (no question mark, no hint phrase) must not
         contribute pressure."""
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -107,13 +107,13 @@ class TestRecentProbePressure:
                  "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
             ],
         )
-        pressure = recent_probe_pressure(cfg, project="proj-a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
         assert "llm" not in pressure
 
     def test_window_excludes_old_probes(
         self, cfg: Config, vault: VaultManager
     ):
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -122,7 +122,7 @@ class TestRecentProbePressure:
             ],
         )
         pressure = recent_probe_pressure(
-            cfg, project="proj-a", window_days=14
+            cfg, project="proj_a", window_days=14
         )
         assert pressure == {}
 
@@ -140,14 +140,14 @@ class TestRecentProbePressure:
             note_type=NoteType.NOTE,
             title="Stub",
             body="Body",
-            project="proj-a",
+            project="proj_a",
             extra_frontmatter={"proposed_concepts": ["frobnicate-widget"]},
         )
         idx = Indexer(config=cfg)
         idx.rebuild(full=True)
         idx.close()
 
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -157,14 +157,14 @@ class TestRecentProbePressure:
             ],
         )
         pressure = recent_probe_pressure(
-            cfg, project="proj-a", window_days=14
+            cfg, project="proj_a", window_days=14
         )
         assert pressure.get("frobnicate-widget", 0) == 1
 
     def test_repeated_probes_compound_pressure(
         self, cfg: Config, vault: VaultManager
     ):
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -177,6 +177,6 @@ class TestRecentProbePressure:
             ],
         )
         pressure = recent_probe_pressure(
-            cfg, project="proj-a", window_days=14
+            cfg, project="proj_a", window_days=14
         )
         assert pressure.get("llm", 0) == 3

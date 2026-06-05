@@ -135,7 +135,7 @@ def cmd_discover(args: argparse.Namespace) -> None:
         scope = projects_cfg.get(project) if project else None
         if not scope:
             scope = projects_cfg.get("default", {})
-        strategy_names = list(scope.get("discover_strategies", ["concept_coverage"]))
+        strategy_names = list(scope.get("discover_strategies", []))
 
     vm = VaultManager(config=cfg)
     all_items: list[dict] = []

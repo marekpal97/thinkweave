@@ -28,12 +28,12 @@ class Strategy(Protocol):
     """Discovery-strategy contract.
 
     Two flavors implement this in practice: internal-state producers
-    (``concept_coverage``, ``decision_review``, ``prompt_gap``) emit
-    *gap descriptors* the ``/discover`` skill turns into search queries;
-    external-trigger producers (``rss_poll``, ``mail_poll``,
-    ``external_tool_runner``) emit *queue items* (or, for ``mail_poll``,
-    a plan a skill executes against MCP). Both flavors share this
-    ``run`` signature; the return shape is a plain list of dicts.
+    (``decision_review``, ``prompt_gap``) emit *gap descriptors* the
+    ``/discover`` skill turns into search queries; external-trigger
+    producers (``rss_poll``, ``mail_poll``, ``external_tool_runner``)
+    emit *queue items* (or, for ``mail_poll``, a plan a skill executes
+    against MCP). Both flavors share this ``run`` signature; the return
+    shape is a plain list of dicts.
     """
 
     name: str
@@ -80,14 +80,13 @@ def names() -> list[str]:
 # ``STRATEGY`` singleton. Built-ins split into two flavors:
 #
 #   internal-state producers (observe vault, emit gap descriptors):
-#     concept_coverage, decision_review, prompt_gap
+#     decision_review, prompt_gap
 #
 #   external-trigger producers (observe outside world, emit queue items):
 #     rss_poll, mail_poll, external_tool_runner
 #
 # Both flavors implement the same ``run(vault, project, config)`` contract.
 from personal_mem.discover.strategies import (  # noqa: E402
-    concept_coverage,
     decision_review,
     external_tool_runner,
     mail_poll,
@@ -95,7 +94,6 @@ from personal_mem.discover.strategies import (  # noqa: E402
     rss_poll,
 )
 
-register(concept_coverage.STRATEGY)
 register(decision_review.STRATEGY)
 register(prompt_gap.STRATEGY)
 register(external_tool_runner.STRATEGY)

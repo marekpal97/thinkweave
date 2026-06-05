@@ -1,9 +1,9 @@
 """Residual probe-gap strategy — surfaces probed concepts not yet in
 the ontology.
 
-The cross-cutting probe-pressure bias on ``concept_coverage`` and
-``decision_review`` already handles probes about *known* concepts.
-This strategy handles the residual case: hyphenated-compound terms the
+The cross-cutting probe-pressure bias on ``decision_review`` already
+handles probes about *known* concepts.  This strategy handles the
+residual case: hyphenated-compound terms the
 user has been asking about that don't appear in the ontology
 (canonical OR proposed) at all. ``/discover`` routes these to ontology
 proposal instead of source research.
