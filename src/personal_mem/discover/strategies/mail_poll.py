@@ -32,7 +32,10 @@ limits planning to one source type.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+from personal_mem.sources.priorities import intake_for, load_priorities
 
 
 class MailPollStrategy:
@@ -51,6 +54,15 @@ class MailPollStrategy:
         sources = config.get("sources") or {}
         out: list[dict[str, Any]] = []
 
+        # Phase 3.1 — PRIORITIES.yaml intake reads.
+        # PRIORITIES.yaml::intake.newsletter_*.senders supersedes the
+        # legacy inline lists in sources.yaml.
+        cfg = getattr(vault, "config", None) or vault
+        vault_root = getattr(cfg, "vault_root", None)
+        priorities = load_priorities(
+            Path(vault_root) if vault_root is not None else None
+        )
+
         for slug, spec in sources.items():
             if filter_type and slug != filter_type:
                 continue
@@ -60,17 +72,29 @@ class MailPollStrategy:
             # for pre-rename vault configs.
             if not (spec.get("mail_provider") or spec.get("mail_connector")):
                 continue
-            plan = self._plan_for(slug, spec)
+            intake_block = intake_for(priorities, slug)
+            plan = self._plan_for(slug, spec, intake_block)
             out.append(plan)
         return out
 
     @staticmethod
-    def _plan_for(slug: str, spec: dict[str, Any]) -> dict[str, Any]:
+    def _plan_for(
+        slug: str, spec: dict[str, Any], intake_block: dict[str, Any]
+    ) -> dict[str, Any]:
         connector = str(
             spec.get("mail_provider") or spec.get("mail_connector") or ""
         )
-        senders = list(spec.get("senders") or [])
-        mail_query = str(spec.get("mail_query") or "").strip()
+        # PRIORITIES.yaml::intake.<slug>.senders wins when present.
+        if intake_block.get("senders"):
+            senders = list(intake_block.get("senders") or [])
+        else:
+            senders = list(spec.get("senders") or [])
+        # mail_query + label_overrides may also live in the intake block.
+        mail_query = str(
+            intake_block.get("mail_query")
+            or spec.get("mail_query")
+            or ""
+        ).strip()
         processed_label = str(spec.get("processed_label") or "mem-processed")
         # 0 is a legitimate "no lookback bound" — only default when missing/None.
         raw_lookback = spec.get("lookback_days")
@@ -85,9 +109,9 @@ class MailPollStrategy:
                 "source_type": slug,
                 "reason": "empty_allowlist",
                 "hint": (
-                    f"Add senders to vault/.mem/sources.yaml under "
-                    f"sources.{slug}.senders — empty allowlist halts to "
-                    f"avoid whole-inbox fan-out."
+                    f"Add senders to vault/config/PRIORITIES.yaml under "
+                    f"intake.{slug.replace('-', '_')}.senders — empty "
+                    f"allowlist halts to avoid whole-inbox fan-out."
                 ),
             }
 

@@ -38,7 +38,7 @@ sources:
     dedup_keys: [url, slug]
   news:
     queue: vault/.mem/queues/news.jsonl
-    feed_config: vault/.mem/news_feeds.yaml
+    # Outlets list → vault/config/PRIORITIES.yaml::intake.news.outlets
     # rss_poll clips entries published more than this many days ago, so
     # stale headlines never enter the queue. Drain workers honour the same
     # window — anything older than 7 days is too cold to be worth a writer
@@ -77,18 +77,7 @@ sources:
     drain_parallelism: 4
     drain_batch_max: 20
     mail_provider: gmail               # v1: gmail-only (outlook/imap deferred). Old `mail_connector:` still accepted.
-    # Sender allowlist — fill in the addresses / domains of the
-    # newsletters you actually subscribe to. The skill composes
-    # `from:(s1 OR s2 OR ...)` for the connector. Use INLINE list syntax
-    # only (personal_mem's YAML loader doesn't read block-style `- item`
-    # lists — those parse as empty). Example:
-    #   senders: [newsletter@stratechery.com, matt@levine.com, bloombergmedia.com]
-    # Entries can be full addresses or bare domains (bare domain matches
-    # any sender at that host). An empty list + empty mail_query is a
-    # deliberate halt — the skill refuses to fan out across the inbox.
-    senders: []
-    # Optional extra filter ANDed on top (e.g. "is:unread"). Default empty.
-    mail_query: ""
+    # Sender allowlist + extra mail_query → vault/config/PRIORITIES.yaml::intake.newsletter_events
     processed_label: mem-processed
     lookback_days: 30
     dedup_keys: [message_id, url]
@@ -105,8 +94,7 @@ sources:
     drain_parallelism: 4
     drain_batch_max: 20
     mail_provider: gmail
-    senders: []
-    mail_query: ""
+    # Sender allowlist → vault/config/PRIORITIES.yaml::intake.newsletter_concepts.senders
     processed_label: mem-processed
     lookback_days: 90
     dedup_keys: [message_id, url]
@@ -123,13 +111,7 @@ sources:
     subagent_model: sonnet
     drain_parallelism: 4
     drain_batch_max: 20
-    # Channel allowlist — fill in YouTube channel IDs (the UCxxx form)
-    # for the channels you actually watch. The skill polls each feed
-    # URL and enqueues new videos. Use INLINE list syntax only.
-    # Example:
-    #   channels: [UCBJycsmduvYEL83R_U4JriQ, UCsBjURrPoezykLs9EqgamOA]
-    # Empty list means the skill is URL-paste only (via /research).
-    channels: []
+    # Channel allowlist → vault/config/PRIORITIES.yaml::intake.youtube_events.channels
     lookback_days: 7
     dedup_keys: [video_id, url]
     url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
@@ -146,7 +128,7 @@ sources:
     subagent_model: sonnet
     drain_parallelism: 4
     drain_batch_max: 20
-    channels: []
+    # Channel allowlist → vault/config/PRIORITIES.yaml::intake.youtube_concepts.channels
     lookback_days: 30
     dedup_keys: [video_id, url]
     url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
@@ -154,12 +136,13 @@ sources:
     allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "mem_create:"]
   podcast-events:
     # Event-grain podcasts (markets / macro / interview shows). Each show
-    # is one outlet in podcast_feeds.yaml; the rss_poll strategy pulls
-    # the <enclosure> audio URL per episode, and the worker hands it to
-    # Gemini Flash via the Files API. Theme candidate floater fires on
-    # create. Show name drives the author_folder layout.
+    # is one outlet in PRIORITIES.yaml::intake.podcast_events.outlets; the
+    # rss_poll strategy pulls the <enclosure> audio URL per episode, and
+    # the worker hands it to Gemini Flash via the Files API. Theme
+    # candidate floater fires on create. Show name drives the
+    # author_folder layout.
     queue: vault/.mem/queues/podcast-events.jsonl
-    feed_config: vault/.mem/podcast_events_feeds.yaml
+    # Outlets list → vault/config/PRIORITIES.yaml::intake.podcast_events.outlets
     drain_strategy: subagent
     subagent_type: research-podcast-worker
     subagent_model: sonnet
@@ -178,7 +161,7 @@ sources:
     # explainer pods. Same Gemini audio extraction; no theme floating.
     # Longer lookback (durable content is worth backfilling).
     queue: vault/.mem/queues/podcast-concepts.jsonl
-    feed_config: vault/.mem/podcast_concepts_feeds.yaml
+    # Outlets list → vault/config/PRIORITIES.yaml::intake.podcast_concepts.outlets
     drain_strategy: subagent
     subagent_type: research-podcast-worker
     subagent_model: sonnet
@@ -200,7 +183,7 @@ sources:
 
 projects:
   default:
-    discover_strategies: [concept_coverage]
+    discover_strategies: []
 
 landing_files:
   state: STATE.md

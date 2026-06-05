@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from personal_mem.sources.config import _parse_simple_yaml
+from personal_mem.sources.priorities import intake_for, load_priorities
 from personal_mem.sources.queue import Queue
 
 
@@ -87,18 +88,34 @@ class RssPollStrategy:
         indexer_urls = _load_indexer_urls(db_path)
         descriptors: list[dict[str, Any]] = []
 
+        # Phase 3.1 — PRIORITIES.yaml intake reads.
+        # When PRIORITIES.yaml::intake.<source_type> is present, its registry
+        # (outlets/feeds/channels) supersedes the legacy reads from
+        # news_feeds.yaml / podcast_events_feeds.yaml / sources.yaml inline.
+        # Absent → legacy fallback. Fail-open (load_priorities returns {}).
+        priorities = load_priorities(Path(vault_root))
+
         for slug, spec in sources.items():
             if filter_type and slug != filter_type:
                 continue
             if not isinstance(spec, dict):
                 continue
-            feeds = self._feed_urls_for(slug, spec, Path(vault_root))
+            intake_block = intake_for(priorities, slug)
+            feeds = self._feed_urls_for(slug, spec, Path(vault_root), intake_block)
             if not feeds:
                 continue
+            # Merge intake-block-level overrides into the spec view the
+            # per-source poller uses (lookback_days, drain_batch_max).
+            # The intake block wins for fields it sets; spec fields fill
+            # in everything else (queue path, dedup_keys, etc).
+            effective_spec = dict(spec)
+            for key in ("lookback_days", "drain_batch_max"):
+                if key in intake_block:
+                    effective_spec[key] = intake_block[key]
             descriptors.extend(
                 self._poll_source(
                     slug=slug,
-                    spec=spec,
+                    spec=effective_spec,
                     feed_urls=feeds,
                     vault_root=Path(vault_root),
                     feedparser_mod=feedparser,
@@ -113,27 +130,52 @@ class RssPollStrategy:
     # ------------------------------------------------------------------
 
     def _feed_urls_for(
-        self, slug: str, spec: dict[str, Any], vault_root: Path
+        self,
+        slug: str,
+        spec: dict[str, Any],
+        vault_root: Path,
+        intake_block: dict[str, Any],
     ) -> list[tuple[str, dict[str, Any]]]:
         """Return ``[(feed_url, meta), ...]`` for a source type.
 
+        Resolution order:
+        1. ``intake_block.outlets`` (PRIORITIES.yaml — news/podcast flavors)
+        2. ``intake_block.channels`` (PRIORITIES.yaml — youtube flavor)
+        3. ``spec.feed_config`` (legacy news_feeds.yaml / podcast_events_feeds.yaml)
+        4. ``spec.channels`` (legacy inline list in sources.yaml)
+
         Meta carries per-feed context the item builder needs:
-        - news flavor → ``{"outlet_slug": ..., "outlet_conf": ...}``
+        - news/podcast flavor → ``{"outlet_slug": ..., "outlet_conf": ...}``
         - youtube flavor → ``{"channel_id": ...}``
 
-        Source types without a recognised config key return ``[]``.
+        Source types without any recognised config return ``[]``.
         """
+        # 1. PRIORITIES.yaml::intake.<slug>.outlets (news / podcast flavor)
+        intake_outlets = intake_block.get("outlets") if intake_block else None
+        if isinstance(intake_outlets, dict) and intake_outlets:
+            return self._outlets_to_feeds(intake_outlets)
+
+        # 2. PRIORITIES.yaml::intake.<slug>.channels (youtube flavor)
+        intake_channels = intake_block.get("channels") if intake_block else None
+        if isinstance(intake_channels, list) and intake_channels:
+            return [
+                (
+                    f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}",
+                    {"channel_id": cid},
+                )
+                for cid in intake_channels
+            ]
+
+        # 3. Legacy feed_config pointer (news_feeds.yaml etc.)
         feed_config = spec.get("feed_config")
         if feed_config:
-            # Strip the leading ``vault/`` prefix that appears in DEFAULT_CONFIG
-            # for visual clarity (e.g. ``vault/.mem/news_feeds.yaml``). The
-            # rest of the codebase treats these as vault-rooted paths and
-            # ignores the prefix (Queue.for_source_type doesn't even read
-            # the config's ``queue:`` field). Keeping the prefix here would
-            # produce a doubled ``<vault>/vault/.mem/...`` path that never
-            # resolves — pre-existing bug surfaced when wiring podcasts.
+            # Strip leading ``vault/`` prefix that appears in DEFAULT_CONFIG
+            # for visual clarity. The rest of the codebase treats these as
+            # vault-rooted paths and ignores the prefix.
             cleaned = feed_config[len("vault/"):] if feed_config.startswith("vault/") else feed_config
             return self._load_news_feeds(vault_root / cleaned)
+
+        # 4. Legacy inline channels list in sources.yaml
         channels = spec.get("channels") or []
         if channels:
             return [
@@ -144,6 +186,31 @@ class RssPollStrategy:
                 for cid in channels
             ]
         return []
+
+    @staticmethod
+    def _outlets_to_feeds(
+        outlets: dict[str, Any],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Convert ``PRIORITIES.yaml::intake.<slug>.outlets`` into feed tuples.
+
+        Same shape as legacy ``news_feeds.yaml::outlets`` — the migration
+        is a YAML key relocation, not a content reshape.
+        """
+        out: list[tuple[str, dict[str, Any]]] = []
+        for outlet_slug, conf in outlets.items():
+            if not isinstance(conf, dict):
+                continue
+            feeds = conf.get("feeds") or []
+            if isinstance(feeds, str):
+                feeds = [feeds]
+            for feed_url in feeds:
+                out.append(
+                    (
+                        str(feed_url),
+                        {"outlet_slug": str(outlet_slug), "outlet_conf": conf},
+                    )
+                )
+        return out
 
     @staticmethod
     def _load_news_feeds(path: Path) -> list[tuple[str, dict[str, Any]]]:
@@ -187,10 +254,16 @@ class RssPollStrategy:
     ) -> list[dict[str, Any]]:
         queue = Queue.for_source_type(slug, vault_root)
         dedup_keys = list(spec.get("dedup_keys") or ["url"])
-        if spec.get("feed_config"):
-            flavor = "podcast" if slug.startswith("podcast-") else "news"
-        else:
+        # Flavor derives from slug shape so PRIORITIES.yaml (which doesn't
+        # carry feed_config) still routes to the right item builder.
+        # Legacy behaviour matched the same branches via feed_config
+        # presence — slug-based is equivalent for the shipped source types.
+        if slug.startswith("podcast-") or slug.startswith("podcast_"):
+            flavor = "podcast"
+        elif slug.startswith("youtube-") or slug.startswith("youtube_"):
             flavor = "youtube"
+        else:
+            flavor = "news"
         # Both news and podcasts honour per-outlet daily caps.
         enqueue_counts_today: dict[str, int] = (
             _count_today_per_outlet(queue, slug) if flavor in ("news", "podcast") else {}

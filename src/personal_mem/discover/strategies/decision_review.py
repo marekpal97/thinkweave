@@ -50,10 +50,27 @@ class DecisionReviewStrategy:
         except Exception:
             pressure = {}
 
+        # Phase 3.1B — focus.watch_themes bias: decisions whose
+        # ``implements:`` intersects the user-pinned theme list float
+        # above their natural rank and carry an ``in_watch_themes`` flag
+        # the /discover skill surfaces in its report. Fail-open: missing
+        # PRIORITIES.yaml → empty set → behaviour matches pre-bias.
+        try:
+            from personal_mem.sources.priorities import (
+                focus_watch_themes,
+                load_priorities,
+            )
+
+            watch_themes = set(
+                focus_watch_themes(load_priorities(getattr(cfg, "vault_root", None)))
+            )
+        except Exception:
+            watch_themes = set()
+
         db = sqlite3.connect(str(db_path))
         db.row_factory = sqlite3.Row
         try:
-            return self._gather(db, project, cutoff, params, pressure)
+            return self._gather(db, project, cutoff, params, pressure, watch_themes)
         finally:
             db.close()
 
@@ -75,6 +92,7 @@ class DecisionReviewStrategy:
         cutoff: str,
         params: dict[str, Any],
         pressure: dict[str, int],
+        watch_themes: set[str],
     ) -> list[dict[str, Any]]:
         if project:
             sql = (
@@ -107,6 +125,10 @@ class DecisionReviewStrategy:
             probe_pressure = sum(
                 pressure.get(c.lower(), 0) for c in decision_concepts
             )
+            implements = fm.get("implements") or []
+            implements = [str(t) for t in implements if isinstance(implements, list)]
+            matched_watch_themes = sorted(set(implements) & watch_themes)
+            in_watch_themes = 1 if matched_watch_themes else 0
             out.append(
                 {
                     "strategy": self.name,
@@ -115,14 +137,20 @@ class DecisionReviewStrategy:
                     "decision_status": status,
                     "decision_date": row["date"] or "",
                     "probe_pressure": probe_pressure,
+                    "in_watch_themes": in_watch_themes,
+                    "watch_themes_matched": matched_watch_themes,
                     "kind": "review",
                     "queue": "backlog",
                 }
             )
-        # Pressure-first, then stalest-first (existing tie-break). The
+        # Sort key (descending): (in_watch_themes, probe_pressure). The
         # SQL already returned rows by date ASC; sorted is stable in
-        # CPython, so equal-pressure entries keep date-asc ordering.
-        out.sort(key=lambda d: d["probe_pressure"], reverse=True)
+        # CPython, so equal-key entries keep date-asc ordering — staler
+        # decisions surface first within each bucket.
+        out.sort(
+            key=lambda d: (d["in_watch_themes"], d["probe_pressure"]),
+            reverse=True,
+        )
         return out[: params["limit"]]
 
 
