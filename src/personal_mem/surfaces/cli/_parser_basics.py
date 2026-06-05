@@ -295,7 +295,33 @@ def add_admin_subparsers(sub) -> None:
     hooks_sub = p_hooks.add_subparsers(dest="hooks_action")
     p_install = hooks_sub.add_parser("install", help="Install hooks")
     p_install.add_argument("--project", "-p", default="")
-    hooks_sub.add_parser("uninstall", help="Uninstall hooks")
+    p_install.add_argument(
+        "--scope",
+        choices=("project", "user"),
+        default="project",
+        help=(
+            "project (default): write to <project>/.claude/settings.local.json; "
+            "user: write to ~/.claude/settings.json (fires in every CC session)"
+        ),
+    )
+    p_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the planned settings.json diff without writing.",
+    )
+    p_uninstall = hooks_sub.add_parser("uninstall", help="Uninstall hooks")
+    p_uninstall.add_argument("--project", "-p", default="")
+    p_uninstall.add_argument(
+        "--scope",
+        choices=("project", "user"),
+        default="project",
+        help="Settings scope to remove hooks from (mirror of install).",
+    )
+    p_uninstall.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the planned settings.json diff without writing.",
+    )
     p_hooks_status = hooks_sub.add_parser("status", help="Show recent hook errors")
     p_hooks_status.add_argument("--limit", "-n", type=int, default=20, help="Number of lines to show")
 

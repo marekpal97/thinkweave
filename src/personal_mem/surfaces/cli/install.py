@@ -161,6 +161,9 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 def _print_next_steps() -> None:
     print()
     print("Next:")
-    print("  1. mem init                  # set up your vault (one time)")
-    print("  2. cd <repo> && claude       # open a project")
-    print("  3. /onboard                  # wire this project into the vault")
+    print("  1. Restart Claude Code      # MCP server only spawns on session start")
+    print("  2. cd <repo> && claude      # open a project")
+    print("  3. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
+    print()
+    print("Tip: pass `--vault PATH` to `mem install` to bake the vault path into the")
+    print("MCP server entry now; otherwise `/onboard` will ask and persist it.")

@@ -415,6 +415,129 @@ class TestHookInstaller:
         )
         assert "hooks" not in settings
 
+    def test_install_user_scope_writes_to_home(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """``scope='user'`` targets ``~/.claude/settings.json`` (note: NOT the
+        ``.local`` variant — the per-user file). Redirect ``Path.home`` so
+        the test never touches the real home directory.
+        """
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        from personal_mem.surfaces.hooks.install import install_hooks
+
+        install_hooks(scope="user", project_dir="")
+
+        target = fake_home / ".claude" / "settings.json"
+        assert target.exists(), f"expected user-scope file at {target}"
+        # The legacy .local.json variant must NOT have been written.
+        assert not (fake_home / ".claude" / "settings.local.json").exists()
+
+        settings = json.loads(target.read_text())
+        assert "hooks" in settings
+        assert "SessionStart" in settings["hooks"]
+
+        out = capsys.readouterr().out
+        assert "scope=user" in out
+
+    def test_install_project_scope_unchanged(self, tmp_path: Path):
+        """Default ``scope='project'`` keeps the historical settings.local.json
+        target (backwards compat for scripts calling ``mem hooks install``)."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        from personal_mem.surfaces.hooks.install import install_hooks
+
+        install_hooks(scope="project", project_dir=str(project_dir))
+
+        target = project_dir / ".claude" / "settings.local.json"
+        assert target.exists()
+        # Confirm the non-local file was NOT touched.
+        assert not (project_dir / ".claude" / "settings.json").exists()
+
+    def test_install_dry_run_prints_diff_and_does_not_write(
+        self, tmp_path: Path, capsys
+    ):
+        """``dry_run=True`` prints a unified diff and writes nothing."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        from personal_mem.surfaces.hooks.install import install_hooks
+
+        install_hooks(scope="project", project_dir=str(project_dir), dry_run=True)
+
+        target = project_dir / ".claude" / "settings.local.json"
+        # Critical: no file written, no parent .claude/ mkdir.
+        assert not target.exists()
+        assert not (project_dir / ".claude").exists()
+
+        out = capsys.readouterr().out
+        # Mentions the target path so the user knows which file applies.
+        assert str(target) in out
+        # Looks like a unified diff against the (empty) starting state.
+        assert "+++" in out and "---" in out
+        # The diff should include at least one of the hook keys being added.
+        assert "SessionStart" in out or "PostToolUse" in out
+
+    def test_install_invalid_scope_raises(self, tmp_path: Path):
+        """Unknown scope value must fail loud at the helper boundary."""
+        from personal_mem.surfaces.hooks.install import install_hooks
+
+        with pytest.raises(ValueError, match="unknown scope"):
+            install_hooks(scope="garbage", project_dir=str(tmp_path))
+
+    def test_install_user_scope_idempotent(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Running ``install_hooks(scope='user')`` twice converges — second
+        call produces no net change. Pins the same idempotency contract
+        as the project-scope path."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        from personal_mem.surfaces.hooks.install import install_hooks
+
+        install_hooks(scope="user", project_dir="")
+        target = fake_home / ".claude" / "settings.json"
+        first = json.loads(target.read_text())
+
+        install_hooks(scope="user", project_dir="")
+        second = json.loads(target.read_text())
+
+        assert first == second, "second install must be a no-op"
+        # Single entry per single-matcher phase, two for PostToolUse.
+        assert len(second["hooks"]["SessionStart"]) == 1
+        assert len(second["hooks"]["PostToolUse"]) == 2
+
+    def test_cli_smoke_install_scope_user_dry_run(self, tmp_path: Path, monkeypatch):
+        """``mem hooks install --scope user --dry-run`` reaches ``cmd_hooks``
+        with both flags set on the argparse Namespace."""
+        # Redirect home so even if the dry-run did write (it shouldn't),
+        # it wouldn't hit the real machine.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        from personal_mem.surfaces.cli.parser import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["hooks", "install", "--scope", "user", "--dry-run"]
+        )
+        assert args.hooks_action == "install"
+        assert args.scope == "user"
+        assert args.dry_run is True
+
+        # cmd_hooks should accept these flags and run without writing.
+        from personal_mem.surfaces.cli.hooks import cmd_hooks
+
+        cmd_hooks(args)
+        # No file written.
+        assert not (fake_home / ".claude" / "settings.json").exists()
+
     def test_uninstall_removes_session_start(self, tmp_path: Path):
         """SessionStart must be round-trippable like every other hook type."""
         project_dir = tmp_path / "project"

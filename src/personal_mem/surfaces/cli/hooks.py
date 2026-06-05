@@ -17,11 +17,16 @@ def cmd_hooks(args: argparse.Namespace) -> None:
         from personal_mem.surfaces.hooks.install import install_hooks
 
         project = args.project if hasattr(args, "project") else ""
-        install_hooks(project_dir=project)
+        scope = getattr(args, "scope", "project")
+        dry_run = getattr(args, "dry_run", False)
+        install_hooks(project_dir=project, scope=scope, dry_run=dry_run)
     elif args.hooks_action == "uninstall":
         from personal_mem.surfaces.hooks.install import uninstall_hooks
 
-        uninstall_hooks()
+        project = args.project if hasattr(args, "project") else ""
+        scope = getattr(args, "scope", "project")
+        dry_run = getattr(args, "dry_run", False)
+        uninstall_hooks(project_dir=project, scope=scope, dry_run=dry_run)
     elif args.hooks_action == "status":
         cfg = load_config()
         log_path = cfg.mem_dir / "hooks.log"

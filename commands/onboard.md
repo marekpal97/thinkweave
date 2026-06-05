@@ -3,7 +3,7 @@ name: onboard
 owns_mechanic: project_bootstrap
 capabilities: [bootstrap]
 consumes: [mem_sources_config, mem_landing, mem_concepts]
-produces: [.claude/settings.json hooks, projects.<name> in vault sources.yaml, vault/.mem/ontology.yaml, per-project landing docs]
+produces: [~/.config/personal-mem/config.toml (vault_root), vault/config/sources.yaml (projects.<name>), vault/config/PRIORITIES.yaml (focus.active_projects + intake.* seeds), vault/config/ontology.yaml, .claude/settings.json or ~/.claude/settings.json hooks, per-project landing docs, ~/crontab personal-mem fence (opt-in)]
 tools:
   - Read
   - Write
@@ -13,70 +13,312 @@ tools:
   - mem_sources_config
   - mem_landing
   - mem_concepts
-description: First-run onboarding — seed vault from prior Claude Code history, bootstrap ontology, configure focus + sources (validated against user-supplied sample files), install hooks, emit landing docs.
+description: First-run onboarding — pre-flight checks, vault wiring, seed vault from prior Claude Code history, bootstrap ontology, configure focus + sources (validated against user-supplied sample files), install hooks (global by default), optionally install cron block, run end-to-end smoke test, emit landing docs.
 ---
 
 # /onboard — make existing work legible to mem
 
-Personal_mem's first-run flow. Seeds the vault from your historical
-Claude Code conversations *first*, then layers ontology, focus, source
-types, and per-project hooks on top of that seed.
+Personal_mem's first-run flow. Owns vault-path selection and `mem init`,
+seeds the vault from your historical Claude Code conversations, then
+layers ontology, focus, source types, hooks, and (optionally) cron on
+top of that seed. Ends with a five-check smoke test.
 
 **Posture: plan-before-execute.** Every user decision in this skill is
 gated by an explicit `AskUserQuestion` call — never improvise prompts,
-never make assumptions on the user's behalf. Step 3 ends with a single
-plan-for-approval summary; no vault state is written until the user
-has approved that summary.
+never make assumptions on the user's behalf. Step 5 ends with a single
+plan-for-approval summary; no `sources.yaml` / `PRIORITIES.yaml` state
+is written until the user has approved that summary.
 
 The skill is invoked from a project directory but its early steps are
-vault-scope. They run once across all your projects; the per-project
-work at the end attaches the *current* repo to the seeded vault.
+vault-scope (or machine-scope, for hooks). They run once across all
+your projects; the per-project work at the end attaches the *current*
+repo to the seeded vault.
 
 ## Idempotency — what makes each step skippable
 
 Re-runnable; later passes only do what hasn't been done yet. The skill
 uses **pragmatic structural checks** instead of a manifest file — each
-step inspects the vault and short-circuits if its output already
+step inspects the world and short-circuits if its output already
 exists:
 
 | Step | "Done" signal — skip when… |
 |---|---|
-| 1 — CC import | `mem_search(type=['session'], limit=1)` returns ≥1 session note (vault already seeded) |
-| 2 — ontology bootstrap | `mem concepts list` has ≥10 canonical concepts AND `mem concepts proposed-counts --min-count 3` survivors list is empty |
-| 3 — focus | `projects:` block already populated in `<vault>/.mem/sources.yaml` for every discovered project |
-| 3 — source types | every enabled source type has its row in `sources.yaml` AND its `intake_folder` / queue path exists on disk |
-| 4 — hooks | `.claude/settings.json` exists in the current repo AND contains `"hooks"` block with `personal-mem` markers (SessionStart / Stop / UserPromptSubmit / PostToolUse) |
-| 5 — landing docs | `<vault>/projects/<project>/STATE.md` exists AND `mtime > 0` |
+| 0 — Pre-flight | always runs (cheap; the checks themselves are the value) |
+| 1 — Vault wiring | `is_vault_initialized(load_config())` returns True AND `~/.config/personal-mem/config.toml` exists |
+| 2 — Hook scope | hooks already present at the chosen scope (plugin manifest OR `~/.claude/settings.json` OR repo `.claude/settings.json`) with `personal-mem` markers |
+| 3 — CC import | `mem_search(type=['session'], limit=1)` returns ≥1 session note (vault already seeded) |
+| 4 — ontology bootstrap | `mem concepts list` has ≥10 canonical concepts AND `mem concepts proposed-counts --min-count 3` survivors list is empty |
+| 5 — focus | `focus.active_projects` already populated in `<vault>/config/PRIORITIES.yaml` for every discovered project |
+| 5 — source types | every enabled source type has its row in `sources.yaml` AND (for intake-driven types) a non-empty entry in `PRIORITIES.yaml::intake.<type>` |
+| 6 — Cron install | the `# --- personal-mem cron block ---` fence already exists in `crontab -l` (re-running replaces between markers; never duplicates) |
+| 7 — Smoke test | always runs (the whole point is verification) |
+| Landing docs | `<vault>/projects/<project>/STATE.md` exists AND `mtime > 0` |
 
 If a step's signal is satisfied, print one line ("Step N already done —
 skipping.") and move on. Don't ask. Don't re-confirm.
 
-## Prerequisites — verify, don't recover
+---
+
+## Step 0 — Pre-flight
+
+Three structured checks. Each one is a gate — failures HALT with
+explicit re-run instructions; passing continues to the next.
+
+### 0a. uv check
 
 ```bash
-command -v mem-mcp >/dev/null && echo "mcp ok" || echo "missing"
-test -f ~/.claude.json && grep -q '"personal-mem"' ~/.claude.json && echo "registered" || echo "missing"
-test -f "${PERSONAL_MEM_VAULT:-$HOME/vault}/.mem/sources.yaml" && echo "vault ready" || echo "MISSING — run mem init"
+command -v uv >/dev/null && echo "uv ok" || echo "missing"
 ```
 
-If any check fails, stop and tell the user which prerequisite is
-missing. This skill does not own machine setup (`mem install`) or vault
-init (`mem init`).
+If missing, detect OS to pick the right installer line:
+
+```bash
+case "$(uname -s)" in
+  Linux|Darwin) echo "curl -LsSf https://astral.sh/uv/install.sh | sh" ;;
+  *)            echo 'powershell -c "irm https://astral.sh/uv/install.ps1 | iex"' ;;
+esac
+```
+
+Then:
+
+```
+AskUserQuestion({
+  "questions": [{
+    "question": "uv isn't on PATH. uv is the package manager personal_mem uses to run its CLI and MCP. Want me to install it for you?\n\nWill run: <the line above>",
+    "header": "uv install",
+    "options": [
+      {"label": "install now", "description": "Run the installer line above via Bash. Standard install — drops binaries in ~/.local/bin (Unix) or %USERPROFILE%\\.local\\bin (Windows)."},
+      {"label": "I'll do it myself, halt", "description": "Stop /onboard. Install uv on your own, then re-run /onboard."},
+      {"label": "skip and let me see what breaks", "description": "Continue without uv. Most subsequent steps will fail; useful only for debugging."}
+    ],
+    "multiSelect": false
+  }]
+})
+```
+
+- **install now**: run the appropriate one-liner via Bash. After it
+  completes, re-check `command -v uv`. If still missing (PATH not yet
+  refreshed in this shell), HALT with: *"uv installed but not yet on
+  this shell's PATH. Open a new terminal, restart Claude Code, then
+  re-run /onboard."*
+- **I'll do it myself, halt**: HALT with: *"Install uv from
+  https://docs.astral.sh/uv/getting-started/ then re-run /onboard."*
+- **skip and let me see what breaks**: print one line and continue.
+
+### 0b. MCP roundtrip probe
+
+Call `mem_concepts(action='list', limit=1)`. The cheapest available
+MCP tool; success confirms the MCP server is wired and Claude Code can
+reach it.
+
+On failure, print exactly:
+
+> MCP tools aren't responding. Most likely: you installed the plugin
+> but didn't restart Claude Code. Restart, then re-run /onboard.
+
+HALT. Don't try to recover; the only fix is a Claude Code restart.
+
+### 0c. mem doctor --mcp
+
+```bash
+uv run mem doctor --mcp
+```
+
+Surface its output verbatim. This is the install diagnostic — covers
+MCP registration scope (`plugin` / `user` / `project`), server health,
+and config sanity.
+
+- **PASS**: continue to Step 1.
+- **FAIL**: print the doctor output's remediation lines and HALT with:
+  *"Pre-flight failed at mem doctor. Address the items above, then
+  re-run /onboard."*
 
 ---
 
-## Step 1 — Seed from historical Claude Code conversations (mandatory)
+## Step 1 — Vault wiring
+
+`/onboard` owns vault-path selection. This is the seam that lets the
+choice survive Claude Code restarts and propagate to the MCP server,
+hooks, and CLI without any shell-rc edits.
+
+### 1a. Detect current state
+
+```bash
+uv run python -c "from personal_mem.core.config import load_config, is_vault_initialized; cfg=load_config(); print('YES' if is_vault_initialized(cfg) else 'NO', cfg.vault_root)"
+```
+
+If output begins with `YES`, print *"Vault at `<path>` already
+initialized — using."* and proceed to Step 2.
+
+If `NO`, fall through to 1b.
+
+### 1b. Ask for vault path (AskUserQuestion)
+
+```
+AskUserQuestion({
+  "questions": [{
+    "question": "Where should your personal_mem vault live? This is one directory that holds every session note, decision, source brief, and concept hub across all your projects. The choice gets persisted to ~/.config/personal-mem/config.toml so the MCP server, hooks, and CLI all agree without you having to set any environment variables.",
+    "header": "Vault location",
+    "options": [
+      {"label": "~/vault (recommended)", "description": "Default. Lives in your home directory; survives system reinstalls if you back up $HOME."},
+      {"label": "Other path", "description": "I'll ask for the path next. Use this if you keep notes in a synced folder (Dropbox, iCloud, Syncthing) or a dedicated drive."}
+    ],
+    "multiSelect": false
+  }]
+})
+```
+
+- **~/vault (recommended)**: chosen path = `$HOME/vault`.
+- **Other path**: follow up with a free-form question for the path.
+
+**Validate** the chosen path:
+
+```bash
+PARENT="$(dirname "<chosen-path>")"
+test -d "$PARENT" && test -w "$PARENT" && echo "ok" || echo "bad-parent"
+case "<chosen-path>" in /tmp/*) echo "tmp-forbidden" ;; esac
+```
+
+On `bad-parent`: print *"Parent directory `<parent>` doesn't exist or
+isn't writable."* and re-issue 1b. On `tmp-forbidden`: print *"Vaults
+under `/tmp` are not allowed — they vanish on reboot."* and re-issue
+1b.
+
+### 1c. Persist the choice
+
+```bash
+uv run python -c "from pathlib import Path; from personal_mem.core.config import write_user_config; write_user_config(Path('<chosen-path>'))"
+```
+
+Writes `~/.config/personal-mem/config.toml` (XDG-respectful, atomic).
+Confirm the file exists:
+
+```bash
+test -f ~/.config/personal-mem/config.toml && echo "persisted" || echo "FAILED"
+```
+
+### 1d. Run `mem init`
+
+```bash
+PERSONAL_MEM_VAULT=<chosen-path> uv run mem init
+```
+
+This seeds `<vault>/config/sources.yaml`, `PRIORITIES.yaml`,
+`ontology.yaml`, `news_feeds.yaml`, and the rest of the template tree.
+
+### 1e. Confirm
+
+Print verbatim:
+
+> Vault at `<chosen-path>` initialized. Persisted to
+> `~/.config/personal-mem/config.toml` — this choice will survive
+> Claude Code restarts.
+
+---
+
+## Step 2 — Hook scope
+
+Determine whether hooks should fire in **every** Claude Code session on
+this machine (global) or **only** sessions launched from the current
+repo (per-project).
+
+### 2a. Detect current install scope
+
+Parse `mem doctor --mcp` output from Step 0c for the scope summary
+line. Three cases:
+
+- Contains `plugin` scope (e.g. `1 scope (plugin)`): the plugin
+  manifest already wires hooks globally. Print *"Hooks installed via
+  plugin manifest — already global."* and proceed to Step 3.
+- Contains `user` scope already: print *"Global hooks already
+  installed at ~/.claude/settings.json."* and proceed to Step 3.
+- Otherwise (legacy / machine / per-project): fall through to 2b.
+
+### 2b. Ask scope (AskUserQuestion)
+
+```
+AskUserQuestion({
+  "questions": [{
+    "question": "Capture every Claude Code session you start, or only sessions in this repo?",
+    "header": "Capture scope",
+    "options": [
+      {"label": "Every session (recommended)", "description": "Hooks fire in every CC session on this machine. Vault-existence gate (set up in Step 1) means hooks no-op silently in repos without your vault. Different repos auto-separate inside the vault by cwd."},
+      {"label": "Only this repo", "description": "Hooks land in .claude/settings.local.json of the current repo. Opt-in per project."}
+    ],
+    "multiSelect": false
+  }]
+})
+```
+
+### 2c. Show diff first if a target settings file already exists
+
+Determine the target path:
+
+- **Every session** → `~/.claude/settings.json`
+- **Only this repo** → `$(pwd)/.claude/settings.json`
+
+If that file already exists, run the install in dry-run mode first so
+the user sees what would change:
+
+```bash
+# Every session:
+uv run mem hooks install --scope user --dry-run
+
+# Only this repo:
+uv run mem hooks install --dry-run
+```
+
+Display the planned diff, then ask:
+
+```
+AskUserQuestion({
+  "questions": [{
+    "question": "The diff above shows what mem hooks install would change in <target>. Apply it?",
+    "header": "Apply hook install?",
+    "options": [
+      {"label": "yes, apply", "description": "Run the install for real. The merge logic preserves any non-personal-mem hooks already in the file."},
+      {"label": "skip", "description": "Don't touch the settings file. Re-run /onboard or `mem hooks install` later."}
+    ],
+    "multiSelect": false
+  }]
+})
+```
+
+On `skip`: print *"Skipped hook install — re-run /onboard or `mem
+hooks install` when ready."* and proceed to Step 3.
+
+### 2d. Apply
+
+```bash
+# Every session:
+uv run mem hooks install --scope user
+
+# Only this repo:
+uv run mem hooks install
+```
+
+If no existing settings file was present in 2c, run directly here
+without the dry-run/confirm dance.
+
+Confirm no errors printed. If the user chose **Only this repo**, flag
+in the eventual wrap-up that other active projects need their own
+`/onboard` run from their respective repos.
+
+---
+
+## Step 3 — Seed from historical Claude Code conversations (mandatory)
 
 This is the spine. Everything else in onboarding is configured *on top*
 of the seed — there's no skip, no "later." If the user has prior CC
 history, importing it is what makes mem useful from the first query.
-If they don't, this step short-circuits and the rest still runs.
+If they don't, this step short-circuits and Step 4 (ontology) is
+skipped too.
 
 **Idempotency check:** if `mem_search(type=['session'], limit=1)`
 returns ≥1 hit, the vault is already seeded — print one line and
-proceed to step 2.
+proceed to Step 4.
 
-### 1a. Dry-run the import
+### 3a. Dry-run the import
 
 ```bash
 mem import claude-code --dry-run
@@ -87,18 +329,23 @@ auto-derived from each session's `cwd` — multi-project aware, no manual
 mapping needed). Parse the output for total session count `N` and the
 per-project breakdown.
 
-**If `~/.claude/projects/` doesn't exist or the dry-run reports zero
-usable sessions,** print one line ("No prior Claude Code history found
-— skipping seed.") and continue to step 2. Don't ask. Don't offer
-alternatives.
+**Empty-history branch.** If `~/.claude/projects/` doesn't exist or
+the dry-run reports zero usable sessions, print verbatim:
 
-### 1b. Check ANTHROPIC_API_KEY status (for --via batch viability)
+> No prior CC history found. To seed your vault: run `/research <url>`
+> on three sources you care about, then re-run `/onboard` to bootstrap
+> the ontology from them.
+
+Then **skip Step 4 entirely** (ontology bootstrap has nothing to chew
+on) and proceed directly to Step 5.
+
+### 3b. Check ANTHROPIC_API_KEY status (for --via batch viability)
 
 ```bash
 test -n "$ANTHROPIC_API_KEY" && echo "key set" || echo "key missing"
 ```
 
-### 1c. Decide import mode (AskUserQuestion)
+### 3c. Decide import mode (AskUserQuestion)
 
 If `N ≤ ~200`, the inline path is fine; skip the question and run
 `mem import claude-code` directly.
@@ -121,10 +368,10 @@ AskUserQuestion({
 ```
 
 If the user picks `--via batch` but the key is missing, fall back to
-`inline` and tell them why in one line. If they pick `skip`, exit step
-1 without importing.
+`inline` and tell them why in one line. If they pick `skip`, exit Step
+3 without importing.
 
-### 1d. Execute the import
+### 3d. Execute the import
 
 ```bash
 mem import claude-code              # if "inline"
@@ -133,11 +380,11 @@ mem import claude-code --via batch  # if "--via batch" AND key set
 
 After import lands, the vault has session notes, decision notes, and
 many `proposed_concepts:` entries from auto-enrichment. Those drive
-step 2.
+Step 4.
 
 ---
 
-## Step 2 — Bootstrap the ontology
+## Step 4 — Bootstrap the ontology
 
 Imported sessions surface domain vocabulary as `proposed_concepts:` —
 candidates that haven't earned canonical status yet. On a fresh vault
@@ -145,11 +392,13 @@ this is the moment to canonicalise the high-frequency ones in one pass,
 so subsequent retrieval and hub generation operate on a real ontology
 instead of an empty seed.
 
+**Skipped entirely** if Step 3 took the empty-history branch.
+
 **Idempotency check:** if `mem concepts list` reports ≥10 canonical
 concepts AND `mem concepts proposed-counts --min-count 3` returns an
-empty survivor list (after filtering), skip step 2.
+empty survivor list (after filtering), skip Step 4.
 
-### 2a. Gather survivors
+### 4a. Gather survivors
 
 Use a lower threshold than periodic hygiene (3 vs. the standard 5) —
 fresh vaults need a faster ramp:
@@ -169,7 +418,7 @@ surviving = filter_promotion_candidates([c for c, _ in proposed_counts])
 Load the existing domain catalogue (`mem concepts list`) to anchor
 domain suggestions in real namespaces.
 
-### 2b. Confirm promotions in batches (AskUserQuestion)
+### 4b. Confirm promotions in batches (AskUserQuestion)
 
 **Batching policy:** present survivors in batches of **5-8 per
 `AskUserQuestion` call**, multi-select. One question per concept is
@@ -209,17 +458,19 @@ chat after submitting the batch — handle inline with a single follow-up
 
 ---
 
-## Step 3 — Focus & acquisition setup
+## Step 5 — Focus & acquisition setup
 
-This step ends with a **plan-for-approval summary** (3d). No writes to
-`sources.yaml`, no hook installs, no landing docs are issued until the
-user has approved that plan.
+This step ends with a **plan-for-approval summary** (5d). No writes to
+`sources.yaml` / `PRIORITIES.yaml`, no landing docs are issued until
+the user has approved that plan.
 
-### 3a. Active-project multi-select (AskUserQuestion)
+### 5a. Active-project multi-select (AskUserQuestion)
 
-Read the projects discovered in step 1's dry-run (or, if step 1 was
-skipped, run `mem project list` to enumerate). Ask which are *active
-focuses* (vs. archived / one-off):
+Read the projects discovered in Step 3's dry-run (or, if Step 3 was
+skipped via empty-history, run `mem project list` to enumerate — likely
+empty, in which case ask the user to name the current repo's project
+as a free-form follow-up). Ask which are *active focuses* (vs.
+archived / one-off):
 
 ```
 AskUserQuestion({
@@ -237,9 +488,9 @@ AskUserQuestion({
 ```
 
 Hold the result in memory — don't write to `sources.yaml` yet. The
-plan-for-approval in 3d covers all the writes at once.
+plan-for-approval in 5d covers all the writes at once.
 
-### 3b. Source-type enable multi-select (AskUserQuestion)
+### 5b. Source-type enable multi-select (AskUserQuestion)
 
 List registered types from `mem_sources_config()` and ask which ones to
 enable. `paper` / `repo` / `article` ship enabled-by-default — surface
@@ -248,7 +499,7 @@ them as already-checked but still selectable.
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Which source types should mem actively acquire for you? You can enable more later by editing <vault>/.mem/sources.yaml or re-running /onboard.\n\nDefault-on: paper, repo, article (research URLs you'll hit /research on). Opt-in: the rest.",
+    "question": "Which source types should mem actively acquire for you? You can enable more later by editing <vault>/config/sources.yaml or re-running /onboard.\n\nDefault-on: paper, repo, article (research URLs you'll hit /research on). Opt-in: the rest.",
     "header": "Source types",
     "options": [
       {"label": "paper", "description": "Arxiv / OpenReview / PDF papers. /research <url> dispatches here. Disk intake folder."},
@@ -273,13 +524,16 @@ transcripts via a custom feed reader, kindle highlights, RSS for a
 non-listed pattern), point them at `/source-fit "<description>"` after
 `/onboard` completes — don't try to scaffold mid-flow.
 
-### 3c. Sample-file validation per enabled type (AskUserQuestion, one per type)
+### 5c. Sample-file validation per enabled type (AskUserQuestion, one per type)
 
 **This is the trust-but-validate turn.** For each source type the user
-enabled in 3b, ask them to point to a concrete sample on disk / paste
+enabled in 5b, ask them to point to a concrete sample on disk / paste
 a real URL / pick an option. The skill then validates the spec
 end-to-end against that sample *before* anything gets written to
 `sources.yaml`.
+
+Hold onto sample URLs for paper/article in particular — Step 7's
+smoke test re-uses them for the "one sample brief lands" check.
 
 Loop over enabled types. For each, issue an `AskUserQuestion`
 appropriate to its shape:
@@ -374,11 +628,11 @@ non-empty, and the substack `intake_folder` resolves on disk.
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Paste an outlet RSS feed URL you want news to pull from (e.g. https://www.ft.com/rss/home). I'll add it to news_feeds.yaml after the plan is approved.",
+    "question": "Paste an outlet RSS feed URL you want news to pull from (e.g. https://www.ft.com/rss/home). I'll seed it into PRIORITIES.yaml::intake.news.outlets after the plan is approved.",
     "header": "Sample for: news",
     "options": [
       {"label": "RSS URL", "description": "Paste the feed URL."},
-      {"label": "skip validation", "description": "I'll edit news_feeds.yaml later."}
+      {"label": "skip validation", "description": "I'll edit PRIORITIES.yaml later."}
     ],
     "multiSelect": false
   }]
@@ -452,15 +706,15 @@ and re-issue the same `AskUserQuestion` (with `skip validation`
 explicitly available). Don't bail out of the whole step — single bad
 sample shouldn't block the rest.
 
-### 3d. Plan-for-approval summary (AskUserQuestion)
+### 5d. Plan-for-approval summary (AskUserQuestion)
 
-Aggregate everything from 3a / 3b / 3c into a single plan. Show
+Aggregate everything from 5a / 5b / 5c into a single plan. Show
 counts, paths, and validation outcomes:
 
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Plan summary — about to apply the following:\n\n  Active projects:    {comma-list, e.g. project-a, personal-mem}\n  Source types:       {N enabled} ({comma-list})\n  Samples validated:  {K of N}\n  Writes to <vault>/.mem/sources.yaml:\n    - projects: block ({new + updated entries})\n    - source-type blocks ({list of slugs})\n  Hook install in:    {current repo path}\n  Landing docs:       STATE / BACKLOG / DECISIONS per active project, THEMES global\n\nConfirm?",
+    "question": "Plan summary — about to apply the following:\n\n  Active projects:    {comma-list, e.g. project-a, personal-mem}\n  Source types:       {N enabled} ({comma-list})\n  Samples validated:  {K of N}\n  Writes to <vault>/config/sources.yaml:\n    - projects.<name> blocks ({new + updated entries})\n    - source-type blocks ({list of slugs})\n  Writes to <vault>/config/PRIORITIES.yaml:\n    - focus.active_projects: {active list}\n    - intake.news.outlets ({M outlets from samples})\n    - intake.{newsletter|youtube|podcast}_{events|concepts} ({per validated sample})\n  Landing docs:       STATE / BACKLOG / DECISIONS per active project, THEMES global\n\nConfirm?",
     "header": "Plan for approval",
     "options": [
       {"label": "confirm", "description": "Apply the plan as shown."},
@@ -472,99 +726,196 @@ AskUserQuestion({
 })
 ```
 
-On `confirm`: proceed to apply via Edit on `sources.yaml` (preserve
-existing config), then step 4.
+On `confirm`: apply via Edit on `vault/config/sources.yaml` (preserve
+existing config) AND on `vault/config/PRIORITIES.yaml`
+(`focus.active_projects` + the per-type `intake.<type>` seeds from
+validated samples in 5c). Both writes target the canonical
+`vault/config/` location — never `vault/.mem/` (which raises
+`LegacyConfigLocationError` on read since Phase 3.1B).
+
+Then issue the landing docs pass:
+
+```bash
+# Per active project (skip any whose STATE.md already exists):
+PERSONAL_MEM_VAULT=<vault> uv run mem landing --project <project> --doc all
+
+# Global themes refresh:
+uv run mem landing --doc themes
+```
+
+Landing docs are derived and idempotent — the user already approved
+them as part of 5d, so no separate confirmation.
 
 On `edit`: the user describes what to change in chat. Loop back to
-the appropriate sub-step (3a / 3b / 3c) for the affected slice, then
-re-show 3d.
+the appropriate sub-step (5a / 5b / 5c) for the affected slice, then
+re-show 5d.
 
 On `cancel`: print "Cancelled. No writes applied." and exit the skill.
-Steps 1 + 2 outputs stay in the vault (already committed).
+Steps 1-4 outputs stay (vault wiring + hook scope + CC import + ontology
+are already committed; only the source-config writes are reverted by
+cancelling here).
 
 ---
 
-## Step 4 — Per-project wiring
+## Step 6 — Cron install (opt-in, with explicit consent)
 
-For the *current* repo (the directory where `/onboard` was invoked),
-plus any other active projects from step 3a, do the per-project setup.
+Opt-in scheduling for the long-running automation: embeddings keep-warm,
+dream cycle, and per-source-type drain flows. Writes directly to the
+user's crontab between fence markers; idempotent.
 
-### 4a. Project entry in sources.yaml
-
-Already covered by step 3d's Edit pass. Move on.
-
-### 4b. Hook install — guard against silent overwrites (AskUserQuestion)
-
-Before running `mem hooks install`, check if `.claude/settings.json`
-exists in the current repo:
+### 6a. Platform check
 
 ```bash
-test -f "$(pwd)/.claude/settings.json" && echo "exists" || echo "absent"
+uname -s
 ```
 
-If **absent**: install directly (no question).
+If the result is **not** `Linux` or `Darwin`, skip this step entirely:
 
-```bash
-PERSONAL_MEM_VAULT=<vault> uv run mem hooks install
+> Cron is Linux/macOS only. Windows users — see the README's Task
+> Scheduler equivalent for the embeddings keep-warm and dream cycle.
+
+Proceed to Step 7.
+
+### 6b. Compose the block
+
+Build the canonical block from `scripts/example-crontab`, keeping only
+the lines whose source types the user enabled in Step 5:
+
+- **Always** include the PATH hardening line and the embeddings
+  keep-warm line.
+- **If any active project exists** (5a non-empty), include the dream
+  cycle line.
+- **If `news` was enabled** in 5b, include the news pull (`/discover
+  --strategy rss_poll --source-type news`) and news drain lines.
+- **If any podcast / youtube / newsletter variant was enabled**,
+  include the relevant `mem flow run` lines from the example crontab.
+
+Wrap the lines in fence markers:
+
+```
+# --- personal-mem cron block ---
+PATH=$HOME/.local/bin:$PATH
+<the composed lines>
+# --- end personal-mem ---
 ```
 
-If **exists**: ask the user how to proceed.
+### 6c. Ask consent (AskUserQuestion)
 
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "{repo}/.claude/settings.json already exists. Installing personal-mem hooks will modify it (mem hooks install is conservative — merges into the existing hooks block, doesn't replace). Proceed?",
-    "header": "Hook install — existing settings.json",
+    "question": "Install the cron block above to your user crontab? Without it, embeddings keep-warm and the dream cycle don't run, and any enabled feed sources won't auto-drain.",
+    "header": "Install cron block?",
     "options": [
-      {"label": "merge", "description": "Run mem hooks install. It merges into the existing hooks block; non-personal-mem entries are preserved."},
-      {"label": "skip", "description": "Don't touch settings.json. I'll wire hooks manually later."},
-      {"label": "show diff first", "description": "Print what mem hooks install would change, then re-ask."}
+      {"label": "yes, install", "description": "Append the block (between fence markers) to your crontab. Idempotent — re-running /onboard replaces what's between the markers."},
+      {"label": "show full block first", "description": "Print every line of the composed block, then re-ask."},
+      {"label": "no thanks, I'll handle cron myself", "description": "Print the block so you can paste it later. Nothing gets written to crontab."}
     ],
     "multiSelect": false
   }]
 })
 ```
 
-On `merge`: run the install command. Confirm no errors printed.
+### 6d. Apply on "yes, install"
 
-On `show diff first`: run `PERSONAL_MEM_VAULT=<vault> uv run mem hooks install --dry-run` (if supported; otherwise read the planned template and diff against current settings.json), display the diff, then re-issue the question with `show diff first` removed.
+```bash
+crontab -l 2>/dev/null > /tmp/onboard-crontab.tmp || true
 
-On `skip`: print "Skipped hook install — re-run /onboard or `mem hooks install` when ready."
+# If fence markers already exist, replace between them; otherwise append.
+if grep -q "^# --- personal-mem cron block ---$" /tmp/onboard-crontab.tmp; then
+  # Use sed to delete between fence markers, then append the new block
+  sed -i '/^# --- personal-mem cron block ---$/,/^# --- end personal-mem ---$/d' /tmp/onboard-crontab.tmp
+fi
 
-Hooks land in `.claude/settings.json` of the current repo: SessionStart,
-UserPromptSubmit, PostToolUse, Stop. Other active projects need their
-own hook install run from their respective repos — flag this in the
-wrap-up:
+cat /tmp/onboard-crontab.tmp - > /tmp/onboard-crontab.new <<'EOF'
+# --- personal-mem cron block ---
+PATH=$HOME/.local/bin:$PATH
+<composed lines from 6b>
+# --- end personal-mem ---
+EOF
 
+crontab /tmp/onboard-crontab.new
+rm /tmp/onboard-crontab.tmp /tmp/onboard-crontab.new
 ```
-You'll want to run /onboard once in each active project so its hooks
-get installed locally.
-```
+
+Confirm by re-reading `crontab -l` and grepping for the fence markers.
+
+### 6e. On "show full block first"
+
+Print every line of the block, then re-issue 6c with `show full block
+first` removed from the options.
+
+### 6f. On "no thanks"
+
+Print the block plus one line:
+
+> Paste these into your crontab when you're ready. The `PATH=` line is
+> required — cron's default PATH won't find `uv` after a standard
+> install.
 
 ---
 
-## Step 5 — First landing docs
+## Step 7 — End-to-end smoke test
 
-**Idempotency check:** for each active project, if
-`<vault>/projects/<project>/STATE.md` exists, skip that project. Bulk
-the survivors:
+Five checks, each one cheap. All must pass before wrap-up; any failure
+HALTs with a remediation line.
 
-```bash
-PERSONAL_MEM_VAULT=<vault> uv run mem landing --project <project> --doc all
-```
+### 7a. MCP responding
 
-Generates `STATE.md` / `BACKLOG.md` / `DECISIONS.md` under
-`<vault>/projects/<project>/`. With imported content, these aren't
-empty — they reflect actual prior work.
+Call `mem_concepts(action='list', limit=1)`. PASS on no error.
+FAIL → *"MCP didn't respond. Restart Claude Code and re-run /onboard."*
 
-Also refresh global `THEMES.md`:
+### 7b. Vault writable
 
 ```bash
-uv run mem landing --doc themes
+touch <vault>/.test-write-probe && rm <vault>/.test-write-probe && echo "ok" || echo "fail"
 ```
 
-No `AskUserQuestion` here — landing docs are derived, idempotent, and
-the user already approved them in 3d.
+PASS on `ok`. FAIL → *"Vault root `<vault>` isn't writable. Check
+permissions on the parent directory."*
+
+### 7c. Index queryable
+
+Call `mem_search(query='', mode='fts', limit=1)`. PASS on no error
+(zero results is fine on a cold vault). FAIL → *"SQLite index isn't
+queryable. Run `mem index --full` and re-run /onboard."*
+
+### 7d. Hooks firing
+
+```bash
+ls -t <vault>/sessions/*/*/events.jsonl 2>/dev/null | head -1
+```
+
+If the result is a non-empty file, hooks are firing (the current
+`/onboard` session itself has been emitting events since SessionStart).
+FAIL → *"No events.jsonl found under <vault>/sessions/. Hooks aren't
+firing in this session. Restart Claude Code and re-run /onboard."*
+
+### 7e. Sample brief landed (conditional)
+
+Only if the user provided a sample paper/article URL in 5c (and didn't
+pick `skip validation`):
+
+Call `mem_search(query='<sample-title>', limit=1, type=['source'])`.
+Note: this check is best-effort — if the sample URL was provided but
+the source brief hasn't been generated yet (the user hasn't run
+`/research <sample-url>` between 5c and now), report it as INFO not
+FAIL: *"Sample URL noted but no source note yet — run `/research
+<sample-url>` to verify the brief generation path."*
+
+### 7f. Print checklist
+
+```
+Verifying everything is wired:
+  ✓ MCP responding
+  ✓ Vault writable
+  ✓ Index queryable
+  ✓ Hooks firing
+  ✓ Sample brief landed   (or INFO line if no /research run yet)
+```
+
+On all PASS (or PASS + INFO), proceed to wrap-up. On any FAIL, print
+the remediation line above and HALT.
 
 ---
 
@@ -579,8 +930,13 @@ Imported:    N sessions across M projects
 Promoted:    K concepts to canonical ontology
 Active:      <list of active projects>
 Sources:     <list of enabled source types> (samples validated: <K of N>)
-Hooks:       installed in <current_project>   (or "skipped per your choice")
+Hooks:       installed (scope: <global|repo>)   (or "skipped per your choice")
 Landing:     STATE/BACKLOG/DECISIONS for active projects, THEMES global
+
+Your config:
+  vault_root:   <path>      (~/.config/personal-mem/config.toml)
+  hook scope:   <global|repo>
+  cron block:   <installed|printed|skipped>
 
 The next time you sit down to work in this repo:
 
@@ -591,7 +947,12 @@ The next time you sit down to work in this repo:
 Cross-vault hygiene (run when things feel noisy):
 
   • /mem-resolve-concepts   — concept dedup, ontology pruning
-  • /themes-resolve         — theme dormancy, candidate promotion
+  • /themes-resolve         — theme dedup, essence rewrites
+
+Reset / debug:
+
+  • mem doctor --all      — full health check
+  • /onboard              — idempotent; safe to re-run
 
 If you hit a new input shape that the defaults don't cover:
   • /source-fit "<description>"

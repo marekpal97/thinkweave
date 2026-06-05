@@ -6,6 +6,8 @@ preserves permissions. Non-destructive.
 
 from __future__ import annotations
 
+import copy
+import difflib
 import json
 import shutil
 import sys
@@ -74,16 +76,36 @@ def _settings_path(project_dir: str = "") -> Path:
     return Path.cwd() / ".claude" / "settings.local.json"
 
 
-def install_hooks(project_dir: str = "") -> None:
-    """Install personal_mem hooks into .claude/settings.local.json."""
-    settings_path = _settings_path(project_dir)
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
+def _settings_path_for_scope(scope: str, project_dir: str = "") -> Path:
+    """Dispatch the settings.json target by install scope.
 
-    # Read existing settings
-    settings: dict = {}
-    if settings_path.exists():
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    ``project`` — the legacy default. Writes to ``<cwd or project_dir>/.claude/
+    settings.local.json``. Fires only inside that project tree.
 
+    ``user`` — machine-scope. Writes to ``~/.claude/settings.json`` (note:
+    non-local, the per-user file). Fires in every Claude Code session on
+    this machine. Used by the legacy `/onboard` install path to mirror
+    what the plugin manifest provides for free.
+    """
+    if scope == "project":
+        return _settings_path(project_dir)
+    if scope == "user":
+        return Path.home() / ".claude" / "settings.json"
+    raise ValueError(
+        f"unknown scope {scope!r}; expected one of: 'project', 'user'"
+    )
+
+
+def _build_installed_settings(existing: dict) -> dict:
+    """Return a settings dict with personal_mem hooks merged in.
+
+    Pure function — operates on a deep copy of ``existing``, never mutates
+    the input. The full body of the historic merge (ensure SessionStart /
+    UserPromptSubmit / PostToolUse {action, mcp} / Stop, strip retired
+    PreToolUse) lives here so it can be exercised both for the real write
+    and for the dry-run diff with no behavioural drift between them.
+    """
+    settings = copy.deepcopy(existing)
     hooks = settings.setdefault("hooks", {})
     hook_cmd = _resolve_hook_cmd()
 
@@ -135,22 +157,16 @@ def install_hooks(project_dir: str = "") -> None:
     stop_hooks = hooks.setdefault("Stop", [])
     _ensure_hook(stop_hooks, "", f"{hook_cmd} stop")
 
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    print(
-        f"Hooks installed at {settings_path}\n"
-        "  SessionStart hook will inject ~7–10k tokens of project context "
-        "on the next Claude Code session."
-    )
+    return settings
 
 
-def uninstall_hooks(project_dir: str = "") -> None:
-    """Remove personal_mem hooks from .claude/settings.local.json."""
-    settings_path = _settings_path(project_dir)
-    if not settings_path.exists():
-        print("No settings file found.")
-        return
+def _build_uninstalled_settings(existing: dict) -> dict:
+    """Return a settings dict with personal_mem hooks removed.
 
-    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    Pure function — mirrors ``_build_installed_settings`` so uninstall and
+    its dry-run share one implementation.
+    """
+    settings = copy.deepcopy(existing)
     hooks = settings.get("hooks", {})
 
     for hook_type in (
@@ -173,11 +189,100 @@ def uninstall_hooks(project_dir: str = "") -> None:
         if not hooks[hook_type]:
             del hooks[hook_type]
 
-    if not hooks:
+    if "hooks" in settings and not hooks:
         del settings["hooks"]
 
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    print(f"Hooks removed from {settings_path}")
+    return settings
+
+
+def _settings_diff(before: dict, after: dict, target: Path) -> str:
+    """Unified diff over pretty-printed JSON, suitable for printing."""
+    before_text = json.dumps(before, indent=2, sort_keys=False) + "\n"
+    after_text = json.dumps(after, indent=2, sort_keys=False) + "\n"
+    diff = difflib.unified_diff(
+        before_text.splitlines(keepends=True),
+        after_text.splitlines(keepends=True),
+        fromfile=f"a/{target}",
+        tofile=f"b/{target}",
+        n=3,
+    )
+    return "".join(diff)
+
+
+def install_hooks(
+    project_dir: str = "",
+    scope: str = "project",
+    dry_run: bool = False,
+) -> None:
+    """Install personal_mem hooks into the chosen Claude Code settings file.
+
+    ``scope`` selects the settings file: ``"project"`` (default — preserves
+    the legacy behaviour) writes to ``<project_dir or cwd>/.claude/
+    settings.local.json``; ``"user"`` writes to ``~/.claude/settings.json``
+    so hooks fire in every Claude Code session on this machine. The
+    plugin install path gets global hooks via the plugin manifest; this
+    flag is the legacy install path's equivalent.
+
+    ``dry_run=True`` prints the planned unified diff against the current
+    settings file and returns without writing.
+    """
+    settings_path = _settings_path_for_scope(scope, project_dir)
+
+    # Read existing settings (no parent mkdir yet — dry-run must not
+    # create the .claude directory either).
+    existing: dict = {}
+    if settings_path.exists():
+        existing = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    planned = _build_installed_settings(existing)
+
+    if dry_run:
+        print(f"Would write: {settings_path}")
+        diff = _settings_diff(existing, planned, settings_path)
+        if diff:
+            print(diff, end="")
+        else:
+            print("(no changes)")
+        return
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(planned, indent=2) + "\n", encoding="utf-8"
+    )
+    print(
+        f"Hooks installed at {settings_path} (scope={scope})\n"
+        "  SessionStart hook will inject ~7–10k tokens of project context "
+        "on the next Claude Code session."
+    )
+
+
+def uninstall_hooks(
+    project_dir: str = "",
+    scope: str = "project",
+    dry_run: bool = False,
+) -> None:
+    """Remove personal_mem hooks from the scoped Claude Code settings file."""
+    settings_path = _settings_path_for_scope(scope, project_dir)
+    if not settings_path.exists():
+        print("No settings file found.")
+        return
+
+    existing = json.loads(settings_path.read_text(encoding="utf-8"))
+    planned = _build_uninstalled_settings(existing)
+
+    if dry_run:
+        print(f"Would write: {settings_path}")
+        diff = _settings_diff(existing, planned, settings_path)
+        if diff:
+            print(diff, end="")
+        else:
+            print("(no changes)")
+        return
+
+    settings_path.write_text(
+        json.dumps(planned, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"Hooks removed from {settings_path} (scope={scope})")
 
 
 def _is_personal_mem_hook(command: str) -> bool:
