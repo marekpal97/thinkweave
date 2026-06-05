@@ -11,7 +11,7 @@ Designed to be runnable as a CLI helper for subagent workers, mirroring
 ``gemini_extract``'s shape so the worker can branch on a single ``ok``
 field regardless of which backend is in play::
 
-    python -m personal_mem.synthesis.transcript_extract youtube <url>
+    python -m personal_mem.sources.extractors.transcript_extract youtube <url>
 
 The command prints a single JSON line on stdout. On success the line
 contains ``"ok": true`` plus ``transcript``, ``segments``,

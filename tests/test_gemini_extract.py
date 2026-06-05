@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.synthesis import gemini_extract as ge
+from personal_mem.sources.extractors import gemini_extract as ge
 
 
 # ---------------------------------------------------------------------------

@@ -303,7 +303,7 @@ def test_unpriced_model_surfaced(fake_home, config):
 
 def test_gemini_thoughts_count_as_output():
     """_record_gemini_spend bills thoughts_token_count as output."""
-    from personal_mem.synthesis.gemini_extract import _record_gemini_spend
+    from personal_mem.sources.extractors.gemini_extract import _record_gemini_spend
 
     recorded = {}
 
@@ -315,7 +315,7 @@ def test_gemini_thoughts_count_as_output():
     class _Resp:
         usage_metadata = _Meta()
 
-    import personal_mem.synthesis.gemini_extract as gx
+    import personal_mem.sources.extractors.gemini_extract as gx
     monkey = pytest.MonkeyPatch()
     monkey.setattr(
         "personal_mem.core.spend.record_spend",
