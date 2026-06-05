@@ -231,7 +231,8 @@ class TestApply:
         }
         result = apply(config, plan=plan, project="t")
         assert result.themes_minted == 1
-        themes = list((config.vault_root / "themes").glob("thm-*.md"))
+        # Theme files are pure-slug (slug.md); the thm-id lives in frontmatter.
+        themes = list((config.vault_root / "themes").glob("*.md"))
         assert len(themes) == 1
         # sources got relates_to backfilled
         fm, _ = parse_frontmatter(paths[0].read_text(encoding="utf-8"))
@@ -513,7 +514,7 @@ class TestStateOfPlayMaintenance:
         out = state_of_play(config, "t")
         assert "## Recent Maintenance" in out
         assert "dream-state-test" in out
-        assert ".mem/dream_reports/dream-state-test.md" in out
+        assert "reports/dream/dream-state-test.md" in out
 
 
 class TestDreamCLI:
@@ -749,7 +750,7 @@ class TestPrioritySignalsReport:
             ],
         }
         r = apply(config, plan=plan, project="t")
-        report = (config.vault_root / ".mem" / "dream_reports"
+        report = (config.vault_root / "reports" / "dream"
                   / f"{r.cycle_id}.md").read_text(encoding="utf-8")
         assert "What I queued" in report
         assert "dynamic-batching" in report

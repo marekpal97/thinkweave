@@ -556,7 +556,14 @@ def mint_theme_from_signal(
     file_slug = _slugify(slug)
     themes_dir = config.vault_root / "themes"
     themes_dir.mkdir(parents=True, exist_ok=True)
-    target_path = themes_dir / f"{thm_id}-{file_slug}.md"
+    # Pure-slug filename (like concept hubs) — the thm-id stays in
+    # frontmatter + aliases, so links resolve by path or id alias. Disambiguate
+    # a slug collision with a numeric suffix; the registry is keyed by id.
+    target_path = themes_dir / f"{file_slug}.md"
+    _n = 1
+    while target_path.exists():
+        target_path = themes_dir / f"{file_slug}-{_n}.md"
+        _n += 1
     today = datetime.now(timezone.utc).isoformat()
 
     body_lines: list[str] = [
@@ -578,22 +585,28 @@ def mint_theme_from_signal(
         body_lines.append(f"parent: {parent}")
     body_lines.append(f"aliases: [{thm_id}]")
     body_lines.append("---")
-    body_lines.append("")
-    body_lines.append(f"# {slug}")
-    body_lines.append("")
-    body_lines.append("## Essence")
-    body_lines.append("")
-    body_lines.append(essence or "_Awaiting first synthesis pass._")
-    body_lines.append("")
-    body_lines.append("## Catalyst log")
-    body_lines.append("")
-    for src_id in cluster_source_ids:
-        body_lines.append(f"- {today[:10]}: cluster seed [[{src_id}]] *new*")
-    body_lines.append("")
-    body_lines.append("## Open questions")
-    body_lines.append("")
+    frontmatter_block = "\n".join(body_lines)
 
-    target_path.write_text("\n".join(body_lines) + "\n", encoding="utf-8")
+    # Body uses the shared Hub spine so the catalyst-log grammar is
+    # byte-identical to concept hubs. (The previous hand-rolled
+    # `- DATE: cluster seed [[src]] *new*` form diverged from the canonical
+    # `- DATE · *new* — text — [[src]]` grammar the Hub parser expects, so
+    # minted catalyst logs rendered as empty.)
+    from personal_mem.synthesis.hub import FLAG_NEW, Hub, HubLogEntry
+
+    log = [
+        HubLogEntry(date=today[:10], flag=FLAG_NEW, text="cluster seed", citation=src_id)
+        for src_id in cluster_source_ids
+    ]
+    hub = Hub(
+        id=thm_id,
+        title=slug,
+        essence=essence or "_Awaiting first synthesis pass._",
+        log=log,
+    )
+    body = hub.render(include_open_questions=True)
+
+    target_path.write_text(frontmatter_block + "\n\n" + body + "\n", encoding="utf-8")
 
     idx = Indexer(config=config)
     try:
