@@ -38,7 +38,7 @@ Pick every key under `sources.` whose slug starts with `podcast-`. If `<source-t
 
 For each type, check that the file pointed at by `feed_config:` exists and contains at least one outlet with a non-placeholder `feeds:` entry. Types whose feed file is empty (or only commented-out examples) are skipped here with a hint:
 
-> `podcast-events`: no outlets configured in `vault/.mem/podcast_events_feeds.yaml`. Add a show by uncommenting an example or adding a new outlet block.
+> `podcast-events`: no outlets configured in `vault/config/PRIORITIES.yaml (intake.podcast_events.outlets)`. Add a show by uncommenting an example or adding a new outlet block.
 
 ---
 
@@ -124,7 +124,7 @@ The `/research` router classifies pasted URLs by `url_patterns` and dispatches t
 
 **One caveat:** the URL pasted into `/research` should be the RSS feed URL (the strategy needs to parse the feed to find the episode's `<enclosure>`). Pasting just a Spotify or Apple Podcasts episode URL won't work — those are player links, not RSS items. Find the show's RSS feed first.
 
-The `url_patterns` for both `podcast-events` and `podcast-concepts` overlap intentionally; the router picks the first matching type in registry order (`podcast-events` wins by default — change the order in `vault/.mem/sources.yaml` to flip the default).
+The `url_patterns` for both `podcast-events` and `podcast-concepts` overlap intentionally; the router picks the first matching type in registry order (`podcast-events` wins by default — change the order in `vault/config/sources.yaml` to flip the default).
 
 ---
 

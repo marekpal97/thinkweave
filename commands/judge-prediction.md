@@ -163,7 +163,7 @@ call.
   "decision_id": "dec-7a3f12",
   "predicted_outcome": "After the transcript-first ladder ships, the next /drain on the 3 queued AI Engineer videos archives all 3 as accepted (0 gemini_refused). Check the youtube-events queue archive after the next drain run.",
   "supersedes": [],
-  "file_paths": ["src/personal_mem/synthesis/transcript_extract.py"],
+  "file_paths": ["src/personal_mem/sources/extractors/transcript_extract.py"],
   "trigger": "cron"
 }
 ```

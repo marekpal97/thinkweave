@@ -67,7 +67,7 @@ similar shape (substack disk inbox, paper PDF inbox), return:
 
 ```
 adapt: <slug>
-how:    point intake_folder at <user-folder> in vault/.mem/sources.yaml
+how:    point intake_folder at <user-folder> in vault/config/sources.yaml
 why:    <slug> already drains a disk inbox; only the path differs
 ```
 
@@ -79,7 +79,7 @@ text-shaped. Return:
 
 ```
 adapt: <slug>
-how:    create vault/.mem/sources.yaml override for <slug> with new dedup_keys
+how:    create vault/config/sources.yaml override for <slug> with new dedup_keys
         (and possibly intake_folder); reuse the existing skill
 why:    same shape, different keys
 ```

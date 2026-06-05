@@ -19,12 +19,12 @@ tools:
   - mem_link
   - mem_queue
   - mem_sources_config
-description: Drain a per-source-type acquisition queue. Source-type-agnostic — config in `vault/.mem/sources.yaml` decides whether items dispatch to a per-type research skill (sequential) or fan out to subagents (parallel).
+description: Drain a per-source-type acquisition queue. Source-type-agnostic — config in `vault/config/sources.yaml` decides whether items dispatch to a per-type research skill (sequential) or fan out to subagents (parallel).
 ---
 
 # /drain — Per-source-type queue drainer
 
-`/drain --source-type <slug>` walks `vault/.mem/queues/<source_type>.jsonl` FIFO and processes each item. The dispatch shape (sequential `Skill` call vs. parallel `Task` subagents) is driven by `vault/.mem/sources.yaml`, not by hard-coded source-type branches.
+`/drain --source-type <slug>` walks `vault/.mem/queues/<source_type>.jsonl` FIFO and processes each item. The dispatch shape (sequential `Skill` call vs. parallel `Task` subagents) is driven by `vault/config/sources.yaml`, not by hard-coded source-type branches.
 
 **Scope.** This skill *only* drains acquisition queues. Two former modes have moved out:
 

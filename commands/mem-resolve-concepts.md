@@ -160,7 +160,7 @@ uv run mem concepts promote streaming-ingestion --domain swe-data
 uv run mem concepts promote regime-shift --domain finance-markets
 ```
 
-Each call: writes the term into `vault/.mem/ontology.yaml` under the
+Each call: writes the term into `vault/config/ontology.yaml` under the
 chosen domain, walks every note carrying it in `proposed_concepts:` and
 moves it to `concepts:`, ensures the hub skeleton at
 `vault/concepts/topics/{term}.md`, and rebuilds the index.
@@ -195,7 +195,7 @@ A canonical singleton is kept when:
   marker set (math, ML, finance, fitness, physics, common tools) lives at
   `synthesis/concepts.py:DOMAIN_MARKERS`; add domains specific to your
   vault by listing substrings under
-  `<vault>/.mem/ontology.yaml::domain_markers` — vault entries *extend*
+  `<vault>/config/ontology.yaml::domain_markers` — vault entries *extend*
   the built-ins (never replace them) so package upgrades stay safe.
 
 Anything else is pruned. Under the strict creation policy this prune is

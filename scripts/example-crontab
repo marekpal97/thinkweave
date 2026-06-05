@@ -8,6 +8,13 @@
 # Install: `crontab -e` and paste the lines below (without the leading
 # `#` from these comments).
 
+# PATH hardening — cron's default PATH is minimal (typically just
+# /usr/bin:/bin) and won't find `uv` or `claude` if they were installed
+# via the standard installers, which land binaries in ~/.local/bin.
+# Without this every line below silently fails with "command not found"
+# in the cron log.
+PATH=$HOME/.local/bin:$PATH
+
 # Daily research cycle: discover gaps, drain queue, refresh hubs.
 0 8 * * *  cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run daily-research >> ~/.cache/personal_mem/cron.log 2>&1
 
@@ -15,11 +22,13 @@
 0 4 * * 0  cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run weekly-hygiene >> ~/.cache/personal_mem/cron.log 2>&1
 
 # News intake (optional — requires `uv pip install personal-mem[news]`).
-# Pulls RSS feeds declared in vault/.mem/news_feeds.yaml into the news
-# acquisition queue every two hours. The downstream /drain step is part
-# of the news-cycle flow (see example-flows.yaml::news-cycle) so the
-# pull stage stays cheap and reliable; LLM cost happens on drain.
-0 */2 * * * cd /home/marekpal97/python_projects/personal_mem && uv run python scripts/pull_news_feeds.py >> ~/.cache/personal_mem/news-pull.log 2>&1
+# Pulls RSS feeds declared in vault/config/news_feeds.yaml into the news
+# acquisition queue every two hours via the canonical `rss_poll` discover
+# strategy. The downstream /drain step is part of the news-cycle flow
+# (see example-flows.yaml::news-cycle) so the pull stage stays cheap and
+# reliable; LLM cost happens on drain. Requires ANTHROPIC_API_KEY in the
+# cron environment because `claude -p` runs headlessly.
+0 */2 * * * cd /home/marekpal97/python_projects/personal_mem && claude -p "/discover --strategy rss_poll --source-type news" >> ~/.cache/personal_mem/news-pull.log 2>&1
 
 # News drain (every 6h: triage + brief). Spaced from the pulls so the
 # queue accumulates a useful batch before Haiku triage runs.

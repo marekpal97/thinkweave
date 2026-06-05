@@ -59,4 +59,4 @@ only essences that are genuinely stale; leave the rest.
 - **No prompts mid-flow.** Decide, apply, report — same posture as
   `/mem-resolve-concepts`.
 - **Registry.** After merges, run `uv run mem themes rebuild-registry` so
-  `vault/.mem/themes.yaml` reflects the surviving set.
+  `vault/config/themes.yaml` reflects the surviving set.

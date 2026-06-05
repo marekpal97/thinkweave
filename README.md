@@ -27,9 +27,13 @@ launcher missing the bare `mem-mcp` console script. Run `mem doctor
 
 **Prerequisites either way:**
 
-- **`uv` is required**, not optional — install with
-  `curl -LsSf https://astral.sh/uv/install.sh | sh`. All three MCP
-  invocations route through `uv run`; without it nothing resolves.
+- **`uv` is required**, not optional. All three MCP invocations route
+  through `uv run`; without it nothing resolves. Install:
+  - Windows (PowerShell): `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
+  - Unix (bash/zsh): `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **Native Windows note.** The plugin path works on native Windows.
+  Cron features (dream cycle, embeddings keep-warm) remain Linux/macOS
+  only; WSL is the recommended Windows posture for the full feature set.
 
 ### Plugin install (recommended)
 
@@ -69,6 +73,19 @@ block into `~/.claude.json` if absent; if a different block exists, it
 shows the diff and waits for `--yes` before overwriting. It does not
 touch any vault or any project's `.claude/`. Hooks still need a separate
 `mem hooks install` per repo (the plugin path declares hooks globally).
+
+- `mem install --vault PATH --yes` — set the vault path at install time;
+  the path is baked into the registered MCP server entry as
+  `PERSONAL_MEM_VAULT`, so you can skip exporting it from your shell rc.
+
+### User config (vault path persistence)
+
+On first run, `/onboard` asks for your vault path and persists it to
+`~/.config/personal-mem/config.toml` (XDG-respectful — honours
+`$XDG_CONFIG_HOME` when set). No shell-rc edits are required; the CLI
+and MCP server both read this file. The `PERSONAL_MEM_VAULT` env var
+still wins as an override when set, so per-shell experimentation works
+unchanged. Delete the file (or edit it) to reset.
 
 Optional environment:
 
@@ -140,8 +157,8 @@ uv pip install -e .[news]
 # (or)
 pipx inject personal-mem feedparser readability-lxml httpx
 
-# 2. Declare feeds in vault/.mem/news_feeds.yaml. A template ships at
-#    src/personal_mem/vault_templates/.mem/news_feeds.yaml — `mem init`
+# 2. Declare feeds in vault/config/news_feeds.yaml. A template ships at
+#    src/personal_mem/vault_templates/config/news_feeds.yaml — `mem init`
 #    copies it into your vault. Each outlet specifies name, slug,
 #    feeds (URLs), tier, region, language.
 

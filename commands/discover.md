@@ -25,7 +25,7 @@ description: Strategy-driven discovery. Runs the configured strategy list; strat
 
 | Flavor | Trigger | Examples | Side effect |
 |---|---|---|---|
-| **Internal-state** | Observe vault | `concept_coverage`, `decision_review`, `prompt_gap` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
+| **Internal-state** | Observe vault | `decision_review`, `prompt_gap` | Emit gap descriptors; the skill resolves them (WebSearch → enqueue) |
 | **External-trigger** | Observe outside world | `rss_poll`, `mail_poll`, `external_tool_runner` | Strategy enqueues directly (rss_poll) or emits a plan (mail_poll) |
 
 Both flavors share the same `run(vault, project, config)` contract.
@@ -43,20 +43,20 @@ Future strategies that emit gap descriptors stay gap-emitters; future strategies
 
 | Strategy | Flavor | What it surfaces |
 |---|---|---|
-| `concept_coverage` | internal-state | Load-bearing concepts with thin source coverage |
 | `decision_review` | internal-state | `proposed`/`accepted` decisions stalled past N days |
+| `prompt_gap` | internal-state | Hyphenated-compound terms probed about that aren't in the ontology — routed to proposal, not research |
 | `external_tool_runner` | external-trigger | User-provided scripts emit JSONL queue items |
 | `rss_poll` | external-trigger | RSS/Atom polling for any source type with `feed_config:` or `channels:` configured. Enqueues directly into the matching queue. |
 | `mail_poll` | external-trigger | Composes the effective Gmail query (sender allowlist + `processed_label` exclusion + lookback). Emits a `mail_fetch_needed` plan that `/newsletter` executes via Gmail MCP. |
 
-## Per-project strategy lists live in `vault/.mem/sources.yaml`:
+## Per-project strategy lists live in `vault/config/sources.yaml`:
 
 ```yaml
 projects:
   default:
-    discover_strategies: [concept_coverage]
+    discover_strategies: []
   myresearch:
-    discover_strategies: [concept_coverage, decision_review]
+    discover_strategies: [decision_review]
   external_signals:
     discover_strategies: [external_tool_runner]
     external_tool_runner:
@@ -72,7 +72,7 @@ projects:
 
 ```
 mem discover --project <name>                              # configured strategies
-mem discover --strategy concept_coverage                   # one strategy, all projects
+mem discover --strategy decision_review                    # one strategy, all projects
 mem discover --strategy rss_poll --source-type news        # one strategy, one source type
 mem discover --strategy mail_poll --source-type newsletter-events
 ```
@@ -87,9 +87,9 @@ If the list is empty, report "no descriptors this run" and exit.
 
 Dispatch on `kind`:
 
-- **`kind: gap` (concept_coverage)** — run a WebSearch for the concept, dedup against existing sources / queue items via `mem_concepts(action="source_counts", concepts=[<name>])`, and create up to 3 queue items via `mem_queue`. Each new item carries `Gap: [[<concept>]]` in its body and the gap concept(s) in its `concepts` frontmatter (ontology terms — load `Read src/personal_mem/ontology.yaml` plus `mem_concepts(min_count=2)` for the live distribution).
+- **`kind: review` (decision_review)** — surface the decision in the run report; do not auto-queue. The user inspects via `mem show <decision_id>` and decides whether to flip status or schedule a re-discussion. If `focus.watch_themes` in `PRIORITIES.yaml` is non-empty and the decision's `implements:` intersects it, mark the row "(watched theme)" in the report.
 
-- **`kind: review` (decision_review)** — surface the decision in the run report; do not auto-queue. The user inspects via `mem show <decision_id>` and decides whether to flip status or schedule a re-discussion.
+- **`kind: ontology_proposal` (prompt_gap)** — the user has probed about a hyphenated-compound term not in the ontology. Surface as a candidate for `/mem-resolve-concepts` to canonicalise; do not WebSearch or enqueue research items from it.
 
 - **`kind: external` (external_tool_runner)** — payloads are user-shaped. If they look like queue items (have `url` / `title` fields), enqueue via `mem_queue`. Otherwise pass through to the run report.
 
@@ -101,31 +101,25 @@ Dispatch on `kind`:
 
 - **`kind: external` with `status: error`** (rss_poll / mail_poll) — surface the reason + hint verbatim. Common causes: `feedparser_missing`, `empty_allowlist`, `connector_not_implemented`.
 
-### 3. Concept assignment rules (for new `kind: gap` queue items)
-
-1. **Use ontology terms only.** Pull from `src/personal_mem/ontology.yaml`. Minimum 2, ideally 3-4.
-2. **Genuinely-new terms** go in `proposed_concepts`, not `concepts`. `/mem-resolve-concepts` canonicalises them later.
-3. **The `Gap:` line in the body must be a wikilink** to an ontology concept — that's the graph edge.
-
-### 4. Run-audit note
+### 3. Run-audit note
 
 Create one `discover-run` audit note per execution. Record:
 
 - The strategies that ran and how many descriptors each emitted.
-- For internal-state: the WebSearch queries you tried (concept_coverage only) and skip reasons for filtered hits.
 - For external-trigger: per-source-type enqueue stats from `kind: summary` rows.
-- Stalled decisions / drift themes surfaced for review.
+- Stalled decisions / ontology-proposal candidates surfaced for review.
 - Queue items created (grouped by descriptor kind).
 
-The note's `concepts` frontmatter is the union of any gap concepts; tags are `discover-run` + `audit`. No project arg — discover runs are cross-project.
+The note's tags are `discover-run` + `audit`. No project arg — discover runs are cross-project.
 
-### 5. Report
+### 4. Report
 
 ```
 ## Discovery — <date>
 
 ### Strategies run
-- concept_coverage: 4 gaps found
+- decision_review: 3 stalled decisions surfaced (1 watched-theme)
+- prompt_gap: 2 ontology-proposal candidates
 - rss_poll (news): 8 enqueued (12 dup_queue / 3 dup_indexer / 0 stale)
 - mail_poll (newsletter-events): plan emitted — `<effective_query>`
 
@@ -165,5 +159,5 @@ No edits to the CLI, the MCP surface, or this skill are needed. Mention the new 
 ## Notes
 
 - Per-project queues are first-class. `RESEARCH_FOCUS.md` is no longer assumed singular — projects with their own queue cadence can route directly to a per-project file.
-- Concept-coverage caps queue items at 3-5 per run; volume is by design, not a bug. The matching `/research` cadence is `/loop 30m /research --queue --batch 3`.
+- `RESEARCH_FOCUS.md` is the user-authored research-priority surface — `/discover` reads it as ambient input but never writes it. The `## Concept Gaps` section in that doc is where on-focus, load-bearing, under-sourced concepts are tracked; gap-emitter strategies upstream of `/discover` were retired in favour of that hand-curated surface.
 - For `rss_poll` cron: `claude -p "/discover --strategy rss_poll --source-type news"` is the canonical headless invocation. Replaces the legacy `scripts/pull_news_feeds.py`.

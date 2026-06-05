@@ -33,7 +33,7 @@ This is the same admission posture as `/research <paper-url>` / `/research <repo
 
 ### 1. Look up outlet metadata
 
-Read `vault/.mem/news_feeds.yaml` and find the outlet whose feed `url_patterns` (or `name` substring) matches the host of the input URL. From that outlet entry pull:
+Read `vault/config/PRIORITIES.yaml (intake.news.outlets)` and find the outlet whose feed `url_patterns` (or `name` substring) matches the host of the input URL. From that outlet entry pull:
 
 - `name` (display name → `outlet_name`)
 - `slug` → `outlet`

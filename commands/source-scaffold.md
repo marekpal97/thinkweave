@@ -3,7 +3,7 @@ name: source-scaffold
 owns_mechanic: source_scaffold
 capabilities: []
 consumes: [mem_sources_config]
-produces: [vault/.mem/source_types.yaml, vault/.mem/sources.yaml, ~/.claude/commands/<slug>.md]
+produces: [vault/config/source_types.yaml, vault/config/sources.yaml, ~/.claude/commands/<slug>.md]
 tools:
   - Read
   - Bash
@@ -15,11 +15,11 @@ description: Generative wizard — register a new source type via vault overlay 
 
 Vault-scope skill. Writes:
 
-- **`<vault>/.mem/source_types.yaml`** — registry overlay (one new entry)
+- **`<vault>/config/source_types.yaml`** — registry overlay (one new entry)
 - **`~/.claude/commands/<slug>.md`** — skill file (machine-global, so
   `/<slug>` works in every Claude Code session)
 
-The per-type **config block** in `<vault>/.mem/sources.yaml`
+The per-type **config block** in `<vault>/config/sources.yaml`
 (intake_folder, dedup_keys, drain_strategy, optional `url_patterns`)
 is **not** written by the CLI — you append it manually in Step 4
 because its shape depends on the capabilities you chose.

@@ -114,7 +114,7 @@ YouTube has no equivalent to newsletter's `processed_label` (RSS feeds carry no 
 
 The `/research` router classifies pasted URLs by `url_patterns` and dispatches the matching one-off skill. For YouTube URLs (`youtube.com/watch`, `youtu.be/`, `youtube.com/shorts`), `/research <url>` enqueues to the matching `youtube-*` queue and then immediately fans out a single worker via `/drain` — same two-rail composition as `/youtube`, just on one URL.
 
-The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap intentionally; the router picks the first matching type in registry order (`youtube-events` wins by default — change the order in `vault/.mem/sources.yaml` to flip the default).
+The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap intentionally; the router picks the first matching type in registry order (`youtube-events` wins by default — change the order in `vault/config/sources.yaml` to flip the default).
 
 ---
 

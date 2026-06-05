@@ -68,7 +68,7 @@ This is a success — the orchestrator will archive the queue item as `done`. **
 Call the transcript-extraction helper. It pulls YouTube's own captions (auto-generated or human-authored) plus per-segment timings — no API key, no auth, no rate-limit pain.
 
 ```bash
-uv run python -m personal_mem.synthesis.transcript_extract youtube "<url>"
+uv run python -m personal_mem.sources.extractors.transcript_extract youtube "<url>"
 ```
 
 The command prints **exactly one JSON line** on stdout. Parse it and branch on the `ok` field:
@@ -117,7 +117,7 @@ Read `<vault_root>/THEMES.md` and find the `## Catalog (active)` section. For ea
 
 - **`relates_to: ["<theme_id>"]`** — if the video's concepts overlap an active theme's concepts by ≥2 AND the video's substance plausibly extends the theme's narrative arc. Pick the single best-fitting theme; do not multi-attach in this pass.
 - **NEW — `proposed_theme: <slug>`** — when no active theme fits, **default to naming the arc** this video belongs to. This is the per-source candidate analog of `proposed_concepts:` on the concept side: `/dream` clusters recent `proposed_theme:` stamps into arc families (folding variant slugs) and mints or extends a theme from each — so an un-stamped unfiled item is a lost vote and falls back to noisy concept clustering. Slug rules: 1–3 kebab words, label-shaped like `iran-war` / `bond-vigilantes` / `memory-chip-supercycle`. No dates. No parentheticals. Not a concatenation of the cluster's concepts. **Apply the disambiguation test from CLAUDE.md §4**: "X capability/technique/area-of-work" fails the test (→ don't set `proposed_theme:`); "X event/period/transition/campaign" passes. If the candidate name has a year, a quarter, or "rollout/unwind/launch/pivot" — it's a theme. If you cannot picture an `## Essence` paragraph that wouldn't change in 5 years — it's a theme. Only leave `proposed_theme:` unset for a genuine one-off with no conceivable arc.
-- **`theme_unfiled: true`** — fallback when no active theme fits AND you cannot name a coherent arc (concepts are genuinely miscellaneous, or the video spans unrelated topics). The `VaultManager.create_note` floater will pick it up — three unfiled items sharing ≥2 concepts within the lookback window mint a candidate stub at `vault/themes/_candidates/`.
+- **`theme_unfiled: true`** — last-resort fallback when no active theme fits AND you cannot name a coherent arc (concepts are genuinely miscellaneous, or the video spans unrelated topics). Prefer `proposed_theme:` above whenever an arc is nameable. No stub is written (the old `_candidates/` floater was removed in the 2026-05-30 teardown) — `/dream`'s `detect_signals` sweeps unfiled event-grain notes and folds those sharing ≥2 concepts into a cluster signal on a later cycle, so the note still reaches a theme over time, just via concept clustering rather than a named-arc vote.
 
 Only one of `relates_to`, `proposed_theme`, or `theme_unfiled` is set per video. Record the reason in `triage_reason:` ("fits AI capex unwind theme" / "bond-vigilantes arc emerging, no theme yet" / "macro signal, no theme match — review pile").
 
