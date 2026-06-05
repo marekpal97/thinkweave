@@ -8,7 +8,7 @@ narrative generation.
 Filename defaults ship in
 ``personal_mem.sources.config.DEFAULT_CONFIG`` under the
 ``landing_files`` key and can be overridden per-vault in
-``vault/.mem/sources.yaml``. Callers that need the *current* filename
+``vault/config/sources.yaml``. Callers that need the *current* filename
 set should use :func:`landing_filenames` /
 :func:`landing_filename_set` rather than hardcoding any of the strings.
 """
@@ -43,16 +43,14 @@ DEFAULT_LANDING_FILENAMES: dict[str, str] = _default_landing_filenames()
 def landing_filenames(vault_root: Path | None = None) -> dict[str, str]:
     """Return the merged ``landing_files`` mapping for the given vault.
 
-    Reads ``vault/.mem/sources.yaml`` if present and overlays user
+    Reads ``vault/config/sources.yaml`` if present and overlays user
     overrides on top of :data:`DEFAULT_LANDING_FILENAMES`. Missing
     vault root → defaults.
 
     The mapping always includes a ``research_focus`` key. The framework
-    does not auto-generate the research-focus landing doc — it remains a
-    user-maintained file (or a per-project ``concept_coverage`` strategy
-    populates it). Projects with no ``concept_coverage`` strategy in
-    ``projects.<name>.discover_strategies`` simply leave it absent;
-    ``/discover`` is a no-op for them.
+    does not auto-generate the research-focus landing doc — it remains
+    a user-maintained file. ``/discover`` reads it as ambient input but
+    never writes it.
     """
     from personal_mem.sources.config import load_user_config
 
@@ -119,6 +117,32 @@ def _extract_summary(frontmatter: dict, body: str) -> str:
     return ""
 
 
+def _id_path_map(db) -> dict[str, str]:
+    """Map note id -> vault-relative path (sans .md) for path-based wikilinks.
+
+    Path links resolve structurally in Obsidian by file location, so they
+    never spawn a phantom stub even on notes that predate the `aliases:`
+    backfill. This is the durable form for every materialised link — the
+    same structural shape concept-hub links use.
+    """
+    out: dict[str, str] = {}
+    for r in db.execute("SELECT id, path FROM notes"):
+        rel = str(r["path"] or "").replace("\\", "/")
+        if rel.endswith(".md"):
+            rel = rel[:-3]
+        if rel:
+            out[r["id"]] = rel
+    return out
+
+
+def _reflink(idmap: dict[str, str], note_id: str, display: str | None = None) -> str:
+    """Path-based wikilink to a note, falling back to the bare id (alias)."""
+    ref = idmap.get(note_id) or note_id
+    if ref == note_id and display is None:
+        return f"[[{note_id}]]"
+    return f"[[{ref}|{display if display is not None else note_id}]]"
+
+
 def _query_decisions(db, project: str) -> list[dict]:
     """Query all decisions for a project, ordered by date."""
     rows = db.execute(
@@ -163,6 +187,7 @@ def decisions_ledger(config: Config, project: str) -> str:
     db = _get_db(config)
     decisions = _query_decisions(db, project)
     edges = _query_edges(db, project)
+    idmap = _id_path_map(db)
     db.close()
 
     today = date.today().isoformat()
@@ -193,7 +218,7 @@ def decisions_ledger(config: Config, project: str) -> str:
                 verdict_str = f"{d['verdict']}{conf}"
             summary = d["summary"].replace("|", "\\|")
             lines.append(
-                f"| [[{d['id']}]] | {d['date']} | {d['title']} "
+                f"| {_reflink(idmap, d['id'])} | {d['date']} | {d['title']} "
                 f"| {d['status']} | {verdict_str} | {summary} |"
             )
         lines.append("")
@@ -233,7 +258,7 @@ def decisions_ledger(config: Config, project: str) -> str:
         for d in inactive:
             summary = d["summary"].replace("|", "\\|")
             lines.append(
-                f"| [[{d['id']}]] | {d['date']} | {d['title']} "
+                f"| {_reflink(idmap, d['id'])} | {d['date']} | {d['title']} "
                 f"| {d['status']} | {summary} |"
             )
         lines.append("")
@@ -344,6 +369,7 @@ def backlog_summary(config: Config, project: str) -> str:
             "reason": reason,
         })
 
+    idmap = _id_path_map(db)
     db.close()
 
     today_str = today.isoformat()
@@ -375,7 +401,7 @@ def backlog_summary(config: Config, project: str) -> str:
                 tag_str = ""
                 if item["tags"]:
                     tag_str = f" — {', '.join(item['tags'])}"
-                lines.append(f"- [ ] {item['title']} ([[{item['id']}]]){tag_str}")
+                lines.append(f"- [ ] {item['title']} ({_reflink(idmap, item['id'])}){tag_str}")
             lines.append("")
 
     # Stalled proposals
@@ -387,7 +413,7 @@ def backlog_summary(config: Config, project: str) -> str:
         lines.append("|---|---|---|---|")
         for s in stalled:
             summary = s["summary"].replace("|", "\\|")
-            lines.append(f"| [[{s['id']}]] | {s['date']} | {s['title']} | {summary} |")
+            lines.append(f"| {_reflink(idmap, s['id'])} | {s['date']} | {s['title']} | {summary} |")
         lines.append("")
 
     # Parked items
@@ -397,7 +423,7 @@ def backlog_summary(config: Config, project: str) -> str:
         lines.append("")
         for p in parked:
             reason = f" — {p['reason']}" if p["reason"] else ""
-            lines.append(f"- {p['title']} ([[{p['id']}]]){reason}")
+            lines.append(f"- {p['title']} ({_reflink(idmap, p['id'])}){reason}")
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -642,6 +668,9 @@ def state_of_play(config: Config, project: str) -> str:
     When called via MCP, the agent can enhance it with LLM narrative.
     """
     ctx = _gather_state_context(config, project)
+    _db = _get_db(config)
+    idmap = _id_path_map(_db)
+    _db.close()
     today = date.today().isoformat()
 
     lines = [
@@ -711,7 +740,7 @@ def state_of_play(config: Config, project: str) -> str:
         if worth_inspecting:
             for d in worth_inspecting:
                 conf_str = f" — confidence: {d['confidence']}" if d['confidence'] else " — not yet evaluated"
-                lines.append(f"- [[{d['id']}]] **{d['title']}**{conf_str}")
+                lines.append(f"- {_reflink(idmap, d['id'])} **{d['title']}**{conf_str}")
                 if d["summary"]:
                     lines.append(f"  {d['summary']}")
             lines.append("")
@@ -760,7 +789,7 @@ def state_of_play(config: Config, project: str) -> str:
         lines.append("")
         for p in probes[:10]:
             session = p.get("session", "")
-            sess_ref = f", [[{session}]]" if session else ""
+            sess_ref = f", {_reflink(idmap, session)}" if session else ""
             tag = ""
             if p.get("source") == "prompt":
                 tag = " · *prompt*"
@@ -1008,6 +1037,7 @@ def themes_ledger(config: Config) -> str:
     """
     db = _get_db(config)
     themes = _query_themes(db)
+    idmap = _id_path_map(db)
     db.close()
 
     today = date.today().isoformat()
@@ -1038,10 +1068,10 @@ def themes_ledger(config: Config) -> str:
 
     def _row(t: dict, depth: int = 0) -> str:
         prefix = "↳ " * depth
-        link = (
-            f"{prefix}[[themes/{t['id']}-{_slug_for_link(t['title'])}|"
-            f"{t['title']}]]"
-        )
+        # Use the real indexed path, not a path reconstructed from the
+        # title-slug — a title whose slug differs from the on-disk filename
+        # would otherwise spawn a phantom theme stub.
+        link = f"{prefix}{_reflink(idmap, t['id'], t['title'])}"
         proj = t["project"] or "—"
         # Catalyst log dates are bare YYYY-MM-DD; the index `date` column
         # carries an ISO timestamp — trim the time portion for display.
@@ -1075,7 +1105,7 @@ def themes_ledger(config: Config) -> str:
         )
         lines.append("")
         for t, depth in _hierarchical_order(active):
-            lines.append(_catalog_card(t, depth, by_id={x["id"]: x for x in active}))
+            lines.append(_catalog_card(t, depth, by_id={x["id"]: x for x in active}, idmap=idmap))
             lines.append("")
 
         # Per-theme temporal DAG — inlined Mermaid diagram for any theme
@@ -1145,7 +1175,7 @@ def _slug_for_link(title: str) -> str:
     return slug[:80] if slug else "untitled"
 
 
-def _catalog_card(t: dict, depth: int, by_id: dict[str, dict]) -> str:
+def _catalog_card(t: dict, depth: int, by_id: dict[str, dict], idmap: dict[str, str] | None = None) -> str:
     """Render one active theme as a markdown sub-block for the Catalog section.
 
     Stable shape so the triage helper can parse-by-heading:
@@ -1164,7 +1194,7 @@ def _catalog_card(t: dict, depth: int, by_id: dict[str, dict]) -> str:
     title = t["title"] or t["id"]
     parent_id = t.get("parent") or ""
     parent_line = (
-        f"- **parent:** [[{parent_id}]] ({by_id[parent_id]['title']})"
+        f"- **parent:** {_reflink(idmap or {}, parent_id, parent_id)} ({by_id[parent_id]['title']})"
         if parent_id and parent_id in by_id
         else "- **parent:** _(top-level)_"
     )

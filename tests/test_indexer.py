@@ -56,7 +56,7 @@ class TestIndexer:
             "SQLite WAL Mode",
             body="WAL mode enables concurrent reads.",
             tags=["sqlite", "gotcha"],
-            project="test-proj",
+            project="test_proj",
         )
         stats = indexer.rebuild(full=True)
         assert stats["indexed"] == 1
@@ -303,14 +303,14 @@ class TestSearch:
             "Use Markdown First",
             body="Decided to use markdown as source of truth for portability.",
             tags=["architecture"],
-            project="personal-mem",
+            project="personal_mem",
         )
         vault.create_note(
             NoteType.SESSION,
             "Refactored indexer",
             body="Rewrote the FTS rebuild logic for correctness.",
             tags=["refactor"],
-            project="personal-mem",
+            project="personal_mem",
         )
         indexer.rebuild(full=True)
 
@@ -328,7 +328,7 @@ class TestSearch:
 
     def test_search_by_project(self, vault: VaultManager, indexer: Indexer, search: Search):
         self._populate_vault(vault, indexer)
-        results = search.search("", project="personal-mem")
+        results = search.search("", project="personal_mem")
         assert len(results) == 2  # decision + session
 
     def test_search_by_tags(self, vault: VaultManager, indexer: Indexer, search: Search):
@@ -339,7 +339,7 @@ class TestSearch:
 
     def test_get_context(self, vault: VaultManager, indexer: Indexer, search: Search):
         self._populate_vault(vault, indexer)
-        results = search.get_context(project="personal-mem", limit=5)
+        results = search.get_context(project="personal_mem", limit=5)
         assert len(results) >= 1
 
     def test_get_note_by_id(self, vault: VaultManager, indexer: Indexer, search: Search):
@@ -689,36 +689,36 @@ class TestConceptSearch:
     ):
         vault.create_note(
             NoteType.NOTE, "ML in Proj A", body="A.",
-            project="proj-a",
+            project="proj_a",
             extra_frontmatter={"concepts": ["pytorch"]},
         )
         vault.create_note(
             NoteType.NOTE, "ML in Proj B", body="B.",
-            project="proj-b",
+            project="proj_b",
             extra_frontmatter={"concepts": ["pytorch"]},
         )
         indexer.rebuild(full=True)
 
-        results = search.search_by_concept("pytorch", project="proj-a")
+        results = search.search_by_concept("pytorch", project="proj_a")
         assert len(results) == 1
-        assert results[0].project == "proj-a"
+        assert results[0].project == "proj_a"
 
     def test_get_project_concepts(
         self, vault: VaultManager, indexer: Indexer, search: Search
     ):
         vault.create_note(
             NoteType.NOTE, "Note 1", body="1.",
-            project="ml-proj",
+            project="ml_proj",
             extra_frontmatter={"concepts": ["pytorch", "cuda"]},
         )
         vault.create_note(
             NoteType.NOTE, "Note 2", body="2.",
-            project="ml-proj",
+            project="ml_proj",
             extra_frontmatter={"concepts": ["pytorch"]},
         )
         indexer.rebuild(full=True)
 
-        concepts = search.get_project_concepts("ml-proj")
+        concepts = search.get_project_concepts("ml_proj")
         assert concepts["pytorch"] == 2
         assert concepts["cuda"] == 1
 

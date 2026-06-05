@@ -345,6 +345,10 @@ class Indexer:
             if md_file.name in SOURCE_COMPANION_FILENAMES:
                 continue
             rel_path = str(md_file.relative_to(self.vault.root))
+            # Skip the reports/ tree — cron dream/discover summaries are
+            # materialized narrative (like landing docs), not source material.
+            if rel_path.replace("\\", "/").startswith("reports/"):
+                continue
             indexed_paths.add(rel_path)
 
             # Layer 1: mtime gate. If the file's mtime matches the cached
@@ -1234,6 +1238,23 @@ class Indexer:
             for row in self.db.execute("SELECT id, path, title FROM notes")
         }
 
+        def _strip_stale_see_also(note_row) -> bool:
+            """Remove a leftover ## See Also from a note that no longer has
+            any links to show. Without this a note that lost all its edges
+            keeps a stale (and possibly pre-alias bare-id) section forever.
+            Returns True if a section was removed."""
+            if dry_run:
+                return False
+            fp = self.vault.root / note_row["path"]
+            if not fp.exists():
+                return False
+            txt = fp.read_text(encoding="utf-8")
+            stripped = strip_section(txt, SEE_ALSO)
+            if stripped != txt:
+                fp.write_text(stripped.rstrip() + "\n", encoding="utf-8")
+                return True
+            return False
+
         for note_id, note_row in all_notes.items():
             edges = self.db.execute(
                 "SELECT source, target, edge_type, metadata FROM edges "
@@ -1242,7 +1263,10 @@ class Indexer:
             ).fetchall()
 
             if not edges:
-                stats["notes_skipped"] += 1
+                if _strip_stale_see_also(note_row):
+                    stats["notes_updated"] += 1
+                else:
+                    stats["notes_skipped"] += 1
                 continue
 
             # Separate structural edges from concept/tag edges
@@ -1319,18 +1343,29 @@ class Indexer:
                         idx += 1
 
             if not linked:
-                stats["notes_skipped"] += 1
+                if _strip_stale_see_also(note_row):
+                    stats["notes_updated"] += 1
+                else:
+                    stats["notes_skipped"] += 1
                 continue
 
-            # Build the See Also section. Link by note id (every note carries
-            # `aliases: [<id>]`, so `[[<id>]]` resolves in Obsidian) with the
-            # title as display text. Filename stems are unreliable — every
-            # folder-layout source note is named `source.md`.
+            # Build the See Also section. Link by vault-relative PATH (sans
+            # .md) — the same structural form concept-hub links use. Obsidian
+            # resolves a path link by file location, so it NEVER spawns a
+            # phantom stub, even on notes that predate the `aliases:` backfill.
+            # (Bare `[[<id>]]` resolves only via the alias; a path link does
+            # not depend on it. A filename stem alone is ambiguous — every
+            # folder-layout source is `source.md` — but the full path is
+            # unique, which is exactly why the id+alias workaround existed.)
             lines = [SEE_ALSO, ""]
             for target_id, edge_type in linked:
                 target = all_notes[target_id]
                 title = (target["title"] or "").replace("|", " ").replace("]", " ").strip()
-                link = f"[[{target_id}|{title}]]" if title else f"[[{target_id}]]"
+                rel = str(target["path"] or "").replace("\\", "/")
+                if rel.endswith(".md"):
+                    rel = rel[:-3]
+                ref = rel or target_id  # fall back to id-alias if path is missing
+                link = f"[[{ref}|{title}]]" if title else f"[[{ref}]]"
                 label = edge_type.replace("_", " ") if edge_type != "relates_to" else ""
                 if label:
                     lines.append(f"- {link} _{label}_")

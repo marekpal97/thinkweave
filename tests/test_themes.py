@@ -357,9 +357,10 @@ class TestCatalogSection:
         assert child_marker in content
         idx = content.index(child_marker)
         # Within the next ~400 chars (card body), parent line must
-        # reference the parent's id, not "(top-level)".
+        # reference the parent, not "(top-level)". Links are path-based
+        # (resolve by file location) with the parent id as display text.
         card_body = content[idx : idx + 400]
-        assert f"[[{parent_id}]]" in card_body
+        assert f"|{parent_id}]]" in card_body
         assert "(Parent theme)" in card_body
 
 

@@ -55,7 +55,10 @@ from personal_mem.core.config import Config
 # ---------------------------------------------------------------------------
 
 MAINTENANCE_LOG_RELPATH = Path(".mem") / "maintenance.jsonl"
-DREAM_REPORTS_RELDIR = Path(".mem") / "dream_reports"
+# User-visible home for cron synthesis reports (was hidden under .mem/).
+# The reports/ tree is excluded from the index (see Indexer.rebuild), like
+# landing docs — materialized narrative, not source material.
+DREAM_REPORTS_RELDIR = Path("reports") / "dream"
 
 
 def maintenance_log_path(cfg: Config) -> Path:

@@ -59,16 +59,16 @@ def _index_all(vault: VaultManager, indexer: Indexer):
 class TestDecisionsLedger:
     def test_empty_project(self, vault: VaultManager, indexer: Indexer, config: Config):
         _index_all(vault, indexer)
-        result = decisions_ledger(config, "test-proj")
+        result = decisions_ledger(config, "test_proj")
         assert "No decisions recorded yet." in result
-        assert "# Decisions — test-proj" in result
+        assert "# Decisions — test_proj" in result
 
     def test_active_decisions_table(self, vault: VaultManager, indexer: Indexer, config: Config):
         vault.create_note(
             NoteType.DECISION,
             "Use markdown as SoT",
             body="Store everything in .md files.",
-            project="test-proj",
+            project="test_proj",
             tags=["architecture"],
             extra_frontmatter={"status": "accepted", "summary": "Markdown files are the source of truth"},
         )
@@ -76,13 +76,13 @@ class TestDecisionsLedger:
             NoteType.DECISION,
             "FTS5 for search",
             body="Use SQLite FTS5 virtual table.",
-            project="test-proj",
+            project="test_proj",
             tags=["search"],
             extra_frontmatter={"status": "accepted", "summary": "SQLite FTS5 for full-text search"},
         )
         _index_all(vault, indexer)
 
-        result = decisions_ledger(config, "test-proj")
+        result = decisions_ledger(config, "test_proj")
         assert "## Active" in result
         assert "Use markdown as SoT" in result
         assert "FTS5 for search" in result
@@ -94,12 +94,12 @@ class TestDecisionsLedger:
             NoteType.DECISION,
             "Old approach",
             body="Was replaced.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"status": "superseded", "summary": "No longer used"},
         )
         _index_all(vault, indexer)
 
-        result = decisions_ledger(config, "test-proj")
+        result = decisions_ledger(config, "test_proj")
         assert "## Superseded / Deprecated" in result
         assert "Old approach" in result
 
@@ -108,19 +108,19 @@ class TestDecisionsLedger:
             NoteType.DECISION,
             "No summary field",
             body="This is the first sentence. More details here.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"status": "accepted"},
         )
         _index_all(vault, indexer)
 
-        result = decisions_ledger(config, "test-proj")
+        result = decisions_ledger(config, "test_proj")
         assert "This is the first sentence." in result
 
     def test_mermaid_dag_with_edges(self, vault: VaultManager, indexer: Indexer, config: Config):
         p1 = vault.create_note(
             NoteType.DECISION,
             "Old decision",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"status": "superseded"},
         )
         old_note = vault.read_note(p1)
@@ -129,7 +129,7 @@ class TestDecisionsLedger:
         vault.create_note(
             NoteType.DECISION,
             "New decision",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={
                 "status": "accepted",
                 "supersedes": [old_id],
@@ -137,7 +137,7 @@ class TestDecisionsLedger:
         )
         _index_all(vault, indexer)
 
-        result = decisions_ledger(config, "test-proj")
+        result = decisions_ledger(config, "test_proj")
         assert "```mermaid" in result
         assert "superseded" in result
 
@@ -145,19 +145,19 @@ class TestDecisionsLedger:
         vault.create_note(
             NoteType.DECISION,
             "Project A decision",
-            project="proj-a",
+            project="proj_a",
             extra_frontmatter={"status": "accepted"},
         )
         vault.create_note(
             NoteType.DECISION,
             "Project B decision",
-            project="proj-b",
+            project="proj_b",
             extra_frontmatter={"status": "accepted"},
         )
         _index_all(vault, indexer)
 
-        result_a = decisions_ledger(config, "proj-a")
-        result_b = decisions_ledger(config, "proj-b")
+        result_a = decisions_ledger(config, "proj_a")
+        result_b = decisions_ledger(config, "proj_b")
         assert "Project A decision" in result_a
         assert "Project B decision" not in result_a
         assert "Project B decision" in result_b
@@ -169,7 +169,7 @@ class TestDecisionsLedger:
 class TestBacklogSummary:
     def test_empty_backlog(self, vault: VaultManager, indexer: Indexer, config: Config):
         _index_all(vault, indexer)
-        result = backlog_summary(config, "test-proj")
+        result = backlog_summary(config, "test_proj")
         assert "No open items" in result
 
     def test_todo_items(self, vault: VaultManager, indexer: Indexer, config: Config):
@@ -177,19 +177,19 @@ class TestBacklogSummary:
             NoteType.NOTE,
             "Add vector search",
             body="Implement semantic search with embeddings.",
-            project="test-proj",
+            project="test_proj",
             tags=["todo"],
         )
         vault.create_note(
             NoteType.NOTE,
             "Fix bug in parser",
             body="Edge case with nested lists.",
-            project="test-proj",
+            project="test_proj",
             tags=["todo", "bugfix"],
         )
         _index_all(vault, indexer)
 
-        result = backlog_summary(config, "test-proj")
+        result = backlog_summary(config, "test_proj")
         assert "## Open" in result
         assert "Add vector search" in result
         assert "Fix bug in parser" in result
@@ -199,7 +199,7 @@ class TestBacklogSummary:
             NoteType.DECISION,
             "Plugin system",
             body="Extensibility via plugins.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={
                 "status": "proposed",
                 "summary": "Add plugin extensibility",
@@ -210,7 +210,7 @@ class TestBacklogSummary:
         _index_all(vault, indexer)
 
         # By default, today's proposals aren't stalled (< 7 days old)
-        result = backlog_summary(config, "test-proj")
+        result = backlog_summary(config, "test_proj")
         # The proposed decision should NOT appear as stalled since it's from today
         assert "Stalled Proposals" not in result or "Plugin system" not in result
 
@@ -219,12 +219,12 @@ class TestBacklogSummary:
             NoteType.NOTE,
             "Real-time sync",
             body="Too complex for now. Out of scope.",
-            project="test-proj",
+            project="test_proj",
             tags=["parked"],
         )
         _index_all(vault, indexer)
 
-        result = backlog_summary(config, "test-proj")
+        result = backlog_summary(config, "test_proj")
         assert "## Parked" in result
         assert "Real-time sync" in result
 
@@ -235,20 +235,20 @@ class TestBacklogSummary:
 class TestStateOfPlay:
     def test_empty_project(self, vault: VaultManager, indexer: Indexer, config: Config):
         _index_all(vault, indexer)
-        result = state_of_play(config, "test-proj")
-        assert "# State of Play — test-proj" in result
+        result = state_of_play(config, "test_proj")
+        assert "# State of Play — test_proj" in result
 
     def test_decisions_worth_understanding(self, vault: VaultManager, indexer: Indexer, config: Config):
         vault.create_note(
             NoteType.DECISION,
             "Untested decision",
             body="Needs review.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"status": "accepted", "summary": "Needs human review"},
         )
         _index_all(vault, indexer)
 
-        result = state_of_play(config, "test-proj")
+        result = state_of_play(config, "test_proj")
         assert "Decisions Worth Understanding" in result
         assert "Untested decision" in result
 
@@ -257,12 +257,12 @@ class TestStateOfPlay:
             NoteType.NOTE,
             "How does the recursive CTE work?",
             body="It traverses edges bidirectionally using UNION.",
-            project="test-proj",
+            project="test_proj",
             tags=["probe"],
         )
         _index_all(vault, indexer)
 
-        result = state_of_play(config, "test-proj")
+        result = state_of_play(config, "test_proj")
         # Phase 4 E renamed the heading from "What You've Been Exploring"
         # to "Open Probes" when it merged manual `probe`-tagged notes
         # with classified prompt events.
@@ -274,19 +274,19 @@ class TestStateOfPlay:
             NoteType.NOTE,
             "SQLite notes",
             body="About SQLite.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"concepts": ["sqlite", "fts5"]},
         )
         vault.create_note(
             NoteType.NOTE,
             "More SQLite",
             body="More about it.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"concepts": ["sqlite", "wal"]},
         )
         _index_all(vault, indexer)
 
-        result = state_of_play(config, "test-proj")
+        result = state_of_play(config, "test_proj")
         assert "Concept Landscape" in result
         assert "`sqlite` (2)" in result
 
@@ -295,7 +295,7 @@ class TestStateOfPlay:
             NoteType.DECISION,
             "Refactor vault.py",
             body="Major refactor of the vault module.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={
                 "status": "accepted",
                 "file_paths": ["src/vault.py", "src/config.py"],
@@ -303,7 +303,7 @@ class TestStateOfPlay:
         )
         _index_all(vault, indexer)
 
-        result = state_of_play(config, "test-proj")
+        result = state_of_play(config, "test_proj")
         assert "## Key Files" in result
         assert "src/vault.py" in result
         assert "Refactor vault.py" in result
@@ -315,12 +315,12 @@ class TestStateOfPlay:
             NoteType.DECISION,
             "Test decision",
             body="A test.",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"status": "accepted"},
         )
         _index_all(vault, indexer)
 
-        result = state_of_play_context(config, "test-proj")
+        result = state_of_play_context(config, "test_proj")
         assert "Context for STATE.md" in result
         assert "Test decision" in result
 
@@ -333,12 +333,12 @@ class TestGenerateAll:
         vault.create_note(
             NoteType.DECISION,
             "A decision",
-            project="test-proj",
+            project="test_proj",
             extra_frontmatter={"status": "accepted"},
         )
         _index_all(vault, indexer)
 
-        result = generate_all(config, "test-proj")
+        result = generate_all(config, "test_proj")
         assert "DECISIONS.md" in result
         assert "BACKLOG.md" in result
         assert "STATE.md" in result
@@ -348,7 +348,7 @@ class TestGenerateAll:
         _index_all(vault, indexer)
 
         # docs="all" now writes 3 project docs + the global THEMES.md.
-        written = write_landing_docs(config, "test-proj", docs="all")
+        written = write_landing_docs(config, "test_proj", docs="all")
         assert len(written) == 4
         for filename, path in written.items():
             assert path.exists()
@@ -359,7 +359,7 @@ class TestGenerateAll:
     def test_write_single_doc(self, vault: VaultManager, indexer: Indexer, config: Config):
         _index_all(vault, indexer)
 
-        written = write_landing_docs(config, "test-proj", docs="decisions")
+        written = write_landing_docs(config, "test_proj", docs="decisions")
         assert len(written) == 1
         assert "DECISIONS.md" in written
 
@@ -375,12 +375,12 @@ class TestIndexerExclusion:
             NoteType.NOTE,
             "A regular note",
             body="Should be indexed.",
-            project="test-proj",
+            project="test_proj",
         )
         _index_all(vault, indexer)
 
         # Write landing docs
-        write_landing_docs(config, "test-proj", docs="all")
+        write_landing_docs(config, "test_proj", docs="all")
 
         # Re-index
         stats = indexer.rebuild(full=True)
@@ -398,7 +398,7 @@ class TestIndexerExclusion:
         _index_all(vault, indexer)
 
         # Create a landing doc file
-        project_dir = config.vault_root / "projects" / "test-proj"
+        project_dir = config.vault_root / "projects" / "test_proj"
         project_dir.mkdir(parents=True, exist_ok=True)
         decisions_path = project_dir / "DECISIONS.md"
         decisions_path.write_text("---\ntype: note\n---\n# Test", encoding="utf-8")
@@ -425,8 +425,8 @@ class TestLandingFilenamesConfig:
 
     def test_user_override_replaces_filename(self, tmp_path: Path):
         vault_root = tmp_path / "vault"
-        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
-        (vault_root / ".mem" / "sources.yaml").write_text(
+        (vault_root / "config").mkdir(parents=True, exist_ok=True)
+        (vault_root / "config" / "sources.yaml").write_text(
             "landing_files:\n  state: STATUS.md\n  backlog: TODO.md\n",
             encoding="utf-8",
         )
@@ -438,8 +438,8 @@ class TestLandingFilenamesConfig:
 
     def test_filename_set_picks_up_overrides(self, tmp_path: Path):
         vault_root = tmp_path / "vault"
-        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
-        (vault_root / ".mem" / "sources.yaml").write_text(
+        (vault_root / "config").mkdir(parents=True, exist_ok=True)
+        (vault_root / "config" / "sources.yaml").write_text(
             "landing_files:\n  state: STATUS.md\n", encoding="utf-8",
         )
         s = landing_filename_set(vault_root)
@@ -450,8 +450,8 @@ class TestLandingFilenamesConfig:
         self, tmp_path: Path
     ):
         vault_root = tmp_path / "vault"
-        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
-        (vault_root / ".mem" / "sources.yaml").write_text(
+        (vault_root / "config").mkdir(parents=True, exist_ok=True)
+        (vault_root / "config" / "sources.yaml").write_text(
             "landing_files:\n  state: STATUS.md\n  decisions: ADR.md\n",
             encoding="utf-8",
         )
@@ -483,9 +483,9 @@ class TestLandingFilenamesConfig:
         """Caller-passed ``landing_filenames_override`` wins over the
         sources.yaml mapping AND the defaults."""
         vault_root = tmp_path / "vault"
-        (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
+        (vault_root / "config").mkdir(parents=True, exist_ok=True)
         # User config sets one rename — the override should still beat it.
-        (vault_root / ".mem" / "sources.yaml").write_text(
+        (vault_root / "config" / "sources.yaml").write_text(
             "landing_files:\n  state: STATUS.md\n", encoding="utf-8",
         )
         cfg = Config(vault_root=vault_root)
