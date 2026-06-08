@@ -247,6 +247,37 @@ class TestEvaluateDecision:
         assert "blame_lines" in result
         assert isinstance(result["blame_lines"], int)
 
+    def test_str_shaped_file_paths_and_commit_refs(self, tmp_path):
+        """Regression: ``file_paths`` / ``commit_refs`` arriving as a YAML
+        scalar (single string instead of list) must not iterate
+        char-by-char. The 2026-06-07 ``as_list`` migration coerces scalar
+        → ``[scalar]`` at read time; pre-migration this iterated each
+        char and produced bogus single-char "file paths" / "commit
+        hashes" that downstream git checks then mangled.
+
+        K2-item-5 coverage: the str-shape input is the load-bearing
+        contract; without this guard, a decision frontmatter mis-shape
+        silently degrades to "no verdict" rather than crashing visibly.
+        """
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        fp = str(existing)
+        dec = _make_decision(
+            committed=True,
+            file_paths=fp,            # scalar, not list
+            commit_refs="abc1234",    # scalar, not list
+        )
+        # If as_list isn't applied, file_paths iterates as individual
+        # chars (one per character of the absolute path) and the
+        # blame/re-edit checks see garbage, but the verdict-shape
+        # contract should still hold.
+        result = evaluate_decision(dec, [dec])
+        assert "verdict" in result
+        assert "commit_refs" in result
+        # The seed scalar must be preserved (would be stripped to chars
+        # without the guard).
+        assert "abc1234" in result["commit_refs"]
+
     @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=15)
     @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
     def test_superseded_with_surviving_lines_becomes_kept(self, mock_git, mock_blame, tmp_path):

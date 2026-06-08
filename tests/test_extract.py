@@ -295,3 +295,115 @@ class TestExtractTodos:
     def test_returns_todo_dataclass(self):
         todos = extract_todos("TODO: a thing")
         assert isinstance(todos[0], Todo)
+
+
+class TestSupersedesStringCoercion:
+    """Regression: ``supersedes: dec-X`` as bare string must not be
+    iterated character-by-character into the rejudge queue.
+
+    The pre-fix code did ``for target_id in dec.get("supersedes", []) or []:``
+    which, when the YAML value was a bare string like ``"dec-71940"``, yielded
+    9 single-character entries (``'d','e','c','-','7','1','9','4','0'``)
+    instead of one ``"dec-71940"`` entry. The fix coerces string → list
+    before the loop.
+    """
+
+    def test_bare_string_supersedes_enqueues_one_entry(self, tmp_path: Path):
+        from personal_mem.core.config import Config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.operations import rejudge_queue
+        from personal_mem.operations.extract import extract_session
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+
+        # Create the predecessor decision so the supersession path has a
+        # real target (otherwise the structural status-flip skips silently;
+        # the enqueue happens regardless, which is the load-bearing bit).
+        predecessor = vm.create_note(
+            NoteType.DECISION,
+            "Old decision",
+            body="## Context\n\n## Decision\n",
+            project="t",
+            extra_frontmatter={"status": "accepted"},
+        )
+        predecessor_id = vm.read_note(predecessor).id
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+
+        # The bug shape: supersedes is a bare string, not a list.
+        out = extract_session(
+            cfg,
+            session_id="ses-superstr-1",
+            project="t",
+            summary="x",
+            insights=[],
+            decisions=[{
+                "title": "New decision",
+                "rationale": "## Context\n\n## Decision\n",
+                "outcome": "committed",
+                "concepts": ["sqlite", "memory-system"],
+                "supersedes": predecessor_id,  # BARE STRING — the bug shape
+            }],
+        )
+        assert out.error == ""
+
+        queued = rejudge_queue.peek(cfg)
+        # Exactly one entry, with the full predecessor id intact — not 9
+        # garbage single-char entries (the pre-fix behavior).
+        assert len(queued) == 1, f"Expected 1 queue entry, got {len(queued)}: {queued}"
+        assert queued[0]["decision_id"] == predecessor_id
+        # Sanity: no single-character garbage decision_ids leaked through.
+        assert all(len(q["decision_id"]) > 1 for q in queued)
+
+    def test_list_supersedes_still_works(self, tmp_path: Path):
+        # Symmetry check: the list shape (the canonical form) still produces
+        # one entry per id and isn't accidentally broken by the coercion.
+        from personal_mem.core.config import Config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.schemas import NoteType
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.operations import rejudge_queue
+        from personal_mem.operations.extract import extract_session
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+
+        p1 = vm.read_note(vm.create_note(
+            NoteType.DECISION, "Old A",
+            body="## Context\n\n## Decision\n", project="t",
+            extra_frontmatter={"status": "accepted"},
+        )).id
+        p2 = vm.read_note(vm.create_note(
+            NoteType.DECISION, "Old B",
+            body="## Context\n\n## Decision\n", project="t",
+            extra_frontmatter={"status": "accepted"},
+        )).id
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+
+        out = extract_session(
+            cfg,
+            session_id="ses-superlist-1",
+            project="t",
+            summary="x",
+            insights=[],
+            decisions=[{
+                "title": "Multi-supersede",
+                "rationale": "## Context\n\n## Decision\n",
+                "outcome": "committed",
+                "concepts": ["sqlite", "memory-system"],
+                "supersedes": [p1, p2],
+            }],
+        )
+        assert out.error == ""
+
+        queued = rejudge_queue.peek(cfg)
+        ids = {q["decision_id"] for q in queued}
+        assert ids == {p1, p2}

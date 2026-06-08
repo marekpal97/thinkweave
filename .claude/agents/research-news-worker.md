@@ -128,6 +128,8 @@ mem_create(
 
 Do NOT set `project` — news is a global knowledge artifact.
 
+**List arguments MUST be JSON arrays, not stringified lists.** `proposed_concepts`, `concepts`, `tags`, `relates_to`, `authors` are list-shaped fields. Pass them as `["llm", "ai-governance"]` (array of strings), NOT as `"['llm', 'ai-governance']"` (a string that looks like a list). The MCP layer forwards your frontmatter dict literally; a stringified list will be iterated character-by-character downstream, producing nonsense like `proposed_concepts: ['[', 'l', 'i', 'q', 'u', 'd', 't', 'y', ']']`. If you only have one concept to propose, the value is still a single-element list: `"proposed_concepts": ["liquidity"]`, not `"proposed_concepts": "liquidity"` and not `"proposed_concepts": "[liquidity]"`.
+
 **`mem_create` (MCP) is the ONLY acceptable write path.** Do not use `mem add` via Bash — the CLI does not apply SourceTypeSpec layout routing the same way, so the note will land at `sources/<slug>/source.md` instead of `sources/news/<outlet>/<slug>/source.md`. Do not use `mem update --frontmatter` to backfill missing fields onto a wrong-path note after the fact — that leaves the file in the wrong location forever. If something prevents the MCP tool from running, report `mem_create: <reason>` in step 8; do NOT silently fall back to a CLI workaround.
 
 **Call `mem_create` exactly once.** If the response gives you a `src-XXXXXXXX` id, the note is written, indexed, and committed — your job is done. Do not call `mem_create` a second time "to verify"; do not call it again with slightly different args because you weren't sure if the first one worked. A second call creates a duplicate note with a different id at a `-1`-suffixed slug, which the user then has to clean up by hand.

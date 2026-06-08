@@ -15,12 +15,18 @@ from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.config import Config, load_config
 from personal_mem.synthesis.landing import (
     LANDING_FILENAMES,
     landing_filename_set,
 )
-from personal_mem.core.vault import VaultManager, content_hash, extract_wikilinks, parse_frontmatter
+from personal_mem.core.vault import (
+    VaultManager,
+    content_hash,
+    extract_wikilink_ids,
+    parse_frontmatter,
+)
 
 log = logging.getLogger(__name__)
 
@@ -560,9 +566,7 @@ class Indexer:
             if not title:
                 title = path.stem
 
-        tags = fm.get("tags", [])
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",")]
+        tags = as_list(fm.get("tags"))
 
         now = datetime.now(timezone.utc).isoformat()
 
@@ -624,9 +628,7 @@ class Indexer:
         Resolves aliases to canonical forms and looks up ontology domain.
         """
         self.db.execute("DELETE FROM note_concepts WHERE note_id = ?", (note_id,))
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+        concepts = as_list(fm.get("concepts"))
         if not concepts:
             return
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.config import load_config
 
 
@@ -200,9 +201,7 @@ def cmd_concepts(args: argparse.Namespace) -> None:
                 fm, _ = parse_frontmatter(text)
                 if not fm:
                     continue
-                concepts = fm.get("concepts", [])
-                if isinstance(concepts, str):
-                    concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+                concepts = as_list(fm.get("concepts"))
                 removed = sum(1 for c in concepts if c.lower() not in keep_set)
                 if removed:
                     would_modify += 1

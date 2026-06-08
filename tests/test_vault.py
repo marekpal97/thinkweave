@@ -130,6 +130,76 @@ class TestRenderFrontmatter:
         rendered = render_frontmatter(data)
         assert '- {"k": "v", "n": 1}' in rendered
 
+    def test_list_field_string_literal_coerced(self):
+        """Writer-subagent regression: a JSON-shaped string passed for a
+        list-shaped field (``proposed_concepts``) must coerce to a real
+        list, not get iterated character-by-character downstream.
+        """
+        data = {"id": "src-test", "proposed_concepts": "[liqudty]"}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert isinstance(fm["proposed_concepts"], list)
+        assert fm["proposed_concepts"] == ["liqudty"]
+        # And critically, NOT char-iterated
+        assert fm["proposed_concepts"] != ["[", "l", "i", "q", "u", "d", "t", "y", "]"]
+
+    def test_list_field_quoted_json_list_coerced(self):
+        """Stringified JSON list with quoted elements parses cleanly."""
+        data = {"id": "src-test", "concepts": '["llm", "ai-governance"]'}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert isinstance(fm["concepts"], list)
+        assert fm["concepts"] == ["llm", "ai-governance"]
+
+    def test_list_field_bare_scalar_wraps(self):
+        """A bare scalar for a list field becomes a single-element list."""
+        data = {"id": "src-test", "tags": "news"}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["tags"] == ["news"]
+
+    def test_list_field_char_iterated_damage_reconstructed(self):
+        """If an upstream layer already char-iterated the value (the actual
+        damage shape found in src-682d7b64, src-8208cf66, etc.), the
+        render-time coercion stitches the chars back into a single string
+        and re-parses. The reconstruction is best-effort but always
+        produces a sane list rather than letting char damage propagate.
+        """
+        data = {
+            "id": "src-test",
+            "proposed_concepts": ["[", "l", "i", "q", "u", "d", "t", "y", "]"],
+        }
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["proposed_concepts"] == ["liqudty"]
+
+    def test_short_legit_list_not_misclassified_as_damage(self):
+        """Char-damage detection must not fire on legitimate short lists
+        even when items happen to be short — only triggers when ALL
+        items are length-1 AND total >3 elements."""
+        # Three single-char items: still legit (below threshold)
+        data = {"id": "n-test", "aliases": ["a", "b", "c"]}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["aliases"] == ["a", "b", "c"]
+
+    def test_list_field_already_a_list_passes_through(self):
+        """The normal case — a proper list of strings — is unchanged."""
+        data = {"id": "src-test", "concepts": ["llm", "ai-governance", "ai-ethics"]}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["concepts"] == ["llm", "ai-governance", "ai-ethics"]
+
+    def test_non_list_field_string_left_alone(self):
+        """Coercion only fires for keys in ``LIST_FRONTMATTER_KEYS``.
+        Scalar fields (title, url, status) keep their string form."""
+        data = {"id": "src-test", "title": "[Some Title]", "url": "https://x.y"}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        # Title contains brackets but is NOT a list field — it must stay a string
+        assert isinstance(fm["title"], str)
+        assert fm["url"] == "https://x.y"
+
 
 # --- Wikilinks ---
 
@@ -270,6 +340,54 @@ class TestVaultManager:
         note = vault.read_note(path)
         assert "Line 1." in note.body
         assert "Line 2." in note.body
+
+    def test_update_note_list_of_dicts_no_typeerror(self, vault: VaultManager):
+        """Regression: dedupe path on a list-of-dicts (e.g. prediction_history)
+        must not raise ``TypeError: unhashable type: 'dict'``.
+
+        Pre-fix, the merge branch did ``existing = set(fm[key])`` blindly,
+        which exploded when ``fm[key]`` held dicts. The fix catches the
+        TypeError and falls through to a replace-with-new-value branch.
+        """
+        path = vault.create_note(
+            NoteType.DECISION,
+            "Test Decision",
+            body="## Context\n\n## Decision\n",
+            extra_frontmatter={
+                "prediction_history": [
+                    {
+                        "match": "pending",
+                        "judged_at": "2026-05-25T16:21Z",
+                        "reason": "awaiting evidence",
+                    }
+                ]
+            },
+        )
+        # Trigger the merge branch: both old and new are lists.
+        new_history = [
+            {
+                "match": "pending",
+                "judged_at": "2026-05-25T16:21Z",
+                "reason": "awaiting evidence",
+            },
+            {
+                "match": "confirmed",
+                "judged_at": "2026-05-26T08:00Z",
+                "reason": "drain produced 3/3 accepted",
+            },
+        ]
+        # Pre-fix this raised TypeError before write; post-fix it should
+        # silently fall through to the replace branch.
+        vault.update_note(
+            path, frontmatter_updates={"prediction_history": new_history}
+        )
+        note = vault.read_note(path)
+        # Fallback path replaces with the incoming value wholesale — the
+        # merged shape is exactly ``new_history`` (2 dicts), not the old
+        # 1-dict list.
+        assert isinstance(note.frontmatter["prediction_history"], list)
+        assert len(note.frontmatter["prediction_history"]) == 2
+        assert note.frontmatter["prediction_history"] == new_history
 
     def test_list_notes(self, vault: VaultManager):
         vault.create_note(NoteType.NOTE, "Note A", project="proj1", tags=["x"])

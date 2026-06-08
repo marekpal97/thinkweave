@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.schemas import NoteMeta
 from personal_mem.core.vault import VaultManager
 
@@ -92,10 +93,10 @@ def evaluate_decision(
 
     fm = decision.frontmatter
     committed = fm.get("committed", False)
-    file_paths = fm.get("file_paths", [])
+    file_paths = as_list(fm.get("file_paths"))
 
     # Collect commit_refs: start from frontmatter, enrich from git
-    commit_refs: list[str] = list(fm.get("commit_refs", []))
+    commit_refs: list[str] = as_list(fm.get("commit_refs"))
     seen_refs = set(commit_refs)
 
     # Check if superseded by a later decision on same files
@@ -197,7 +198,7 @@ def _check_re_edited(
         if other.id == decision.id:
             continue
         if other.date and decision.date and other.date > decision.date:
-            other_files = set(other.frontmatter.get("file_paths", []))
+            other_files = set(as_list(other.frontmatter.get("file_paths")))
             if decision_files & other_files:
                 return other.id
     return None

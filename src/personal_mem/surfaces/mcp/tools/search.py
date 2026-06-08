@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.config import Config
 
 
@@ -264,7 +265,11 @@ def handle_timeline(cfg: Config, args: dict):
     lines = []
     for sess in sessions:
         fm = sess.frontmatter
-        files = fm.get("files_touched", [])
+        # files_touched is list[str] — guard against scalar mis-shape so
+        # `', '.join(files[:5])` doesn't silently slice a string by char.
+        # commits / test_runs are list[dict]; leave those raw (as_list
+        # would str()-coerce each dict).
+        files = as_list(fm.get("files_touched"))
         commits = fm.get("commits", [])
         test_runs = fm.get("test_runs", [])
         processed = fm.get("processed", False)

@@ -363,7 +363,10 @@ def extract_session(
         # the LLM via the worklist payload.
         new_decision_id = outcome.created_decisions[-1].id
 
-        for target_id in dec.get("supersedes", []) or []:
+        supersedes_raw = dec.get("supersedes") or []
+        if isinstance(supersedes_raw, str):
+            supersedes_raw = [supersedes_raw]
+        for target_id in supersedes_raw:
             # Always enqueue first — the judge skill's worklist is what
             # actually drives re-judgment, and we want it populated even if
             # the structural status-flip below fails (missing file, stale

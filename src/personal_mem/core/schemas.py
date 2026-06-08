@@ -64,3 +64,42 @@ NOTE_ID_PREFIXES: dict[NoteType, str] = {
     NoteType.SOURCE: "src",
     NoteType.THEME: "thm",
 }
+
+
+# Canonical set of frontmatter keys whose value must be a list. Used by
+# ``core/vault.py::render_frontmatter`` (and the early-coercion guard in
+# ``VaultManager.create_note``) as a write-time backstop: when a caller
+# passes a JSON-shaped string (e.g. ``"['liqudty']"``) or a bare scalar
+# for one of these fields, we coerce it to a real list rather than (a)
+# letting the string get iterated char-by-char by a downstream consumer,
+# or (b) letting it round-trip through YAML as a stringified value.
+#
+# The bug this set defends against was the 2026-06-07 char-by-char
+# ``proposed_concepts: ['[', 'l', 'i', 'q', 'u', 'd', 't', 'y', ']']``
+# pollution found on four news source notes: the news-writer subagent
+# occasionally JSON-stringified its frontmatter list arguments before
+# the MCP call, and ``split_concepts_by_ontology`` iterated the string
+# as characters.
+LIST_FRONTMATTER_KEYS: frozenset[str] = frozenset({
+    # Concept + tag vocabulary
+    "concepts",
+    "proposed_concepts",
+    "tags",
+    "aliases",
+    "authors",
+    # Edge declarations (typed graph references)
+    "relates_to",
+    "derived_from",
+    "builds_on",
+    "supersedes",
+    "implements",
+    "cites",
+    # Git + file tracking (decisions, sessions) — always list[str]
+    "file_paths",
+    "files_touched",
+    "commit_refs",
+    "commits",
+    # Test + verdict logs — list[dict]
+    "test_runs",
+    "prediction_history",
+})

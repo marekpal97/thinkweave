@@ -14,13 +14,25 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from personal_mem.core.config import Config, load_config, normalize_project_name
-from personal_mem.core.schemas import NOTE_ID_PREFIXES, DecisionStatus, NoteMeta, NoteType
+from personal_mem.core.schemas import (
+    LIST_FRONTMATTER_KEYS,
+    NOTE_ID_PREFIXES,
+    DecisionStatus,
+    NoteMeta,
+    NoteType,
+)
 from personal_mem.sources import registry as source_registry
 
 # --- YAML frontmatter parsing (inline, no PyYAML dependency) ---
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
+# Captures both target (group 1) and optional display alias (group 2). Used to
+# recover a note id from path-based links (``[[path|note-id]]``) where the id
+# lives in the display, not the target.
+_WIKILINK_REF_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+# A note-id-shaped token: prefix + hex suffix (src-…, n-…, dec-…, ses-…, thm-…).
+_NOTE_ID_RE = re.compile(r"^[a-z]+-[0-9a-f]{6,}$")
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -112,12 +124,90 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return result, body
 
 
+def _coerce_list_field(value):
+    """Best-effort coerce ``value`` into a list of strings.
+
+    Handles three error modes the writer subagents have produced
+    against the MCP ``mem_create`` surface (see ``LIST_FRONTMATTER_KEYS``
+    docstring for the bug log):
+
+    1. *Bare scalar passed for a list field* — wrap as ``[value]``.
+    2. *JSON / YAML list literal passed as a string* (``"['a', 'b']"`` or
+       ``'[a, b]'``) — parse and return the underlying list.
+    3. *Char-by-char damage from a prior string-iteration bug* — a list
+       whose elements are all single-character strings of length >3 is
+       reconstructed as a single string (the original scalar) then
+       re-parsed as case 2 (handling bracket-wrapping, comma-split).
+
+    Returns the coerced list. Callers must verify the key belongs to
+    ``LIST_FRONTMATTER_KEYS`` before calling — this is a typed coercion,
+    not a free-floating "make everything a list".
+    """
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        # Char-by-char damage check: legitimate concept/tag lists never
+        # consist of nothing but single-character strings, and the
+        # >3-element threshold protects short legitimate lists like
+        # ``['a', 'b']`` or even ``['x']`` from being misclassified.
+        if (
+            len(value) > 3
+            and all(isinstance(v, str) and len(v) == 1 for v in value)
+        ):
+            joined = "".join(value)
+            return _coerce_list_field(joined)
+        return list(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return []
+        # JSON / inline-YAML list literal
+        if s.startswith("[") and s.endswith("]"):
+            inner = s[1:-1].strip()
+            if not inner:
+                return []
+            # Try JSON first (handles quoted strings)
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return [str(v).strip() for v in parsed if str(v).strip()]
+            except (json.JSONDecodeError, ValueError):
+                pass
+            # Fall back to comma-split, stripping quotes
+            return [
+                item.strip().strip("\"'")
+                for item in inner.split(",")
+                if item.strip()
+            ]
+        # Bare scalar — wrap as a single-element list
+        return [s]
+    # Other scalar types (int, bool, float) — wrap as single-element list
+    return [value]
+
+
 def render_frontmatter(data: dict) -> str:
-    """Render a dict as YAML frontmatter string (between --- delimiters)."""
+    """Render a dict as YAML frontmatter string (between --- delimiters).
+
+    For keys declared in ``LIST_FRONTMATTER_KEYS`` (``concepts``,
+    ``proposed_concepts``, ``tags``, edge fields, etc.), any non-list
+    value is coerced into a real list via :func:`_coerce_list_field`
+    before rendering. This is the terminal write-time backstop against
+    callers passing a JSON-shaped string or a bare scalar for a field
+    that downstream consumers will iterate as a list.
+    """
     lines = ["---"]
     for key, value in data.items():
         if value is None or value == "":
             continue
+        # Coerce list-shaped values so a stringified list (or a bare
+        # scalar) for a known list field doesn't get iterated
+        # character-by-character downstream.
+        if key in LIST_FRONTMATTER_KEYS and not isinstance(value, list):
+            value = _coerce_list_field(value)
+        elif key in LIST_FRONTMATTER_KEYS and isinstance(value, list):
+            # Already a list, but still run through coercion to catch
+            # the char-by-char damage shape (all single-char strings).
+            value = _coerce_list_field(value)
         if isinstance(value, list):
             if not value:
                 lines.append(f"{key}: []")
@@ -421,6 +511,15 @@ class VaultManager:
             fm["authors"] = []
 
         if extra_frontmatter:
+            # Coerce known list-shaped fields BEFORE merging. Defends against
+            # writer subagents JSON-stringifying their frontmatter list
+            # arguments (the bug log lives in ``LIST_FRONTMATTER_KEYS``).
+            # Early coercion here also normalises char-by-char damage shape
+            # so the indexer + downstream readers see real lists instead of
+            # whatever upstream layer mangled the value.
+            for k in list(extra_frontmatter.keys()):
+                if k in LIST_FRONTMATTER_KEYS:
+                    extra_frontmatter[k] = _coerce_list_field(extra_frontmatter[k])
             fm.update(extra_frontmatter)
 
         # Obsidian resolves [[note-id]] wikilinks by filename or alias, never by
@@ -611,8 +710,11 @@ class VaultManager:
         if frontmatter_updates:
             for key, value in frontmatter_updates.items():
                 if isinstance(value, list) and isinstance(fm.get(key), list):
-                    # Merge lists, avoiding duplicates
-                    existing = set(fm[key])
+                    try:
+                        existing = set(fm[key])
+                    except TypeError:
+                        fm[key] = value
+                        continue
                     fm[key] = fm[key] + [v for v in value if v not in existing]
                 else:
                     fm[key] = value

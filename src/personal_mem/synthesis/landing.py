@@ -21,6 +21,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.config import Config, load_config
 from personal_mem.core.schemas import NoteType
 
@@ -281,10 +282,7 @@ def _group_by_concepts(notes: list[dict], db) -> dict[str, list[dict]]:
     for note in notes:
         note_by_id[note["id"]] = note
         fm = note.get("frontmatter", {})
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
-        for c in concepts:
+        for c in as_list(fm.get("concepts")):
             concept_to_notes[c.lower()].append(note["id"])
 
     # Find clusters via shared concepts
@@ -630,10 +628,7 @@ def _gather_state_context(config: Config, project: str) -> dict:
         "SELECT frontmatter FROM notes WHERE project = ?", (project,),
     ):
         fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
-        for c in concepts:
+        for c in as_list(fm.get("concepts")):
             concept_counts[c.lower()] += 1
 
     # File touch frequency from sessions

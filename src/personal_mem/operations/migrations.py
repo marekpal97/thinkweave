@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.config import Config
 from personal_mem.core.vault import VaultManager, parse_frontmatter
 from personal_mem.sources import load_user_config
@@ -108,7 +109,7 @@ def _strip_todo_tag(path: Path, fm: dict, body: str) -> None:
     frontmatter fields and the body are preserved verbatim."""
     from personal_mem.core.vault import render_frontmatter
 
-    tags = [t for t in (fm.get("tags") or []) if t != "todo"]
+    tags = [t for t in as_list(fm.get("tags")) if t != "todo"]
     fm = dict(fm)
     fm["tags"] = tags
     new_text = render_frontmatter(fm) + "\n" + body.lstrip("\n")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.config import Config
 
 
@@ -133,10 +134,7 @@ def _handle_list(cfg: Config, args: dict):
     concept_counts: dict[str, int] = defaultdict(int)
     for row in idx.db.execute("SELECT frontmatter FROM notes"):
         fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
-        for c in concepts:
+        for c in as_list(fm.get("concepts")):
             concept_counts[c.lower()] += 1
     idx.close()
 

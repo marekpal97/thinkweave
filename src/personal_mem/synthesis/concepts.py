@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_mem.core.config import Config
+from personal_mem.core._utils import as_list
 
 
 def _aliases_path(config: Config) -> Path:
@@ -1166,9 +1167,7 @@ def prune_concepts(
         if not fm:
             continue
 
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+        concepts = as_list(fm.get("concepts"))
         if not concepts:
             continue
 
@@ -1339,9 +1338,7 @@ def add_hub_wikilinks(
         if not fm or not fm.get("id"):
             continue
 
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+        concepts = as_list(fm.get("concepts"))
         if not concepts:
             continue
 
@@ -1593,9 +1590,7 @@ def merge_concept_in_notes(
         if not fm:
             continue
 
-        concepts = fm.get("concepts", [])
-        if isinstance(concepts, str):
-            concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+        concepts = as_list(fm.get("concepts"))
         if not concepts:
             continue
 
