@@ -576,3 +576,139 @@ class TestImportClaudeMem:
         discovery_files = list(config.vault_root.rglob("options-engine-architecture*.md"))
         fm, _ = parse_frontmatter(discovery_files[0].read_text(encoding="utf-8"))
         assert fm["date"].startswith("2026-01-25")
+
+
+# ── CLI parser flags for `mem import claude-code` ────────────────────
+
+
+class TestImportClaudeCodeParserFlags:
+    """Lock the shorthand semantics for the import-scope flags so a
+    refactor that drops or renames them surfaces in CI.
+
+    Covers:
+      - ``--sample-only`` lands as ``sample_only=True`` on the Namespace
+      - ``--since YYYY-MM-DD`` is captured as a string (validated in the
+        importer, not the parser)
+      - explicit ``--limit`` coexists with ``--sample-only`` and wins at
+        the cmd_import translation layer
+    """
+
+    def test_sample_only_flag_parses(self):
+        from personal_mem.surfaces.cli.parser import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["import", "claude-code", "--sample-only", "--dry-run"]
+        )
+        assert args.source == "claude-code"
+        assert args.sample_only is True
+        assert args.limit == 0  # left untouched; translation happens in cmd_import
+        assert args.since == ""
+
+    def test_since_and_limit_parse_for_claude_code(self):
+        from personal_mem.surfaces.cli.parser import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "import",
+                "claude-code",
+                "--since",
+                "2025-06-01",
+                "--limit",
+                "100",
+            ]
+        )
+        assert args.since == "2025-06-01"
+        assert args.limit == 100
+        assert args.sample_only is False
+
+    def test_sample_only_default_false(self):
+        """Bare ``mem import claude-code`` leaves sample_only off."""
+        from personal_mem.surfaces.cli.parser import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["import", "claude-code"])
+        assert args.sample_only is False
+        assert args.limit == 0
+
+
+class TestImportClaudeCodeFlagWiring:
+    """End-to-end: cmd_import correctly translates parser flags into the
+    ``import_claude_code`` kwargs, including the ``--sample-only`` →
+    ``limit=50`` shorthand and the precedence rule when both flags
+    coexist."""
+
+    def _captured_kwargs(self, argv: list[str], monkeypatch) -> dict:
+        """Run cmd_import with import_claude_code stubbed; return the
+        kwargs the real function would have received."""
+        from personal_mem.surfaces.cli import index as cli_index
+        from personal_mem.surfaces.cli.parser import build_parser
+
+        captured: dict = {}
+
+        def fake_import_claude_code(*args, **kwargs):
+            captured.update(kwargs)
+            return {
+                "discovered": 0,
+                "skipped_no_content": 0,
+                "skipped_filter": 0,
+                "skipped_already_imported": 0,
+                "skipped_since": 0,
+                "materialized": 0,
+                "per_project": {},
+                "errors": [],
+            }
+
+        monkeypatch.setattr(
+            "personal_mem.onboarding.claude_code_seed.import_claude_code",
+            fake_import_claude_code,
+        )
+        # cmd_import does a `from ... import import_claude_code` inside the
+        # function body, so we need to patch the source module — done above.
+
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        cli_index.cmd_import(args)
+        return captured
+
+    def test_sample_only_translates_to_limit_50(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            ["import", "claude-code", "--sample-only", "--dry-run"],
+            monkeypatch,
+        )
+        assert kwargs["limit"] == 50
+        assert kwargs["since"] == ""
+
+    def test_explicit_limit_wins_over_sample_only(self, tmp_path, monkeypatch):
+        """When both flags are passed, --limit is the explicit user intent
+        and should override the --sample-only shorthand."""
+        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            [
+                "import",
+                "claude-code",
+                "--sample-only",
+                "--limit",
+                "200",
+                "--dry-run",
+            ],
+            monkeypatch,
+        )
+        assert kwargs["limit"] == 200
+
+    def test_neither_flag_leaves_limit_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            ["import", "claude-code", "--dry-run"], monkeypatch
+        )
+        assert kwargs["limit"] == 0
+
+    def test_since_passes_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            ["import", "claude-code", "--since", "2025-06-01", "--dry-run"],
+            monkeypatch,
+        )
+        assert kwargs["since"] == "2025-06-01"

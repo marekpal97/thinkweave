@@ -353,6 +353,8 @@ def import_claude_code(
     project_filter: str = "",
     dry_run: bool = False,
     claude_projects_root: Path | None = None,
+    since: str = "",
+    limit: int = 0,
 ) -> dict:
     """Walk Claude Code session histories and materialise them as vault
     session notes.
@@ -364,12 +366,19 @@ def import_claude_code(
         dry_run: If True, returns per-project counts without writing.
         claude_projects_root: Override for the CC projects root
             (default ``~/.claude/projects``).
+        since: ISO date (``YYYY-MM-DD``). Sessions whose ``started_at``
+            is older are tallied as ``skipped_since`` and not imported.
+            Empty string disables the filter.
+        limit: Cap on materialised session count (0 = unbounded). When
+            set, sessions are processed **newest-first** so the cap
+            keeps the most recent work — the natural shape for
+            ``--sample-only`` previews from the onboard flow.
 
     Returns:
         Stats dict: ``{
             "discovered": N, "skipped_no_content": N, "skipped_filter": N,
-            "skipped_already_imported": N, "materialized": N,
-            "per_project": {<project>: <count>}, "errors": [...],
+            "skipped_already_imported": N, "skipped_since": N,
+            "materialized": N, "per_project": {...}, "errors": [...],
         }``
     """
     cfg = cfg or load_config()
@@ -380,6 +389,7 @@ def import_claude_code(
         "skipped_no_content": 0,
         "skipped_filter": 0,
         "skipped_already_imported": 0,
+        "skipped_since": 0,
         "materialized": 0,
         "per_project": {},
         "errors": [],
@@ -389,27 +399,63 @@ def import_claude_code(
         stats["errors"].append(f"Claude Code projects root not found: {root}")
         return stats
 
+    since_dt: datetime | None = None
+    if since:
+        try:
+            since_dt = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            stats["errors"].append(f"--since must be YYYY-MM-DD, got {since!r}")
+            return stats
+
     vm = VaultManager(config=cfg) if not dry_run else None
     if vm:
         vm.ensure_dirs()
 
     manifest = load_manifest(cfg)
 
-    for jsonl in discover_sessions(root):
-        stats["discovered"] += 1
-        try:
-            session = parse_session(jsonl)
-        except Exception as e:
-            stats["errors"].append(f"{jsonl}: {type(e).__name__}: {e}")
-            continue
+    # When `limit` is set, parse every session up-front, sort newest-first,
+    # then materialise the head. Without `limit` we keep the streaming path
+    # (manifest order, lower memory) — the cost of a full pre-pass on small
+    # imports is negligible but unnecessary.
+    if limit > 0:
+        parsed: list[ClaudeCodeSession] = []
+        for jsonl in discover_sessions(root):
+            stats["discovered"] += 1
+            try:
+                session = parse_session(jsonl)
+            except Exception as e:
+                stats["errors"].append(f"{jsonl}: {type(e).__name__}: {e}")
+                continue
+            if session is None:
+                stats["skipped_no_content"] += 1
+                continue
+            parsed.append(session)
+        parsed.sort(key=lambda s: s.started_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        sessions_iter: Iterator[ClaudeCodeSession] = iter(parsed)
+    else:
+        def _stream() -> Iterator[ClaudeCodeSession]:
+            for jsonl in discover_sessions(root):
+                stats["discovered"] += 1
+                try:
+                    session = parse_session(jsonl)
+                except Exception as e:
+                    stats["errors"].append(f"{jsonl}: {type(e).__name__}: {e}")
+                    continue
+                if session is None:
+                    stats["skipped_no_content"] += 1
+                    continue
+                yield session
+        sessions_iter = _stream()
 
-        if session is None:
-            stats["skipped_no_content"] += 1
-            continue
-
+    for session in sessions_iter:
         if project_filter and session.project != project_filter:
             stats["skipped_filter"] += 1
             continue
+
+        if since_dt is not None:
+            if session.started_at is None or session.started_at < since_dt:
+                stats["skipped_since"] += 1
+                continue
 
         if session.uuid in manifest.get("imported_uuids", {}):
             stats["skipped_already_imported"] += 1
@@ -423,6 +469,8 @@ def import_claude_code(
         if dry_run:
             per_proj["materialized"] += 1
             stats["materialized"] += 1
+            if limit and stats["materialized"] >= limit:
+                break
             continue
 
         try:
@@ -433,7 +481,11 @@ def import_claude_code(
                 per_proj["materialized"] += 1
                 stats["materialized"] += 1
         except Exception as e:
-            stats["errors"].append(f"{jsonl}: {type(e).__name__}: {e}")
+            src = session.file_path or session.uuid
+            stats["errors"].append(f"{src}: {type(e).__name__}: {e}")
+
+        if limit and stats["materialized"] >= limit:
+            break
 
     if not dry_run:
         save_manifest(cfg, manifest)

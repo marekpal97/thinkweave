@@ -339,11 +339,16 @@ def cmd_import(args: argparse.Namespace) -> None:
             return
 
         root = Path(args.cc_root) if args.cc_root else DEFAULT_CC_PROJECTS_ROOT
+        # --sample-only is the CLI shorthand for --limit 50, newest-first.
+        # Explicit --limit wins if both are passed.
+        effective_limit = args.limit if args.limit else (50 if getattr(args, "sample_only", False) else 0)
         stats = import_claude_code(
             cfg,
             project_filter=args.project,
             dry_run=args.dry_run,
             claude_projects_root=root,
+            since=args.since,
+            limit=effective_limit,
         )
         label = "Would materialize" if args.dry_run else "Materialized"
         print(

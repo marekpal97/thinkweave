@@ -3,7 +3,7 @@ name: onboard
 owns_mechanic: project_bootstrap
 capabilities: [bootstrap]
 consumes: [mem_sources_config, mem_landing, mem_concepts]
-produces: [~/.config/personal-mem/config.toml (vault_root), vault/config/sources.yaml (projects.<name>), vault/config/PRIORITIES.yaml (focus.active_projects + intake.* seeds), vault/config/ontology.yaml, .claude/settings.json or ~/.claude/settings.json hooks, per-project landing docs, ~/crontab personal-mem fence (opt-in)]
+produces: [~/.config/personal-mem/config.toml (vault_root), vault/config/sources.yaml (projects.<name>), vault/config/PRIORITIES.yaml (focus.active_projects + intake.* seeds), vault/config/ontology.yaml, .claude/settings.json or ~/.claude/settings.json hooks, per-project landing docs, scheduled jobs via `mem schedule` (crontab on Linux/macOS or Task Scheduler on Windows, opt-in)]
 tools:
   - Read
   - Write
@@ -50,7 +50,7 @@ exists:
 | 4 — ontology bootstrap | `mem concepts list` has ≥10 canonical concepts AND `mem concepts proposed-counts --min-count 3` survivors list is empty |
 | 5 — focus | `focus.active_projects` already populated in `<vault>/config/PRIORITIES.yaml` for every discovered project |
 | 5 — source types | every enabled source type has its row in `sources.yaml` AND (for intake-driven types) a non-empty entry in `PRIORITIES.yaml::intake.<type>` |
-| 6 — Cron install | the `# --- personal-mem cron block ---` fence already exists in `crontab -l` (re-running replaces between markers; never duplicates) |
+| 6 — Scheduler install | personal-mem jobs already registered (re-running `mem schedule install` replaces them; never duplicates). Linux/macOS: `# --- personal-mem cron block ---` fence in `crontab -l`. Windows: `PersonalMem\*` tasks in `schtasks /Query`. |
 | 7 — Smoke test | always runs (the whole point is verification) |
 | Landing docs | `<vault>/projects/<project>/STATE.md` exists AND `mtime > 0` |
 
@@ -228,11 +228,15 @@ Parse `mem doctor --mcp` output from Step 0c for the scope summary
 line. Three cases:
 
 - Contains `plugin` scope (e.g. `1 scope (plugin)`): the plugin
-  manifest already wires hooks globally. Print *"Hooks installed via
-  plugin manifest — already global."* and proceed to Step 3.
+  manifest wires **both** the MCP server *and* the four hook events
+  (SessionStart, UserPromptSubmit, PostToolUse × {Write|Edit|Bash,
+  mcp__personal-mem__.*}, Stop) globally via `.claude-plugin/plugin.json`.
+  Print *"Hooks installed via plugin manifest — already global."* and
+  proceed to Step 3. **No `mem hooks install` needed for plugin users.**
 - Contains `user` scope already: print *"Global hooks already
   installed at ~/.claude/settings.json."* and proceed to Step 3.
-- Otherwise (legacy / machine / per-project): fall through to 2b.
+- Otherwise (non-plugin install / legacy / per-project): fall through
+  to 2b.
 
 ### 2b. Ask scope (AskUserQuestion)
 
@@ -345,12 +349,49 @@ on) and proceed directly to Step 5.
 test -n "$ANTHROPIC_API_KEY" && echo "key set" || echo "key missing"
 ```
 
+### 3b'. Decide import scope (AskUserQuestion — only if `N > ~500`)
+
+A heavy CC user can have multi-thousand-session history. Surface scope
+controls before the mode question so the user isn't forced into a full
+backfill on first run. Skip this sub-step entirely when `N ≤ 500` —
+small histories should just import.
+
+```
+AskUserQuestion({
+  "questions": [{
+    "question": "Found {N} historical sessions ({oldest_date} → {newest_date}). How much should this run import?",
+    "header": "Import scope",
+    "options": [
+      {"label": "everything", "description": "Import all {N} sessions. Newest-first ordering still applies inside the run; just no cap."},
+      {"label": "recent only (--since)", "description": "Set a date floor — sessions older than that are skipped. I'll ask for the date next."},
+      {"label": "sample 50 first (--sample-only)", "description": "Materialise the 50 newest sessions for an ontology preview. After Step 4 you can re-run /onboard to ingest the rest."},
+      {"label": "cap at N (--limit)", "description": "Materialise the K newest, where K is the cap I'll ask for next."}
+    ],
+    "multiSelect": false
+  }]
+})
+```
+
+- **everything** → no scope flags.
+- **recent only**: follow up with a free-form date prompt (`YYYY-MM-DD`),
+  validate the format, then pass `--since <date>`.
+- **sample 50 first**: pass `--sample-only`. Print a one-liner reminder
+  *"You'll be prompted to re-run /onboard for the full backfill after
+  Step 4."*
+- **cap at N**: follow up with a free-form integer prompt, then pass
+  `--limit <N>`.
+
+Hold the chosen flags in memory; they pipe into 3d.
+
 ### 3c. Decide import mode (AskUserQuestion)
 
-If `N ≤ ~200`, the inline path is fine; skip the question and run
-`mem import claude-code` directly.
+Recompute `N_effective` = sessions that survive the 3b' scope filter
+(use the dry-run output filtered locally; no need to re-shell).
 
-If `N > ~200`, ask the user which mode to use:
+If `N_effective ≤ ~200`, the inline path is fine; skip the question and
+run `mem import claude-code` directly with the 3b' scope flags.
+
+If `N_effective > ~200`, ask the user which mode to use:
 
 ```
 AskUserQuestion({
@@ -373,14 +414,20 @@ If the user picks `--via batch` but the key is missing, fall back to
 
 ### 3d. Execute the import
 
+Append any scope flags chosen in 3b' to the command:
+
 ```bash
-mem import claude-code              # if "inline"
-mem import claude-code --via batch  # if "--via batch" AND key set
+mem import claude-code [--since YYYY-MM-DD] [--sample-only] [--limit N]
+mem import claude-code --via batch [--since YYYY-MM-DD] [--sample-only] [--limit N]
 ```
 
 After import lands, the vault has session notes, decision notes, and
 many `proposed_concepts:` entries from auto-enrichment. Those drive
 Step 4.
+
+If the user picked `sample 50 first` in 3b', flag at the start of the
+wrap-up: *"Sampled 50 sessions for ontology bootstrap. Re-run `/onboard`
+(or `mem import claude-code`) to materialise the remaining {N-50}."*
 
 ---
 
@@ -523,6 +570,18 @@ If the user mentions an input shape that *isn't* covered (podcast
 transcripts via a custom feed reader, kindle highlights, RSS for a
 non-listed pattern), point them at `/source-fit "<description>"` after
 `/onboard` completes — don't try to scaffold mid-flow.
+
+**Output-format note (advisory, not gating).** Each enabled source
+type ships with a default brief structure baked into its writer skill
+(`commands/research-paper.md`, `commands/research-news-worker.md`,
+`commands/research-newsletter-worker.md`, etc.). The shipped formats
+are opinionated — they're a starting point, not a constraint. After
+`/onboard` completes, the user can edit the corresponding writer
+skill markdown to change what gets extracted, how sections are
+named, or what gets dropped entirely. Mention this once in the
+wrap-up; don't drag it into a confirmation step. Full per-source
+output customization (templates, fragments, per-project overrides)
+is tracked in `.claude/plans/source-output-customization.md`.
 
 ### 5c. Sample-file validation per enabled type (AskUserQuestion, one per type)
 
@@ -757,59 +816,55 @@ cancelling here).
 
 ---
 
-## Step 6 — Cron install (opt-in, with explicit consent)
+## Step 6 — Scheduler install (opt-in, with explicit consent)
 
 Opt-in scheduling for the long-running automation: embeddings keep-warm,
-dream cycle, and per-source-type drain flows. Writes directly to the
-user's crontab between fence markers; idempotent.
+dream cycle, and per-source-type drain flows. **Cross-platform** — the
+`mem schedule` command renders the one `vault/config/scheduling.yaml` job
+registry onto whatever the host provides: crontab on Linux/macOS, Windows
+Task Scheduler (via `schtasks`) on Windows. The job bodies are identical
+across OSes; only the trigger mechanism differs. Idempotent.
 
-### 6a. Platform check
+### 6a. Compose the `--only` job list
+
+Pick which registry jobs to install from what the user enabled in Step 5
+(naming a job via `--only` installs it regardless of its default `enabled`
+flag in the template):
+
+- **Always** include `embeddings-keepwarm` and (if any active project
+  exists from 5a) `dream`. Also include `weekly-hygiene` — concept/theme
+  dedup is always safe.
+- **If any acquire source type was enabled** in 5b, include
+  `daily-research` (the discover → drain → hub-refresh flow).
+- **If `news` was enabled** in 5b, also include `news-poll` and
+  `news-cycle`.
+
+Build a comma-separated `ONLY` string from the selected names, e.g.
+`embeddings-keepwarm,dream,weekly-hygiene`.
+
+### 6b. Preview (dry-run, OS-aware)
 
 ```bash
-uname -s
+uv run mem schedule install --dry-run --only "<ONLY>"
 ```
 
-If the result is **not** `Linux` or `Darwin`, skip this step entirely:
-
-> Cron is Linux/macOS only. Windows users — see the README's Task
-> Scheduler equivalent for the embeddings keep-warm and dream cycle.
-
-Proceed to Step 7.
-
-### 6b. Compose the block
-
-Build the canonical block from `scripts/example-crontab`, keeping only
-the lines whose source types the user enabled in Step 5:
-
-- **Always** include the PATH hardening line and the embeddings
-  keep-warm line.
-- **If any active project exists** (5a non-empty), include the dream
-  cycle line.
-- **If `news` was enabled** in 5b, include the news pull (`/discover
-  --strategy rss_poll --source-type news`) and news drain lines.
-- **If any podcast / youtube / newsletter variant was enabled**,
-  include the relevant `mem flow run` lines from the example crontab.
-
-Wrap the lines in fence markers:
-
-```
-# --- personal-mem cron block ---
-PATH=$HOME/.local/bin:$PATH
-<the composed lines>
-# --- end personal-mem ---
-```
+This prints the resolved scheduler entries for **this** OS (the crontab
+fence block, or the `schtasks /Create` task list) plus any
+`warning: … declares <VAR> but it is unset` lines for missing env vars.
+Surface that output verbatim — on Windows, an unset `OPENAI_API_KEY` is a
+real prerequisite for the embeddings job; an unset `ANTHROPIC_API_KEY` is
+advisory if Claude Code is authed via subscription/OAuth.
 
 ### 6c. Ask consent (AskUserQuestion)
 
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Install the cron block above to your user crontab? Without it, embeddings keep-warm and the dream cycle don't run, and any enabled feed sources won't auto-drain.",
-    "header": "Install cron block?",
+    "question": "Install the scheduled jobs shown above? Without them, embeddings keep-warm and the dream cycle don't run, and any enabled feed sources won't auto-drain.",
+    "header": "Install scheduler?",
     "options": [
-      {"label": "yes, install", "description": "Append the block (between fence markers) to your crontab. Idempotent — re-running /onboard replaces what's between the markers."},
-      {"label": "show full block first", "description": "Print every line of the composed block, then re-ask."},
-      {"label": "no thanks, I'll handle cron myself", "description": "Print the block so you can paste it later. Nothing gets written to crontab."}
+      {"label": "yes, install", "description": "Install via the native scheduler (crontab on Linux/macOS, Task Scheduler on Windows). Idempotent — re-running replaces the personal-mem entries, never duplicates."},
+      {"label": "no thanks, I'll handle it myself", "description": "Nothing gets scheduled. You can run `mem schedule install` later, or edit vault/config/scheduling.yaml first."}
     ],
     "multiSelect": false
   }]
@@ -819,39 +874,20 @@ AskUserQuestion({
 ### 6d. Apply on "yes, install"
 
 ```bash
-crontab -l 2>/dev/null > /tmp/onboard-crontab.tmp || true
-
-# If fence markers already exist, replace between them; otherwise append.
-if grep -q "^# --- personal-mem cron block ---$" /tmp/onboard-crontab.tmp; then
-  # Use sed to delete between fence markers, then append the new block
-  sed -i '/^# --- personal-mem cron block ---$/,/^# --- end personal-mem ---$/d' /tmp/onboard-crontab.tmp
-fi
-
-cat /tmp/onboard-crontab.tmp - > /tmp/onboard-crontab.new <<'EOF'
-# --- personal-mem cron block ---
-PATH=$HOME/.local/bin:$PATH
-<composed lines from 6b>
-# --- end personal-mem ---
-EOF
-
-crontab /tmp/onboard-crontab.new
-rm /tmp/onboard-crontab.tmp /tmp/onboard-crontab.new
+uv run mem schedule install --only "<ONLY>"
 ```
 
-Confirm by re-reading `crontab -l` and grepping for the fence markers.
+Confirm by re-running `mem schedule list` (shows the backend) and, on
+Linux/macOS, `crontab -l | grep personal-mem` for the fence; on Windows,
+`schtasks /Query /TN "PersonalMem\*"`.
 
-### 6e. On "show full block first"
+### 6e. On "no thanks"
 
-Print every line of the block, then re-issue 6c with `show full block
-first` removed from the options.
+Print one line:
 
-### 6f. On "no thanks"
-
-Print the block plus one line:
-
-> Paste these into your crontab when you're ready. The `PATH=` line is
-> required — cron's default PATH won't find `uv` after a standard
-> install.
+> Skipped scheduling. Run `mem schedule install` when ready, or edit
+> `vault/config/scheduling.yaml` to toggle jobs first
+> (`mem schedule list` shows the menu).
 
 ---
 
@@ -919,6 +955,27 @@ the remediation line above and HALT.
 
 ---
 
+## Post-install / restart caveats
+
+Surface these as part of the wrap-up — they're the difference between
+"install reported success" and "install actually takes effect in your
+session."
+
+- The subagent registry is captured at claude-process start. New
+  `.claude/agents/*.md` files just installed (the `dream-*-worker`
+  set, any research workers) won't be available until restart —
+  `/clear` does **not** reload them. Exit claude and re-launch after
+  `/onboard` completes.
+- The MCP server is process-bound. Any future `mem install` upgrade
+  or change to MCP-exposed schemas/enums (new `NoteType` values, new
+  tools, new enum members) requires the same restart to pick up.
+- The cron `claude -p` path (used by the dream cycle and drain flows
+  installed in Step 6) is a fresh process per run — unaffected by
+  either caveat. The restart requirement only bites interactive
+  users.
+
+---
+
 ## Wrap-up
 
 Print a summary tailored to what just happened:
@@ -936,7 +993,7 @@ Landing:     STATE/BACKLOG/DECISIONS for active projects, THEMES global
 Your config:
   vault_root:   <path>      (~/.config/personal-mem/config.toml)
   hook scope:   <global|repo>
-  cron block:   <installed|printed|skipped>
+  scheduler:    <installed via crontab|Task Scheduler|skipped>
 
 The next time you sit down to work in this repo:
 

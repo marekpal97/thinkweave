@@ -284,9 +284,34 @@ def add_index_subparsers(sub) -> None:
         default="claude-haiku-4-5-20251001",
         help="Claude model for batch enrichment.",
     )
-    p_import.add_argument("--limit", type=int, default=0, help="Max conversations to import (chatgpt)")
-    p_import.add_argument("--since", default="", help="Import conversations from this date (YYYY-MM-DD)")
+    p_import.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help=(
+            "Cap on imported sessions/conversations (0 = unbounded). "
+            "For claude-code, newest-first ordering is applied so the cap "
+            "retains the most recent work."
+        ),
+    )
+    p_import.add_argument(
+        "--since",
+        default="",
+        help=(
+            "Import sessions/conversations from this date (YYYY-MM-DD). "
+            "Honored by claude-code, chatgpt, messenger."
+        ),
+    )
     p_import.add_argument("--until", default="", help="Import conversations until this date (YYYY-MM-DD)")
+    p_import.add_argument(
+        "--sample-only",
+        action="store_true",
+        help=(
+            "claude-code: shorthand for `--limit 50` — materialise a recent "
+            "sample for ontology bootstrap before committing to a full "
+            "backfill. Re-run without the flag to ingest the rest."
+        ),
+    )
     p_import.add_argument("--no-resolve", action="store_true", help="Skip Facebook URL resolution (messenger)")
 
 
