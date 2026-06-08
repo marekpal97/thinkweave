@@ -35,7 +35,11 @@ def tool_schemas() -> list:
                 '- "session": Work session logs. Normally auto-created by hooks — only create '
                 "manually if hooks are not installed.\n"
                 '- "source": External references (articles, podcasts, papers). '
-                "Set source_type, url, and authors in frontmatter.\n\n"
+                "Set source_type, url, and authors in frontmatter.\n"
+                '- "digest": Daily knowledge-first summary written by '
+                "dream-digest-worker (phase 2 of /dream). Grain-split: files at "
+                "digests/YYYY-MM-DD-<grain>.md (grain ∈ {concept, event}). "
+                "Normal hand-authored writes should not target this type.\n\n"
                 "Linking guidance (set via frontmatter field):\n"
                 "- derived_from: [session-id] — when extracting knowledge from a session\n"
                 "- builds_on: [note-id] — when extending existing knowledge\n"
@@ -59,12 +63,13 @@ def tool_schemas() -> list:
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["note", "session", "decision", "source"],
+                        "enum": ["note", "session", "decision", "source", "digest"],
                         "description": (
                             'Note type. "note" for reusable knowledge (default choice). '
                             '"decision" for architectural choices with lifecycle tracking. '
                             '"session" for work logs (usually auto-created). '
-                            '"source" for external references.'
+                            '"source" for external references. '
+                            '"digest" for daily knowledge-delta summaries (written by dream-digest-worker).'
                         ),
                     },
                     "title": {"type": "string"},

@@ -137,11 +137,554 @@ class DreamCycleScan:
     # ``priority_signals`` plan key: concepts the user has been
     # probing about that the cycle should surface (enqueue or log).
     recent_probes: dict = field(default_factory=dict)
+    # Active themes carrying ≥1 catalyst within the last 30 days, pre-loaded
+    # with their current ``## Essence`` text + last 10 catalyst entries. The
+    # phase-1 essence-worker reads this directly so it never has to crawl
+    # theme files — the indexer + ``Hub.parse`` bound the cost to (# themes).
+    active_themes: list = field(default_factory=list)
+    # Sessions whose ``events.jsonl`` is non-empty AND whose frontmatter
+    # lacks ``processed: true`` — the phase-2 ``dream-wrap-worker`` input.
+    # Discovered via the SQLite index (``type='session'``) so we never crawl
+    # the projects/ tree. Capped at 50 entries; older than 30 days skipped.
+    unwrapped_sessions: list = field(default_factory=list)
+    # Decisions awaiting re-judgment — the phase-2 ``dream-judge-worker``
+    # input. Composed from ``.mem/rejudge_queue.jsonl`` plus any stale
+    # ``pending`` verdicts discovered via the index (judged_at missing or
+    # older than 7 days). Capped at 20 total.
+    rejudge_queue: list = field(default_factory=list)
+    # Composite knowledge-delta surface — the phase-2 ``dream-digest-worker``
+    # input. Pre-computed over a 24h window: landings_24h /
+    # catalyst_additions_24h / probe_matches_24h / verdict_flips_24h /
+    # predictions_landed_24h, plus a ``theme_mutations_this_cycle`` slot
+    # the orchestrator fills in after apply.
+    knowledge_delta: dict = field(default_factory=dict)
     timings: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def _collect_active_themes(
+    cfg: Config,
+    *,
+    recent_days: int = 30,
+    max_catalysts: int = 10,
+) -> list[dict]:
+    """Themes with ≥1 catalyst inside the last ``recent_days`` days.
+
+    Returns enriched payloads the phase-1 essence-worker can judge in
+    isolation — current ``## Essence`` text, the most recent
+    ``max_catalysts`` catalyst entries (newest first), total catalyst
+    count, last catalyst date. The worker never needs to ``mem_read`` the
+    theme file because the scan already loaded it.
+
+    Theme count on a real vault is bounded (dozens, not thousands), so the
+    per-theme ``Hub.parse`` file read is fine. The lookup of *which*
+    themes to consider goes through the SQLite index — no vault crawl.
+
+    Vault-wide on purpose: themes live at ``vault/themes/{slug}.md``
+    regardless of project (CLAUDE.md §3), mirroring how
+    ``theme_cluster_signals`` and drift surfaces walk the whole vault.
+
+    Themes whose frontmatter ``status`` is anything other than ``active``
+    (default when missing) are skipped: only active themes can have their
+    essence rewritten by the dream cycle.
+    """
+    from datetime import date, timedelta
+
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.synthesis.hub import Hub
+
+    cutoff = (date.today() - timedelta(days=recent_days)).isoformat()
+
+    idx = Indexer(config=cfg)
+    try:
+        rows = list(
+            idx.db.execute(
+                "SELECT id, title, path, frontmatter "
+                "FROM notes WHERE type = 'theme'"
+            )
+        )
+    finally:
+        idx.close()
+
+    active: list[dict] = []
+    for row in rows:
+        try:
+            fm = json.loads(row["frontmatter"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        status = (fm.get("status") or "active").lower()
+        if status != "active":
+            continue
+
+        theme_path = cfg.vault_root / row["path"]
+        if not theme_path.exists():
+            continue
+
+        try:
+            hub = Hub.parse(theme_path, hub_id=row["id"])
+        except Exception:  # noqa: BLE001 — corrupt body shouldn't kill scan
+            continue
+
+        recent = [e for e in hub.log if e.date >= cutoff]
+        if not recent:
+            continue
+
+        all_sorted = sorted(hub.log, key=lambda e: e.date, reverse=True)
+        last_n = all_sorted[:max_catalysts]
+
+        active.append({
+            "theme_id": row["id"],
+            "title": row["title"],
+            "path": row["path"],
+            "essence": hub.essence,
+            "recent_catalysts": [
+                {
+                    "date": e.date,
+                    "flag": e.flag,
+                    "text": e.text,
+                    "citation": e.citation,
+                }
+                for e in last_n
+            ],
+            "total_catalysts": len(hub.log),
+            "last_catalyst_date": all_sorted[0].date,
+        })
+
+    return active
+
+
+def _collect_unwrapped_sessions(
+    cfg: Config,
+    *,
+    recent_days: int = 30,
+    cap: int = 50,
+) -> list[dict]:
+    """Sessions whose ``events.jsonl`` is non-empty and lack ``processed: true``.
+
+    Phase-2 ``dream-wrap-worker`` input. Each entry carries
+    ``{session_id, project, events_jsonl_path, last_activity_ts}`` so the
+    worker can read the events buffer directly without re-discovering it.
+
+    Conservative defaults: missing or empty ``events.jsonl`` means the
+    session is effectively already wrapped (nothing to extract), so it's
+    skipped. Sessions older than ``recent_days`` are skipped — a session
+    that's been sitting unwrapped for a month isn't a candidate for
+    automated nightly catch-up.
+
+    All discovery goes through the SQLite index (``type='session'``); we
+    never walk the projects/ tree.
+    """
+    from datetime import date, timedelta
+
+    from personal_mem.core.indexer import Indexer
+
+    cutoff_date = (date.today() - timedelta(days=recent_days)).isoformat()
+
+    idx = Indexer(config=cfg)
+    try:
+        rows = list(
+            idx.db.execute(
+                "SELECT id, path, frontmatter, project, date "
+                "FROM notes WHERE type = 'session'"
+            )
+        )
+    finally:
+        idx.close()
+
+    out: list[dict] = []
+    for row in rows:
+        try:
+            fm = json.loads(row["frontmatter"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        # Already processed → skip.
+        if fm.get("processed") is True:
+            continue
+
+        # Date cutoff (frontmatter date is the session's recorded ts).
+        session_date = (row["date"] or "")[:10]
+        if session_date and session_date < cutoff_date:
+            continue
+
+        session_path = cfg.vault_root / row["path"]
+        events_path = session_path.parent / "events.jsonl"
+
+        # Conservative: missing/empty events.jsonl ⇒ nothing to wrap.
+        try:
+            if not events_path.exists() or events_path.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
+
+        out.append({
+            "session_id": row["id"],
+            "project": row["project"] or "",
+            "events_jsonl_path": str(events_path),
+            "last_activity_ts": row["date"] or "",
+        })
+        if len(out) >= cap:
+            break
+
+    return out
+
+
+def _collect_rejudge_queue(
+    cfg: Config,
+    *,
+    stale_pending_age_days: int = 7,
+    cap: int = 20,
+) -> list[dict]:
+    """Combine drained rejudge-queue entries with stale ``pending`` decisions.
+
+    Phase-2 ``dream-judge-worker`` input. Two contributing streams:
+
+    1. ``vault/.mem/rejudge_queue.jsonl`` — already in the right shape
+       (``{decision_id, predecessor_decision_id?, queued_at, reason}``;
+        legacy entries may carry ``source``/``enqueued_at`` keys —
+        normalized below).
+    2. Decisions with ``prediction_match == 'pending'`` whose
+       ``judged_at`` is missing or older than ``stale_pending_age_days``.
+       Fabricated entries: ``predecessor_decision_id: null``,
+       ``queued_at: <judged_at or "">``, ``reason: 'stale_pending'``.
+
+    Capped at ``cap`` total. Discovery uses the SQLite index
+    (``json_extract`` on the frontmatter blob) — no vault file crawl.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from personal_mem.core.indexer import Indexer
+
+    out: list[dict] = []
+    seen_ids: set[str] = set()
+
+    # 1. Drain the on-disk queue first (priority — these are explicit).
+    queue_path = cfg.vault_root / ".mem" / "rejudge_queue.jsonl"
+    if queue_path.exists():
+        for line in queue_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            dec_id = row.get("decision_id") or ""
+            if not dec_id or dec_id in seen_ids:
+                continue
+            out.append({
+                "decision_id": dec_id,
+                "predecessor_decision_id": row.get("predecessor_decision_id"),
+                "queued_at": row.get("queued_at")
+                    or row.get("enqueued_at")
+                    or "",
+                "reason": row.get("reason") or "",
+            })
+            seen_ids.add(dec_id)
+            if len(out) >= cap:
+                return out
+
+    # 2. Stale-pending sweep via index.
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=stale_pending_age_days)
+    ).isoformat()
+
+    idx = Indexer(config=cfg)
+    try:
+        rows = idx.db.execute(
+            """
+            SELECT id,
+                   json_extract(frontmatter, '$.judged_at') AS judged_at
+              FROM notes
+             WHERE type = 'decision'
+               AND json_extract(frontmatter, '$.prediction_match') = 'pending'
+            """,
+        ).fetchall()
+    finally:
+        idx.close()
+
+    for row in rows:
+        try:
+            dec_id = row["id"]
+            judged = row["judged_at"]
+        except (KeyError, IndexError):
+            dec_id = row[0]
+            judged = row[1]
+        if not dec_id or dec_id in seen_ids:
+            continue
+        if judged and str(judged) >= cutoff:
+            continue  # fresh — not stale
+        out.append({
+            "decision_id": dec_id,
+            "predecessor_decision_id": None,
+            "queued_at": str(judged) if judged else "",
+            "reason": "stale_pending",
+        })
+        seen_ids.add(dec_id)
+        if len(out) >= cap:
+            break
+
+    return out
+
+
+def _collect_knowledge_delta(
+    cfg: Config,
+    *,
+    window_hours: int = 24,
+) -> dict:
+    """Composite 24h surface for the phase-2 ``dream-digest-worker``.
+
+    Returns a **grain-split** shape — ``{concept: {...}, event: {...}}`` —
+    so the digest worker can compose two sibling notes:
+
+    - ``concept`` ("what you learned"): concept-grain source landings
+      (paper/repo/article/newsletter-concepts/youtube-concepts/podcast-concepts),
+      concept-hub catalyst additions, probe matches, decision verdict flips,
+      and confirmed predictions.
+    - ``event`` ("what happened"): event-grain source landings
+      (substack/news/newsletter-events/youtube-events/podcast-events),
+      theme-hub catalyst additions, and the orchestrator-filled
+      ``theme_mutations_this_cycle`` slot.
+
+    The grain is read off ``SourceTypeSpec.temporal_grain`` (sources/
+    registry.py) — adding a new source type with
+    ``temporal_grain='event'`` automatically routes its landings into the
+    event slice; ``temporal_grain='none'`` (e.g. ``conversation``) drops
+    out of both. Catalyst additions split by ``hub_kind`` (``theme`` →
+    event, ``concept`` → concept).
+
+    Top-level keys ``window_start`` / ``window_end`` remain at the root
+    of the returned dict so downstream consumers can stamp the digest
+    note's ``date:`` from a single field regardless of grain. Hub set
+    discovery still goes through the SQLite index, never a filesystem
+    crawl.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.operations.prompts import recent_probe_pressure
+    from personal_mem.sources import registry as source_registry
+    from personal_mem.synthesis.hub import Hub
+
+    now = datetime.now(timezone.utc)
+    cutoff_dt = now - timedelta(hours=window_hours)
+    cutoff_iso = cutoff_dt.isoformat()
+    # For the catalyst log scan we compare against the entry's ``date``
+    # field, which is YYYY-MM-DD only — use the day-level cutoff.
+    cutoff_day = cutoff_dt.date().isoformat()
+
+    # Pre-compute the source_type → temporal_grain lookup once. User-side
+    # overlays at vault/.mem/source_types.yaml are honoured.
+    grain_lookup: dict[str, str] = {}
+    try:
+        for spec in source_registry.all_specs(vault_root=cfg.vault_root):
+            grain_lookup[spec.slug] = spec.temporal_grain
+            for alias in spec.aliases:
+                grain_lookup[alias] = spec.temporal_grain
+    except Exception:  # noqa: BLE001 — registry load shouldn't kill scan
+        grain_lookup = {}
+
+    def _new_grain_bucket() -> dict:
+        return {
+            "landings_24h": [],
+            "catalyst_additions_24h": [],
+            "theme_mutations_this_cycle": {
+                "theme_mints": [],
+                "theme_extensions": [],
+            },
+            "probe_matches_24h": [],
+            "verdict_flips_24h": [],
+            "predictions_landed_24h": [],
+        }
+
+    delta: dict = {
+        "window_start": cutoff_iso,
+        "window_end": now.isoformat(),
+        "concept": _new_grain_bucket(),
+        "event": _new_grain_bucket(),
+    }
+
+    idx = Indexer(config=cfg)
+    try:
+        # 1. Landings (sources created in window) -----------------------
+        source_rows = idx.db.execute(
+            "SELECT id, title, type, frontmatter, date "
+            "FROM notes WHERE type = 'source' AND date >= ?",
+            (cutoff_iso,),
+        ).fetchall()
+        for row in source_rows:
+            try:
+                fm = json.loads(row["frontmatter"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                fm = {}
+            relates = fm.get("relates_to") or []
+            if not isinstance(relates, list):
+                relates = [relates]
+            theme_id = next(
+                (str(r) for r in relates if str(r).startswith("thm-")), None
+            )
+            concepts = fm.get("concepts") or []
+            if not isinstance(concepts, list):
+                concepts = []
+            source_type = fm.get("source_type") or "source"
+            landing = {
+                "id": row["id"],
+                "title": row["title"],
+                "type": source_type,
+                "theme_id": theme_id,
+                "concepts": [str(c) for c in concepts],
+            }
+            # Route by source-type grain. Unknown source types default to
+            # ``concept`` (mirrors SourceTypeSpec's own default — "adding a
+            # new source type shouldn't silently start floating themes").
+            # ``none`` grain (conversation) drops out of both slices.
+            grain = grain_lookup.get(source_type, "concept")
+            if grain == "event":
+                delta["event"]["landings_24h"].append(landing)
+            elif grain == "concept":
+                delta["concept"]["landings_24h"].append(landing)
+            # grain == "none" → not surfaced in either digest
+
+        # 2. Catalyst additions (concept hubs + themes) -----------------
+        # Concept hubs: type='note', path under concepts/topics/.
+        hub_rows = idx.db.execute(
+            "SELECT id, path FROM notes "
+            "WHERE type = 'theme' "
+            "   OR (type = 'note' AND path LIKE 'concepts/topics/%')"
+        ).fetchall()
+        for row in hub_rows:
+            rel_path = row["path"] or ""
+            hub_path = cfg.vault_root / rel_path
+            if not hub_path.exists():
+                continue
+            kind = "theme" if rel_path.startswith("themes/") else "concept"
+            try:
+                hub = Hub.parse(hub_path, hub_id=row["id"])
+            except Exception:  # noqa: BLE001
+                continue
+            for entry in hub.log:
+                if entry.date < cutoff_day:
+                    continue
+                addition = {
+                    "hub": row["id"],
+                    "hub_kind": kind,
+                    "line_date": entry.date,
+                    "flag": entry.flag,
+                    "cited_note_id": entry.citation,
+                }
+                if kind == "theme":
+                    delta["event"]["catalyst_additions_24h"].append(addition)
+                else:
+                    delta["concept"]["catalyst_additions_24h"].append(addition)
+
+        # 3. Probe matches (recent probe pressure × in-window sources) --
+        # Lives on the concept slice — probes are the user's "what am I
+        # trying to learn" signal, knowledge-oriented by construction.
+        try:
+            pressure = recent_probe_pressure(cfg, project="", window_days=14)
+        except Exception:  # noqa: BLE001
+            pressure = {}
+        for concept, probe_count in pressure.items():
+            matched = idx.db.execute(
+                "SELECT notes.id AS id, notes.title AS title "
+                "  FROM notes "
+                "  JOIN note_concepts ON note_concepts.note_id = notes.id "
+                " WHERE note_concepts.concept = ? "
+                "   AND notes.type = 'source' "
+                "   AND notes.date >= ?",
+                (concept, cutoff_iso),
+            ).fetchall()
+            for src in matched:
+                delta["concept"]["probe_matches_24h"].append({
+                    "source_id": src["id"],
+                    "source_title": src["title"],
+                    "concept": concept,
+                    "probe_count": probe_count,
+                })
+
+        # 4. Verdict flips (decisions with judged_at in window, history
+        #    shows a different previous match) — concept slice (decisions
+        #    are about your learning loop, not external events).
+        flip_rows = idx.db.execute(
+            "SELECT id, frontmatter, "
+            "       json_extract(frontmatter, '$.judged_at') AS judged_at, "
+            "       json_extract(frontmatter, '$.prediction_match') AS match "
+            "  FROM notes "
+            " WHERE type = 'decision' "
+            "   AND json_extract(frontmatter, '$.judged_at') >= ?",
+            (cutoff_iso,),
+        ).fetchall()
+        for row in flip_rows:
+            try:
+                fm = json.loads(row["frontmatter"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            current_match = fm.get("prediction_match")
+            history = fm.get("prediction_history") or []
+            if not isinstance(history, list):
+                history = []
+            prev_match = None
+            if len(history) >= 2:
+                # Tail is current; one before tail is previous.
+                prev_entry = history[-2]
+                if isinstance(prev_entry, dict):
+                    prev_match = prev_entry.get("match")
+            elif len(history) == 1 and not current_match:
+                # Treat as null — only one entry and no current value.
+                continue
+
+            # Only count as a flip when there is meaningful change.
+            if prev_match is None and current_match:
+                # Inaugural verdict — not strictly a flip, but the spec
+                # says "treat prev_match as null and only include if
+                # current prediction_match is set."
+                pass
+            elif prev_match == current_match:
+                continue
+
+            if not current_match:
+                continue
+
+            delta["concept"]["verdict_flips_24h"].append({
+                "decision_id": row["id"],
+                "prediction_match": current_match,
+                "prev_match": prev_match,
+                "judged_at": fm.get("judged_at") or "",
+                "reason": (
+                    (history[-1].get("reason") if history and isinstance(history[-1], dict) else "")
+                    or ""
+                ),
+            })
+
+        # 5. Predictions landed (confirmed in window) — concept slice.
+        landed_rows = idx.db.execute(
+            "SELECT id, frontmatter "
+            "  FROM notes "
+            " WHERE type = 'decision' "
+            "   AND json_extract(frontmatter, '$.prediction_match') = 'confirmed' "
+            "   AND json_extract(frontmatter, '$.judged_at') >= ?",
+            (cutoff_iso,),
+        ).fetchall()
+        for row in landed_rows:
+            try:
+                fm = json.loads(row["frontmatter"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            delta["concept"]["predictions_landed_24h"].append({
+                "decision_id": row["id"],
+                "predicted_outcome": fm.get("predicted_outcome") or "",
+                "prediction_match": "confirmed",
+                "judged_at": fm.get("judged_at") or "",
+            })
+    finally:
+        idx.close()
+
+    return delta
 
 
 def scan(
@@ -283,14 +826,228 @@ def scan(
     finally:
         result.timings["recent_probes"] = time.perf_counter() - _t
 
+    # 5. active themes ----------------------------------------------------
+    # Themes carrying recent catalyst activity, pre-loaded with their
+    # current essence + last 10 catalysts. Phase-1 ``dream-essence-worker``
+    # reads this surface to judge whether any essence needs a rewrite —
+    # no per-theme ``mem_read`` round trip needed. Vault-wide (themes are
+    # not per-project, matching how cluster signals are scanned).
+    _t = time.perf_counter()
+    try:
+        result.active_themes = _collect_active_themes(cfg)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"active_themes: {e}")
+    finally:
+        result.timings["active_themes"] = time.perf_counter() - _t
+
+    # 6. unwrapped sessions (phase-2 dream-wrap-worker input) ------------
+    _t = time.perf_counter()
+    try:
+        result.unwrapped_sessions = _collect_unwrapped_sessions(cfg)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"unwrapped_sessions: {e}")
+    finally:
+        result.timings["unwrapped_sessions"] = time.perf_counter() - _t
+
+    # 7. rejudge queue (phase-2 dream-judge-worker input) ----------------
+    _t = time.perf_counter()
+    try:
+        result.rejudge_queue = _collect_rejudge_queue(cfg)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"rejudge_queue: {e}")
+    finally:
+        result.timings["rejudge_queue"] = time.perf_counter() - _t
+
+    # 8. knowledge delta (phase-2 dream-digest-worker input) -------------
+    _t = time.perf_counter()
+    try:
+        result.knowledge_delta = _collect_knowledge_delta(cfg)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"knowledge_delta: {e}")
+    finally:
+        result.timings["knowledge_delta"] = time.perf_counter() - _t
+
+    # ``knowledge_delta`` stats are sub-keyed by grain (``concept`` /
+    # ``event``) so cycle telemetry can see at a glance whether the cycle
+    # has work for both digest variants, just one, or neither.
+    kd = result.knowledge_delta or {}
+
+    def _grain_stats(slice_key: str) -> dict[str, int]:
+        s = kd.get(slice_key) or {}
+        return {
+            "landings_24h": len(s.get("landings_24h", [])),
+            "catalyst_additions_24h": len(s.get("catalyst_additions_24h", [])),
+            "probe_matches_24h": len(s.get("probe_matches_24h", [])),
+            "verdict_flips_24h": len(s.get("verdict_flips_24h", [])),
+            "predictions_landed_24h": len(s.get("predictions_landed_24h", [])),
+        }
+
     result.stats = {
         "drift_pairs": len(result.drift_pairs),
         "promotion_candidates": len(result.promotion_candidates),
         "theme_cluster_signals": len(result.theme_cluster_signals),
         "recent_probes": len(result.recent_probes),
+        "active_themes": len(result.active_themes),
+        "unwrapped_sessions": len(result.unwrapped_sessions),
+        "rejudge_queue": len(result.rejudge_queue),
+        "knowledge_delta": {
+            "concept": _grain_stats("concept"),
+            "event": _grain_stats("event"),
+        },
     }
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Plan-fragment validation — strict allowlist of plan keys + per-item shapes
+# ---------------------------------------------------------------------------
+
+# Top-level allowlist. Anything outside this set raises in strict mode (or is
+# appended to ``result.errors`` in non-strict). Keep in sync with the apply
+# function's plan-reading loops and the docstring on ``apply``.
+#
+# ``cycle_id`` is plumbed through by the orchestrator (commands/dream.md
+# step 1.5 merges it into the plan before writing to disk) so apply can
+# stamp the result with the same cycle id used in the maintenance log;
+# it is a structural envelope field, not a per-domain plan key.
+_VALID_PLAN_TOP_KEYS: frozenset[str] = frozenset({
+    "cycle_id",
+    "merges",
+    "promotions",
+    "theme_mints",
+    "theme_extensions",
+    "essence_rewrites",
+    "priority_signals",
+})
+
+# Per-top-key sub-key allowlists. Each item in a list-valued plan key is a
+# dict; this map tells us which dict keys are permitted on each.
+#
+# The drift these guards catch (verbatim from the 2026-06 surface map):
+# - ``add_source_ids`` for ``source_ids`` inside ``theme_extensions``
+# - ``rationale`` for ``essence`` inside ``theme_mints``
+#
+# Sub-keys for nested dicts (``priority_signals[*].queue_item``) are validated
+# in a dedicated nested map below.
+_VALID_PLAN_ITEM_KEYS: dict[str, frozenset[str]] = {
+    "merges": frozenset({"from", "to", "reason"}),
+    "promotions": frozenset({"concept", "domain", "reason"}),
+    "theme_mints": frozenset({
+        "slug",
+        "essence",
+        "source_ids",
+        "concepts",
+        "candidacy",
+        "project",
+        "parent",
+    }),
+    "theme_extensions": frozenset({
+        "theme_id",
+        "source_ids",
+        "reason",
+    }),
+    "essence_rewrites": frozenset({
+        "theme_id",
+        "new_essence",
+        "reason",
+    }),
+    "priority_signals": frozenset({
+        "concept",
+        "probe_count",
+        "action",
+        "queue_item",
+        "reason",
+    }),
+}
+
+# Sub-key allowlist for the one nested-dict shape we ship today. The
+# ``Queue.enqueue`` payload itself is open-shape (per-source-type), but the
+# fields ``apply`` reads off the dict before forwarding are bounded — we
+# allow-list those plus the common payload extensions writers add today.
+_VALID_QUEUE_ITEM_KEYS: frozenset[str] = frozenset({
+    "source_type",
+    "title",
+    "concept",
+    "source",
+    "url",
+})
+
+
+def validate_plan_fragment(plan: dict) -> list[str]:
+    """Return a list of warnings for unknown plan keys / item sub-keys.
+
+    Two layers:
+    1. Top-level keys must be in :data:`_VALID_PLAN_TOP_KEYS`.
+    2. Each item in a list-valued plan key (``merges``, ``promotions``, …)
+       is a dict whose keys must be in the matching
+       :data:`_VALID_PLAN_ITEM_KEYS` set.
+
+    Empty list ⇒ the plan is structurally clean. The caller decides whether
+    to raise (strict mode) or append to a worker_bug-style report
+    (non-strict). The check is deliberately key-shape only — semantic
+    validation (e.g. ``slug`` looks like a slug, ``source_ids`` are str)
+    belongs in the per-step apply paths, which already raise structured
+    errors recorded in ``result.errors``.
+    """
+    warnings: list[str] = []
+    if not isinstance(plan, dict):
+        warnings.append(f"plan is not a dict: {type(plan).__name__}")
+        return warnings
+
+    # Layer 1: top-level keys
+    for key in plan.keys():
+        if key not in _VALID_PLAN_TOP_KEYS:
+            warnings.append(f"unknown plan key: {key!r}")
+
+    # Layer 2: per-item sub-keys
+    for top_key, valid_subs in _VALID_PLAN_ITEM_KEYS.items():
+        items = plan.get(top_key)
+        if not items:
+            continue
+        if not isinstance(items, list):
+            warnings.append(
+                f"plan[{top_key!r}] is not a list: {type(items).__name__}"
+            )
+            continue
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                warnings.append(
+                    f"plan[{top_key!r}][{i}] is not a dict: "
+                    f"{type(item).__name__}"
+                )
+                continue
+            for sub_key in item.keys():
+                if sub_key not in valid_subs:
+                    warnings.append(
+                        f"unknown sub-key {sub_key!r} in "
+                        f"plan[{top_key!r}][{i}]"
+                    )
+            # Nested queue_item dict on priority_signals
+            if top_key == "priority_signals":
+                qi = item.get("queue_item")
+                if isinstance(qi, dict):
+                    for qk in qi.keys():
+                        if qk not in _VALID_QUEUE_ITEM_KEYS:
+                            warnings.append(
+                                f"unknown sub-key {qk!r} in "
+                                f"plan[{top_key!r}][{i}].queue_item"
+                            )
+
+    return warnings
+
+
+class PlanValidationError(ValueError):
+    """Raised when ``apply(strict=True)`` finds unknown plan / item keys.
+
+    Carries the full warning list so the orchestrator (and any operator
+    running ``mem dream apply`` interactively) can see every drift point
+    in a single shot.
+    """
+
+    def __init__(self, warnings: list[str]):
+        self.warnings = list(warnings)
+        super().__init__("plan validation failed:\n  " + "\n  ".join(warnings))
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +1075,12 @@ class DreamCycleResult:
     promotions_applied: int = 0
     themes_minted: int = 0
     themes_extended: int = 0
-    essence_rewrites_logged: int = 0  # body edits done by the skill, logged here
+    # Counts essence rewrites processed by the apply step. Entries with
+    # a ``new_essence`` field trigger an in-place ``## Essence`` rewrite;
+    # entries lacking ``new_essence`` are log-only no-ops (back-compat
+    # with the pre-refactor shape). Renamed from ``essence_rewrites_logged``
+    # 2026-06-06 — joint shape now that apply actually writes.
+    essence_rewrites_applied: int = 0
     # Priority signals (Slice 1.5) — split on action.
     # ``enqueued`` rises when ``dream_enqueue_priority_signals`` is
     # True AND the signal's action is ``enqueue`` AND the queue write
@@ -354,7 +1116,7 @@ class DreamCycleResult:
                 "promotions": self.promotions_applied,
                 "themes_minted": self.themes_minted,
                 "themes_extended": self.themes_extended,
-                "essence_rewrites": self.essence_rewrites_logged,
+                "essence_rewrites": self.essence_rewrites_applied,
                 "priority_signals_enqueued": self.priority_signals_enqueued,
                 "priority_signals_logged": self.priority_signals_logged,
                 "ontology_grew": self.ontology_grew,
@@ -376,6 +1138,7 @@ def apply(
     plan: dict,
     project: str = "",
     cycle_id: str | None = None,
+    strict: bool = True,
 ) -> DreamCycleResult:
     """Execute the LLM-decided structural changes for one dream cycle.
 
@@ -404,8 +1167,13 @@ def apply(
             ...
           ],
           "essence_rewrites": [
-            {"theme_id": "thm-X", "reason": "..."},  # log-only; the skill
-                                                     # already Edit'd the file
+            # New (post-2026-06-06) shape: ``new_essence`` triggers an
+            # in-place ``## Essence`` rewrite of the theme file.
+            {"theme_id": "thm-X",
+             "new_essence": "The arc tightened around X after Y...",
+             "reason": "Recent catalysts contradict the prior framing."},
+            # Legacy log-only shape — counted, not mutated (back-compat).
+            {"theme_id": "thm-Y", "reason": "noted, no rewrite needed"},
             ...
           ],
           "priority_signals": [
@@ -436,13 +1204,39 @@ def apply(
     theme lifecycle is hand-driven, and the candidate-stub path was
     removed in the 2026-05-30 teardown.
 
+    ``strict`` (default ``True``) gates plan-fragment validation. The plan
+    is run through :func:`validate_plan_fragment` first; unknown top-level
+    keys or unknown per-item sub-keys raise
+    :class:`PlanValidationError` (so worker drift like ``add_source_ids``
+    for ``source_ids`` or ``rationale`` for ``essence`` fails loudly
+    instead of silently no-opping). Pass ``strict=False`` to record the
+    warnings on ``result.errors`` and still run the rest of apply — the
+    non-strict mode exists for legacy plans on disk and for batch
+    backfills where any single drift shouldn't abort the cycle.
+
     Returns :class:`DreamCycleResult` carrying counts, per-step wall
     times, and the path to the appended maintenance-log line.
     """
+    # Validation gate — runs before any cycle-id resolution so a bad plan
+    # never produces a half-written maintenance-log line. Strict mode raises
+    # so the orchestrator stops, sees the full warning list, and re-prompts
+    # the offending worker (see commands/dream.md step 1.5).
+    plan_warnings = validate_plan_fragment(plan)
+    if plan_warnings:
+        if strict:
+            raise PlanValidationError(plan_warnings)
+        # Non-strict: surface every warning on the result so downstream
+        # readers (maintenance.jsonl, dream report) see the drift instead
+        # of letting unknown keys disappear into a silent no-op.
+
     result = DreamCycleResult(
         cycle_id=cycle_id or _new_cycle_id(),
         project=project,
     )
+
+    if plan_warnings and not strict:
+        for w in plan_warnings:
+            result.errors.append(f"plan_validation: {w}")
 
     # 1. merges -----------------------------------------------------------
     # Bypass operations.concepts.merge (which rebuilds per call). Use the
@@ -593,8 +1387,62 @@ def apply(
     finally:
         result.timings["theme_extensions"] = time.perf_counter() - _t
 
-    # 3c. essence rewrites — log-only (the skill already Edit'd files) ----
-    result.essence_rewrites_logged = len(plan.get("essence_rewrites") or [])
+    # 3c. essence rewrites — joint shape: rewrite-and-log when an entry
+    # carries ``new_essence``; log-only for legacy entries that don't.
+    # Per-entry errors don't cascade — the rest of the step still runs.
+    _t = time.perf_counter()
+    try:
+        rewrites = plan.get("essence_rewrites") or []
+        if rewrites:
+            from personal_mem.core.indexer import Indexer
+
+            # One indexer query for all rewrites — bounded by rewrites size.
+            idx = Indexer(config=cfg)
+            try:
+                rows = idx.db.execute(
+                    "SELECT id, path FROM notes WHERE type = 'theme'"
+                ).fetchall()
+            finally:
+                idx.close()
+            theme_paths: dict[str, str] = {
+                row["id"]: row["path"] for row in rows
+            }
+
+            for r in rewrites:
+                try:
+                    theme_id = (r.get("theme_id") or "").strip()
+                    if not theme_id:
+                        result.errors.append(
+                            f"essence_rewrite: missing theme_id in {r}"
+                        )
+                        continue
+                    new_essence = r.get("new_essence")
+                    if new_essence is None:
+                        # Legacy log-only entry — count and move on.
+                        result.essence_rewrites_applied += 1
+                        continue
+                    rel = theme_paths.get(theme_id)
+                    if not rel:
+                        result.errors.append(
+                            f"essence_rewrite: unknown theme_id {theme_id}"
+                        )
+                        continue
+                    theme_path = cfg.vault_root / rel
+                    if not theme_path.exists():
+                        result.errors.append(
+                            f"essence_rewrite: missing file {rel}"
+                        )
+                        continue
+                    _rewrite_theme_essence(theme_path, str(new_essence))
+                    result.essence_rewrites_applied += 1
+                except Exception as e:  # noqa: BLE001
+                    result.errors.append(
+                        f"essence_rewrite {r.get('theme_id', '?')}: {e}"
+                    )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"essence_rewrites: {e}")
+    finally:
+        result.timings["essence_rewrites"] = time.perf_counter() - _t
 
     # 3d. priority signals — log-or-enqueue per LLM judgment + cfg gate --
     # Composed from ``scan().recent_probes`` upstream. Each signal either
@@ -648,7 +1496,7 @@ def apply(
         + result.promotions_applied
         + result.themes_minted
         + result.themes_extended
-        + result.essence_rewrites_logged
+        + result.essence_rewrites_applied
         + result.priority_signals_enqueued
     )
     if structural_changes:
@@ -729,6 +1577,54 @@ def apply(
 
 
 # ---------------------------------------------------------------------------
+# Theme essence rewrite — splice helper used by apply()
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_theme_essence(theme_path: Path, new_essence: str) -> None:
+    """Rewrite the ``## Essence`` section of a theme file in place.
+
+    Preserves frontmatter, the ``# Title`` heading, and every other ``##``
+    section (notably ``## Catalyst log`` and ``## Open questions``).
+    Locates the essence section via the same ``extract_section`` slice the
+    shared :class:`Hub` parser uses — find the heading, find the next
+    ``##`` heading (or EOF), splice the new body between them.
+
+    Idempotent: writing the same essence again is a byte-for-byte no-op.
+    If the heading is missing entirely, appends a new section after the
+    frontmatter; that path is for safety and never fires in normal use
+    (theme files always carry the canonical skeleton).
+    """
+    from personal_mem.synthesis.hub import ESSENCE_HEADING
+
+    text = theme_path.read_text(encoding="utf-8")
+    body = new_essence.strip()
+    # Standard inter-section spacing — blank line above the next heading.
+    block = f"{ESSENCE_HEADING}\n\n{body}\n\n"
+
+    if ESSENCE_HEADING not in text:
+        # Defensive: append at end, never overwrite other content.
+        sep = "" if text.endswith("\n") else "\n"
+        theme_path.write_text(text + sep + block, encoding="utf-8")
+        return
+
+    start = text.index(ESSENCE_HEADING)
+    # Find the next ``##`` heading after the essence section (mirrors
+    # ``extract_section`` in synthesis.hub).
+    import re as _re
+
+    rest = text[start + len(ESSENCE_HEADING):]
+    m = _re.search(r"\n##\s", rest)
+    if m:
+        end = start + len(ESSENCE_HEADING) + m.start() + 1  # +1 = leading \n
+    else:
+        end = len(text)
+
+    new_text = text[:start] + block + text[end:]
+    theme_path.write_text(new_text, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Markdown report — the human-trust artifact
 # ---------------------------------------------------------------------------
 
@@ -773,7 +1669,7 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
     lines.append(f"| Concept promotions | {result.promotions_applied} |")
     lines.append(f"| Themes minted | {result.themes_minted} |")
     lines.append(f"| Themes extended | {result.themes_extended} |")
-    lines.append(f"| Essence rewrites logged | {result.essence_rewrites_logged} |")
+    lines.append(f"| Essence rewrites applied | {result.essence_rewrites_applied} |")
     lines.append(
         f"| Priority signals enqueued | {result.priority_signals_enqueued} |"
     )
@@ -844,14 +1740,16 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
         lines.append(f"## Essence rewrites ({len(rewrites)})")
         lines.append("")
         lines.append(
-            "_Body edits were made by the skill before apply; see the "
+            "_Entries with ``new_essence`` were rewritten by apply; "
+            "entries without it are log-only (legacy shape). See each "
             "theme file's git history for the diff._"
         )
         lines.append("")
         for r in rewrites:
             tid = r.get("theme_id", "?")
             reason = r.get("reason") or "(no reason given)"
-            lines.append(f"- `{tid}` — {reason}")
+            shape = "rewritten" if r.get("new_essence") else "logged"
+            lines.append(f"- `{tid}` — {shape} — {reason}")
         lines.append("")
 
     # --- Priority signals (Slice 1.5) ------------------------------------

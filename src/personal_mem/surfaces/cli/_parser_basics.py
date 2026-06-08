@@ -690,6 +690,60 @@ def add_admin_subparsers(sub) -> None:
         "--json", action="store_true",
         help="Emit raw JSON result on stdout",
     )
+    # Strict plan-fragment validation: unknown top-level / sub-keys abort
+    # instead of silently no-opping. Default ON — the orchestrator should
+    # see worker drift loudly. Pass --no-strict for legacy plans where any
+    # single drift shouldn't kill the cycle.
+    p_dream_apply.add_argument(
+        "--strict", dest="strict", action="store_true", default=True,
+        help=(
+            "Abort on unknown plan keys or item sub-keys (default ON). "
+            "Catches worker-fragment drift like ``add_source_ids`` for "
+            "``source_ids`` that would otherwise silently no-op."
+        ),
+    )
+    p_dream_apply.add_argument(
+        "--no-strict", dest="strict", action="store_false",
+        help=(
+            "Surface unknown plan keys as errors on the result but still "
+            "run apply. Use for legacy plans where individual drift "
+            "shouldn't abort the cycle."
+        ),
+    )
+
+    p_dream_tasks = dream_sub.add_parser(
+        "tasks",
+        help=(
+            "Enumerate the subagent tasks the /dream orchestrator should "
+            "spawn for one phase. Consumes the scan JSON (optionally piped "
+            "in from `mem dream scan --json`), filters the dream_tasks "
+            "REGISTRY by phase + has_signal, and emits one JSON list of "
+            "{surface_key, worker_name, plan_keys, depends_on} entries."
+        ),
+    )
+    p_dream_tasks.add_argument(
+        "--phase", type=int, choices=(1, 2), required=True,
+        help="Phase to enumerate (1=synthesis, 2=composition/consumption)",
+    )
+    p_dream_tasks.add_argument(
+        "--scan", default=None,
+        help=(
+            "Path to a scan JSON payload (output of `mem dream scan --json`). "
+            "If omitted, runs scan(cfg) fresh."
+        ),
+    )
+    p_dream_tasks.add_argument(
+        "--apply-result", dest="apply_result", default=None,
+        help=(
+            "Path to a DreamCycleResult JSON payload. Required by some "
+            "phase-2 workers in future revisions; pass-through for v1."
+        ),
+    )
+    p_dream_tasks.add_argument("--project", "-p", default="")
+    p_dream_tasks.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON for skill/headless consumption",
+    )
 
     # --- C24: CLI parity for MCP-only tools -------------------------------
     p_unlink = sub.add_parser(

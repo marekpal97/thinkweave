@@ -360,6 +360,22 @@ class VaultManager:
             d.mkdir(parents=True, exist_ok=True)
             return d
 
+        if note_type == NoteType.DIGEST:
+            # Daily knowledge-delta digests written by
+            # ``dream-digest-worker`` (phase 2 of ``/dream``). Post-2026-06-07
+            # grain split: digests live at the vault root —
+            # ``vault/digests/YYYY-MM-DD-{grain}.md`` — with the grain
+            # (``concept`` or ``event``) baked into the title slug. The
+            # worker writes one note per non-empty grain; flat layout keeps
+            # the daily pair easy to scan.
+            #
+            # ``project:`` frontmatter on a digest is informational only —
+            # digests are vault-global (cross-project synthesis), mirroring
+            # how themes are filed regardless of project.
+            d = self.root / "digests"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
         if project:
             if note_type == NoteType.SESSION:
                 d = self.root / "projects" / project / "sessions"

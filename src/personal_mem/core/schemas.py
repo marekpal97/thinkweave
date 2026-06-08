@@ -12,6 +12,14 @@ class NoteType(str, Enum):
     DECISION = "decision"
     SOURCE = "source"
     THEME = "theme"
+    # Knowledge-first daily summary written by ``dream-digest-worker``
+    # (phase 2 of ``/dream``). Post-2026-06-07 grain split: files land
+    # vault-global at ``vault/digests/YYYY-MM-DD-<grain>.md``, with
+    # ``grain ∈ {"concept", "event"}`` — one per non-empty knowledge slice.
+    # Queryable via ``mem_search(type='digest')`` and ``mem list_notes`` —
+    # the SQLite indexer treats it like any other note type (uniform
+    # ``fm.get('type','note')`` read in ``Indexer.index_file``).
+    DIGEST = "digest"
 
 
 class EdgeType(str, Enum):
@@ -63,6 +71,7 @@ NOTE_ID_PREFIXES: dict[NoteType, str] = {
     NoteType.DECISION: "dec",
     NoteType.SOURCE: "src",
     NoteType.THEME: "thm",
+    NoteType.DIGEST: "dig",
 }
 
 

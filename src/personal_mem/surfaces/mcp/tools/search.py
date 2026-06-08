@@ -25,7 +25,7 @@ def tool_schemas() -> list:
                 "Always search FIRST before creating notes (deduplication).\n\n"
                 "Filters:\n"
                 "- `type`: single string OR list (e.g. `['source','session','theme']`). "
-                'Valid types: "note", "session", "decision", "source", "theme".\n'
+                'Valid types: "note", "session", "decision", "source", "theme", "digest".\n'
                 "- `project`: project name (empty = cross-project).\n"
                 "- `tags`: broad categories (todo, parked, probe, theme, trade, til, ...).\n"
                 "- `concepts`: domain-specific concepts; result must include ≥1.\n"
@@ -41,7 +41,7 @@ def tool_schemas() -> list:
                         "default": "fts",
                         "description": "fts = keyword, similar = semantic, hybrid = RRF fusion.",
                     },
-                    "type": {"description": "Note type filter. String or list. Valid: note, session, decision, source, theme."},
+                    "type": {"description": "Note type filter. String or list. Valid: note, session, decision, source, theme, digest."},
                     "project": {"type": "string", "description": "Filter by project name. Empty = cross-project."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter to notes containing ALL of these tags."},
                     "concepts": {
