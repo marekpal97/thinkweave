@@ -218,6 +218,17 @@ def add_index_subparsers(sub) -> None:
     )
     p_enrich.add_argument("--dry-run", action="store_true", help="Show what would be done")
     p_enrich.add_argument(
+        "--via",
+        choices=["inline", "batch"],
+        default=None,
+        help=(
+            "Execution route. 'batch' = wrapper async fan-out (needs an "
+            "API key); 'inline' = /enrich-notes CC skill (uses the running "
+            "model, no provider key). Default: auto (batch when key + "
+            ">200 items, else inline)."
+        ),
+    )
+    p_enrich.add_argument(
         "--reindex", action="store_true", default=True,
         help="Rebuild index after enrichment (default: true)",
     )
@@ -253,9 +264,14 @@ def add_index_subparsers(sub) -> None:
     )
     p_import.add_argument(
         "--via",
-        choices=["batch"],
-        default="batch",
-        help="Enrichment strategy. Currently only 'batch' (Anthropic Batches).",
+        choices=["inline", "batch"],
+        default=None,
+        help=(
+            "Execution route for claude-code --enrich and chatgpt imports. "
+            "'batch' = wrapper async fan-out; 'inline' = CC skill "
+            "(/seed-enrich for claude-code-enrich, /import-chatgpt for "
+            "chatgpt). Default: auto via choose_route()."
+        ),
     )
     p_import.add_argument(
         "--enrich-limit",

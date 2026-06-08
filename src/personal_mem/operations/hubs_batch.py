@@ -1,19 +1,23 @@
-"""Hub-backfill batch orchestration — the OpenAI Batches API path for concept hubs.
+"""Hub-backfill orchestrator — concept-hub catalyst-log backfill.
 
 Renamed from ``operations/drain.py`` to disambiguate from the ``/drain`` skill,
 which drains per-source-type acquisition queues — a different object entirely.
-This module holds the 250-LOC monolith previously inlined as ``_hubs_run`` in
-``surfaces/cli/__init__.py``. CLI ``mem drain --target hubs --via batch`` calls
-into ``run_hubs_batch``.
+CLI ``mem drain --target hubs --via batch`` calls into ``run_hubs_batch``.
+
+The OpenAI Batches submission / polling / fetching dance was deleted
+2026-06-06 (plan: ``go-back-to-the-scalable-firefly.md`` step C2). The
+orchestrator now delegates execution to
+:func:`personal_mem.core.agent_client.batch_completions_sync`, which fires
+N async completions in parallel under a semaphore-capped concurrency budget
+([[feedback_unified_wrapper_no_batches_apis]]). ~50% per-token discount
+forfeited for one code path.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,18 +28,24 @@ def run_hubs_batch(
     cfg: Config,
     *,
     plan_path: Path | None = None,
-    model: str = "gpt-5-mini",
+    model: str | None = None,
     max_tokens: int = 1024,
     poll_interval: int = 30,
     max_input_tokens: int = 4_500_000,
     dry_run: bool = False,
 ) -> dict:
-    """Execute a concept-hub backfill plan via OpenAI Batches API.
+    """Execute a concept-hub backfill plan via the wrapper's async fan-out.
 
     Returns a stats dict; prints progress to stdout (legacy behaviour preserved).
-    Exits the process via sys.exit on hard errors (missing plan, missing key,
-    failed batch).
+    Exits the process via sys.exit on hard errors (missing plan).
+
+    Provider / model resolution: when ``model`` is ``None`` (typical), reads
+    ``vault/config/api.yaml::overrides.hubs_run`` for the effective provider
+    and model. Explicit ``model=`` (from a CLI flag) overrides the api.yaml
+    model; provider always comes from api.yaml. ``poll_interval`` is kept in
+    the signature for back-compat — there's no polling anymore.
     """
+    del poll_interval  # accepted for back-compat with the CLI flag; unused
     from personal_mem.core.indexer import Indexer
     from personal_mem.core.vault import VaultManager, parse_frontmatter
     from personal_mem.synthesis.concept_hub import (
@@ -111,27 +121,12 @@ def run_hubs_batch(
             print(r["user"][:800])
         return {"applied": 0, "concepts": len(concept_plans), "dry_run": True}
 
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print(
-            "mem hubs run requires the OpenAI SDK.\n"
-            "Install with: uv add --optional hubs openai  (or `pip install openai`)"
-        )
-        sys.exit(1)
-
-    from personal_mem.enrich import load_openai_api_key
-
-    api_key = load_openai_api_key()
-    if not api_key:
-        print(
-            "OPENAI_API_KEY is not set (neither in env nor in the project .env)."
-            " Export it or add OPENAI_API_KEY=sk-... to the repo .env."
-        )
-        sys.exit(1)
-    os.environ["OPENAI_API_KEY"] = api_key
-
-    client = OpenAI()
+    # Resolve provider + model from api.yaml::overrides.hubs_run.
+    from personal_mem.core.api_config import load_api_config, resolve_for_op
+    op_cfg = resolve_for_op(load_api_config(cfg.vault_root), "hubs_run")
+    provider = op_cfg["provider"]
+    effective_model = model or op_cfg["model"]
+    concurrency = int(op_cfg.get("batch_concurrency", 20))
 
     sorted_requests = sorted(
         requests_to_send, key=lambda r: (r["cache_key"], r["note_id"])
@@ -153,131 +148,56 @@ def run_hubs_batch(
                 f"Capping at {len(capped)} request(s) (~{total_tokens:,} input "
                 f"tokens) to stay under --max-input-tokens={budget:,}. "
                 f"{deferred} request(s) deferred — rerun `mem hubs plan` + "
-                f"`mem hubs run` after this batch completes."
+                f"`mem drain --target hubs --via batch` after this batch "
+                f"completes."
             )
         sorted_requests = capped
 
-    id_to_key: dict[str, tuple[str, str, str]] = {}
-    jsonl_lines: list[str] = []
-    for i, r in enumerate(sorted_requests):
-        custom_id = f"req-{i:05d}"
-        id_to_key[custom_id] = (r["concept"], r["note_id"], r["note_date"])
-        body = {
-            "model": model,
-            "max_completion_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": r["system"]},
-                {"role": "user", "content": r["user"]},
-            ],
-        }
-        jsonl_lines.append(
-            json.dumps(
-                {
-                    "custom_id": custom_id,
-                    "method": "POST",
-                    "url": "/v1/chat/completions",
-                    "body": body,
-                }
-            )
-        )
+    if not sorted_requests:
+        return {"applied": 0, "concepts": len(concept_plans)}
 
-    batch_input_path = cfg.mem_dir / "hubs_batch_input.jsonl"
-    batch_input_path.parent.mkdir(parents=True, exist_ok=True)
-    batch_input_path.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
-    print(f"Wrote batch input: {batch_input_path} ({len(jsonl_lines)} line(s))")
-
-    print("Uploading batch input to OpenAI Files API...")
-    with batch_input_path.open("rb") as f:
-        input_file = client.files.create(file=f, purpose="batch")
-    print(f"Input file ID: {input_file.id}")
-
-    print(f"Submitting batch of {len(jsonl_lines)} request(s) to {model}...")
-    batch = client.batches.create(
-        input_file_id=input_file.id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={"source": "personal-mem.hubs"},
-    )
-    print(f"Batch ID: {batch.id}")
-    (cfg.mem_dir / "hubs_last_run").write_text(
-        json.dumps({"batch_id": batch.id, "input_file_id": input_file.id}, indent=2),
-        encoding="utf-8",
+    print(
+        f"Issuing {len(sorted_requests)} request(s) to {provider}/{effective_model} "
+        f"(concurrency={concurrency})..."
     )
 
-    terminal_statuses = {"completed", "failed", "expired", "cancelled"}
-    while True:
-        batch = client.batches.retrieve(batch.id)
-        counts = batch.request_counts
-        print(
-            f"  status={batch.status} "
-            f"completed={counts.completed if counts else 0} "
-            f"failed={counts.failed if counts else 0} "
-            f"total={counts.total if counts else 0}"
-        )
-        if batch.status in terminal_statuses:
-            break
-        time.sleep(poll_interval)
-
-    if batch.status != "completed":
-        print(f"Batch did not complete cleanly: status={batch.status}")
-        if batch.errors:
-            print(f"Errors: {batch.errors}")
-        sys.exit(1)
-
-    if not batch.output_file_id:
-        print("Batch completed but has no output_file_id.")
-        sys.exit(1)
-
-    print(f"Downloading results from output file {batch.output_file_id}...")
-    output_content = client.files.content(batch.output_file_id).text
+    # All hub requests share HUB_EXTRACTION_SYSTEM — pass it once as the
+    # uniform system prompt for the batch.
+    from personal_mem.core.agent_client import batch_completions_sync
+    prompts = [r["user"] for r in sorted_requests]
+    results = batch_completions_sync(
+        prompts,
+        provider=provider,
+        model=effective_model,
+        op="hubs_run",
+        max_tokens=max_tokens,
+        system=HUB_EXTRACTION_SYSTEM,
+        concurrency=concurrency,
+        mode="cron",
+        return_exceptions=True,
+    )
 
     applied = 0
     essence_flagged: set[str] = set()
-    _spend_in = _spend_out = 0
-    _spend_model = ""
-    for line in output_content.splitlines():
-        if not line.strip():
+    errors = 0
+    for req, result in zip(sorted_requests, results):
+        if isinstance(result, BaseException):
+            errors += 1
             continue
-        try:
-            result = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        custom_id = result.get("custom_id", "")
-        concept, note_id, note_date = id_to_key.get(custom_id, ("", "", ""))
-        if not concept:
-            continue
-        if result.get("error"):
-            continue
-        response = result.get("response", {})
-        if response.get("status_code") != 200:
-            continue
-        body = response.get("body", {})
-        _u = body.get("usage") or {}
-        _spend_in += _u.get("prompt_tokens", 0) or 0
-        _spend_out += _u.get("completion_tokens", 0) or 0
-        _spend_model = body.get("model") or _spend_model
-        choices = body.get("choices", [])
-        if not choices:
-            continue
-        raw = choices[0].get("message", {}).get("content", "")
-        if not raw:
+        text, _usage = result
+        if not text:
             continue
         entries, needs_essence = parse_llm_response(
-            raw, note_id=note_id, run_date=note_date
+            text, note_id=req["note_id"], run_date=req["note_date"]
         )
         if entries:
-            append_log_entries(cfg, concept, entries)
+            append_log_entries(cfg, req["concept"], entries)
             applied += len(entries)
         if needs_essence:
-            essence_flagged.add(concept)
+            essence_flagged.add(req["concept"])
 
-    if _spend_in or _spend_out:
-        from personal_mem.core.spend import record_spend
-
-        record_spend(
-            "openai", _spend_model or "gpt-5-mini", "hubs_backfill",
-            _spend_in, _spend_out, mode="cron",
-        )
+    if errors:
+        print(f"  warning: {errors} request(s) failed; rerun to retry the rest")
 
     print(f"\nApplied {applied} new log entries.")
     if essence_flagged:
@@ -289,7 +209,7 @@ def run_hubs_batch(
     import sqlite3 as _sqlite3
 
     idx = Indexer(config=cfg)
-    touched_concepts = {c for c, _, _ in id_to_key.values()}
+    touched_concepts = {r["concept"] for r in sorted_requests}
     reindex_failures = 0
     for concept in touched_concepts:
         path = concept_hub_path(cfg, concept)

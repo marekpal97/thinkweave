@@ -152,10 +152,66 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         sys.exit(exit_code)
 
 
+def _count_chatgpt_conversations(path: Path, limit: int) -> int:
+    """Cheap pre-flight conversation count for the route picker.
+
+    ChatGPT's ``conversations.json`` is a JSON array; we don't need to
+    parse the full bodies — just count list entries.
+    """
+    import json
+    raw = path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return 0
+    if not isinstance(data, list):
+        return 0
+    n = len(data)
+    if limit > 0:
+        n = min(n, limit)
+    return n
+
+
+def _count_enrichment_candidates(
+    cfg, *, project: str, note_types: list[str], force: bool
+) -> int:
+    """Cheap row count for the same set ``enrich()`` would process.
+
+    Mirrors the WHERE clause in ``enrich.enrich()`` so the route picker
+    sees the actual candidate count, not a stale estimate.
+    """
+    import sqlite3
+
+    type_filter = note_types or ["note", "session", "decision", "source"]
+    placeholders = ",".join("?" for _ in type_filter)
+    where = [f"n.type IN ({placeholders})"]
+    params: list = list(type_filter)
+    if project:
+        where.append("n.project = ?")
+        params.append(project)
+    if not force:
+        where.append(
+            "(SELECT COUNT(*) FROM note_concepts WHERE note_id = n.id) < 1"
+        )
+    try:
+        db = sqlite3.connect(str(cfg.index_db))
+        try:
+            row = db.execute(
+                f"SELECT COUNT(*) FROM notes n WHERE {' AND '.join(where)}",
+                params,
+            ).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return 0
+    return int((row or [0])[0] or 0)
+
+
 def cmd_enrich(args: argparse.Namespace) -> None:
     """LLM-assisted concept enrichment for notes missing concepts."""
     from personal_mem.core.indexer import Indexer
     from personal_mem.enrich import enrich
+    from personal_mem.operations._backfill_route import choose_route
 
     cfg = load_config()
 
@@ -165,12 +221,32 @@ def cmd_enrich(args: argparse.Namespace) -> None:
         else ["session", "note", "decision", "source"]
     )
 
+    # B3: --via {inline,batch} route selection.
+    # Quick COUNT to feed choose_route's size heuristic — no need to load
+    # the full candidate row set just to pick a route.
+    n_candidates = _count_enrichment_candidates(
+        cfg, project=args.project, note_types=note_types, force=args.force
+    )
+    decision = choose_route(
+        via=getattr(args, "via", None),
+        n_items=n_candidates,
+    )
+    if decision.route == "inline":
+        print(
+            f"Inline enrichment ({len(candidates)} candidate notes; "
+            f"{decision.reason}).\n"
+            f"  Run:  /enrich-notes\n"
+            f"  (skill walks candidates via the running model, no provider "
+            f"key required)."
+        )
+        return
+
     prefix = "[dry run] " if args.dry_run else ""
     type_str = ",".join(note_types)
     print(f"{prefix}Enriching {type_str} notes"
           + (f" in project '{args.project}'" if args.project else " (all projects)")
           + (f" (limit {args.limit})" if args.limit else "")
-          + "...")
+          + f" via batch ({decision.reason})...")
 
     def progress(current, total, title):
         pct = current * 100 // max(total, 1)
@@ -308,6 +384,31 @@ def cmd_import(args: argparse.Namespace) -> None:
             load_dotenv()
         except ImportError:
             pass
+
+        # B2: --via {inline,batch} route. The importer's summarisation
+        # step is the LLM-bearing part; inline routes to /import-chatgpt
+        # (CC skill); batch keeps the existing path which now flows through
+        # agent_client.
+        from personal_mem.operations._backfill_route import choose_route
+
+        # Cheap probe of conversation count via the importer's index.
+        try:
+            n_conversations = _count_chatgpt_conversations(Path(args.path), args.limit)
+        except OSError:
+            n_conversations = 0
+        decision = choose_route(
+            via=getattr(args, "via", None),
+            n_items=n_conversations,
+        )
+        if decision.route == "inline":
+            print(
+                f"Inline ChatGPT import ({n_conversations} conversation(s); "
+                f"{decision.reason}).\n"
+                f"  Run:  /import-chatgpt {args.path}\n"
+                f"  (skill walks conversations via the running model, no "
+                f"provider key required)."
+            )
+            return
 
         from personal_mem.importers.chatgpt import import_chatgpt
 

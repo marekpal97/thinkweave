@@ -1,15 +1,17 @@
-"""``mem hubs link`` — temporal-DAG linkage pass via OpenAI Batches.
+"""``mem hubs link`` — temporal-DAG linkage pass.
 
-Lives apart from the other ``mem hubs`` actions because the OpenAI
-Batches loop (build requests → upload file → poll for completion → apply
-revisions → reindex) is long and stateful.
+Rewrites flat `new` flags on concept hubs into agrees/contradicts/extends
+relationships. The OpenAI Batches submission/poll/fetch dance was
+deleted 2026-06-06 (plan B4, ``go-back-to-the-scalable-firefly.md``);
+this now flows through
+:func:`personal_mem.core.agent_client.batch_completions_sync`. The
+``mem hubs link --via inline`` route dispatches to the
+``/hubs-link`` CC skill instead.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
 
 
@@ -33,9 +35,17 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
         target = args.concept.lower()
         hub_files = [p for p in hub_files if p.stem == target]
 
+    # id->path / id->title for re-rendering title-aliased citations, and the
+    # path->id inverse so parsing recovers ids from those links (else cited_ids
+    # and date lookups would key on paths). Soft-fails to bare links if the DB
+    # is unavailable.
+    from personal_mem.synthesis.concept_hub import _safe_hub_maps
+
+    _link_idmap, _link_titles, _link_path_id = _safe_hub_maps(cfg)
+
     work: list[tuple[str, list[LogEntry], str]] = []
     for hub_path in hub_files:
-        hub = parse_concept_hub(hub_path)
+        hub = parse_concept_hub(hub_path, path_to_id=_link_path_id)
         if len(hub.log_entries) < args.min_entries:
             continue
         entries_sorted = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
@@ -98,118 +108,62 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
             )
         requests_to_send = capped
 
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print(
-            "mem hubs link requires the OpenAI SDK.\n"
-            "Install with: uv add --optional hubs openai"
-        )
-        sys.exit(1)
-
-    from personal_mem.enrich import load_openai_api_key
-
-    api_key = load_openai_api_key()
-    if not api_key:
-        print("OPENAI_API_KEY is not set.")
-        sys.exit(1)
-    os.environ["OPENAI_API_KEY"] = api_key
-    client = OpenAI()
-
-    id_to_concept: dict[str, str] = {}
-    jsonl_lines: list[str] = []
-    for i, r in enumerate(requests_to_send):
-        custom_id = f"link-{i:05d}"
-        id_to_concept[custom_id] = r["concept"]
-        body = {
-            "model": args.model,
-            "max_completion_tokens": args.max_tokens,
-            "messages": [
-                {"role": "system", "content": r["system"]},
-                {"role": "user", "content": r["user"]},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        jsonl_lines.append(json.dumps({
-            "custom_id": custom_id,
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": body,
-        }))
-
-    batch_input_path = cfg.mem_dir / "hubs_link_input.jsonl"
-    batch_input_path.parent.mkdir(parents=True, exist_ok=True)
-    batch_input_path.write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
-    print(f"Wrote batch input: {batch_input_path} ({len(jsonl_lines)} line(s))")
-
-    with batch_input_path.open("rb") as f:
-        input_file = client.files.create(file=f, purpose="batch")
-    print(f"Input file ID: {input_file.id}")
-
-    batch = client.batches.create(
-        input_file_id=input_file.id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={"source": "personal-mem.hubs-link"},
+    # B4: route decision — inline dispatches to /hubs-link CC skill.
+    from personal_mem.operations._backfill_route import choose_route
+    decision = choose_route(
+        via=getattr(args, "via", None),
+        n_items=len(requests_to_send),
     )
-    print(f"Batch ID: {batch.id}")
-    (cfg.mem_dir / "hubs_last_link_run").write_text(
-        json.dumps({"batch_id": batch.id, "input_file_id": input_file.id}, indent=2),
-        encoding="utf-8",
-    )
-
-    import time as _time
-    terminal_statuses = {"completed", "failed", "expired", "cancelled"}
-    while True:
-        batch = client.batches.retrieve(batch.id)
-        counts = batch.request_counts
+    if decision.route == "inline":
         print(
-            f"  status={batch.status} "
-            f"completed={counts.completed if counts else 0} "
-            f"failed={counts.failed if counts else 0} "
-            f"total={counts.total if counts else 0}"
+            f"Inline hubs link ({len(requests_to_send)} hub(s); "
+            f"{decision.reason}).\n"
+            f"  Run:  /hubs-link"
+            + (f" --concept {args.concept}" if args.concept else "")
+            + "\n  (skill walks hubs via the running model, no provider "
+            f"key required)."
         )
-        if batch.status in terminal_statuses:
-            break
-        _time.sleep(args.poll_interval)
+        return
 
-    if batch.status != "completed" or not batch.output_file_id:
-        print(f"Batch did not complete cleanly: status={batch.status}")
-        if batch.errors:
-            print(f"Errors: {batch.errors}")
-        sys.exit(1)
+    # Batch path: fan out via the wrapper. Resolve provider + model from
+    # api.yaml::overrides.hubs_link (default openai / gpt-5-mini).
+    from personal_mem.core.agent_client import batch_completions_sync
+    from personal_mem.core.api_config import load_api_config, resolve_for_op
 
-    output_content = client.files.content(batch.output_file_id).text
+    op_cfg = resolve_for_op(load_api_config(cfg.vault_root), "hubs_link")
+    provider = op_cfg["provider"]
+    effective_model = args.model or op_cfg["model"]
+    concurrency = int(op_cfg.get("batch_concurrency", 20))
+
+    prompts = [r["user"] for r in requests_to_send]
+    print(
+        f"Issuing {len(prompts)} request(s) to {provider}/{effective_model} "
+        f"(concurrency={concurrency})..."
+    )
+    completions = batch_completions_sync(
+        prompts,
+        provider=provider,
+        model=effective_model,
+        op="hubs_link",
+        max_tokens=args.max_tokens,
+        system=HUB_LINKAGE_SYSTEM,
+        concurrency=concurrency,
+        mode="cron",
+        return_exceptions=True,
+        response_format={"type": "json_object"},
+    )
 
     applied_hubs = 0
     applied_entries = 0
-    _spend_in = _spend_out = 0
-    _spend_model = ""
-    for line in output_content.splitlines():
-        if not line.strip():
+    request_errors = 0
+    touched_concepts: set[str] = set()
+    for req, result in zip(requests_to_send, completions):
+        concept = req["concept"]
+        touched_concepts.add(concept)
+        if isinstance(result, BaseException):
+            request_errors += 1
             continue
-        try:
-            result = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        custom_id = result.get("custom_id", "")
-        concept = id_to_concept.get(custom_id, "")
-        if not concept or result.get("error"):
-            continue
-        response = result.get("response", {})
-        if response.get("status_code") != 200:
-            continue
-        _body = response.get("body", {})
-        _u = _body.get("usage") or {}
-        _spend_in += _u.get("prompt_tokens", 0) or 0
-        _spend_out += _u.get("completion_tokens", 0) or 0
-        _spend_model = _body.get("model") or _spend_model
-        raw = (
-            _body
-            .get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        raw, _usage = result
         if not raw:
             continue
         revisions = parse_linkage_response(raw)
@@ -217,7 +171,7 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
             continue
 
         hub_path = concept_hub_path(cfg, concept)
-        hub = parse_concept_hub(hub_path, concept=concept)
+        hub = parse_concept_hub(hub_path, concept=concept, path_to_id=_link_path_id)
         entries_sorted = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
 
         # Length tolerance: gpt-5-mini occasionally truncates very long hubs.
@@ -257,15 +211,13 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
 
         if any_change:
             hub.log_entries = sorted(hub.log_entries, key=lambda e: (e.date, e.citation))
-            write_concept_hub(hub)
+            write_concept_hub(hub, idmap=_link_idmap, title_map=_link_titles)
             applied_hubs += 1
 
-    if _spend_in or _spend_out:
-        from personal_mem.core.spend import record_spend
-
-        record_spend(
-            "openai", _spend_model or "gpt-5-mini", "hubs_link",
-            _spend_in, _spend_out, mode="cron",
+    if request_errors:
+        print(
+            f"  warning: {request_errors} request(s) failed; rerun to retry "
+            f"the rest"
         )
 
     print(f"\nApplied linkage revisions to {applied_hubs} hub(s), {applied_entries} entries updated.")
@@ -274,7 +226,7 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
 
     idx = Indexer(config=cfg)
     reindex_failures = 0
-    for concept in set(id_to_concept.values()):
+    for concept in touched_concepts:
         p = concept_hub_path(cfg, concept)
         if not p.exists():
             continue

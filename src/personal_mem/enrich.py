@@ -96,24 +96,16 @@ Return JSON only."""
 
 
 def load_openai_api_key() -> str:
-    """Get OpenAI API key from env or .env file in the project directory.
+    """Get OpenAI API key from env or .env (vault → cwd → project root).
 
-    Shared between `mem enrich`, `mem hubs run`, and any other caller that
-    needs to hit the OpenAI API.
+    Thin shim over :func:`personal_mem.core.api_keys.get_provider_key` —
+    preserved as a name for back-compat with the half-dozen callers
+    that already import it. Returns ``""`` on miss (callers branch on
+    truthiness; ``None`` would break that idiom).
     """
-    key = os.environ.get(OPENAI_API_KEY_ENV, "")
-    if key:
-        return key
+    from personal_mem.core.api_keys import get_provider_key
 
-    # Try loading from .env in the personal_mem project root
-    env_path = Path(__file__).parent.parent.parent / ".env"
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if line.startswith(f"{OPENAI_API_KEY_ENV}=") and not line.startswith("#"):
-                return line.split("=", 1)[1].strip()
-
-    return ""
+    return get_provider_key("openai") or ""
 
 
 # Alias preserved for back-compat within this module.
@@ -123,18 +115,23 @@ _load_api_key = load_openai_api_key
 def _call_openai(
     notes: list[dict],
     ontology_text: str,
-    api_key: str,
+    api_key: str,  # accepted for back-compat — get_provider_key resolves internally
     *,
     dry_run: bool = False,
 ) -> list[dict]:
-    """Send a batch to OpenAI chat completions and return [{id, concepts}]."""
+    """Send a batch through the agent_client wrapper and return [{id, concepts}].
+
+    Switched from direct httpx → ``agent_client.get_completion_sync``
+    on 2026-06-06 (plan B3). Provider + model resolve from
+    ``vault/config/api.yaml::overrides.enrich`` (default openai /
+    gpt-5-mini, mirroring legacy behaviour). The ``api_key`` arg is
+    accepted for back-compat but ignored — the wrapper reads via
+    :func:`personal_mem.core.api_keys.get_provider_key`.
+    """
+    del api_key  # back-compat only
+
     if dry_run:
         return [{"id": n["id"], "concepts": ["[dry-run]"]} for n in notes]
-
-    try:
-        import httpx
-    except ImportError:
-        raise ImportError("mem enrich requires httpx: pip install personal-mem[embeddings]")
 
     system = _SYSTEM_PROMPT_TEMPLATE.format(ontology=ontology_text)
     notes_json = json.dumps(
@@ -144,44 +141,33 @@ def _call_openai(
     )
     user = _USER_PROMPT_TEMPLATE.format(n=len(notes), notes_json=notes_json)
 
-    response = httpx.post(
-        OPENAI_API_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": ENRICH_MODEL,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        },
-        timeout=60.0,
-    )
-    response.raise_for_status()
+    # Resolve provider + model from api.yaml::overrides.enrich.
+    from personal_mem.core.agent_client import get_completion_sync
+    from personal_mem.core.api_config import load_api_config, resolve_for_op
 
-    data = response.json()
-    _usage = data.get("usage") or {}
-    from personal_mem.core.spend import record_spend
+    cfg = load_config()
+    op_cfg = resolve_for_op(load_api_config(cfg.vault_root), "enrich")
 
-    record_spend(
-        "openai",
-        ENRICH_MODEL,
-        "enrich",
-        _usage.get("prompt_tokens", 0),
-        _usage.get("completion_tokens", 0),
+    raw, _usage = get_completion_sync(
+        user,
+        provider=op_cfg["provider"],
+        model=op_cfg["model"],
+        op="enrich",
+        max_tokens=op_cfg["max_tokens"],
+        system=system,
         mode="cli",
+        response_format={"type": "json_object"},
     )
-
-    raw = data["choices"][0]["message"]["content"].strip()
+    raw = (raw or "").strip()
 
     # Strip markdown code fences if present
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
-    parsed = json.loads(raw)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
     return parsed.get("results", [])
 
 

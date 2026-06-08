@@ -219,7 +219,18 @@ def add_hubs_subparsers(sub) -> None:
     p_hubs_link.add_argument(
         "--dry-run",
         action="store_true",
-        help="Build requests and print the first one, but don't submit to the API",
+        help="Build requests and print the first one, but don't issue completions",
+    )
+    p_hubs_link.add_argument(
+        "--via",
+        choices=["inline", "batch"],
+        default=None,
+        help=(
+            "Execution route. 'batch' = wrapper async fan-out via "
+            "agent_client.batch_completions_sync (needs an API key); "
+            "'inline' = /hubs-link CC skill (uses the running model, "
+            "no provider key). Default: auto."
+        ),
     )
 
 

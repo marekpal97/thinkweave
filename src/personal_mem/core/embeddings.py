@@ -243,46 +243,29 @@ class EmbeddingSearch:
         return results[:limit]
 
     def _call_api(self, texts: list[str]) -> list[list[float]]:
-        """Call the embedding API. Requires httpx."""
-        try:
-            import httpx
-        except ImportError:
-            raise ImportError(
-                "Embeddings require httpx. Install with: pip install personal-mem[embeddings]"
-            )
+        """Delegate to the configured :class:`EmbeddingProvider`.
 
-        api_key = os.environ.get(self.config.embedding_api_key_env, "")
-        if not api_key:
-            raise ValueError(
-                f"API key not found. Set {self.config.embedding_api_key_env} environment variable."
-            )
+        Provider selection reads ``vault/config/api.yaml::embeddings``
+        via :func:`personal_mem.core.embedding_provider.build_from_vault`.
+        Spend tracking is the provider's responsibility (each backend
+        calls :func:`record_spend` for its own network cost).
+        """
+        if not texts:
+            return []
+        provider = self._provider()
+        return provider.embed(texts)
 
-        response = httpx.post(
-            self.config.embedding_api_url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.config.embedding_model,
-                "input": texts,
-            },
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        data = response.json()
+    def _provider(self):
+        """Cached :class:`EmbeddingProvider` for this ``EmbeddingSearch``.
 
-        _usage = data.get("usage") or {}
-        from personal_mem.core.spend import record_spend
-
-        record_spend(
-            "openai",
-            self.config.embedding_model,
-            "embed",
-            _usage.get("prompt_tokens", 0),
-            0,
-            mode="cron",
-        )
-
-        # OpenAI-compatible response format
-        return [item["embedding"] for item in data["data"]]
+        Reading the config + instantiating the backend on every call
+        would re-import the SDK and re-warm the SentenceTransformer
+        model — neither cheap. Memoize per-instance.
+        """
+        cached = getattr(self, "_cached_provider", None)
+        if cached is not None:
+            return cached
+        from personal_mem.core.embedding_provider import build_from_vault
+        cached = build_from_vault(self.config.vault_root)
+        self._cached_provider = cached  # type: ignore[attr-defined]
+        return cached

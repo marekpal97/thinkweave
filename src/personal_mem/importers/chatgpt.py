@@ -174,52 +174,39 @@ def parse_conversations(path: Path) -> list[Thread]:
 
 
 def summarize_thread(thread: Thread, api_key: str, model: str = "gpt-5-mini") -> dict:
-    """Call OpenAI API to produce a structured summary.
+    """Produce a structured ChatGPT-thread summary via the agent_client wrapper.
+
+    Switched from direct httpx → ``agent_client.get_completion_sync``
+    on 2026-06-06 (plan B2). Provider + model resolve from
+    ``vault/config/api.yaml::overrides.chatgpt_import``; the legacy
+    ``api_key`` arg and ``model`` arg are accepted for back-compat:
+    when ``model`` differs from the api.yaml-resolved default it takes
+    precedence; ``api_key`` is ignored (the wrapper handles its own
+    key lookup).
 
     Returns dict with keys: summary, key_questions, key_insights, concepts.
     """
-    try:
-        import httpx
-    except ImportError:
-        raise ImportError(
-            "ChatGPT import requires httpx. Install with: pip install personal-mem[embeddings]"
-        )
+    del api_key  # back-compat only — the wrapper resolves its own key
+
+    from personal_mem.core.agent_client import get_completion_sync
+    from personal_mem.core.api_config import load_api_config, resolve_for_op
+    from personal_mem.core.config import load_config
+
+    cfg = load_config()
+    op_cfg = resolve_for_op(load_api_config(cfg.vault_root), "chatgpt_import")
+    effective_model = model or op_cfg["model"]
 
     transcript = thread.transcript()
-
-    response = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SUMMARIZE_PROMPT},
-                {"role": "user", "content": transcript},
-            ],
-            "temperature": 0.3,
-            "max_tokens": 1000,
-        },
-        timeout=60.0,
-    )
-    response.raise_for_status()
-    data = response.json()
-    _usage = data.get("usage") or {}
-    from personal_mem.core.spend import record_spend
-
-    record_spend(
-        "openai",
-        model,
-        "chatgpt_import",
-        _usage.get("prompt_tokens", 0),
-        _usage.get("completion_tokens", 0),
+    content, _usage = get_completion_sync(
+        transcript,
+        provider=op_cfg["provider"],
+        model=effective_model,
+        op="chatgpt_import",
+        max_tokens=1000,
+        system=SUMMARIZE_PROMPT,
         mode="cli",
     )
-    content = data["choices"][0]["message"]["content"]
-
-    return _parse_summary_response(content)
+    return _parse_summary_response(content or "")
 
 
 def _parse_summary_response(content: str) -> dict:

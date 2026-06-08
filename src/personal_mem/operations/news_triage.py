@@ -1,20 +1,14 @@
 """News-item triage against the active-themes catalog.
 
-Stage-1 of the news pipeline (replaces the per-worker FOCUS gate). One
-cheap LLM call per drain batch decides for each title whether it (a)
-fits an active theme, (b) is substantive but theme-unmatched, or (c) is
-noise. Stage-2 (the Sonnet writer subagent) only runs on (a) and (b) —
-(c) is archived with reason.
-
-**TEMPORARY: provider swap (2026-05-21).** This module was originally
-written against Anthropic's Messages API (Haiku) with explicit
-``cache_control={"type":"ephemeral"}`` on the catalog block. Until
-``ANTHROPIC_API_KEY`` is available in the env, the triage runs against
-the OpenAI Chat Completions API (``gpt-5-mini``) using the same httpx
-pattern as ``enrich.py`` and ``mem hubs run``. Prompt caching becomes
-implicit (OpenAI auto-caches prefixes ≥1024 tokens) rather than
-explicit. To revert: ``git diff`` against the prior commit — the
-Anthropic shape is preserved in history and is the long-term home.
+Stage-1 of the news pipeline. As of 2026-06-06 (plan A2,
+``go-back-to-the-scalable-firefly.md``) the canonical triage path is
+the ``news-triage-worker`` CC Task subagent invoked from
+``commands/drain.md``. This module survives as the **explicit-opt-out
+fallback** — when the user disables the subagent path via
+``vault/config/api.yaml::overrides.news_triage_fallback``, the drain
+shells out to ``python -m personal_mem.operations.news_triage`` and
+this code runs against whatever provider+model the override specifies
+(default still OpenAI ``gpt-5-mini``, mirroring legacy behaviour).
 
 Architecture choices worth flagging:
 
@@ -330,7 +324,7 @@ def main() -> int:
 
         echo '[{"id":"q-1","title":"...","outlet":"zerohedge","tier":2}, ...]' | \\
           uv run python -m personal_mem.operations.news_triage \\
-            --themes /mnt/c/Users/marek/vault/THEMES.md
+            --themes <vault>/THEMES.md
     """
     parser = argparse.ArgumentParser(
         description=(

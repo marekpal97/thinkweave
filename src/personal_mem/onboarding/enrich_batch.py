@@ -1,29 +1,30 @@
-"""Anthropic Batches enrichment for materialized claude-code sessions.
+"""Claude-code session enrichment orchestrator.
 
-Sibling to ``operations.hubs_batch.run_hubs_batch`` (which uses OpenAI
-Batches for concept-hub backfill). Same shape — build per-item
-requests, submit, poll, write back — but the work item is a
-materialized session whose ``enrichment_status: pending``, and the
-writeback updates the session's frontmatter + creates derived decision
-notes.
+Sibling to :func:`personal_mem.operations.hubs_batch.run_hubs_batch`.
+Same shape — find pending work items, build per-item prompts, write
+results back — but the item is a materialized session whose
+``enrichment_status: pending``, and the writeback updates the session
+frontmatter + creates derived decision notes.
 
-Triggered by ``mem import claude-code --enrich --via batch``. Requires
-``ANTHROPIC_API_KEY`` and the ``[seed]`` extra (``anthropic`` SDK).
+Triggered by ``mem import claude-code --enrich --via batch``.
 
-Inline alternative: the ``/seed-enrich`` skill loops pending sessions
-and calls ``mem_extract`` per-session via the running Claude Code
-model — no API key, but no parallelism either. Both paths consume the
-same ``enrichment_status: pending`` discriminator.
+Provider Batches dance deleted 2026-06-06 (plan:
+``go-back-to-the-scalable-firefly.md`` step C2). Now delegates execution
+to :func:`personal_mem.core.agent_client.batch_completions_sync`, which
+fans out N async completions in parallel
+([[feedback_unified_wrapper_no_batches_apis]]). The Anthropic Batches
+50% discount is forfeited for one code path.
+
+Provider + model are resolved from
+``vault/config/api.yaml::overrides.claude_code_enrich`` (default
+provider ``anthropic``, model ``claude-haiku-4-5-20251001``).
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
-import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_mem.core.config import Config
@@ -115,36 +116,12 @@ def find_pending_sessions(
     return pending
 
 
-def _build_request_jsonl(
-    pending: list[PendingSession],
-    *,
-    model: str,
-    max_tokens: int,
-) -> tuple[str, dict[str, str]]:
-    """Render the JSONL Batches input + a custom_id → note_id mapping."""
-    id_to_note: dict[str, str] = {}
-    lines: list[str] = []
-    for i, sess in enumerate(pending):
-        custom_id = f"sess-{i:05d}"
-        id_to_note[custom_id] = sess.note_id
-        body = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "system": ENRICHMENT_SYSTEM,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        f"Project: {sess.project}\nSession title: {sess.title}\n\n"
-                        f"--- transcript ---\n{sess.transcript}"
-                    ),
-                }
-            ],
-        }
-        lines.append(
-            json.dumps({"custom_id": custom_id, "params": body})
-        )
-    return "\n".join(lines) + "\n", id_to_note
+def _build_user_prompt(sess: PendingSession) -> str:
+    """Render a single session's user-prompt body."""
+    return (
+        f"Project: {sess.project}\nSession title: {sess.title}\n\n"
+        f"--- transcript ---\n{sess.transcript}"
+    )
 
 
 def _writeback_one(
@@ -257,16 +234,25 @@ def run_enrichment_batch(
     cfg: Config,
     *,
     project_filter: str = "",
-    model: str = "claude-haiku-4-5-20251001",
+    model: str | None = None,
     max_tokens: int = 1024,
     poll_interval: int = 60,
     limit: int = 0,
     dry_run: bool = False,
 ) -> dict:
-    """Enrich pending materialized sessions via Anthropic Batches.
+    """Enrich pending materialized sessions via the wrapper's async fan-out.
 
-    Lifecycle: find pending → build JSONL → submit → poll → writeback.
+    Lifecycle: find pending → build prompts → ``batch_completions_sync``
+    → writeback per result.
+
+    Provider / model resolution: when ``model`` is ``None`` (typical), reads
+    ``vault/config/api.yaml::overrides.claude_code_enrich`` for the
+    effective provider and model. Defaults are Anthropic /
+    ``claude-haiku-4-5-20251001``. ``poll_interval`` is accepted for
+    back-compat with the CLI flag — there's no polling anymore.
     """
+    del poll_interval  # back-compat only; no polling under the new path
+
     pending = find_pending_sessions(cfg, project_filter=project_filter, limit=limit)
     stats: dict = {
         "pending": len(pending),
@@ -280,107 +266,68 @@ def run_enrichment_batch(
         print("No pending claude-code sessions found. Nothing to enrich.")
         return stats
 
-    jsonl, id_to_note = _build_request_jsonl(
-        pending, model=model, max_tokens=max_tokens
-    )
+    # Resolve provider + model from api.yaml::overrides.claude_code_enrich.
+    from personal_mem.core.api_config import load_api_config, resolve_for_op
+    op_cfg = resolve_for_op(load_api_config(cfg.vault_root), "claude_code_enrich")
+    provider = op_cfg["provider"]
+    effective_model = model or op_cfg["model"]
+    concurrency = int(op_cfg.get("batch_concurrency", 20))
+
+    prompts = [_build_user_prompt(s) for s in pending]
 
     if dry_run:
         sample = pending[0]
-        print(f"--- DRY RUN: would submit {len(pending)} request(s) to {model} ---")
+        print(
+            f"--- DRY RUN: would issue {len(pending)} request(s) to "
+            f"{provider}/{effective_model} ---"
+        )
         print(f"  first session: {sample.note_id} ({sample.project})")
         print(f"  transcript chars: {len(sample.transcript)}")
-        print(f"  estimated input tokens (all sessions): "
-              f"~{sum(len(s.transcript) for s in pending) // 4:,}")
+        print(
+            f"  estimated input tokens (all sessions): "
+            f"~{sum(len(s.transcript) for s in pending) // 4:,}"
+        )
         print()
-        print("--- first request body (truncated) ---")
-        print(jsonl.split('\n', 1)[0][:600] + "...")
+        print("--- first user prompt (truncated) ---")
+        print(prompts[0][:600] + "...")
         return stats
 
-    try:
-        import anthropic
-    except ImportError:
-        print(
-            "mem import claude-code --enrich --via batch requires the "
-            "Anthropic SDK.\n"
-            "Install with: uv add --optional seed anthropic  (or `pip install anthropic`)"
-        )
-        sys.exit(1)
+    print(
+        f"Issuing {len(prompts)} request(s) to {provider}/{effective_model} "
+        f"(concurrency={concurrency})..."
+    )
+    stats["submitted"] = len(prompts)
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("ANTHROPIC_API_KEY is not set in the environment.")
-        sys.exit(1)
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    requests = []
-    for line in jsonl.strip().split("\n"):
-        requests.append(json.loads(line))
-
-    print(f"Submitting batch of {len(requests)} session(s) to {model}...")
-    batch = client.messages.batches.create(requests=requests)
-    stats["submitted"] = len(requests)
-    batch_id = batch.id
-    print(f"Batch ID: {batch_id}")
-    (cfg.mem_dir / "claude_code_seed_last_batch").write_text(
-        json.dumps({"batch_id": batch_id, "submitted_at": datetime.now(timezone.utc).isoformat()}, indent=2),
-        encoding="utf-8",
+    from personal_mem.core.agent_client import batch_completions_sync
+    results = batch_completions_sync(
+        prompts,
+        provider=provider,
+        model=effective_model,
+        op="claude_code_enrich",
+        max_tokens=max_tokens,
+        system=ENRICHMENT_SYSTEM,
+        concurrency=concurrency,
+        mode="cli",
+        return_exceptions=True,
     )
 
-    while True:
-        batch = client.messages.batches.retrieve(batch_id)
-        counts = batch.request_counts
-        print(
-            f"  status={batch.processing_status} "
-            f"succeeded={counts.succeeded} failed={counts.errored} "
-            f"processing={counts.processing}"
-        )
-        if batch.processing_status == "ended":
-            break
-        time.sleep(poll_interval)
-
-    print("Streaming results...")
-    _spend_in = _spend_out = _spend_cr = _spend_cw = 0
-    _spend_model = ""
-    for result in client.messages.batches.results(batch_id):
-        custom_id = result.custom_id
-        note_id = id_to_note.get(custom_id, "")
-        if not note_id:
+    for sess, result in zip(pending, results):
+        if isinstance(result, BaseException):
+            stats["errors"].append(f"{sess.note_id}: {result.__class__.__name__}: {result}")
             continue
-        if result.result.type != "succeeded":
-            stats["errors"].append(f"{custom_id}: {result.result.type}")
+        text, _usage = result
+        if not text:
+            stats["errors"].append(f"{sess.note_id}: empty response")
             continue
-        message = result.result.message
-        _mu = getattr(message, "usage", None)
-        if _mu is not None:
-            _spend_in += getattr(_mu, "input_tokens", 0) or 0
-            _spend_out += getattr(_mu, "output_tokens", 0) or 0
-            _spend_cr += getattr(_mu, "cache_read_input_tokens", 0) or 0
-            _spend_cw += getattr(_mu, "cache_creation_input_tokens", 0) or 0
-            _spend_model = getattr(message, "model", "") or _spend_model
-        text = ""
-        for block in message.content:
-            if getattr(block, "type", "") == "text":
-                text += block.text
         try:
             enrichment = json.loads(text.strip())
         except json.JSONDecodeError as e:
-            stats["errors"].append(f"{note_id}: bad JSON ({e})")
+            stats["errors"].append(f"{sess.note_id}: bad JSON ({e})")
             continue
-        wb_counts = _writeback_one(cfg, note_id, enrichment)
+        wb_counts = _writeback_one(cfg, sess.note_id, enrichment)
         stats["enriched"] += 1
         stats["decisions_created"] += wb_counts["decisions_created"]
         stats["insights_appended"] += wb_counts["insights_appended"]
-
-    if _spend_in or _spend_out:
-        from personal_mem.core.spend import record_spend
-
-        record_spend(
-            "anthropic", _spend_model or "claude-opus-4", "onboard_enrich",
-            _spend_in, _spend_out,
-            tokens_cache_read=_spend_cr, tokens_cache_write=_spend_cw,
-            mode="cli",
-        )
 
     print(
         f"\nEnriched {stats['enriched']} session(s); "

@@ -80,17 +80,20 @@ The drain orchestrator spawns Sonnet writer subagents in parallel. Admission is 
 | set (e.g. `claude-haiku-4-5`) | Haiku triage per item | Writers fan out only for `keep`/`keep_unfiled` items |
 | **unset** (default) | **skipped** — every item treated as `keep_unfiled` | Writers fan out for every queue item |
 
-**Stage 1 — Haiku triage (single batched call, prompt-cached). Only runs when `triage_model` is set.**
+**Stage 1 — Haiku triage subagent. Only runs when `triage_model` is set.**
 
-Take up to `drain_batch_max` items off the queue (don't archive yet). Build a JSON list of `{id, title, outlet, tier}` for each. Then:
+Take up to `drain_batch_max` items off the queue (don't archive yet). Build a JSON list of `{id, title, outlet, tier}` for each. Then spawn the triage subagent:
 
-```bash
-echo '<items_json>' | uv run python -m personal_mem.operations.news_triage \
-    --themes <vault_root>/THEMES.md \
-    --model claude-haiku-4-5
+```
+Task({
+  subagent_type: "news-triage-worker",
+  model: "haiku",
+  description: "Triage news batch (<n> items)",
+  prompt: "Themes catalog: <vault_root>/THEMES.md\n\nItems:\n<items_json>"
+})
 ```
 
-The triage helper reads the `## Catalog (active)` section of `THEMES.md` (placed there by `themes_ledger`), passes it as a cached system message to Haiku, and emits one verdict per input. Verdicts:
+The subagent's spec lives at `.claude/agents/news-triage-worker.md`. It Reads `THEMES.md`, parses the `## Catalog (active)` section, and emits one verdict per input. The orchestrator parses the subagent's final JSON line — a `{<item_id>: {verdict, theme_id, reason}}` map. Verdicts:
 
 - `keep` — fits an active theme. Carries a `theme_id`.
 - `keep_unfiled` — substantive but no theme match. `theme_id: null`. Goes to the periodic-review pile (frontmatter flag `theme_unfiled: true`).
