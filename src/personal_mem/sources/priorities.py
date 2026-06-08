@@ -98,6 +98,23 @@ def focus_watch_themes(priorities: dict[str, Any]) -> list[str]:
     return [str(t) for t in raw if t]
 
 
+def focus_concepts(priorities: dict[str, Any]) -> list[str]:
+    """Concept slugs the user declared as research focus.
+
+    Read from ``focus.research_concepts`` (the YAML key that survived the
+    2026-06-06 ``concept_coverage`` strategy deletion). Exposed through a
+    generic ``focus_concepts`` name so consumers — chiefly the
+    ``focus_research`` discover strategy — aren't tied to the historical
+    naming. Returns empty list when absent or malformed; the strategy
+    treats that as "no declared focus" and emits no gaps.
+    """
+    focus = priorities.get("focus") or {}
+    raw = focus.get("research_concepts") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(c) for c in raw if c]
+
+
 def intake_for(priorities: dict[str, Any], source_type: str) -> dict[str, Any]:
     """Return ``intake.<source_type>`` dict (or empty if unset).
 

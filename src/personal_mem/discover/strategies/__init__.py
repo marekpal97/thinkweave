@@ -89,6 +89,7 @@ def names() -> list[str]:
 from personal_mem.discover.strategies import (  # noqa: E402
     decision_review,
     external_tool_runner,
+    focus_research,
     mail_poll,
     prompt_gap,
     rss_poll,
@@ -99,3 +100,7 @@ register(prompt_gap.STRATEGY)
 register(external_tool_runner.STRATEGY)
 register(rss_poll.STRATEGY)
 register(mail_poll.STRATEGY)
+# focus_research is registered but NOT in the default discover_strategies
+# list — user opts in via vault/.mem/sources.yaml. Substrate-derived
+# exemplars are valuable but conservative-by-default until proven per-vault.
+register(focus_research.STRATEGY)
