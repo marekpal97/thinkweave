@@ -114,9 +114,14 @@ def _build_installed_settings(existing: dict) -> dict:
     _ensure_hook(session_start_hooks, "", f"{hook_cmd} session_start")
 
     # UserPromptSubmit hook — captures every user prompt as a JSONL event,
-    # promoting prompts into a first-class primitive (Phase 4 E).
+    # promoting prompts into a first-class primitive (Phase 4 E), and runs R2
+    # prompt-time retrieval enrichment. Timeout raised to 10s (above the default
+    # 5s) to cover the bounded embedding deadline (~3s) + render + write-back;
+    # the handler degrades to FTS / silent no-op well inside this budget.
     user_prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
-    _ensure_hook(user_prompt_hooks, "", f"{hook_cmd} user_prompt_submit")
+    _ensure_hook(
+        user_prompt_hooks, "", f"{hook_cmd} user_prompt_submit", timeout=10
+    )
 
     # PreToolUse: previously injected "related vault notes" before each
     # Write/Edit. Retired — redundant with SessionStart context and the
@@ -313,7 +318,14 @@ def _strip_personal_mem_hooks(hooks: dict, hook_type: str) -> None:
         del hooks[hook_type]
 
 
-def _ensure_hook(entries: list, matcher: str, command: str, *, slot: str | None = None) -> None:
+def _ensure_hook(
+    entries: list,
+    matcher: str,
+    command: str,
+    *,
+    slot: str | None = None,
+    timeout: int = 5,
+) -> None:
     """Add a hook entry, or rewrite any existing personal_mem hook in place.
 
     Matches any form this project has ever written (see HOOK_MARKERS),
@@ -343,8 +355,9 @@ def _ensure_hook(entries: list, matcher: str, command: str, *, slot: str | None 
         for hook in entry.get("hooks", []):
             if _is_personal_mem_hook(hook.get("command", "")):
                 hook["command"] = command
-                # Snap matcher to the canonical value too, in case a
-                # legacy install wrote a stale matcher string.
+                # Snap matcher + timeout to the canonical values too, in case a
+                # legacy install wrote a stale matcher or the default timeout.
+                hook["timeout"] = timeout
                 entry["matcher"] = matcher
                 return
 
@@ -355,7 +368,7 @@ def _ensure_hook(entries: list, matcher: str, command: str, *, slot: str | None 
                 {
                     "type": "command",
                     "command": command,
-                    "timeout": 5,
+                    "timeout": timeout,
                 }
             ],
         }

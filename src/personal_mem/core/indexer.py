@@ -118,13 +118,15 @@ CREATE INDEX IF NOT EXISTS idx_ch_ancestor ON concept_hierarchy(ancestor);
 
 -- Context served to a session, projected from per-session retrieval_log.jsonl.
 -- One row per (session, note, source). `source` is the closed-set distinction
--- between SessionStart payload notes ('startup') and on-the-fly MCP retrievals
--- during the session ('onthefly'). Feeds the RLVR decision-context export.
--- Rebuildable from retrieval_log.jsonl — markdown stays truth.
+-- between SessionStart payload notes ('startup'), on-the-fly MCP retrievals the
+-- agent pulled ('onthefly'), and system-pushed prompt-time enrichment
+-- ('prompttime', R2). Keeping prompttime distinct from onthefly preserves the
+-- agent-judgment signal in the RLVR export. Feeds the RLVR decision-context
+-- export. Rebuildable from retrieval_log.jsonl — markdown stays truth.
 CREATE TABLE IF NOT EXISTS context_served (
     session_id TEXT NOT NULL,
     note_id    TEXT NOT NULL,
-    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly')),
+    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime')),
     ts         TEXT,
     PRIMARY KEY (session_id, note_id, source)
 );
@@ -280,6 +282,22 @@ class Indexer:
                 )
             self.db.commit()
 
+        # R2: context_served gained a 'prompttime' source. Older vaults created
+        # the table with CHECK(source IN ('startup','onthefly')), which rejects
+        # prompttime INSERTs. SQLite can't ALTER a CHECK constraint, but the
+        # table is 100% derived from retrieval_log.jsonl — drop and let
+        # SCHEMA_SQL recreate it with the widened constraint; the next
+        # _rebuild_context_served (same rebuild) repopulates it.
+        cs_sql_row = self.db.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='context_served'"
+        ).fetchone()
+        cs_sql = cs_sql_row[0] if cs_sql_row else None
+        if cs_sql and "prompttime" not in cs_sql:
+            self.db.execute("DROP TABLE context_served")
+            self.db.executescript(SCHEMA_SQL)
+            self.db.commit()
+
     def close(self) -> None:
         if self._db:
             self._db.close()
@@ -416,6 +434,11 @@ class Indexer:
         # current session lands in ``changed_ids`` naturally.
         if full:
             self._rebuild_context_served()
+            # co_served edges are projected from the full context_served table;
+            # only meaningful after a full rebuild. Incremental rebuilds leave
+            # existing co_served rows in place — the nightly /dream full
+            # rebuild refreshes them at that cadence.
+            self._rebuild_co_served_edges()
         else:
             self._rebuild_context_served(only_ids=changed_ids)
 
@@ -1212,7 +1235,14 @@ class Indexer:
                 if etype == "startup":
                     src = "startup"
                 elif etype == "retrieval":
-                    src = "onthefly"
+                    # R2 write-backs are retrieval events tagged with the
+                    # prompt-time sentinel — system-pushed, not agent-pulled —
+                    # so they get their own source to keep onthefly clean.
+                    src = (
+                        "prompttime"
+                        if ev.get("tool") == "prompt_time_retrieval"
+                        else "onthefly"
+                    )
                 else:
                     continue
                 ts = ev.get("ts", "")
@@ -1227,6 +1257,73 @@ class Indexer:
                     )
                     upserted += 1
         return upserted
+
+    # ------------------------------------------------------------------
+    # Behavioural overlay: co_served edges
+    # ------------------------------------------------------------------
+
+    def _rebuild_co_served_edges(self, threshold: int = 2) -> int:
+        """Project session-grain co-occurrence in context_served into edges.
+
+        For each session, every pair of served notes (note_id_a < note_id_b)
+        contributes +1 to the pair's ``co_served_count``. Pairs whose count
+        reaches ``threshold`` (default 2) materialise as ``edge_type =
+        'co_served'`` rows with ``weight = co_served_count``. The threshold
+        keeps one-off session-mates from becoming permanent neighbours.
+
+        Independent of the concept/tag/wikilink edges — folds in alongside
+        them as a behavioural overlay. Callers can include or exclude via
+        ``mem_graph(edge_types=[..., 'co_served'])``; default walks
+        unchanged.
+
+        Runs on full rebuilds only; incremental rebuilds skip (the
+        nightly /dream cycle does a full rebuild, keeping co_served edges
+        warm at that cadence). Reversible: ``DELETE FROM edges WHERE
+        edge_type = 'co_served'`` reverts to today's behaviour without
+        touching any other edge.
+
+        TODO: extend with ``co_cited_count`` stored in ``metadata`` JSON
+        — requires linking decisions to their session via ``source_session``
+        frontmatter, deferred from v1 to keep the projection focused on
+        the core mechanic.
+
+        Returns:
+            Number of co_served edges materialised.
+        """
+        self.db.execute("DELETE FROM edges WHERE edge_type = 'co_served'")
+
+        # Bucket served note_ids by session_id.
+        per_session: dict[str, list[str]] = {}
+        for row in self.db.execute(
+            "SELECT session_id, note_id FROM context_served"
+        ):
+            sess = row["session_id"] if isinstance(row, sqlite3.Row) else row[0]
+            nid = row["note_id"] if isinstance(row, sqlite3.Row) else row[1]
+            if not sess or not nid:
+                continue
+            per_session.setdefault(sess, []).append(nid)
+
+        # Accumulate pair counts. Ordered (a, b) with a < b to dedupe direction.
+        pair_counts: dict[tuple[str, str], int] = {}
+        for nids in per_session.values():
+            unique = sorted(set(nids))
+            for i, a in enumerate(unique):
+                for b in unique[i + 1 :]:
+                    pair_counts[(a, b)] = pair_counts.get((a, b), 0) + 1
+
+        now = datetime.now(timezone.utc).isoformat()
+        inserted = 0
+        for (a, b), count in pair_counts.items():
+            if count < threshold:
+                continue
+            self.db.execute(
+                "INSERT OR REPLACE INTO edges "
+                "(source, target, edge_type, created_at, weight, metadata) "
+                "VALUES (?, ?, 'co_served', ?, ?, ?)",
+                (a, b, now, float(count), json.dumps({"co_served_count": count})),
+            )
+            inserted += 1
+        return inserted
 
     def materialize_links(self, max_links: int = 7, dry_run: bool = False) -> dict:
         """Write a managed ``## See Also`` section into each note with its top connections.

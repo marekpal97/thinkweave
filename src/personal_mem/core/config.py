@@ -14,6 +14,7 @@ file at tier 3.
 from __future__ import annotations
 
 import os
+import platform
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
@@ -21,6 +22,48 @@ from pathlib import Path
 
 
 _DEFAULT_VAULT = Path.home() / "vault"
+
+
+def _is_windows() -> bool:
+    return platform.system() == "Windows"
+
+
+@dataclass
+class PromptTimeRetrieval:
+    """Config for prompt-time retrieval enrichment (R2).
+
+    On each substantive user prompt the UserPromptSubmit hook runs a bounded
+    hybrid search, drops anything already served this session, applies hard
+    caps, and prepends a small ignorable block. Defaults are deliberately
+    conservative — this is default-on, so the caps are the safety net against
+    the noise-tax failure mode that retired the old pre-Edit injection.
+    """
+
+    enabled: bool = True
+    # Triviality gate only — skip trivially short inputs and slash-commands so
+    # we don't pay an embedding on "ok"/"yes"/"/clear". NOT a semantic filter;
+    # relevance is decided entirely by the cosine floor below.
+    min_prompt_chars: int = 12
+    # Wall-clock budget for the similarity (embedding) arm. The FTS arm is
+    # synchronous; on overrun the similarity arm is abandoned (daemon thread)
+    # and we fall back to FTS. Generous enough to let the embedding complete on
+    # a normal network; kept under the UserPromptSubmit hook timeout (10s).
+    embed_deadline_seconds: float = 4.0
+    # Cosine floor on the similarity arm — THE relevance gate. Drops low-cosine
+    # nearest neighbours, so generic/meta prompts (~0.22–0.36) no-op while
+    # domain prompts (~0.40+) fire. Model-dependent (text-embedding-3-small);
+    # retune if you swap embedding models.
+    min_similarity: float = 0.38
+    # Per-turn caps.
+    max_pieces_per_turn: int = 3
+    max_injected_chars_per_turn: int = 1200
+    # Per-session caps — make R2 self-extinguish as the session matures.
+    max_firings_per_session: int = 8
+    max_injected_chars_per_session: int = 6000
+    # Bias toward the axes startup under-serves (sources + learnings); decisions
+    # are already well-exposed at boot (Key Files table + Decisions Worth
+    # Understanding), so they're left out of the default bias.
+    bias_types: tuple[str, ...] = ("source", "note")
 
 
 @dataclass
@@ -52,6 +95,11 @@ class Config:
     # per 100 active concepts on a typical vault (pure-Python power
     # iteration), so off by default until the user opts in.
     dream_compute_pagerank: bool = False
+
+    # R2 — prompt-time retrieval enrichment (see PromptTimeRetrieval).
+    retrieval_prompt_time: PromptTimeRetrieval = field(
+        default_factory=PromptTimeRetrieval
+    )
 
     @property
     def mem_dir(self) -> Path:
@@ -256,6 +304,31 @@ def load_config() -> Config:
             )
         if "compute_pagerank" in dream_cfg:
             cfg.dream_compute_pagerank = bool(dream_cfg["compute_pagerank"])
+
+        # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
+        pt = data.get("retrieval", {}).get("prompt_time", {})
+        if pt:
+            rpt = cfg.retrieval_prompt_time
+            if "enabled" in pt:
+                rpt.enabled = bool(pt["enabled"])
+            if "min_prompt_chars" in pt:
+                rpt.min_prompt_chars = int(pt["min_prompt_chars"])
+            if "embed_deadline_seconds" in pt:
+                rpt.embed_deadline_seconds = float(pt["embed_deadline_seconds"])
+            if "min_similarity" in pt:
+                rpt.min_similarity = float(pt["min_similarity"])
+            if "max_pieces_per_turn" in pt:
+                rpt.max_pieces_per_turn = int(pt["max_pieces_per_turn"])
+            if "max_injected_chars_per_turn" in pt:
+                rpt.max_injected_chars_per_turn = int(pt["max_injected_chars_per_turn"])
+            if "max_firings_per_session" in pt:
+                rpt.max_firings_per_session = int(pt["max_firings_per_session"])
+            if "max_injected_chars_per_session" in pt:
+                rpt.max_injected_chars_per_session = int(
+                    pt["max_injected_chars_per_session"]
+                )
+            if "bias_types" in pt:
+                rpt.bias_types = tuple(pt["bias_types"])
 
     # Per-field env overrides
     if os.environ.get("PERSONAL_MEM_PROJECT"):

@@ -20,7 +20,7 @@ The row schema is locked by ``project_decision_context_rl``::
       "outcome": {"verdict", "committed", "blame_lines", "days_alive"},
       "context": {
         "n_retrievals_onthefly", "cited_onthefly_ids",
-        "cited_startup_only_ids", "startup_token_est",
+        "cited_prompttime_ids", "cited_startup_only_ids", "startup_token_est",
       }
     }
 
@@ -48,7 +48,7 @@ from typing import Iterator
 
 from personal_mem.core.config import Config
 from personal_mem.core.indexer import Indexer
-from personal_mem.core.vault import VaultManager, extract_wikilinks
+from personal_mem.core.vault import VaultManager, extract_wikilink_ids
 from personal_mem.synthesis.prediction import read_history
 
 # Same prefix family as operations/retrieval_log.py:_ID_RE. `fullmatch` here —
@@ -101,7 +101,9 @@ def extract_cited_ids(body: str) -> list[str]:
     """
     seen: set[str] = set()
     out: list[str] = []
-    for target in extract_wikilinks(body):
+    # ``extract_wikilink_ids`` recovers the id from path-based ``[[path|id]]``
+    # links too, so citations survive the bare→path body migration.
+    for target in extract_wikilink_ids(body):
         target = target.strip()
         if _ID_RE.fullmatch(target) and target not in seen:
             seen.add(target)
@@ -187,6 +189,7 @@ def _assemble_with_indexer(
 
     # Context-served lookups: bucket cited ids by source, count onthefly events.
     onthefly_ids: set[str] = set()
+    prompttime_ids: set[str] = set()
     startup_ids: set[str] = set()
     n_retrievals_onthefly = 0
     if session_id:
@@ -197,6 +200,8 @@ def _assemble_with_indexer(
         for r in rows:
             if r["source"] == "onthefly":
                 onthefly_ids.add(r["note_id"])
+            elif r["source"] == "prompttime":
+                prompttime_ids.add(r["note_id"])
             elif r["source"] == "startup":
                 startup_ids.add(r["note_id"])
         # Retrieval-event count = distinct ts among onthefly rows. One MCP
@@ -208,10 +213,13 @@ def _assemble_with_indexer(
         ).fetchone()
         n_retrievals_onthefly = int(n_row["n"] or 0) if n_row else 0
 
+    # Source precedence for a note served via multiple channels:
+    # onthefly (agent pulled) > prompttime (system pushed) > startup (boot).
     cited_onthefly = sorted(cited & onthefly_ids)
-    # startup-only = cited & startup & NOT onthefly (a note both startup-served
-    # and fetched again on the fly counts as onthefly, not startup-only).
-    cited_startup_only = sorted((cited & startup_ids) - onthefly_ids)
+    cited_prompttime = sorted((cited & prompttime_ids) - onthefly_ids)
+    cited_startup_only = sorted(
+        (cited & startup_ids) - onthefly_ids - prompttime_ids
+    )
 
     # startup_token_est: re-read the session's retrieval_log.jsonl (cached
     # across batch calls).
@@ -272,6 +280,7 @@ def _assemble_with_indexer(
         context={
             "n_retrievals_onthefly": n_retrievals_onthefly,
             "cited_onthefly_ids": cited_onthefly,
+            "cited_prompttime_ids": cited_prompttime,
             "cited_startup_only_ids": cited_startup_only,
             "startup_token_est": startup_token_est,
         },

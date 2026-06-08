@@ -777,17 +777,14 @@ class TestHandlePostCommitCapture:
         assert commits[0]["message"] == "E2E commit"
 
 
-class TestStopHookOpportunisticEmbed:
-    """A6 follow-up: Stop hook calls EmbeddingSearch.compute_all(only_new=True)
-    after the session note is indexed, gated on OPENAI_API_KEY presence.
-
-    The cron line ships as the durable refresh path; this opportunistic call
-    just shortens the time-to-first-embed for a freshly-archived session note
-    from "next cron tick" to "end of session." Failures must not break Stop.
+class TestStopHookNoEmbed:
+    """A1 (2026-06-06): the Stop hook no longer fires opportunistic
+    embeddings. The cron path (``mem index --embed --only-new``) is the
+    sole driver. This guard test asserts the regression — if anyone
+    re-adds a ``compute_all`` call to ``_handle_stop``, the test trips.
     """
 
-    def _stage_archived_session(self, tmp_path, monkeypatch):
-        """Materialise enough vault state that _handle_stop runs to the embed step."""
+    def test_stop_hook_does_not_call_compute_all(self, tmp_path: Path, monkeypatch):
         from personal_mem.core.config import Config
         from personal_mem.core.schemas import NoteType
         from personal_mem.core.vault import VaultManager
@@ -804,8 +801,6 @@ class TestStopHookOpportunisticEmbed:
             project="alpha",
             extra_frontmatter={"source_session": "ses-embed-test"},
         )
-
-        # One Bash event in the buffer so _handle_stop has something to extract.
         buf = cfg.mem_dir / "buffer" / "ses-embed-test.jsonl"
         buf.parent.mkdir(parents=True, exist_ok=True)
         buf.write_text(
@@ -817,64 +812,28 @@ class TestStopHookOpportunisticEmbed:
             }) + "\n",
             encoding="utf-8",
         )
-        return handler_mod
 
-    def test_embed_fires_when_api_key_set(self, tmp_path: Path, monkeypatch):
-        handler_mod = self._stage_archived_session(tmp_path, monkeypatch)
+        # Seed an API key — would have triggered the embed under the old code.
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
-        calls: list[dict] = []
+        calls: list = []
 
-        class _Stub:
-            def __init__(self, config=None):
-                pass
-
-            def compute_all(self, *, only_new=False, since=""):
-                calls.append({"only_new": only_new, "since": since})
-                return {"computed": 0, "skipped": 0, "errors": 0, "scanned": 0, "cutoff": ""}
-
-        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Stub)
-
-        handler_mod._handle_stop({"session_id": "ses-embed-test"})
-
-        assert len(calls) == 1, "Stop hook must call compute_all exactly once"
-        assert calls[0]["only_new"] is True, "must use incremental mode"
-
-    def test_embed_skipped_without_api_key(self, tmp_path: Path, monkeypatch):
-        handler_mod = self._stage_archived_session(tmp_path, monkeypatch)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-        called = []
-
-        class _Stub:
+        class _Tripwire:
             def __init__(self, config=None):
                 pass
 
             def compute_all(self, **kw):
-                called.append(kw)
+                calls.append(kw)
                 return {}
 
-        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Stub)
+        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Tripwire)
 
         handler_mod._handle_stop({"session_id": "ses-embed-test"})
 
-        assert called == [], "no API key → no embed attempt"
-
-    def test_embed_failure_does_not_break_stop(self, tmp_path: Path, monkeypatch):
-        handler_mod = self._stage_archived_session(tmp_path, monkeypatch)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-
-        class _Boom:
-            def __init__(self, config=None):
-                pass
-
-            def compute_all(self, **kw):
-                raise RuntimeError("embedding provider down")
-
-        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Boom)
-
-        # Must not raise — embedding is best-effort.
-        handler_mod._handle_stop({"session_id": "ses-embed-test"})
+        assert calls == [], (
+            "Stop hook must NOT call EmbeddingSearch.compute_all — "
+            "embeddings are cron-driven only (plan A1, 2026-06-06)."
+        )
 
 
 class TestDiffContext:
@@ -1427,3 +1386,107 @@ class TestUserPromptSubmitHook:
         assert "hooks" not in settings or "UserPromptSubmit" not in settings.get(
             "hooks", {}
         )
+
+    def test_install_user_prompt_submit_timeout_raised(self, tmp_path: Path):
+        # R2 runs in this hook; its timeout is raised above the default 5s to
+        # cover the bounded embedding deadline + render + write-back.
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        settings = json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+        ups = settings["hooks"]["UserPromptSubmit"][0]
+        assert ups["hooks"][0]["timeout"] == 10
+
+
+class TestPromptTimeEnrichment:
+    """R2 — UserPromptSubmit prepends a bounded, deduped vault block."""
+
+    def _cfg(self, tmp_path: Path, monkeypatch):
+        from personal_mem.core.config import Config
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            "personal_mem.surfaces.hooks.handler._ensure_session",
+            lambda *a, **k: None,
+        )
+        return cfg
+
+    def test_emits_additional_context_and_writes_back(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+        block = "📎 Possibly relevant from your vault (optional):\n- [[n-aaaaaa01]] (note) — X"
+        monkeypatch.setattr(
+            "personal_mem.operations.prompt_time_retrieval.build_enrichment",
+            lambda *a, **k: (block, ["n-aaaaaa01"]),
+        )
+
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-r2", "prompt": "a real substantive question here"}
+        )
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+        assert out["hookSpecificOutput"]["additionalContext"] == block
+
+        # Buffer carries the prompt event AND the prompt-time write-back.
+        lines = [
+            json.loads(x)
+            for x in (cfg.mem_dir / "buffer" / "ses-r2.jsonl")
+            .read_text().splitlines()
+            if x.strip()
+        ]
+        assert lines[0]["type"] == "prompt"
+        wb = lines[-1]
+        assert wb["type"] == "retrieval"
+        assert wb["tool"] == "prompt_time_retrieval"
+        assert wb["returned_ids"] == ["n-aaaaaa01"]
+        assert wb["chars"] == len(block)
+
+    def test_noop_emits_plain_and_no_writeback(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+        # Real module path, but disabled → guaranteed no-op without any search.
+        cfg.retrieval_prompt_time.enabled = False
+
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-r2b", "prompt": "a real substantive question here"}
+        )
+
+        assert json.loads(capsys.readouterr().out) == {}
+        lines = [
+            json.loads(x)
+            for x in (cfg.mem_dir / "buffer" / "ses-r2b.jsonl")
+            .read_text().splitlines()
+            if x.strip()
+        ]
+        assert len(lines) == 1 and lines[0]["type"] == "prompt"
+
+    def test_enrichment_failure_never_breaks_turn(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from personal_mem.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+
+        def _boom(*a, **k):
+            raise RuntimeError("search exploded")
+
+        monkeypatch.setattr(
+            "personal_mem.operations.prompt_time_retrieval.build_enrichment", _boom
+        )
+
+        # Must not raise; emits a plain response; prompt event still captured.
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-r2c", "prompt": "a real substantive question here"}
+        )
+        assert json.loads(capsys.readouterr().out) == {}
+        assert (cfg.mem_dir / "buffer" / "ses-r2c.jsonl").exists()

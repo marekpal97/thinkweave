@@ -209,10 +209,60 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         # with prompts (no Edit/Bash yet) still has a note to attach to.
         _ensure_session(cfg, session_id, hook_input)
 
+        # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
+        # live buffer, hard-capped. Any failure here must fall through to a
+        # plain (empty) response — never break the user's turn.
+        block = _prompt_time_enrichment(cfg, session_id, prompt_text, now)
+        if block:
+            _output(
+                additional_context=block,
+                hook_event_name="UserPromptSubmit",
+            )
+            return
+
         _output()
     except Exception as e:
         _log_error("user_prompt_submit", e)
         _output()
+
+
+def _prompt_time_enrichment(
+    cfg, session_id: str, prompt_text: str, now: str
+) -> str | None:
+    """Build the R2 enrichment block and record its served ids to the buffer.
+
+    Returns the block to inject, or ``None`` to no-op. Self-contained: on any
+    error it logs and returns ``None`` so the caller emits a plain response.
+    The write-back event is a ``retrieval`` event tagged with
+    ``PROMPT_TIME_TOOL`` so (1) the next turn's dedup sees these ids and (2)
+    the indexer projects them to ``context_served`` with ``source='prompttime'``.
+    """
+    try:
+        from personal_mem.operations.prompt_time_retrieval import (
+            PROMPT_TIME_TOOL,
+            build_enrichment,
+        )
+
+        block, served_ids = build_enrichment(cfg, session_id, prompt_text)
+        if not block:
+            return None
+
+        _buffer_event(
+            cfg.mem_dir,
+            session_id,
+            {
+                "ts": now,
+                "type": "retrieval",
+                "tool": PROMPT_TIME_TOOL,
+                "returned_ids": served_ids,
+                "chars": len(block),
+                "token_est": len(block) // 4,
+            },
+        )
+        return block
+    except Exception as e:
+        _log_error("prompt_time_enrichment", e)
+        return None
 
 
 def _find_session_note(vm, session_id: str) -> Path | None:
@@ -809,19 +859,10 @@ def _handle_stop(hook_input: dict) -> None:
         except Exception as e:
             _log_error("stop/index", e)
 
-        # Opportunistic embed: A6 ships a cron-driven embedding refresh,
-        # but a freshly-archived session note shouldn't have to wait up to
-        # four hours for similarity retrieval to see it. Gated on the API
-        # key being present so machines without it stay silent. Failures
-        # never break the Stop hook — the cron path is the durable fallback.
-        if os.environ.get("OPENAI_API_KEY"):
-            try:
-                from personal_mem.core.embeddings import EmbeddingSearch
-
-                EmbeddingSearch(config=cfg).compute_all(only_new=True)
-            except Exception as e:
-                _log_error("stop/embed", e)
-
+        # Stop-hook opportunistic embed deleted 2026-06-06 (plan A1,
+        # go-back-to-the-scalable-firefly.md). Embeddings are now driven
+        # exclusively by the cron path (`mem index --embed --only-new`);
+        # query-time similarity retrieval reads the same cache.
         _output()
     except Exception as e:
         _log_error("stop", e)
