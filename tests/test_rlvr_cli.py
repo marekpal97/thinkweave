@@ -339,8 +339,12 @@ class TestDispatchTable:
         # C24 CLI parity (Slice 4) adds unlink, timeline,
         # project-snapshot, prompts: 36 → 40.
         # Cost-tracking adds `mem spend` (two-layer ledger report): 40 → 41.
-        # CLAUDE.md §7 reflects the same count; if either slips, the
-        # other catches doc drift.
+        # `mem pause` / `mem resume` (hook pause toggle) + `mem themes`
+        # (themes registry rebuild) added later: 41 → 44.
+        # `mem schedule` (cross-platform scheduler — crontab / Task
+        # Scheduler) added: 44 → 45.
+        # CLAUDE.md §7 reflects the same count (see CLAUDE.md §7); if
+        # either slips, the other catches doc drift.
         from personal_mem.surfaces.cli import _DISPATCH
 
-        assert len(_DISPATCH) == 41
+        assert len(_DISPATCH) == 45

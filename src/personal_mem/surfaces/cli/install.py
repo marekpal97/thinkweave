@@ -2,8 +2,13 @@
 
 Verifies the personal_mem console scripts are reachable on PATH and
 idempotently registers the personal-mem MCP server entry in
-``~/.claude.json`` so Claude Code can launch it. Run once per machine
-after ``pip install`` / ``pipx install``.
+``~/.claude.json`` so Claude Code can launch it. Additionally appends a
+small sentinel-wrapped block to ``~/.claude/CLAUDE.md`` (the user-global
+instructions file Claude Code loads every turn) — a persistent nudge so
+the model reaches for ``mem_*`` tools instead of filesystem search even
+in long sessions where the SessionStart context payload has been
+compacted away. Pass ``--no-claude-md`` to skip that touch. Run once
+per machine after ``pip install`` / ``pipx install``.
 
 Scope boundary: this command never touches a vault or a project's
 ``.claude/settings.json``. ``mem init`` owns the vault; ``mem hooks
@@ -14,14 +19,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 CLAUDE_JSON = Path.home() / ".claude.json"
+CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
+MARKER = Path.home() / ".claude" / "personal_mem_paused.json"
+PLUGINS_ROOT = Path.home() / ".claude" / "plugins"
 SERVER_NAME = "personal-mem"
 REQUIRED_SCRIPTS = ("mem", "mem-hook", "mem-mcp")
+
+CLAUDE_MD_BLOCK_START = "<!-- personal_mem:start -->"
+CLAUDE_MD_BLOCK_END = "<!-- personal_mem:end -->"
+CLAUDE_MD_BLOCK_BODY = (
+    "If `mem_*` MCP tools are available, personal_mem (Obsidian-native memory "
+    "layer) is your durable memory for this session. Prefer `mem_search` / "
+    "`mem_context` / `mem_graph` over filesystem search, and run `/mem-wrap` "
+    "before `/clear`."
+)
 
 
 def _detect_uv_path() -> str:
@@ -67,6 +86,96 @@ def _check_scripts() -> list[str]:
     return [s for s in REQUIRED_SCRIPTS if shutil.which(s) is None]
 
 
+def _check_uv_available() -> None:
+    """Validate that ``uv`` is on PATH. The MCP server entry invokes
+    ``uv run --project ... mem-mcp``, so a missing uv means the server
+    silently fails to spawn at every Claude Code session start. Fail
+    fast at install instead."""
+    if shutil.which("uv") is None:
+        print(
+            "error: `uv` not found on PATH. personal_mem's MCP server uses uv\n"
+            "to resolve its dependencies on demand. Install uv first:\n"
+            "  https://docs.astral.sh/uv/getting-started/installation/\n"
+            "then re-run `mem install`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _check_pyproject_reachable(project_root: Path) -> None:
+    """Refuse to write a broken MCP entry. The MCP command is
+    ``uv run --project <project_root> mem-mcp`` — if there's no
+    ``pyproject.toml`` at that root, uv has nothing to resolve from. This
+    happens on ``pipx install`` (package files live in pipx's isolated
+    ``site-packages/`` with no upstream ``pyproject.toml``);
+    ``_detect_project_root`` falls back to cwd and the install silently
+    bakes the user's terminal directory into the MCP entry."""
+    if not (project_root / "pyproject.toml").exists():
+        print(
+            f"error: could not find personal_mem's pyproject.toml.\n"
+            f"  detected project_root={project_root}\n"
+            f"This usually means personal_mem was installed via `pipx`, which\n"
+            f"is not supported (the MCP entry needs a resolvable source tree).\n"
+            f"Use the plugin route, or `pip install -e .[all]` from a git clone.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _uv_sync(project_root: Path) -> None:
+    """Run ``uv sync --extra mcp`` eagerly so the first Claude Code session
+    after install doesn't pay 30s–2min of dependency resolution. Streams
+    uv's output so users see progress; a non-zero exit aborts the
+    install with a clear pointer to manual retry."""
+    print()
+    print(f"Syncing personal_mem dependencies at {project_root} …")
+    print("(one-time, ~30s–2min depending on cache)")
+    try:
+        result = subprocess.run(
+            ["uv", "sync", "--project", str(project_root), "--extra", "mcp"],
+            check=False,
+        )
+    except FileNotFoundError:
+        # _check_uv_available already validated; defend anyway
+        print("error: `uv` not found at sync time.", file=sys.stderr)
+        sys.exit(1)
+    if result.returncode != 0:
+        print(
+            f"\nerror: `uv sync` exited {result.returncode}. The MCP server\n"
+            f"likely won't start. Retry manually after fixing the error:\n"
+            f"  uv sync --project {project_root} --extra mcp",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print("Dependencies synced.")
+
+
+def _plugin_provides_mcp() -> Path | None:
+    """Return the path to a plugin manifest that already declares the
+    personal-mem MCP server, or None if no installed plugin claims it.
+
+    Plugin-route users have the MCP entry sourced from
+    ``~/.claude/plugins/<name>/.claude-plugin/plugin.json`` (the plugin
+    manager owns ``~/.claude.json`` for plugin-managed servers). When this
+    helper returns a path, ``cmd_install`` skips its ``~/.claude.json``
+    write — duplicate registrations would cause Claude Code to try to
+    spawn the server twice — and only adds the CLAUDE.md nudge.
+
+    Corrupt or unreadable manifests are silently skipped rather than
+    aborting the install; a broken plugin shouldn't block ``mem install``.
+    """
+    if not PLUGINS_ROOT.exists():
+        return None
+    for manifest in PLUGINS_ROOT.glob("*/.claude-plugin/plugin.json"):
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if SERVER_NAME in data.get("mcpServers", {}):
+            return manifest
+    return None
+
+
 def _entries_equal(a: dict, b: dict) -> bool:
     """Compare two MCP-server blocks ignoring key order."""
     return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
@@ -86,32 +195,146 @@ def _diff_lines(old: dict, new: dict) -> list[str]:
     return out
 
 
-def cmd_install(args: argparse.Namespace) -> None:
-    missing = _check_scripts()
-    if missing:
-        print(
-            f"error: required console scripts missing from PATH: {', '.join(missing)}",
-            file=sys.stderr,
-        )
-        print(
-            "Install personal-mem first (e.g. `pipx install personal-mem` or "
-            "`pip install -e .[all]` from a clone), then re-run `mem install`.",
-            file=sys.stderr,
-        )
+def _render_claude_md_block() -> str:
+    """The exact bytes we want between the sentinels (no trailing newline)."""
+    return f"{CLAUDE_MD_BLOCK_START}\n{CLAUDE_MD_BLOCK_BODY}\n{CLAUDE_MD_BLOCK_END}"
+
+
+def _extract_claude_md_block(text: str) -> str | None:
+    """Return the existing sentinel-wrapped block, or None if absent/corrupt."""
+    start = text.find(CLAUDE_MD_BLOCK_START)
+    if start == -1:
+        return None
+    end = text.find(CLAUDE_MD_BLOCK_END, start)
+    if end == -1:
+        return None
+    return text[start : end + len(CLAUDE_MD_BLOCK_END)]
+
+
+def _splice_claude_md_block(text: str, new_block: str) -> str:
+    """Replace an existing block in place, or append a new one. Never edits
+    bytes outside the sentinels — hand-edits adjacent to the block survive."""
+    start = text.find(CLAUDE_MD_BLOCK_START)
+    end = text.find(CLAUDE_MD_BLOCK_END, max(start, 0))
+    if start == -1 or end == -1:
+        # absent or only one sentinel (corrupt) — append a fresh block
+        sep = "" if text == "" or text.endswith("\n") else "\n"
+        return f"{text}{sep}\n{new_block}\n"
+    return text[:start] + new_block + text[end + len(CLAUDE_MD_BLOCK_END) :]
+
+
+def _install_claude_md_block(yes: bool) -> None:
+    """Idempotently splice the personal_mem block into ``~/.claude/CLAUDE.md``.
+
+    Mirrors the consent posture of the ``~/.claude.json`` write: announce
+    what would change, require ``--yes`` to actually write. Skip path is
+    ``--no-claude-md`` on the parser (see ``cmd_install``).
+    """
+    import os
+
+    new_block = _render_claude_md_block()
+
+    if not CLAUDE_MD.exists():
+        print()
+        print(f"~/.claude/CLAUDE.md does not exist. `mem install` will create it")
+        print("with a small personal_mem block (loaded into every Claude Code session):")
+        print()
+        for line in new_block.splitlines():
+            print(f"  {line}")
+        if not yes:
+            print()
+            print("Re-run with --yes to write, or --no-claude-md to skip.")
+            sys.exit(1)
+        CLAUDE_MD.parent.mkdir(parents=True, exist_ok=True)
+        CLAUDE_MD.write_text(new_block + "\n", encoding="utf-8")
+        print()
+        print(f"Wrote {CLAUDE_MD} with personal_mem block.")
+        return
+
+    text = CLAUDE_MD.read_text(encoding="utf-8")
+    existing = _extract_claude_md_block(text)
+    if existing == new_block:
+        print(f"personal_mem block already present in {CLAUDE_MD} (no change).")
+        return
+
+    action = "Update" if existing is not None else "Append to"
+    print()
+    print(f"{action} {CLAUDE_MD} (user-global, loaded into every Claude Code session) with:")
+    print()
+    for line in new_block.splitlines():
+        print(f"  {line}")
+    if not yes:
+        print()
+        print("Re-run with --yes to apply, or --no-claude-md to skip.")
         sys.exit(1)
 
-    project_root = _detect_project_root()
-    new_entry = _build_server_entry(project_root, vault_root=args.vault)
+    new_text = _splice_claude_md_block(text, new_block)
+    tmp = CLAUDE_MD.with_suffix(CLAUDE_MD.suffix + ".tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.replace(tmp, CLAUDE_MD)
+    print()
+    verb = "Updated" if existing is not None else "Appended"
+    print(f"{verb} personal_mem block in {CLAUDE_MD}.")
 
+
+def _remove_mcp_entry() -> bool:
+    """Remove the personal-mem MCP entry from ``~/.claude.json``. Other
+    servers and top-level keys survive. Returns False if nothing to do."""
+    if not CLAUDE_JSON.exists():
+        return False
+    cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+    servers = cfg.get("mcpServers", {})
+    if SERVER_NAME not in servers:
+        return False
+    servers.pop(SERVER_NAME)
+    _atomic_write_json(CLAUDE_JSON, cfg)
+    return True
+
+
+def _restore_mcp_entry() -> None:
+    """Re-register the personal-mem MCP entry. Used by ``mem resume``."""
+    entry = _build_server_entry(_detect_project_root(), vault_root=None)
+    cfg: dict = {}
+    if CLAUDE_JSON.exists():
+        cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+    cfg.setdefault("mcpServers", {})[SERVER_NAME] = entry
+    _atomic_write_json(CLAUDE_JSON, cfg)
+
+
+def _remove_claude_md_block() -> bool:
+    """Strip the sentinel-wrapped block (plus surrounding blank lines)
+    from ``~/.claude/CLAUDE.md``. Returns False if no block present."""
+    if not CLAUDE_MD.exists():
+        return False
+    text = CLAUDE_MD.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"\n*" + re.escape(CLAUDE_MD_BLOCK_START)
+        + r".*?" + re.escape(CLAUDE_MD_BLOCK_END) + r"\n*",
+        re.DOTALL,
+    )
+    new_text, n = pattern.subn("\n", text, count=1)
+    if n == 0:
+        return False
+    CLAUDE_MD.write_text(new_text.lstrip("\n"), encoding="utf-8")
+    return True
+
+
+def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
+    """Ensure the personal-mem MCP entry exists in ``~/.claude.json``.
+
+    Four states: file missing, entry missing, entry matches, entry differs.
+    The first and last require ``--yes`` (creating a new file or overwriting
+    a divergent entry); the middle two are idempotent / write-through. Exits
+    the process when consent is needed but not granted.
+    """
     if not CLAUDE_JSON.exists():
         if not args.yes:
-            print(f"~/.claude.json does not exist. `mem install` will create it.")
+            print("~/.claude.json does not exist. `mem install` will create it.")
             print("Re-run with --yes to proceed.")
             sys.exit(1)
         cfg: dict[str, Any] = {"mcpServers": {SERVER_NAME: new_entry}}
         CLAUDE_JSON.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote {CLAUDE_JSON} with personal-mem MCP entry.")
-        _print_next_steps()
         return
 
     try:
@@ -127,12 +350,10 @@ def cmd_install(args: argparse.Namespace) -> None:
         servers[SERVER_NAME] = new_entry
         _atomic_write_json(CLAUDE_JSON, cfg)
         print(f"Registered personal-mem MCP server in {CLAUDE_JSON}.")
-        _print_next_steps()
         return
 
     if _entries_equal(existing, new_entry):
-        print(f"personal-mem MCP server already registered (no change).")
-        _print_next_steps()
+        print("personal-mem MCP server already registered (no change).")
         return
 
     print(f"personal-mem MCP server already in {CLAUDE_JSON} but differs:")
@@ -145,7 +366,104 @@ def cmd_install(args: argparse.Namespace) -> None:
     servers[SERVER_NAME] = new_entry
     _atomic_write_json(CLAUDE_JSON, cfg)
     print(f"Updated personal-mem MCP entry in {CLAUDE_JSON}.")
+
+
+def cmd_install(args: argparse.Namespace) -> None:
+    missing = _check_scripts()
+    if missing:
+        print(
+            f"error: required console scripts missing from PATH: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        print(
+            "Install personal-mem first (e.g. `pip install -e .[all]` from a "
+            "clone), then re-run `mem install`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    _check_uv_available()
+
+    plugin_manifest = _plugin_provides_mcp()
+    if plugin_manifest is not None:
+        print(
+            f"personal-mem MCP entry is provided by plugin manifest:\n"
+            f"  {plugin_manifest}\n"
+            f"Skipping ~/.claude.json write (plugin manager owns that registration)."
+        )
+        if args.vault:
+            print(
+                "Note: --vault is a no-op on the plugin route — set "
+                "PERSONAL_MEM_VAULT in your shell env instead."
+            )
+        # Eager `uv sync` is skipped on the plugin route — the plugin's
+        # source path (`${CLAUDE_PLUGIN_ROOT}`) is resolved by the plugin
+        # runtime, not by `mem`. First MCP launch syncs lazily.
+        if not getattr(args, "no_claude_md", False):
+            _install_claude_md_block(args.yes)
+        _print_next_steps()
+        return
+
+    project_root = _detect_project_root()
+    _check_pyproject_reachable(project_root)
+    new_entry = _build_server_entry(project_root, vault_root=args.vault)
+
+    _write_mcp_entry(args, new_entry)
+    _uv_sync(project_root)
+    if not getattr(args, "no_claude_md", False):
+        _install_claude_md_block(args.yes)
     _print_next_steps()
+
+
+def cmd_uninstall(args: argparse.Namespace) -> None:
+    """Reverse `mem install` — remove the MCP entry, the CLAUDE.md block,
+    and any leftover pause marker. Vault, hooks, plugin manifest, and cron
+    jobs are out of scope (they have their own owners)."""
+    md_block_present = (
+        CLAUDE_MD.exists()
+        and CLAUDE_MD_BLOCK_START in CLAUDE_MD.read_text(encoding="utf-8")
+    )
+    mcp_present = False
+    if CLAUDE_JSON.exists():
+        try:
+            cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+            mcp_present = SERVER_NAME in cfg.get("mcpServers", {})
+        except json.JSONDecodeError:
+            pass
+
+    to_remove: list[str] = []
+    if mcp_present:
+        to_remove.append(f"personal-mem MCP entry in {CLAUDE_JSON}")
+    if md_block_present:
+        to_remove.append(f"personal_mem block in {CLAUDE_MD}")
+    if MARKER.exists():
+        to_remove.append(f"pause marker {MARKER}")
+
+    if not to_remove:
+        print("Nothing to remove — `mem install` has not touched this machine.")
+        return
+
+    print("`mem uninstall` will remove:")
+    for item in to_remove:
+        print(f"  - {item}")
+    print()
+    print("Untouched: vault, hooks (run `mem hooks uninstall --scope user` separately),")
+    print("           plugin manifest (use your plugin manager), cron jobs.")
+
+    if not args.yes:
+        print()
+        print("Re-run with --yes to proceed.")
+        sys.exit(1)
+
+    if _remove_mcp_entry():
+        print(f"Removed MCP entry from {CLAUDE_JSON}.")
+    if _remove_claude_md_block():
+        print(f"Removed personal_mem block from {CLAUDE_MD}.")
+    if MARKER.exists():
+        MARKER.unlink()
+        print(f"Removed pause marker {MARKER}.")
+    print()
+    print("Done. Restart Claude Code so the MCP server is no longer launched.")
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:

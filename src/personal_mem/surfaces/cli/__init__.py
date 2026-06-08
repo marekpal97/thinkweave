@@ -31,7 +31,8 @@ from personal_mem.surfaces.cli.index import (
     cmd_index,
     cmd_stats,
 )
-from personal_mem.surfaces.cli.install import cmd_install
+from personal_mem.surfaces.cli.install import cmd_install, cmd_uninstall
+from personal_mem.surfaces.cli.pause import cmd_pause, cmd_resume
 from personal_mem.surfaces.cli.intake import cmd_intake
 from personal_mem.surfaces.cli.judge import cmd_judge
 from personal_mem.surfaces.cli.landing import cmd_landing
@@ -56,8 +57,8 @@ from personal_mem.surfaces.cli.parity import (
 from personal_mem.surfaces.cli.parser import build_parser
 from personal_mem.surfaces.cli.queue import cmd_queue
 from personal_mem.surfaces.cli.rlvr import cmd_rlvr
-from personal_mem.surfaces.cli.skill import cmd_skill
 from personal_mem.surfaces.cli.schedule import cmd_schedule
+from personal_mem.surfaces.cli.skill import cmd_skill
 from personal_mem.surfaces.cli.themes import cmd_themes
 from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
 from personal_mem.surfaces.cli.wrap import cmd_spend, cmd_wrap_finalize
@@ -83,10 +84,13 @@ _DISPATCH = {
     "stats": cmd_stats,
     "doctor": cmd_doctor,
     "flow": cmd_flow,
-    "hooks": cmd_hooks,
     "schedule": cmd_schedule,
+    "hooks": cmd_hooks,
     "init": cmd_init,
     "install": cmd_install,
+    "uninstall": cmd_uninstall,
+    "pause": cmd_pause,
+    "resume": cmd_resume,
     "mcp": cmd_mcp,
     "intake": cmd_intake,
     "sources": cmd_sources,

@@ -15,5 +15,6 @@
       "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "--extra", "mcp", "mem-mcp"],
       "env": {}
     }
-  }
+  },
+  "post_install": "mem hooks install && mem install --yes"
 }

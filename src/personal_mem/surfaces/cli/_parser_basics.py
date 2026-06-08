@@ -409,6 +409,45 @@ def add_admin_subparsers(sub) -> None:
         "--yes", "-y", action="store_true",
         help="Proceed without prompting on create or overwrite.",
     )
+    p_install.add_argument(
+        "--no-claude-md", action="store_true",
+        help=(
+            "Skip the small personal_mem block normally appended to "
+            "~/.claude/CLAUDE.md (a persistent nudge to prefer mem_* tools "
+            "over filesystem search). MCP registration still happens."
+        ),
+    )
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help=(
+            "Reverse `mem install` — remove the MCP entry from "
+            "~/.claude.json, the personal_mem block from "
+            "~/.claude/CLAUDE.md, and any leftover pause marker. "
+            "Hooks, vault, plugin manifest, and cron jobs are untouched."
+        ),
+    )
+    p_uninstall.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Proceed without prompting (otherwise prints a preview and exits).",
+    )
+
+    p_pause = sub.add_parser(
+        "pause",
+        help=(
+            "Temporarily disable personal_mem (remove user-scope hooks, MCP "
+            "entry, and CLAUDE.md block). Vault untouched. Reversed by `mem resume`."
+        ),
+    )
+    p_pause.add_argument(
+        "--status", action="store_true",
+        help="Report whether personal_mem is currently paused and exit.",
+    )
+
+    sub.add_parser(
+        "resume",
+        help="Restore personal_mem touchpoints removed by `mem pause`.",
+    )
 
     sub.add_parser("init", help="Initialize a new vault")
 

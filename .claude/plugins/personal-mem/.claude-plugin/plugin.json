@@ -10,5 +10,5 @@
       "env": {}
     }
   },
-  "post_install": "mem hooks install"
+  "post_install": "mem hooks install && mem install --yes"
 }
