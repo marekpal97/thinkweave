@@ -114,6 +114,29 @@ Path A (sequential) is for `paper`, `repo`, `article`. Path B (subagent fan-out)
 
 Some flows legitimately skip discover: `/substack` and `mem import {chatgpt|claude-history}` because the user (or an external export) has already done the discovery step; `/news <url>` and `/research <url>` because they're one-shot URL bypasses.
 
+### Dream orchestrator (two-phase, mirrors /drain)
+
+`/dream` is the second orchestrator in the repo. Same idiom as `/drain` (config-driven dispatch from a typed registry, scoped per-domain workers with strict JSON outcome contract, parallel fan-out, deterministic apply tail), specialised for the synthesis + composition + consumption lane instead of acquisition:
+
+```mermaid
+flowchart LR
+    classDef st fill:#1f2937,stroke:#60a5fa,color:#f9fafb,rx:6,ry:6
+    classDef store fill:#0f172a,stroke:#a78bfa,color:#f9fafb,rx:6,ry:6
+    SC[mem dream scan]:::st --> P1[Phase 1<br/>5 synthesis workers]:::st
+    P1 -->|plan fragments| AP[mem dream apply]:::st
+    AP --> P2A[Phase 2 wave A<br/>wrap + judge]:::st
+    P2A --> P2B[Phase 2 wave B<br/>digest]:::st
+    AP --> ML[(maintenance.jsonl)]:::store
+    P2B --> DG[(digests/YYYY-MM-DD.md)]:::store
+```
+
+- **Phase 1 (synthesis)** — 5 workers in parallel: `dream-{promotion,merge,theme,essence,priority}-worker`. Each emits a `plan_fragment` JSON outcome. Orchestrator merges, calls `mem dream apply` (one index rebuild, one `maintenance.jsonl` line).
+- **Phase 2 (composition + consumption)** — 3 workers in dependency waves. Wave A in parallel: `dream-wrap-worker` (catch-up unwrapped sessions, subsumes the standalone `/mem-wrap` cron) + `dream-judge-worker` (drain rejudge queue, subsumes `/judge-prediction --drain`). Wave B after wave A: `dream-digest-worker` (compose `type: digest` note at `vault/projects/<p>/digests/YYYY-MM-DD.md`). Phase-2 workers write directly; they emit a `side_effects` list, not plan fragments.
+
+**Extensibility seam.** `src/personal_mem/operations/dream_tasks.py::DreamTaskSpec` is the typed registry, structurally analogous to `sources/registry.py::SourceTypeSpec`. A new judgment, composition, or consumption domain plugs in via one `REGISTRY` entry (`surface_key, worker_name, plan_keys, has_signal, phase, depends_on`) plus one `.claude/agents/<worker>.md` file — no skill-text or orchestrator-code edits. Dependency edges (`depends_on`) let the orchestrator topologically sort the fan-out without per-domain branching.
+
+**Operational vs epistemic separation (per dec-719e47e0 + n-d31cc330).** The dream report at `vault/reports/dream/<cycle_id>.md` is *operational* (what apply did this cycle). The digest at `vault/projects/<p>/digests/YYYY-MM-DD.md` is *epistemic* (what your knowledge gained today). Same orchestrator, separate workers, separate output files, separate prompt framings — no data-level conflation despite shared dispatch.
+
 ## Ontology as the joint vocabulary
 
 The ontology is what glues the knowledge layer together. Every note — regardless of type or project — can carry a `concepts` frontmatter list. Notes that share ≥`concept_edge_threshold` concepts (default 1) auto-link in the graph. Concept hubs (`vault/concepts/topics/{concept}.md`) aggregate learning artifacts across the whole vault.
@@ -329,7 +352,8 @@ surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
       concepts.py     list / tighten / merge / drift / source_counts / search
       decisions.py    list_by_file / judge_and_writeback
       queue.py        list_queues / peek / inspect / enqueue (auto-dedup)
-      hubs_batch.py   run_hubs_batch — OpenAI Batches monolith for hub backfill
+      hubs_batch.py   run_hubs_batch — orchestrator over agent_client.batch_completions_sync
+      _backfill_route.py  choose_route — picks inline (CC skill) vs batch (wrapper fan-out)
       dream.py        scan + apply for /dream synthesis + hygiene cycle
       wrap.py         /mem-wrap deterministic tail (prune → index → judge → landing → drift)
       rlvr_export.py  decision-context RLVR substrate export
@@ -340,6 +364,43 @@ surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
 Dependency rule: operations may import from `core/`, `retrieval/`, `synthesis/`, `sources/`, but never from `surfaces/`. CLI and MCP handlers import from operations, not from the knowledge layer directly. So `cmd_add` (CLI) and `mem_create` (MCP) both delegate to `operations.notes.create_note(cfg, …)` — the same call, the same code path.
 
 Operations functions take a `Config` (or `VaultManager` / `Indexer`) plus parameters and return data. They don't `print` and they don't call `sys.exit`. Surfaces own input shape (argparse / JSON) and output shape (text / JSON).
+
+## LLM provider abstraction — `core/agent_client.py` + `core/embedding_provider.py`
+
+Pre-2026-06-06 personal_mem talked to three providers (OpenAI, Anthropic, Gemini) through three SDKs and four httpx call sites, with provider-specific Batches dances in `operations/hubs_batch.py` and `onboarding/enrich_batch.py`. After the API consolidation refactor (plan: `.claude/plans/go-back-to-the-scalable-firefly.md`):
+
+```
+            vault/config/api.yaml
+            completion.{provider, model, max_tokens, batch_concurrency}
+            embeddings.{provider, model}
+            overrides.<op>.{provider, model, ...}
+                            │
+                            ▼ resolve_for_op() / embeddings_config()
+            ┌───────────────┴───────────────┐
+            ▼                               ▼
+core/agent_client.py            core/embedding_provider.py
+(AsyncOpenAI + per-provider     EmbeddingProvider protocol
+ base_url for Anthropic /         OpenAI (httpx, default)
+ Gemini OpenAI-compat)            SentenceTransformer (local)
+                                  LiteLLM passthrough
+get_completion / batch_completions     embed(texts) -> vectors
+            │                               │
+            ▼                               ▼
+   Consumers (backfill ops)        Consumers (embedding paths)
+   • operations/hubs_batch.py      • core/embeddings.py
+   • onboarding/enrich_batch.py    • retrieval/search.py (mode='similar')
+   • importers/chatgpt.py          • mem index --embed
+   • enrich.py
+   • surfaces/cli/_hubs_link.py
+   (news-triage subagent stays on
+    CC Task path, not the wrapper)
+
+CARVE-OUT:
+   • sources/extractors/gemini_extract.py — podcast audio Files API
+     (direct google.genai; no chat-completion shape covers it)
+```
+
+Every wrapper call records spend exactly once via `core/spend.record_spend`. Dual-route surfaces (`--via {inline,batch}`) pick between the wrapper (batch) and a CC skill (inline) via `operations/_backfill_route.choose_route`.
 
 ## A note on the importers under `src/personal_mem/importers/`
 
