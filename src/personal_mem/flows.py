@@ -29,9 +29,8 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -111,7 +110,7 @@ def run_flow(spec: FlowSpec, *, dry_run: bool = False) -> int:
             _log(log_handle, f"\n=== flow {spec.name} stage {i + 1}/{len(spec.stages)} ===")
             _log(log_handle, f"$ {cmd}")
             proc = subprocess.run(
-                shlex.split(cmd),
+                _build_argv(stage.run),
                 stdout=log_handle if log_handle else None,
                 stderr=subprocess.STDOUT if log_handle else None,
             )
@@ -138,19 +137,30 @@ def run_flow(spec: FlowSpec, *, dry_run: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _build_command(run_arg: str) -> str:
-    """Build the literal shell command for one stage.
+def _build_argv(run_arg: str) -> list[str]:
+    """The argv list executed for one stage.
 
-    Hardcodes the Claude Code flags that the existing cron entries use.
-    Single-quotes the user-supplied prompt so spaces/quotes inside it
-    don't break shlex.
+    Building the argv directly (rather than a shell string parsed by
+    ``shlex.split``) keeps execution correct on every OS — the prompt may
+    contain spaces, quotes, or backslashes (Windows paths) that POSIX
+    shell-splitting would mangle. Hardcodes the Claude Code flags the cron
+    entries use.
     """
     bin_path = os.environ.get("PERSONAL_MEM_CLAUDE_BIN") or "claude"
-    quoted = shlex.quote(run_arg)
-    return (
-        f"{bin_path} --model sonnet -p {quoted} "
-        f"--dangerously-skip-permissions"
-    )
+    return [bin_path, "--model", "sonnet", "-p", run_arg, "--dangerously-skip-permissions"]
+
+
+def _build_command(run_arg: str) -> str:
+    """Human-readable display string for one stage (dry-run + logs).
+
+    Execution goes through :func:`_build_argv`; this is only for showing the
+    user what will run. Quoting is OS-correct: ``shlex.join`` on POSIX,
+    ``subprocess.list2cmdline`` on Windows.
+    """
+    argv = _build_argv(run_arg)
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
 def _log(handle, text: str) -> None:

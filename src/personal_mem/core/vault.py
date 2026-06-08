@@ -649,7 +649,10 @@ class VaultManager:
         else:
             header = f"# {title}\n\n"
         content = render_frontmatter(fm) + "\n\n" + header + body
-        filepath.write_text(content, encoding="utf-8")
+        # Pin LF so the vault stays newline-consistent across machines —
+        # without this, write_text emits CRLF on Windows, drifting synced
+        # vaults and risking trailing-\r leakage into frontmatter parses.
+        filepath.write_text(content, encoding="utf-8", newline="\n")
 
         # Post-write hook: event-grain sources auto-float theme candidates.
         #
@@ -772,7 +775,9 @@ class VaultManager:
             body = body.rstrip() + "\n\n" + body_append + "\n"
 
         content = render_frontmatter(fm) + "\n\n" + body
-        path.write_text(content, encoding="utf-8")
+        # Pin LF (see create_note) — keep vault writes newline-consistent
+        # regardless of host OS.
+        path.write_text(content, encoding="utf-8", newline="\n")
 
     def list_notes(
         self,

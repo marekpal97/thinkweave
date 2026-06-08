@@ -81,6 +81,51 @@ def test_user_config_path_falls_back_to_home_dot_config(
     assert user_config_path() == fake_home / ".config" / "personal-mem" / "config.toml"
 
 
+def test_user_config_path_windows_uses_appdata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr("personal_mem.core.config._is_windows", lambda: True)
+    appdata = tmp_path / "Roaming"
+    monkeypatch.setenv("APPDATA", str(appdata))
+    assert user_config_path() == appdata / "personal-mem" / "config.toml"
+
+
+def test_user_config_path_xdg_wins_over_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # An explicitly-set XDG var beats the Windows %APPDATA% branch.
+    monkeypatch.setattr("personal_mem.core.config._is_windows", lambda: True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    assert user_config_path() == xdg / "personal-mem" / "config.toml"
+
+
+def test_user_cache_dir_windows_uses_localappdata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from personal_mem.core.config import user_cache_dir
+
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setattr("personal_mem.core.config._is_windows", lambda: True)
+    local = tmp_path / "Local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    assert user_cache_dir() == local / "personal_mem"
+
+
+def test_user_cache_dir_posix_falls_back_to_home_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from personal_mem.core.config import user_cache_dir
+
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setattr("personal_mem.core.config._is_windows", lambda: False)
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    assert user_cache_dir() == fake_home / ".cache" / "personal_mem"
+
+
 # ---------------------------------------------------------------------------
 # write_user_config
 # ---------------------------------------------------------------------------

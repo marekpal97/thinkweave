@@ -256,8 +256,9 @@ def _now_iso() -> str:
 
 
 def _cache_root() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "personal_mem" / "spend"
+    from personal_mem.core.config import user_cache_dir
+
+    return user_cache_dir() / "spend"
 
 
 def _headless_log_path() -> Path:

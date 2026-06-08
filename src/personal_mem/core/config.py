@@ -161,16 +161,51 @@ def resolve_config_file(vault_root: Path, filename: str) -> Path:
 
 
 def user_config_path() -> Path:
-    """XDG-respectful path to the user-scope personal-mem config.
+    """Path to the user-scope personal-mem config, idiomatic per-OS.
 
-    Returns ``$XDG_CONFIG_HOME/personal-mem/config.toml`` when the env var
-    is set, else ``~/.config/personal-mem/config.toml``. This is the tier
+    Resolution order for the base dir:
+    1. ``$XDG_CONFIG_HOME`` when set (honoured on every OS — some Windows
+       users export it deliberately).
+    2. Windows: ``%APPDATA%`` (e.g. ``C:\\Users\\x\\AppData\\Roaming``).
+    3. Otherwise: ``~/.config``.
+
+    The final file is ``<base>/personal-mem/config.toml``. This is the tier
     ``/onboard`` writes to when persisting the user's chosen vault root —
-    the seam that lets the plugin path work without a shell-rc edit.
+    the seam that lets the plugin path work without a shell-rc edit. Reader
+    (:func:`_load_user_config_vault_root`) and writer
+    (:func:`write_user_config`) both go through this one function, so the
+    per-OS branch can never drift between them.
     """
     xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
+    if xdg:
+        base = Path(xdg)
+    elif _is_windows() and os.environ.get("APPDATA"):
+        base = Path(os.environ["APPDATA"])
+    else:
+        base = Path.home() / ".config"
     return base / "personal-mem" / "config.toml"
+
+
+def user_cache_dir() -> Path:
+    """Platform cache base for personal_mem runtime artifacts (cron/Task
+    Scheduler logs, the spend ledger).
+
+    Resolution order mirrors :func:`user_config_path`:
+    1. ``$XDG_CACHE_HOME`` when set.
+    2. Windows: ``%LOCALAPPDATA%`` (e.g. ``C:\\Users\\x\\AppData\\Local``).
+    3. Otherwise: ``~/.cache``.
+
+    Returns ``<base>/personal_mem`` (underscore form, matching the historic
+    ``~/.cache/personal_mem`` layout the example crontab logs into).
+    """
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg:
+        base = Path(xdg)
+    elif _is_windows() and os.environ.get("LOCALAPPDATA"):
+        base = Path(os.environ["LOCALAPPDATA"])
+    else:
+        base = Path.home() / ".cache"
+    return base / "personal_mem"
 
 
 def write_user_config(vault_root: Path) -> None:

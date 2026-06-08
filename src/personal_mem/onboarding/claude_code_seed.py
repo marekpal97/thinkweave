@@ -22,7 +22,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from personal_mem.core.config import Config, load_config
@@ -70,15 +70,31 @@ def normalize_project(cwd: str) -> str:
     if not cwd:
         return UNSCOPED_PROJECT
 
-    cwd_clean = cwd.rstrip("/")
-    cwd_clean = re.sub(r"/\.claude/worktrees/[^/]+/?.*$", "", cwd_clean)
+    # Normalize separators up front so a Windows cwd (``C:\\Users\\x\\repo``)
+    # and a POSIX cwd parse identically, regardless of which OS runs the
+    # import. PurePosixPath then gives consistent ``.parts`` semantics on
+    # the normalized string (a drive like ``C:`` becomes a leading part).
+    parts = list(PurePosixPath(cwd.replace("\\", "/").rstrip("/")).parts)
 
-    home = str(Path.home())
-    if cwd_clean in {home, home + "/.claude", "/", ""}:
+    # Strip a trailing ``.claude/worktrees/<branch>[/...]`` — we want the
+    # repo root, not the worktree branch dir.
+    for i in range(len(parts) - 1):
+        if parts[i] == ".claude" and parts[i + 1] == "worktrees":
+            parts = parts[:i]
+            break
+
+    # Drop sessions whose cwd is the homedir, ``~/.claude``, or the root.
+    home_parts = PurePosixPath(str(Path.home()).replace("\\", "/")).parts
+    if (
+        not parts
+        or tuple(parts) == home_parts
+        or tuple(parts) == home_parts + (".claude",)
+    ):
         return UNSCOPED_PROJECT
 
-    name = Path(cwd_clean).name
-    if not name or name.startswith("."):
+    name = parts[-1]
+    # Guard a bare drive root (``C:``) and dotfile dirs.
+    if not name or name.startswith(".") or name.endswith(":"):
         return UNSCOPED_PROJECT
 
     name = name.lower().replace("-", "_")

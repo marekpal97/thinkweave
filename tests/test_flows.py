@@ -10,6 +10,7 @@ from personal_mem.core.config import Config
 from personal_mem.flows import (
     FlowSpec,
     FlowStage,
+    _build_argv,
     _build_command,
     _parse_flows_yaml,
     flows_path,
@@ -153,6 +154,32 @@ class TestBuildCommand:
         monkeypatch.setenv("PERSONAL_MEM_CLAUDE_BIN", "/custom/claude")
         cmd = _build_command("/x")
         assert cmd.startswith("/custom/claude ")
+
+
+class TestBuildArgv:
+    """The execution path is an argv list — no shell parsing, so a prompt
+    with spaces/quotes/backslashes survives intact on every OS."""
+
+    def test_argv_keeps_prompt_as_single_token(self):
+        argv = _build_argv("/discover (gap cap of 10)")
+        assert argv == [
+            "claude",
+            "--model",
+            "sonnet",
+            "-p",
+            "/discover (gap cap of 10)",
+            "--dangerously-skip-permissions",
+        ]
+
+    def test_argv_does_not_split_windows_path_in_prompt(self):
+        # The whole prompt is a single -p token; a backslash path inside it
+        # must survive intact (shlex.split would have mangled it).
+        argv = _build_argv('/x C:\\Users\\me\\f.md')
+        assert argv[4] == "/x C:\\Users\\me\\f.md"
+
+    def test_argv_respects_bin_override(self, monkeypatch):
+        monkeypatch.setenv("PERSONAL_MEM_CLAUDE_BIN", "/custom/claude")
+        assert _build_argv("/x")[0] == "/custom/claude"
 
 
 # ---------------------------------------------------------------------------
