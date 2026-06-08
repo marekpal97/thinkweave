@@ -1,12 +1,18 @@
-# Example crontab for personal_mem automation.
+# DEPRECATED as a hand-install target — kept as a cadence reference only.
 #
-# Replace `/home/marekpal97/python_projects/personal_mem` with your repo
-# path and `~/.cache/personal_mem/cron.log` with whatever log location
-# you prefer. Sleep between research batches now lives inside the flow
-# definition (vault/.mem/flows.yaml), not in cron-spacing.
+# The schedule now lives in ONE place: vault/config/scheduling.yaml. Install
+# it onto your OS's native scheduler with:
 #
-# Install: `crontab -e` and paste the lines below (without the leading
-# `#` from these comments).
+#   mem schedule list                 # show jobs + the backend for this OS
+#   mem schedule install --dry-run    # preview crontab / Task Scheduler entries
+#   mem schedule install              # crontab on Linux/macOS, schtasks on Windows
+#
+# `mem schedule` renders the same jobs onto crontab (Linux/macOS) or Windows
+# Task Scheduler — no more hand-pasting, and Windows works without WSL. The
+# lines below mirror the shipped scheduling.yaml cadences for reference.
+#
+# Sleep between research batches lives inside the flow definition
+# (vault/config/flows.yaml), not in cron-spacing.
 
 # PATH hardening — cron's default PATH is minimal (typically just
 # /usr/bin:/bin) and won't find `uv` or `claude` if they were installed

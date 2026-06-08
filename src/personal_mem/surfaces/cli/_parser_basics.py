@@ -307,6 +307,31 @@ def add_admin_subparsers(sub) -> None:
         help="Print resolved invocations without executing them.",
     )
 
+    p_schedule = sub.add_parser(
+        "schedule",
+        help="Install recurring jobs (vault/config/scheduling.yaml) onto the "
+        "host scheduler — crontab on Linux/macOS, Task Scheduler on Windows.",
+    )
+    sched_sub = p_schedule.add_subparsers(dest="schedule_action")
+    sched_sub.add_parser("list", help="List scheduled jobs + the resolved backend.")
+    p_sched_install = sched_sub.add_parser(
+        "install", help="Render + install the jobs onto the native scheduler."
+    )
+    p_sched_uninstall = sched_sub.add_parser(
+        "uninstall", help="Remove personal-mem's scheduled jobs."
+    )
+    for p in (p_sched_install, p_sched_uninstall):
+        p.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Print what would change without touching the scheduler.",
+        )
+        p.add_argument(
+            "--only",
+            default="",
+            help="Comma-separated job names to act on (default: all).",
+        )
+
     p_hooks = sub.add_parser("hooks", help="Manage Claude Code hooks")
     hooks_sub = p_hooks.add_subparsers(dest="hooks_action")
     p_install = hooks_sub.add_parser("install", help="Install hooks")

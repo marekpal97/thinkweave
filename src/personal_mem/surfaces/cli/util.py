@@ -49,6 +49,7 @@ def _seed_vault_templates(vault_root: Path) -> None:
         "PRIORITIES.yaml",
         "podcast_events_feeds.yaml",
         "podcast_concepts_feeds.yaml",
+        "scheduling.yaml",
     ):
         source = templates_dir / filename
         target = target_dir / filename

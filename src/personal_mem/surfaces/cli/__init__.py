@@ -57,6 +57,7 @@ from personal_mem.surfaces.cli.parser import build_parser
 from personal_mem.surfaces.cli.queue import cmd_queue
 from personal_mem.surfaces.cli.rlvr import cmd_rlvr
 from personal_mem.surfaces.cli.skill import cmd_skill
+from personal_mem.surfaces.cli.schedule import cmd_schedule
 from personal_mem.surfaces.cli.themes import cmd_themes
 from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
 from personal_mem.surfaces.cli.wrap import cmd_spend, cmd_wrap_finalize
@@ -83,6 +84,7 @@ _DISPATCH = {
     "doctor": cmd_doctor,
     "flow": cmd_flow,
     "hooks": cmd_hooks,
+    "schedule": cmd_schedule,
     "init": cmd_init,
     "install": cmd_install,
     "mcp": cmd_mcp,
