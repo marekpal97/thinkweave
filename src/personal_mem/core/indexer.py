@@ -695,6 +695,15 @@ class Indexer:
             stem = Path(row["path"]).stem
             slug_to_id[stem] = row["id"]
             slug_to_id[row["title"].lower()] = row["id"]
+            # Resolve links by note id (bare ``[[dec-X]]``) and by vault path
+            # sans .md (path-based ``[[notes/foo|dec-X]]`` — extract_wikilink_ids
+            # recovers the id, but key the path too as a belt-and-braces fallback).
+            slug_to_id[row["id"].lower()] = row["id"]
+            rel = str(row["path"] or "").replace("\\", "/")
+            if rel.endswith(".md"):
+                rel = rel[:-3]
+            if rel:
+                slug_to_id[rel.lower()] = row["id"]
             id_to_type[row["id"]] = row["type"]
             id_to_path[row["id"]] = row["path"]
 
@@ -723,7 +732,7 @@ class Indexer:
 
             # ── 2. Wikilink edges (with type inference) ──────────────
             body = row["body_text"] or ""
-            for link in extract_wikilinks(body):
+            for link in extract_wikilink_ids(body):
                 link_lower = link.lower().strip()
                 resolved = slug_to_id.get(link_lower, slug_to_id.get(link, ""))
                 if resolved and resolved != note_id:
@@ -881,6 +890,15 @@ class Indexer:
             stem = Path(row["path"]).stem
             slug_to_id[stem] = row["id"]
             slug_to_id[row["title"].lower()] = row["id"]
+            # Resolve links by note id (bare ``[[dec-X]]``) and by vault path
+            # sans .md (path-based ``[[notes/foo|dec-X]]`` — extract_wikilink_ids
+            # recovers the id, but key the path too as a belt-and-braces fallback).
+            slug_to_id[row["id"].lower()] = row["id"]
+            rel = str(row["path"] or "").replace("\\", "/")
+            if rel.endswith(".md"):
+                rel = rel[:-3]
+            if rel:
+                slug_to_id[rel.lower()] = row["id"]
             id_to_type[row["id"]] = row["type"]
             id_to_path[row["id"]] = row["path"]
         all_ids = set(slug_to_id.values())
@@ -922,7 +940,7 @@ class Indexer:
                         edge_count += 1
 
             body = row["body_text"] or ""
-            for link in extract_wikilinks(body):
+            for link in extract_wikilink_ids(body):
                 link_lower = link.lower().strip()
                 resolved = slug_to_id.get(link_lower, slug_to_id.get(link, ""))
                 if resolved and resolved != note_id:

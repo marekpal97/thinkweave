@@ -128,22 +128,26 @@ def render_theme_body_skeleton(title: str) -> str:
     )
 
 
-def parse_theme_catalyst_log(body: str) -> list[HubLogEntry]:
+def parse_theme_catalyst_log(
+    body: str, path_to_id: dict[str, str] | None = None
+) -> list[HubLogEntry]:
     """Parse the ``## Catalyst log`` section of a theme body.
 
     Returns a list of ``HubLogEntry`` records — the same dataclass concept
     hubs use, sourced from ``synthesis.hub``. Empty list if the section is
-    absent or empty.
+    absent or empty. ``path_to_id`` is forwarded so title-aliased citations
+    (``[[path|Title]]``) recover their id from the path side.
     """
-    return parse_log_section(body, CATALYST_LOG_HEADING)
+    return parse_log_section(body, CATALYST_LOG_HEADING, path_to_id=path_to_id)
 
 
-def parse_theme(path) -> Hub:
+def parse_theme(path, *, path_to_id: dict[str, str] | None = None) -> Hub:
     """Parse a theme file from disk into a unified ``Hub`` view.
 
     Convenience wrapper that exposes the shared spine on the theme
     surface. Theme-specific helpers (``build_theme_frontmatter``,
     ``render_theme_body_skeleton``, status constants) stay here; the log
-    grammar lives in ``Hub.parse``.
+    grammar lives in ``Hub.parse``. ``path_to_id`` is forwarded for
+    title-aliased citation recovery.
     """
-    return Hub.parse(path)
+    return Hub.parse(path, path_to_id=path_to_id)

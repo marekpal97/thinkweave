@@ -74,6 +74,7 @@ def repair(cfg: Config, *, concept: str = "", dry_run: bool = False) -> dict:
         topics_dir,
         write_concept_hub,
     )
+    from personal_mem.synthesis.hub import build_id_path_map, build_id_title_map
 
     topics = topics_dir(cfg)
     if not topics.exists():
@@ -85,6 +86,13 @@ def repair(cfg: Config, *, concept: str = "", dry_run: bool = False) -> dict:
         "SELECT id, date FROM notes WHERE date IS NOT NULL AND date != ''"
     ):
         id_to_date[row["id"]] = str(row["date"])[:10]
+    # Maps so the full re-render below keeps citations path-based with title
+    # aliases (not reverting to bare-id links), and the path->id inverse so the
+    # parse recovers ids from title-aliased links (else the per-entry date
+    # lookup keyed on entry.citation would silently no-op).
+    idmap = build_id_path_map(idx.db)
+    title_map = build_id_title_map(idx.db)
+    path_to_id = {path: nid for nid, path in idmap.items()}
     idx.close()
 
     hub_files = sorted(topics.glob("*.md"))
@@ -96,7 +104,7 @@ def repair(cfg: Config, *, concept: str = "", dry_run: bool = False) -> dict:
     date_updates = 0
     citation_cleanups = 0
     for hub_path in hub_files:
-        hub = parse_concept_hub(hub_path)
+        hub = parse_concept_hub(hub_path, path_to_id=path_to_id)
         if not hub.log_entries:
             continue
         dirty = False
@@ -114,7 +122,7 @@ def repair(cfg: Config, *, concept: str = "", dry_run: bool = False) -> dict:
         if dirty:
             changed_hubs += 1
             if not dry_run:
-                write_concept_hub(hub)
+                write_concept_hub(hub, idmap=idmap, title_map=title_map)
 
     if not dry_run:
         idx = Indexer(config=cfg)

@@ -247,6 +247,32 @@ def extract_wikilinks(text: str) -> list[str]:
     return _WIKILINK_RE.findall(text)
 
 
+def extract_wikilink_ids(text: str) -> list[str]:
+    """Extract the note-id reference for each [[wikilink]], path-link aware.
+
+    Bare links (``[[dec-X]]``) yield the target. Path-based links
+    (``[[notes/foo|dec-X]]``) yield the id from the *display* side — so the
+    durable path-based form still resolves to a note id for edge inference
+    and the RLVR citation substrate. When neither side is id-shaped, the raw
+    target is returned (a title/path/slug the caller can resolve another way).
+
+    This is the link-form-agnostic counterpart to ``extract_wikilinks``;
+    callers that map links to note ids should prefer it so that migrating
+    bodies bare→path doesn't drop edges or citations.
+    """
+    out: list[str] = []
+    for m in _WIKILINK_REF_RE.finditer(text):
+        target = (m.group(1) or "").strip()
+        display = (m.group(2) or "").strip()
+        if display and _NOTE_ID_RE.match(display):
+            out.append(display)
+        elif _NOTE_ID_RE.match(target):
+            out.append(target)
+        else:
+            out.append(target)
+    return out
+
+
 def strip_section(body: str, heading: str) -> str:
     """Remove a markdown section (heading + content until next ## heading or EOF)."""
     if heading not in body:

@@ -48,6 +48,14 @@ CATALYST_LOG_HEADING = "## Catalyst log"
 LEGACY_LEARNING_LOG_HEADING = "## Learning log"
 OPEN_QUESTIONS_HEADING = "## Open questions"
 
+# Catalyst logs on major hubs run to hundreds of entries. Past this many
+# thread anchors the renderer folds the *older* anchors into a collapsible
+# ``<details>`` block so the page opens on the recent activity. The fold is
+# purely visual — every entry stays in ``body_text`` (so the indexer still
+# projects its citation into the edge graph) and round-trips through the
+# parser unchanged. Never truncate; only collapse.
+LOG_FOLD_THRESHOLD = 25
+
 # Observational flag vocabulary. Same set on both surfaces — kept narrow on
 # purpose, these are honest LLM observations the reader can verify, not a
 # lifecycle state machine.
@@ -79,7 +87,93 @@ _ENTRY_RE = re.compile(
     r"(?P<rest>.*)$"
 )
 
-_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
+# Captures both the link target (group 1) and the optional display alias
+# (group 2). Catalyst-log citations are rendered path-based as
+# ``[[full/path|note-id]]`` (the id lives in the display so it round-trips),
+# but legacy logs carry bare ``[[note-id]]``; both must parse back to the id.
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+# A note-id-shaped token: prefix + hex suffix (src-0032dd84, thm-aaaa1111,
+# n-ade83929, dec-…, ses-…). Used to recover the citation id from either side
+# of a piped wikilink — the side that looks like an id is the citation; the
+# other side is a vault path. Falls back to the raw target when neither matches.
+_NOTE_ID_RE = re.compile(r"^[a-z]+-[0-9a-f]{6,}$")
+
+
+def build_id_path_map(db) -> dict[str, str]:
+    """Map note id -> vault-relative path (sans ``.md``) for path-based links.
+
+    A path wikilink resolves structurally in Obsidian by file location, so it
+    never spawns a phantom stub — unlike a bare ``[[note-id]]`` that depends on
+    the target's ``aliases:`` frontmatter being present *and* indexed. This is
+    the same id->path resolution ``landing._id_path_map`` and the ``## See Also``
+    materialiser use; the catalyst log shares it so every surface links the same
+    durable way. ``db`` is any sqlite connection with a ``notes(id, path)`` table.
+    """
+    out: dict[str, str] = {}
+    for r in db.execute("SELECT id, path FROM notes"):
+        rel = str(r["path"] or "").replace("\\", "/")
+        if rel.endswith(".md"):
+            rel = rel[:-3]
+        if rel:
+            out[r["id"]] = rel
+    return out
+
+
+def build_id_title_map(db) -> dict[str, str]:
+    """Map note id -> human title, for title-aliased catalyst-log citations.
+
+    Mirrors ``build_id_path_map``; the two together let the renderer emit
+    ``[[path|Title]]`` (durable target + legible alias). ``db`` is any sqlite
+    connection with a ``notes(id, title)`` table. Empty/missing titles are
+    skipped (the citation then falls back to displaying its id).
+    """
+    out: dict[str, str] = {}
+    for r in db.execute("SELECT id, title FROM notes"):
+        title = str(r["title"] or "").strip()
+        if title:
+            out[r["id"]] = title
+    return out
+
+
+def _clean_alias(text: str) -> str:
+    """Sanitise a wikilink display alias.
+
+    Aliases can't contain ``|`` (the wikilink field separator) or ``[`` / ``]``
+    (the bracket delimiters), and newlines would break the single-line entry
+    grammar. Collapse whitespace too so a multi-line title renders on one line.
+    """
+    return " ".join(
+        text.replace("|", "/").replace("[", "(").replace("]", ")").split()
+    )
+
+
+def reflink(
+    citation: str,
+    idmap: dict[str, str] | None = None,
+    title_map: dict[str, str] | None = None,
+) -> str:
+    """Render a catalyst-log citation as a wikilink.
+
+    Path-based (``[[path|display]]``) when ``idmap`` resolves the id — the
+    durable form that never spawns a phantom stub. ``display`` is the note's
+    human title when ``title_map`` resolves it (so the reader sees *what* is
+    cited, not an opaque ``n-ade83929``), falling back to the id otherwise.
+    Falls back to bare ``[[note-id]]`` (alias resolution) when the path is
+    unknown (e.g. a dangling citation to a deleted note). Empty citation ->
+    empty string.
+
+    Note the id stays the round-trip key: the parser recovers it from the path
+    side via a ``path_to_id`` map (see ``_split_citation``), so swapping the
+    display from id to title is lossless.
+    """
+    if not citation:
+        return ""
+    path = (idmap or {}).get(citation)
+    if not path:
+        return f"[[{citation}]]"
+    display = (title_map or {}).get(citation) or citation
+    return f"[[{path}|{_clean_alias(display)}]]"
 
 
 @dataclass
@@ -109,18 +203,32 @@ class HubLogEntry:
         """
         return [self.citation] if self.citation else []
 
-    def render(self, *, depth: int = 0) -> str:
+    def render(
+        self,
+        *,
+        depth: int = 0,
+        idmap: dict[str, str] | None = None,
+        title_map: dict[str, str] | None = None,
+    ) -> str:
         """Render this entry as one markdown line.
 
         ``depth`` controls threading. Depth 0 is a top-level anchor
-        (rendered as ``- {date} · *flag* — text — [[id]]``); depth ≥ 1
+        (rendered as ``- {date} · *flag* — text — [[path|Title]]``); depth ≥ 1
         is a descendant rendered as a nested list item with a ``↳``
-        cue (``    - ↳ {date} · *extends 2026-01-15* — text — [[id]]``).
+        cue (``    - ↳ {date} · *extends 2026-01-15* — text — [[path|Title]]``).
         Indentation is 4 spaces per level — the canonical markdown
         nested-list indent that Obsidian renders as a real sub-bullet.
+
+        ``idmap`` (id -> vault-relative path) makes the citation a path-based
+        wikilink that resolves structurally instead of via the fragile
+        bare-alias form. ``title_map`` (id -> human title) makes the display
+        alias the note's title so the reader can tell what is cited; without
+        it the alias is the id. Omit both and the citation falls back to bare
+        ``[[id]]`` (the legacy shape) — all forms round-trip through the parser.
         """
         flag_str = f"*{self.flag}*" if not self.ref else f"*{self.flag} {self.ref}*"
-        citation = f" — [[{self.citation}]]" if self.citation else ""
+        link = reflink(self.citation, idmap, title_map)
+        citation = f" — {link}" if link else ""
         if depth <= 0:
             prefix = "- "
         else:
@@ -193,6 +301,61 @@ def thread_log(entries: list["HubLogEntry"]) -> list[tuple["HubLogEntry", int]]:
     return result
 
 
+def render_catalyst_log(
+    entries: list["HubLogEntry"],
+    *,
+    idmap: dict[str, str] | None = None,
+    title_map: dict[str, str] | None = None,
+    threaded: bool = False,
+    fold_threshold: int | None = LOG_FOLD_THRESHOLD,
+) -> list[str]:
+    """Render a catalyst log to markdown lines — the shared body for both surfaces.
+
+    Threads (``thread_log``) when ``threaded``; otherwise renders flat in the
+    given order. When the number of top-level *anchors* exceeds
+    ``fold_threshold``, the older anchors (and their whole threads — a thread is
+    never split across the boundary) are wrapped in a collapsible ``<details>``
+    block so the page opens on the most recent ``fold_threshold`` anchors. The
+    fold is purely visual: every entry stays in the markdown (and thus in the
+    SQL edge graph) and re-parses identically. Pass ``fold_threshold=None`` to
+    disable folding.
+
+    Returns the lines for the section body (no heading). Empty log ->
+    ``["*No entries yet.*"]``.
+    """
+    if not entries:
+        return ["*No entries yet.*"]
+
+    rows: list[tuple[HubLogEntry, int]] = (
+        thread_log(entries) if threaded else [(e, 0) for e in entries]
+    )
+
+    anchor_rows = [i for i, (_, depth) in enumerate(rows) if depth == 0]
+    n_anchors = len(anchor_rows)
+
+    if fold_threshold and n_anchors > fold_threshold:
+        # Keep the most recent `fold_threshold` anchors visible; the split lands
+        # on an anchor boundary so threads stay whole on both sides.
+        split = anchor_rows[n_anchors - fold_threshold]
+        older, recent = rows[:split], rows[split:]
+    else:
+        older, recent = [], rows
+
+    def _line(entry: HubLogEntry, depth: int) -> str:
+        return entry.render(depth=depth, idmap=idmap, title_map=title_map)
+
+    lines: list[str] = []
+    if older:
+        lines.append("<details>")
+        lines.append(f"<summary>Earlier log ({len(older)} entries)</summary>")
+        lines.append("")
+        lines.extend(_line(e, d) for e, d in older)
+        lines.append("</details>")
+        lines.append("")
+    lines.extend(_line(e, d) for e, d in recent)
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Hub
 # ---------------------------------------------------------------------------
@@ -226,13 +389,26 @@ class Hub:
     # ---- I/O -------------------------------------------------------------
 
     @classmethod
-    def parse(cls, path: Path, *, hub_id: str | None = None) -> "Hub":
+    def parse(
+        cls,
+        path: Path,
+        *,
+        hub_id: str | None = None,
+        path_to_id: dict[str, str] | None = None,
+    ) -> "Hub":
         """Read a hub file from disk and parse the shared sections.
 
         Missing file → returns a Hub with empty essence/log. Malformed
         sections → best-effort parse; unrecognised entries are dropped
         silently. Tolerates both ``## Catalyst log`` (canonical) and
         ``## Learning log`` (legacy concept-hub heading).
+
+        ``path_to_id`` (vault-relative-path-sans-.md -> note id) lets the
+        parser recover the citation id from a title-aliased link
+        (``[[path|Title]]``), where the id is no longer on the display side.
+        Omit it and the parser still recovers ids from legacy ``[[path|id]]``
+        and bare ``[[id]]`` links — so it's only required when reading hubs
+        that have already been rewritten with title aliases.
         """
         if hub_id is None:
             hub_id = path.stem
@@ -251,7 +427,7 @@ class Hub:
         log_body = extract_section(body, CATALYST_LOG_HEADING)
         if not log_body:
             log_body = extract_section(body, LEGACY_LEARNING_LOG_HEADING)
-        log = parse_log_entries(log_body)
+        log = parse_log_entries(log_body, path_to_id=path_to_id)
 
         open_q = extract_section(body, OPEN_QUESTIONS_HEADING).strip()
 
@@ -271,6 +447,9 @@ class Hub:
         *,
         include_open_questions: bool = False,
         threaded: bool = False,
+        idmap: dict[str, str] | None = None,
+        title_map: dict[str, str] | None = None,
+        fold_threshold: int | None = LOG_FOLD_THRESHOLD,
     ) -> str:
         """Render the shared body skeleton.
 
@@ -299,15 +478,15 @@ class Hub:
 
         lines.append(CATALYST_LOG_HEADING)
         lines.append("")
-        if self.log:
-            if threaded:
-                for entry, depth in thread_log(self.log):
-                    lines.append(entry.render(depth=depth))
-            else:
-                for entry in self.log:
-                    lines.append(entry.render())
-        else:
-            lines.append("*No entries yet.*")
+        lines.extend(
+            render_catalyst_log(
+                self.log,
+                idmap=idmap,
+                title_map=title_map,
+                threaded=threaded,
+                fold_threshold=fold_threshold,
+            )
+        )
         lines.append("")
 
         if include_open_questions:
@@ -381,12 +560,21 @@ def extract_section(body: str, heading: str) -> str:
     return rest
 
 
-def parse_log_entries(section_text: str) -> list[HubLogEntry]:
+def parse_log_entries(
+    section_text: str, path_to_id: dict[str, str] | None = None
+) -> list[HubLogEntry]:
     """Parse log entries out of a block of markdown.
 
     Supports multi-line entry text (continuation lines join into the same
     entry until the next ``- YYYY-MM-DD`` line). Returns the entries that
     pass flag validation; everything else is silently dropped.
+
+    HTML fold decoration (``<details>`` / ``<summary>`` / their closing tags)
+    is skipped — those lines are how ``render_catalyst_log`` collapses old
+    entries, and must not be mistaken for entry continuation text.
+
+    ``path_to_id`` is forwarded to ``_split_citation`` so title-aliased links
+    (``[[path|Title]]``) recover their citation id from the path side.
     """
     entries: list[HubLogEntry] = []
     current_lines: list[str] = []
@@ -396,7 +584,7 @@ def parse_log_entries(section_text: str) -> list[HubLogEntry]:
         if current_header is None:
             return
         rest_text = " ".join(line.strip() for line in current_lines).strip()
-        text, citation = _split_citation(rest_text)
+        text, citation = _split_citation(rest_text, path_to_id)
         entries.append(
             HubLogEntry(
                 date=current_header["date"],
@@ -417,6 +605,11 @@ def parse_log_entries(section_text: str) -> list[HubLogEntry]:
                 "ref": m.group("ref"),
             }
             current_lines = [m.group("rest")]
+        elif line.lstrip().startswith("<"):
+            # Fold decoration (<details>/<summary>/closing tags) — neither a
+            # new entry nor continuation text. Skip so it never pollutes the
+            # preceding entry's body on re-parse.
+            continue
         elif current_header is not None and line.strip():
             current_lines.append(line)
 
@@ -424,29 +617,51 @@ def parse_log_entries(section_text: str) -> list[HubLogEntry]:
     return [e for e in entries if e.flag in ALLOWED_FLAGS]
 
 
-def parse_log_section(body: str, heading: str) -> list[HubLogEntry]:
+def parse_log_section(
+    body: str, heading: str, path_to_id: dict[str, str] | None = None
+) -> list[HubLogEntry]:
     """Extract a ``## ...`` section and parse it as log entries.
 
     Convenience wrapper used by both surfaces (concept hubs read
     ``## Catalyst log``; themes read the same heading on theme bodies).
     Empty list if the heading is absent or the section has no valid entries.
+    ``path_to_id`` is forwarded to the parser for title-aliased citations.
     """
-    return parse_log_entries(extract_section(body, heading))
+    return parse_log_entries(extract_section(body, heading), path_to_id=path_to_id)
 
 
-def _split_citation(text: str) -> tuple[str, str]:
+def _split_citation(
+    text: str, path_to_id: dict[str, str] | None = None
+) -> tuple[str, str]:
     """Strip the final [[wikilink]] from an entry's rest-text.
 
     Returns ``(text_without_citation, citation_id)``. The citation is the
     *last* wikilink on the line; embedded wikilinks earlier in the body
     are left in place for the caller to handle (the concept-hub LLM path
     has a separate scrubber for stray inline wikilinks).
+
+    Three citation shapes round-trip here:
+      - ``[[path|note-id]]`` (legacy path-based) — id is the display side.
+      - ``[[note-id]]`` (bare) — id is the target.
+      - ``[[path|Title]]`` (title-aliased) — id is on neither side; recovered
+        by resolving the path against ``path_to_id``.
     """
     matches = list(_WIKILINK_RE.finditer(text))
     if not matches:
         return text, ""
     last = matches[-1]
-    citation = last.group(1).strip()
+    target = (last.group(1) or "").strip()
+    display = (last.group(2) or "").strip()
+    if display and _NOTE_ID_RE.match(display):
+        citation = display
+    elif path_to_id and target in path_to_id:
+        # Title-aliased link: the display is a human title, the id lives in
+        # the path. Resolve it back so dedup/edges still key on the id.
+        citation = path_to_id[target]
+    elif _NOTE_ID_RE.match(target):
+        citation = target
+    else:
+        citation = target
     stripped = (text[: last.start()] + text[last.end():]).rstrip(" —-")
     return stripped, citation
 
@@ -502,3 +717,43 @@ def migrate_hub_log_heading(path: Path) -> bool:
         return False
     path.write_text(new_text, encoding="utf-8")
     return True
+
+
+# Bare note-id wikilink: ``[[src-0032dd84]]`` with no pipe and no path. Already
+# path-based (``[[path|id]]``) or namespaced (``[[concepts/foo]]``) links carry
+# a pipe or slash and are deliberately excluded, which makes the rewrite below
+# idempotent.
+_BARE_ID_LINK_RE = re.compile(r"\[\[([a-z]+-[0-9a-f]{6,})\]\]")
+
+
+def migrate_bare_id_links(path: Path, idmap: dict[str, str]) -> int:
+    """Rewrite bare ``[[note-id]]`` wikilinks to path-based ``[[path|note-id]]``.
+
+    Heals any markdown file (hub catalyst logs and note/decision/source
+    bodies alike) so id references resolve structurally instead of via the
+    fragile bare-alias form (the phantom-stub bug). Only bare ids present in
+    ``idmap`` are rewritten; unknown ids (e.g. dangling references to deleted
+    notes) are left as-is. Idempotent — already-piped or namespaced links
+    carry a pipe/slash and don't match the bare pattern.
+
+    Returns the number of links rewritten in this file (0 if unchanged or
+    missing).
+    """
+    if not path.exists():
+        return 0
+    text = path.read_text(encoding="utf-8")
+    count = 0
+
+    def _sub(m: re.Match) -> str:
+        nonlocal count
+        note_id = m.group(1)
+        dest = idmap.get(note_id)
+        if not dest:
+            return m.group(0)  # unknown id — leave the bare link untouched
+        count += 1
+        return f"[[{dest}|{note_id}]]"
+
+    new_text = _BARE_ID_LINK_RE.sub(_sub, text)
+    if count and new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+    return count

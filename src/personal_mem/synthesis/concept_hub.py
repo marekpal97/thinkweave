@@ -58,6 +58,7 @@ from personal_mem.synthesis.hub import (
     migrate_hub_log_heading,
     parse_log_entries,
     parse_log_section,
+    render_catalyst_log,
 )
 
 # ---------------------------------------------------------------------------
@@ -131,7 +132,12 @@ class ConceptHub:
 # ---------------------------------------------------------------------------
 
 
-def parse_concept_hub(path: Path, concept: str | None = None) -> ConceptHub:
+def parse_concept_hub(
+    path: Path,
+    concept: str | None = None,
+    *,
+    path_to_id: dict[str, str] | None = None,
+) -> ConceptHub:
     """Read a concept hub file from disk and parse it.
 
     Missing file → returns a ConceptHub with empty essence/log. Malformed
@@ -142,6 +148,11 @@ def parse_concept_hub(path: Path, concept: str | None = None) -> ConceptHub:
     Tolerates both the canonical ``## Catalyst log`` and the legacy
     ``## Learning log`` heading; ``migrate_hub_log_heading`` rewrites the
     file to canonical form on first index run.
+
+    ``path_to_id`` is required to recover citation ids from title-aliased
+    links (``[[path|Title]]``); pass it at any site that dedups ``cited_ids``
+    against real note ids or re-renders the hub. Omit it only for legacy
+    ``[[path|id]]`` files (the id is still recoverable from the display side).
     """
     if concept is None:
         concept = path.stem
@@ -149,7 +160,7 @@ def parse_concept_hub(path: Path, concept: str | None = None) -> ConceptHub:
     if not path.exists():
         return ConceptHub(concept=concept, path=path)
 
-    hub = Hub.parse(path, hub_id=concept)
+    hub = Hub.parse(path, hub_id=concept, path_to_id=path_to_id)
     return ConceptHub(
         concept=concept,
         path=path,
@@ -160,14 +171,16 @@ def parse_concept_hub(path: Path, concept: str | None = None) -> ConceptHub:
     )
 
 
-def parse_log_section_entries(body: str, heading: str) -> list[HubLogEntry]:
+def parse_log_section_entries(
+    body: str, heading: str, path_to_id: dict[str, str] | None = None
+) -> list[HubLogEntry]:
     """Public helper: extract a ``## ...`` section and parse it as log entries.
 
     Used by themes.py to read a theme's ``## Catalyst log`` with the same
     grammar as concept hubs. Empty list if the heading is absent or the
     section has no valid entries.
     """
-    return parse_log_section(body, heading)
+    return parse_log_section(body, heading, path_to_id=path_to_id)
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +188,23 @@ def parse_log_section_entries(body: str, heading: str) -> list[HubLogEntry]:
 # ---------------------------------------------------------------------------
 
 
-def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> str:
+def render_concept_hub(
+    hub: ConceptHub,
+    *,
+    domains: list[str] | None = None,
+    idmap: dict[str, str] | None = None,
+    title_map: dict[str, str] | None = None,
+) -> str:
     """Serialize a ConceptHub back to markdown with preserved frontmatter metadata.
 
     Frontmatter is refreshed (type, concept, domains, updated) but any
     previously-saved custom keys are preserved.
+
+    ``idmap`` (id -> vault-relative path) renders catalyst-log citations as
+    path-based wikilinks so clicking a source navigates to the note instead of
+    spawning a phantom stub. ``title_map`` (id -> human title) makes the link
+    display the note's title (``[[path|Title]]``) rather than an opaque id.
+    Omit both and citations render bare (``[[id]]``) — the legacy form.
     """
     now = datetime.now(timezone.utc).isoformat()
     fm = dict(hub.frontmatter)
@@ -212,13 +237,11 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
 
     lines.append(CATALYST_LOG_HEADING)
     lines.append("")
-    if hub.log_entries:
-        from personal_mem.synthesis.hub import thread_log
-
-        for entry, depth in thread_log(hub.log_entries):
-            lines.append(entry.render(depth=depth))
-    else:
-        lines.append("*No entries yet.*")
+    lines.extend(
+        render_catalyst_log(
+            hub.log_entries, idmap=idmap, title_map=title_map, threaded=True
+        )
+    )
     lines.append("")
 
     # No Mermaid `## Evolution` block — the threaded log above already
@@ -230,10 +253,19 @@ def render_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> 
     return "\n".join(lines)
 
 
-def write_concept_hub(hub: ConceptHub, *, domains: list[str] | None = None) -> Path:
+def write_concept_hub(
+    hub: ConceptHub,
+    *,
+    domains: list[str] | None = None,
+    idmap: dict[str, str] | None = None,
+    title_map: dict[str, str] | None = None,
+) -> Path:
     """Write a concept hub to disk, creating parent dirs if needed."""
     hub.path.parent.mkdir(parents=True, exist_ok=True)
-    hub.path.write_text(render_concept_hub(hub, domains=domains), encoding="utf-8")
+    hub.path.write_text(
+        render_concept_hub(hub, domains=domains, idmap=idmap, title_map=title_map),
+        encoding="utf-8",
+    )
     return hub.path
 
 
@@ -253,7 +285,12 @@ def append_log_entries(
     Returns the hub path.
     """
     path = concept_hub_path(config, concept)
-    hub = parse_concept_hub(path, concept=concept)
+    # One DB pass yields all three maps: id->path and id->title for rendering
+    # title-aliased links, and the path->id inverse so the parse below recovers
+    # citation ids from any links already written in title-aliased form (else
+    # dedup would compare paths against ids and re-cite everything).
+    idmap, title_map, path_to_id = _safe_hub_maps(config)
+    hub = parse_concept_hub(path, concept=concept, path_to_id=path_to_id)
     cited = hub.cited_ids
     for entry in new_entries:
         if entry.citation and entry.citation in cited:
@@ -263,7 +300,10 @@ def append_log_entries(
         hub.log_entries.append(entry)
         if entry.citation:
             cited.add(entry.citation)
-    return write_concept_hub(hub, domains=domains)
+    # Re-rendering the whole file means existing bare-id / id-aliased entries
+    # also heal to the title form on this pass. Soft-fails to bare links if the
+    # index DB isn't available (e.g. a fresh vault mid-bootstrap).
+    return write_concept_hub(hub, domains=domains, idmap=idmap, title_map=title_map)
 
 
 def ensure_concept_hub_skeleton(
@@ -315,6 +355,51 @@ def _open_index_db(config: Config) -> sqlite3.Connection:
     db = sqlite3.connect(str(config.index_db))
     db.row_factory = sqlite3.Row
     return db
+
+
+def _safe_id_path_map(config: Config) -> dict[str, str]:
+    """id -> vault-relative path for path-based citation links.
+
+    Soft-fails to an empty map (-> bare ``[[id]]`` links) when the index DB
+    is absent or unreadable, so hub writes never hard-fail on a fresh vault.
+    """
+    from personal_mem.synthesis.hub import build_id_path_map
+
+    if not config.index_db.exists():
+        return {}
+    db = _open_index_db(config)
+    try:
+        return build_id_path_map(db)
+    except sqlite3.Error:
+        return {}
+    finally:
+        db.close()
+
+
+def _safe_hub_maps(
+    config: Config,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """Build (id->path, id->title, path->id) in one DB pass for hub render+parse.
+
+    ``id->path`` and ``id->title`` drive title-aliased citation rendering;
+    ``path->id`` (the inverse of id->path — paths are unique) lets the parser
+    recover the citation id from a ``[[path|Title]]`` link. Soft-fails to three
+    empty maps when the index DB is absent or unreadable, so hub writes never
+    hard-fail on a fresh vault (citations then degrade to bare ``[[id]]``).
+    """
+    from personal_mem.synthesis.hub import build_id_path_map, build_id_title_map
+
+    if not config.index_db.exists():
+        return {}, {}, {}
+    db = _open_index_db(config)
+    try:
+        idmap = build_id_path_map(db)
+        title_map = build_id_title_map(db)
+        return idmap, title_map, {path: nid for nid, path in idmap.items()}
+    except sqlite3.Error:
+        return {}, {}, {}
+    finally:
+        db.close()
 
 
 @dataclass
@@ -402,7 +487,12 @@ def unprocessed_notes_for_concept(
     all_notes = notes_for_concept(
         config, concept, project=project, note_type=note_type
     )
-    hub = parse_concept_hub(concept_hub_path(config, concept), concept=concept)
+    # path->id so title-aliased citations resolve back to ids; without it the
+    # cited-set would hold paths and every note would look unprocessed.
+    _, _, path_to_id = _safe_hub_maps(config)
+    hub = parse_concept_hub(
+        concept_hub_path(config, concept), concept=concept, path_to_id=path_to_id
+    )
     cited = hub.cited_ids
     return [n for n in all_notes if n.id not in cited]
 

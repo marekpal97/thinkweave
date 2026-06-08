@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from personal_mem.core._utils import as_list
 from personal_mem.core.config import Config
 
 
@@ -227,7 +228,7 @@ def detect_signals(
                 fm = _json.loads(row["frontmatter"]) if row["frontmatter"] else {}
                 if fm.get("source_type") != st:
                     continue
-                concepts = _as_list(fm.get("concepts"))
+                concepts = as_list(fm.get("concepts"))
                 if not concepts:
                     continue
                 # Already filed to a theme → settled. Re-clustering it is
@@ -235,7 +236,7 @@ def detect_signals(
                 # on), so it never enters detection.
                 if any(
                     str(r).startswith("thm-")
-                    for r in _as_list(fm.get("relates_to"))
+                    for r in as_list(fm.get("relates_to"))
                 ):
                     continue
                 matches.append(
@@ -262,7 +263,7 @@ def detect_signals(
                 {
                     "theme_id": row["id"],
                     "slug": fm.get("title") or row["title"] or row["id"],
-                    "concepts": {c.lower() for c in _as_list(fm.get("concepts"))},
+                    "concepts": {c.lower() for c in as_list(fm.get("concepts"))},
                     "status": (fm.get("status") or "active").split(":")[0],
                 }
             )
@@ -592,6 +593,7 @@ def mint_theme_from_signal(
     # `- DATE: cluster seed [[src]] *new*` form diverged from the canonical
     # `- DATE · *new* — text — [[src]]` grammar the Hub parser expects, so
     # minted catalyst logs rendered as empty.)
+    from personal_mem.synthesis.concept_hub import _safe_hub_maps
     from personal_mem.synthesis.hub import FLAG_NEW, Hub, HubLogEntry
 
     log = [
@@ -604,7 +606,14 @@ def mint_theme_from_signal(
         essence=essence or "_Awaiting first synthesis pass._",
         log=log,
     )
-    body = hub.render(include_open_questions=True)
+    # Path-based citations so clicking a seeded source navigates to the note
+    # instead of spawning a phantom stub (sources are slug-filed, so a bare
+    # [[src-id]] would resolve only via the fragile alias); title aliases so the
+    # log shows the headline, not an opaque src-id.
+    _mint_idmap, _mint_titles, _ = _safe_hub_maps(config)
+    body = hub.render(
+        include_open_questions=True, idmap=_mint_idmap, title_map=_mint_titles
+    )
 
     target_path.write_text(frontmatter_block + "\n\n" + body + "\n", encoding="utf-8")
 
@@ -665,20 +674,37 @@ def extend_theme_with_sources(
         if not theme_path.exists():
             raise FileNotFoundError(f"theme file missing: {theme_path}")
 
+        from personal_mem.synthesis.hub import (
+            FLAG_NEW,
+            HubLogEntry,
+            build_id_path_map,
+            build_id_title_map,
+        )
+
         fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
-        cites = _as_list(fm.get("cites"))
+        cites = as_list(fm.get("cites"))
         existing = set(cites)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Path-based citations, canonical catalyst grammar. The old hand-rolled
+        # `- DATE: extend … [[src]] *new*` form both diverged from the grammar
+        # the Hub parser expects (so it rendered as plain text, not a log entry)
+        # and used a bare [[src-id]] link that spawns phantom stubs. The title
+        # alias now carries the headline, so the entry text drops the redundant
+        # label and is just the bare flag verb.
+        idmap = build_id_path_map(idx.db)
+        title_map = build_id_title_map(idx.db)
 
         new_lines: list[str] = []
         for src_id in source_ids:
             if src_id in existing:
                 continue
-            title = _backfill_relates_to(config, idx, [src_id], theme_id)
+            _backfill_relates_to(config, idx, [src_id], theme_id)
             cites.append(src_id)
             existing.add(src_id)
-            label = title.get(src_id) or src_id
-            new_lines.append(f"- {today}: extend — {label} [[{src_id}]] *new*")
+            entry = HubLogEntry(
+                date=today, flag=FLAG_NEW, text="extend", citation=src_id
+            )
+            new_lines.append(entry.render(idmap=idmap, title_map=title_map))
             linked += 1
 
         if linked:
@@ -697,15 +723,6 @@ def extend_theme_with_sources(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
-
-
-def _as_list(value) -> list[str]:
-    """Normalise a frontmatter list-or-csv-string field to a list."""
-    if not value:
-        return []
-    if isinstance(value, str):
-        return [v.strip() for v in value.split(",") if v.strip()]
-    return [str(v).strip() for v in value if str(v).strip()]
 
 
 def _append_catalyst_lines(body: str, lines: list[str]) -> str:
@@ -743,7 +760,7 @@ def _backfill_relates_to(config, idx, source_ids, thm_id) -> dict:
         if not src_path.exists():
             continue
         fm, body = parse_frontmatter(src_path.read_text(encoding="utf-8"))
-        rel = _as_list(fm.get("relates_to"))
+        rel = as_list(fm.get("relates_to"))
         if thm_id in rel:
             continue
         fm["relates_to"] = rel + [thm_id]

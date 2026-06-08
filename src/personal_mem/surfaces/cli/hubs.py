@@ -108,6 +108,7 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
         topics_dir,
         write_concept_hub,
     )
+    from personal_mem.synthesis.hub import build_id_path_map, build_id_title_map
 
     topics = topics_dir(cfg)
     if not topics.exists():
@@ -118,6 +119,12 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
     id_to_date: dict[str, str] = {}
     for row in idx.db.execute("SELECT id, date FROM notes WHERE date IS NOT NULL AND date != ''"):
         id_to_date[row["id"]] = str(row["date"])[:10]
+    # Path/title maps so the full re-render keeps citations path-based with
+    # title aliases; path->id inverse so the parse recovers ids from those
+    # links (else the entry.citation date lookup silently no-ops).
+    idmap = build_id_path_map(idx.db)
+    title_map = build_id_title_map(idx.db)
+    path_to_id = {path: nid for nid, path in idmap.items()}
     idx.close()
 
     hub_files = sorted(topics.glob("*.md"))
@@ -131,7 +138,7 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
     date_updates = 0
 
     for hub_path in hub_files:
-        hub = parse_concept_hub(hub_path)
+        hub = parse_concept_hub(hub_path, path_to_id=path_to_id)
         if not hub.log_entries:
             continue
         dirty = False
@@ -155,7 +162,7 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
             if args.dry_run:
                 print(f"[dry-run] would rewrite {hub_path.name}")
             else:
-                write_concept_hub(hub)
+                write_concept_hub(hub, idmap=idmap, title_map=title_map)
 
     print(
         f"Repaired {changed_hubs} hub(s) — "

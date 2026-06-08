@@ -219,6 +219,38 @@ class TestWikilinks:
         assert extract_wikilinks("No links here.") == []
 
 
+class TestWikilinkIds:
+    """``extract_wikilink_ids`` recovers a note id whether the link is bare
+    (``[[id]]``) or path-based (``[[path|id]]``). Load-bearing: edge inference
+    and the RLVR citation substrate route through it, so the bare→path body
+    migration must not drop edges or citations.
+    """
+
+    def test_bare_id(self):
+        from personal_mem.core.vault import extract_wikilink_ids
+
+        assert extract_wikilink_ids("see [[dec-9988aaff]]") == ["dec-9988aaff"]
+
+    def test_path_based_id_from_display(self):
+        from personal_mem.core.vault import extract_wikilink_ids
+
+        ids = extract_wikilink_ids("see [[notes/foo/bar|n-abc123ef]]")
+        assert ids == ["n-abc123ef"]
+
+    def test_title_link_returns_raw_target(self):
+        from personal_mem.core.vault import extract_wikilink_ids
+
+        # Not id-shaped on either side — caller (e.g. RLVR) filters it out.
+        assert extract_wikilink_ids("see [[Some Title]]") == ["Some Title"]
+
+    def test_mixed(self):
+        from personal_mem.core.vault import extract_wikilink_ids
+
+        body = "[[notes/x|n-aaaaaa11]] then [[dec-bbbbbb22]] and [[concepts/finance|Finance]]"
+        ids = extract_wikilink_ids(body)
+        assert ids == ["n-aaaaaa11", "dec-bbbbbb22", "concepts/finance"]
+
+
 class TestContentHash:
     def test_deterministic(self):
         assert content_hash("hello") == content_hash("hello")

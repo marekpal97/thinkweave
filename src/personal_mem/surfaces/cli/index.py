@@ -34,6 +34,31 @@ def cmd_index(args: argparse.Namespace) -> None:
     print(f"Indexed: {stats['indexed']}, Skipped: {stats['skipped']}, "
           f"Removed: {stats['removed']}, Edges: {stats['edges']}")
 
+    if args.full:
+        # Heal bare [[note-id]] wikilinks to path-based links vault-wide
+        # (hub catalyst logs AND note/decision/source bodies) so clicking a
+        # reference resolves structurally instead of spawning a phantom stub.
+        # Runs after rebuild so the id->path map reflects current file layout;
+        # idempotent (only bare id-shaped links present in the index match).
+        from personal_mem.synthesis.hub import (
+            build_id_path_map,
+            migrate_bare_id_links,
+        )
+
+        idmap = build_id_path_map(idx.db)
+        links_healed = 0
+        files_touched = 0
+        for p in cfg.vault_root.rglob("*.md"):
+            n = migrate_bare_id_links(p, idmap)
+            if n:
+                links_healed += n
+                files_touched += 1
+        if links_healed:
+            print(
+                f"Healed {links_healed} bare wikilink(s) → path-based "
+                f"across {files_touched} file(s)."
+            )
+
     if args.embed:
         try:
             from personal_mem.core.embeddings import EmbeddingSearch
