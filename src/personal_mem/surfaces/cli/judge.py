@@ -20,7 +20,6 @@ import json
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 from personal_mem.core.config import load_config
 from personal_mem.core.vault import VaultManager, parse_frontmatter

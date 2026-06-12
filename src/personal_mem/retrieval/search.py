@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from personal_mem.core.config import Config, load_config
 
