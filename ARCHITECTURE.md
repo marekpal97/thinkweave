@@ -86,7 +86,7 @@ Each lane maps to skill files under `commands/`:
 
 | Lane | Skills | Owns |
 |---|---|---|
-| import | `/research`, `/research-paper`, `/research-repo`, `/research-article`, `/news`, `/capture`, `/ingest-paper-file` | URL/file → one source note |
+| import | `/research`, `/research-paper`, `/research-repo`, `/research-article`, `/news`, `/capture`, `/ingest-paper-file` (the last three are agent-internal — invoked by routers/workers, not symlinked as public `/` commands) | URL/file → one source note |
 | acquire | `/drain`, `/substack`, `/newsletter`, `/youtube`, `/podcast` | Queue/inbox → many source notes |
 | discover | `/discover` | Strategy registry: internal-state gap emitters (`decision_review`, `prompt_gap`) + external-trigger enqueuers (`rss_poll`, `mail_poll`, `external_tool_runner`) |
 | synthesis | `/update-hubs`, `/themes-resolve`, `/dream`, `/mem-wrap`, `/mem-resolve-concepts` | Concept hubs, theme hubs, landing docs, ontology hygiene, session wrap |
@@ -131,7 +131,7 @@ flowchart LR
 ```
 
 - **Phase 1 (synthesis)** — 5 workers in parallel: `dream-{promotion,merge,theme,essence,priority}-worker`. Each emits a `plan_fragment` JSON outcome. Orchestrator merges, calls `mem dream apply` (one index rebuild, one `maintenance.jsonl` line).
-- **Phase 2 (composition + consumption)** — 3 workers in dependency waves. Wave A in parallel: `dream-wrap-worker` (catch-up unwrapped sessions, subsumes the standalone `/mem-wrap` cron) + `dream-judge-worker` (drain rejudge queue, subsumes `/judge-prediction --drain`). Wave B after wave A: `dream-digest-worker` (compose `type: digest` note at `vault/projects/<p>/digests/YYYY-MM-DD.md`). Phase-2 workers write directly; they emit a `side_effects` list, not plan fragments.
+- **Phase 2 (composition + consumption)** — 4 workers in dependency waves. Wave A in parallel: `dream-wrap-worker` (catch-up unwrapped sessions, subsumes the standalone `/mem-wrap` cron) + `dream-judge-worker` (drain rejudge queue, subsumes `/judge-prediction --drain`) + `dream-seam-link-worker` (drain `.mem/seam_link_queue.jsonl` — cross-parent catalyst linkage on hubs folded by merges). Wave B after wave A: `dream-digest-worker` (compose `type: digest` note at `vault/projects/<p>/digests/YYYY-MM-DD.md`). Phase-2 workers write directly; they emit a `side_effects` list, not plan fragments.
 
 **Extensibility seam.** `src/personal_mem/operations/dream_tasks.py::DreamTaskSpec` is the typed registry, structurally analogous to `sources/registry.py::SourceTypeSpec`. A new judgment, composition, or consumption domain plugs in via one `REGISTRY` entry (`surface_key, worker_name, plan_keys, has_signal, phase, depends_on`) plus one `.claude/agents/<worker>.md` file — no skill-text or orchestrator-code edits. Dependency edges (`depends_on`) let the orchestrator topologically sort the fan-out without per-domain branching.
 
@@ -307,14 +307,16 @@ Six distinct dedup mechanisms, each scoped to a different kind of overlap:
 
 | Scenario | Mechanism | Where |
 |---|---|---|
-| Concept overlap (near-dupes) | `concept_aliases.yaml` + Levenshtein | `mem doctor`, `mem concepts drift` |
-| Concept merge | rename across notes + delete stale hub | `mem concepts merge` |
+| Concept overlap (near-dupes) | drift v2: string rules ∪ centroid-cosine ≥ 0.8 (`synthesis/geometry.py`), verdict-history-excluded | `/dream` scan (`drift_pairs`); `mem doctor` / `mem concepts drift` for the advisory view |
+| Concept merge | rename across notes + FOLD hub into winner + archive tombstone + seam-link enqueue | `mem concepts merge`, `/dream` apply (`merges`) |
 | Source slug collision | filesystem check, auto-increments (`<slug>-1`, `-2`, …) | `VaultManager.create_note` |
 | Note content dup | SHA-256 over body | indexer (skips on insert) |
-| Theme dedup | manual via skill | `/themes-resolve` |
+| Theme dedup | drift v2 cosine over theme embeddings → `merge_theme_into` (fold + repoint + `merged-into:` tombstone) | `/dream` (`theme_dup_candidates` → `theme_merges`); `/themes-resolve` on demand |
 | Queue item dedup | `dedup_keys` from `sources.yaml` + indexer URL check | `Queue.dedup_check` |
 
-Concept aliasing is the only mechanism that mutates content automatically — everything else either flags (`drift`, `doctor`), silently sidesteps (slug auto-increment, hash skip), or defers to a human-in-the-loop skill.
+Since the 2026-06-11 drift-v2 doctrine, dedup-merge for both hub families mutates automatically inside `/dream` — logged in the maintenance line's `verdicts` block (which doubles as the judgment memory the next scan excludes against) and reversible (folded hubs are archived/status-tombstoned, never deleted). Everything else either flags (`doctor`), silently sidesteps (slug auto-increment, hash skip), or defers to the on-demand skills.
+
+**Seam-link invariant: entries never change hubs without a seam-link pass.** A fold (concept or theme merge — and any future hub *split*) produces two disjoint catalyst DAGs in one file; the fold stamps `fold_pending_from`/`fold_pending_dates` and enqueues the winner on `.mem/seam_link_queue.jsonl`. The phase-2 `dream-seam-link-worker` judges cross-parent entry pairs only and writes through `mem hubs apply-linkage` (`validate_linkage_revision`-gated; `--clear-fold` clears the stamps and retires the queue item atomically).
 
 **Embeddings freshness.** Hybrid and similarity retrieval read from `<vault>/.mem/embeddings.db` (rebuildable from markdown). Without an external trigger nothing repopulates it as new content lands, so similarity silently degrades to FTS-only on recent content. The keep-warm contract is a cron line (`mem index --embed --only-new`) that re-embeds only the delta. `mem doctor` flags a stale DB (`embeddings.db` mtime > 7 days) when `OPENAI_API_KEY` is set.
 
@@ -400,7 +402,7 @@ CARVE-OUT:
      (direct google.genai; no chat-completion shape covers it)
 ```
 
-Every wrapper call records spend exactly once via `core/spend.record_spend`. Dual-route surfaces (`--via {inline,batch}`) pick between the wrapper (batch) and a CC skill (inline) via `operations/_backfill_route.choose_route`.
+Dual-route surfaces (`--via {inline,batch}`) pick between the wrapper (batch) and a CC skill (inline) via `operations/_backfill_route.choose_route`.
 
 ## A note on the importers under `src/personal_mem/importers/`
 

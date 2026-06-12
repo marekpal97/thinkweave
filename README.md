@@ -46,14 +46,23 @@ claude plugin install personal-mem   # registers MCP, hooks, commands
 ```
 
 The plugin manifest declares the MCP server inline, so no separate
-`mem install` step is required.
+`mem install` step is required. The plugin also ships the subagent
+workers (`agents/` — the `dream-*` and `research-*-worker` set that
+`/dream` and `/drain` fan out to).
 
-After restart, run `/onboard` from any repo. It seeds your vault from
-prior Claude Code conversations *unconditionally* (step 1), bootstraps
-the ontology from imported `proposed_concepts:` (step 2), walks you
-through focus + source-type configuration (step 3), and emits first
-landing docs (step 4). Idempotent — re-running only does what's still
-missing.
+**Namespacing.** Claude Code registers plugin commands and agents under
+the plugin's namespace, with no bare-name aliasing: type
+`/personal-mem:onboard`, not `/onboard` (tab-completion after
+`/personal-mem:` lists everything). The skills handle the same rule for
+their internal agent fan-outs, and `mem schedule` renders namespaced
+cron lines automatically when it detects the plugin route.
+
+After restart, run `/personal-mem:onboard` from any repo. It seeds your
+vault from prior Claude Code conversations *unconditionally* (step 1),
+bootstraps the ontology from imported `proposed_concepts:` (step 2),
+walks you through focus + source-type configuration (step 3), and emits
+first landing docs (step 4). Idempotent — re-running only does what's
+still missing.
 
 ### Legacy install (no plugin)
 
