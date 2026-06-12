@@ -23,6 +23,9 @@ Thin URL classifier. For each URL the user passes:
    source type.
 2. Match the URL against patterns. First match wins.
 3. Dispatch to the matching subskill via `Skill(skill="research-<type>")`.
+   Under the plugin install, skills resolve namespaced — if the bare name
+   fails with an unknown skill, retry as `personal-mem:research-<type>`
+   (same rule for every `Skill` dispatch in this file).
 
 The actual fetch + summarize + `mem_create` lives in the subskills, where
 each source type's quirks (PDF extraction for papers, `gh repo view`

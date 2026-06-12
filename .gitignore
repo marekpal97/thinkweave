@@ -22,7 +22,10 @@ build/
 # uv
 .python-version
 
-# Claude Code local state — but keep the plugin shell (it ships with the repo)
+# Claude Code local state — but keep the plugin shell (it ships with the repo).
+# Subagent worker specs live at the repo-root `agents/` dir (tracked), where the
+# plugin auto-discovers them; `.claude/agents/` holds dev-machine symlinks back
+# to them (same pattern as `.claude/commands/`) and stays untracked.
 .claude/*
 !.claude/plugins/
 

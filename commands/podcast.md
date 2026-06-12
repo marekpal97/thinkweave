@@ -79,6 +79,8 @@ For each type that got fresh items:
 Skill(skill="drain", args="--source-type <slug> [--limit N]")
 ```
 
+Under the plugin install, skills resolve namespaced — if `Skill(skill="drain")` fails with an unknown skill, retry as `personal-mem:drain`.
+
 `/drain` handles Path B (writer-only, no triage) for `podcast-*` — it peeks the queue, fans out `research-podcast-worker` subagents at `drain_parallelism` (default 2 — Gemini Files API uploads are bandwidth-bound), validates allowed-failure prefixes, and archives outcomes.
 
 **Why parallelism: 2 and not 4 like news/newsletter?** Each podcast worker downloads a 20-100MB MP3 and uploads to Gemini before generation. Higher parallelism saturates upstream bandwidth and rarely improves wall-clock. Override per-type in `sources.yaml` if you have a fat pipe.

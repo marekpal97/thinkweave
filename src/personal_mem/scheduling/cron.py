@@ -71,6 +71,42 @@ class CrontabBackend:
         existing = self._read_crontab()
         spliced = _splice(existing, self.render(jobs))
         self._write_crontab(spliced)
+        self._warn_if_daemon_not_running()
+
+    def _warn_if_daemon_not_running(self) -> None:
+        """Surface a WSL footgun: crontab edits succeed, nothing ever fires.
+
+        On WSL (and some minimal containers) the ``crontab`` binary works
+        but the cron *daemon* isn't running by default, so an installed
+        schedule silently never executes. Best-effort check via
+        ``pidof cron``/``crond``; advisory only — never blocks install.
+        """
+        import shutil
+        import sys
+
+        pidof = shutil.which("pidof")
+        if not pidof:
+            return
+        try:
+            for daemon in ("cron", "crond"):
+                if (
+                    subprocess.run(
+                        [pidof, daemon], capture_output=True
+                    ).returncode
+                    == 0
+                ):
+                    return
+        except OSError:
+            return
+        print(
+            "warning: crontab updated, but no cron daemon appears to be "
+            "running — your jobs will never fire.\n"
+            "  On WSL: start it with `sudo service cron start`, and make it "
+            "persistent with `systemd=true` under `[boot]` in /etc/wsl.conf "
+            "(then `wsl --shutdown` once) or add the service start to your "
+            "shell profile.",
+            file=sys.stderr,
+        )
 
     def uninstall(self, jobs: list[ScheduledJob] | None = None) -> None:
         """Remove the personal-mem fence block, leaving foreign lines intact.

@@ -75,6 +75,8 @@ For each type that got fresh items:
 Skill(skill="drain", args="--source-type <slug> [--limit N]")
 ```
 
+Under the plugin install, skills resolve namespaced — if `Skill(skill="drain")` fails with an unknown skill, retry as `personal-mem:drain`.
+
 `/drain` handles Path B (writer-only, no triage) for `youtube-*` — it peeks the queue, fans out `research-youtube-worker` subagents at `drain_parallelism`, validates allowed-failure prefixes, and archives outcomes. The orchestrator returns the drain report verbatim per type.
 
 ---

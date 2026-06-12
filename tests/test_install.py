@@ -595,21 +595,60 @@ def subprocess_result(returncode: int):
     return r
 
 
-class TestPluginManifestsHavePostInstall:
-    """Both checked-in plugin manifests must declare a `post_install` that
-    invokes `mem hooks install && mem install --yes` so plugin users get
-    the same end state as pip-route users (hooks + CLAUDE.md nudge)."""
+class TestPluginManifestContract:
+    """The root `.claude-plugin/plugin.json` is the shipped packaging.
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            REPO_ROOT / ".claude-plugin" / "plugin.json",
-            REPO_ROOT / ".claude" / "plugins" / "personal-mem" / ".claude-plugin" / "plugin.json",
-        ],
-        ids=["root_manifest", "nested_manifest"],
-    )
-    def test_post_install_includes_both_mem_invocations(self, path: Path):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        post = data.get("post_install", "")
-        assert "mem hooks install" in post, f"{path} missing hooks install in post_install"
-        assert "mem install" in post, f"{path} missing mem install in post_install"
+    Claude Code has no `post_install` manifest hook (verified against the
+    plugin docs 2026-06-12 — the key is silently ignored), so nothing on
+    the plugin route may depend on one. Hooks ship via `hooks/hooks.json`
+    and agents via the auto-discovered root `agents/` dir; every launcher
+    uses the canonical `uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra
+    mcp` shape because the plugin route never puts console scripts on
+    PATH.
+    """
+
+    MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
+    HOOK_LAUNCHER = 'uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra mcp mem-hook '
+
+    def test_no_post_install(self):
+        data = json.loads(self.MANIFEST.read_text(encoding="utf-8"))
+        assert "post_install" not in data, (
+            "post_install is not a supported plugin.json field — Claude Code "
+            "ignores it silently; don't ship steps that never run"
+        )
+
+    def test_hook_commands_use_plugin_root_launcher(self):
+        hooks = json.loads(
+            (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        commands = [
+            h["command"]
+            for matchers in hooks["hooks"].values()
+            for matcher in matchers
+            for h in matcher["hooks"]
+        ]
+        assert commands, "plugin ships no hook commands"
+        for cmd in commands:
+            assert cmd.startswith(self.HOOK_LAUNCHER), (
+                f"hook command {cmd!r} bypasses the canonical uv launcher — "
+                "bare `mem-hook` is not on PATH for plugin-route users"
+            )
+
+    def test_agents_shipped_at_plugin_root(self):
+        """Every worker the dream registry fans out to (plus the drain
+        Path B writers) must exist under the auto-discovered `agents/`
+        dir, or plugin users get 'Agent type not found' from /dream and
+        every fan-out drain."""
+        from personal_mem.operations.dream_tasks import REGISTRY
+
+        shipped = {p.stem for p in (REPO_ROOT / "agents").glob("*.md")}
+        assert shipped, "plugin ships no subagent workers"
+
+        dream_workers = {spec.worker_name for spec in REGISTRY}
+        missing = dream_workers - shipped
+        assert not missing, f"dream workers missing from agents/: {sorted(missing)}"
+
+        assert "news-triage-worker" in shipped
+        assert {n for n in shipped if n.startswith("research-")}, (
+            "no drain Path B writer agents shipped"
+        )

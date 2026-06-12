@@ -32,7 +32,7 @@ dispatched subskills (see `/research`, `/research-paper`, `/capture`,
 
 ## Classification table
 
-Classify on input shape first, then dispatch. First match wins.
+Classify on input shape first, then dispatch. First match wins. Under the plugin install, skills resolve namespaced — if a bare `Skill(skill="X")` dispatch fails with an unknown skill, retry as `personal-mem:X` (applies to every dispatch row below).
 
 | Input shape         | Detection                                                                                                            | Dispatch                                                                                                  |
 |---------------------|----------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|

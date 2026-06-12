@@ -41,6 +41,7 @@ from typing import Literal
 import yaml
 
 from personal_mem.core.config import Config, resolve_config_file
+from personal_mem.core.plugin_route import namespace_prompt, plugin_namespace
 
 Runner = Literal["direct", "uv"]
 
@@ -138,10 +139,19 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
     head, *rest = tokens
 
     if job.runner == "direct":
+        # Plugin-route installs register skills namespaced (verified: no
+        # bare-name aliasing), so `/dream` must render as
+        # `/personal-mem:dream` in the scheduled line. The token after a
+        # `-p` flag is the skill invocation.
+        ns = plugin_namespace()
+        if ns:
+            for i, tok in enumerate(rest[:-1]):
+                if tok == "-p":
+                    rest[i + 1] = namespace_prompt(rest[i + 1], ns)
         resolved = shutil.which(head)
         if resolved:
             return " ".join([_quote(resolved), *rest])
-        return job.command
+        return " ".join([head, *rest])
 
     # runner == "uv": a `mem` subcommand.
     if head == "mem":

@@ -22,7 +22,7 @@ pass a ``vault_root`` to ``get_spec``/``all_specs``.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -143,7 +143,7 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         # Email-newsletter ingestion. The slug encodes the *grain*, not a
         # topic — `newsletter-events` is the event-grain sibling, used for
         # markets/macro/dealflow subscriptions where theme-floating fires.
-        # See commands/newsletter.md and .claude/agents/research-newsletter-worker.md.
+        # See commands/newsletter.md and agents/research-newsletter-worker.md.
         skills=("newsletter", "drain"),
         description=(
             "Email newsletters with event-shaped content (markets, macro, "
@@ -176,7 +176,7 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         # markets/macro recaps). Channel RSS poll + URL paste intake;
         # Gemini Flash extracts transcript + summary natively from the
         # video URL. Channel name drives the author_folder layout.
-        # See commands/youtube.md and .claude/agents/research-youtube-worker.md.
+        # See commands/youtube.md and agents/research-youtube-worker.md.
         skills=("youtube", "drain"),
         description=(
             "YouTube videos with event-shaped content (tech-news, market "
@@ -209,7 +209,7 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         # in podcast_feeds.yaml; rss_poll picks the <enclosure> audio URL
         # off each item and the worker hands the MP3 to Gemini Flash
         # via the Files API. Show name drives the author_folder layout.
-        # See commands/podcast.md and .claude/agents/research-podcast-worker.md.
+        # See commands/podcast.md and agents/research-podcast-worker.md.
         skills=("podcast", "drain"),
         description=(
             "Podcasts with event-shaped content (markets, macro, "

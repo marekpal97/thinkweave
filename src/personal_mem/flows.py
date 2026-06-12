@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Literal
 
 from personal_mem.core.config import Config
+from personal_mem.core.plugin_route import namespace_prompt, plugin_namespace
 
 
 OnError = Literal["continue", "abort"]
@@ -147,6 +148,9 @@ def _build_argv(run_arg: str) -> list[str]:
     entries use.
     """
     bin_path = os.environ.get("PERSONAL_MEM_CLAUDE_BIN") or "claude"
+    # Plugin-route installs register skills namespaced (`/personal-mem:dream`),
+    # with no bare-name aliasing — rewrite the stage's skill token to match.
+    run_arg = namespace_prompt(run_arg, plugin_namespace())
     return [bin_path, "--model", "sonnet", "-p", run_arg, "--dangerously-skip-permissions"]
 
 

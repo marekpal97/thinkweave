@@ -158,6 +158,8 @@ For each type with new queue items:
 Skill(skill="drain", args="--source-type <slug> [--limit N]")
 ```
 
+Under the plugin install, skills resolve namespaced — if `Skill(skill="drain")` fails with an unknown skill, retry as `personal-mem:drain`.
+
 `/drain` runs Path B (writer-only, no triage) for newsletter types — fans out `research-newsletter-worker` subagents at `drain_parallelism`, validates allowed-failure prefixes, archives outcomes. Capture which queue items got archived `done` (you need their `thread_id`s for step 5).
 
 ---

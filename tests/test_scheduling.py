@@ -159,6 +159,55 @@ class TestResolveCommand:
         out = resolve_command(job, repo_root=Path("/repo"))
         assert out == "uv run --project /repo mem index --embed"
 
+    def test_direct_namespaces_skill_under_plugin_route(
+        self, monkeypatch, tmp_path
+    ):
+        # Plugin route active → the `-p` skill token renders namespaced
+        # (plugin commands have no bare-name aliasing).
+        import json
+
+        from personal_mem.core import plugin_route
+
+        manifest = tmp_path / "installed_plugins.json"
+        manifest.write_text(
+            json.dumps({"version": 2, "plugins": {"personal-mem@mp": []}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
+        monkeypatch.setattr(
+            "personal_mem.scheduling.registry.shutil.which",
+            lambda name: "/abs/claude" if name == "claude" else None,
+        )
+        job = ScheduledJob(
+            "dream",
+            "0 3 * * *",
+            "claude --model sonnet -p /dream --dangerously-skip-permissions",
+            runner="direct",
+        )
+        out = resolve_command(job)
+        assert out == (
+            "/abs/claude --model sonnet -p /personal-mem:dream"
+            " --dangerously-skip-permissions"
+        )
+
+    def test_uv_jobs_unaffected_by_plugin_route(self, monkeypatch, tmp_path):
+        import json
+
+        from personal_mem.core import plugin_route
+
+        manifest = tmp_path / "installed_plugins.json"
+        manifest.write_text(
+            json.dumps({"version": 2, "plugins": {"personal-mem@mp": []}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
+        monkeypatch.setattr(
+            "personal_mem.scheduling.registry.shutil.which",
+            lambda name: "/abs/mem" if name == "mem" else None,
+        )
+        job = ScheduledJob("x", "0 3 * * *", "mem index --embed", runner="uv")
+        assert resolve_command(job) == "/abs/mem index --embed"
+
 
 # --------------------------------------------------------------------------- #
 # CrontabBackend
@@ -226,6 +275,57 @@ class TestCrontabBackend:
         assert "# my own line" in out  # foreign preserved
         assert "0 0 * * * echo hi" in out
         assert FENCE_START in out and FENCE_END in out
+
+    def test_install_warns_when_cron_daemon_absent(
+        self, config, monkeypatch, capsys
+    ):
+        """WSL footgun: crontab edits succeed but no daemon runs the jobs."""
+        import subprocess as _sp
+
+        monkeypatch.setattr(
+            CrontabBackend, "_read_crontab", lambda self: ""
+        )
+        monkeypatch.setattr(
+            CrontabBackend, "_write_crontab", lambda self, content: None
+        )
+        monkeypatch.setattr(
+            "personal_mem.scheduling.cron.user_cache_dir",
+            lambda: config.vault_root / "cache",
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/pidof")
+        monkeypatch.setattr(
+            _sp,
+            "run",
+            lambda *a, **k: _sp.CompletedProcess(a, returncode=1),
+        )
+        CrontabBackend(config).install(self._jobs())
+        err = capsys.readouterr().err
+        assert "no cron daemon" in err
+        assert "sudo service cron start" in err
+
+    def test_install_silent_when_cron_daemon_running(
+        self, config, monkeypatch, capsys
+    ):
+        import subprocess as _sp
+
+        monkeypatch.setattr(
+            CrontabBackend, "_read_crontab", lambda self: ""
+        )
+        monkeypatch.setattr(
+            CrontabBackend, "_write_crontab", lambda self, content: None
+        )
+        monkeypatch.setattr(
+            "personal_mem.scheduling.cron.user_cache_dir",
+            lambda: config.vault_root / "cache",
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/pidof")
+        monkeypatch.setattr(
+            _sp,
+            "run",
+            lambda *a, **k: _sp.CompletedProcess(a, returncode=0),
+        )
+        CrontabBackend(config).install(self._jobs())
+        assert "no cron daemon" not in capsys.readouterr().err
 
     def test_idempotent_replace(self):
         existing = (

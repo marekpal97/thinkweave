@@ -155,6 +155,22 @@ class TestBuildCommand:
         cmd = _build_command("/x")
         assert cmd.startswith("/custom/claude ")
 
+    def test_namespaces_skill_under_plugin_route(self, monkeypatch, tmp_path):
+        # Plugin route active → stage skill tokens render namespaced
+        # (plugin commands have no bare-name aliasing).
+        import json
+
+        from personal_mem.core import plugin_route
+
+        manifest = tmp_path / "installed_plugins.json"
+        manifest.write_text(
+            json.dumps({"version": 2, "plugins": {"personal-mem@mp": []}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
+        argv = _build_argv("/discover --strategy rss_poll")
+        assert "/personal-mem:discover --strategy rss_poll" in argv
+
 
 class TestBuildArgv:
     """The execution path is an argv list — no shell parsing, so a prompt

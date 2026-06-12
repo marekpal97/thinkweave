@@ -961,11 +961,12 @@ Surface these as part of the wrap-up — they're the difference between
 "install reported success" and "install actually takes effect in your
 session."
 
-- The subagent registry is captured at claude-process start. New
-  `.claude/agents/*.md` files just installed (the `dream-*-worker`
-  set, any research workers) won't be available until restart —
-  `/clear` does **not** reload them. Exit claude and re-launch after
-  `/onboard` completes.
+- The subagent registry is captured at claude-process start. Worker
+  agent files that just became available (the `dream-*-worker` set,
+  any research workers — `agents/` in the plugin, `.claude/agents/`
+  on a clone) won't load until restart — `/clear` does **not** reload
+  them. Exit claude and re-launch after `/onboard` completes. Plugin
+  installs register them namespaced (`personal-mem:<worker>`).
 - The MCP server is process-bound. Any future `mem install` upgrade
   or change to MCP-exposed schemas/enums (new `NoteType` values, new
   tools, new enum members) requires the same restart to pick up.

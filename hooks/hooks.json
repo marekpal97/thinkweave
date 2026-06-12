@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mem-hook session_start"
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp mem-hook session_start"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mem-hook user_prompt_submit"
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp mem-hook user_prompt_submit"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mem-hook post_tool_use"
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp mem-hook post_tool_use"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mem-hook stop"
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp mem-hook stop"
           }
         ]
       }

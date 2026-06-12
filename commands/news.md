@@ -76,6 +76,8 @@ Task({
 })
 ```
 
+Under the plugin install the worker is registered as `personal-mem:research-news-worker` — if the bare type doesn't resolve, retry once with the prefix.
+
 The synthesized `triage_verdict: keep_unfiled` mirrors what the cron drain emits for items that didn't theme-match — the writer files the note with `theme_unfiled: true` so the periodic theme-review pass can pick it up. If the user wants to file the new note under an explicit theme later, that's a manual `mem_link source_id target_id --type relates_to` call after the writer returns.
 
 The writer fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note.

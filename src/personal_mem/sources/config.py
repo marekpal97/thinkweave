@@ -199,7 +199,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # episode, and the worker hands the MP3 to Gemini Flash via
             # the Files API. Theme candidate floater fires on create.
             # See commands/podcast.md and
-            # .claude/agents/research-podcast-worker.md.
+            # agents/research-podcast-worker.md.
             "queue": "vault/.mem/queues/podcast-events.jsonl",
             "feed_config": "vault/.mem/podcast_events_feeds.yaml",
             "drain_strategy": "subagent",
