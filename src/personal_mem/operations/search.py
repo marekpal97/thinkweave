@@ -141,15 +141,49 @@ def _project_buffer_session_ids(cfg: Config, project: str) -> set[str]:
 
     Used to scope active ``.mem/buffer/<uuid>.jsonl`` files so we never
     bleed prompts across projects.
+
+    Goes through the SQLite index (one query). The pre-2026-06-09 variant
+    crawled the vault via ``VaultManager.list_notes`` — which reads every
+    note file to filter by type — and ``recent_probe_pressure``'s
+    vault-wide scope multiplied that by the project count: ~88k file
+    reads / 6+ minutes per dream scan on a /mnt/c WSL vault. The vault
+    crawl remains as the fallback for index-less vaults.
     """
+    out: set[str] = set()
+
+    # Fast path: the index. Session notes are indexed with their full
+    # frontmatter blob; source_session is a plain key on it. Trust the
+    # index whenever it knows about ANY session note — only a vault whose
+    # index has never seen a session (fresh install, index not yet built)
+    # falls through to the legacy walk.
+    try:
+        from personal_mem.core.indexer import Indexer
+
+        idx = Indexer(config=cfg)
+        try:
+            n_sessions = idx.db.execute(
+                "SELECT COUNT(*) FROM notes WHERE type = 'session'"
+            ).fetchone()[0]
+            rows = idx.db.execute(
+                "SELECT json_extract(frontmatter, '$.source_session') "
+                "  FROM notes WHERE type = 'session' AND project = ?",
+                (project,),
+            ).fetchall()
+        finally:
+            idx.close()
+        if n_sessions:
+            for row in rows:
+                if row[0]:
+                    out.add(str(row[0]))
+            return out
+    except Exception:
+        pass
+
+    # Fallback: index unavailable → bounded vault walk (legacy path).
     try:
         from personal_mem.core.schemas import NoteType
         from personal_mem.core.vault import VaultManager
-    except Exception:
-        return set()
 
-    out: set[str] = set()
-    try:
         vm = VaultManager(config=cfg)
         for note in vm.list_notes(note_type=NoteType.SESSION, limit=500):
             if note.project != project:

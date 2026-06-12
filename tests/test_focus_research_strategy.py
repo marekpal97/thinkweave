@@ -265,6 +265,11 @@ class TestProbeExemplars:
         assert result[0]["exemplar_probed"] == [tagged]
         # And it shows up as a substrate exemplar too (served once).
         assert tagged in result[0]["exemplar_served"]
+        # The probe question itself rides on the descriptor so the
+        # resolving skill can tighten its search to what was asked.
+        assert result[0]["probe_texts"] == [
+            "What is dense-retrieval and how does it differ?"
+        ]
 
     def test_no_probe_yields_empty_probe_exemplars(
         self, vault: VaultManager, indexer: Indexer, config: Config, vault_dir: Path
@@ -284,6 +289,7 @@ class TestProbeExemplars:
 
         result = focus_research.STRATEGY.run(config, "test", {})
         assert result[0]["exemplar_probed"] == []
+        assert result[0]["probe_texts"] == []
         assert tagged in result[0]["exemplar_served"]
 
 

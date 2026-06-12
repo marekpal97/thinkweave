@@ -13,6 +13,11 @@ a gap descriptor with three pieces of evidence:
   served in the same session as a probe-classified prompt whose text
   mentions the concept slug. Captures "what the user was looking at
   while wondering about this."
+- **Probe texts** — the matched probe questions themselves (most
+  recent first, capped). The skill resolving the gap composes its
+  search from the focus concept and tightens it with these — the same
+  two-step (concept picks the lane, probes aim the query) that
+  `/dream`'s priority signals use via ``queue_item.probes``.
 - **Source coverage** — count of ``type=source`` notes tagged with the
   concept, partitioned by ``source_type``. Surfaces gaps in the
   evidence base ("focus concept X has 3 papers but no repos").
@@ -34,6 +39,7 @@ Emitted descriptor shape::
         "concept": "agent-harness",
         "exemplar_served": ["n-abc123", "n-def456"],
         "exemplar_probed": ["n-jkl012"],
+        "probe_texts": ["How do agent harnesses checkpoint mid-run?"],
         "source_coverage": {"paper": 3, "repo": 1, "article": 5},
         "kind": "research_focus",
         "title": "Research focus: agent-harness (...)",
@@ -86,14 +92,14 @@ class FocusResearchStrategy:
         # project-scoped). Without one, fall back to default_project; if
         # neither, skip the probe leg (substrate + coverage still ship).
         probe_project = project or getattr(cfg, "default_project", None)
-        probe_sessions_by_concept: dict[str, set[str]] = {}
+        probe_evidence_by_concept: dict[str, dict] = {}
         if probe_project:
             try:
-                probe_sessions_by_concept = self._probe_sessions_by_concept(
+                probe_evidence_by_concept = self._probe_evidence_by_concept(
                     cfg, probe_project, concepts, params["window_days"]
                 )
             except Exception:
-                probe_sessions_by_concept = {}
+                probe_evidence_by_concept = {}
 
         cutoff_iso = (
             datetime.now(timezone.utc) - timedelta(days=params["window_days"])
@@ -107,7 +113,7 @@ class FocusResearchStrategy:
                     db,
                     concept,
                     cutoff_iso,
-                    probe_sessions_by_concept.get(concept, set()),
+                    probe_evidence_by_concept.get(concept) or {},
                     params,
                 )
                 for concept in concepts
@@ -120,9 +126,10 @@ class FocusResearchStrategy:
         db: sqlite3.Connection,
         concept: str,
         cutoff_iso: str,
-        probe_sessions: set[str],
+        probe_evidence: dict[str, Any],
         params: dict[str, Any],
     ) -> dict[str, Any]:
+        probe_sessions: set[str] = probe_evidence.get("sessions") or set()
         substrate_exemplars = self._substrate_exemplars(
             db, concept, cutoff_iso, params["exemplar_limit"]
         )
@@ -130,6 +137,17 @@ class FocusResearchStrategy:
             db, concept, probe_sessions, params["probe_exemplar_limit"]
         )
         coverage = self._source_coverage(db, concept)
+
+        # Most-recent-first, deduped, capped — the resolving skill uses
+        # these to tighten its search query for the concept.
+        probe_texts: list[str] = []
+        for _ts, text in sorted(
+            probe_evidence.get("texts") or [], reverse=True
+        ):
+            if text not in probe_texts:
+                probe_texts.append(text)
+            if len(probe_texts) >= params["probe_text_limit"]:
+                break
 
         coverage_summary = ", ".join(
             f"{cnt} {st}{'s' if cnt != 1 else ''}"
@@ -140,6 +158,7 @@ class FocusResearchStrategy:
             "concept": concept,
             "exemplar_served": substrate_exemplars,
             "exemplar_probed": probe_exemplars,
+            "probe_texts": probe_texts,
             "source_coverage": coverage,
             "kind": "research_focus",
             "title": f"Research focus: {concept} ({coverage_summary})",
@@ -229,16 +248,17 @@ class FocusResearchStrategy:
             coverage[stype] = coverage.get(stype, 0) + 1
         return coverage
 
-    def _probe_sessions_by_concept(
+    def _probe_evidence_by_concept(
         self,
         cfg: Any,
         project: str,
         concepts: list[str],
         window_days: int,
-    ) -> dict[str, set[str]]:
-        """Map each focus concept → set of vault session note ids whose
-        ``events.jsonl`` carries a probe-classified prompt mentioning the
-        concept slug.
+    ) -> dict[str, dict]:
+        """Map each focus concept → ``{"sessions": set[ses_id],
+        "texts": [(ts_iso, text), ...]}`` from probe-classified prompts
+        mentioning the concept slug. Sessions feed the probe-exemplar
+        SQL leg; texts surface verbatim on the descriptor.
 
         Walks ``vault/projects/<project>/sessions/<dir>/events.jsonl``
         directly rather than going through ``query_prompts`` — the latter
@@ -254,7 +274,9 @@ class FocusResearchStrategy:
         from personal_mem.core.events import extract_prompts
         from personal_mem.core.vault import VaultManager
 
-        by_concept: dict[str, set[str]] = {c: set() for c in concepts}
+        by_concept: dict[str, dict] = {
+            c: {"sessions": set(), "texts": []} for c in concepts
+        }
         lowered = [(c, c.lower()) for c in concepts if c]
         if not lowered:
             return by_concept
@@ -289,12 +311,21 @@ class FocusResearchStrategy:
                     and prompt.ts < cutoff
                 ):
                     continue
-                text = (prompt.text or "").lower()
-                if not text:
+                text = (prompt.text or "").strip()
+                text_lower = text.lower()
+                if not text_lower:
                     continue
+                ts_iso = (
+                    prompt.ts.isoformat()
+                    if prompt.ts != datetime.min
+                    else ""
+                )
                 for canonical, slug_lower in lowered:
-                    if slug_lower in text:
-                        by_concept[canonical].add(ses_id)
+                    if slug_lower in text_lower:
+                        by_concept[canonical]["sessions"].add(ses_id)
+                        by_concept[canonical]["texts"].append(
+                            (ts_iso, text[:240])
+                        )
         return by_concept
 
     def _params(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -308,6 +339,9 @@ class FocusResearchStrategy:
             "exemplar_limit": int(strategies_cfg.get("exemplar_limit", 5)),
             "probe_exemplar_limit": int(
                 strategies_cfg.get("probe_exemplar_limit", 3)
+            ),
+            "probe_text_limit": int(
+                strategies_cfg.get("probe_text_limit", 3)
             ),
         }
 

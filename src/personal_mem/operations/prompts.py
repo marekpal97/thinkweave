@@ -1,12 +1,14 @@
 """Probe-pressure helper — aggregates probe-classified prompts into
-per-concept pressure scores.
+per-concept pressure scores (and, for the detail variant, the probe
+texts themselves).
 
-Output is consumed as an additive bias by gap-emitting discover
-strategies (``decision_review``, ``prompt_gap``), plus ``/dream``'s
-scan phase to seed ``priority_signals``. Concept
-substrate stays the same; the helper turns "what the user has been
-asking about" into a dict the downstream consumers can multiply
-against their existing scoring.
+The count projection (:func:`recent_probe_pressure`) is consumed as an
+additive bias by gap-emitting discover strategies (``decision_review``,
+``prompt_gap``) and landing's ``probe_matches_24h``. The detail variant
+(:func:`recent_probe_details`) feeds ``/dream``'s scan phase to seed
+``priority_signals`` — carrying the texts forward is what makes probes
+first-class on the acquisition rail (queue items inherit them so
+``/drain`` can tighten search queries to the user's actual questions).
 """
 
 from __future__ import annotations
@@ -14,6 +16,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from personal_mem.core.config import Config
+from personal_mem.core.events import match_probe_concepts
+
+
+# Probe texts carried per concept by :func:`recent_probe_details`.
+# Three keeps the worker prompt lean while still showing the shape of
+# what the user asked; 240 chars survives multi-sentence questions
+# without dragging pasted code blocks along.
+_TEXTS_PER_CONCEPT = 3
+_TEXT_TRUNCATE = 240
 
 
 def recent_probe_pressure(
@@ -23,10 +34,35 @@ def recent_probe_pressure(
 ) -> dict[str, int]:
     """Aggregate probe-classified prompts into per-concept pressure.
 
+    Count-only projection of :func:`recent_probe_details` — kept for the
+    consumers that multiply pressure against their own scoring
+    (``decision_review`` bias, landing's ``probe_matches_24h``) and don't
+    need the underlying probe texts.
+    """
+    return {
+        concept: detail["count"]
+        for concept, detail in recent_probe_details(
+            cfg, project=project, window_days=window_days
+        ).items()
+    }
+
+
+def recent_probe_details(
+    cfg: Config,
+    project: str | None = None,
+    window_days: int = 14,
+    texts_per_concept: int = _TEXTS_PER_CONCEPT,
+) -> dict[str, dict]:
+    """Aggregate probe-classified prompts into per-concept pressure + texts.
+
     Walks recent probes via :func:`personal_mem.operations.search.query_prompts`
     (``classified_as="probe"``), tokenises each prompt against the merged
-    set of canonical-ontology + indexed proposed concepts, and returns a
-    frequency count per matching concept slug.
+    set of canonical-ontology + indexed proposed concepts, and returns,
+    per matching concept slug, the frequency count **and** the most
+    recent probe texts themselves. Keeping the texts is what lets the
+    acquisition side (``priority_signals`` → queue items → ``/drain``)
+    tighten its search queries to what the user actually asked, instead
+    of working from the concept slug alone.
 
     Matching is case-insensitive substring with a 3-char minimum on the
     concept slug — a probe like "How does FTS5 tokenize?" pressures both
@@ -56,10 +92,14 @@ def recent_probe_pressure(
             a project context.
         window_days: lookback window in days. Default 14 matches the
             audit's "recent" framing.
+        texts_per_concept: how many probe texts to keep per concept,
+            most-recent-first. Texts are truncated to ~240 chars and
+            exact duplicates are dropped (re-asking the same question
+            still counts toward ``count``).
 
     Returns:
-        Dict ``{concept_slug: probe_count}``. Empty when no probes in
-        window or no vocabulary loaded.
+        Dict ``{concept_slug: {"count": int, "probes": [text, ...]}}``.
+        Empty when no probes in window or no vocabulary loaded.
     """
     # Resolve scope: explicit project > cfg.default_project > vault-wide.
     # The vault-wide fallback (project=="") matters because dream.scan
@@ -133,23 +173,28 @@ def recent_probe_pressure(
     if not vocabulary:
         return {}
 
-    pressure: dict[str, int] = {}
-    for row in probes:
-        text_lower = (row.get("text") or "").lower()
-        if not text_lower:
-            continue
-        # Tokenise against the vocabulary as a whole rather than splitting
-        # words first — concepts like ``write-ahead-log`` or ``concept-edge``
-        # contain hyphens and would be split apart by naive whitespace
-        # tokenisation. Substring match catches them.
-        matched: set[str] = set()
-        for concept in vocabulary:
-            # ``len(concept) >= 3`` guards against the single/2-char
-            # garbage pool described in the docstring — those slugs
-            # match every probe and drown real signal.
-            if concept and len(concept) >= 3 and concept in text_lower:
-                matched.add(concept)
-        for concept in matched:
-            pressure[concept] = pressure.get(concept, 0) + 1
+    # Most-recent-first so the texts kept per concept are the freshest
+    # framing of the question (the vault-wide branch already sorted; the
+    # project-scoped branch returns walk order).
+    probes.sort(key=lambda r: r.get("ts") or "", reverse=True)
 
-    return pressure
+    details: dict[str, dict] = {}
+    for row in probes:
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        # Shared attribution rule with the prompt_concepts SQL projection
+        # (substring match, 3-char slug minimum) — see
+        # core.events.match_probe_concepts for the rationale.
+        matched = match_probe_concepts(text, vocabulary)
+        for concept in matched:
+            detail = details.setdefault(concept, {"count": 0, "probes": []})
+            detail["count"] += 1
+            snippet = text[:_TEXT_TRUNCATE]
+            if (
+                len(detail["probes"]) < texts_per_concept
+                and snippet not in detail["probes"]
+            ):
+                detail["probes"].append(snippet)
+
+    return details

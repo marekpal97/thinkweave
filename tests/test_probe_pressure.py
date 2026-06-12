@@ -17,7 +17,10 @@ from personal_mem.core.config import Config
 from personal_mem.core.indexer import Indexer
 from personal_mem.core.schemas import NoteType
 from personal_mem.core.vault import VaultManager
-from personal_mem.operations.prompts import recent_probe_pressure
+from personal_mem.operations.prompts import (
+    recent_probe_details,
+    recent_probe_pressure,
+)
 
 
 def _write_events(path: Path, rows: list[dict]) -> None:
@@ -180,6 +183,87 @@ class TestRecentProbePressure:
             cfg, project="proj_a", window_days=14
         )
         assert pressure.get("llm", 0) == 3
+
+
+class TestRecentProbeDetails:
+    """The detail variant keeps the probe texts alongside the counts —
+    the substrate for queue_item.probes on the acquisition rail."""
+
+    def test_texts_ride_along_most_recent_first(
+        self, cfg: Config, vault: VaultManager
+    ):
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=3)},
+                {"type": "prompt", "text": "What does the llm output?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+            ],
+        )
+        details = recent_probe_details(cfg, project="proj_a", window_days=14)
+        detail = details.get("llm") or {}
+        assert detail.get("count") == 2
+        assert detail.get("probes") == [
+            "What does the llm output?",
+            "How does the llm work?",
+        ]
+
+    def test_texts_capped_count_not(
+        self, cfg: Config, vault: VaultManager
+    ):
+        """Five probes → count 5 but only ``texts_per_concept`` texts."""
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": f"How does the llm handle case {i}?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=i)}
+                for i in range(1, 6)
+            ],
+        )
+        details = recent_probe_details(
+            cfg, project="proj_a", window_days=14, texts_per_concept=3
+        )
+        detail = details.get("llm") or {}
+        assert detail.get("count") == 5
+        assert len(detail.get("probes", [])) == 3
+        # Most recent (smallest days_ago) first.
+        assert detail["probes"][0] == "How does the llm handle case 1?"
+
+    def test_duplicate_texts_collapse_but_still_count(
+        self, cfg: Config, vault: VaultManager
+    ):
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=2)},
+            ],
+        )
+        details = recent_probe_details(cfg, project="proj_a", window_days=14)
+        detail = details.get("llm") or {}
+        assert detail.get("count") == 2
+        assert detail.get("probes") == ["How does the llm work?"]
+
+    def test_pressure_is_projection_of_details(
+        self, cfg: Config, vault: VaultManager
+    ):
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+            ],
+        )
+        details = recent_probe_details(cfg, project="proj_a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
+        assert pressure == {c: d["count"] for c, d in details.items()}
 
 
 class TestRecentProbePressureVaultWide:

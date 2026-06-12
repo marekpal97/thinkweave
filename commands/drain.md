@@ -11,6 +11,7 @@ tools:
   - Bash
   - Task
   - WebFetch
+  - WebSearch
   - mem_search
   - mem_concepts
   - mem_create
@@ -67,13 +68,16 @@ If empty → report "Nothing to drain." and stop. If `--limit N` was passed, use
 This is the original behavior. Process items one at a time:
 
 For each item:
-1. `Skill(skill="<research_skill>", args="<url>")` — that skill handles fetch + summarize + concept mapping + `mem_create`.
-2. On success: `mem_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="done")`.
-3. On non-recoverable failure: `mem_queue(action="archive", ..., status="failed")`. On recoverable failure: leave in place.
+1. **If the item has no `url`** (priority signals from `/dream` — `source: dream-priority-signal` — carry `concept`, `title`, and usually `probes`): resolve one first. Run a `WebSearch` whose query is the two-step composition — the `concept` + `title` pick the lane, and the `probes[]` texts (the user's verbatim open questions) tighten the angle. Example: item `{concept: dynamic-batching, title: "Dynamic batching under mixed sequence lengths", probes: ["How does vLLM decide batch size under mixed sequence lengths?"]}` → search `vLLM dynamic batching batch size mixed sequence lengths`, not just `dynamic-batching`. Pick the single best result that matches the item's `source_type` (a paper for `paper`, a repo URL for `repo`, …). If no result fits, archive `failed` with reason `no_url_resolved: <query used>`.
+2. `Skill(skill="<research_skill>", args="<url>")` — that skill handles fetch + summarize + concept mapping + `mem_create`.
+3. On success: `mem_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="done")`.
+4. On non-recoverable failure: `mem_queue(action="archive", ..., status="failed")`. On recoverable failure: leave in place.
 
 ### Path B: Writer fan-out (`subagent_type` is set), optionally preceded by triage
 
 The drain orchestrator spawns Sonnet writer subagents in parallel. Admission is **either** decided upstream (channel allowlist / sender allowlist — no triage stage), **or** decided per-drain by a cheap Haiku triage on titles (news's "fits an active theme?" filter). The presence of `triage_model` in the source's config selects which.
+
+**Install-route namespacing.** Plugin installs register the workers under the `personal-mem:` namespace; project-scope installs use bare names. Spawn with the bare type from config first; if it doesn't resolve, retry once as `personal-mem:<subagent_type>` (the failure message lists the available types). Applies to the triage and writer `Task` calls below.
 
 | `triage_model` | Stage 1 | Stage 2 |
 |---|---|---|
@@ -93,7 +97,7 @@ Task({
 })
 ```
 
-The subagent's spec lives at `.claude/agents/news-triage-worker.md`. It Reads `THEMES.md`, parses the `## Catalog (active)` section, and emits one verdict per input. The orchestrator parses the subagent's final JSON line — a `{<item_id>: {verdict, theme_id, reason}}` map. Verdicts:
+The subagent's spec lives at `agents/news-triage-worker.md`. It Reads `THEMES.md`, parses the `## Catalog (active)` section, and emits one verdict per input. The orchestrator parses the subagent's final JSON line — a `{<item_id>: {verdict, theme_id, reason}}` map. Verdicts:
 
 - `keep` — fits an active theme. Carries a `theme_id`.
 - `keep_unfiled` — substantive but no theme match. `theme_id: null`. Goes to the periodic-review pile (frontmatter flag `theme_unfiled: true`).
@@ -114,7 +118,7 @@ Task({
 })
 ```
 
-The writer's spec lives at `.claude/agents/research-news-worker.md`. It fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note (filed under `relates_to: [theme_id]` if `keep`, or with `theme_unfiled: true` if `keep_unfiled`).
+The writer's spec lives at `agents/research-news-worker.md`. It fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note (filed under `relates_to: [theme_id]` if `keep`, or with `theme_unfiled: true` if `keep_unfiled`). The full queue-item dict is in the prompt, so any `probes[]` field (priority-signal items) reaches the writer for free — writers should angle the brief toward those questions when present.
 
 Collect each writer's final JSON line. Outcomes: `accepted` / `fetch_failed`. (Concept-bundle dedup, FOCUS gate, and Jaccard math are gone — the v1 mechanics no longer apply.)
 
@@ -218,7 +222,7 @@ Drain summary for queue '<slug>' (path=A):
 | B without triage (writer-only) | youtube-events, youtube-concepts | Admission is decided upstream by the channel allowlist in `sources.yaml`. /drain treats every queue item as `keep_unfiled` and fans out workers directly. No per-drain triage cost. |
 
 Adding a source type to Path B without triage requires:
-1. A writer subagent at `.claude/agents/research-<slug>-worker.md` (writer-only — no gating).
+1. A writer subagent at `agents/research-<slug>-worker.md` (writer-only — no gating).
 2. `subagent_type` + `subagent_model` + `drain_parallelism` set in config; **do not** set `triage_model`.
 3. `allowed_failure_prefixes` set in config so the hallucinated-refusal validator uses the right vocabulary.
 

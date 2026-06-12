@@ -90,6 +90,8 @@ Dispatch on `kind`:
 
 - **`kind: ontology_proposal` (prompt_gap)** — the user has probed about a hyphenated-compound term not in the ontology. Surface as a candidate for `/mem-resolve-concepts` to canonicalise; do not WebSearch or enqueue research items from it.
 
+- **`kind: research_focus` (focus_research)** — a declared focus concept with its substrate exemplars, probe evidence, and `source_coverage` partition. If coverage shows a real gap (e.g. zero sources of a type the concept plausibly needs), resolve it: compose a WebSearch from the concept, **tightened by `probe_texts`** (the user's verbatim open questions — search what they asked, not just the slug), and enqueue the best hit via `mem_queue` with `concept`, `url`, `title`, and the `probes` field carried over so the drain-side writer keeps the angle. If coverage looks adequate, surface the row in the report only. This is the discover-rail twin of `/dream`'s `queue_item.probes`.
+
 - **`kind: external` (external_tool_runner)** — payloads are user-shaped. If they look like queue items (have `url` / `title` fields), enqueue via `mem_queue`. Otherwise pass through to the run report.
 
 - **`kind: enqueued` (rss_poll)** — the strategy already enqueued. Surface the row in the report (title, url, outlet/channel, queue_item_id); no further action.
