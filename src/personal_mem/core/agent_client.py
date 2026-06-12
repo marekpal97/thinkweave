@@ -11,8 +11,6 @@ Built on the ``openai`` Python SDK's :class:`AsyncOpenAI` with per-provider
   • Batched work = ``asyncio.gather`` over N completions with a
     semaphore-capped concurrency budget. Provider-native Batches APIs
     are NOT used.
-  • Every call records spend via :func:`personal_mem.core.spend.record_spend`
-    exactly once.
 
 The Gemini Files API (audio modality for podcast extraction) stays a
 direct ``google.genai`` carve-out in :mod:`sources.extractors.gemini_extract`
@@ -25,7 +23,6 @@ import asyncio
 from typing import Any
 
 from personal_mem.core.api_keys import get_provider_key
-from personal_mem.core.spend import record_spend
 
 
 # Per-provider ``base_url`` override for ``AsyncOpenAI``. None → SDK default
@@ -117,19 +114,11 @@ async def get_completion(
     *,
     provider: str,
     model: str,
-    op: str,
     max_tokens: int = 8000,
     system: str | None = None,
-    mode: str = "mcp",
-    session_id: str | None = None,
     response_format: dict | None = None,
 ) -> tuple[str, dict[str, int]]:
     """Issue one chat completion and return ``(text, usage)``.
-
-    Records spend once per call via :func:`record_spend` — ``op`` is the
-    bookkeeping label (e.g. ``"enrich"``, ``"hubs_run"``, ``"hubs_link"``).
-    ``mode`` mirrors ``record_spend``'s ``mode`` arg: ``"mcp"`` (default,
-    in-server), ``"cli"`` (CLI process), ``"cron"`` (scheduled).
 
     ``response_format`` — when set (e.g. ``{"type": "json_object"}``) the
     SDK enforces the constraint at the provider level. When ``None`` the
@@ -155,15 +144,6 @@ async def get_completion(
         create_kwargs["response_format"] = response_format
     response = await client.chat.completions.create(**create_kwargs)
     usage = _usage_to_dict(getattr(response, "usage", None))
-    record_spend(
-        provider,
-        model,
-        op,
-        usage["prompt_tokens"],
-        usage["completion_tokens"],
-        mode=mode,
-        session_id=session_id,
-    )
     text = response.choices[0].message.content or ""
     return text, usage
 
@@ -173,12 +153,9 @@ async def batch_completions(
     *,
     provider: str,
     model: str,
-    op: str,
     max_tokens: int = 8000,
     system: str | None = None,
     concurrency: int = 20,
-    mode: str = "mcp",
-    session_id: str | None = None,
     return_exceptions: bool = False,
     response_format: dict | None = None,
 ) -> list[tuple[str, dict[str, int]]]:
@@ -206,11 +183,8 @@ async def batch_completions(
                 p,
                 provider=provider,
                 model=model,
-                op=op,
                 max_tokens=max_tokens,
                 system=system,
-                mode=mode,
-                session_id=session_id,
                 response_format=response_format,
             )
 
@@ -233,11 +207,8 @@ def get_completion_sync(
     *,
     provider: str,
     model: str,
-    op: str,
     max_tokens: int = 8000,
     system: str | None = None,
-    mode: str = "mcp",
-    session_id: str | None = None,
     response_format: dict | None = None,
 ) -> tuple[str, dict[str, int]]:
     return asyncio.run(
@@ -245,11 +216,8 @@ def get_completion_sync(
             prompt,
             provider=provider,
             model=model,
-            op=op,
             max_tokens=max_tokens,
             system=system,
-            mode=mode,
-            session_id=session_id,
             response_format=response_format,
         )
     )
@@ -260,12 +228,9 @@ def batch_completions_sync(
     *,
     provider: str,
     model: str,
-    op: str,
     max_tokens: int = 8000,
     system: str | None = None,
     concurrency: int = 20,
-    mode: str = "mcp",
-    session_id: str | None = None,
     return_exceptions: bool = False,
     response_format: dict | None = None,
 ) -> list[tuple[str, dict[str, int]]]:
@@ -274,12 +239,9 @@ def batch_completions_sync(
             prompts,
             provider=provider,
             model=model,
-            op=op,
             max_tokens=max_tokens,
             system=system,
             concurrency=concurrency,
-            mode=mode,
-            session_id=session_id,
             return_exceptions=return_exceptions,
             response_format=response_format,
         )

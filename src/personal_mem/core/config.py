@@ -188,7 +188,7 @@ def user_config_path() -> Path:
 
 def user_cache_dir() -> Path:
     """Platform cache base for personal_mem runtime artifacts (cron/Task
-    Scheduler logs, the spend ledger).
+    Scheduler logs).
 
     Resolution order mirrors :func:`user_config_path`:
     1. ``$XDG_CACHE_HOME`` when set.

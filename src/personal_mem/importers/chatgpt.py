@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -201,10 +200,8 @@ def summarize_thread(thread: Thread, api_key: str, model: str = "gpt-5-mini") ->
         transcript,
         provider=op_cfg["provider"],
         model=effective_model,
-        op="chatgpt_import",
         max_tokens=1000,
         system=SUMMARIZE_PROMPT,
-        mode="cli",
     )
     return _parse_summary_response(content or "")
 

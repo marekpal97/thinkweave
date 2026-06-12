@@ -52,8 +52,6 @@ def main() -> None:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        # ``dispatch`` exports PERSONAL_MEM_SESSION_ID from the call's args so
-        # nested Layer-B spend attributes to the session (see tools/__init__).
         return dispatch(cfg, name, arguments)
 
     async def run():

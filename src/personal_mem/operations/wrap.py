@@ -44,8 +44,6 @@ class WrapFinalizeResult:
     # Per-step wall time (seconds) — keys: prune, index, judge, landing, drift.
     # Populated even when a step errors, so a slow failure is visible.
     timings: dict[str, float] = field(default_factory=dict)
-    # Layer A + B spend summary for this session (see core/spend.py).
-    spend: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -62,7 +60,6 @@ class WrapFinalizeResult:
             "drift_text": self.drift_text,
             "errors": self.errors,
             "timings": self.timings,
-            "spend": self.spend,
         }
 
 
@@ -176,18 +173,5 @@ def finalize_wrap(
         result.errors.append(f"drift: {e}")
     finally:
         result.timings["drift"] = time.perf_counter() - _t
-
-    # 6. spend rollup (read-only) — Layer A native jsonl + Layer B spend events.
-    _t = time.perf_counter()
-    try:
-        from personal_mem.core.spend import read_session_spend
-
-        result.spend = read_session_spend(
-            session_id, project=project, cfg=cfg
-        ).as_dict()
-    except Exception as e:  # noqa: BLE001 — advisory, never fatal
-        result.errors.append(f"spend: {e}")
-    finally:
-        result.timings["spend"] = time.perf_counter() - _t
 
     return result

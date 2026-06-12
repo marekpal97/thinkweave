@@ -8,13 +8,10 @@ Requires: pip install personal-mem[embeddings]  (httpx)
 
 from __future__ import annotations
 
-import json
 import math
-import os
 import sqlite3
 import struct
 from datetime import datetime, timezone
-from pathlib import Path
 
 from personal_mem.core.config import Config, load_config
 
@@ -247,8 +244,6 @@ class EmbeddingSearch:
 
         Provider selection reads ``vault/config/api.yaml::embeddings``
         via :func:`personal_mem.core.embedding_provider.build_from_vault`.
-        Spend tracking is the provider's responsibility (each backend
-        calls :func:`record_spend` for its own network cost).
         """
         if not texts:
             return []

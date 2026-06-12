@@ -519,37 +519,6 @@ def add_admin_subparsers(sub) -> None:
         help="Skip the orphan-prune step",
     )
 
-    p_spend = sub.add_parser(
-        "spend",
-        help=(
-            "Report LLM spend. With a session id: Layer A (Claude turns, read "
-            "from the native transcript) + Layer B (mem internal ops). With "
-            "--since/--until: a date-range rollup over all runs + headless ops."
-        ),
-    )
-    p_spend.add_argument(
-        "session_id", nargs="?", default="",
-        help="Session id (ses-… / Claude UUID) for a single-session report",
-    )
-    p_spend.add_argument(
-        "--project", "-p", default="",
-        help="Project (defaults to PERSONAL_MEM_PROJECT) — locates Layer-B events",
-    )
-    p_spend.add_argument("--since", default="", help="Range start (YYYY-MM-DD)")
-    p_spend.add_argument("--until", default="", help="Range end (YYYY-MM-DD)")
-    p_spend.add_argument(
-        "--ops-only",
-        action="store_true",
-        help=(
-            "Range mode only: report just personal_mem's own operating cost — "
-            "all Layer-B internal ops plus Layer-A turns of mem-skill runs "
-            "(/dream, /drain, /mem-wrap, …), excluding interactive coding."
-        ),
-    )
-    p_spend.add_argument(
-        "--json", action="store_true", help="Emit the summary as JSON"
-    )
-
     p_judge = sub.add_parser(
         "judge",
         help=(

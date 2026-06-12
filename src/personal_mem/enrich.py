@@ -14,10 +14,8 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
-from pathlib import Path
 
 from personal_mem.core.config import Config, load_config
 from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
@@ -152,10 +150,8 @@ def _call_openai(
         user,
         provider=op_cfg["provider"],
         model=op_cfg["model"],
-        op="enrich",
         max_tokens=op_cfg["max_tokens"],
         system=system,
-        mode="cli",
         response_format={"type": "json_object"},
     )
     raw = (raw or "").strip()

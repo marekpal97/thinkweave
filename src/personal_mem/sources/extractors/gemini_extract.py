@@ -391,7 +391,6 @@ def extract_audio(
             "reason": "GOOGLE_API_KEY env var not set (checked env + .env in PERSONAL_MEM_VAULT and CWD)",
         }
 
-    import tempfile
 
     audio_path: Path | None = None
     try:
@@ -594,7 +593,6 @@ def _call_gemini_for_audio(api_key: str, model: str, audio_path: Path) -> str:
             temperature=0.2,
         ),
     )
-    _record_gemini_spend(response, model, "gemini_extract")
     return getattr(response, "text", "") or ""
 
 
@@ -637,30 +635,7 @@ def _call_gemini_for_youtube(api_key: str, model: str, url: str) -> str:
             temperature=0.2,
         ),
     )
-    _record_gemini_spend(response, model, "gemini_extract")
     return getattr(response, "text", "") or ""
-
-
-def _record_gemini_spend(response, model: str, op: str) -> None:
-    """Best-effort Layer-B spend capture from a Gemini response's
-    ``usage_metadata`` (``prompt_token_count`` / ``candidates_token_count``)."""
-    meta = getattr(response, "usage_metadata", None)
-    if meta is None:
-        return
-    from personal_mem.core.spend import record_spend
-
-    # Thinking tokens (``thoughts_token_count``) bill as output on 2.5 models.
-    output = (getattr(meta, "candidates_token_count", 0) or 0) + (
-        getattr(meta, "thoughts_token_count", 0) or 0
-    )
-    record_spend(
-        "gemini",
-        model,
-        op,
-        getattr(meta, "prompt_token_count", 0) or 0,
-        output,
-        mode="mcp",
-    )
 
 
 def _maybe_load_env_file() -> None:

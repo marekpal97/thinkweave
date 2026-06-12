@@ -61,7 +61,7 @@ from personal_mem.surfaces.cli.schedule import cmd_schedule
 from personal_mem.surfaces.cli.skill import cmd_skill
 from personal_mem.surfaces.cli.themes import cmd_themes
 from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
-from personal_mem.surfaces.cli.wrap import cmd_spend, cmd_wrap_finalize
+from personal_mem.surfaces.cli.wrap import cmd_wrap_finalize
 
 
 _DISPATCH = {
@@ -103,7 +103,6 @@ _DISPATCH = {
     "themes": cmd_themes,
     "update": cmd_update,
     "wrap-finalize": cmd_wrap_finalize,
-    "spend": cmd_spend,
     "rlvr": cmd_rlvr,
     "judge": cmd_judge,
     "unlink": cmd_unlink,

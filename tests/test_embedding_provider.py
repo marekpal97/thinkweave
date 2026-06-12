@@ -132,42 +132,15 @@ def fake_httpx(monkeypatch: pytest.MonkeyPatch):
     yield calls
 
 
-@pytest.fixture
-def spend_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
-    captured: list[dict] = []
-
-    def _capture(provider, model, op, ti, to, **kw):
-        captured.append({
-            "provider": provider, "model": model, "op": op,
-            "tokens_input": ti, "tokens_output": to, **kw,
-        })
-
-    # The spend module is imported lazily inside each provider's embed().
-    monkeypatch.setattr("personal_mem.core.spend.record_spend", _capture)
-    return captured
-
-
-def test_openai_provider_returns_vectors(fake_httpx, spend_calls):
+def test_openai_provider_returns_vectors(fake_httpx):
     p = OpenAIEmbeddingProvider(model="text-embedding-3-small")
     vecs = p.embed(["a", "b", "c"])
     assert vecs == [[0.1, 0.2, 0.3]] * 3
 
 
-def test_openai_provider_records_spend_once(fake_httpx, spend_calls):
-    p = OpenAIEmbeddingProvider(model="text-embedding-3-small")
-    p.embed(["a", "b", "c"])
-    assert len(spend_calls) == 1
-    assert spend_calls[0]["provider"] == "openai"
-    assert spend_calls[0]["op"] == "embed"
-    # 5 tokens × 3 inputs = 15.
-    assert spend_calls[0]["tokens_input"] == 15
-    assert spend_calls[0]["mode"] == "cron"
-
-
-def test_openai_provider_empty_texts_is_noop(fake_httpx, spend_calls):
+def test_openai_provider_empty_texts_is_noop(fake_httpx):
     p = OpenAIEmbeddingProvider()
     assert p.embed([]) == []
-    assert spend_calls == []
     assert fake_httpx == []
 
 
@@ -185,7 +158,7 @@ def test_openai_provider_missing_key_raises(monkeypatch, fake_httpx):
             p.embed(["x"])
 
 
-def test_openai_provider_sends_model_and_input(fake_httpx, spend_calls):
+def test_openai_provider_sends_model_and_input(fake_httpx):
     p = OpenAIEmbeddingProvider(model="text-embedding-3-large")
     p.embed(["hello"])
     assert fake_httpx[0]["json"] == {

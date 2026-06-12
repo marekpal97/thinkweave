@@ -5,7 +5,6 @@ Verifies:
 
   • provider→base_url dispatch
   • missing-key + unknown-provider raise ProviderError
-  • record_spend invoked exactly once per get_completion
   • batch_completions honors concurrency cap (semaphore)
   • return_exceptions semantics
   • sync façades wrap asyncio.run cleanly
@@ -19,7 +18,6 @@ from typing import Any
 
 import pytest
 
-from personal_mem.core import agent_client
 from personal_mem.core.agent_client import (
     ProviderError,
     batch_completions,
@@ -130,23 +128,6 @@ def patched_sdk(monkeypatch: pytest.MonkeyPatch):
     yield monkeypatch
 
 
-@pytest.fixture
-def spend_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
-    """Record every ``record_spend`` invocation."""
-    captured: list[dict] = []
-
-    def _capture(provider, model, op, ti, to, **kw):
-        captured.append(
-            {
-                "provider": provider, "model": model, "op": op,
-                "tokens_input": ti, "tokens_output": to, **kw,
-            }
-        )
-
-    monkeypatch.setattr(agent_client, "record_spend", _capture)
-    return captured
-
-
 # ---------------------------------------------------------------------------
 # Surface
 # ---------------------------------------------------------------------------
@@ -161,29 +142,22 @@ def test_supported_providers_contains_three():
 # ---------------------------------------------------------------------------
 
 
-def test_get_completion_returns_text_and_usage(patched_sdk, spend_calls):
+def test_get_completion_returns_text_and_usage(patched_sdk):
     text, usage = asyncio.run(
         get_completion(
             "hello",
             provider="openai",
             model="gpt-5-mini",
-            op="enrich",
         )
     )
     assert text == "OK"
     assert usage == {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
-    # Spend recorded once.
-    assert len(spend_calls) == 1
-    assert spend_calls[0]["provider"] == "openai"
-    assert spend_calls[0]["op"] == "enrich"
-    assert spend_calls[0]["tokens_input"] == 10
-    assert spend_calls[0]["tokens_output"] == 20
 
 
-def test_get_completion_dispatches_provider_url(patched_sdk, spend_calls):
-    asyncio.run(get_completion("p", provider="openai", model="m", op="o"))
-    asyncio.run(get_completion("p", provider="anthropic", model="m", op="o"))
-    asyncio.run(get_completion("p", provider="gemini", model="m", op="o"))
+def test_get_completion_dispatches_provider_url(patched_sdk):
+    asyncio.run(get_completion("p", provider="openai", model="m"))
+    asyncio.run(get_completion("p", provider="anthropic", model="m"))
+    asyncio.run(get_completion("p", provider="gemini", model="m"))
     urls = [inst.base_url for inst in FakeAsyncOpenAI.instances]
     # Order matches call order. OpenAI is None (SDK default).
     assert urls == [
@@ -196,7 +170,7 @@ def test_get_completion_dispatches_provider_url(patched_sdk, spend_calls):
 def test_get_completion_unknown_provider_raises(patched_sdk):
     with pytest.raises(ProviderError, match="unknown provider"):
         asyncio.run(
-            get_completion("p", provider="cohere", model="m", op="o")
+            get_completion("p", provider="cohere", model="m")
         )
 
 
@@ -214,17 +188,16 @@ def test_get_completion_missing_key_raises(patched_sdk, monkeypatch):
         monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
         with pytest.raises(ProviderError, match="no API key found"):
             asyncio.run(
-                get_completion("p", provider="openai", model="m", op="o")
+                get_completion("p", provider="openai", model="m")
             )
 
 
-def test_get_completion_builds_messages_with_system_prompt(patched_sdk, spend_calls):
+def test_get_completion_builds_messages_with_system_prompt(patched_sdk):
     asyncio.run(
         get_completion(
             "user-text",
             provider="openai",
             model="m",
-            op="o",
             system="be terse",
         )
     )
@@ -235,22 +208,22 @@ def test_get_completion_builds_messages_with_system_prompt(patched_sdk, spend_ca
     ]
 
 
-def test_get_completion_omits_system_when_none(patched_sdk, spend_calls):
-    asyncio.run(get_completion("p", provider="openai", model="m", op="o"))
+def test_get_completion_omits_system_when_none(patched_sdk):
+    asyncio.run(get_completion("p", provider="openai", model="m"))
     msgs = FakeAsyncOpenAI.instances[0].calls[0]["messages"]
     assert msgs == [{"role": "user", "content": "p"}]
 
 
-def test_get_completion_passes_max_tokens(patched_sdk, spend_calls):
+def test_get_completion_passes_max_tokens(patched_sdk):
     asyncio.run(
         get_completion(
-            "p", provider="openai", model="m", op="o", max_tokens=4096
+            "p", provider="openai", model="m", max_tokens=4096
         )
     )
     assert FakeAsyncOpenAI.instances[0].calls[0]["max_tokens"] == 4096
 
 
-def test_get_completion_gpt5_uses_max_completion_tokens(patched_sdk, spend_calls):
+def test_get_completion_gpt5_uses_max_completion_tokens(patched_sdk):
     """OpenAI's gpt-5 family rejects ``max_tokens`` at the API level — the
     wrapper must translate to ``max_completion_tokens`` while keeping its
     public kwarg name unchanged."""
@@ -259,7 +232,6 @@ def test_get_completion_gpt5_uses_max_completion_tokens(patched_sdk, spend_calls
             "p",
             provider="openai",
             model="gpt-5-mini",
-            op="o",
             max_tokens=2048,
         )
     )
@@ -268,7 +240,7 @@ def test_get_completion_gpt5_uses_max_completion_tokens(patched_sdk, spend_calls
     assert "max_tokens" not in call
 
 
-def test_get_completion_gpt4_keeps_max_tokens(patched_sdk, spend_calls):
+def test_get_completion_gpt4_keeps_max_tokens(patched_sdk):
     """Regression guard: the gpt-5 translation must NOT fire for gpt-4
     family models — they still use classic ``max_tokens``."""
     asyncio.run(
@@ -276,7 +248,6 @@ def test_get_completion_gpt4_keeps_max_tokens(patched_sdk, spend_calls):
             "p",
             provider="openai",
             model="gpt-4o-mini",
-            op="o",
             max_tokens=1024,
         )
     )
@@ -285,7 +256,7 @@ def test_get_completion_gpt4_keeps_max_tokens(patched_sdk, spend_calls):
     assert "max_completion_tokens" not in call
 
 
-def test_get_completion_anthropic_keeps_max_tokens(patched_sdk, spend_calls):
+def test_get_completion_anthropic_keeps_max_tokens(patched_sdk):
     """The gpt-5 prefix check is provider-gated: an Anthropic model must
     still receive ``max_tokens`` even if some future model name shares a
     prefix shape with OpenAI's gpt-* family."""
@@ -294,7 +265,6 @@ def test_get_completion_anthropic_keeps_max_tokens(patched_sdk, spend_calls):
             "p",
             provider="anthropic",
             model="claude-haiku-4-5-20251001",
-            op="o",
             max_tokens=512,
         )
     )
@@ -303,7 +273,7 @@ def test_get_completion_anthropic_keeps_max_tokens(patched_sdk, spend_calls):
     assert "max_completion_tokens" not in call
 
 
-def test_get_completion_forwards_response_format(patched_sdk, spend_calls):
+def test_get_completion_forwards_response_format(patched_sdk):
     """When ``response_format`` is set, the wrapper threads it straight into
     the SDK call so the provider enforces the JSON-only contract at the API
     level — not just via prompt convention."""
@@ -312,7 +282,6 @@ def test_get_completion_forwards_response_format(patched_sdk, spend_calls):
             "p",
             provider="openai",
             model="m",
-            op="o",
             response_format={"type": "json_object"},
         )
     )
@@ -320,12 +289,12 @@ def test_get_completion_forwards_response_format(patched_sdk, spend_calls):
     assert call["response_format"] == {"type": "json_object"}
 
 
-def test_get_completion_omits_response_format_when_none(patched_sdk, spend_calls):
+def test_get_completion_omits_response_format_when_none(patched_sdk):
     """Default path: ``response_format`` is absent from the SDK call entirely
     (the OpenAI SDK rejects ``response_format=None``, so the wrapper must
     drop the kwarg rather than forward a null)."""
     asyncio.run(
-        get_completion("p", provider="openai", model="m", op="o")
+        get_completion("p", provider="openai", model="m")
     )
     call = FakeAsyncOpenAI.instances[0].calls[0]
     assert "response_format" not in call
@@ -336,32 +305,28 @@ def test_get_completion_omits_response_format_when_none(patched_sdk, spend_calls
 # ---------------------------------------------------------------------------
 
 
-def test_batch_completions_returns_per_prompt(patched_sdk, spend_calls):
+def test_batch_completions_returns_per_prompt(patched_sdk):
     results = asyncio.run(
         batch_completions(
             ["a", "b", "c"],
             provider="openai",
             model="m",
-            op="enrich",
         )
     )
     assert len(results) == 3
     for text, usage in results:
         assert text == "OK"
         assert usage["prompt_tokens"] == 10
-    # Spend recorded once per prompt.
-    assert len(spend_calls) == 3
 
 
-def test_batch_completions_empty_returns_empty(patched_sdk, spend_calls):
+def test_batch_completions_empty_returns_empty(patched_sdk):
     results = asyncio.run(
-        batch_completions([], provider="openai", model="m", op="o")
+        batch_completions([], provider="openai", model="m")
     )
     assert results == []
-    assert spend_calls == []
 
 
-def test_batch_completions_honors_concurrency_cap(patched_sdk, spend_calls):
+def test_batch_completions_honors_concurrency_cap(patched_sdk):
     """Run 6 prompts with concurrency=2 against a fake that gates each
     completion behind a tracked semaphore — verify never more than 2 in
     flight at once."""
@@ -399,7 +364,6 @@ def test_batch_completions_honors_concurrency_cap(patched_sdk, spend_calls):
                 ["p"] * 6,
                 provider="openai",
                 model="m",
-                op="o",
                 concurrency=2,
             )
         finally:
@@ -410,7 +374,7 @@ def test_batch_completions_honors_concurrency_cap(patched_sdk, spend_calls):
     assert peak >= 1
 
 
-def test_batch_completions_return_exceptions_partial(patched_sdk, spend_calls, monkeypatch):
+def test_batch_completions_return_exceptions_partial(patched_sdk, monkeypatch):
     """When one prompt fails and return_exceptions=True, surviving slots
     still hold their (text, usage) tuples."""
     call_count = {"n": 0}
@@ -431,7 +395,6 @@ def test_batch_completions_return_exceptions_partial(patched_sdk, spend_calls, m
             ["a", "b", "c"],
             provider="openai",
             model="m",
-            op="o",
             return_exceptions=True,
             concurrency=1,  # serialize so call order is deterministic
         )
@@ -441,7 +404,7 @@ def test_batch_completions_return_exceptions_partial(patched_sdk, spend_calls, m
     assert isinstance(results[2], tuple)
 
 
-def test_batch_completions_fail_fast_raises(patched_sdk, spend_calls, monkeypatch):
+def test_batch_completions_fail_fast_raises(patched_sdk, monkeypatch):
     async def broken_create(self, *, model, messages, **kwargs):
         raise RuntimeError("boom")
 
@@ -452,7 +415,6 @@ def test_batch_completions_fail_fast_raises(patched_sdk, spend_calls, monkeypatc
                 ["a", "b"],
                 provider="openai",
                 model="m",
-                op="o",
             )
         )
 
@@ -462,18 +424,16 @@ def test_batch_completions_fail_fast_raises(patched_sdk, spend_calls, monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_get_completion_sync(patched_sdk, spend_calls):
+def test_get_completion_sync(patched_sdk):
     text, usage = get_completion_sync(
-        "p", provider="openai", model="m", op="o"
+        "p", provider="openai", model="m"
     )
     assert text == "OK"
     assert usage["total_tokens"] == 30
-    assert len(spend_calls) == 1
 
 
-def test_batch_completions_sync(patched_sdk, spend_calls):
+def test_batch_completions_sync(patched_sdk):
     results = batch_completions_sync(
-        ["a", "b"], provider="openai", model="m", op="o"
+        ["a", "b"], provider="openai", model="m"
     )
     assert len(results) == 2
-    assert len(spend_calls) == 2

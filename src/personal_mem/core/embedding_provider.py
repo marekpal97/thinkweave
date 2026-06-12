@@ -23,7 +23,6 @@ Provider matrix (initial set):
 
 from __future__ import annotations
 
-import os
 from typing import Any, Protocol, runtime_checkable
 
 from personal_mem.core.api_keys import get_provider_key
@@ -45,10 +44,7 @@ _KNOWN_DIMS: dict[tuple[str, str], int] = {
 class EmbeddingProvider(Protocol):
     """Protocol every embedding backend implements.
 
-    The ``embed`` call returns one vector per input text. Implementations
-    must call :func:`personal_mem.core.spend.record_spend` on each
-    network call so the cost ledger sees embedding spend on the same
-    footing as completion spend.
+    The ``embed`` call returns one vector per input text.
     """
 
     @property
@@ -107,25 +103,12 @@ class OpenAIEmbeddingProvider:
         )
         response.raise_for_status()
         data = response.json()
-
-        usage = data.get("usage") or {}
-        from personal_mem.core.spend import record_spend
-
-        record_spend(
-            "openai",
-            self._model,
-            "embed",
-            usage.get("prompt_tokens", 0),
-            0,
-            mode="cron",
-        )
         return [item["embedding"] for item in data["data"]]
 
 
 class SentenceTransformerProvider:
     """Local embeddings via ``sentence-transformers``. No network call,
-    no API key, no spend recording (the cost is the GPU/CPU cycle, not
-    the wallet).
+    no API key.
 
     The model is loaded lazily on first ``embed`` so importing this
     module stays cheap. Subsequent calls reuse the loaded model.
@@ -202,23 +185,6 @@ class LiteLLMEmbeddingProvider:
         response = litellm_embedding(model=self._model, input=texts)
         # LiteLLM normalizes to OpenAI's response shape.
         data = response["data"] if isinstance(response, dict) else response.data
-        usage = (response.get("usage") if isinstance(response, dict)
-                 else getattr(response, "usage", {})) or {}
-        prompt_tokens = (
-            usage.get("prompt_tokens", 0) if isinstance(usage, dict)
-            else getattr(usage, "prompt_tokens", 0)
-        )
-
-        from personal_mem.core.spend import record_spend
-
-        record_spend(
-            "litellm",
-            self._model,
-            "embed",
-            int(prompt_tokens or 0),
-            0,
-            mode="cron",
-        )
         return [
             item["embedding"] if isinstance(item, dict) else item.embedding
             for item in data

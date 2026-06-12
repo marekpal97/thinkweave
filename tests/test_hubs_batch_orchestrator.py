@@ -95,10 +95,9 @@ def test_run_hubs_batch_passes_resolved_provider_to_wrapper(
 
     captured: dict = {}
 
-    def fake_batch(prompts, *, provider, model, op, **kw):
+    def fake_batch(prompts, *, provider, model, **kw):
         captured["provider"] = provider
         captured["model"] = model
-        captured["op"] = op
         captured["n_prompts"] = len(prompts)
         # Return an empty-text result per prompt — orchestrator then
         # walks (skip), reindexes, returns stats.
@@ -116,7 +115,6 @@ def test_run_hubs_batch_passes_resolved_provider_to_wrapper(
     stats = run_hubs_batch(cfg, plan_path=plan_path)
     assert captured["provider"] == "gemini"
     assert captured["model"] == "gemini-2.5-flash"
-    assert captured["op"] == "hubs_run"
     assert captured["n_prompts"] == 1
     assert stats["concepts"] == 1
 
@@ -212,10 +210,9 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
 
     captured: dict = {}
 
-    def fake_batch(prompts, *, provider, model, op, **kw):
+    def fake_batch(prompts, *, provider, model, **kw):
         captured["provider"] = provider
         captured["model"] = model
-        captured["op"] = op
         # Empty JSON => writeback skipped, no decisions/insights created.
         return [('{"decisions": [], "insights": [], "concepts": []}', {})
                 for _ in prompts]
@@ -236,7 +233,6 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
     stats = run_enrichment_batch(cfg)
     assert captured["provider"] == "openai"
     assert captured["model"] == "gpt-5-mini"
-    assert captured["op"] == "claude_code_enrich"
     assert stats["submitted"] == 1
     assert stats["enriched"] == 1
 

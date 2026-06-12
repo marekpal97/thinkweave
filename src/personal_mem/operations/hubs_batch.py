@@ -169,11 +169,9 @@ def run_hubs_batch(
         prompts,
         provider=provider,
         model=effective_model,
-        op="hubs_run",
         max_tokens=max_tokens,
         system=HUB_EXTRACTION_SYSTEM,
         concurrency=concurrency,
-        mode="cron",
         return_exceptions=True,
     )
 

@@ -23,7 +23,6 @@ provider ``anthropic``, model ``claude-haiku-4-5-20251001``).
 from __future__ import annotations
 
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -303,11 +302,9 @@ def run_enrichment_batch(
         prompts,
         provider=provider,
         model=effective_model,
-        op="claude_code_enrich",
         max_tokens=max_tokens,
         system=ENRICHMENT_SYSTEM,
         concurrency=concurrency,
-        mode="cli",
         return_exceptions=True,
     )
 
