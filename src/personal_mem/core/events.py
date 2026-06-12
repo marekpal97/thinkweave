@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -323,6 +324,38 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
 
 _PROBE_FOLLOW_LOOKAHEAD = 3
 _UNFAMILIAR_HINTS = ("look at", "look up", "what is", "what's", "explain", "where", "how does")
+
+# Minimum concept-slug length for probe→concept attribution. Defends
+# against the single/2-char garbage pool (2026-06-07 str-iter bug class:
+# entries like ``-``, ``[``, individual letters survived as
+# ``proposed_concepts``) — those slugs substring-match every probe and
+# drown real signal. Two-char concepts (``ai``, ``hf``) are real but the
+# false-positive cost dominates; canonicalise them with longer aliases.
+_PROBE_CONCEPT_MIN_LEN = 3
+
+
+def match_probe_concepts(text: str, vocabulary: Iterable[str]) -> set[str]:
+    """Concept attribution for a prompt text: case-insensitive substring
+    match of concept slugs against the text.
+
+    THE shared rule between the live probe-pressure path
+    (``operations.prompts.recent_probe_details``) and the SQL projection
+    (``Indexer._project_session_prompts`` → ``prompt_concepts``) — keep
+    both on this function so the table never disagrees with what the
+    pressure aggregate would compute. Substring (not word-split) matching
+    is deliberate: concepts like ``write-ahead-log`` contain hyphens and
+    naive whitespace tokenisation would break them apart.
+    """
+    text_lower = (text or "").strip().lower()
+    if not text_lower:
+        return set()
+    return {
+        concept
+        for concept in vocabulary
+        if concept
+        and len(concept) >= _PROBE_CONCEPT_MIN_LEN
+        and concept in text_lower
+    }
 
 
 def classify_probe(prompt: Prompt, events: list[dict]) -> bool:

@@ -149,6 +149,64 @@ CREATE TABLE IF NOT EXISTS graph_ranks (
 
 CREATE INDEX IF NOT EXISTS idx_gr_type ON graph_ranks(rank_type);
 CREATE INDEX IF NOT EXISTS idx_gr_score ON graph_ranks(score DESC);
+
+-- Hub catalyst-log entries projected to SQL — the evolution DAG.
+-- One row per log entry on a concept hub (hub_kind='concept', hub_id =
+-- vocabulary term) or theme (hub_kind='theme', hub_id = thm-id).
+-- ``ref_date`` is the intra-log predecessor an *extends/agrees/contradicts
+-- <date>* entry points at (written by `mem hubs link`); ``cited_note_id``
+-- is the entry's citation. Derived from markdown (the shared Hub parser);
+-- rebuildable via `mem index --full` — markdown stays truth. ``seq`` is
+-- the entry's position in the log for stable ordering within one date.
+CREATE TABLE IF NOT EXISTS hub_log_entries (
+    hub_id        TEXT NOT NULL,
+    hub_kind      TEXT NOT NULL CHECK(hub_kind IN ('concept', 'theme')),
+    entry_date    TEXT NOT NULL,
+    flag          TEXT NOT NULL,
+    ref_date      TEXT,
+    cited_note_id TEXT,
+    text          TEXT,
+    seq           INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_hle_hub ON hub_log_entries(hub_id);
+CREATE INDEX IF NOT EXISTS idx_hle_cited ON hub_log_entries(cited_note_id);
+CREATE INDEX IF NOT EXISTS idx_hle_date ON hub_log_entries(entry_date);
+
+-- User prompts projected from per-session events.jsonl — the user's
+-- question stream as a queryable surface. One row per archived prompt
+-- event; ``session_id`` is the vault session note id (ses-…, same key
+-- as context_served), ``seq`` the prompt's position among the session's
+-- prompt events, ``classification`` the probe heuristic's verdict
+-- ('probe' or NULL) as stamped by core.events.extract_prompts.
+-- ``prompt_concepts`` carries concept attribution for *probe* rows only,
+-- using the same substring rule as the live probe-pressure path
+-- (core.events.match_probe_concepts) — so probes JOIN against
+-- note_concepts / hub_log_entries / themes without re-deriving.
+-- Live consumers (recent_probe_details, mem_prompts) intentionally stay
+-- on the JSONL walk: it covers active buffers + not-yet-indexed sessions.
+-- This table is the join/analytics substrate. Rebuildable from
+-- events.jsonl via ``mem index --full`` — the JSONL stays truth.
+CREATE TABLE IF NOT EXISTS prompts (
+    session_id     TEXT NOT NULL,
+    seq            INTEGER NOT NULL,
+    ts             TEXT NOT NULL,
+    text           TEXT NOT NULL,
+    classification TEXT,
+    project        TEXT,
+    PRIMARY KEY (session_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompts_class ON prompts(classification, ts);
+
+CREATE TABLE IF NOT EXISTS prompt_concepts (
+    session_id TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    concept    TEXT NOT NULL,
+    PRIMARY KEY (session_id, seq, concept)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prc_concept ON prompt_concepts(concept);
 """
 
 FTS_SCHEMA_SQL = """
@@ -338,6 +396,9 @@ class Indexer:
             self.db.execute("DELETE FROM concept_hierarchy")
             self.db.execute("DELETE FROM context_served")
             self.db.execute("DELETE FROM graph_ranks")
+            self.db.execute("DELETE FROM hub_log_entries")
+            self.db.execute("DELETE FROM prompts")
+            self.db.execute("DELETE FROM prompt_concepts")
             self.db.execute("DELETE FROM notes")
             self._rebuild_fts()
 
@@ -439,8 +500,10 @@ class Indexer:
             # existing co_served rows in place — the nightly /dream full
             # rebuild refreshes them at that cadence.
             self._rebuild_co_served_edges()
+            self._rebuild_prompts()
         else:
             self._rebuild_context_served(only_ids=changed_ids)
+            self._rebuild_prompts(only_ids=changed_ids)
 
         self.db.commit()
         return stats
@@ -563,6 +626,12 @@ class Indexer:
                     self._project_session_retrieval_log(
                         sess_id, path.parent / "retrieval_log.jsonl"
                     )
+                    self._project_session_prompts(
+                        sess_id,
+                        path.parent / "events.jsonl",
+                        fm.get("project"),
+                        self._probe_vocabulary(),
+                    )
         except Exception:
             log.exception("context_served projection failed for %s", rel_path)
         self._rebuild_fts()
@@ -621,7 +690,83 @@ class Indexer:
         self._sync_concepts(note_id, fm)
         self._sync_tags(note_id, tags)
         self._sync_decision_files(note_id, note_type, fm)
+        self._sync_hub_log(note_id, note_type, rel_path, body)
         return note_id
+
+    def _sync_hub_log(
+        self, note_id: str, note_type: str, rel_path: str, body: str
+    ) -> None:
+        """Project a hub's catalyst log into ``hub_log_entries``.
+
+        Fires only for hub files — themes (``type: theme``) and concept
+        hubs (``concepts/topics/*.md``). Delete+reinsert per hub, same
+        pattern as ``_sync_concepts``. Uses the shared Hub parser, so the
+        rows survive the visual ``<details>`` fold and all three citation
+        link shapes (bare, path|id, title-aliased — the last resolved via
+        a lazily-built path→id map).
+        """
+        if note_type == "theme":
+            hub_id, hub_kind = note_id, "theme"
+        elif rel_path.startswith("concepts/topics/"):
+            hub_id, hub_kind = Path(rel_path).stem, "concept"
+        else:
+            return
+
+        self.db.execute(
+            "DELETE FROM hub_log_entries WHERE hub_id = ?", (hub_id,)
+        )
+
+        try:
+            from personal_mem.synthesis.hub import (
+                CATALYST_LOG_HEADING,
+                LEGACY_LEARNING_LOG_HEADING,
+                parse_log_section,
+            )
+
+            # Lazy path→id map for title-aliased citations ([[path|Title]]).
+            # One query per Indexer lifetime; bare/[[path|id]] forms resolve
+            # without it, so a slightly stale map only affects hubs whose
+            # citations were title-aliased within the same rebuild pass.
+            if not hasattr(self, "_path_to_id"):
+                try:
+                    self._path_to_id = {
+                        (row["path"] or "").removesuffix(".md"): row["id"]
+                        for row in self.db.execute(
+                            "SELECT id, path FROM notes"
+                        )
+                    }
+                except Exception:  # noqa: BLE001
+                    self._path_to_id = {}
+
+            entries = parse_log_section(
+                body, CATALYST_LOG_HEADING, path_to_id=self._path_to_id
+            )
+            if not entries:
+                entries = parse_log_section(
+                    body,
+                    LEGACY_LEARNING_LOG_HEADING,
+                    path_to_id=self._path_to_id,
+                )
+        except Exception:  # noqa: BLE001 — corrupt log never kills indexing
+            return
+
+        for seq, e in enumerate(entries):
+            self.db.execute(
+                "INSERT INTO hub_log_entries "
+                "(hub_id, hub_kind, entry_date, flag, ref_date, "
+                " cited_note_id, text, seq) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    hub_id,
+                    hub_kind,
+                    e.date,
+                    e.flag,
+                    e.ref or None,
+                    e.citation or None,
+                    e.text,
+                    seq,
+                ),
+            )
 
     def _sync_decision_files(self, note_id: str, note_type: str, fm: dict) -> None:
         """Sync decision_files rows from a decision note's ``file_paths`` frontmatter.
@@ -701,6 +846,18 @@ class Indexer:
             self.db.execute("DELETE FROM note_concepts WHERE note_id = ?", (note_id,))
             self.db.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
             self.db.execute("DELETE FROM decision_files WHERE decision_id = ?", (note_id,))
+            # Hub log rows key on the hub identity: thm-id for themes,
+            # path stem (vocabulary term) for concept hubs. Stem-keyed
+            # delete only under concepts/topics/ — a coincidental stem
+            # match elsewhere must not wipe a real hub's rows.
+            hub_ident = (
+                Path(rel_path).stem
+                if rel_path.startswith("concepts/topics/")
+                else note_id
+            )
+            self.db.execute(
+                "DELETE FROM hub_log_entries WHERE hub_id = ?", (hub_ident,)
+            )
         self.db.execute("DELETE FROM notes WHERE path = ?", (rel_path,))
 
     def _rebuild_edges(self) -> int:
@@ -1257,6 +1414,129 @@ class Indexer:
                     )
                     upserted += 1
         return upserted
+
+    # ------------------------------------------------------------------
+    # Prompt projection: events.jsonl → prompts / prompt_concepts
+    # ------------------------------------------------------------------
+
+    def _probe_vocabulary(self) -> set[str]:
+        """Merged concept vocabulary for prompt→concept attribution.
+
+        Canonical ontology (seed + vault override) unioned with every
+        indexed ``proposed_concepts:`` term — the same merge
+        ``operations.prompts.recent_probe_details`` performs, so the
+        ``prompt_concepts`` rows agree with the live pressure aggregate
+        (modulo vocabulary growth between rebuilds; the next full
+        rebuild re-attributes against the then-current vocabulary).
+        """
+        # Local import: synthesis sits above core in the layering.
+        from personal_mem.synthesis.concepts import (
+            build_keep_set,
+            get_all_proposed_concepts,
+            load_ontology,
+        )
+
+        vocabulary: set[str] = build_keep_set(load_ontology())
+        try:
+            vocabulary.update(get_all_proposed_concepts(self.db).keys())
+        except Exception:
+            log.exception("proposed-concept vocabulary load failed")
+        return vocabulary
+
+    def _rebuild_prompts(self, only_ids: set[str] | None = None) -> None:
+        """Project sessions' ``events.jsonl`` into ``prompts``/``prompt_concepts``.
+
+        Mirror of :meth:`_rebuild_context_served` — same walk, same
+        ``only_ids`` contract (None = every session, empty set = no-op).
+        Covers *archived* buffers only; live ``.mem/buffer`` files are
+        intentionally out of scope (they belong to unfinished sessions —
+        the JSONL-walking consumers handle those).
+        """
+        if only_ids is not None and not only_ids:
+            return
+        if only_ids:
+            chunk = list(only_ids)
+            placeholders = ",".join("?" * len(chunk))
+            rows = self.db.execute(
+                f"SELECT id, path, project FROM notes "
+                f"WHERE type = 'session' AND id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                "SELECT id, path, project FROM notes WHERE type = 'session'"
+            ).fetchall()
+        if not rows:
+            return
+        vocabulary = self._probe_vocabulary()
+        for row in rows:
+            sess_path = self.vault.root / row["path"]
+            if not sess_path.exists():
+                continue
+            try:
+                self._project_session_prompts(
+                    row["id"],
+                    sess_path.parent / "events.jsonl",
+                    row["project"],
+                    vocabulary,
+                )
+            except Exception:
+                log.exception("prompt projection failed for %s", row["id"])
+
+    def _project_session_prompts(
+        self,
+        session_id: str,
+        events_path: Path,
+        project: str | None,
+        vocabulary: set[str],
+    ) -> int:
+        """Parse one session's ``events.jsonl`` and replace its prompt rows.
+
+        One ``prompts`` row per prompt event (``seq`` = position among the
+        session's prompt events; ``classification`` as stamped by
+        ``extract_prompts``). ``prompt_concepts`` rows are written for
+        *probe* rows only — attribution for instructions would be noise
+        (every "refactor X" mentions concepts without signalling
+        curiosity). Delete-then-insert keeps the projection idempotent
+        even if the events file shrank. Returns rows written; 0 when the
+        file is missing.
+        """
+        from personal_mem.core.events import extract_prompts, match_probe_concepts
+
+        if not events_path.exists():
+            return 0
+
+        prompts = extract_prompts(events_path)
+        self.db.execute("DELETE FROM prompts WHERE session_id = ?", (session_id,))
+        self.db.execute(
+            "DELETE FROM prompt_concepts WHERE session_id = ?", (session_id,)
+        )
+        written = 0
+        for seq, prompt in enumerate(prompts):
+            ts = "" if prompt.ts == datetime.min else prompt.ts.isoformat()
+            self.db.execute(
+                "INSERT OR REPLACE INTO prompts "
+                "(session_id, seq, ts, text, classification, project) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    seq,
+                    ts,
+                    prompt.text,
+                    prompt.classification,
+                    project or prompt.project,
+                ),
+            )
+            written += 1
+            if prompt.classification != "probe":
+                continue
+            for concept in match_probe_concepts(prompt.text, vocabulary):
+                self.db.execute(
+                    "INSERT OR REPLACE INTO prompt_concepts "
+                    "(session_id, seq, concept) VALUES (?, ?, ?)",
+                    (session_id, seq, concept),
+                )
+        return written
 
     # ------------------------------------------------------------------
     # Behavioural overlay: co_served edges
