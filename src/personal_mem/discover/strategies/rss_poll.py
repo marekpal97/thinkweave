@@ -85,7 +85,15 @@ class RssPollStrategy:
                 }
             ]
 
-        indexer_urls = _load_indexer_urls(db_path)
+        # Union of every source type's dedup keys — the indexer guard must
+        # cover the same keys the queue dedup uses (an item lacking `url`,
+        # or matching only a secondary key like `video_id`, must not
+        # re-enqueue a note that already exists).
+        all_dedup_keys: set[str] = {"url"}
+        for spec in sources.values():
+            if isinstance(spec, dict):
+                all_dedup_keys.update(spec.get("dedup_keys") or [])
+        indexer_seen = _load_indexer_keys(db_path, all_dedup_keys)
         descriptors: list[dict[str, Any]] = []
 
         # Phase 3.1 — PRIORITIES.yaml intake reads.
@@ -119,7 +127,7 @@ class RssPollStrategy:
                     feed_urls=feeds,
                     vault_root=Path(vault_root),
                     feedparser_mod=feedparser,
-                    indexer_urls=indexer_urls,
+                    indexer_seen=indexer_seen,
                 )
             )
 
@@ -250,7 +258,7 @@ class RssPollStrategy:
         feed_urls: list[tuple[str, dict[str, Any]]],
         vault_root: Path,
         feedparser_mod: Any,
-        indexer_urls: set[str],
+        indexer_seen: dict[str, set[str]],
     ) -> list[dict[str, Any]]:
         queue = Queue.for_source_type(slug, vault_root)
         dedup_keys = list(spec.get("dedup_keys") or ["url"])
@@ -330,7 +338,10 @@ class RssPollStrategy:
                         continue
                 if item is None:
                     continue
-                if item.get("url") and item["url"] in indexer_urls:
+                if any(
+                    item.get(k) and item[k] in indexer_seen.get(k, ())
+                    for k in dedup_keys
+                ):
                     stats["dup_indexer"] += 1
                     continue
                 if queue.dedup_check(item, dedup_keys):
@@ -567,24 +578,39 @@ def _build_youtube_item(
     }
 
 
-def _load_indexer_urls(db_path: Path | None) -> set[str]:
-    """Return the URLs already on file as ``type='source'`` notes.
+def _load_indexer_keys(
+    db_path: Path | None, keys: set[str]
+) -> dict[str, set[str]]:
+    """Per-dedup-key value sets from existing ``type='source'`` notes.
 
     Covers the gap beyond ``Queue.dedup_check``'s 30-day archive horizon —
-    a URL ingested months ago that re-emits via RSS won't get re-enqueued.
+    a URL (or video_id / message_id) ingested months ago that re-emits via
+    RSS won't get re-enqueued. Keys absent from a note's frontmatter simply
+    don't contribute; the ``url`` key remains the universal backstop.
     """
-    if db_path is None or not db_path.exists():
-        return set()
+    if db_path is None or not db_path.exists() or not keys:
+        return {}
+    safe_keys = sorted(k for k in keys if k.replace("_", "").isalnum())
+    if not safe_keys:
+        return {}
+    select = ", ".join(
+        f"json_extract(frontmatter, '$.{k}')" for k in safe_keys
+    )
     try:
         conn = sqlite3.connect(str(db_path))
         rows = conn.execute(
-            "SELECT json_extract(frontmatter, '$.url') FROM notes "
+            f"SELECT {select} FROM notes "  # noqa: S608 — keys are vetted above
             "WHERE type = 'source' AND frontmatter IS NOT NULL"
         ).fetchall()
         conn.close()
     except sqlite3.Error:
-        return set()
-    return {r[0] for r in rows if r[0]}
+        return {}
+    seen: dict[str, set[str]] = {k: set() for k in safe_keys}
+    for row in rows:
+        for k, val in zip(safe_keys, row):
+            if val:
+                seen[k].add(str(val))
+    return seen
 
 
 def _count_today_per_outlet(queue: Queue, source_type: str) -> dict[str, int]:
