@@ -42,7 +42,6 @@ tag_vocabulary:
   - autopilot             # workflow: agent-run / automated
   - mem-wrap              # workflow: produced by /mem-wrap
   - discover              # workflow: produced by /discover
-  - discover-run          # workflow: discovery batch run artifact
   - audit                 # workflow: audit / hygiene activity
   - hubs                  # workflow: hub-related session
   - concept-hygiene       # workflow: concept dedup / cleanup

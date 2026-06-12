@@ -4,7 +4,7 @@ owns_mechanic: research_discovery
 source_type: [paper, repo, article, news, youtube-events, youtube-concepts, newsletter-events, newsletter-concepts]
 capabilities: [discover]
 consumes: [mem_concepts, mem_search, mem_timeline, mem_queue]
-produces: [vault/.mem/queues/*.jsonl]
+produces: [vault/.mem/queues/*.jsonl, vault/reports/discover/*]
 tools:
   - Read
   - Bash
@@ -13,7 +13,6 @@ tools:
   - mem_search
   - mem_read
   - mem_timeline
-  - mem_create
   - mem_queue
   - mem_sources_config
 description: Strategy-driven discovery. Runs the configured strategy list; strategies emit gap descriptors and (for external-trigger ones) directly enqueue. The single producer rail in the discover→drain spine.
@@ -101,16 +100,11 @@ Dispatch on `kind`:
 
 - **`kind: external` with `status: error`** (rss_poll / mail_poll) — surface the reason + hint verbatim. Common causes: `feedparser_missing`, `empty_allowlist`, `connector_not_implemented`.
 
-### 3. Run-audit note
+### 3. Persist the run report
 
-Create one `discover-run` audit note per execution. Record:
+Write the report (section 4's exact content) to `vault/reports/discover/discover-<YYYYMMDD-HHMMSS>.md` via Bash (`mkdir -p` the directory first). This mirrors `/dream`'s `vault/reports/dream/*` — the `reports/` tree is the user-visible home for autonomous-run reports, deliberately excluded from the SQLite index (materialized narrative, not source material), and landing's "Recent Maintenance" section links the newest ones. No project subfolder — discover runs are cross-project.
 
-- The strategies that ran and how many descriptors each emitted.
-- For external-trigger: per-source-type enqueue stats from `kind: summary` rows.
-- Stalled decisions / ontology-proposal candidates surfaced for review.
-- Queue items created (grouped by descriptor kind).
-
-The note's tags are `discover-run` + `audit`. No project arg — discover runs are cross-project.
+Headless cron runs make this the **only** durable record of internal-state findings (stalled decisions, ontology proposals) — the chat report below evaporates with the transcript. Do not skip it even when every strategy came back empty; an "all quiet" report is itself signal. (This step replaces the former `discover-run` audit note — run audits are operational narrative and don't belong in the knowledge index.)
 
 ### 4. Report
 

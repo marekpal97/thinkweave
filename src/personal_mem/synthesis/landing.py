@@ -22,8 +22,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from personal_mem.core._utils import as_list
-from personal_mem.core.config import Config, load_config
-from personal_mem.core.schemas import NoteType
+from personal_mem.core.config import Config
 
 
 def _default_landing_filenames() -> dict[str, str]:
@@ -803,21 +802,28 @@ def state_of_play(config: Config, project: str) -> str:
         lines.append(", ".join(concept_strs))
         lines.append("")
 
-    # Section 5: Recent Maintenance — links to the latest dream-cycle
-    # reports so a user can see exactly what each autonomous cycle did.
-    from personal_mem.operations.dream import recent_dream_reports
+    # Section 5: Recent Maintenance — links to the latest autonomous-run
+    # reports (dream cycles + discover runs) so a user can see exactly
+    # what each cycle did without digging through transcripts.
+    from personal_mem.operations.reports import recent_reports
 
-    reports = recent_dream_reports(config, n=3)
+    reports = sorted(
+        recent_reports(config, "dream", n=3)
+        + recent_reports(config, "discover", n=3),
+        key=lambda r: r["mtime"],
+        reverse=True,
+    )
     if reports:
         lines.append("## Recent Maintenance")
         lines.append(
-            "Per-cycle dream reports — concept/theme promotions, "
-            "candidates archived, status changes, essence rewrites."
+            "Per-run reports from the autonomous cycles — dream "
+            "(promotions, theme mints, essence rewrites) and discover "
+            "(enqueues, stalled decisions, ontology proposals)."
         )
         lines.append("")
         for r in reports:
             rel = Path(r["path"]).relative_to(config.vault_root)
-            lines.append(f"- [{r['cycle_id']}]({rel})")
+            lines.append(f"- [{r['run_id']}]({rel})")
         lines.append("")
 
     return "\n".join(lines) + "\n"
