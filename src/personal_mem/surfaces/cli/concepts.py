@@ -44,7 +44,11 @@ def cmd_concepts(args: argparse.Namespace) -> None:
             print(f"  {count:3d}  {concept}")
 
     elif action == "merge":
-        from personal_mem.synthesis.concepts import delete_concept_hub
+        # Delegate to the operations layer — the single manual merge
+        # implementation (notes rewrite + alias + hub FOLD/tombstone +
+        # seam-link enqueue + rebuild). Keeps CLI and MCP behaviour
+        # identical to the /dream apply path's per-merge semantics.
+        from personal_mem.operations.concepts import merge as merge_op
 
         from_c = args.from_concept.lower()
         to_c = args.to_concept.lower()
@@ -52,29 +56,19 @@ def cmd_concepts(args: argparse.Namespace) -> None:
             print("from and to concepts are the same.")
             return
 
-        changed = merge_concept_in_notes(cfg.vault_root, from_c, to_c)
-
-        aliases = load_aliases(cfg)
-        existing = aliases.get(to_c, [])
-        if from_c not in existing:
-            existing.append(from_c)
-        if from_c in aliases:
-            for old in aliases.pop(from_c):
-                if old != to_c and old not in existing:
-                    existing.append(old)
-        aliases[to_c] = existing
-        save_aliases(cfg, aliases)
-
-        hub_removed = delete_concept_hub(cfg, from_c)
-
-        idx = Indexer(config=cfg)
-        idx.rebuild(full=True)
-        idx.close()
-
-        suffix = " Stale hub removed." if hub_removed else ""
+        stats = merge_op(cfg, from_c, to_c)
+        fold = stats.get("hub_fold") or {}
+        if fold.get("archived"):
+            suffix = (
+                f" Hub folded ({fold.get('folded', 0)} entries, "
+                f"{fold.get('deduped', 0)} deduped) and archived with "
+                f"merged-into stamp."
+            )
+        else:
+            suffix = ""
         print(
-            f"Merged '{from_c}' → '{to_c}': {changed} notes updated. "
-            f"Alias saved. Index rebuilt.{suffix}"
+            f"Merged '{from_c}' → '{to_c}': {stats['changed']} notes "
+            f"updated. Alias saved. Index rebuilt.{suffix}"
         )
 
     elif action == "proposed-counts":

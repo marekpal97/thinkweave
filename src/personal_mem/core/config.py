@@ -96,6 +96,23 @@ class Config:
     # iteration), so off by default until the user opts in.
     dream_compute_pagerank: bool = False
 
+    # Cap on essence candidates surfaced per scan (themes + concept hubs,
+    # placeholder-first). Keeps the nightly essence-worker payload bounded;
+    # 0 = unlimited (the backfill lever — `mem dream scan --essence-cap 0`).
+    dream_essence_cap: int = 12
+
+    # Drift v2 — embedding-geometry dedup (concepts AND themes).
+    # ``cosine_threshold``: pairs at/above go to the merge worker.
+    # ``drift_cap``: max concept pairs surfaced per scan, cosine-ranked
+    # (0 = unlimited). Judged pairs are excluded via the maintenance-log
+    # verdicts history, so the cap bounds payload size without starving
+    # the tail the way the old lexical [:5] slice did.
+    dream_cosine_threshold: float = 0.8
+    dream_drift_cap: int = 15
+
+    # Max folded hubs the phase-2 seam-link worker drains per cycle.
+    dream_seam_link_cap: int = 10
+
     # R2 — prompt-time retrieval enrichment (see PromptTimeRetrieval).
     retrieval_prompt_time: PromptTimeRetrieval = field(
         default_factory=PromptTimeRetrieval
@@ -339,6 +356,14 @@ def load_config() -> Config:
             )
         if "compute_pagerank" in dream_cfg:
             cfg.dream_compute_pagerank = bool(dream_cfg["compute_pagerank"])
+        if "essence_cap" in dream_cfg:
+            cfg.dream_essence_cap = int(dream_cfg["essence_cap"])
+        if "cosine_threshold" in dream_cfg:
+            cfg.dream_cosine_threshold = float(dream_cfg["cosine_threshold"])
+        if "drift_cap" in dream_cfg:
+            cfg.dream_drift_cap = int(dream_cfg["drift_cap"])
+        if "seam_link_cap" in dream_cfg:
+            cfg.dream_seam_link_cap = int(dream_cfg["seam_link_cap"])
 
         # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
         pt = data.get("retrieval", {}).get("prompt_time", {})

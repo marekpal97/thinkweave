@@ -12,7 +12,9 @@ this now flows through
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 
 def hubs_link(cfg, args: argparse.Namespace) -> None:
@@ -144,11 +146,9 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
         prompts,
         provider=provider,
         model=effective_model,
-        op="hubs_link",
         max_tokens=args.max_tokens,
         system=HUB_LINKAGE_SYSTEM,
         concurrency=concurrency,
-        mode="cron",
         return_exceptions=True,
         response_format={"type": "json_object"},
     )
@@ -281,3 +281,203 @@ def _load_titles_for_citations(cfg, work) -> dict[str, str]:
     finally:
         db.close()
     return titles
+
+
+def hubs_apply_linkage(cfg, args) -> None:
+    """``mem hubs apply-linkage`` — validated linkage writes for one hub.
+
+    The write half of the seam-link contract: the ``dream-seam-link-worker``
+    (or ``/hubs-link`` run by hand) judges cross-parent entry pairs and
+    hands the revisions here as JSON; every revision runs through
+    ``validate_linkage_revision`` (flag allowlist, ref-date ordering,
+    ≥20-char verbatim ref_quote anchored in the cited entry's text) before
+    the file mutates. Invalid revisions demote to ``new`` — they never
+    fail the run.
+
+    Revisions JSON (``--revisions <path>`` or ``-`` for stdin)::
+
+        {"revisions": [
+          {"date": "2026-05-05", "citation": "n-cccc3333",
+           "flag": "agrees", "ref": "2026-05-01",
+           "ref_quote": "verbatim ≥20-char quote from the cited entry"},
+          ...
+        ]}
+
+    Entries are addressed by ``(date, citation)``. ``--clear-fold`` drops
+    the ``fold_pending_from`` / ``fold_pending_dates`` provenance stamps
+    after applying — the worker passes it on its final call for a hub.
+    """
+    import sqlite3 as _sqlite3
+
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+    from personal_mem.operations.hubs_batch import validate_linkage_revision
+    from personal_mem.synthesis.hub import (
+        CATALYST_LOG_HEADING,
+        FOLD_PENDING_DATES_KEY,
+        FOLD_PENDING_FROM_KEY,
+        LEGACY_LEARNING_LOG_HEADING,
+        Hub,
+        build_id_path_map,
+        build_id_title_map,
+        render_catalyst_log,
+        replace_section_body,
+    )
+
+    hub_id = (args.hub or "").strip()
+    kind = (args.kind or "concept").strip().lower()
+    if not hub_id:
+        print("error: --hub is required", file=sys.stderr)
+        sys.exit(2)
+
+    # --- Resolve the hub file --------------------------------------------
+    if kind == "concept":
+        from personal_mem.synthesis.concept_hub import concept_hub_path
+
+        hub_path = concept_hub_path(cfg, hub_id)
+    elif kind == "theme":
+        db = _sqlite3.connect(cfg.index_db)
+        db.row_factory = _sqlite3.Row
+        try:
+            row = db.execute(
+                "SELECT path FROM notes WHERE id = ? AND type = 'theme'",
+                (hub_id,),
+            ).fetchone()
+        finally:
+            db.close()
+        if not row:
+            print(f"error: unknown theme id {hub_id!r}", file=sys.stderr)
+            sys.exit(2)
+        hub_path = cfg.vault_root / row["path"]
+    else:
+        print(f"error: unknown --kind {kind!r}", file=sys.stderr)
+        sys.exit(2)
+    if not hub_path.exists():
+        print(f"error: hub file missing: {hub_path}", file=sys.stderr)
+        sys.exit(2)
+
+    # --- Read revisions ----------------------------------------------------
+    raw = (
+        sys.stdin.read()
+        if args.revisions == "-"
+        else Path(args.revisions).read_text(encoding="utf-8")
+    )
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"error: invalid revisions JSON — {e}", file=sys.stderr)
+        sys.exit(2)
+    revisions = (
+        payload.get("revisions") if isinstance(payload, dict) else payload
+    )
+    if not isinstance(revisions, list):
+        print("error: revisions must be a list", file=sys.stderr)
+        sys.exit(2)
+
+    # --- Parse hub + apply validated revisions -----------------------------
+    idmap: dict[str, str] = {}
+    title_map: dict[str, str] = {}
+    path_to_id: dict[str, str] = {}
+    if cfg.index_db.exists():
+        db = _sqlite3.connect(cfg.index_db)
+        db.row_factory = _sqlite3.Row
+        try:
+            idmap = build_id_path_map(db)
+            title_map = build_id_title_map(db)
+            path_to_id = {p: i for i, p in idmap.items()}
+        finally:
+            db.close()
+
+    hub = Hub.parse(hub_path, hub_id=hub_id, path_to_id=path_to_id)
+    by_date_texts: dict[str, list[str]] = {}
+    for e in hub.log:
+        by_date_texts.setdefault(e.date, []).append(e.text or "")
+
+    applied = demoted = unmatched = 0
+    for rev in revisions:
+        if not isinstance(rev, dict):
+            unmatched += 1
+            continue
+        date = str(rev.get("date") or "")
+        citation = str(rev.get("citation") or "")
+        target = None
+        for e in hub.log:
+            if e.date == date and (not citation or e.citation == citation):
+                target = e
+                break
+        if target is None:
+            unmatched += 1
+            continue
+        flag, ref, _quote = validate_linkage_revision(
+            target.date,
+            str(rev.get("flag") or ""),
+            str(rev.get("ref") or ""),
+            ref_quote=str(rev.get("ref_quote") or ""),
+            by_date_texts=by_date_texts,
+        )
+        if flag is None:
+            demoted += 1
+            continue
+        if flag == "new" and (rev.get("flag") or "new") != "new":
+            demoted += 1
+        target.flag = flag
+        target.ref = ref
+        applied += 1
+
+    # --- Rewrite the catalyst-log section in place -------------------------
+    text = hub_path.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+    if CATALYST_LOG_HEADING not in body and LEGACY_LEARNING_LOG_HEADING in body:
+        body = body.replace(LEGACY_LEARNING_LOG_HEADING, CATALYST_LOG_HEADING, 1)
+    body = replace_section_body(
+        body,
+        CATALYST_LOG_HEADING,
+        render_catalyst_log(
+            hub.log, idmap=idmap, title_map=title_map, threaded=True
+        ),
+    )
+    dequeued = False
+    if getattr(args, "clear_fold", False):
+        fm.pop(FOLD_PENDING_FROM_KEY, None)
+        fm.pop(FOLD_PENDING_DATES_KEY, None)
+        # Stamp-clear and queue-retire are one atomic notion of "seam
+        # stitched" — do both here so no orchestrator bookkeeping needed.
+        try:
+            from personal_mem.operations import seam_link_queue as _slq
+
+            dequeued = _slq.dequeue(cfg, hub_kind=kind, hub_id=hub_id)
+        except Exception:  # noqa: BLE001
+            dequeued = False
+    hub_path.write_text(
+        render_frontmatter(fm) + "\n" + body.lstrip("\n"), encoding="utf-8"
+    )
+
+    reindexed = True
+    try:
+        idx = Indexer(config=cfg)
+        try:
+            idx.index_file(hub_path)
+        finally:
+            idx.close()
+    except Exception:  # noqa: BLE001 — contention: `mem index` catches up
+        reindexed = False
+
+    summary = {
+        "hub": hub_id,
+        "kind": kind,
+        "applied": applied,
+        "demoted_to_new": demoted,
+        "unmatched": unmatched,
+        "fold_cleared": bool(getattr(args, "clear_fold", False)),
+        "dequeued": dequeued,
+        "reindexed": reindexed,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print(
+            f"apply-linkage · {kind} {hub_id} · {applied} applied, "
+            f"{demoted} demoted, {unmatched} unmatched"
+            + ("" if reindexed else " · reindex deferred (run `mem index`)")
+        )
+    sys.exit(0 if not unmatched else 1)

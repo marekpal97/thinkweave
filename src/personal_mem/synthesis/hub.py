@@ -678,6 +678,233 @@ def _extract_h1(body: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Fold — merging one hub's log into another (concept merge / theme merge)
+# ---------------------------------------------------------------------------
+
+#: Frontmatter keys stamped on a hub whose log just absorbed another hub's
+#: entries. Transient: the dream seam-link worker judges cross-parent entry
+#: pairs (fold dates × the rest) and clears both keys when done. Two *flat*
+#: keys (not one nested map) because the vault frontmatter parser is
+#: deliberately flat — a nested dict renders but doesn't round-trip.
+FOLD_PENDING_FROM_KEY = "fold_pending_from"
+FOLD_PENDING_DATES_KEY = "fold_pending_dates"
+
+#: Marker wrapping a folded-in essence stash inside ``## Essence`` — the
+#: essence worker reconciles the two texts into one on its next pass.
+FOLD_ESSENCE_MARKER = "<!-- folded-essence -->"
+
+_ESSENCE_PLACEHOLDERS = (
+    "*No synthesis yet.*",
+    "_Awaiting first synthesis pass._",
+)
+
+
+def essence_is_placeholder(essence: str) -> bool:
+    """True when the essence is empty or one of the never-synthesised stubs."""
+    text = (essence or "").strip()
+    if not text:
+        return True
+    normalized = text.strip("*_ ").rstrip(".").lower()
+    return normalized in {"no synthesis yet", "awaiting first synthesis pass"}
+
+
+def _richer_entry(a: HubLogEntry, b: HubLogEntry) -> HubLogEntry:
+    """Pick the more informative of two entries citing the same note.
+
+    A non-``new`` flag carries linkage information; otherwise longer text
+    wins (generic stubs like ``extend`` / ``cluster seed`` lose to a real
+    distillation). Ties keep ``a`` (the winner hub's copy).
+    """
+    a_linked, b_linked = a.flag != FLAG_NEW, b.flag != FLAG_NEW
+    if a_linked != b_linked:
+        return a if a_linked else b
+    return a if len(a.text or "") >= len(b.text or "") else b
+
+
+def merge_log_entries(
+    winner: list[HubLogEntry], loser: list[HubLogEntry]
+) -> tuple[list[HubLogEntry], list[str]]:
+    """Interleave two catalyst logs by date, deduping shared citations.
+
+    Returns ``(merged_entries, fold_dates)`` — ``fold_dates`` are the dates
+    of entries whose content came from the loser log (the seam-link pass
+    judges those against the rest). Entries citing the same note collapse
+    to the richer copy (:func:`_richer_entry`); near-dupe hubs logging the
+    same source is expected, and a merged hub shouldn't say it twice.
+    """
+    by_citation: dict[str, int] = {}
+    merged: list[HubLogEntry] = []
+    from_loser: set[int] = set()
+
+    for e in winner:
+        if e.citation:
+            by_citation[e.citation] = len(merged)
+        merged.append(e)
+
+    for e in loser:
+        if e.citation and e.citation in by_citation:
+            i = by_citation[e.citation]
+            keep = _richer_entry(merged[i], e)
+            if keep is e:
+                merged[i] = e
+                from_loser.add(id(e))
+            continue
+        if e.citation:
+            by_citation[e.citation] = len(merged)
+        from_loser.add(id(e))
+        merged.append(e)
+
+    merged.sort(key=lambda e: (e.date, e.citation))
+    fold_dates = sorted({e.date for e in merged if id(e) in from_loser})
+    return merged, fold_dates
+
+
+def replace_section_body(body: str, heading: str, new_lines: list[str]) -> str:
+    """Replace the contents of a ``## Heading`` section in a markdown body.
+
+    The heading line stays; everything up to the next ``##`` (any depth ≥2)
+    or EOF is swapped for ``new_lines``. Missing heading → section appended
+    at the end of the body.
+    """
+    block = "\n".join([heading, ""] + new_lines + ["", ""])
+    if heading not in body:
+        return body.rstrip("\n") + "\n\n" + block
+    start = body.index(heading)
+    after = body[start + len(heading):]
+    m = re.search(r"\n##\s", after)
+    tail = after[m.start() + 1:] if m else ""
+    return body[:start] + block + tail
+
+
+def fold_hub_logs(
+    winner_path: Path,
+    loser_path: Path,
+    *,
+    loser_id: str | None = None,
+    path_to_id: dict[str, str] | None = None,
+    idmap: dict[str, str] | None = None,
+    title_map: dict[str, str] | None = None,
+) -> dict:
+    """Fold ``loser_path``'s catalyst log (and essence) into ``winner_path``.
+
+    The deterministic half of a hub merge — used for both concept-hub and
+    theme merges (shared spine). Mutates the winner file in place:
+
+    1. Log: interleave by date, dedup shared citations keeping the richer
+       copy (:func:`merge_log_entries`), re-render threaded.
+    2. Provenance: stamp :data:`FOLD_PENDING_FROM_KEY` /
+       :data:`FOLD_PENDING_DATES_KEY` frontmatter so the dream seam-link
+       worker knows which entry dates need cross-parent linkage judgment.
+       Re-folding while a stamp is pending unions the dates.
+    3. Essence: if both hubs carry a real essence, the loser's is stashed
+       under :data:`FOLD_ESSENCE_MARKER` inside ``## Essence`` and the
+       ``essence_updated`` stamp is cleared — the existing essence worker
+       picks the hub up as a reconciliation candidate on its next cycle.
+       A placeholder winner essence simply adopts the loser's (still
+       clearing the stamp).
+
+    Does NOT archive/delete the loser — callers orchestrate the tombstone
+    (``archive_concept_hub`` / theme ``merged-into:`` status). Returns
+    stats ``{folded, deduped, fold_dates, essence_stashed}``.
+    """
+    if loser_id is None:
+        loser_id = loser_path.stem
+
+    winner = Hub.parse(winner_path, path_to_id=path_to_id)
+    loser = Hub.parse(loser_path, path_to_id=path_to_id)
+    if not loser.log and essence_is_placeholder(loser.essence):
+        return {"folded": 0, "deduped": 0, "fold_dates": [], "essence_stashed": False}
+
+    n_before = len(winner.log)
+    merged, fold_dates = merge_log_entries(winner.log, loser.log)
+    deduped = n_before + len(loser.log) - len(merged)
+
+    # Essence reconciliation routing.
+    essence_stashed = False
+    new_essence: str | None = None
+    if not essence_is_placeholder(loser.essence):
+        if essence_is_placeholder(winner.essence):
+            new_essence = loser.essence.strip()
+        else:
+            new_essence = (
+                winner.essence.strip()
+                + f"\n\n{FOLD_ESSENCE_MARKER}\n"
+                + f"> [!note]- Folded essence from `{loser_id}`\n"
+                + "\n".join(
+                    f"> {ln}" for ln in loser.essence.strip().splitlines()
+                )
+            )
+            essence_stashed = True
+
+    text = winner_path.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+
+    # Normalize a legacy-heading winner before section surgery.
+    if CATALYST_LOG_HEADING not in body and LEGACY_LEARNING_LOG_HEADING in body:
+        body = re.sub(
+            r"(?m)^##\s+Learning log\s*$", CATALYST_LOG_HEADING, body
+        )
+
+    log_lines = render_catalyst_log(
+        merged, idmap=idmap, title_map=title_map, threaded=True
+    )
+    body = replace_section_body(body, CATALYST_LOG_HEADING, log_lines)
+    if new_essence is not None:
+        body = replace_section_body(
+            body, ESSENCE_HEADING, new_essence.splitlines()
+        )
+        fm.pop("essence_updated", None)
+
+    prior_dates = fm.get(FOLD_PENDING_DATES_KEY) or []
+    if not isinstance(prior_dates, list):
+        prior_dates = [prior_dates]
+    if prior_dates:
+        # Union with an unprocessed earlier fold; keep the older `from`
+        # label (the seam pass judges by dates, not by source label).
+        fm[FOLD_PENDING_DATES_KEY] = sorted(set(prior_dates) | set(fold_dates))
+        fm.setdefault(FOLD_PENDING_FROM_KEY, loser_id)
+    elif fold_dates:
+        fm[FOLD_PENDING_FROM_KEY] = loser_id
+        fm[FOLD_PENDING_DATES_KEY] = fold_dates
+
+    from personal_mem.core.vault import render_frontmatter
+
+    winner_path.write_text(
+        render_frontmatter(fm) + "\n" + body.lstrip("\n"), encoding="utf-8"
+    )
+    return {
+        "folded": len(merged) - n_before + deduped,
+        "deduped": deduped,
+        "fold_dates": fold_dates,
+        "essence_stashed": essence_stashed,
+    }
+
+
+def set_frontmatter_keys(path: Path, updates: dict) -> bool:
+    """Set/replace top-level frontmatter keys on a markdown file in place.
+
+    ``None`` values delete the key. Returns False when the file is missing.
+    Used for the merge tombstone (``merged-into:``) and for clearing the
+    :data:`FOLD_PENDING_FROM_KEY` / :data:`FOLD_PENDING_DATES_KEY` stamps
+    after the seam-link pass.
+    """
+    if not path.exists():
+        return False
+    from personal_mem.core.vault import render_frontmatter
+
+    fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    for k, v in updates.items():
+        if v is None:
+            fm.pop(k, None)
+        else:
+            fm[k] = v
+    path.write_text(
+        render_frontmatter(fm) + "\n" + body.lstrip("\n"), encoding="utf-8"
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Migrations
 # ---------------------------------------------------------------------------
 

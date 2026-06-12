@@ -11,14 +11,16 @@ tools:
   - mem_search
   - mem_read
   - mem_update
-description: Periodic dream cycle — two-phase subagent orchestrator. Phase 1 fans out 5 synthesis workers (promotion/merge/theme/essence/priority), merges plan fragments, applies. Phase 2 fans out 3 composition workers (wrap catch-up, prediction judge, knowledge digest). One cron entry, eight workers, single maintenance.jsonl line per cycle. Self-deciding, headless-safe.
+description: Periodic dream cycle — two-phase subagent orchestrator. Phase 1 fans out 5 synthesis workers (promotion/merge/theme/essence/priority), merges plan fragments, applies. Phase 2 fans out 4 composition workers (wrap catch-up, prediction judge, hub seam-link, knowledge digest). One cron entry, nine workers, single maintenance.jsonl line per cycle. Owns routine ontology dedup for BOTH hub families (drift v2: cosine + verdict memory). Self-deciding, headless-safe.
 ---
 
 # /dream — Two-phase synthesis + composition cycle
 
 The cron-friendly synthesis orchestrator. Phase 1 is **synthesis** (concept hygiene + theme mint/extend + essence rewrites + priority signals → plan → apply). Phase 2 is **composition + consumption** (catch-up unwrapped sessions, drain the rejudge queue, compose the day's knowledge digest).
 
-**One cron entry replaces three** — what used to be three nightly jobs (`/dream`, `/mem-wrap` catch-up, `/judge-prediction --drain`) is now one orchestrator that fans out 8 workers across two phases.
+**One cron entry replaces three** — what used to be three nightly jobs (`/dream`, `/mem-wrap` catch-up, `/judge-prediction --drain`) is now one orchestrator that fans out 9 workers across two phases.
+
+**Dream owns routine ontology guarding (2026-06-11 doctrine).** Concept dedup AND theme dedup run here — automated, logged in the maintenance line + report, reversible (folded hubs are archived/tombstoned, never deleted; theme losers keep their file with `merged-into:` status). `/mem-resolve-concepts` and `/themes-resolve` remain as on-demand front doors over the same helpers.
 
 Self-deciding. **Never prompts the user.** Designed for `claude -p "/dream"` cron use; works the same interactively.
 
@@ -50,7 +52,11 @@ You'll write the scan JSON and per-phase task lists there so workers can read th
 uv run mem dream scan --promotion-cap 20 --json > "$CYCLE_TMP/scan.json"
 ```
 
-Returns a `DreamCycleScan` JSON payload with all six scan surfaces (`promotion_candidates`, `drift_pairs`, `theme_cluster_signals`, `active_themes`, `recent_probes`, plus phase-2 surfaces `unwrapped_sessions`, `rejudge_queue`, `knowledge_delta`). The `cycle_id` field is the cycle identity — carry it through to apply and into worker prompts.
+Returns a `DreamCycleScan` JSON payload with all phase-1 scan surfaces (`promotion_candidates`, `drift_pairs`, `theme_cluster_signals`, `theme_dup_candidates`, `theme_log_gaps`, `essence_candidates`, `recent_probes`, plus phase-2 surfaces `unwrapped_sessions`, `rejudge_queue`, `seam_link_queue`, `knowledge_delta`).
+
+Drift v2: `drift_pairs` are cosine-ranked evidence packets (string ∪ centroid-cosine generators, judged pairs excluded via the maintenance-log verdict history — pass `--rejudge-pairs` to re-open them); `theme_dup_candidates` is the theme-family analog. The `cycle_id` field is the cycle identity — carry it through to apply and into worker prompts.
+
+For a one-shot essence backfill (heal every placeholder hub in one cycle instead of the nightly cap-12 drip), add `--essence-cap 0` (or pass `/dream --essence-cap N` and forward it here).
 
 ### Step 1.2 — Load phase-1 tasks
 
@@ -69,11 +75,14 @@ For each task entry from `tasks-p1.json`:
 ```
 Task({
   subagent_type: "<worker_name>",       // e.g. "dream-promotion-worker"
-  model: "sonnet",
   description: "Dream phase-1 <surface_key>",
   prompt: <see per-worker prompt shape below>
 })
 ```
+
+**Install-route namespacing.** Plugin installs register the workers under the `personal-mem:` namespace; project-scope installs use bare names. Spawn with the bare `<worker_name>` first; if the agent type doesn't resolve, retry once as `personal-mem:<worker_name>` (the failure message lists the available types). Applies to every `Task` call in this skill, both phases.
+
+**Never pass `model:` in these Task calls.** Each worker's model is pinned in its agent frontmatter (`agents/dream-*-worker.md`) — that file is the single place users retune a worker (e.g. drop `dream-merge-worker` to haiku). A Task-level `model:` takes precedence over frontmatter and would silently override the user's edit.
 
 Per-worker prompt shape:
 
@@ -95,6 +104,12 @@ JSON outcome as the final non-empty line of your response. Envelope:
 ```
 
 The promotion worker additionally needs the contents of the active ontology — Read `ontology.yaml` once and embed inline.
+
+The theme worker reads **two** scan slices — embed both `theme_cluster_signals` and `theme_log_gaps` in its prompt (the second is the directly-filed-sources catch-up; the worker turns each gap into a `theme_extensions` item with distilled `catalysts`).
+
+The merge worker also reads **two** scan slices — embed both `drift_pairs` and `theme_dup_candidates`. It emits up to three plan keys: `merges`, `theme_merges`, and `distinct_pairs` (leave-with-memory rulings that apply records into the maintenance-log verdict history so the pair never re-surfaces).
+
+**Essence sharding rule:** if `essence_candidates` has more than 15 entries (a backfill run with a raised `--essence-cap`), split it into chunks of ≤15 and spawn one `dream-essence-worker` Task per chunk **in the same parallel message**. Their `essence_rewrites` lists merge by simple concatenation in step 1.4 — entries are per-hub independent, so there are no cross-chunk collisions.
 
 ### Step 1.4 — Validate outcomes + merge plan fragments
 
@@ -118,7 +133,7 @@ echo "<merged-plan-json>" > "$CYCLE_TMP/plan.json"
 uv run mem dream apply --plan "$CYCLE_TMP/plan.json" --json > "$CYCLE_TMP/apply-result.json"
 ```
 
-The apply phase batches every structural change (merges → promotions → theme mints → theme extensions → essence rewrites → priority signals → one index rebuild → one maintenance.jsonl line). The essence-rewrite plan key with `new_essence` field actually mutates each theme's `## Essence` section. Returns a `DreamCycleResult` JSON.
+The apply phase batches every structural change (merges → promotions → theme mints → theme extensions → theme merges → distinct-pair recording → essence rewrites → priority signals → one index rebuild → one maintenance.jsonl line). Concept merges FOLD the losing hub into the winner (log preserved, archived with a `merged-into:` stamp) and theme merges run `merge_theme_into` (fold + relates_to repoint + tombstone + registry); both enqueue the survivor on the seam-link queue for phase 2. The essence-rewrite plan key with `new_essence` actually mutates each hub's `## Essence` section (themes by `theme_id`; concept hubs by `hub_kind: "concept"` + `concept`) and stamps `essence_updated`. Theme mints/extensions write the worker's distilled `catalysts` as the log lines; mints without a composed essence are rejected. Returns a `DreamCycleResult` JSON.
 
 If `apply-result.json` has non-empty `errors`, surface them in the wrap-up — the errors-don't-cascade contract guarantees the other steps still ran, so the cycle is partially successful, not failed.
 
@@ -134,11 +149,13 @@ uv run mem dream tasks --phase 2 --scan "$CYCLE_TMP/scan.json" --apply-result "$
 
 Same shape as phase-1 tasks; each entry now potentially carries a `depends_on: [<worker_name>, ...]` field. The registry encodes `dream-digest-worker.depends_on = ["dream-judge-worker"]` because the digest reads the day's verdict flips (including any just-applied this cycle).
 
+**Do NOT pass `--scan` here when phase 1 applied any merges** (check `apply-result.json`'s `merges`/`theme_merges` counts): the pre-apply scan peeked an empty seam-link queue, but apply just enqueued the folded hubs. Calling `mem dream tasks --phase 2 --json` *without* `--scan` re-runs the scan fresh, so the `seam_link_queue` surface (and `dream-seam-link-worker`) reflects this cycle's merges. When phase 1 applied zero merges, reusing `--scan "$CYCLE_TMP/scan.json"` is fine and cheaper.
+
 ### Step 2.2 — Topologically fan out phase-2 workers
 
 Walk the task list and group by dependency wave:
 
-- **Wave A** — every task whose `depends_on` is empty (or all its named workers are not in the enabled list). For the v1 registry this is `dream-wrap-worker` and `dream-judge-worker`.
+- **Wave A** — every task whose `depends_on` is empty (or all its named workers are not in the enabled list). For the current registry this is `dream-wrap-worker`, `dream-judge-worker`, and `dream-seam-link-worker` (the seam worker stitches cross-parent catalyst linkage on hubs folded by this or an earlier cycle's merges; it drains its own queue via `mem hubs apply-linkage --clear-fold`).
 - **Wave B** — every task whose `depends_on` is non-empty (and at least one named worker is in the enabled list). For v1 this is `dream-digest-worker`.
 
 **Spawn Wave A in parallel** (single message, one `Task` per enabled worker):
@@ -146,7 +163,6 @@ Walk the task list and group by dependency wave:
 ```
 Task({
   subagent_type: "<worker_name>",       // dream-wrap-worker / dream-judge-worker
-  model: "sonnet",
   description: "Dream phase-2 <surface_key>",
   prompt: <per-worker prompt — surface slice from scan.json + cycle_id>
 })
@@ -157,7 +173,6 @@ Task({
 ```
 Task({
   subagent_type: "dream-digest-worker",
-  model: "sonnet",
   description: "Dream phase-2 knowledge_delta",
   prompt: "cycle_id: <cycle_id>\nphase: 2\nsurface_key: knowledge_delta\n\n<knowledge_delta from scan.json — already grain-split into concept/event slices. Fill in theme_mutations_this_cycle on the event slice from apply-result.json's theme_mints + theme_extensions.>\n\nverdict_flips_from_this_cycle: <list of judgments dream-judge-worker just performed, parsed from its outcome JSON; goes onto the concept slice>\n\nPer your worker spec, compose up to TWO knowledge-first digest notes (one per non-empty grain). Emit the outcome envelope as the final non-empty line."
 })
@@ -182,9 +197,11 @@ Three lines for phase 1, three lines for phase 2:
 
 ```
 Dream cycle <id>.
-  Phase 1: promoted N concepts. Minted T themes, extended X. M drift merges.
-           E essence rewrites. P priority signals (Q enqueued).
-  Phase 2: wrapped W sessions. Judged J verdicts (F flipped). Digests: <concept-id> (Sc sections), <event-id> (Se sections); skipped grains: <list>.
+  Phase 1: promoted N concepts. Minted T themes, extended X. M drift merges,
+           TM theme merges, D distinct rulings recorded. E essence rewrites.
+           P priority signals (Q enqueued).
+  Phase 2: wrapped W sessions. Judged J verdicts (F flipped). Stitched S hub
+           seams. Digests: <concept-id> (Sc sections), <event-id> (Se sections); skipped grains: <list>.
 Logged to vault/.mem/maintenance.jsonl. Digests at vault/digests/YYYY-MM-DD-{concept,event}.md.
 Cycle took <wall-time>s. Worker bugs: <worker_bug count or "none">.
 ```
@@ -203,12 +220,13 @@ rm -rf "$CYCLE_TMP"
 - **The scan never crawls the filesystem from this skill.** All discovery is in the `mem dream scan` Bash call, which uses the SQLite index. Phase-2 surfaces follow the same rule: `unwrapped_sessions` / `rejudge_queue` / `knowledge_delta` are all index-driven.
 - **No prompts.** If a worker's input is ambiguous, it skips (capability-named theme clusters age out cheaply; false promotion costs a `/themes-resolve` fix-up later).
 - **Phase 2 is dependency-aware, not just sequential.** Wave A is parallel; Wave B waits for its `depends_on` workers. New workers added to the registry that declare additional dependency edges fit into the same topology — the orchestrator does not need a change.
+- **Worker models are owned by agent frontmatter, both phases.** No `Task` call in this skill passes `model:` — `agents/dream-*-worker.md` is where each worker's model is declared and retuned. (Contrast `/drain`, where `subagent_model` is config-driven via `sources.yaml` by design.)
 - **Workers are pure-output (phase 1) or write-with-receipt (phase 2).** Phase-1 workers never Edit files; the apply step does all writes. Phase-2 workers DO write directly (e.g. `dream-wrap-worker` calls `mem wrap-finalize`; `dream-digest-worker` calls `mem_create`), but emit a `side_effects` list so the orchestrator can include the receipts in the report.
 - **Hub fill is out of scope.** If a worker notices an empty concept hub during its judgment, it leaves it — `mem drain --target hubs` owns hub population, deliberately decoupled.
 - **Cron consolidation.** This skill replaces three former cron entries (`/dream`, `/mem-wrap` catch-up, `/judge-prediction --drain`). The standalone `/mem-wrap` and `/judge-prediction` skills remain available for interactive use; only their cron entries collapse into this orchestrator.
 
 ## Post-install / restart caveats
 
-- The subagent registry is captured at claude-process start. `.claude/agents/*.md` files added in-session (including the `dream-*-worker` files installed by `mem install`) won't be available until restart — `/clear` doesn't reload them. Exit claude and re-launch after install or after adding new subagents.
+- The subagent registry is captured at claude-process start. Worker agent files added in-session (the `dream-*-worker` set — shipped at the plugin's `agents/` dir, or project-scope `.claude/agents/` on a clone) won't be available until restart — `/clear` doesn't reload them. Exit claude and re-launch after install or after adding new subagents.
 - The MCP server is process-bound too. After `mem install` upgrades or any change to MCP-exposed schemas/enums (new `NoteType` values, new tools, new enum members), restart claude to pick them up.
 - The cron `claude -p '/dream'` path is fresh-process every run, so it's unaffected by either caveat. This applies only to interactive sessions.

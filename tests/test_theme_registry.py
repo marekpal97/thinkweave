@@ -456,7 +456,8 @@ class TestDreamApplyMintRegistry:
         ids = list(detect_signals(config)[0].cluster_source_ids)
         plan = {
             "theme_mints": [
-                {"slug": "ai-capex-unwind", "essence": "x",
+                {"slug": "ai-capex-unwind",
+                 "essence": "Hyperscaler capex pulls back through 2026.",
                  "source_ids": ids, "concepts": ["ai-capex", "hyperscaler"]}
             ]
         }

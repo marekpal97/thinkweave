@@ -8,12 +8,22 @@ tools:
   - Edit
   - Bash
   - mem_concepts
-description: Periodic concept and ontology hygiene. Merge near-duplicates, prune noise, update `ontology.yaml`, regenerate concept hubs. Designed to run under 2 min.
+description: On-demand concept/ontology hygiene front door — review drift-v2 (cosine-evidenced) merge candidates, prune noise, update `ontology.yaml`, regenerate concept hubs. Routine dedup + promotion run nightly inside /dream. Designed to run under 2 min.
 ---
 
-# /mem-resolve-concepts — Concept & Ontology Hygiene
+# /mem-resolve-concepts — Concept & Ontology Hygiene (manual front door)
 
-Periodic concept maintenance, organised into three phases:
+> **Routine dedup + promotion run inside `/dream` (2026-06-11 doctrine).**
+> The nightly cycle's drift v2 surfaces cosine-evidenced pairs (string ∪
+> centroid-cosine, judged pairs excluded via the maintenance-log verdict
+> history), judges them in `dream-merge-worker`, and applies merges with the
+> hub FOLD path (log preserved, archive tombstone, seam-link enqueue). Run
+> this skill on demand — an immediate pass, re-litigating a recorded
+> `distinct` ruling (`mem dream scan --rejudge-pairs`), or the ontology
+> restructuring work dream doesn't touch (splits, domain moves, dead-vocab
+> pruning).
+
+On-demand concept maintenance, organised into three phases:
 
 1. **Concepts** — merge near-dupes, surface ontology candidates, surface redundant hubs.
 2. **Hubs** — prune orphan hub pages, regenerate skeletons for any new ontology concept, re-render Evolution sections.
@@ -27,7 +37,7 @@ Designed to run in under 2 minutes. Steps below correspond to phases.
 
 Two discovery calls cover everything:
 
-- `mem_concepts(action='drift', threshold=5, max_items=30)` — near-duplicate concepts and ontology candidates (string-similarity-based; filtered below).
+- `uv run mem dream scan --json` → the `drift_pairs` surface — the drift-v2 pair pool (string ∪ cosine generators, evidence packets, judged-pairs excluded). Prefer this over `mem_concepts(action='drift')`, which is string-only and caps at the lexical head.
 - `uv run mem doctor` — coherence linter: tag/concept overlap, unknown tags, and **dead vocabulary** (ontology concepts assigned to <2 notes). The dead-vocab list feeds Phase 3's ontology pruning step.
 
 Optionally surface redundant-hub candidates with `uv run mem concepts drift --hubs` — pre-filtered hub pairs whose Essence content overlaps (Jaccard ≥ 0.4). The pair list is structural; semantic judgment lives in Phase 3.
@@ -91,12 +101,15 @@ Keep the tables tight — no row numbers, no separate count columns, no explanat
 
 ### 4. Execute on approval
 
-**Merges**: Use `scripts/batch_merge.py` pattern: write a temporary Python script that runs all merges with a single index rebuild at the end. Do NOT call `mem_concepts_merge` N times.
+**Merges**: Use the `scripts/batch_merge.py` pattern: write a temporary Python script that runs all merges with a single index rebuild at the end. Do NOT call `mem_concepts_merge` N times. After each `merge_concept_in_notes`, call `fold_concept_hub_on_merge(cfg, from_c, to_c)` — the fold-not-delete hub path (log folded into the winner, loser archived with a `merged-into:` stamp, seam-link enqueued). Never `delete_concept_hub` on a merge.
 
 ```python
 # Pattern: all file edits first, one rebuild at end
+from personal_mem.synthesis.concepts import fold_concept_hub_on_merge
+
 for from_c, to_c in merges:
     merge_concept_in_notes(vault_root, from_c, to_c)
+    fold_concept_hub_on_merge(cfg, from_c, to_c)  # fold + tombstone + seam
     # update aliases in memory
 save_aliases(cfg, aliases)
 ```

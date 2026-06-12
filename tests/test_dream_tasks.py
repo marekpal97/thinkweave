@@ -70,15 +70,23 @@ def _populated_scan() -> SimpleNamespace:
         theme_cluster_signals=[
             {"label": "iran-war", "source_count": 3, "shared_concepts": ["geopolitics"]}
         ],
-        active_themes=[
+        essence_candidates=[
             {
+                "hub_kind": "theme",
                 "theme_id": "thm-aaaa1111",
                 "title": "AI capex unwind 2026",
                 "essence": "...",
+                "essence_is_placeholder": False,
                 "recent_catalysts": [],
             }
         ],
-        recent_probes={"dynamic-batching": 4},
+        theme_log_gaps=[],
+        recent_probes={
+            "dynamic-batching": {
+                "count": 4,
+                "probes": ["How does dynamic-batching size batches?"],
+            }
+        },
         # Phase-2 surfaces — populated to exercise the phase-2 path too.
         unwrapped_sessions=[{"session_id": "ses-zzz"}],
         rejudge_queue=[{"decision_id": "dec-zzz"}],
@@ -121,8 +129,8 @@ def _populated_scan() -> SimpleNamespace:
 class TestRegistrySanity:
     """The shape-correctness contract every spec promises."""
 
-    def test_registry_has_eight_specs(self):
-        assert len(REGISTRY) == 8
+    def test_registry_has_nine_specs(self):
+        assert len(REGISTRY) == 9
 
     def test_every_spec_has_nonempty_surface_and_worker(self):
         for spec in REGISTRY:
@@ -166,6 +174,7 @@ class TestRegistrySanity:
             "dream-priority-worker",
             "dream-wrap-worker",
             "dream-judge-worker",
+            "dream-seam-link-worker",
             "dream-digest-worker",
         }
         assert names == expected, f"registry missing {expected - names}"
@@ -330,7 +339,7 @@ class TestDreamTasksCLI:
                 "promotion_candidates": [{"concept": "x", "count": 8}],
                 "drift_pairs": [],
                 "theme_cluster_signals": [],
-                "active_themes": [],
+                "essence_candidates": [],
                 "recent_probes": {},
             }),
             encoding="utf-8",
@@ -368,7 +377,7 @@ class TestDreamTasksCLI:
                 "promotion_candidates": [],
                 "drift_pairs": [],
                 "theme_cluster_signals": [],
-                "active_themes": [],
+                "essence_candidates": [],
                 "recent_probes": {},
                 "unwrapped_sessions": [{"session_id": "ses-zzz"}],
                 "rejudge_queue": [{"decision_id": "dec-zzz"}],
@@ -437,7 +446,7 @@ class TestDreamTasksCLI:
                 "promotion_candidates": [{"concept": "x", "count": 8}],
                 "drift_pairs": [],
                 "theme_cluster_signals": [],
-                "active_themes": [],
+                "essence_candidates": [],
                 "recent_probes": {},
             }),
             encoding="utf-8",

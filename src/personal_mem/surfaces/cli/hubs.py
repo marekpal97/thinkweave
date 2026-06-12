@@ -13,6 +13,9 @@ import sys
 from pathlib import Path
 
 from personal_mem.core.config import load_config
+from personal_mem.surfaces.cli._hubs_link import (
+    hubs_apply_linkage as _hubs_apply_linkage,
+)
 from personal_mem.surfaces.cli._hubs_link import hubs_link as _hubs_link
 
 
@@ -34,6 +37,8 @@ def cmd_hubs(args: argparse.Namespace) -> None:
         _hubs_repair(cfg, args)
     elif action == "link":
         _hubs_link(cfg, args)
+    elif action == "apply-linkage":
+        _hubs_apply_linkage(cfg, args)
     else:
         print(f"Unknown hubs action: {action}")
         sys.exit(1)

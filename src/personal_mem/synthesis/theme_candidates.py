@@ -84,6 +84,28 @@ def _slugify(text: str, *, max_len: int = 60) -> str:
     return (s[:max_len] or "theme").strip("-")
 
 
+# Excerpt length for per-source body snippets attached to signals. Long
+# enough for the theme worker to distill a 1-2 sentence catalyst artifact,
+# short enough that MAX_SIGNAL_SOURCES excerpts stay under ~10KB/signal.
+EXCERPT_CHARS = 600
+
+
+def _excerpt(body_text: str, *, max_len: int = EXCERPT_CHARS) -> str:
+    """First ``max_len`` chars of prose — headings stripped, word-boundary cut."""
+    if not body_text:
+        return ""
+    prose = "\n".join(
+        ln for ln in body_text.splitlines() if not ln.lstrip().startswith("#")
+    ).strip()
+    if len(prose) <= max_len:
+        return prose
+    cut = prose[:max_len]
+    sp = cut.rfind(" ")
+    if sp > max_len // 2:
+        cut = cut[:sp]
+    return cut.rstrip() + "…"
+
+
 @dataclass(frozen=True)
 class ClusterDescriptor:
     """A detected cluster: ≥N event-grain sources sharing ≥M concepts."""
@@ -114,7 +136,10 @@ class ThemeClusterSignal:
             clusters they are the concepts that drove grouping.
         sources: one dict per cluster source, newest first, capped at
             ``MAX_SIGNAL_SOURCES``. Shape:
-            ``{"id", "title", "proposed_theme", "date"}``.
+            ``{"id", "title", "proposed_theme", "date", "excerpt"}`` —
+            ``excerpt`` is ~600 chars of body prose so the theme worker
+            can distill per-source catalyst artifacts without extra
+            ``mem_read`` round-trips.
         proposed_names: distinct-source tally of the ``proposed_theme:``
             stamps in the cluster — ``{slug: n_distinct_sources}`` (D1:
             this counts *sources*, never appearances-across-clusters, so
@@ -215,7 +240,7 @@ def detect_signals(
         for st in event_types:
             rows = idx.db.execute(
                 """
-                SELECT n.id, n.title, n.date, n.frontmatter
+                SELECT n.id, n.title, n.date, n.frontmatter, n.body_text
                 FROM notes n
                 WHERE n.type = 'source'
                   AND n.date >= ?
@@ -246,6 +271,7 @@ def detect_signals(
                         "date": row["date"] or "",
                         "concepts": [c.lower() for c in concepts],
                         "proposed_theme": (fm.get("proposed_theme") or "").strip(),
+                        "excerpt": _excerpt(row["body_text"] or ""),
                     }
                 )
             sources_by_type[st] = matches
@@ -346,6 +372,7 @@ def _build_signal(
             "title": s["title"],
             "proposed_theme": s["proposed_theme"],
             "date": s["date"],
+            "excerpt": s.get("excerpt", ""),
         }
         for s in members[:MAX_SIGNAL_SOURCES]
     ]
@@ -531,6 +558,36 @@ def _cluster_by_proposed_theme(
     return out
 
 
+def _catalyst_map(catalysts: list[dict] | None) -> dict[str, tuple[str, str]]:
+    """Normalize worker-provided catalyst entries → ``{source_id: (text, flag)}``.
+
+    Defensive against worker drift: missing/blank text drops the entry
+    (caller falls back to its generic line), unknown flags fall back to
+    ``new``, over-long text is clipped at a word boundary (~300 chars).
+    """
+    from personal_mem.synthesis.hub import ALLOWED_FLAGS, FLAG_NEW
+
+    out: dict[str, tuple[str, str]] = {}
+    for c in catalysts or []:
+        if not isinstance(c, dict):
+            continue
+        sid = str(c.get("source_id") or "").strip()
+        text = " ".join(str(c.get("text") or "").split())
+        if not sid or not text:
+            continue
+        if len(text) > 300:
+            cut = text[:300]
+            sp = cut.rfind(" ")
+            if sp > 150:
+                cut = cut[:sp]
+            text = cut.rstrip() + "…"
+        flag = str(c.get("flag") or "").strip().lower()
+        if flag not in ALLOWED_FLAGS:
+            flag = FLAG_NEW
+        out[sid] = (text, flag)
+    return out
+
+
 def mint_theme_from_signal(
     config: Config,
     *,
@@ -541,6 +598,8 @@ def mint_theme_from_signal(
     candidacy: str = "inferred-from-signal",
     project: str = "",
     parent: str = "",
+    title: str = "",
+    catalysts: list[dict] | None = None,
     rebuild_index: bool = True,
 ) -> Path:
     """Mint a canonical theme from a cluster signal.
@@ -549,9 +608,15 @@ def mint_theme_from_signal(
     ``relates_to: [thm-id]`` on each cluster source so source→theme edges
     exist in both directions. Returns the new theme path. Used by the
     ``/dream`` apply phase's ``theme_mints`` plan key.
+
+    ``title`` (optional) is a human display title ("Iran–Hormuz supply
+    shock") written to ``title:`` frontmatter and the H1; the slug stays
+    the filename + registry key. ``catalysts`` (optional) carries
+    per-source distillations ``{source_id, text, flag?}`` composed by the
+    dream theme worker — seed log entries use them instead of the generic
+    "cluster seed" text.
     """
     from personal_mem.core.indexer import Indexer
-    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
 
     thm_id = f"thm-{uuid.uuid4().hex[:8]}"
     file_slug = _slugify(slug)
@@ -567,15 +632,21 @@ def mint_theme_from_signal(
         _n += 1
     today = datetime.now(timezone.utc).isoformat()
 
+    display_title = (title or "").strip() or slug
     body_lines: list[str] = [
         "---",
         "type: theme",
         f"id: {thm_id}",
         f'date: "{today}"',
-        f'title: "{slug}"',
+        f'title: "{display_title}"',
         "status: active",
         f"promotion_origin: {candidacy}",
     ]
+    if essence.strip():
+        # Stamp only when a real essence was supplied — the placeholder
+        # fallback below must still read as "never synthesised" to the
+        # dream essence worker's candidate scan.
+        body_lines.append(f'essence_updated: "{today[:10]}"')
     if cluster_concepts:
         body_lines.append(f"concepts: [{', '.join(cluster_concepts)}]")
     if cluster_source_ids:
@@ -596,13 +667,19 @@ def mint_theme_from_signal(
     from personal_mem.synthesis.concept_hub import _safe_hub_maps
     from personal_mem.synthesis.hub import FLAG_NEW, Hub, HubLogEntry
 
+    cmap = _catalyst_map(catalysts)
     log = [
-        HubLogEntry(date=today[:10], flag=FLAG_NEW, text="cluster seed", citation=src_id)
+        HubLogEntry(
+            date=today[:10],
+            flag=cmap.get(src_id, ("", FLAG_NEW))[1],
+            text=cmap.get(src_id, ("cluster seed", FLAG_NEW))[0] or "cluster seed",
+            citation=src_id,
+        )
         for src_id in cluster_source_ids
     ]
     hub = Hub(
         id=thm_id,
-        title=slug,
+        title=display_title,
         essence=essence or "_Awaiting first synthesis pass._",
         log=log,
     )
@@ -642,6 +719,7 @@ def extend_theme_with_sources(
     *,
     theme_id: str,
     source_ids: list[str],
+    catalysts: list[dict] | None = None,
     rebuild_index: bool = True,
 ) -> int:
     """Attach newly-arrived sources to an existing theme.
@@ -653,6 +731,12 @@ def extend_theme_with_sources(
     1. backfill ``relates_to: [theme_id]`` on the source frontmatter,
     2. add the source id to the theme's ``cites:`` frontmatter,
     3. append a catalyst-log line under ``## Catalyst log``.
+
+    ``catalysts`` (optional) carries per-source distillations
+    ``{source_id, text, flag?}`` composed by the dream theme worker; a
+    source with an entry gets that text + flag as its catalyst line,
+    sources without one fall back to the generic ``extend`` line
+    (back-compat with legacy plans).
 
     Essence rewrites are NOT done here — ``/dream`` edits the essence
     directly when it judges the thesis has moved. Returns the number of
@@ -694,6 +778,7 @@ def extend_theme_with_sources(
         idmap = build_id_path_map(idx.db)
         title_map = build_id_title_map(idx.db)
 
+        cmap = _catalyst_map(catalysts)
         new_lines: list[str] = []
         for src_id in source_ids:
             if src_id in existing:
@@ -701,8 +786,9 @@ def extend_theme_with_sources(
             _backfill_relates_to(config, idx, [src_id], theme_id)
             cites.append(src_id)
             existing.add(src_id)
+            text, flag = cmap.get(src_id, ("extend", FLAG_NEW))
             entry = HubLogEntry(
-                date=today, flag=FLAG_NEW, text="extend", citation=src_id
+                date=today, flag=flag, text=text, citation=src_id
             )
             new_lines.append(entry.render(idmap=idmap, title_map=title_map))
             linked += 1
@@ -718,6 +804,175 @@ def extend_theme_with_sources(
     finally:
         idx.close()
     return linked
+
+
+def merge_theme_into(
+    config: Config,
+    *,
+    from_id: str,
+    to_id: str,
+    enqueue_seam: bool = True,
+    rebuild_index: bool = True,
+) -> dict:
+    """Merge duplicate theme ``from_id`` into survivor ``to_id``.
+
+    The deterministic half of a theme dedup — survivor election and the
+    duplicate judgment itself happen in the LLM turn (``/dream``'s merge
+    worker via the ``theme_merges`` plan key, or ``/themes-resolve`` run
+    by hand). Steps, mirroring the concept-hub merge (shared Hub spine):
+
+    1. Fold the loser's catalyst log + essence into the survivor
+       (:func:`personal_mem.synthesis.hub.fold_hub_logs` — interleave,
+       dedup shared citations, stamp ``fold_pending_*`` provenance).
+    2. Union the loser's ``cites:`` into the survivor's frontmatter and
+       carry over any ``## Open questions`` content.
+    3. Repoint every note whose ``relates_to:`` references the loser.
+    4. Tombstone: the loser file stays on disk with
+       ``status: merged-into:<to_id>`` (reversible by hand); the registry
+       row is updated to match.
+    5. Enqueue the survivor on the seam-link queue so the dream phase-2
+       worker judges cross-parent catalyst pairs.
+
+    Returns a stats dict (fold stats + ``cites_added`` +
+    ``relates_repointed``).
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+    from personal_mem.synthesis.hub import (
+        OPEN_QUESTIONS_HEADING,
+        Hub,
+        build_id_path_map,
+        build_id_title_map,
+        fold_hub_logs,
+        replace_section_body,
+        set_frontmatter_keys,
+    )
+
+    if not from_id or not to_id or from_id == to_id:
+        raise ValueError("merge_theme_into needs two distinct theme ids")
+
+    idx = Indexer(config=config)
+    try:
+        rows = {
+            row["id"]: row["path"]
+            for row in idx.db.execute(
+                "SELECT id, path FROM notes WHERE type = 'theme' AND id IN (?, ?)",
+                (from_id, to_id),
+            )
+        }
+        if from_id not in rows or to_id not in rows:
+            missing = [t for t in (from_id, to_id) if t not in rows]
+            raise ValueError(f"unknown theme id(s): {', '.join(missing)}")
+        from_path = config.vault_root / rows[from_id]
+        to_path = config.vault_root / rows[to_id]
+        if not from_path.exists() or not to_path.exists():
+            raise ValueError("theme file missing on disk")
+
+        idmap = build_id_path_map(idx.db)
+        title_map = build_id_title_map(idx.db)
+        path_to_id = {v: k for k, v in idmap.items()}
+
+        loser = Hub.parse(from_path, hub_id=from_id, path_to_id=path_to_id)
+
+        stats = fold_hub_logs(
+            to_path,
+            from_path,
+            loser_id=from_id,
+            path_to_id=path_to_id,
+            idmap=idmap,
+            title_map=title_map,
+        )
+
+        # Cites union + open-questions carry-over on the survivor (re-read:
+        # the fold just rewrote the file).
+        fm, body = parse_frontmatter(to_path.read_text(encoding="utf-8"))
+        cites = as_list(fm.get("cites"))
+        loser_fm, _ = parse_frontmatter(from_path.read_text(encoding="utf-8"))
+        added = [c for c in as_list(loser_fm.get("cites")) if c not in cites]
+        if added:
+            fm["cites"] = cites + added
+        if loser.open_questions.strip():
+            existing_oq = Hub.parse(to_path, hub_id=to_id).open_questions.strip()
+            merged_oq = (
+                (existing_oq + "\n\n" if existing_oq else "")
+                + f"*(from `{from_id}`)*\n"
+                + loser.open_questions.strip()
+            )
+            body = replace_section_body(
+                body, OPEN_QUESTIONS_HEADING, merged_oq.splitlines()
+            )
+        to_path.write_text(
+            render_frontmatter(fm) + "\n" + body.lstrip("\n"), encoding="utf-8"
+        )
+
+        repointed = _repoint_relates_to(config, idx, from_id, to_id)
+
+        set_frontmatter_keys(from_path, {"status": f"merged-into:{to_id}"})
+        try:
+            # Partial upsert — only status changes; slug/concepts/parent are
+            # preserved from the existing registry row. Best-effort: registry
+            # drift is repairable via `mem themes rebuild-registry`.
+            from personal_mem.synthesis import theme_registry
+
+            theme_registry.upsert(
+                config, from_id, {"status": f"merged-into:{to_id}"}
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        if enqueue_seam and stats.get("fold_dates"):
+            from personal_mem.operations import seam_link_queue
+
+            seam_link_queue.enqueue(
+                config,
+                hub_kind="theme",
+                hub_id=to_id,
+                folded_from=from_id,
+                fold_dates=stats["fold_dates"],
+                reason="theme_merged",
+            )
+
+        if rebuild_index:
+            idx.rebuild(full=False)
+    finally:
+        idx.close()
+
+    stats["cites_added"] = len(added)
+    stats["relates_repointed"] = repointed
+    return stats
+
+
+def _repoint_relates_to(config, idx, from_id: str, to_id: str) -> int:
+    """Rewrite ``relates_to: [from_id]`` → ``to_id`` on every referencing note.
+
+    Candidate notes come from a coarse ``frontmatter LIKE`` scan over the
+    index; each hit is precision-checked against the parsed frontmatter
+    before rewriting. Returns the number of notes repointed.
+    """
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+
+    rows = idx.db.execute(
+        "SELECT id, path FROM notes WHERE frontmatter LIKE ? AND id != ?",
+        (f"%{from_id}%", from_id),
+    ).fetchall()
+    repointed = 0
+    for row in rows:
+        note_path = config.vault_root / row["path"]
+        if not note_path.exists():
+            continue
+        fm, body = parse_frontmatter(note_path.read_text(encoding="utf-8"))
+        rel = as_list(fm.get("relates_to"))
+        if from_id not in rel:
+            continue
+        new_rel = [r for r in rel if r != from_id]
+        if to_id not in new_rel:
+            new_rel.append(to_id)
+        fm["relates_to"] = new_rel
+        note_path.write_text(
+            render_frontmatter(fm) + "\n" + body, encoding="utf-8"
+        )
+        repointed += 1
+    return repointed
 
 
 # ---------------------------------------------------------------------------

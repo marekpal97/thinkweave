@@ -55,10 +55,17 @@ def tighten(cfg: Config):
 
 
 def merge(cfg: Config, from_concept: str, to_concept: str) -> dict:
-    """Rename concept across all notes; persist alias; rebuild index. Returns stats."""
+    """Rename concept across all notes; persist alias; rebuild index. Returns stats.
+
+    The losing concept's hub is FOLDED into the winner's and archived
+    with a ``merged-into:`` tombstone (``fold_concept_hub_on_merge`` —
+    same path the ``/dream`` apply step uses), never deleted. When the
+    fold moved log entries, the winner lands on the seam-link queue for
+    the next dream cycle's cross-parent linkage pass.
+    """
     from personal_mem.core.indexer import Indexer
     from personal_mem.synthesis.concepts import (
-        delete_concept_hub,
+        fold_concept_hub_on_merge,
         load_aliases,
         merge_concept_in_notes,
         save_aliases,
@@ -82,13 +89,13 @@ def merge(cfg: Config, from_concept: str, to_concept: str) -> dict:
     aliases[to_c] = existing
     save_aliases(cfg, aliases)
 
-    hub_removed = delete_concept_hub(cfg, from_c)
+    fold_stats = fold_concept_hub_on_merge(cfg, from_c, to_c)
 
     idx = Indexer(config=cfg)
     idx.rebuild(full=True)
     idx.close()
 
-    return {"changed": changed, "hub_removed": hub_removed}
+    return {"changed": changed, "hub_fold": fold_stats}
 
 
 def source_counts(cfg: Config, concepts: list[str]) -> dict:

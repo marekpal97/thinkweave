@@ -43,20 +43,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_mem.core.config import Config
-from personal_mem.core.vault import parse_frontmatter
 from personal_mem.synthesis.hub import (
     ALLOWED_FLAGS,
     CATALYST_LOG_HEADING,
     ESSENCE_HEADING,
-    FLAG_AGREES,
-    FLAG_CONTRADICTS,
-    FLAG_EXTENDS,
-    FLAG_NEW,
     Hub,
     HubLogEntry,
-    extract_section,
     migrate_hub_log_heading,
-    parse_log_entries,
     parse_log_section,
     render_catalyst_log,
 )

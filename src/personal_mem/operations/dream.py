@@ -41,6 +41,7 @@ sideways.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -86,7 +87,9 @@ def append_maintenance_log(cfg: Config, entry: dict) -> Path:
 
 def dream_reports_dir(cfg: Config) -> Path:
     """Directory holding per-cycle human-readable dream reports."""
-    return cfg.vault_root / DREAM_REPORTS_RELDIR
+    from personal_mem.operations.reports import reports_dir
+
+    return reports_dir(cfg, "dream")
 
 
 def dream_report_path(cfg: Config, cycle_id: str) -> Path:
@@ -132,16 +135,29 @@ class DreamCycleScan:
     # existing one (`theme_extensions`). No candidate stubs, no vote, no
     # lifecycle — themes change status only by hand.
     theme_cluster_signals: list = field(default_factory=list)
-    # Probe-pressure aggregate (Slice 1.5) — ``{concept: probe_count}``
-    # over the lookback window. Seeds the LLM judgment phase's
-    # ``priority_signals`` plan key: concepts the user has been
-    # probing about that the cycle should surface (enqueue or log).
+    # Probe-pressure aggregate (Slice 1.5) — ``{concept: {"count": N,
+    # "probes": [text, ...]}}`` over the lookback window. Seeds the LLM
+    # judgment phase's ``priority_signals`` plan key: concepts the user
+    # has been probing about that the cycle should surface (enqueue or
+    # log). The texts ride along so the priority worker judges against
+    # the user's actual questions and copies them into
+    # ``queue_item.probes`` — `/drain` uses them to tighten its search.
     recent_probes: dict = field(default_factory=dict)
-    # Active themes carrying ≥1 catalyst within the last 30 days, pre-loaded
-    # with their current ``## Essence`` text + last 10 catalyst entries. The
-    # phase-1 essence-worker reads this directly so it never has to crawl
-    # theme files — the indexer + ``Hub.parse`` bound the cost to (# themes).
-    active_themes: list = field(default_factory=list)
+    # Essence candidates across BOTH hub families (themes + concept hubs),
+    # pre-loaded with their current ``## Essence`` text + recent catalyst
+    # entries. The phase-1 essence-worker reads this directly so it never
+    # has to crawl hub files — the indexer + ``Hub.parse`` bound the cost.
+    # Each entry carries ``hub_kind: "theme"|"concept"`` plus the
+    # placeholder/growth fields the worker's decision rules key on.
+    # Placeholder-first ranking, capped (``--essence-cap`` / config
+    # ``dream_essence_cap``; 0 = unlimited for backfill runs).
+    essence_candidates: list = field(default_factory=list)
+    # Per-active-theme list of sources filed to the theme (``relates_to:
+    # thm-X``) but absent from its catalyst log — the directly-filed
+    # sources (news triage `keep`) that never went through a cluster
+    # signal. The theme worker distills these into ``theme_extensions``
+    # catalyst entries. Deterministic diff, no LLM.
+    theme_log_gaps: list = field(default_factory=list)
     # Sessions whose ``events.jsonl`` is non-empty AND whose frontmatter
     # lacks ``processed: true`` — the phase-2 ``dream-wrap-worker`` input.
     # Discovered via the SQLite index (``type='session'``) so we never crawl
@@ -152,6 +168,19 @@ class DreamCycleScan:
     # ``pending`` verdicts discovered via the index (judged_at missing or
     # older than 7 days). Capped at 20 total.
     rejudge_queue: list = field(default_factory=list)
+    # Near-duplicate THEME pairs (drift v2) — all-pairs cosine over the
+    # themes' cached note embeddings, history-excluded via the maintenance
+    # log, annotated with slug-token overlap + essence excerpts. The merge
+    # worker judges these alongside concept drift pairs; survivors land in
+    # the ``theme_merges`` plan key (worker payload only — nothing new on
+    # disk).
+    theme_dup_candidates: list = field(default_factory=list)
+    # Hubs whose folded logs await cross-parent linkage — the phase-2
+    # ``dream-seam-link-worker`` input, peeked (not drained) from
+    # ``.mem/seam_link_queue.jsonl``. The worker drains for real; the scan
+    # only reports so ``has_signal`` can decide whether to spawn. Capped
+    # at ``dream_seam_link_cap``.
+    seam_link_queue: list = field(default_factory=list)
     # Composite knowledge-delta surface — the phase-2 ``dream-digest-worker``
     # input. Pre-computed over a 24h window: landings_24h /
     # catalyst_additions_24h / probe_matches_24h / verdict_flips_24h /
@@ -165,36 +194,88 @@ class DreamCycleScan:
         return asdict(self)
 
 
-def _collect_active_themes(
+def _essence_is_placeholder(essence: str) -> bool:
+    """True when an essence has never been genuinely synthesised.
+
+    Matches the ``landing.py:_truncate_essence`` skeleton heuristic:
+    empty, or a single italic-wrapped placeholder line (``_Awaiting first
+    synthesis pass._`` / ``*No synthesis yet.*`` and friends).
+    """
+    text = (essence or "").strip()
+    if not text:
+        return True
+    return (text.startswith("_") and text.endswith("_")) or (
+        text.startswith("*") and text.endswith("*")
+    )
+
+
+def _parse_hub_body(body: str):
+    """Parse a hub's indexed ``body_text`` into ``(essence, log_entries)``.
+
+    Body-level twin of ``Hub.parse`` for scan collectors — works off the
+    SQLite-indexed body so the scan never does per-hub file I/O (minutes
+    per scan on a /mnt/c WSL vault). Tolerates both the canonical
+    ``## Catalyst log`` heading and the legacy ``## Learning log``.
+    """
+    from personal_mem.synthesis.hub import (
+        CATALYST_LOG_HEADING,
+        ESSENCE_HEADING,
+        LEGACY_LEARNING_LOG_HEADING,
+        extract_section,
+        parse_log_section,
+    )
+
+    essence = extract_section(body, ESSENCE_HEADING).strip()
+    log = parse_log_section(body, CATALYST_LOG_HEADING)
+    if not log:
+        log = parse_log_section(body, LEGACY_LEARNING_LOG_HEADING)
+    return essence, log
+
+
+def _collect_essence_candidates(
     cfg: Config,
     *,
     recent_days: int = 30,
     max_catalysts: int = 10,
+    placeholder_max_catalysts: int = 25,
+    cap: int = 12,
 ) -> list[dict]:
-    """Themes with ≥1 catalyst inside the last ``recent_days`` days.
+    """Hubs (themes AND concept hubs) whose essence deserves worker attention.
 
     Returns enriched payloads the phase-1 essence-worker can judge in
-    isolation — current ``## Essence`` text, the most recent
-    ``max_catalysts`` catalyst entries (newest first), total catalyst
-    count, last catalyst date. The worker never needs to ``mem_read`` the
-    theme file because the scan already loaded it.
+    isolation — current ``## Essence`` text, recent catalyst entries
+    (newest first; ``placeholder_max_catalysts`` for placeholder essences,
+    which need more material to compose fresh), total catalyst count, and
+    the growth fields the worker's decision rules key on.
 
-    Theme count on a real vault is bounded (dozens, not thousands), so the
-    per-theme ``Hub.parse`` file read is fine. The lookup of *which*
-    themes to consider goes through the SQLite index — no vault crawl.
+    Inclusion (deterministic prefilter — semantic judgment stays in the
+    worker):
 
-    Vault-wide on purpose: themes live at ``vault/themes/{slug}.md``
-    regardless of project (CLAUDE.md §3), mirroring how
-    ``theme_cluster_signals`` and drift surfaces walk the whole vault.
+    - **theme** (``status: active`` only, ≥1 catalyst):
+      placeholder essence, OR a catalyst in the last ``recent_days``
+      days, OR ≥5 catalysts since the ``essence_updated`` stamp.
+    - **concept hub**: placeholder essence with ≥5 catalysts, OR ≥10
+      catalysts since the stamp, OR ≥1 ``contradicts`` in the window.
 
-    Themes whose frontmatter ``status`` is anything other than ``active``
-    (default when missing) are skipped: only active themes can have their
-    essence rewritten by the dream cycle.
+    ``catalysts_since_essence`` counts entries dated after the
+    ``essence_updated`` frontmatter stamp; hubs without the stamp count
+    *all* entries (an unstamped essence has never been synthesised by the
+    cycle, so everything in the log post-dates it).
+
+    Ranking is placeholder-first, then total catalysts desc, capped at
+    ``cap`` (config ``dream_essence_cap`` / ``--essence-cap``; 0 =
+    unlimited — the backfill lever). Discovery AND content both go through
+    the SQLite index — the hub body is parsed from the indexed
+    ``body_text``, never a per-hub file read. On a Windows-mounted WSL
+    vault (~250ms/file over /mnt/c) the file-read variant cost minutes
+    per scan across ~1000+ hubs; the index is kept warm by
+    ``VaultManager.create_note`` and every rebuild, so it carries the
+    same freshness the rest of the scan already trusts.
     """
     from datetime import date, timedelta
 
     from personal_mem.core.indexer import Indexer
-    from personal_mem.synthesis.hub import Hub
+    from personal_mem.synthesis.hub import FLAG_CONTRADICTS
 
     cutoff = (date.today() - timedelta(days=recent_days)).isoformat()
 
@@ -202,44 +283,76 @@ def _collect_active_themes(
     try:
         rows = list(
             idx.db.execute(
-                "SELECT id, title, path, frontmatter "
-                "FROM notes WHERE type = 'theme'"
+                # Hubs index as type='concept-hub' (their frontmatter
+                # type); 'note' is kept for legacy skeletons without it.
+                "SELECT id, title, path, frontmatter, body_text FROM notes "
+                "WHERE type = 'theme' "
+                "   OR (type IN ('concept-hub', 'note') "
+                "       AND path LIKE 'concepts/topics/%')"
             )
         )
     finally:
         idx.close()
 
-    active: list[dict] = []
+    candidates: list[dict] = []
     for row in rows:
         try:
             fm = json.loads(row["frontmatter"] or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
-        status = (fm.get("status") or "active").lower()
-        if status != "active":
-            continue
 
-        theme_path = cfg.vault_root / row["path"]
-        if not theme_path.exists():
-            continue
+        rel_path = row["path"] or ""
+        hub_kind = "concept" if rel_path.startswith("concepts/topics/") else "theme"
+
+        if hub_kind == "theme":
+            status = (fm.get("status") or "active").lower()
+            if status != "active":
+                continue
 
         try:
-            hub = Hub.parse(theme_path, hub_id=row["id"])
+            essence, log = _parse_hub_body(row["body_text"] or "")
         except Exception:  # noqa: BLE001 — corrupt body shouldn't kill scan
             continue
 
-        recent = [e for e in hub.log if e.date >= cutoff]
-        if not recent:
+        total = len(log)
+        if total == 0:
+            continue  # nothing to synthesise from, either kind
+
+        placeholder = _essence_is_placeholder(essence)
+        stamp = str(fm.get("essence_updated") or "")[:10]
+        since_essence = (
+            sum(1 for e in log if e.date > stamp) if stamp else total
+        )
+        recent = [e for e in log if e.date >= cutoff]
+        recent_contradicts = sum(
+            1 for e in recent if e.flag == FLAG_CONTRADICTS
+        )
+
+        if hub_kind == "theme":
+            include = placeholder or bool(recent) or since_essence >= 5
+        else:
+            include = (
+                (placeholder and total >= 5)
+                or since_essence >= 10
+                or recent_contradicts >= 1
+            )
+        if not include:
             continue
 
-        all_sorted = sorted(hub.log, key=lambda e: e.date, reverse=True)
-        last_n = all_sorted[:max_catalysts]
+        all_sorted = sorted(log, key=lambda e: e.date, reverse=True)
+        n_catalysts = placeholder_max_catalysts if placeholder else max_catalysts
+        last_n = all_sorted[:n_catalysts]
 
-        active.append({
-            "theme_id": row["id"],
+        entry = {
+            "hub_kind": hub_kind,
             "title": row["title"],
-            "path": row["path"],
-            "essence": hub.essence,
+            "path": rel_path,
+            "essence": essence,
+            "essence_is_placeholder": placeholder,
+            "essence_word_count": len((essence or "").split()),
+            "essence_updated": stamp,
+            "catalysts_since_essence": since_essence,
+            "recent_contradicts": recent_contradicts,
             "recent_catalysts": [
                 {
                     "date": e.date,
@@ -249,11 +362,121 @@ def _collect_active_themes(
                 }
                 for e in last_n
             ],
-            "total_catalysts": len(hub.log),
+            "total_catalysts": total,
             "last_catalyst_date": all_sorted[0].date,
-        })
+        }
+        if hub_kind == "theme":
+            entry["theme_id"] = row["id"]
+        else:
+            # Concept hubs are identified by the vocabulary term — the
+            # filename stem, which concept_hub_path() round-trips.
+            entry["concept"] = Path(rel_path).stem
+        candidates.append(entry)
 
-    return active
+    candidates.sort(
+        key=lambda c: (
+            not c["essence_is_placeholder"],
+            -c["total_catalysts"],
+            c.get("theme_id") or c.get("concept") or "",
+        )
+    )
+    if cap and cap > 0:
+        candidates = candidates[:cap]
+    return candidates
+
+
+def _collect_theme_log_gaps(
+    cfg: Config,
+    *,
+    cap_per_theme: int = 10,
+) -> list[dict]:
+    """Sources filed to an active theme but missing from its catalyst log.
+
+    The directly-filed path (news triage ``keep`` → worker stamps
+    ``relates_to: thm-X`` at create time) bypasses cluster detection
+    entirely — ``detect_signals`` excludes already-filed sources as
+    settled, and ``extend_theme_with_sources`` only ever ran for cluster
+    members. This diff closes that gap: every active theme is checked for
+    cited-in-frontmatter-but-absent-from-log sources, newest first,
+    capped at ``cap_per_theme``. The theme worker turns each entry into a
+    normal ``theme_extensions`` item with distilled ``catalysts``.
+
+    Membership test is against the union of the theme's catalyst-log
+    citations and its ``cites:`` frontmatter — a source in ``cites:`` but
+    not the log was linked by a legacy extend that predates log entries,
+    and re-adding it would duplicate the frontmatter entry.
+    """
+    from personal_mem.core._utils import as_list
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.synthesis.theme_candidates import _excerpt
+
+    idx = Indexer(config=cfg)
+    try:
+        theme_rows = list(
+            idx.db.execute(
+                "SELECT id, title, path, frontmatter, body_text "
+                "FROM notes WHERE type = 'theme' AND id LIKE 'thm-%'"
+            )
+        )
+        source_rows = list(
+            idx.db.execute(
+                "SELECT id, title, date, frontmatter, body_text "
+                "FROM notes WHERE type = 'source'"
+            )
+        )
+    finally:
+        idx.close()
+
+    # theme_id → filed sources (from each source's relates_to).
+    filed: dict[str, list[dict]] = {}
+    for row in source_rows:
+        try:
+            fm = json.loads(row["frontmatter"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for rel in as_list(fm.get("relates_to")):
+            rel = str(rel)
+            if rel.startswith("thm-"):
+                filed.setdefault(rel, []).append(row)
+
+    gaps: list[dict] = []
+    for trow in theme_rows:
+        try:
+            tfm = json.loads(trow["frontmatter"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (tfm.get("status") or "active").lower() != "active":
+            continue
+        theme_id = trow["id"]
+        filed_here = filed.get(theme_id)
+        if not filed_here:
+            continue
+
+        try:
+            _, log = _parse_hub_body(trow["body_text"] or "")
+        except Exception:  # noqa: BLE001
+            continue
+        logged = {e.citation for e in log if e.citation}
+        logged |= {str(c) for c in as_list(tfm.get("cites"))}
+
+        missing = [s for s in filed_here if s["id"] not in logged]
+        if not missing:
+            continue
+        missing.sort(key=lambda r: r["date"] or "", reverse=True)
+        gaps.append({
+            "theme_id": theme_id,
+            "title": trow["title"],
+            "sources": [
+                {
+                    "id": s["id"],
+                    "title": s["title"] or "",
+                    "date": s["date"] or "",
+                    "excerpt": _excerpt(s["body_text"] or ""),
+                }
+                for s in missing[:cap_per_theme]
+            ],
+        })
+    return gaps
 
 
 def _collect_unwrapped_sessions(
@@ -469,7 +692,6 @@ def _collect_knowledge_delta(
     from personal_mem.core.indexer import Indexer
     from personal_mem.operations.prompts import recent_probe_pressure
     from personal_mem.sources import registry as source_registry
-    from personal_mem.synthesis.hub import Hub
 
     now = datetime.now(timezone.utc)
     cutoff_dt = now - timedelta(hours=window_hours)
@@ -551,23 +773,27 @@ def _collect_knowledge_delta(
             # grain == "none" → not surfaced in either digest
 
         # 2. Catalyst additions (concept hubs + themes) -----------------
-        # Concept hubs: type='note', path under concepts/topics/.
+        # Concept hubs index as type='concept-hub' (their frontmatter
+        # type) — the old type='note' filter matched zero hubs on real
+        # vaults, silently emptying the concept digest's catalyst slice.
+        # 'note' is kept for legacy skeletons without frontmatter type.
+        # Parses the indexed body_text rather than reading each hub file
+        # — the file-read variant cost minutes per scan over /mnt/c on a
+        # 1000+-hub vault.
         hub_rows = idx.db.execute(
-            "SELECT id, path FROM notes "
+            "SELECT id, path, body_text FROM notes "
             "WHERE type = 'theme' "
-            "   OR (type = 'note' AND path LIKE 'concepts/topics/%')"
+            "   OR (type IN ('concept-hub', 'note') "
+            "       AND path LIKE 'concepts/topics/%')"
         ).fetchall()
         for row in hub_rows:
             rel_path = row["path"] or ""
-            hub_path = cfg.vault_root / rel_path
-            if not hub_path.exists():
-                continue
             kind = "theme" if rel_path.startswith("themes/") else "concept"
             try:
-                hub = Hub.parse(hub_path, hub_id=row["id"])
+                _, log = _parse_hub_body(row["body_text"] or "")
             except Exception:  # noqa: BLE001
                 continue
-            for entry in hub.log:
+            for entry in log:
                 if entry.date < cutoff_day:
                     continue
                 addition = {
@@ -687,18 +913,114 @@ def _collect_knowledge_delta(
     return delta
 
 
+def _collect_theme_dup_candidates(
+    cfg: Config, *, rejudge_pairs: bool = False
+) -> list[dict]:
+    """Near-duplicate ACTIVE theme pairs by embedding cosine (drift v2).
+
+    Themes are embedded whole (essence + catalyst log ride in
+    ``body_text``), so their cached vectors already encode content.
+    All-pairs is fine at theme scale. Each candidate carries slugs,
+    titles, essence excerpts, shared concepts, and a slug-token Jaccard —
+    enough for the merge worker to elect a survivor without ``mem_read``
+    round-trips. Pairs a past cycle ruled on are excluded via the
+    maintenance-log history unless ``rejudge_pairs``.
+    """
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.synthesis import geometry
+
+    threshold = float(getattr(cfg, "dream_cosine_threshold", 0.8) or 0.8)
+
+    idx = Indexer(config=cfg)
+    try:
+        rows = idx.db.execute(
+            "SELECT id, title, path, frontmatter, body_text FROM notes "
+            "WHERE type = 'theme'"
+        ).fetchall()
+    finally:
+        idx.close()
+
+    meta: dict[str, dict] = {}
+    for row in rows:
+        try:
+            fm = json.loads(row["frontmatter"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            fm = {}
+        status = str(fm.get("status") or "active")
+        if status != "active":
+            continue
+        essence, _ = _parse_hub_body(row["body_text"] or "")
+        slug = Path(str(row["path"] or "")).stem
+        concepts = fm.get("concepts") or []
+        if not isinstance(concepts, list):
+            concepts = [concepts]
+        meta[row["id"]] = {
+            "slug": slug,
+            "title": row["title"] or slug,
+            "essence_excerpt": essence[:300],
+            "concepts": [str(c).lower() for c in concepts],
+        }
+
+    vectors = {
+        tid: vec
+        for tid, vec in geometry.theme_vectors(cfg).items()
+        if tid in meta
+    }
+    if len(vectors) < 2:
+        return []
+
+    judged = set() if rejudge_pairs else geometry.judged_pairs(cfg)
+
+    def _tokens(slug: str) -> set[str]:
+        return {t for t in re.split(r"[^a-z0-9]+", slug.lower()) if t}
+
+    out: list[dict] = []
+    for a, b, cos in geometry.cosine_pairs(vectors, threshold=threshold):
+        if geometry.pair_key("theme", a, b) in judged:
+            continue
+        ma, mb = meta[a], meta[b]
+        ta, tb = _tokens(ma["slug"]), _tokens(mb["slug"])
+        union = ta | tb
+        out.append(
+            {
+                "from_id": a,
+                "to_id": b,
+                "cosine": cos,
+                "slugs": {a: ma["slug"], b: mb["slug"]},
+                "titles": {a: ma["title"], b: mb["title"]},
+                "essence_excerpts": {
+                    a: ma["essence_excerpt"],
+                    b: mb["essence_excerpt"],
+                },
+                "shared_concepts": sorted(
+                    set(ma["concepts"]) & set(mb["concepts"])
+                ),
+                "slug_token_overlap": round(
+                    len(ta & tb) / len(union), 3
+                ) if union else 0.0,
+            }
+        )
+    return out
+
+
 def scan(
     cfg: Config,
     *,
     project: str = "",
     promotion_cap: int = 20,
     promotion_threshold: int = 5,
+    essence_cap: int | None = None,
+    rejudge_pairs: bool = False,
 ) -> DreamCycleScan:
     """Compose a read-only action plan from three vault-global scans.
 
-    1. **drift pairs** — ``operations.concepts.drift`` filtered through
-       ``filter_drift_candidates`` (drops the substring/short-name noise
-       documented in [[feedback_dont_trust_drift_blindly]]).
+    1. **drift pairs (v2)** — union of string near-dupes
+       (``find_near_duplicates`` → ``filter_drift_candidates``) and
+       centroid-cosine pairs ≥ ``dream_cosine_threshold`` (synonyms with
+       zero string overlap). Already-judged pairs are excluded via the
+       maintenance-log history (pass ``rejudge_pairs=True`` to re-surface
+       them); survivors are ranked by cosine descending, capped at
+       ``dream_drift_cap``, and shipped with evidence packets.
     2. **promotion candidates** — ``proposed_concepts`` at ``count ≥
        promotion_threshold`` (default 5), filtered through
        ``filter_promotion_candidates`` (drops domain-paths, generic
@@ -721,31 +1043,84 @@ def scan(
         promotion_cap=promotion_cap,
     )
 
-    # 1. drift pairs ------------------------------------------------------
+    # 1. drift pairs (v2) ---------------------------------------------------
+    # Pair pool = string near-dupes (typo catcher — typo'd concepts tag too
+    # few notes for a stable centroid) ∪ centroid-cosine pairs ≥ threshold
+    # (synonym catcher — finds pairs with zero string overlap). Pairs a past
+    # cycle already ruled on (merged OR distinct, read back from
+    # maintenance.jsonl) are excluded so the pool drains instead of
+    # re-litigating the lexical head every night. Ranked by cosine
+    # descending, capped by ``dream_drift_cap``. Each survivor carries an
+    # evidence packet (domains, same_domain, counts, co-occurrence, sample
+    # titles) so the merge worker judges from contents without extra
+    # ``mem_read`` round-trips.
     _t = time.perf_counter()
     try:
-        from personal_mem.operations.concepts import drift as concept_drift
-        from personal_mem.synthesis.concepts import filter_drift_candidates
+        from personal_mem.synthesis import geometry
+        from personal_mem.synthesis.concepts import (
+            filter_drift_candidates,
+            find_near_duplicates,
+        )
 
-        d = concept_drift(cfg, project=project)
-        # drift_report's near_duplicates is already the tuple shape
-        # filter_drift_candidates wants: [(a, b, reason), ...].
-        # Convert defensively in case the producer ever switches to dicts.
-        raw_pairs = (d.get("report") or {}).get("near_duplicates", []) or []
-        tuples: list[tuple[str, str, str]] = []
-        for p in raw_pairs:
-            if isinstance(p, dict):
-                tuples.append(
-                    (p.get("from", ""), p.get("to", ""), p.get("reason", ""))
-                )
-            elif isinstance(p, (tuple, list)) and len(p) >= 2:
-                tuples.append(
-                    (p[0], p[1], p[2] if len(p) > 2 else "")
-                )
-        surviving = filter_drift_candidates(tuples)
-        result.drift_pairs = [
-            {"from": a, "to": b, "reason": r} for a, b, r in surviving
+        judged = set() if rejudge_pairs else geometry.judged_pairs(cfg)
+        threshold = float(getattr(cfg, "dream_cosine_threshold", 0.8) or 0.8)
+        drift_cap = int(getattr(cfg, "dream_drift_cap", 15) or 0)
+
+        # String generator — full pair list (the old [:5] advisory slice
+        # starved everything past the lexical head; see 2026-06-10 audit).
+        from personal_mem.core.indexer import Indexer
+
+        idx = Indexer(config=cfg)
+        try:
+            concept_rows = idx.db.execute(
+                """
+                SELECT DISTINCT concept FROM note_concepts
+                WHERE (? = '' OR note_id IN (
+                    SELECT id FROM notes WHERE project = ?
+                ))
+                """,
+                (project, project),
+            ).fetchall()
+        finally:
+            idx.close()
+        all_concepts = [r["concept"] for r in concept_rows]
+        string_pairs = filter_drift_candidates(
+            find_near_duplicates(all_concepts)
+        )
+
+        # Cosine generator — usage centroids over the embedding cache.
+        centroids = geometry.concept_centroids(cfg)
+        cos_pairs = geometry.cosine_pairs(centroids, threshold=threshold)
+
+        pool: dict[frozenset, tuple[str, str, float | None, str]] = {}
+        for a, b, cos in cos_pairs:
+            pool[frozenset((a, b))] = (a, b, cos, f"cosine {cos}")
+        for a, b, reason in string_pairs:
+            key = frozenset((a, b))
+            if key in pool:
+                pa, pb, pcos, preason = pool[key]
+                pool[key] = (pa, pb, pcos, f"{preason}; {reason}")
+            else:
+                # Attach the centroid cosine as evidence even below
+                # threshold — the worker should see "0.31" on a string
+                # pair and smell a homonym.
+                cos = None
+                va, vb = centroids.get(a), centroids.get(b)
+                if va is not None and vb is not None and len(va) == len(vb):
+                    cos = round(geometry._dot(va, vb), 4)
+                pool[key] = (a, b, cos, reason)
+
+        surviving = [
+            row
+            for key, row in pool.items()
+            if geometry.pair_key("concept", row[0], row[1]) not in judged
         ]
+        surviving.sort(
+            key=lambda r: (r[2] is None, -(r[2] or 0.0), r[0])
+        )
+        if drift_cap:
+            surviving = surviving[:drift_cap]
+        result.drift_pairs = geometry.build_concept_evidence(cfg, surviving)
     except Exception as e:  # noqa: BLE001 — best-effort scan step
         result.errors.append(f"drift: {e}")
     finally:
@@ -809,16 +1184,32 @@ def scan(
     finally:
         result.timings["theme_cluster_signals"] = time.perf_counter() - _t
 
-    # 4. probe pressure ---------------------------------------------------
-    # Aggregate probe-classified prompts into per-concept pressure over
-    # a 14-day window. The LLM judgment phase reads this to compose
-    # ``priority_signals`` — concepts the user has been asking about
-    # that warrant attention (enqueue or log).
+    # 3b. theme dup candidates (drift v2, theme family) -------------------
+    # All-pairs cosine over the active themes' cached note embeddings —
+    # n(themes) is small, so this is cheap. History-excluded like concept
+    # pairs. The merge worker elects the survivor; apply's ``theme_merges``
+    # step runs ``merge_theme_into`` (fold + repoint + tombstone + seam).
     _t = time.perf_counter()
     try:
-        from personal_mem.operations.prompts import recent_probe_pressure
+        result.theme_dup_candidates = _collect_theme_dup_candidates(
+            cfg, rejudge_pairs=rejudge_pairs
+        )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_dup_candidates: {e}")
+    finally:
+        result.timings["theme_dup_candidates"] = time.perf_counter() - _t
 
-        result.recent_probes = recent_probe_pressure(
+    # 4. probe pressure ---------------------------------------------------
+    # Aggregate probe-classified prompts into per-concept pressure over
+    # a 14-day window — counts plus the most recent probe texts. The LLM
+    # judgment phase reads this to compose ``priority_signals`` —
+    # concepts the user has been asking about that warrant attention
+    # (enqueue or log) — and threads the texts into queue items.
+    _t = time.perf_counter()
+    try:
+        from personal_mem.operations.prompts import recent_probe_details
+
+        result.recent_probes = recent_probe_details(
             cfg, project=project, window_days=14
         )
     except Exception as e:  # noqa: BLE001
@@ -826,19 +1217,35 @@ def scan(
     finally:
         result.timings["recent_probes"] = time.perf_counter() - _t
 
-    # 5. active themes ----------------------------------------------------
-    # Themes carrying recent catalyst activity, pre-loaded with their
-    # current essence + last 10 catalysts. Phase-1 ``dream-essence-worker``
-    # reads this surface to judge whether any essence needs a rewrite —
-    # no per-theme ``mem_read`` round trip needed. Vault-wide (themes are
-    # not per-project, matching how cluster signals are scanned).
+    # 5. essence candidates ------------------------------------------------
+    # Hubs (themes + concept hubs) whose essence deserves worker attention,
+    # pre-loaded with essence + recent catalysts. Phase-1
+    # ``dream-essence-worker`` reads this surface directly — no per-hub
+    # ``mem_read`` round trip needed. Vault-wide (hubs are not
+    # per-project, matching how cluster signals are scanned).
     _t = time.perf_counter()
     try:
-        result.active_themes = _collect_active_themes(cfg)
+        if essence_cap is None:
+            essence_cap = int(getattr(cfg, "dream_essence_cap", 12) or 0)
+        result.essence_candidates = _collect_essence_candidates(
+            cfg, cap=essence_cap
+        )
     except Exception as e:  # noqa: BLE001
-        result.errors.append(f"active_themes: {e}")
+        result.errors.append(f"essence_candidates: {e}")
     finally:
-        result.timings["active_themes"] = time.perf_counter() - _t
+        result.timings["essence_candidates"] = time.perf_counter() - _t
+
+    # 5b. theme log gaps ----------------------------------------------------
+    # Directly-filed sources (relates_to: thm-X stamped at create time)
+    # that never produced a catalyst-log entry. The theme worker distills
+    # them into normal ``theme_extensions`` items.
+    _t = time.perf_counter()
+    try:
+        result.theme_log_gaps = _collect_theme_log_gaps(cfg)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_log_gaps: {e}")
+    finally:
+        result.timings["theme_log_gaps"] = time.perf_counter() - _t
 
     # 6. unwrapped sessions (phase-2 dream-wrap-worker input) ------------
     _t = time.perf_counter()
@@ -857,6 +1264,23 @@ def scan(
         result.errors.append(f"rejudge_queue: {e}")
     finally:
         result.timings["rejudge_queue"] = time.perf_counter() - _t
+
+    # 7b. seam-link queue (phase-2 dream-seam-link-worker input) ----------
+    # Peek only — the worker drains for real via `mem hubs apply-linkage`.
+    # Items enqueued by THIS cycle's apply (merges land after the scan)
+    # are picked up by the orchestrator re-checking the queue post-apply
+    # (commands/dream.md step 2.1) or, at worst, by the next cycle.
+    _t = time.perf_counter()
+    try:
+        from personal_mem.operations import seam_link_queue as _slq
+
+        seam_cap = int(getattr(cfg, "dream_seam_link_cap", 10) or 0)
+        items = _slq.peek(cfg)
+        result.seam_link_queue = items[:seam_cap] if seam_cap else items
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"seam_link_queue: {e}")
+    finally:
+        result.timings["seam_link_queue"] = time.perf_counter() - _t
 
     # 8. knowledge delta (phase-2 dream-digest-worker input) -------------
     _t = time.perf_counter()
@@ -886,10 +1310,13 @@ def scan(
         "drift_pairs": len(result.drift_pairs),
         "promotion_candidates": len(result.promotion_candidates),
         "theme_cluster_signals": len(result.theme_cluster_signals),
+        "theme_dup_candidates": len(result.theme_dup_candidates),
         "recent_probes": len(result.recent_probes),
-        "active_themes": len(result.active_themes),
+        "essence_candidates": len(result.essence_candidates),
+        "theme_log_gaps": len(result.theme_log_gaps),
         "unwrapped_sessions": len(result.unwrapped_sessions),
         "rejudge_queue": len(result.rejudge_queue),
+        "seam_link_queue": len(result.seam_link_queue),
         "knowledge_delta": {
             "concept": _grain_stats("concept"),
             "event": _grain_stats("event"),
@@ -917,6 +1344,8 @@ _VALID_PLAN_TOP_KEYS: frozenset[str] = frozenset({
     "promotions",
     "theme_mints",
     "theme_extensions",
+    "theme_merges",
+    "distinct_pairs",
     "essence_rewrites",
     "priority_signals",
 })
@@ -935,20 +1364,35 @@ _VALID_PLAN_ITEM_KEYS: dict[str, frozenset[str]] = {
     "promotions": frozenset({"concept", "domain", "reason"}),
     "theme_mints": frozenset({
         "slug",
+        "title",
         "essence",
         "source_ids",
         "concepts",
         "candidacy",
         "project",
         "parent",
+        "catalysts",
     }),
     "theme_extensions": frozenset({
         "theme_id",
         "source_ids",
+        "catalysts",
         "reason",
     }),
+    # Theme dedup (drift v2): survivor = ``to_id``, elected by the merge
+    # worker from the scan's ``theme_dup_candidates``. Apply runs
+    # ``merge_theme_into`` (fold + repoint + tombstone + seam enqueue).
+    "theme_merges": frozenset({"from_id", "to_id", "reason"}),
+    # Leave-with-memory verdicts: pairs the merge worker judged NOT
+    # duplicates. No mutation — recorded in the maintenance.jsonl
+    # ``verdicts`` block (+ dream report) so future scans stop
+    # re-surfacing them. ``kind`` ∈ {concept, theme}; ``pair`` is the
+    # two names/ids.
+    "distinct_pairs": frozenset({"kind", "pair", "reason", "cosine"}),
     "essence_rewrites": frozenset({
+        "hub_kind",
         "theme_id",
+        "concept",
         "new_essence",
         "reason",
     }),
@@ -965,12 +1409,27 @@ _VALID_PLAN_ITEM_KEYS: dict[str, frozenset[str]] = {
 # ``Queue.enqueue`` payload itself is open-shape (per-source-type), but the
 # fields ``apply`` reads off the dict before forwarding are bounded — we
 # allow-list those plus the common payload extensions writers add today.
+# ``probes`` carries the probe texts that drove the signal (≤3, copied by
+# the priority worker from the scan's ``recent_probes``) so `/drain` can
+# tighten its search queries to the user's actual questions.
 _VALID_QUEUE_ITEM_KEYS: frozenset[str] = frozenset({
     "source_type",
     "title",
     "concept",
     "source",
     "url",
+    "probes",
+})
+
+# Sub-key allowlist for per-source catalyst distillations carried by
+# ``theme_mints`` / ``theme_extensions`` items. ``text`` is the 1-2
+# sentence artifact the dream theme worker composed for that source;
+# ``flag`` is the catalyst-log flag (new/agrees/contradicts/extends).
+_VALID_CATALYST_ITEM_KEYS: frozenset[str] = frozenset({
+    "source_id",
+    "text",
+    "flag",
+    "ref",
 })
 
 
@@ -1033,6 +1492,28 @@ def validate_plan_fragment(plan: dict) -> list[str]:
                                 f"unknown sub-key {qk!r} in "
                                 f"plan[{top_key!r}][{i}].queue_item"
                             )
+            # Nested catalysts list on theme mints/extensions
+            if top_key in ("theme_mints", "theme_extensions"):
+                cats = item.get("catalysts")
+                if cats is not None and not isinstance(cats, list):
+                    warnings.append(
+                        f"plan[{top_key!r}][{i}].catalysts is not a "
+                        f"list: {type(cats).__name__}"
+                    )
+                elif isinstance(cats, list):
+                    for j, cat in enumerate(cats):
+                        if not isinstance(cat, dict):
+                            warnings.append(
+                                f"plan[{top_key!r}][{i}].catalysts[{j}] "
+                                f"is not a dict: {type(cat).__name__}"
+                            )
+                            continue
+                        for ck in cat.keys():
+                            if ck not in _VALID_CATALYST_ITEM_KEYS:
+                                warnings.append(
+                                    f"unknown sub-key {ck!r} in "
+                                    f"plan[{top_key!r}][{i}].catalysts[{j}]"
+                                )
 
     return warnings
 
@@ -1088,10 +1569,21 @@ class DreamCycleResult:
     # action explicitly ``log``, or a missing/malformed queue_item).
     priority_signals_enqueued: int = 0
     priority_signals_logged: int = 0
+    theme_merges_applied: int = 0
+    distinct_pairs_recorded: int = 0
+    seams_enqueued: int = 0
     ontology_grew: bool = False
     indexed: int = 0
     removed: int = 0
     edges: int = 0
+    # Verdict memory (drift v2) — the *applied* ontology rulings of this
+    # cycle, written into the maintenance.jsonl ``verdicts`` block that
+    # ``geometry.judged_pairs`` reads back to keep judged pairs from
+    # re-surfacing. Applied-only on purpose: an errored merge stays
+    # eligible for retry next cycle.
+    applied_merges: list = field(default_factory=list)
+    applied_theme_merges: list = field(default_factory=list)
+    recorded_distinct_pairs: list = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     log_path: str = ""
@@ -1105,7 +1597,11 @@ class DreamCycleResult:
 
         Captures intent (the plan) alongside outcome (counts + errors).
         Lets a human grep the log later and answer "what did the cycle
-        do on day X, and was anything left unfinished?".
+        do on day X, and was anything left unfinished?". The ``verdicts``
+        block doubles as the ontology judgment memory — the scan's
+        ``geometry.judged_pairs`` reads merged/distinct rulings back from
+        here, which is what makes the drift pool drain (no separate
+        ledger file, by design).
         """
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -1116,10 +1612,18 @@ class DreamCycleResult:
                 "promotions": self.promotions_applied,
                 "themes_minted": self.themes_minted,
                 "themes_extended": self.themes_extended,
+                "theme_merges": self.theme_merges_applied,
+                "distinct_pairs": self.distinct_pairs_recorded,
+                "seams_enqueued": self.seams_enqueued,
                 "essence_rewrites": self.essence_rewrites_applied,
                 "priority_signals_enqueued": self.priority_signals_enqueued,
                 "priority_signals_logged": self.priority_signals_logged,
                 "ontology_grew": self.ontology_grew,
+            },
+            "verdicts": {
+                "merges": list(self.applied_merges),
+                "theme_merges": list(self.applied_theme_merges),
+                "distinct_pairs": list(self.recorded_distinct_pairs),
             },
             "index": {
                 "indexed": self.indexed,
@@ -1187,7 +1691,9 @@ def apply(
              "queue_item": {"source_type": "article",
                             "title": "Survey: dynamic-batching",
                             "concept": "dynamic-batching",
-                            "source": "dream-priority-signal"},
+                            "source": "dream-priority-signal",
+                            "probes": ["How does vLLM decide batch size "
+                                       "under mixed sequence lengths?"]},
              "reason": "User asked 4× in 14d; vault has no source coverage."},
             {"concept": "embeddings", "probe_count": 6,
              "action": "log",
@@ -1197,8 +1703,17 @@ def apply(
         }
 
     Order matters: merges → promotions → theme mints → theme extensions →
-    ONE index rebuild → maintenance.jsonl append. Each step is wrapped;
-    failure in one is recorded in ``errors`` and the rest still run.
+    theme merges → distinct-pair recording → ONE index rebuild →
+    maintenance.jsonl append. Each step is wrapped; failure in one is
+    recorded in ``errors`` and the rest still run.
+
+    Two drift-v2 keys ride alongside (2026-06-11): ``theme_merges``
+    (``{from_id, to_id, reason}`` — ``merge_theme_into`` fold + repoint +
+    tombstone + seam enqueue) and ``distinct_pairs`` (``{kind, pair,
+    reason, cosine}`` — no mutation; recorded into the maintenance-log
+    ``verdicts`` block that the next scan reads back as judgment memory).
+    Concept merges fold the losing hub into the winner and archive the
+    husk with a ``merged-into:`` stamp — never delete.
 
     There is deliberately no theme-status / candidate-archival surface:
     theme lifecycle is hand-driven, and the candidate-stub path was
@@ -1241,10 +1756,13 @@ def apply(
     # 1. merges -----------------------------------------------------------
     # Bypass operations.concepts.merge (which rebuilds per call). Use the
     # synthesis helpers directly and rebuild once at the end (step 4).
+    # The losing hub is FOLDED into the winner and archived with a
+    # ``merged-into:`` tombstone (fold_concept_hub_on_merge) — never
+    # deleted; its catalyst log is knowledge, not residue.
     _t = time.perf_counter()
     try:
         from personal_mem.synthesis.concepts import (
-            delete_concept_hub,
+            fold_concept_hub_on_merge,
             load_aliases,
             merge_concept_in_notes,
             save_aliases,
@@ -1268,8 +1786,22 @@ def apply(
                             if old != to_c and old not in existing:
                                 existing.append(old)
                     aliases[to_c] = existing
-                    delete_concept_hub(cfg, from_c)
+                    fold_stats = fold_concept_hub_on_merge(cfg, from_c, to_c)
+                    if fold_stats.get("error"):
+                        result.errors.append(
+                            f"merge {from_c}→{to_c} hub fold: "
+                            f"{fold_stats['error']}"
+                        )
+                    if fold_stats.get("fold_dates"):
+                        result.seams_enqueued += 1
                     result.merges_applied += 1
+                    result.applied_merges.append(
+                        {
+                            "from": from_c,
+                            "to": to_c,
+                            "reason": str(m.get("reason") or ""),
+                        }
+                    )
                 except Exception as e:  # noqa: BLE001
                     result.errors.append(
                         f"merge {m.get('from', '?')}→{m.get('to', '?')}: {e}"
@@ -1332,15 +1864,29 @@ def apply(
                         f"theme_mint: missing slug/source_ids in {tm}"
                     )
                     continue
+                # Mint-time essence guard: a theme born without a real
+                # essence stays a placeholder forever in the worst case
+                # (the live-vault ai-capex failure mode). Skip the mint;
+                # the cluster signal re-surfaces next cycle, so the
+                # worker gets another shot at composing one.
+                essence = (tm.get("essence") or "").strip()
+                if len(essence.split()) < 5:
+                    result.errors.append(
+                        f"theme_mint {slug}: empty/placeholder essence — "
+                        "re-emit with a composed essence (≥5 words)"
+                    )
+                    continue
                 mint_theme_from_signal(
                     cfg,
                     slug=slug,
-                    essence=tm.get("essence") or "",
+                    essence=essence,
                     cluster_source_ids=list(source_ids),
                     cluster_concepts=list(tm.get("concepts") or []),
                     candidacy=tm.get("candidacy") or "inferred-from-signal",
                     project=tm.get("project") or "",
                     parent=tm.get("parent") or "",
+                    title=tm.get("title") or "",
+                    catalysts=tm.get("catalysts") or None,
                     rebuild_index=False,
                 )
                 result.themes_minted += 1
@@ -1374,6 +1920,7 @@ def apply(
                     cfg,
                     theme_id=theme_id,
                     source_ids=list(source_ids),
+                    catalysts=tx.get("catalysts") or None,
                     rebuild_index=False,
                 )
                 if n:
@@ -1387,6 +1934,76 @@ def apply(
     finally:
         result.timings["theme_extensions"] = time.perf_counter() - _t
 
+    # 3b2. theme merges (drift v2) ----------------------------------------
+    # Duplicate-theme folds elected by the merge worker from the scan's
+    # ``theme_dup_candidates``. Each item is {from_id, to_id, [reason]};
+    # ``merge_theme_into`` folds the catalyst log + cites, repoints
+    # relates_to, tombstones the loser (``merged-into:`` — file stays on
+    # disk, reversible), updates the registry, and enqueues the survivor
+    # for the phase-2 seam-link pass. Runs after extensions so a theme
+    # extended this cycle still merges cleanly.
+    _t = time.perf_counter()
+    try:
+        from personal_mem.synthesis.theme_candidates import merge_theme_into
+
+        for tm in plan.get("theme_merges") or []:
+            try:
+                from_id = (tm.get("from_id") or "").strip()
+                to_id = (tm.get("to_id") or "").strip()
+                if not from_id or not to_id or from_id == to_id:
+                    result.errors.append(
+                        f"theme_merge: bad from_id/to_id in {tm}"
+                    )
+                    continue
+                m_stats = merge_theme_into(
+                    cfg,
+                    from_id=from_id,
+                    to_id=to_id,
+                    rebuild_index=False,
+                )
+                if m_stats.get("fold_dates"):
+                    result.seams_enqueued += 1
+                result.theme_merges_applied += 1
+                result.applied_theme_merges.append(
+                    {
+                        "from_id": from_id,
+                        "to_id": to_id,
+                        "reason": str(tm.get("reason") or ""),
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                result.errors.append(
+                    f"theme_merge {tm.get('from_id', '?')}"
+                    f"→{tm.get('to_id', '?')}: {e}"
+                )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_merges: {e}")
+    finally:
+        result.timings["theme_merges"] = time.perf_counter() - _t
+
+    # 3b3. distinct pairs — verdict memory, no mutation -------------------
+    # Pairs the merge worker judged NOT duplicates. Recording them in the
+    # result (→ maintenance.jsonl ``verdicts`` block) is the whole action:
+    # the next scan's ``geometry.judged_pairs`` reads them back and stops
+    # re-surfacing the pair. This is what makes the drift pool drain.
+    try:
+        for dp in plan.get("distinct_pairs") or []:
+            pair = dp.get("pair") or []
+            if not isinstance(pair, list) or len(pair) != 2:
+                result.errors.append(f"distinct_pair: bad pair in {dp}")
+                continue
+            result.recorded_distinct_pairs.append(
+                {
+                    "kind": str(dp.get("kind") or "concept"),
+                    "pair": [str(pair[0]), str(pair[1])],
+                    "reason": str(dp.get("reason") or ""),
+                    "cosine": dp.get("cosine"),
+                }
+            )
+            result.distinct_pairs_recorded += 1
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"distinct_pairs: {e}")
+
     # 3c. essence rewrites — joint shape: rewrite-and-log when an entry
     # carries ``new_essence``; log-only for legacy entries that don't.
     # Per-entry errors don't cascade — the rest of the step still runs.
@@ -1395,8 +2012,9 @@ def apply(
         rewrites = plan.get("essence_rewrites") or []
         if rewrites:
             from personal_mem.core.indexer import Indexer
+            from personal_mem.synthesis.concept_hub import concept_hub_path
 
-            # One indexer query for all rewrites — bounded by rewrites size.
+            # One indexer query for all theme rewrites — bounded by size.
             idx = Indexer(config=cfg)
             try:
                 rows = idx.db.execute(
@@ -1409,11 +2027,18 @@ def apply(
             }
 
             for r in rewrites:
+                hub_label = r.get("theme_id") or r.get("concept") or "?"
                 try:
-                    theme_id = (r.get("theme_id") or "").strip()
-                    if not theme_id:
+                    hub_kind = (r.get("hub_kind") or "theme").strip().lower()
+                    if hub_kind == "concept":
+                        ident = (r.get("concept") or "").strip()
+                    else:
+                        ident = (r.get("theme_id") or "").strip()
+                    if not ident:
                         result.errors.append(
-                            f"essence_rewrite: missing theme_id in {r}"
+                            "essence_rewrite: missing "
+                            f"{'concept' if hub_kind == 'concept' else 'theme_id'}"
+                            f" in {r}"
                         )
                         continue
                     new_essence = r.get("new_essence")
@@ -1421,23 +2046,31 @@ def apply(
                         # Legacy log-only entry — count and move on.
                         result.essence_rewrites_applied += 1
                         continue
-                    rel = theme_paths.get(theme_id)
-                    if not rel:
-                        result.errors.append(
-                            f"essence_rewrite: unknown theme_id {theme_id}"
-                        )
-                        continue
-                    theme_path = cfg.vault_root / rel
-                    if not theme_path.exists():
-                        result.errors.append(
-                            f"essence_rewrite: missing file {rel}"
-                        )
-                        continue
-                    _rewrite_theme_essence(theme_path, str(new_essence))
+                    if hub_kind == "concept":
+                        hub_path = concept_hub_path(cfg, ident)
+                        if not hub_path.exists():
+                            result.errors.append(
+                                f"essence_rewrite: unknown concept hub {ident}"
+                            )
+                            continue
+                    else:
+                        rel = theme_paths.get(ident)
+                        if not rel:
+                            result.errors.append(
+                                f"essence_rewrite: unknown theme_id {ident}"
+                            )
+                            continue
+                        hub_path = cfg.vault_root / rel
+                        if not hub_path.exists():
+                            result.errors.append(
+                                f"essence_rewrite: missing file {rel}"
+                            )
+                            continue
+                    _rewrite_hub_essence(hub_path, str(new_essence))
                     result.essence_rewrites_applied += 1
                 except Exception as e:  # noqa: BLE001
                     result.errors.append(
-                        f"essence_rewrite {r.get('theme_id', '?')}: {e}"
+                        f"essence_rewrite {hub_label}: {e}"
                     )
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"essence_rewrites: {e}")
@@ -1496,6 +2129,7 @@ def apply(
         + result.promotions_applied
         + result.themes_minted
         + result.themes_extended
+        + result.theme_merges_applied
         + result.essence_rewrites_applied
         + result.priority_signals_enqueued
     )
@@ -1577,27 +2211,30 @@ def apply(
 
 
 # ---------------------------------------------------------------------------
-# Theme essence rewrite — splice helper used by apply()
+# Hub essence rewrite — splice helper used by apply()
 # ---------------------------------------------------------------------------
 
 
-def _rewrite_theme_essence(theme_path: Path, new_essence: str) -> None:
-    """Rewrite the ``## Essence`` section of a theme file in place.
+def _rewrite_hub_essence(hub_path: Path, new_essence: str) -> None:
+    """Rewrite the ``## Essence`` section of a hub file in place.
 
-    Preserves frontmatter, the ``# Title`` heading, and every other ``##``
-    section (notably ``## Catalyst log`` and ``## Open questions``).
-    Locates the essence section via the same ``extract_section`` slice the
-    shared :class:`Hub` parser uses — find the heading, find the next
-    ``##`` heading (or EOF), splice the new body between them.
+    Surface-agnostic — themes and concept hubs share the section grammar.
+    Preserves frontmatter (plus stamps ``essence_updated: <today>`` so the
+    essence-candidate scan can count catalysts-since-essence), the
+    ``# Title`` heading, and every other ``##`` section (notably
+    ``## Catalyst log`` and ``## Open questions``). Locates the essence
+    section via the same ``extract_section`` slice the shared
+    :class:`Hub` parser uses — find the heading, find the next ``##``
+    heading (or EOF), splice the new body between them.
 
-    Idempotent: writing the same essence again is a byte-for-byte no-op.
-    If the heading is missing entirely, appends a new section after the
-    frontmatter; that path is for safety and never fires in normal use
-    (theme files always carry the canonical skeleton).
+    Near-idempotent: writing the same essence again only refreshes the
+    ``essence_updated`` stamp. If the heading is missing entirely,
+    appends a new section at the end; that path is for safety and never
+    fires in normal use (hub files always carry the canonical skeleton).
     """
     from personal_mem.synthesis.hub import ESSENCE_HEADING
 
-    text = theme_path.read_text(encoding="utf-8")
+    text = hub_path.read_text(encoding="utf-8")
     body = new_essence.strip()
     # Standard inter-section spacing — blank line above the next heading.
     block = f"{ESSENCE_HEADING}\n\n{body}\n\n"
@@ -1605,23 +2242,33 @@ def _rewrite_theme_essence(theme_path: Path, new_essence: str) -> None:
     if ESSENCE_HEADING not in text:
         # Defensive: append at end, never overwrite other content.
         sep = "" if text.endswith("\n") else "\n"
-        theme_path.write_text(text + sep + block, encoding="utf-8")
-        return
-
-    start = text.index(ESSENCE_HEADING)
-    # Find the next ``##`` heading after the essence section (mirrors
-    # ``extract_section`` in synthesis.hub).
-    import re as _re
-
-    rest = text[start + len(ESSENCE_HEADING):]
-    m = _re.search(r"\n##\s", rest)
-    if m:
-        end = start + len(ESSENCE_HEADING) + m.start() + 1  # +1 = leading \n
+        text = text + sep + block
     else:
-        end = len(text)
+        start = text.index(ESSENCE_HEADING)
+        # Find the next ``##`` heading after the essence section (mirrors
+        # ``extract_section`` in synthesis.hub).
+        import re as _re
 
-    new_text = text[:start] + block + text[end:]
-    theme_path.write_text(new_text, encoding="utf-8")
+        rest = text[start + len(ESSENCE_HEADING):]
+        m = _re.search(r"\n##\s", rest)
+        if m:
+            end = start + len(ESSENCE_HEADING) + m.start() + 1  # +1 = leading \n
+        else:
+            end = len(text)
+        text = text[:start] + block + text[end:]
+
+    # Stamp essence_updated in frontmatter — the growth-trigger baseline.
+    try:
+        from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+
+        fm, md_body = parse_frontmatter(text)
+        if fm:
+            fm["essence_updated"] = datetime.now(timezone.utc).date().isoformat()
+            text = render_frontmatter(fm) + "\n" + md_body
+    except Exception:  # noqa: BLE001 — stamp is advisory, never block the rewrite
+        pass
+
+    hub_path.write_text(text, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -1669,6 +2316,9 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
     lines.append(f"| Concept promotions | {result.promotions_applied} |")
     lines.append(f"| Themes minted | {result.themes_minted} |")
     lines.append(f"| Themes extended | {result.themes_extended} |")
+    lines.append(f"| Theme merges | {result.theme_merges_applied} |")
+    lines.append(f"| Distinct rulings recorded | {result.distinct_pairs_recorded} |")
+    lines.append(f"| Hub seams enqueued | {result.seams_enqueued} |")
     lines.append(f"| Essence rewrites applied | {result.essence_rewrites_applied} |")
     lines.append(
         f"| Priority signals enqueued | {result.priority_signals_enqueued} |"
@@ -1733,6 +2383,46 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
             if reason:
                 line += f" — {reason}"
             lines.append(line)
+        lines.append("")
+
+    theme_merges = plan.get("theme_merges") or []
+    if theme_merges:
+        lines.append(f"## Theme merges ({len(theme_merges)})")
+        lines.append("")
+        lines.append(
+            "_The loser keeps its file with `merged-into:` status — "
+            "reversible by hand. Catalyst logs were folded into the "
+            "survivor; the seam-link worker stitches cross-parent "
+            "linkage on the next phase-2 pass._"
+        )
+        lines.append("")
+        for tm in theme_merges:
+            reason = tm.get("reason") or "(no reason given)"
+            lines.append(
+                f"- **{tm.get('from_id', '?')} → {tm.get('to_id', '?')}**"
+                f" — {reason}"
+            )
+        lines.append("")
+
+    distinct = plan.get("distinct_pairs") or []
+    if distinct:
+        lines.append(f"## Distinct rulings ({len(distinct)})")
+        lines.append("")
+        lines.append(
+            "_Pairs judged NOT duplicates. Recorded in the maintenance "
+            "log so future scans stop re-surfacing them; re-open with "
+            "`mem dream scan --rejudge-pairs`._"
+        )
+        lines.append("")
+        for dp in distinct:
+            pair = dp.get("pair") or ["?", "?"]
+            kind = dp.get("kind") or "concept"
+            cos = dp.get("cosine")
+            cos_str = f" (cosine {cos})" if cos is not None else ""
+            reason = dp.get("reason") or "(no reason given)"
+            lines.append(
+                f"- [{kind}] **{pair[0]} ≠ {pair[1]}**{cos_str} — {reason}"
+            )
         lines.append("")
 
     rewrites = plan.get("essence_rewrites") or []
@@ -1828,19 +2518,9 @@ def recent_dream_reports(cfg: Config, n: int = 3) -> list[dict]:
     Returns ``[]`` if the reports directory doesn't exist (dream has
     never run on this vault).
     """
-    reports_dir = dream_reports_dir(cfg)
-    if not reports_dir.exists():
-        return []
-    rows: list[dict] = []
-    for path in reports_dir.glob("dream-*.md"):
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        rows.append({
-            "cycle_id": path.stem,
-            "path": str(path),
-            "mtime": mtime,
-        })
-    rows.sort(key=lambda r: r["mtime"], reverse=True)
-    return rows[:n]
+    from personal_mem.operations.reports import recent_reports
+
+    return [
+        {"cycle_id": r["run_id"], "path": r["path"], "mtime": r["mtime"]}
+        for r in recent_reports(cfg, "dream", n=n)
+    ]

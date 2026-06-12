@@ -174,6 +174,42 @@ def add_hubs_subparsers(sub) -> None:
         help="Report changes per hub without writing",
     )
 
+    p_hubs_apply = hubs_sub.add_parser(
+        "apply-linkage",
+        help=(
+            "Apply pre-judged linkage revisions to ONE hub (concept or "
+            "theme) with validate_linkage_revision gating. The write half "
+            "of the seam-link contract — used by dream-seam-link-worker "
+            "after a hub fold, or by /hubs-link run by hand."
+        ),
+    )
+    p_hubs_apply.add_argument(
+        "--hub", required=True,
+        help="Hub identity: concept name (e.g. derivatives) or thm-id",
+    )
+    p_hubs_apply.add_argument(
+        "--kind", choices=("concept", "theme"), default="concept",
+        help="Which hub family --hub names (default: concept)",
+    )
+    p_hubs_apply.add_argument(
+        "--revisions", required=True,
+        help=(
+            "Path to revisions JSON ({'revisions': [{date, citation, "
+            "flag, ref, ref_quote}, ...]}), or '-' for stdin"
+        ),
+    )
+    p_hubs_apply.add_argument(
+        "--clear-fold", action="store_true",
+        help=(
+            "Drop the fold_pending_from/fold_pending_dates provenance "
+            "stamps after applying (the seam worker's final call per hub)"
+        ),
+    )
+    p_hubs_apply.add_argument(
+        "--json", action="store_true",
+        help="Emit a JSON summary instead of the human line",
+    )
+
     p_hubs_link = hubs_sub.add_parser(
         "link",
         help=(

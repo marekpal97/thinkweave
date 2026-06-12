@@ -1397,6 +1397,80 @@ def delete_concept_hub(config: Config, concept: str) -> bool:
     return False
 
 
+def fold_concept_hub_on_merge(
+    config: Config,
+    from_concept: str,
+    to_concept: str,
+    *,
+    enqueue_seam: bool = True,
+) -> dict:
+    """Fold the losing concept's hub into the winner's on a merge.
+
+    The fold-not-delete counterpart of :func:`delete_concept_hub`, shared
+    by both merge paths (``mem concepts merge`` and the ``/dream`` apply
+    step). Three moves:
+
+    1. **Fold** — the loser hub's catalyst log + essence are merged into
+       the winner hub (:func:`personal_mem.synthesis.hub.fold_hub_logs`:
+       date-interleave, dedup shared citations, ``fold_pending_*``
+       provenance stamp, essence stash + ``essence_updated`` clear).
+       Skipped when the winner hub doesn't exist yet — the archived loser
+       then remains the only copy and ``/update-hubs`` builds the winner
+       from the re-tagged notes.
+    2. **Tombstone** — the loser hub moves to ``topics/_archive/`` with a
+       ``merged-into:`` frontmatter stamp (reversible; mirrors the theme
+       ``merged-into:thm-X`` convention).
+    3. **Seam** — the winner is enqueued on the seam-link queue so the
+       dream phase-2 worker judges cross-parent catalyst pairs.
+
+    Returns stats ``{folded, deduped, fold_dates, archived}``. Best-effort
+    by design: any failure returns partial stats with an ``error`` key —
+    a hub-layer hiccup must never abort the note-level merge.
+    """
+    from personal_mem.synthesis.concept_hub import _safe_hub_maps, concept_hub_path
+    from personal_mem.synthesis.hub import fold_hub_logs, set_frontmatter_keys
+
+    stats: dict = {"folded": 0, "deduped": 0, "fold_dates": [], "archived": False}
+    try:
+        from_path = concept_hub_path(config, from_concept)
+        to_path = concept_hub_path(config, to_concept)
+        if not from_path.exists():
+            return stats
+
+        if to_path.exists():
+            idmap, title_map, path_to_id = _safe_hub_maps(config)
+            stats.update(
+                fold_hub_logs(
+                    to_path,
+                    from_path,
+                    loser_id=from_concept,
+                    path_to_id=path_to_id,
+                    idmap=idmap,
+                    title_map=title_map,
+                )
+            )
+
+        archived = archive_concept_hub(config, from_concept)
+        if archived is not None:
+            set_frontmatter_keys(archived, {"merged-into": to_concept})
+            stats["archived"] = True
+
+        if enqueue_seam and stats.get("fold_dates"):
+            from personal_mem.operations import seam_link_queue
+
+            seam_link_queue.enqueue(
+                config,
+                hub_kind="concept",
+                hub_id=to_concept,
+                folded_from=from_concept,
+                fold_dates=stats["fold_dates"],
+                reason="concept_merged",
+            )
+    except Exception as e:  # noqa: BLE001
+        stats["error"] = str(e)
+    return stats
+
+
 HUB_ARCHIVE_DIRNAME = "_archive"
 
 

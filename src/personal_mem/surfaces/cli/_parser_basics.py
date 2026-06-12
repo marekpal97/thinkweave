@@ -724,6 +724,23 @@ def add_admin_subparsers(sub) -> None:
         help="Min proposed-concept count for promotion eligibility (default: 5)",
     )
     p_dream_scan.add_argument(
+        "--essence-cap", type=int, default=None,
+        help=(
+            "Max essence candidates (themes + concept hubs) to surface "
+            "(default: config dream.essence_cap, 12; 0 = unlimited — "
+            "the backfill lever)"
+        ),
+    )
+    p_dream_scan.add_argument(
+        "--rejudge-pairs", action="store_true",
+        help=(
+            "Re-surface drift/dup pairs a past cycle already ruled on "
+            "(merged or distinct, per the maintenance-log verdicts "
+            "block). Default: judged pairs are excluded so the pool "
+            "drains."
+        ),
+    )
+    p_dream_scan.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON for skill/headless consumption",
     )

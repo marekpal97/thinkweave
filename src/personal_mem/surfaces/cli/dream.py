@@ -52,6 +52,8 @@ def _cmd_scan(args: argparse.Namespace) -> None:
         project=project,
         promotion_cap=args.promotion_cap,
         promotion_threshold=args.promotion_threshold,
+        essence_cap=getattr(args, "essence_cap", None),
+        rejudge_pairs=getattr(args, "rejudge_pairs", False),
     )
 
     if args.json:
@@ -66,7 +68,10 @@ def _cmd_scan(args: argparse.Namespace) -> None:
         f"{s.get('promotion_candidates', 0)} promotions "
         f"(cap {result.promotion_cap}) · "
         f"{s.get('theme_cluster_signals', 0)} theme-signals · "
-        f"{s.get('active_themes', 0)} active-themes"
+        f"{s.get('theme_dup_candidates', 0)} theme-dups · "
+        f"{s.get('essence_candidates', 0)} essence-candidates · "
+        f"{s.get('theme_log_gaps', 0)} log-gaps · "
+        f"{s.get('seam_link_queue', 0)} seams"
     )
     if result.promotion_candidates:
         print("  promotion candidates:")
@@ -75,7 +80,21 @@ def _cmd_scan(args: argparse.Namespace) -> None:
     if result.drift_pairs:
         print("  drift pairs (post-filter):")
         for d in result.drift_pairs:
-            print(f"    {d['from']} → {d['to']}  ({d.get('reason', '')})")
+            cos = d.get("cosine")
+            cos_str = f" cos={cos}" if cos is not None else ""
+            dom = " [same-domain]" if d.get("same_domain") else ""
+            print(
+                f"    {d['from']} → {d['to']}{cos_str}{dom}"
+                f"  ({d.get('reason', '')})"
+            )
+    if result.theme_dup_candidates:
+        print("  theme dup candidates:")
+        for t in result.theme_dup_candidates:
+            slugs = t.get("slugs") or {}
+            print(
+                f"    {slugs.get(t['from_id'], t['from_id'])} ≈ "
+                f"{slugs.get(t['to_id'], t['to_id'])}  cos={t.get('cosine')}"
+            )
     if result.theme_cluster_signals:
         print(f"  theme cluster signals: {len(result.theme_cluster_signals)}")
         for sig in result.theme_cluster_signals[:10]:
@@ -136,6 +155,8 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             "promotions": len(plan.get("promotions") or []),
             "theme_mints": len(plan.get("theme_mints") or []),
             "theme_extensions": len(plan.get("theme_extensions") or []),
+            "theme_merges": len(plan.get("theme_merges") or []),
+            "distinct_pairs": len(plan.get("distinct_pairs") or []),
             "essence_rewrites": len(plan.get("essence_rewrites") or []),
         }
         if args.json:
@@ -188,6 +209,8 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         f"{result.promotions_applied} promotions · "
         f"{result.themes_minted} themes-minted · "
         f"{result.themes_extended} themes-extended · "
+        f"{result.theme_merges_applied} themes-merged · "
+        f"{result.distinct_pairs_recorded} distinct-rulings · "
         f"{result.essence_rewrites_applied} essence-rewrites"
     )
     print(

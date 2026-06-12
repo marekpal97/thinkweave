@@ -215,11 +215,11 @@ class TestScan:
         assert ai[0]["covering_themes"]
         assert ai[0]["covering_themes"][0]["slug"] == "AI capex"
 
-    def test_active_themes_surface_recent_catalysts(
+    def test_essence_candidates_surface_recent_catalysts(
         self, config: Config, vault: VaultManager
     ):
-        """A theme with a recent catalyst surfaces in ``active_themes``."""
-        from datetime import date as _date, timedelta as _td
+        """A theme with a recent catalyst surfaces in ``essence_candidates``."""
+        from datetime import date as _date
 
         theme_id = _make_active_theme(
             vault, "AI capex", concepts=["ai-capex", "hyperscaler"]
@@ -234,13 +234,19 @@ class TestScan:
 
         result = scan(config, project="t")
         matching = [
-            t for t in result.active_themes if t["theme_id"] == theme_id
+            t for t in result.essence_candidates
+            if t.get("theme_id") == theme_id
         ]
         assert len(matching) == 1
         t = matching[0]
+        assert t["hub_kind"] == "theme"
         assert t["title"] == "AI capex"
         # Essence section is pre-loaded — worker doesn't need to mem_read.
         assert "essence" in t
+        assert t["essence_is_placeholder"] is False
+        # No essence_updated stamp yet ⇒ everything counts as since-essence.
+        assert t["essence_updated"] == ""
+        assert t["catalysts_since_essence"] == 2
         # Both catalysts surface; last_catalyst_date is today.
         assert t["total_catalysts"] == 2
         assert t["last_catalyst_date"] == _date.today().isoformat()
@@ -248,22 +254,46 @@ class TestScan:
         assert len(t["recent_catalysts"]) == 2
         assert t["recent_catalysts"][0]["date"] >= t["recent_catalysts"][1]["date"]
 
-    def test_active_themes_skips_themes_without_recent_activity(
+    def test_essence_candidates_skip_quiet_substantive_theme(
         self, config: Config, vault: VaultManager
     ):
-        """A theme whose newest catalyst is older than the cutoff is skipped."""
+        """Quiet theme with a real essence and little growth is skipped."""
         _make_active_theme(vault, "Old arc", concepts=["ai-capex"])
         theme_path = next(
             (config.vault_root / "themes").glob("*.md")
         )
-        # Catalyst from 60d ago — outside the 30d default window.
+        # Catalyst from 60d ago — outside the 30d default window, below
+        # the since-essence growth bar, and the essence is substantive.
         _add_catalyst(theme_path, days_ago=60, citation="n-ccccdddd")
         _index(config)
 
         result = scan(config, project="t")
-        assert result.active_themes == []
+        assert result.essence_candidates == []
 
-    def test_active_themes_skips_non_active_status(
+    def test_essence_candidates_placeholder_theme_included_when_quiet(
+        self, config: Config, vault: VaultManager
+    ):
+        """A placeholder essence surfaces even with zero recent activity."""
+        vault.create_note(
+            NoteType.THEME,
+            "Blank arc",
+            body=(
+                "## Essence\n\n_Awaiting first synthesis pass._\n\n"
+                "## Catalyst log\n\n## Open questions\n"
+            ),
+            extra_frontmatter={"concepts": ["ai-capex"], "status": "active"},
+        )
+        theme_path = next((config.vault_root / "themes").glob("*.md"))
+        _add_catalyst(theme_path, days_ago=60, citation="n-ccccdddd")
+        _index(config)
+
+        result = scan(config, project="t")
+        assert len(result.essence_candidates) == 1
+        t = result.essence_candidates[0]
+        assert t["essence_is_placeholder"] is True
+        assert t["hub_kind"] == "theme"
+
+    def test_essence_candidates_skips_non_active_status(
         self, config: Config, vault: VaultManager
     ):
         """A theme with ``status: merged-into:...`` is skipped even with recent catalysts."""
@@ -281,17 +311,90 @@ class TestScan:
         _index(config)
 
         result = scan(config, project="t")
-        assert result.active_themes == []
+        assert result.essence_candidates == []
 
-    def test_active_themes_empty_when_no_themes(
+    def test_essence_candidates_empty_when_no_themes(
         self, config: Config, vault: VaultManager
     ):
-        """Vault with zero themes ⇒ active_themes is empty, no errors."""
+        """Vault with zero hubs ⇒ essence_candidates is empty, no errors."""
         _index(config)
         result = scan(config, project="t")
-        assert result.active_themes == []
-        assert result.stats["active_themes"] == 0
-        assert "active_themes" in result.timings
+        assert result.essence_candidates == []
+        assert result.stats["essence_candidates"] == 0
+        assert "essence_candidates" in result.timings
+
+    def test_essence_candidates_include_placeholder_concept_hub(
+        self, config: Config, vault: VaultManager
+    ):
+        """A concept hub with ≥5 log entries and a placeholder essence surfaces."""
+        from datetime import date as _date, timedelta as _td
+
+        topics = config.vault_root / "concepts" / "topics"
+        topics.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "---",
+            "type: concept-hub",
+            "concept: agentic-ai",
+            "---",
+            "",
+            "# agentic-ai",
+            "",
+            "## Essence",
+            "",
+            "*No synthesis yet.*",
+            "",
+            "## Catalyst log",
+            "",
+        ]
+        for i in range(6):
+            d = (_date.today() - _td(days=i)).isoformat()
+            lines.append(f"- {d} · *new* — entry {i} — [[n-aaaa000{i}]]")
+        (topics / "agentic-ai.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+        _index(config)
+
+        result = scan(config, project="t")
+        hubs = [
+            c for c in result.essence_candidates
+            if c["hub_kind"] == "concept"
+        ]
+        assert len(hubs) == 1
+        c = hubs[0]
+        assert c["concept"] == "agentic-ai"
+        assert c["essence_is_placeholder"] is True
+        assert c["total_catalysts"] == 6
+        # Placeholder entries get the wider catalyst window (≤25).
+        assert len(c["recent_catalysts"]) == 6
+
+    def test_essence_candidates_cap_placeholder_first(
+        self, config: Config, vault: VaultManager
+    ):
+        """Cap is honored and placeholder hubs outrank substantive ones."""
+        # Substantive theme with recent activity (would qualify)…
+        _make_active_theme(vault, "Busy arc", concepts=["ai-capex"])
+        theme_path = next((config.vault_root / "themes").glob("*.md"))
+        _add_catalyst(theme_path, days_ago=1, citation="n-aaaa1111")
+        # …and a placeholder theme with an old catalyst.
+        vault.create_note(
+            NoteType.THEME,
+            "Blank arc",
+            body=(
+                "## Essence\n\n_Awaiting first synthesis pass._\n\n"
+                "## Catalyst log\n\n## Open questions\n"
+            ),
+            extra_frontmatter={"concepts": ["oil"], "status": "active"},
+        )
+        blank_path = next(
+            p for p in (config.vault_root / "themes").glob("*.md")
+            if p != theme_path
+        )
+        _add_catalyst(blank_path, days_ago=40, citation="n-bbbb2222")
+        _index(config)
+
+        result = scan(config, project="t", essence_cap=1)
+        assert len(result.essence_candidates) == 1
+        assert result.essence_candidates[0]["essence_is_placeholder"] is True
 
     # --- unwrapped_sessions surface (phase-2 wrap-worker input) ----------
 
@@ -608,7 +711,7 @@ class TestApply:
             "theme_mints": [
                 {
                     "slug": "ai-capex-unwind",
-                    "essence": "AI capex pulls back.",
+                    "essence": "AI capex pulls back across hyperscalers in 2026.",
                     "source_ids": _src_ids(paths),
                     "concepts": ["ai-capex", "hyperscaler"],
                 }
@@ -974,6 +1077,30 @@ class TestStateOfPlayMaintenance:
         assert "dream-state-test" in out
         assert "reports/dream/dream-state-test.md" in out
 
+    def test_discover_reports_listed_alongside_dream(
+        self, config: Config, vault: VaultManager
+    ):
+        from personal_mem.operations.reports import recent_reports, reports_dir
+        from personal_mem.synthesis.landing import state_of_play
+
+        r = DreamCycleResult(cycle_id="dream-state-test", project="t")
+        write_dream_report(config, r, plan={})
+        disc_dir = reports_dir(config, "discover")
+        disc_dir.mkdir(parents=True, exist_ok=True)
+        (disc_dir / "discover-20260610-120000.md").write_text(
+            "## Discovery — 2026-06-10\n", encoding="utf-8"
+        )
+
+        assert [r["run_id"] for r in recent_reports(config, "discover")] == [
+            "discover-20260610-120000"
+        ]
+
+        _index(config)
+        out = state_of_play(config, "t")
+        assert "## Recent Maintenance" in out
+        assert "reports/dream/dream-state-test.md" in out
+        assert "reports/discover/discover-20260610-120000.md" in out
+
 
 class TestDreamCLI:
     def test_scan_json_output_parses(
@@ -1072,11 +1199,15 @@ class TestPrioritySignalsScan:
         self, config: Config, vault: VaultManager
     ):
         # llm is canonical in the shipped ontology — a probe touching
-        # it lands in recent_probes.
+        # it lands in recent_probes with both the count and the probe
+        # text itself (the text rides through to queue_item.probes so
+        # /drain can tighten its search to the user's actual question).
         _index(config)
         _seed_probe(config, "t", "How does the llm choose?")
         result = scan(config, project="t", promotion_cap=20)
-        assert result.recent_probes.get("llm", 0) == 1
+        detail = result.recent_probes.get("llm") or {}
+        assert detail.get("count", 0) == 1
+        assert detail.get("probes") == ["How does the llm choose?"]
         assert result.stats.get("recent_probes", 0) == 1
 
 
@@ -1329,6 +1460,29 @@ class TestPlanValidation:
         warnings = validate_plan_fragment(plan)
         assert any("bogus_key" in w and "queue_item" in w for w in warnings)
 
+    def test_queue_item_probes_key_is_valid(self):
+        """``probes`` is the probe-text passthrough the priority worker
+        copies from the scan surface — it must survive validation so
+        /drain can read the user's questions off the queue item."""
+        plan = {
+            "priority_signals": [
+                {
+                    "concept": "x",
+                    "probe_count": 2,
+                    "action": "enqueue",
+                    "queue_item": {
+                        "source_type": "article",
+                        "title": "t",
+                        "concept": "x",
+                        "source": "dream-priority-signal",
+                        "probes": ["How does x interact with y?"],
+                    },
+                    "reason": "x",
+                }
+            ]
+        }
+        assert validate_plan_fragment(plan) == []
+
     def test_apply_strict_default_raises_on_drift(
         self, config: Config, vault: VaultManager
     ):
@@ -1535,3 +1689,224 @@ class TestKnowledgeDeltaGrainSplit:
         ]
         assert "exotic landing" in concept_titles
         assert "exotic landing" not in event_titles
+
+
+class TestThemeLogGaps:
+    """S1.5 — directly-filed sources missing from the theme's catalyst log."""
+
+    def test_directly_filed_source_surfaces_as_gap(
+        self, config: Config, vault: VaultManager
+    ):
+        theme_id = _make_active_theme(
+            vault, "bond-vigilantes", concepts=["rates"]
+        )
+        # Source filed straight to the theme (the news-triage `keep` path)
+        # — relates_to stamped at create time, never extended into the log.
+        src = vault.create_note(
+            NoteType.SOURCE,
+            "JGB auction tails",
+            body="# JGB auction tails\n\nThe 10y auction tailed badly.\n",
+            extra_frontmatter={
+                "source_type": "news",
+                "concepts": ["rates", "bonds"],
+                "relates_to": [theme_id],
+            },
+        )
+        sfm, _ = parse_frontmatter(src.read_text(encoding="utf-8"))
+        _index(config)
+
+        result = scan(config, project="t")
+        gaps = [g for g in result.theme_log_gaps if g["theme_id"] == theme_id]
+        assert len(gaps) == 1
+        ids = [s["id"] for s in gaps[0]["sources"]]
+        assert sfm["id"] in ids
+        assert gaps[0]["sources"][0]["excerpt"]
+
+    def test_extended_source_is_not_a_gap(
+        self, config: Config, vault: VaultManager
+    ):
+        from personal_mem.synthesis.theme_candidates import (
+            extend_theme_with_sources,
+        )
+
+        theme_id = _make_active_theme(
+            vault, "bond-vigilantes", concepts=["rates"]
+        )
+        src = vault.create_note(
+            NoteType.SOURCE,
+            "JGB auction tails",
+            body="# JGB auction tails\n\nbody\n",
+            extra_frontmatter={
+                "source_type": "news",
+                "concepts": ["rates", "bonds"],
+            },
+        )
+        sfm, _ = parse_frontmatter(src.read_text(encoding="utf-8"))
+        _index(config)
+        extend_theme_with_sources(
+            config, theme_id=theme_id, source_ids=[sfm["id"]]
+        )
+        _index(config)
+
+        result = scan(config, project="t")
+        assert [
+            g for g in result.theme_log_gaps if g["theme_id"] == theme_id
+        ] == []
+
+
+class TestApplyHubEssence:
+    """S2/S3 — dual-surface essence rewrites + mint essence guard."""
+
+    def _write_concept_hub(self, config: Config, concept: str) -> Path:
+        topics = config.vault_root / "concepts" / "topics"
+        topics.mkdir(parents=True, exist_ok=True)
+        p = topics / f"{concept}.md"
+        p.write_text(
+            "---\ntype: concept-hub\nconcept: " + concept + "\n---\n\n"
+            f"# {concept}\n\n## Essence\n\n*No synthesis yet.*\n\n"
+            "## Catalyst log\n\n"
+            "- 2026-06-01 · *new* — artifact — [[n-aaaa1111]]\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def test_concept_hub_essence_rewrite(
+        self, config: Config, vault: VaultManager
+    ):
+        from datetime import datetime as _dt, timezone as _tz
+
+        hub_path = self._write_concept_hub(config, "agentic-ai")
+        _index(config)
+        plan = {
+            "essence_rewrites": [
+                {
+                    "hub_kind": "concept",
+                    "concept": "agentic-ai",
+                    "new_essence": "A real working mental model of agentic AI.",
+                    "reason": "placeholder over a live log",
+                }
+            ]
+        }
+        result = apply(config, plan=plan, project="t")
+        assert result.essence_rewrites_applied == 1
+        assert result.errors == []
+        fm, body = parse_frontmatter(hub_path.read_text(encoding="utf-8"))
+        assert "A real working mental model" in body
+        assert "*No synthesis yet.*" not in body
+        # Log preserved; essence_updated stamped.
+        assert "artifact" in body
+        assert str(fm.get("essence_updated")) == _dt.now(_tz.utc).date().isoformat()
+
+    def test_unknown_concept_hub_is_error(
+        self, config: Config, vault: VaultManager
+    ):
+        _index(config)
+        plan = {
+            "essence_rewrites": [
+                {
+                    "hub_kind": "concept",
+                    "concept": "no-such-term",
+                    "new_essence": "text",
+                }
+            ]
+        }
+        result = apply(config, plan=plan, project="t")
+        assert result.essence_rewrites_applied == 0
+        assert any("unknown concept hub" in e for e in result.errors)
+
+    def test_theme_essence_rewrite_stamps_frontmatter(
+        self, config: Config, vault: VaultManager
+    ):
+        from datetime import datetime as _dt, timezone as _tz
+
+        theme_id = _make_active_theme(vault, "AI capex", concepts=["ai-capex"])
+        _index(config)
+        plan = {
+            "essence_rewrites": [
+                {
+                    "theme_id": theme_id,
+                    "new_essence": "The arc tightened around capex cuts.",
+                    "reason": "growth",
+                }
+            ]
+        }
+        result = apply(config, plan=plan, project="t")
+        assert result.essence_rewrites_applied == 1
+        theme_path = next((config.vault_root / "themes").glob("*.md"))
+        fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert "The arc tightened around capex cuts." in body
+        assert str(fm.get("essence_updated")) == _dt.now(_tz.utc).date().isoformat()
+        # The other sections survive the splice.
+        assert "## Catalyst log" in body and "## Open questions" in body
+
+    def test_mint_with_empty_essence_rejected(
+        self, config: Config, vault: VaultManager
+    ):
+        paths = [
+            _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
+            for i in range(3)
+        ]
+        _index(config)
+        plan = {
+            "theme_mints": [
+                {
+                    "slug": "thin-arc",
+                    "essence": "",
+                    "source_ids": _src_ids(paths),
+                    "concepts": ["ai-capex"],
+                }
+            ]
+        }
+        result = apply(config, plan=plan, project="t")
+        assert result.themes_minted == 0
+        assert any("essence" in e for e in result.errors)
+        assert list((config.vault_root / "themes").glob("*.md")) == []
+
+
+class TestPlanValidationNewKeys:
+    """S1/S2/S4 — catalysts / hub_kind / title pass; junk inside warns."""
+
+    def test_catalysts_and_title_accepted(self):
+        plan = {
+            "theme_mints": [
+                {
+                    "slug": "x", "title": "X arc", "essence": "a b c d e f",
+                    "source_ids": ["src-a"],
+                    "catalysts": [
+                        {"source_id": "src-a", "text": "t", "flag": "new"}
+                    ],
+                }
+            ],
+            "theme_extensions": [
+                {
+                    "theme_id": "thm-a", "source_ids": ["src-b"],
+                    "catalysts": [{"source_id": "src-b", "text": "t"}],
+                }
+            ],
+            "essence_rewrites": [
+                {"hub_kind": "concept", "concept": "fts5", "new_essence": "y"},
+            ],
+        }
+        assert validate_plan_fragment(plan) == []
+
+    def test_unknown_catalyst_subkey_warns(self):
+        plan = {
+            "theme_extensions": [
+                {
+                    "theme_id": "thm-a", "source_ids": ["src-b"],
+                    "catalysts": [{"source_id": "src-b", "summary": "drift"}],
+                }
+            ],
+        }
+        warnings = validate_plan_fragment(plan)
+        assert any("summary" in w and "catalysts" in w for w in warnings)
+
+    def test_non_list_catalysts_warns(self):
+        plan = {
+            "theme_extensions": [
+                {"theme_id": "thm-a", "source_ids": ["src-b"],
+                 "catalysts": {"source_id": "src-b"}},
+            ],
+        }
+        warnings = validate_plan_fragment(plan)
+        assert any("catalysts is not a list" in w for w in warnings)

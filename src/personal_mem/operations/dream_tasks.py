@@ -35,7 +35,7 @@ class DreamTaskSpec:
         surface_key: field name on :class:`DreamCycleScan` (phase 1) or the
             combined ``DreamCycleScan`` + ``DreamCycleResult`` view (phase 2)
             that this worker reads as its primary input.
-        worker_name: filename (without ``.md``) under ``.claude/agents/``.
+        worker_name: filename (without ``.md``) under ``agents/``.
             The orchestrator constructs the Task subagent prompt around this
             name.
         plan_keys: keys this worker's ``plan_fragment`` writes. Empty for
@@ -79,6 +79,10 @@ def _has_rejudge_queue(scan: Any) -> bool:
     return bool(getattr(scan, "rejudge_queue", None))
 
 
+def _has_seam_link_queue(scan: Any) -> bool:
+    return bool(getattr(scan, "seam_link_queue", None))
+
+
 def _has_knowledge_delta(scan: Any) -> bool:
     """Only fire the digest worker when SOMETHING substantive landed in 24h.
 
@@ -118,17 +122,24 @@ REGISTRY: tuple[DreamTaskSpec, ...] = (
         phase=1,
     ),
     DreamTaskSpec(
+        # The theme worker reads two scan surfaces: cluster signals
+        # (mint-vs-extend judgment) and theme_log_gaps (directly-filed
+        # sources needing catalyst distillation — extensions only, no
+        # judgment about which theme). surface_key names the primary.
         surface_key="theme_cluster_signals",
         worker_name="dream-theme-worker",
         plan_keys=("theme_mints", "theme_extensions"),
-        has_signal=lambda s: bool(getattr(s, "theme_cluster_signals", None)),
+        has_signal=lambda s: bool(
+            getattr(s, "theme_cluster_signals", None)
+            or getattr(s, "theme_log_gaps", None)
+        ),
         phase=1,
     ),
     DreamTaskSpec(
-        surface_key="active_themes",
+        surface_key="essence_candidates",
         worker_name="dream-essence-worker",
         plan_keys=("essence_rewrites",),
-        has_signal=lambda s: bool(getattr(s, "active_themes", None)),
+        has_signal=lambda s: bool(getattr(s, "essence_candidates", None)),
         phase=1,
     ),
     DreamTaskSpec(
@@ -149,6 +160,16 @@ REGISTRY: tuple[DreamTaskSpec, ...] = (
         surface_key="rejudge_queue",
         worker_name="dream-judge-worker",
         has_signal=_has_rejudge_queue,
+        phase=2,
+    ),
+    DreamTaskSpec(
+        # Hubs whose logs absorbed another hub's entries this (or an
+        # earlier) cycle — phase 1's apply enqueues on every merge, so the
+        # same cycle's phase 2 stitches the seam. Cross-parent entry pairs
+        # only; writes via `mem hubs apply-linkage` (Bash).
+        surface_key="seam_link_queue",
+        worker_name="dream-seam-link-worker",
+        has_signal=_has_seam_link_queue,
         phase=2,
     ),
     DreamTaskSpec(
