@@ -33,7 +33,7 @@ The orchestrator passes the queue list in the prompt body:
 }
 ```
 
-The list is capped at 20 entries (drained from `.mem/rejudge_queue.jsonl` plus stale `pending` verdicts found by the scan). Process every entry in input order; do not sub-select.
+The list is capped at 20 entries (read from `.mem/rejudge_queue.jsonl` plus stale `pending` verdicts found by the scan; phase 1's `mem dream apply` removes the handed-off file entries from the queue, so they won't resurface — entries beyond the cap survive for the next cycle). Process every entry in input order; do not sub-select.
 
 ## Job
 
@@ -129,7 +129,7 @@ Anything other than the JSON line is allowed above it — a one-line preamble pe
 - **Decision id missing in vault** (`mem_read` returns no content) → record `{"decision_id": "...", "reason": "decision not found"}` under `outcome.errors`. Don't `mem_update` — the id doesn't resolve.
 - **`predicted_outcome` empty / missing** → emit `unevaluable` with `reason: "no predicted_outcome to evaluate"`. Still `mem_update` (so the entry doesn't resurface).
 - **Bash/Grep-required pointer** → emit `unevaluable` with `reason: "manifestation pointer requires Bash/Grep evidence (worker scope)"`. Still `mem_update`. The `/judge-prediction` standalone skill can pick this up next cycle with its full tool surface.
-- **`mem_update` raises** → record `{"decision_id": "...", "reason": "<exception text>"}` under `outcome.errors`. The verdict will be re-attempted on the next dream cycle (the queue entry is still drained but the rejudge_queue.jsonl line is consumed by the scan, not by you — the scan's `_collect_rejudge_queue` already shifted the file; if mem_update fails the verdict is simply lost for this cycle and the predecessor's `prediction_match` stays at its prior state).
+- **`mem_update` raises** → record `{"decision_id": "...", "reason": "<exception text>"}` under `outcome.errors`. The rejudge_queue.jsonl line is consumed by phase 1's `mem dream apply` (the hand-off point), not by you — if mem_update fails the verdict is simply lost for this cycle and the decision's `prediction_match` stays at its prior state; a still-`pending` decision self-heals via the next scan's stale-pending index sweep, which re-surfaces it.
 - **Frontmatter prediction_history corrupted (not a list)** → coerce to `[]` before appending your entry. The mem_update will overwrite the field with a clean list; record `{"decision_id": "...", "reason": "prediction_history coerced from <type>"}` as a benign note (still in `outcome.errors` for visibility).
 
 ## What this worker does NOT do

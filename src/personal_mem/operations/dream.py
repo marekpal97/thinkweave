@@ -197,16 +197,15 @@ class DreamCycleScan:
 def _essence_is_placeholder(essence: str) -> bool:
     """True when an essence has never been genuinely synthesised.
 
-    Matches the ``landing.py:_truncate_essence`` skeleton heuristic:
-    empty, or a single italic-wrapped placeholder line (``_Awaiting first
-    synthesis pass._`` / ``*No synthesis yet.*`` and friends).
+    Thin delegation to the shared predicate next to the placeholder
+    constants in ``synthesis/hub.py`` — the same one
+    ``landing.py:_truncate_essence`` uses, so the two surfaces can't
+    drift again (the old local copy was a bare starts/ends-with-emphasis
+    check that flagged real essences opening with emphasis).
     """
-    text = (essence or "").strip()
-    if not text:
-        return True
-    return (text.startswith("_") and text.endswith("_")) or (
-        text.startswith("*") and text.endswith("*")
-    )
+    from personal_mem.synthesis.hub import essence_is_placeholder
+
+    return essence_is_placeholder(essence)
 
 
 def _parse_hub_body(body: str):
@@ -555,20 +554,29 @@ def _collect_unwrapped_sessions(
     return out
 
 
+#: How many rejudge entries one cycle hands to the phase-2 judge worker.
+#: Shared by the scan collector below AND apply's consumption step — apply
+#: removes exactly this prefix of the on-disk queue (the handed-off
+#: entries), so anything beyond the cap survives for the next cycle.
+_REJUDGE_CAP = 20
+
+
 def _collect_rejudge_queue(
     cfg: Config,
     *,
     stale_pending_age_days: int = 7,
-    cap: int = 20,
+    cap: int = _REJUDGE_CAP,
 ) -> list[dict]:
-    """Combine drained rejudge-queue entries with stale ``pending`` decisions.
+    """Combine queued rejudge entries with stale ``pending`` decisions.
 
     Phase-2 ``dream-judge-worker`` input. Two contributing streams:
 
     1. ``vault/.mem/rejudge_queue.jsonl`` — already in the right shape
        (``{decision_id, predecessor_decision_id?, queued_at, reason}``;
         legacy entries may carry ``source``/``enqueued_at`` keys —
-        normalized below).
+        normalized below). Read-only here — the queue file is consumed
+        by :func:`apply` (the hand-off point), not by the scan, so a
+        scan-only run never loses entries.
     2. Decisions with ``prediction_match == 'pending'`` whose
        ``judged_at`` is missing or older than ``stale_pending_age_days``.
        Fabricated entries: ``predecessor_decision_id: null``,
@@ -584,7 +592,7 @@ def _collect_rejudge_queue(
     out: list[dict] = []
     seen_ids: set[str] = set()
 
-    # 1. Drain the on-disk queue first (priority — these are explicit).
+    # 1. Read the on-disk queue first (priority — these are explicit).
     queue_path = cfg.vault_root / ".mem" / "rejudge_queue.jsonl"
     if queue_path.exists():
         for line in queue_path.read_text(encoding="utf-8").splitlines():
@@ -1572,10 +1580,24 @@ class DreamCycleResult:
     theme_merges_applied: int = 0
     distinct_pairs_recorded: int = 0
     seams_enqueued: int = 0
+    # Rejudge-queue hand-off consumption — entries removed from
+    # ``.mem/rejudge_queue.jsonl`` because the scan surfaced them into the
+    # phase-2 ``dream-judge-worker``'s prompt (apply is the hand-off
+    # point; entries beyond the scan cap survive for the next cycle).
+    rejudge_consumed: int = 0
     ontology_grew: bool = False
     indexed: int = 0
     removed: int = 0
     edges: int = 0
+    # Outcome id-lists — the apply-result contract the phase-2 digest
+    # worker reads (commands/dream.md step 2.2 fills
+    # ``theme_mutations_this_cycle`` from these): ``theme_mints`` carries
+    # ``{theme_id, slug, essence}`` per minted theme; ``theme_extensions``
+    # carries ``{theme_id, added_source_ids, added_concept}``. Counter
+    # twins (``themes_minted`` / ``themes_extended``) stay for the
+    # maintenance-log summary.
+    theme_mints: list = field(default_factory=list)
+    theme_extensions: list = field(default_factory=list)
     # Verdict memory (drift v2) — the *applied* ontology rulings of this
     # cycle, written into the maintenance.jsonl ``verdicts`` block that
     # ``geometry.judged_pairs`` reads back to keep judged pairs from
@@ -1615,6 +1637,7 @@ class DreamCycleResult:
                 "theme_merges": self.theme_merges_applied,
                 "distinct_pairs": self.distinct_pairs_recorded,
                 "seams_enqueued": self.seams_enqueued,
+                "rejudge_consumed": self.rejudge_consumed,
                 "essence_rewrites": self.essence_rewrites_applied,
                 "priority_signals_enqueued": self.priority_signals_enqueued,
                 "priority_signals_logged": self.priority_signals_logged,
@@ -1703,9 +1726,10 @@ def apply(
         }
 
     Order matters: merges → promotions → theme mints → theme extensions →
-    theme merges → distinct-pair recording → ONE index rebuild →
-    maintenance.jsonl append. Each step is wrapped; failure in one is
-    recorded in ``errors`` and the rest still run.
+    theme merges → distinct-pair recording → rejudge-queue hand-off
+    consumption → ONE index rebuild → maintenance.jsonl append. Each step
+    is wrapped; failure in one is recorded in ``errors`` and the rest
+    still run.
 
     Two drift-v2 keys ride alongside (2026-06-11): ``theme_merges``
     (``{from_id, to_id, reason}`` — ``merge_theme_into`` fold + repoint +
@@ -1876,7 +1900,7 @@ def apply(
                         "re-emit with a composed essence (≥5 words)"
                     )
                     continue
-                mint_theme_from_signal(
+                mint_path = mint_theme_from_signal(
                     cfg,
                     slug=slug,
                     essence=essence,
@@ -1890,6 +1914,25 @@ def apply(
                     rebuild_index=False,
                 )
                 result.themes_minted += 1
+                # Apply-result contract (commands/dream.md step 2.2 /
+                # dream-digest-worker): surface the minted id, not just
+                # the counter. The helper returns the file path; the
+                # thm-id lives in its frontmatter.
+                theme_id = ""
+                try:
+                    from personal_mem.core.vault import parse_frontmatter
+
+                    fm_mint, _ = parse_frontmatter(
+                        mint_path.read_text(encoding="utf-8")
+                    )
+                    theme_id = str(fm_mint.get("id") or "")
+                except Exception as e:  # noqa: BLE001
+                    result.errors.append(
+                        f"theme_mint {slug}: minted but id unread ({e})"
+                    )
+                result.theme_mints.append(
+                    {"theme_id": theme_id, "slug": slug, "essence": essence}
+                )
             except Exception as e:  # noqa: BLE001
                 result.errors.append(f"theme_mint {tm.get('slug', '?')}: {e}")
     except Exception as e:  # noqa: BLE001
@@ -1925,6 +1968,16 @@ def apply(
                 )
                 if n:
                     result.themes_extended += 1
+                    # Same id-list contract as theme_mints. The plan's
+                    # source_ids are the hand-off list; already-cited
+                    # sources were skipped by the helper (n ≤ len).
+                    result.theme_extensions.append(
+                        {
+                            "theme_id": theme_id,
+                            "added_source_ids": list(source_ids),
+                            "added_concept": "",
+                        }
+                    )
             except Exception as e:  # noqa: BLE001
                 result.errors.append(
                     f"theme_extend {tx.get('theme_id', '?')}: {e}"
@@ -2121,6 +2174,30 @@ def apply(
         result.errors.append(f"priority_signals: {e}")
     finally:
         result.timings["priority_signals"] = time.perf_counter() - _t
+
+    # 3e. rejudge-queue hand-off consumption -------------------------------
+    # The scan surfaced (capped at ``_REJUDGE_CAP``) queue entries into the
+    # phase-2 ``dream-judge-worker``'s prompt; apply is the cycle's point of
+    # no return, so the handed-off prefix leaves the on-disk queue here —
+    # mirroring ``mem judge --drain`` (consume at hand-off; the worker
+    # records verdicts via ``mem_update``, never the file). Entries beyond
+    # the cap were never handed off and survive for the next cycle. A
+    # verdict lost to a downstream worker error self-heals: the decision's
+    # ``prediction_match`` stays ``pending`` and the next scan's
+    # stale-pending index sweep re-surfaces it.
+    _t = time.perf_counter()
+    try:
+        from personal_mem.operations import rejudge_queue as _rq
+
+        handed = [
+            e.get("decision_id") for e in _rq.peek(cfg)[:_REJUDGE_CAP]
+        ]
+        if handed:
+            result.rejudge_consumed = _rq.remove(cfg, handed)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"rejudge_consume: {e}")
+    finally:
+        result.timings["rejudge_consume"] = time.perf_counter() - _t
 
     # 4. one index rebuild + concept-hub maintenance ----------------------
     _t = time.perf_counter()

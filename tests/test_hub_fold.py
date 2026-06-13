@@ -78,6 +78,33 @@ class TestEssencePlaceholder:
         assert essence_is_placeholder("_Awaiting first synthesis pass._")
         assert not essence_is_placeholder("A real thesis about things.")
 
+    def test_generic_skeleton_stub_is_placeholder(self):
+        """The theme skeleton's italic instruction line counts as a stub."""
+        from personal_mem.synthesis.theme_hub import render_theme_body_skeleton
+
+        body = render_theme_body_skeleton("X")
+        # Pull the ## Essence section text the skeleton writes.
+        essence = body.split("## Essence\n\n", 1)[1].split("\n\n", 1)[0]
+        assert essence.startswith("_") and essence.endswith("_")
+        assert essence_is_placeholder(essence)
+
+    def test_real_essence_opening_with_emphasis_not_flagged(self):
+        """A genuine essence that merely starts/ends with emphasis survives."""
+        # Multi-line paragraph wrapped in emphasis markers.
+        assert not essence_is_placeholder(
+            "*Regime shifts* dominate the framing here.\n"
+            "The model treats drawdowns as state transitions, "
+            "not noise — see the catalyst log for the pivots. *Updated often.*"
+        )
+        # Single-line but far longer than any system-written stub.
+        assert not essence_is_placeholder(
+            "_" + "A substantive working mental model sentence. " * 6 + "_"
+        )
+
+    def test_short_emphasis_wrapped_stub_variants_flagged(self):
+        assert essence_is_placeholder("*No essence composed yet.*")
+        assert essence_is_placeholder("_Placeholder — fill me in._")
+
 
 class TestMergeLogEntries:
     def test_interleave_and_fold_dates(self):

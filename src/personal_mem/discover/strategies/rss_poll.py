@@ -586,7 +586,11 @@ def _load_indexer_keys(
     Covers the gap beyond ``Queue.dedup_check``'s 30-day archive horizon —
     a URL (or video_id / message_id) ingested months ago that re-emits via
     RSS won't get re-enqueued. Keys absent from a note's frontmatter simply
-    don't contribute; the ``url`` key remains the universal backstop.
+    don't contribute. ``url`` is always *loaded* (it's the default dedup
+    key for types that configure none), but the per-item guard in
+    ``_poll_source`` deliberately matches only each type's own
+    ``dedup_keys`` — mirroring ``Queue.dedup_check`` — so a type whose
+    keys omit ``url`` is not matched on it.
     """
     if db_path is None or not db_path.exists() or not keys:
         return {}

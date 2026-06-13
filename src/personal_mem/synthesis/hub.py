@@ -697,15 +697,45 @@ _ESSENCE_PLACEHOLDERS = (
     "*No synthesis yet.*",
     "_Awaiting first synthesis pass._",
 )
+_NORMALIZED_ESSENCE_PLACEHOLDERS = frozenset(
+    p.strip("*_ ").rstrip(".").lower() for p in _ESSENCE_PLACEHOLDERS
+)
+#: Generic-stub length bound — every system-written stub is one short line
+#: (the longest, ``render_theme_body_skeleton``'s ``_Replace with the
+#: working thesis…_`` instruction, is ~170 chars). A real essence paragraph
+#: is longer and/or multi-line, so it never trips the generic arm.
+_PLACEHOLDER_MAX_CHARS = 200
 
 
 def essence_is_placeholder(essence: str) -> bool:
-    """True when the essence is empty or one of the never-synthesised stubs."""
+    """True when the essence is empty or still a system-written stub.
+
+    The single shared predicate for both hub families — the dream scan
+    (``operations/dream.py``) and the landing catalog renderer
+    (``synthesis/landing.py``) call it too, so the surfaces can't drift.
+
+    Two arms: exact membership in the known stub strings
+    (:data:`_ESSENCE_PLACEHOLDERS`, normalized), then a generic-stub
+    check — ONE short line fully wrapped in a matching emphasis marker,
+    the register every skeleton writer uses (``*No synthesis yet.*``,
+    ``_Awaiting first synthesis pass._``, the theme skeleton's
+    ``_Replace with the working thesis…_`` instruction). A real essence
+    paragraph that merely opens with emphasis is NOT flagged: it is
+    multi-line, longer than the stub bound, or doesn't end with the
+    matching marker.
+    """
     text = (essence or "").strip()
     if not text:
         return True
     normalized = text.strip("*_ ").rstrip(".").lower()
-    return normalized in {"no synthesis yet", "awaiting first synthesis pass"}
+    if normalized in _NORMALIZED_ESSENCE_PLACEHOLDERS:
+        return True
+    # Generic stub: a single short emphasis-wrapped line.
+    if "\n" in text or len(text) > _PLACEHOLDER_MAX_CHARS or len(text) < 2:
+        return False
+    return (text.startswith("_") and text.endswith("_")) or (
+        text.startswith("*") and text.endswith("*")
+    )
 
 
 def _richer_entry(a: HubLogEntry, b: HubLogEntry) -> HubLogEntry:

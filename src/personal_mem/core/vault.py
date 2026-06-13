@@ -831,7 +831,7 @@ class VaultManager:
         return self.root / p
 
     def get_all_md_files(self) -> list[Path]:
-        """Get all markdown files in the vault (excluding templates, .obsidian, .archive)."""
+        """Get all markdown files in the vault (excluding templates, .obsidian, .archive, _archive)."""
         results = []
         for md_file in self.root.rglob("*.md"):
             rel = md_file.relative_to(self.root)
@@ -841,6 +841,11 @@ class VaultManager:
                 or ".obsidian" in parts
                 or ".mem" in parts
                 or ".archive" in parts
+                # _archive: archival convention for merged/demoted hubs
+                # (synthesis.concepts.HUB_ARCHIVE_DIRNAME — topics/_archive/).
+                # Indexing them would stem-collide with live hubs in
+                # hub_log_entries and surface tombstones as essence candidates.
+                or "_archive" in parts
             ):
                 continue
             results.append(md_file)

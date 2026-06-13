@@ -749,6 +749,97 @@ class TestApply:
         fm, _ = parse_frontmatter(paths[0].read_text(encoding="utf-8"))
         assert theme_id in (fm.get("relates_to") or [])
 
+    def test_apply_result_carries_theme_mint_ids(
+        self, config: Config, vault: VaultManager
+    ):
+        """Apply surfaces minted thm-ids, not just a counter (digest contract)."""
+        paths = [
+            _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
+            for i in range(3)
+        ]
+        _index(config)
+        essence = "AI capex pulls back across hyperscalers in 2026."
+        plan = {
+            "theme_mints": [
+                {
+                    "slug": "ai-capex-unwind",
+                    "essence": essence,
+                    "source_ids": _src_ids(paths),
+                    "concepts": ["ai-capex", "hyperscaler"],
+                }
+            ]
+        }
+        result = apply(config, plan=plan, project="t")
+        assert result.themes_minted == 1
+        assert len(result.theme_mints) == 1
+        mint = result.theme_mints[0]
+        assert mint["theme_id"].startswith("thm-")
+        assert mint["slug"] == "ai-capex-unwind"
+        assert mint["essence"] == essence
+        # The JSON apply-result (what the orchestrator reads) carries it too.
+        assert result.as_dict()["theme_mints"] == [mint]
+
+    def test_apply_result_carries_theme_extension_ids(
+        self, config: Config, vault: VaultManager
+    ):
+        """Extensions surface {theme_id, added_source_ids}, not just a counter."""
+        theme_id = _make_active_theme(
+            vault, "AI capex", concepts=["ai-capex", "hyperscaler"]
+        )
+        paths = [
+            _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
+            for i in range(2)
+        ]
+        _index(config)
+        src_ids = _src_ids(paths)
+        plan = {
+            "theme_extensions": [
+                {"theme_id": theme_id, "source_ids": src_ids, "reason": "new drops"}
+            ]
+        }
+        result = apply(config, plan=plan, project="t")
+        assert result.themes_extended == 1
+        assert result.theme_extensions == [
+            {
+                "theme_id": theme_id,
+                "added_source_ids": src_ids,
+                "added_concept": "",
+            }
+        ]
+
+    def test_apply_consumes_handed_off_rejudge_entries(
+        self, config: Config, vault: VaultManager
+    ):
+        """Judged (handed-off) entries leave the queue; overflow survives."""
+        from personal_mem.operations import rejudge_queue
+
+        # 22 entries — two beyond the scan hand-off cap of 20.
+        for i in range(22):
+            rejudge_queue.enqueue(
+                config, decision_id=f"dec-{i:04d}", reason="r", source="manual"
+            )
+        _index(config)
+        result = apply(config, plan={}, project="t")
+        assert result.rejudge_consumed == 20
+        assert result.errors == []
+        survivors = rejudge_queue.peek(config)
+        assert [s["decision_id"] for s in survivors] == ["dec-0020", "dec-0021"]
+        # The maintenance line records the consumption.
+        lines = maintenance_log_path(config).read_text(
+            encoding="utf-8"
+        ).strip().splitlines()
+        entry = json.loads(lines[-1])
+        assert entry["summary"]["rejudge_consumed"] == 20
+
+    def test_apply_empty_rejudge_queue_consumes_nothing(
+        self, config: Config, vault: VaultManager
+    ):
+        _index(config)
+        result = apply(config, plan={}, project="t")
+        assert result.rejudge_consumed == 0
+        assert "rejudge_consume" in result.timings
+        assert result.errors == []
+
     def test_theme_mint_missing_fields_is_error(
         self, config: Config, vault: VaultManager
     ):

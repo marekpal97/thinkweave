@@ -429,10 +429,10 @@ class Indexer:
             # are archival artifacts of source notes, not standalone notes.
             if md_file.name in SOURCE_COMPANION_FILENAMES:
                 continue
-            rel_path = str(md_file.relative_to(self.vault.root))
+            rel_path = self._rel_path(md_file)
             # Skip the reports/ tree — cron dream/discover summaries are
             # materialized narrative (like landing docs), not source material.
-            if rel_path.replace("\\", "/").startswith("reports/"):
+            if rel_path.startswith("reports/"):
                 continue
             indexed_paths.add(rel_path)
 
@@ -478,6 +478,14 @@ class Indexer:
             for old_path in set(existing_hash.keys()) - indexed_paths:
                 self._remove_by_path(old_path)
                 stats["removed"] += 1
+
+        # Second pass: re-resolve hub-log citations now that every note is
+        # indexed. On a full rebuild the notes table starts empty, so the
+        # lazily-built path→id map a mid-pass _sync_hub_log sees is missing
+        # every note indexed after it was first built — title-aliased
+        # citations then store paths instead of ids in hub_log_entries.
+        if full or stats["indexed"] > 0:
+            self._resync_hub_logs()
 
         # Rebuild edges and FTS only when content changed.
         if full:
@@ -539,7 +547,7 @@ class Indexer:
             if not p.is_absolute():
                 p = self.vault.root / p
             try:
-                rel = str(p.relative_to(self.vault.root))
+                rel = self._rel_path(p)
             except ValueError:
                 # Path is outside the vault — skip silently.
                 continue
@@ -605,14 +613,14 @@ class Indexer:
         if path.name in SOURCE_COMPANION_FILENAMES:
             return  # Source companion artifacts (raw.md, snapshot.md, etc.)
         if not path.exists():
-            rel = str(path.relative_to(self.vault.root))
+            rel = self._rel_path(path)
             self._remove_by_path(rel)
             self.db.commit()
             return
 
         text = path.read_text(encoding="utf-8")
         file_hash = content_hash(text)
-        rel_path = str(path.relative_to(self.vault.root))
+        rel_path = self._rel_path(path)
         self._index_file(path, text, file_hash, rel_path)
 
         # If this is a session note, project its sibling retrieval_log.jsonl
@@ -636,6 +644,48 @@ class Indexer:
             log.exception("context_served projection failed for %s", rel_path)
         self._rebuild_fts()
         self.db.commit()
+
+    def _rel_path(self, path: Path) -> str:
+        """Vault-relative path in canonical stored form (forward slashes).
+
+        Normalized once at index time so every reader can match
+        forward-slash literals (``startswith("concepts/topics/")``,
+        SQL ``LIKE 'reports/%'``) without per-site ``replace("\\\\", "/")``
+        — on Windows ``Path.relative_to`` yields backslash separators.
+        Raises ``ValueError`` when ``path`` is outside the vault (same as
+        ``Path.relative_to``).
+        """
+        return str(path.relative_to(self.vault.root)).replace("\\", "/")
+
+    def _resync_hub_logs(self) -> None:
+        """Re-project every hub's catalyst log with a complete path→id map.
+
+        Run as a second pass at the end of :meth:`rebuild`. During the file
+        loop ``_sync_hub_log`` resolves title-aliased citations against a
+        lazily-cached map built from whatever the ``notes`` table held at
+        the time — empty/partial on ``rebuild(full=True)``, and missing any
+        note first indexed later in the same pass. Refreshing the map from
+        the now-complete table (via the shared ``build_id_path_map``,
+        inverted) and re-syncing each hub heals both gaps; ``_sync_hub_log``
+        is delete+reinsert per hub, so the re-run is idempotent.
+        """
+        try:
+            from personal_mem.synthesis.hub import build_id_path_map
+
+            self._path_to_id = {
+                path: note_id
+                for note_id, path in build_id_path_map(self.db).items()
+            }
+        except Exception:  # noqa: BLE001 — never let resync kill a rebuild
+            return
+        rows = self.db.execute(
+            "SELECT id, type, path, body_text FROM notes "
+            "WHERE type = 'theme' OR path LIKE 'concepts/topics/%'"
+        ).fetchall()
+        for row in rows:
+            self._sync_hub_log(
+                row["id"], row["type"], row["path"] or "", row["body_text"] or ""
+            )
 
     def _index_file(self, path: Path, text: str, file_hash: str, rel_path: str) -> str:
         """Parse and upsert a single file into the index. Returns the note_id."""
@@ -725,8 +775,9 @@ class Indexer:
 
             # Lazy path→id map for title-aliased citations ([[path|Title]]).
             # One query per Indexer lifetime; bare/[[path|id]] forms resolve
-            # without it, so a slightly stale map only affects hubs whose
-            # citations were title-aliased within the same rebuild pass.
+            # without it. The map is empty/partial mid-rebuild (the notes
+            # table fills as the pass runs) — _resync_hub_logs re-resolves
+            # every hub with a complete map at the end of rebuild().
             if not hasattr(self, "_path_to_id"):
                 try:
                     self._path_to_id = {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -133,6 +133,23 @@ class TestIndexer:
         assert db_stats["notes_session"] == 1
         assert db_stats["notes_decision"] == 1
         assert db_stats["notes_source"] == 1
+
+
+class TestRelPathNormalization:
+    def test_rel_path_normalizes_windows_separators(self, indexer: Indexer):
+        """Stored rel_path uses forward slashes regardless of OS — readers
+        match forward-slash literals (``concepts/topics/``, SQL
+        ``LIKE 'reports/%'``) against it. On Windows, ``Path.relative_to``
+        yields backslashes; simulate that with a PureWindowsPath."""
+
+        class _WindowsShapedPath:
+            def relative_to(self, root: Path) -> PureWindowsPath:
+                return PureWindowsPath("concepts/topics/foo.md")
+
+        assert (
+            indexer._rel_path(_WindowsShapedPath())
+            == "concepts/topics/foo.md"
+        )
 
 
 class TestMtimeGate:

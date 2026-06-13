@@ -141,6 +141,27 @@ def drain_all(config: Config) -> list[dict[str, Any]]:
     return items
 
 
+def remove(config: Config, decision_ids: list[str] | set[str]) -> int:
+    """Remove the entries whose ``decision_id`` is in ``decision_ids``. Atomic.
+
+    The selective counterpart of :func:`drain_all` — used by
+    ``mem dream apply`` to consume exactly the entries the dream scan
+    handed off to the phase-2 ``dream-judge-worker``, leaving anything
+    beyond the scan cap (or enqueued since) untouched, fields intact.
+    Returns the number of entries removed.
+    """
+    ids = {i for i in decision_ids if i}
+    if not ids:
+        return 0
+    path = _queue_path(config)
+    items = _read_all(path)
+    kept = [it for it in items if it.get("decision_id") not in ids]
+    removed = len(items) - len(kept)
+    if removed:
+        _write_all(path, kept)
+    return removed
+
+
 def peek(config: Config) -> list[dict[str, Any]]:
     """Return every queued item without clearing. Read-only."""
     return _read_all(_queue_path(config))

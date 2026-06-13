@@ -1231,12 +1231,12 @@ def _truncate_essence(essence: str, *, max_chars: int = 400) -> str:
     underscores prefacing the body) is dropped entirely — those notes
     have no real essence yet and shouldn't pollute the catalog.
     """
+    from personal_mem.synthesis.hub import essence_is_placeholder
+
     text = essence.strip()
-    if not text:
-        return ""
-    # Skeleton placeholder check — generated bodies wrap the prompt
-    # text in italics; treat that as "no real essence yet".
-    if text.startswith("_") and text.endswith("_"):
+    # Skeleton placeholder check — shared predicate (synthesis/hub.py)
+    # with the dream scan; stub essences shouldn't pollute the catalog.
+    if essence_is_placeholder(text):
         return ""
     if len(text) <= max_chars:
         return text

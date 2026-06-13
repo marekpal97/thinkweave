@@ -29,11 +29,14 @@ dependency doctrine.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 from typing import Any
 
 from personal_mem.core.config import Config
+
+log = logging.getLogger(__name__)
 
 #: Minimum embedded notes for a stable usage centroid; below this the
 #: term string itself is embedded instead (a 2-note centroid says more
@@ -149,8 +152,13 @@ def concept_centroids(
                 unit = _normalize(vec)
                 if unit is not None:
                     out[concept] = unit
-        except Exception:  # noqa: BLE001 — no key / offline: degrade quietly
-            pass
+        except Exception as exc:  # noqa: BLE001 — no key / offline: string pairs still cover these
+            log.warning(
+                "term-embedding fallback failed for %d sparse concepts (%s); "
+                "they get string-match dedup evidence only",
+                len(sparse),
+                exc,
+            )
     return out
 
 

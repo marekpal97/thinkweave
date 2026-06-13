@@ -486,6 +486,23 @@ class TestVaultManager:
         assert p2.parent.name == "same-source-1"
 
 
+class TestGetAllMdFiles:
+    def test_underscore_archive_excluded(self, vault: VaultManager):
+        """``concepts/topics/_archive/`` (merged/demoted hubs) must not be
+        swept up by the index scan — it's the underscore analog of
+        ``.archive`` (see synthesis.concepts.HUB_ARCHIVE_DIRNAME)."""
+        topics = vault.root / "concepts" / "topics"
+        (topics / "_archive").mkdir(parents=True, exist_ok=True)
+        live = topics / "live-hub.md"
+        live.write_text("---\ntype: concept-hub\n---\n", encoding="utf-8")
+        archived = topics / "_archive" / "dead-hub.md"
+        archived.write_text("---\ntype: concept-hub\n---\n", encoding="utf-8")
+
+        files = vault.get_all_md_files()
+        assert live in files
+        assert archived not in files
+
+
 class TestStripSection:
     def test_strip_events_section(self):
         body = "# Title\n\n## Events\n- 12:00 Edit foo.py\n- 12:01 Bash cmd\n\n## Summary\nDone.\n"

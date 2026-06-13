@@ -105,6 +105,36 @@ def test_drain_all_returns_items_and_truncates(cfg: Config) -> None:
     assert rejudge_queue.drain_all(cfg) == []
 
 
+def test_remove_consumes_only_named_ids(cfg: Config) -> None:
+    """`remove` drops the judged entries; unjudged ones survive intact."""
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-aaa111", reason="r1", source="supersession"
+    )
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-bbb222", reason="r2", source="manual"
+    )
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-ccc333", reason="r3", source="cron"
+    )
+    removed = rejudge_queue.remove(cfg, ["dec-aaa111", "dec-ccc333"])
+    assert removed == 2
+    survivors = rejudge_queue.peek(cfg)
+    assert len(survivors) == 1
+    # Survivor keeps its fields (field-preserving, unlike drain+re-enqueue).
+    assert survivors[0]["decision_id"] == "dec-bbb222"
+    assert survivors[0]["reason"] == "r2"
+    assert survivors[0]["source"] == "manual"
+
+
+def test_remove_unknown_or_empty_ids_is_noop(cfg: Config) -> None:
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-aaa111", reason="r", source="manual"
+    )
+    assert rejudge_queue.remove(cfg, []) == 0
+    assert rejudge_queue.remove(cfg, ["dec-zzz999", ""]) == 0
+    assert len(rejudge_queue.peek(cfg)) == 1
+
+
 def test_peek_does_not_clear(cfg: Config) -> None:
     rejudge_queue.enqueue(
         cfg, decision_id="dec-aaa111", reason="r", source="manual"

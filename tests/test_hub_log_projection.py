@@ -159,6 +159,108 @@ class TestConceptHubProjection:
         assert _rows(config, "dead-term") == []
 
 
+def _write_note(config: Config, rel: str, note_id: str, title: str) -> Path:
+    """Write a minimal note file at a known vault-relative path with a known id."""
+    p = config.vault_root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        f"---\nid: {note_id}\ntype: note\ntitle: {title}\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    return p
+
+
+class TestTitleAliasedCitationResolution:
+    """Defect A — the lazily-cached path→id map is empty/partial during a
+    full rebuild (notes table wiped up front), so title-aliased citations
+    ([[path|Title]]) used to store paths in ``cited_note_id``. The second
+    pass (``_resync_hub_logs``) re-resolves with a complete map."""
+
+    def test_full_rebuild_twice_resolves_title_aliased_citation(
+        self, config: Config, vault: VaultManager
+    ):
+        _write_note(config, "notes/sky-study.md", "n-feedbeef", "Sky Study")
+        _write_concept_hub(
+            config,
+            "sky",
+            ["- 2026-06-01 · *new* — artifact — [[notes/sky-study|Sky Study]]"],
+        )
+        idx = Indexer(config=config)
+        try:
+            idx.rebuild(full=True)
+            idx.rebuild(full=True)
+        finally:
+            idx.close()
+
+        rows = _rows(config, "sky")
+        assert len(rows) == 1
+        assert rows[0]["cited_note_id"] == "n-feedbeef"
+
+    def test_full_rebuild_resolves_note_indexed_after_map_was_cached(
+        self, config: Config, vault: VaultManager
+    ):
+        """The poisoning case: the map gets cached before the cited note
+        exists; a later full rebuild on the same Indexer must not reuse it."""
+        _write_concept_hub(
+            config,
+            "late",
+            ["- 2026-06-01 · *new* — artifact — [[notes/late-note|Late Note]]"],
+        )
+        idx = Indexer(config=config)
+        try:
+            idx.rebuild(full=True)  # caches a map lacking the note
+            _write_note(config, "notes/late-note.md", "n-deadc0de", "Late Note")
+            idx.rebuild(full=True)
+        finally:
+            idx.close()
+
+        rows = _rows(config, "late")
+        assert len(rows) == 1
+        assert rows[0]["cited_note_id"] == "n-deadc0de"
+
+
+class TestArchivedHubExclusion:
+    """Defect B — ``concepts/topics/_archive/`` (merged/demoted hubs) must
+    not be indexed: an archived hub shares its stem with the live hub, so
+    its rows would clobber the live hub's in ``hub_log_entries``."""
+
+    def test_archived_hub_not_indexed_and_does_not_clobber_live_rows(
+        self, config: Config, vault: VaultManager
+    ):
+        _write_concept_hub(
+            config,
+            "regime",
+            [
+                "- 2026-05-01 · *new* — first — [[n-aaaa1111]]",
+                "- 2026-06-01 · *extends 2026-05-01* — second — [[n-bbbb2222]]",
+            ],
+        )
+        # Stale archived copy with the same stem but a different log.
+        archive = config.vault_root / "concepts" / "topics" / "_archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        (archive / "regime.md").write_text(
+            "---\ntype: concept-hub\nconcept: regime\nmerged-into: other\n---\n\n"
+            "# regime\n\n## Essence\n\nOld.\n\n## Catalyst log\n\n"
+            "- 2026-04-01 · *new* — stale — [[n-cccc3333]]\n",
+            encoding="utf-8",
+        )
+        _rebuild(config)
+
+        rows = _rows(config, "regime")
+        assert len(rows) == 2
+        assert {r["cited_note_id"] for r in rows} == {"n-aaaa1111", "n-bbbb2222"}
+
+        idx = Indexer(config=config)
+        try:
+            n = idx.db.execute(
+                "SELECT COUNT(*) FROM notes "
+                "WHERE path LIKE 'concepts/topics/_archive/%'"
+            ).fetchone()[0]
+        finally:
+            idx.close()
+        assert n == 0
+
+
 class TestThemeProjection:
     def test_theme_log_projects_with_thm_id(
         self, config: Config, vault: VaultManager
