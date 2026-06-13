@@ -208,27 +208,57 @@ def _essence_is_placeholder(essence: str) -> bool:
     return essence_is_placeholder(essence)
 
 
-def _parse_hub_body(body: str):
-    """Parse a hub's indexed ``body_text`` into ``(essence, log_entries)``.
+def _hub_essence(body: str) -> str:
+    """Extract the ``## Essence`` section from a hub's indexed ``body_text``."""
+    from personal_mem.synthesis.hub import ESSENCE_HEADING, extract_section
 
-    Body-level twin of ``Hub.parse`` for scan collectors — works off the
-    SQLite-indexed body so the scan never does per-hub file I/O (minutes
-    per scan on a /mnt/c WSL vault). Tolerates both the canonical
-    ``## Catalyst log`` heading and the legacy ``## Learning log``.
+    return extract_section(body, ESSENCE_HEADING).strip()
+
+
+def _indexed_hub_logs(
+    db, *, hub_kind: str | None = None, min_date: str | None = None
+) -> dict:
+    """Read hub catalyst logs from the ``hub_log_entries`` SQL projection.
+
+    Returns ``{hub_id: [HubLogEntry, ...]}`` in log order (``seq``);
+    ``hub_id`` is the thm-id for themes, the vocabulary term (path stem)
+    for concept hubs — the namespaces don't collide, so a flat key is
+    safe. Freshness: ``Indexer._index_file`` writes these rows
+    (``_sync_hub_log``) in the same pass/commit as ``notes.body_text``,
+    so reading them carries exactly the freshness of the per-collector
+    body re-parse this replaced — with title-aliased citations already
+    resolved to note ids via the indexer's path→id map.
     """
-    from personal_mem.synthesis.hub import (
-        CATALYST_LOG_HEADING,
-        ESSENCE_HEADING,
-        LEGACY_LEARNING_LOG_HEADING,
-        extract_section,
-        parse_log_section,
-    )
+    from personal_mem.synthesis.hub import HubLogEntry
 
-    essence = extract_section(body, ESSENCE_HEADING).strip()
-    log = parse_log_section(body, CATALYST_LOG_HEADING)
-    if not log:
-        log = parse_log_section(body, LEGACY_LEARNING_LOG_HEADING)
-    return essence, log
+    sql = (
+        "SELECT hub_id, entry_date, flag, ref_date, cited_note_id, text "
+        "FROM hub_log_entries"
+    )
+    where: list[str] = []
+    params: list[str] = []
+    if hub_kind:
+        where.append("hub_kind = ?")
+        params.append(hub_kind)
+    if min_date:
+        where.append("entry_date >= ?")
+        params.append(min_date)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY hub_id, seq"
+
+    logs: dict[str, list[HubLogEntry]] = {}
+    for row in db.execute(sql, params):
+        logs.setdefault(row["hub_id"], []).append(
+            HubLogEntry(
+                date=row["entry_date"],
+                flag=row["flag"],
+                ref=row["ref_date"] or "",
+                text=row["text"] or "",
+                citation=row["cited_note_id"] or "",
+            )
+        )
+    return logs
 
 
 def _collect_essence_candidates(
@@ -264,12 +294,13 @@ def _collect_essence_candidates(
     Ranking is placeholder-first, then total catalysts desc, capped at
     ``cap`` (config ``dream_essence_cap`` / ``--essence-cap``; 0 =
     unlimited — the backfill lever). Discovery AND content both go through
-    the SQLite index — the hub body is parsed from the indexed
-    ``body_text``, never a per-hub file read. On a Windows-mounted WSL
-    vault (~250ms/file over /mnt/c) the file-read variant cost minutes
-    per scan across ~1000+ hubs; the index is kept warm by
-    ``VaultManager.create_note`` and every rebuild, so it carries the
-    same freshness the rest of the scan already trusts.
+    the SQLite index — catalyst logs come from the ``hub_log_entries``
+    projection (one indexed query for all hubs) and the essence from the
+    indexed ``body_text``, never a per-hub file read. On a
+    Windows-mounted WSL vault (~250ms/file over /mnt/c) the file-read
+    variant cost minutes per scan across ~1000+ hubs; the index is kept
+    warm by ``VaultManager.create_note`` and every rebuild, so it carries
+    the same freshness the rest of the scan already trusts.
     """
     from datetime import date, timedelta
 
@@ -290,6 +321,7 @@ def _collect_essence_candidates(
                 "       AND path LIKE 'concepts/topics/%')"
             )
         )
+        hub_logs = _indexed_hub_logs(idx.db)
     finally:
         idx.close()
 
@@ -309,9 +341,15 @@ def _collect_essence_candidates(
                 continue
 
         try:
-            essence, log = _parse_hub_body(row["body_text"] or "")
+            essence = _hub_essence(row["body_text"] or "")
         except Exception:  # noqa: BLE001 — corrupt body shouldn't kill scan
             continue
+        # Catalyst log from the SQL projection — keyed by thm-id for
+        # themes, vocabulary term (path stem) for concept hubs.
+        hub_ident = (
+            Path(rel_path).stem if hub_kind == "concept" else row["id"]
+        )
+        log = hub_logs.get(hub_ident, [])
 
         total = len(log)
         if total == 0:
@@ -413,7 +451,7 @@ def _collect_theme_log_gaps(
     try:
         theme_rows = list(
             idx.db.execute(
-                "SELECT id, title, path, frontmatter, body_text "
+                "SELECT id, title, path, frontmatter "
                 "FROM notes WHERE type = 'theme' AND id LIKE 'thm-%'"
             )
         )
@@ -423,6 +461,9 @@ def _collect_theme_log_gaps(
                 "FROM notes WHERE type = 'source'"
             )
         )
+        # Cited note ids per theme, from the hub_log_entries projection
+        # (same freshness as the body_text these used to be parsed from).
+        theme_logs = _indexed_hub_logs(idx.db, hub_kind="theme")
     finally:
         idx.close()
 
@@ -451,11 +492,9 @@ def _collect_theme_log_gaps(
         if not filed_here:
             continue
 
-        try:
-            _, log = _parse_hub_body(trow["body_text"] or "")
-        except Exception:  # noqa: BLE001
-            continue
-        logged = {e.citation for e in log if e.citation}
+        logged = {
+            e.citation for e in theme_logs.get(theme_id, []) if e.citation
+        }
         logged |= {str(c) for c in as_list(tfm.get("cites"))}
 
         missing = [s for s in filed_here if s["id"] not in logged]
@@ -785,25 +824,27 @@ def _collect_knowledge_delta(
         # type) — the old type='note' filter matched zero hubs on real
         # vaults, silently emptying the concept digest's catalyst slice.
         # 'note' is kept for legacy skeletons without frontmatter type.
-        # Parses the indexed body_text rather than reading each hub file
-        # — the file-read variant cost minutes per scan over /mnt/c on a
-        # 1000+-hub vault.
+        # In-window entries come from the hub_log_entries projection — a
+        # single indexed ``entry_date >= ?`` query (same freshness as the
+        # body_text these were previously parsed out of); the notes query
+        # only maps hub identity (thm-id / path stem) back to the note id
+        # and path-derived kind the digest payload has always carried.
         hub_rows = idx.db.execute(
-            "SELECT id, path, body_text FROM notes "
+            "SELECT id, path FROM notes "
             "WHERE type = 'theme' "
             "   OR (type IN ('concept-hub', 'note') "
             "       AND path LIKE 'concepts/topics/%')"
         ).fetchall()
+        recent_logs = _indexed_hub_logs(idx.db, min_date=cutoff_day)
         for row in hub_rows:
             rel_path = row["path"] or ""
             kind = "theme" if rel_path.startswith("themes/") else "concept"
-            try:
-                _, log = _parse_hub_body(row["body_text"] or "")
-            except Exception:  # noqa: BLE001
-                continue
-            for entry in log:
-                if entry.date < cutoff_day:
-                    continue
+            hub_ident = (
+                Path(rel_path).stem
+                if rel_path.startswith("concepts/topics/")
+                else row["id"]
+            )
+            for entry in recent_logs.get(hub_ident, []):
                 addition = {
                     "hub": row["id"],
                     "hub_kind": kind,
@@ -957,7 +998,7 @@ def _collect_theme_dup_candidates(
         status = str(fm.get("status") or "active")
         if status != "active":
             continue
-        essence, _ = _parse_hub_body(row["body_text"] or "")
+        essence = _hub_essence(row["body_text"] or "")
         slug = Path(str(row["path"] or "")).stem
         concepts = fm.get("concepts") or []
         if not isinstance(concepts, list):
@@ -2335,17 +2376,50 @@ def _rewrite_hub_essence(hub_path: Path, new_essence: str) -> None:
         text = text[:start] + block + text[end:]
 
     # Stamp essence_updated in frontmatter — the growth-trigger baseline.
+    # Targeted line edit, NOT a parse → render_frontmatter round-trip:
+    # re-rendering the whole block drops YAML comments / empty keys and
+    # re-serializes every value, so user-authored frontmatter bytes
+    # outside the one stamped key must stay untouched.
     try:
-        from personal_mem.core.vault import parse_frontmatter, render_frontmatter
-
-        fm, md_body = parse_frontmatter(text)
-        if fm:
-            fm["essence_updated"] = datetime.now(timezone.utc).date().isoformat()
-            text = render_frontmatter(fm) + "\n" + md_body
+        text = _set_frontmatter_line(
+            text,
+            "essence_updated",
+            datetime.now(timezone.utc).date().isoformat(),
+        )
     except Exception:  # noqa: BLE001 — stamp is advisory, never block the rewrite
         pass
 
     hub_path.write_text(text, encoding="utf-8")
+
+
+def _set_frontmatter_line(text: str, key: str, value: str) -> str:
+    """Set a top-level ``key: value`` in frontmatter via a targeted line edit.
+
+    Replaces the existing ``key:`` line in place (column-0 keys only —
+    nested same-named keys are never clobbered), or inserts one before
+    the closing ``---``; every other frontmatter byte stays exactly as
+    authored. No-op when there is no frontmatter block. Deliberately NOT
+    ``synthesis.hub.set_frontmatter_keys``, which round-trips through
+    ``render_frontmatter`` and re-serializes the whole block.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return text
+    close = next(
+        (i for i in range(1, len(lines)) if lines[i].strip() == "---"), None
+    )
+    if close is None:
+        return text
+
+    new_line = f"{key}: {value}"
+    key_re = re.compile(rf"^{re.escape(key)}\s*:")
+    for i in range(1, close):
+        if key_re.match(lines[i]):
+            lines[i] = new_line
+            break
+    else:
+        lines.insert(close, new_line)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
