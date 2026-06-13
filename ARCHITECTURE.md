@@ -125,18 +125,33 @@ flowchart LR
     classDef store fill:#0f172a,stroke:#a78bfa,color:#f9fafb,rx:6,ry:6
     SC[mem dream scan]:::st --> P1[Phase 1<br/>5 synthesis workers]:::st
     P1 -->|plan fragments| AP[mem dream apply]:::st
-    AP --> P2A[Phase 2 wave A<br/>wrap + judge]:::st
+    AP --> P2A[Phase 2 wave A<br/>wrap + judge + seams]:::st
     P2A --> P2B[Phase 2 wave B<br/>digest]:::st
     AP --> ML[(maintenance.jsonl)]:::store
     P2B --> DG[(digests/YYYY-MM-DD.md)]:::store
 ```
 
 - **Phase 1 (synthesis)** — 5 workers in parallel: `dream-{promotion,merge,theme,essence,priority}-worker`. Each emits a `plan_fragment` JSON outcome. Orchestrator merges, calls `mem dream apply` (one index rebuild, one `maintenance.jsonl` line).
-- **Phase 2 (composition + consumption)** — 4 workers in dependency waves. Wave A in parallel: `dream-wrap-worker` (catch-up unwrapped sessions, subsumes the standalone `/mem-wrap` cron) + `dream-judge-worker` (drain rejudge queue, subsumes `/judge-prediction --drain`) + `dream-seam-link-worker` (drain `.mem/seam_link_queue.jsonl` — cross-parent catalyst linkage on hubs folded by merges). Wave B after wave A: `dream-digest-worker` (compose `type: digest` note at `vault/projects/<p>/digests/YYYY-MM-DD.md`). Phase-2 workers write directly; they emit a `side_effects` list, not plan fragments.
+- **Phase 2 (composition + consumption)** — 5 workers in dependency waves. Wave A in parallel: `dream-wrap-worker` (catch-up unwrapped sessions, subsumes the standalone `/mem-wrap` cron) + `dream-judge-worker` (drain rejudge queue, subsumes `/judge-prediction --drain`) + `dream-seam-link-worker` (drain `.mem/seam_link_queue.jsonl` — cross-parent catalyst linkage on hubs folded by merges) + `dream-seam-worker` (reconcile the CC-auto-memory↔vault **memory seam** — see below). Wave B after wave A: `dream-digest-worker` (compose `type: digest` note at `vault/projects/<p>/digests/YYYY-MM-DD.md`). Phase-2 workers write directly; they emit a `side_effects` list, not plan fragments.
 
 **Extensibility seam.** `src/personal_mem/operations/dream_tasks.py::DreamTaskSpec` is the typed registry, structurally analogous to `sources/registry.py::SourceTypeSpec`. A new judgment, composition, or consumption domain plugs in via one `REGISTRY` entry (`surface_key, worker_name, plan_keys, has_signal, phase, depends_on`) plus one `.claude/agents/<worker>.md` file — no skill-text or orchestrator-code edits. Dependency edges (`depends_on`) let the orchestrator topologically sort the fan-out without per-domain branching.
 
 **Operational vs epistemic separation (per dec-719e47e0 + n-d31cc330).** The dream report at `vault/reports/dream/<cycle_id>.md` is *operational* (what apply did this cycle). The digest at `vault/projects/<p>/digests/YYYY-MM-DD.md` is *epistemic* (what your knowledge gained today). Same orchestrator, separate workers, separate output files, separate prompt framings — no data-level conflation despite shared dispatch.
+
+### Memory seam — CC auto-memory ↔ vault reconciliation
+
+Two always-on knowledge channels feed every session and are assembled *independently*: **Claude Code auto-memory** (`~/.claude/projects/*/memory/*.md`, the *durable* layer — preferences, feedback, hard-won lessons) and **the vault SessionStart payload** (the *fresh* layer — recent sessions / decisions / state, regenerated each session). The seam is the missing reconciliation between them — an active correctness guard that keeps the durable layer from going **stale** against, or silently **duplicating**, the fresh layer (empirically, staleness concentrates in `project`-type CC facts that race the vault — "14 MCP tools" when the vault has 18 — and almost never in durable `feedback` facts).
+
+The mechanic splits deterministic-Python from agent-judgment, exactly like concepts/themes:
+
+- **`synthesis/memory_seam.py`** (embedding-free) walks the CC memory files into fact records keyed by content hash + mtime, diffs them against the durable state map (`vault/.mem/memory_seam.json`) to find the **dirty** set (new / edited / previously-unresolved / recheck-due), computes the deterministic `project`-type+age stale prior, and renders the report. It resolves no twins and calls no embedding API — so the dream *scan* keeps its API-free contract.
+- **`dream-seam-worker`** (phase 2, Wave A) does the irreducibly-semantic half: for each dirty fact it resolves the vault twin via `mem_search(mode='similar')`, bands the cosine (`seam.cosine_twin` / `seam.cosine_none`), reads the twin, and rules `confirmed-fresh` / `stale` / `diverged` / `durable-unique`. It writes verdicts back through **`mem seam commit`**, which recomputes the durable map from the *current* CC files (so a verdict can never attach to stale text), carries forward clean facts' priors, and renders `vault/.mem/memory_seam.md`.
+
+The map is incremental — steady-state cost is ~0 (a clean cycle spawns no worker). Verdicts persist in the JSON map; unresolved ones (`stale`/`diverged`) re-validate every cycle, resolved ones re-validate every `seam.recheck_days` to catch *vault* drift.
+
+**Serving is a session-scoped lens, not a banner.** The map is *not* dumped at SessionStart. `synthesis/memory_seam.py:session_guard_section` builds a reverse index (`twin_note_id → flagged fact`) over the `stale`/`diverged` verdicts and intersects it against the note ids the boot payload actually served (`parse_returned_ids(payload)` in the SessionStart hook). A guard line is injected at the top of the payload **only** when a note the model is about to rely on is the twin of a durable CC memory the seam flagged — "memory X may be stale: 14 tools vs 18 → cross-check `[[dec-…]]` (in your context)". No served twin matches → nothing injected (the common case). Because the intersection runs first, the live drift re-check (re-hash the CC file to flag "edited since this verdict") only touches the handful of facts whose twins are in context, not all ~138 — so the hook stays fast.
+
+**Two consumers, by design — and deliberately no third.** (1) The full `memory_seam.md` is the human-facing **maintenance report** — "these N durable CC memories have drifted from the vault, go fix the files" — which is where stale flags earn their keep. (2) The boot guard is a zero-cost-when-silent correctness interrupt for the rare case both a stale memory and its fresh counterpart land in the same boot context. A **mid-session on-the-fly guard was considered and rejected** (2026-06-13): it's redundant. The seam's `verdict_reason` carries the substance (the pointer id is disposable); within-session supersession chains are the model's own edits (it already knows); and cross-session-but-pre-dream supersessions are *recent decisions* that the standard boot payload (`build_project_context`) already serves via the `supersedes:` chain + STATE. The only residual case (model fetches an old twin whose contradiction is too subtle to read off the note itself) is too thin to justify a hook on every retrieval.
 
 ## Ontology as the joint vocabulary
 
@@ -220,7 +235,7 @@ vault/
 
 Loaders use a backwards-compatible fallback (`vault/config/<filename>` → `vault/.mem/<filename>`) so pre-Phase-3.1 vaults keep working. Writes always commit forward to `vault/config/`. Legacy-location reads emit a one-per-session stderr deprecation warning.
 
-### `vault/.mem/config.toml` — engine policy knobs
+### `vault/config/config.toml` — engine policy knobs
 
 The vault-internal TOML (tier 3 of `core/config.py:load_config`) owns the engine-level policy values: embedding provider, edge-generation thresholds, and the behavioural knobs below. Every knob has a built-in default equal to the value the engine shipped with — an absent file or block changes nothing. This file is deliberately **not** PRIORITIES.yaml (research focus + intake registries) and not sources.yaml (per-source-type operational tuning); it is the "how the machine behaves" layer.
 
@@ -236,6 +251,10 @@ compute_pagerank = false           # per-concept PageRank after rebuilds
 essence_cap = 12                   # essence candidates surfaced per scan (0 = unlimited)
 cosine_threshold = 0.8             # drift-v2 centroid-cosine merge floor
 drift_cap = 15                     # drift pairs surfaced per scan (0 = unlimited)
+coarsen_threshold = 0.85           # near-clique floor for grain coarsening (stricter than cosine_threshold)
+coarsen_cap = 3                    # coarsen clusters surfaced per scan, per family (concept + theme)
+coarsen_max_size = 6               # max members in one coarsening cluster
+coarsen_apply = true               # true = nightly auto-applies the fold; false = surface-only for /tighten approval
 seam_link_cap = 10                 # folded hubs the seam-link worker drains per cycle
 promotion_threshold = 5            # min proposed-concept count for promotion eligibility
 promotion_cap = 20                 # promotion candidates surfaced per scan
@@ -244,6 +263,13 @@ rejudge_cap = 20                   # rejudge entries handed to the judge worker 
 knowledge_delta_hours = 24         # digest-worker knowledge-delta window
 essence_max_catalysts = 10         # catalysts shipped per essence candidate
 essence_placeholder_max_catalysts = 25  # …for placeholder essences (compose-fresh needs more)
+
+[seam]                             # CC-auto-memory ↔ vault reconciliation (dream-seam-worker)
+cosine_twin = 0.70                 # ≥ this = a real vault twin exists (worker inspects it)
+cosine_none = 0.55                 # < this = no twin → durable-unique (CC-only knowledge)
+stale_age_days = 30                # project-type CC fact untouched this long → stale prior
+recheck_days = 14                  # re-validate resolved verdicts after this long (catch vault drift)
+cap = 20                           # dirty CC facts handed to the seam worker per cycle
 
 [extract]
 insights_cap = 3                   # max insight notes per mem_extract call
@@ -254,6 +280,7 @@ recent_days = 30                   # event-grain source lookback
 min_shared_concepts = 2            # concepts a concept-cluster must share
 name_family_jaccard = 0.5          # slug-token Jaccard that folds proposed_theme variants
 generic_concept_ratio = 0.5        # df ratio above which a concept is "generic"
+resolve_after_days = 60            # active theme with no catalyst entry in N days auto-resolves (0 = disabled)
 
 [landing]
 open_probes_cap = 20               # prompt-probes gathered into the landing context
