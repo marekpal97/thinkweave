@@ -75,7 +75,7 @@ This is a success — the orchestrator will archive the queue item as `done`. **
 Call the audio-extraction helper. It downloads the MP3 enclosure to a tempfile, uploads via Gemini's Files API, and prompts Flash for a structured brief:
 
 ```bash
-uv run python -m personal_mem.sources.extractors.gemini_extract podcast "<audio_url>"
+uv run python -m personal_mem.acquisition.sources.extractors.gemini_extract podcast "<audio_url>"
 ```
 
 The command prints **exactly one JSON line** on stdout. Parse it and branch on the `ok` field:

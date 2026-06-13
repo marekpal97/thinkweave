@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.sources import REGISTRY, get_spec, load_user_specs
+from personal_mem.acquisition.sources import REGISTRY, get_spec, load_user_specs
 from personal_mem.surfaces.cli.util import cmd_sources
 
 

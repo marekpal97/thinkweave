@@ -33,7 +33,7 @@ def tool_schemas() -> list:
 def handle(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from personal_mem.sources import load_user_config
+    from personal_mem.acquisition.sources import load_user_config
 
     merged = load_user_config(cfg.vault_root)
     return [TextContent(type="text", text=json.dumps(merged, indent=2))]

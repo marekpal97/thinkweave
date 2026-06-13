@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from personal_mem.sources.priorities import (
+from personal_mem.acquisition.sources.priorities import (
     focus_active_projects,
     focus_watch_themes,
     intake_for,

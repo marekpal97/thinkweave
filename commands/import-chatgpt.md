@@ -24,7 +24,7 @@ CLI prints a hint pointing here) or directly as `/import-chatgpt <path>`.
    - Flatten the `mapping` tree into a chronological transcript
      (user → assistant → user → …). The same logic lives in
      `importers/chatgpt.parse_thread` if you want to shell out via
-     `python -c "from personal_mem.importers.chatgpt import parse_thread; …"`.
+     `python -c "from personal_mem.acquisition.importers.chatgpt import parse_thread; …"`.
    - Compose a summary inline — 4 sections:
      - `## Summary` (3–5 sentences)
      - `## Key questions` (bullets — user-driven curiosity)

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from personal_mem.core.config import Config
-from personal_mem.flows import (
+from personal_mem.operations.flows import (
     FlowSpec,
     FlowStage,
     _build_argv,

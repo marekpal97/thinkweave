@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from personal_mem.importers.chatgpt import (
+from personal_mem.acquisition.importers.chatgpt import (
     Message,
     Thread,
     _build_body,
@@ -379,7 +379,7 @@ class TestImportChatgpt:
         )
         assert stats["total"] == 1  # Only conv-002
 
-    @patch("personal_mem.importers.chatgpt.summarize_thread")
+    @patch("personal_mem.acquisition.importers.chatgpt.summarize_thread")
     def test_full_import(self, mock_summarize, conversations_file, vault_config):
         mock_summarize.return_value = {
             "summary": "Test summary.",
@@ -410,7 +410,7 @@ class TestImportChatgpt:
         assert "imported_from: chatgpt" in content
         assert "Test summary." in content
 
-    @patch("personal_mem.importers.chatgpt.summarize_thread")
+    @patch("personal_mem.acquisition.importers.chatgpt.summarize_thread")
     def test_idempotency(self, mock_summarize, conversations_file, vault_config):
         mock_summarize.return_value = {
             "summary": "S", "key_questions": "", "key_insights": "", "concepts": [],

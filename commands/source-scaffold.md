@@ -121,7 +121,7 @@ Print:
 
 ## What this skill never does
 
-- Never edits `src/personal_mem/sources/registry.py` (that's the
+- Never edits `src/personal_mem/acquisition/sources/registry.py` (that's the
   in-code default set; user additions go to the vault overlay).
 - Never edits files in the personal_mem repo. All artifacts are
   vault-scope (`<vault>/.mem/`) or machine-scope (`~/.claude/commands/`).

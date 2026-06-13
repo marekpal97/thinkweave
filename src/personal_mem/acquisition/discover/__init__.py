@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from personal_mem.discover.strategies import REGISTRY, get, names, register
+from personal_mem.acquisition.discover.strategies import REGISTRY, get, names, register
 
 
 class DiscoveryStrategy(Protocol):

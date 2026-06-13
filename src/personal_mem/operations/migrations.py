@@ -13,9 +13,9 @@ from pathlib import Path
 from personal_mem.core._utils import as_list
 from personal_mem.core.config import Config
 from personal_mem.core.vault import VaultManager, parse_frontmatter
-from personal_mem.sources import load_user_config
-from personal_mem.sources.queue import Queue
-from personal_mem.sources.registry import normalize
+from personal_mem.acquisition.sources import load_user_config
+from personal_mem.acquisition.sources.queue import Queue
+from personal_mem.acquisition.sources.registry import normalize
 
 
 def migrate_todo_research_to_queue(vault_root: Path) -> int:

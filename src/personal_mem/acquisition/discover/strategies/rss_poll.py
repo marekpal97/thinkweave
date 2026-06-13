@@ -40,9 +40,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from personal_mem.sources.config import _parse_simple_yaml
-from personal_mem.sources.priorities import intake_for, load_priorities
-from personal_mem.sources.queue import Queue
+from personal_mem.acquisition.sources.config import _parse_simple_yaml
+from personal_mem.acquisition.sources.priorities import intake_for, load_priorities
+from personal_mem.acquisition.sources.queue import Queue
 
 
 class RssPollStrategy:

@@ -463,7 +463,7 @@ def extract_session(
         pass
 
     try:
-        from personal_mem.sources import load_user_config
+        from personal_mem.acquisition.sources import load_user_config
 
         cfg_merged = load_user_config(cfg.vault_root)
         if cfg_merged.get("auto_todo_extraction", True):

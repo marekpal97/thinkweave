@@ -21,7 +21,7 @@ from personal_mem.core.schemas import (
     NoteMeta,
     NoteType,
 )
-from personal_mem.sources import registry as source_registry
+from personal_mem.acquisition.sources import registry as source_registry
 
 # --- YAML frontmatter parsing (inline, no PyYAML dependency) ---
 
@@ -437,7 +437,7 @@ class VaultManager:
             return d
         return self.root / "projects"
 
-    # Source-type routing is declared in ``personal_mem.sources.registry``.
+    # Source-type routing is declared in ``personal_mem.acquisition.sources.registry``.
     # Adding a new source type means adding a SourceTypeSpec entry there and
     # writing a skill under commands/; no edits in this file are required.
 

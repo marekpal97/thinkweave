@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.discover.strategies.rss_poll import (
+from personal_mem.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_podcast_item,
     _parse_itunes_duration,

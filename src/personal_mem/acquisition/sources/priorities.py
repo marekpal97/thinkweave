@@ -48,7 +48,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from personal_mem.sources.config import _parse_simple_yaml
+from personal_mem.acquisition.sources.config import _parse_simple_yaml
 
 
 _PRIORITIES_FILENAME = "PRIORITIES.yaml"

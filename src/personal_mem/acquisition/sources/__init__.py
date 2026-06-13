@@ -10,15 +10,15 @@ Adding a new source type means adding one ``SourceTypeSpec`` entry to
 ``vault.py`` are required — the vault dispatches on ``spec.layout``.
 """
 
-from personal_mem.sources.config import DEFAULT_CONFIG, load_user_config
-from personal_mem.sources.frontmatter import build_source_frontmatter
-from personal_mem.sources.intake import (
+from personal_mem.acquisition.sources.config import DEFAULT_CONFIG, load_user_config
+from personal_mem.acquisition.sources.frontmatter import build_source_frontmatter
+from personal_mem.acquisition.sources.intake import (
     InboxEntry,
     archive_to_processed,
     enumerate_inbox,
 )
-from personal_mem.sources.queue import Queue
-from personal_mem.sources.registry import (
+from personal_mem.acquisition.sources.queue import Queue
+from personal_mem.acquisition.sources.registry import (
     REGISTRY,
     Layout,
     SourceTypeSpec,

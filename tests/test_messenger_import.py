@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from personal_mem.importers.messenger import (
+from personal_mem.acquisition.importers.messenger import (
     Message,
     ResolvedURL,
     _build_queue_body,

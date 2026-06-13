@@ -75,7 +75,7 @@ class FocusResearchStrategy:
         # focus_concepts returns no gaps, matching the pre-strategy
         # behaviour of "nothing happens."
         try:
-            from personal_mem.sources.priorities import (
+            from personal_mem.acquisition.sources.priorities import (
                 focus_concepts,
                 load_priorities,
             )

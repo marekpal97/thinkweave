@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.sources.queue import Queue
+from personal_mem.acquisition.sources.queue import Queue
 
 
 def _make_queue(tmp_path: Path, source_type: str = "paper") -> Queue:

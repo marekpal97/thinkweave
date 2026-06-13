@@ -65,7 +65,7 @@ def cmd_prune_orphans(args: argparse.Namespace) -> None:
     (< 500 bytes), empty ``files_touched``, empty ``commits``, older than
     ``--min-age`` seconds, and NOT the currently running session.
     """
-    from personal_mem.prune import find_orphans, prune_orphans
+    from personal_mem.operations.prune import find_orphans, prune_orphans
 
     cfg = load_config()
     project = args.project or cfg.default_project or ""
@@ -141,7 +141,7 @@ def _remove_notes_by_path_prefix(idx, prefix: str) -> int:
 
 
 def cmd_sources(args: argparse.Namespace) -> None:
-    from personal_mem.sources import REGISTRY, all_specs, get_spec, load_user_specs
+    from personal_mem.acquisition.sources import REGISTRY, all_specs, get_spec, load_user_specs
     from personal_mem.surfaces.cli.skill import skills_for_source_type
 
     action = getattr(args, "sources_action", None) or "list"
@@ -223,7 +223,7 @@ def _cmd_sources_scaffold(
     if slug in registry:
         print(
             f"error: '{slug}' is already a built-in source type "
-            f"(in src/personal_mem/sources/registry.py). Pick a different slug.",
+            f"(in src/personal_mem/acquisition/sources/registry.py). Pick a different slug.",
             file=sys.stderr,
         )
         sys.exit(1)

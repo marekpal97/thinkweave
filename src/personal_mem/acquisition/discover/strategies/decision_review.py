@@ -56,7 +56,7 @@ class DecisionReviewStrategy:
         # the /discover skill surfaces in its report. Fail-open: missing
         # PRIORITIES.yaml → empty set → behaviour matches pre-bias.
         try:
-            from personal_mem.sources.priorities import (
+            from personal_mem.acquisition.sources.priorities import (
                 focus_watch_themes,
                 load_priorities,
             )

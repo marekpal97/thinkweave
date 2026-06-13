@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.discover.strategies.mail_poll import MailPollStrategy
+from personal_mem.acquisition.discover.strategies.mail_poll import MailPollStrategy
 
 
 class _FakeVault:

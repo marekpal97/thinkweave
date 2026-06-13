@@ -67,8 +67,8 @@ def tool_schemas() -> list:
 def handle(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from personal_mem.sources import all_specs, load_user_config
-    from personal_mem.sources.queue import Queue
+    from personal_mem.acquisition.sources import all_specs, load_user_config
+    from personal_mem.acquisition.sources.queue import Queue
 
     action = args.get("action", "")
     source_type = args.get("source_type", "") or ""

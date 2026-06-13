@@ -7,7 +7,7 @@ workers run after the apply on the freshly-mutated state. The registry below
 is the seam any new judgment, composition, or consumption domain plugs into.
 
 This module is the dream-side analog of
-:mod:`personal_mem.sources.registry` — a frozen :class:`DreamTaskSpec`
+:mod:`personal_mem.acquisition.sources.registry` — a frozen :class:`DreamTaskSpec`
 dataclass per task, a tuple :data:`REGISTRY` declaring all of them, and a
 single :func:`enabled_tasks` selector the CLI / orchestrator skill consume.
 Anyone familiar with how ``SourceTypeSpec`` extends ``/drain`` already knows

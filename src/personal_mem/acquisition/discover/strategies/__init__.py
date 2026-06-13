@@ -86,7 +86,7 @@ def names() -> list[str]:
 #     rss_poll, mail_poll, external_tool_runner
 #
 # Both flavors implement the same ``run(vault, project, config)`` contract.
-from personal_mem.discover.strategies import (  # noqa: E402
+from personal_mem.acquisition.discover.strategies import (  # noqa: E402
     decision_review,
     external_tool_runner,
     focus_research,

@@ -77,5 +77,5 @@ Cost: ~3 sessions of work + a deprecation cycle. Benefit: ~one fewer file in `va
 
 - `ARCHITECTURE.md` §"User configuration — `sources.yaml`" — the short-form description.
 - `ARCHITECTURE_NOTES.md` §"sources.yaml vs source_types.yaml" — the open/closed asymmetry deep dive.
-- `src/personal_mem/sources/registry.py:load_user_specs` — overlay loader for `source_types.yaml`.
-- `src/personal_mem/sources/config.py:load_user_config` — overlay loader for `sources.yaml`.
+- `src/personal_mem/acquisition/sources/registry.py:load_user_specs` — overlay loader for `source_types.yaml`.
+- `src/personal_mem/acquisition/sources/config.py:load_user_config` — overlay loader for `sources.yaml`.

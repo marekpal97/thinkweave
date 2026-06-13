@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from personal_mem.core.config import Config
-from personal_mem.prune import (
+from personal_mem.operations.prune import (
     EVENTS_MIN_BYTES,
     ORPHAN_MIN_AGE_SECONDS,
     PruneResult,

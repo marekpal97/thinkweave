@@ -59,7 +59,7 @@ def find_existing_source_by_dedup_keys(
     if not source_type:
         return None
 
-    from personal_mem.sources.config import load_user_config
+    from personal_mem.acquisition.sources.config import load_user_config
 
     sources_cfg = load_user_config(cfg.vault_root).get("sources") or {}
     dedup_keys = (sources_cfg.get(source_type) or {}).get("dedup_keys") or []

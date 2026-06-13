@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from personal_mem.sources.extractors import transcript_extract as te
+from personal_mem.acquisition.sources.extractors import transcript_extract as te
 
 
 # ---------------------------------------------------------------------------

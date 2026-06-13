@@ -16,7 +16,7 @@ def cmd_intake(args: argparse.Namespace) -> None:
     skill that calls these. Image backfill is platform-specific and lives
     with each importer skill.
     """
-    from personal_mem.sources.intake import (
+    from personal_mem.acquisition.sources.intake import (
         archive_to_processed,
         enumerate_inbox,
     )

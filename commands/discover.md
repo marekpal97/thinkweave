@@ -137,7 +137,7 @@ Headless cron runs make this the **only** durable record of internal-state findi
 
 ## Adding a new strategy
 
-Drop a file under `src/personal_mem/discover/strategies/` exposing a module-level `STRATEGY` instance, then add one `register()` call in `src/personal_mem/discover/strategies/__init__.py`. The strategy implements:
+Drop a file under `src/personal_mem/acquisition/discover/strategies/` exposing a module-level `STRATEGY` instance, then add one `register()` call in `src/personal_mem/acquisition/discover/strategies/__init__.py`. The strategy implements:
 
 ```python
 class MyStrategy:

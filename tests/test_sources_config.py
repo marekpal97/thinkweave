@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.sources import DEFAULT_CONFIG, load_user_config
-from personal_mem.sources.config import _parse_simple_yaml
+from personal_mem.acquisition.sources import DEFAULT_CONFIG, load_user_config
+from personal_mem.acquisition.sources.config import _parse_simple_yaml
 
 
 def test_defaults_when_no_file(tmp_path: Path) -> None:

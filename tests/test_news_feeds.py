@@ -29,8 +29,8 @@ from typing import Any
 
 import pytest
 
-from personal_mem.discover.strategies import rss_poll
-from personal_mem.discover.strategies.rss_poll import (
+from personal_mem.acquisition.discover.strategies import rss_poll
+from personal_mem.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_news_item,
 )
@@ -227,7 +227,7 @@ def test_strategy_enqueues_new_entries(tmp_path, fake_feedparser, monkeypatch) -
 
 
 def test_strategy_dedups_against_queue(tmp_path, fake_feedparser, monkeypatch) -> None:
-    from personal_mem.sources.queue import Queue
+    from personal_mem.acquisition.sources.queue import Queue
 
     q = Queue.for_source_type("news", tmp_path)
     q.enqueue(

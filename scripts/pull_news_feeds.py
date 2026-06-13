@@ -28,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from personal_mem.core.config import load_config
 from personal_mem.core.vault import VaultManager
-from personal_mem.discover import get
-from personal_mem.sources import load_user_config
+from personal_mem.acquisition.discover import get
+from personal_mem.acquisition.sources import load_user_config
 
 
 def main() -> int:

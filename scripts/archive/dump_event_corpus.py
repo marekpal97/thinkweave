@@ -15,7 +15,7 @@ from pathlib import Path
 
 from personal_mem.core.config import load_config
 from personal_mem.core.vault import parse_frontmatter
-from personal_mem.sources.registry import REGISTRY
+from personal_mem.acquisition.sources.registry import REGISTRY
 
 
 _WIKILINK_ONLY = re.compile(r"^-\s*\[\[[^\]]+\]\][^\n]*$")

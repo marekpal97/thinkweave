@@ -35,7 +35,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from personal_mem.sources.priorities import intake_for, load_priorities
+from personal_mem.acquisition.sources.priorities import intake_for, load_priorities
 
 
 class MailPollStrategy:

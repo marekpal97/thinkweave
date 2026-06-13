@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.discover.strategies.rss_poll import RssPollStrategy
+from personal_mem.acquisition.discover.strategies.rss_poll import RssPollStrategy
 
 
 class _FakeVault:

@@ -10,7 +10,7 @@ from personal_mem.core.config import load_config
 
 def cmd_flow(args: argparse.Namespace) -> None:
     """Run a named workflow pipeline."""
-    from personal_mem.flows import flows_path, load_flows, run_flow
+    from personal_mem.operations.flows import flows_path, load_flows, run_flow
 
     cfg = load_config()
     flows = load_flows(cfg)

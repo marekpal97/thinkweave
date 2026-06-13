@@ -7,8 +7,8 @@ that the CLI and MCP both call into. Auto-applies dedup checks on enqueue.
 from __future__ import annotations
 
 from personal_mem.core.config import Config
-from personal_mem.sources import all_specs, load_user_config
-from personal_mem.sources.queue import Queue, QueueItem
+from personal_mem.acquisition.sources import all_specs, load_user_config
+from personal_mem.acquisition.sources.queue import Queue, QueueItem
 
 
 def list_queues(cfg: Config) -> list[dict]:

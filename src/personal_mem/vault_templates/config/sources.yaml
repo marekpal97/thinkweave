@@ -1,12 +1,12 @@
 # personal_mem source-config overrides
 #
 # All keys are optional — anything you omit falls back to the in-code
-# defaults from src/personal_mem/sources/config.py:DEFAULT_CONFIG. Edit
+# defaults from src/personal_mem/acquisition/sources/config.py:DEFAULT_CONFIG. Edit
 # this file to retarget queues, swap importers, change drain strategies,
 # or add new source-type entries without forking personal_mem.
 #
 # Adding a new source type (e.g. podcast):
-#   1. Add a SourceTypeSpec entry to src/personal_mem/sources/registry.py
+#   1. Add a SourceTypeSpec entry to src/personal_mem/acquisition/sources/registry.py
 #   2. Add a `sources:` block here with `queue`, `research_skill`,
 #      `dedup_keys`, `url_patterns`, `drain_strategy` (defaults below).
 #   3. Drop a `commands/research/research-podcast.md` skill alongside.

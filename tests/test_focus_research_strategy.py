@@ -18,7 +18,7 @@ from personal_mem.core.config import Config
 from personal_mem.core.indexer import Indexer
 from personal_mem.core.schemas import NoteType
 from personal_mem.core.vault import VaultManager
-from personal_mem.discover.strategies import focus_research
+from personal_mem.acquisition.discover.strategies import focus_research
 
 
 @pytest.fixture
@@ -297,7 +297,7 @@ class TestProbeExemplars:
 
 
 def test_strategy_is_registered():
-    from personal_mem.discover import get, names
+    from personal_mem.acquisition.discover import get, names
 
     assert "focus_research" in names()
     s = get("focus_research")

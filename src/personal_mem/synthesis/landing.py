@@ -6,7 +6,7 @@ auto-generated from data; ``state`` gathers context for LLM-assisted
 narrative generation.
 
 Filename defaults ship in
-``personal_mem.sources.config.DEFAULT_CONFIG`` under the
+``personal_mem.acquisition.sources.config.DEFAULT_CONFIG`` under the
 ``landing_files`` key and can be overridden per-vault in
 ``vault/config/sources.yaml``. Callers that need the *current* filename
 set should use :func:`landing_filenames` /
@@ -27,9 +27,9 @@ from personal_mem.core.config import Config
 
 def _default_landing_filenames() -> dict[str, str]:
     """In-code defaults — pulled from
-    :data:`personal_mem.sources.config.DEFAULT_CONFIG` so the framework
+    :data:`personal_mem.acquisition.sources.config.DEFAULT_CONFIG` so the framework
     has a single source of truth for landing-doc names."""
-    from personal_mem.sources.config import DEFAULT_CONFIG
+    from personal_mem.acquisition.sources.config import DEFAULT_CONFIG
 
     return dict(DEFAULT_CONFIG["landing_files"])
 
@@ -52,7 +52,7 @@ def landing_filenames(vault_root: Path | None = None) -> dict[str, str]:
     a user-maintained file. ``/discover`` reads it as ambient input but
     never writes it.
     """
-    from personal_mem.sources.config import load_user_config
+    from personal_mem.acquisition.sources.config import load_user_config
 
     merged = _default_landing_filenames()
     if vault_root is None:

@@ -3,7 +3,7 @@
 The single user-facing surface for which provider+model personal_mem's
 backfill ops (`mem enrich`, `mem hubs run`, `mem import chatgpt`,
 `mem import claude-code --enrich`, `mem hubs link`) and embedding paths
-talk to. Mirrors the posture of :mod:`personal_mem.sources.priorities`:
+talk to. Mirrors the posture of :mod:`personal_mem.acquisition.sources.priorities`:
 missing file → built-in defaults, malformed YAML → defaults + warn,
 canonical path only (``vault/config/api.yaml``).
 
@@ -41,7 +41,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from personal_mem.sources.config import _parse_simple_yaml
+from personal_mem.acquisition.sources.config import _parse_simple_yaml
 
 
 _API_FILENAME = "api.yaml"
@@ -76,7 +76,7 @@ def load_api_config(vault_root: Path | None) -> dict[str, Any]:
     """Return the merged api.yaml dict: defaults overlaid with user file.
 
     Missing file → defaults. Malformed YAML → defaults (silent, same
-    posture as :func:`personal_mem.sources.config.load_user_config`).
+    posture as :func:`personal_mem.acquisition.sources.config.load_user_config`).
     """
     merged: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
     if vault_root is None:
@@ -138,7 +138,7 @@ def embeddings_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> None:
     """In-place recursive dict merge — mirrors
-    :func:`personal_mem.sources.config._deep_merge`."""
+    :func:`personal_mem.acquisition.sources.config._deep_merge`."""
     for key, value in overlay.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             _deep_merge(base[key], value)

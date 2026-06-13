@@ -18,7 +18,7 @@ description: One sentence describing what this skill does. Appears in `mem sourc
 
   To add a new source type to personal_mem:
 
-    1. Add a SourceTypeSpec entry to src/personal_mem/sources/registry.py
+    1. Add a SourceTypeSpec entry to src/personal_mem/acquisition/sources/registry.py
        with your source_type slug, bucket name, and layout ("flat",
        "folder", or "author_folder").
 
@@ -53,7 +53,7 @@ description: One sentence describing what this skill does. Appears in `mem sourc
   source types have genuinely different fetch/parse/interpret logic.
 -->
 
-You are ingesting {SOURCE_TYPE} entries into the personal_mem vault. Each ingested entry becomes a `source.md` in the layout declared by this source type's `SourceTypeSpec` in `src/personal_mem/sources/registry.py`, with any raw companion content (`raw.md`, `snapshot.md`, `assets/`) alongside.
+You are ingesting {SOURCE_TYPE} entries into the personal_mem vault. Each ingested entry becomes a `source.md` in the layout declared by this source type's `SourceTypeSpec` in `src/personal_mem/acquisition/sources/registry.py`, with any raw companion content (`raw.md`, `snapshot.md`, `assets/`) alongside.
 
 **Arguments**: {ARGUMENT_DESCRIPTION — e.g. "One or more URLs", "`--queue` to drain the research queue", "`--drain` to process the disk inbox"}
 
@@ -118,7 +118,7 @@ mem_create(
 )
 ```
 
-The `source_type` field is what routes the file into its bucket under `vault/sources/`. Routing is handled automatically by `VaultManager.create_note` via the spec in `src/personal_mem/sources/registry.py`.
+The `source_type` field is what routes the file into its bucket under `vault/sources/`. Routing is handled automatically by `VaultManager.create_note` via the spec in `src/personal_mem/acquisition/sources/registry.py`.
 
 ### 4. Save raw companion content
 
@@ -219,10 +219,10 @@ tags=["todo", "research", "needs-url"]
 
 ## Frontmatter shape (every source note your skill writes)
 
-Use the canonical helper in `src/personal_mem/sources/frontmatter.py`:
+Use the canonical helper in `src/personal_mem/acquisition/sources/frontmatter.py`:
 
 ```python
-from personal_mem.sources import build_source_frontmatter
+from personal_mem.acquisition.sources import build_source_frontmatter
 fm = build_source_frontmatter(
     source_type="{SLUG}",
     title="<title>",

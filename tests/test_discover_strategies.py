@@ -17,8 +17,8 @@ from personal_mem.core.config import Config
 from personal_mem.core.indexer import Indexer
 from personal_mem.core.schemas import NoteType
 from personal_mem.core.vault import VaultManager
-from personal_mem.discover import REGISTRY, get, names, register
-from personal_mem.discover.strategies import (
+from personal_mem.acquisition.discover import REGISTRY, get, names, register
+from personal_mem.acquisition.discover.strategies import (
     decision_review,
     external_tool_runner,
     prompt_gap,

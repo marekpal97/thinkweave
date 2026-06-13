@@ -13,8 +13,8 @@ extract a transcript + summary from media in a single API call.
 Designed to be runnable as a CLI helper for subagent workers, who
 shell out via Bash rather than importing Python:
 
-    python -m personal_mem.sources.extractors.gemini_extract youtube <url>
-    python -m personal_mem.sources.extractors.gemini_extract podcast <audio_url>
+    python -m personal_mem.acquisition.sources.extractors.gemini_extract youtube <url>
+    python -m personal_mem.acquisition.sources.extractors.gemini_extract podcast <audio_url>
 
 The command prints a single JSON line on stdout. On success the line
 contains ``"ok": true`` plus the transcript / summary / key moments;

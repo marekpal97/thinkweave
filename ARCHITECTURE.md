@@ -27,11 +27,12 @@ personal_mem splits cleanly into two layers with a one-way dependency.
 │   core/         schemas, config, vault, indexer, embeddings, events     │
 │   retrieval/    search, context, temporal                               │
 │   synthesis/    hubs, concepts, themes, landing, judge                  │
-│   sources/      registry, frontmatter, queue, intake, extractors        │
-│   discover/     strategy registry (decision_review, rss_poll, mail_poll, …)│
+│   acquisition/  the discover → drain spine                              │
+│     sources/      registry, frontmatter, queue, intake, extractors      │
+│     discover/     strategy registry (decision_review, rss_poll, mail_poll, …)│
+│     importers/    one-shot CLI importers (chatgpt, claude_history, …)   │
 │   operations/   pure functions consumed by both surfaces                │
 │   surfaces/     cli/, mcp/, hooks/                                      │
-│   importers/    one-shot CLI importers (chatgpt, claude_history, …)     │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,7 +42,7 @@ The Claude Code layer sits on top: hooks feed session events into the knowledge 
 
 ## The source primitive
 
-A **source** is a note of `type: source` representing external content — a paper, repo, article, newsletter post, conversation export. Every source type is declared once in `src/personal_mem/sources/registry.py` as a `SourceTypeSpec`:
+A **source** is a note of `type: source` representing external content — a paper, repo, article, newsletter post, conversation export. Every source type is declared once in `src/personal_mem/acquisition/sources/registry.py` as a `SourceTypeSpec`:
 
 ```python
 SourceTypeSpec(
@@ -290,7 +291,7 @@ Loaded by `sources/priorities.py`. Read by `rss_poll` and `mail_poll` strategies
 
 ## User configuration — `sources.yaml`
 
-`vault/config/sources.yaml` overlays per-vault defaults onto the shipped `DEFAULT_CONFIG` in `src/personal_mem/sources/config.py`. Four top-level sections, all optional:
+`vault/config/sources.yaml` overlays per-vault defaults onto the shipped `DEFAULT_CONFIG` in `src/personal_mem/acquisition/sources/config.py`. Four top-level sections, all optional:
 
 ```yaml
 sources:                       # per-source-type overrides
@@ -327,7 +328,7 @@ The optional `vault/config/source_types.yaml` overlay (loaded by `sources/regist
 
 Internal-state strategies describe a need (concept/decision metadata); external-trigger strategies write the queue. Forcing gap-emitters to enqueue would conflate "scan and report" with "decide what to do" — the latter legitimately lives in `/discover`.
 
-Each strategy lives in its own file under `src/personal_mem/discover/strategies/` and implements the `Strategy` protocol (`_protocol.py`) — adding a new one is **one file plus one `register()` line** in `strategies/__init__.py`. This directory is the framework's growth axis post-launch.
+Each strategy lives in its own file under `src/personal_mem/acquisition/discover/strategies/` and implements the `Strategy` protocol (`_protocol.py`) — adding a new one is **one file plus one `register()` line** in `strategies/__init__.py`. This directory is the framework's growth axis post-launch.
 
 ## Decision lifecycle
 
@@ -439,7 +440,7 @@ Full inventory — 43 CLI subcommands × 18 MCP tools (audience: *agent* = MCP-o
 
 ## Operations layer
 
-`src/personal_mem/operations/` is the seam between surfaces (CLI, MCP) and the knowledge layer (`core/`, `retrieval/`, `synthesis/`, `sources/`). Note creation, concept queries, hub backfill, etc. are implemented exactly once here, then consumed by both surfaces.
+`src/personal_mem/operations/` is the seam between surfaces (CLI, MCP) and the two lower layers: the knowledge layer (`core/`, `retrieval/`, `synthesis/`) and the acquisition layer (`acquisition/` — the discover → drain spine: `acquisition/sources/`, `acquisition/discover/`, `acquisition/importers/`). Note creation, concept queries, hub backfill, etc. are implemented exactly once here, then consumed by both surfaces.
 
 ```
 surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
@@ -449,7 +450,6 @@ surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
     operations/                      ← pure functions
       notes.py        create / read / update / link / unlink
       search.py       query_fts / query_similar / query_hybrid / query_context / query_prompts
-      graph.py        walk(filter='source_lens'|'decisions_for_file'|'concept_walk'|…)
       concepts.py     list / tighten / merge / drift / source_counts / search
       decisions.py    list_by_file / judge_and_writeback
       queue.py        list_queues / peek / inspect / enqueue (auto-dedup)
@@ -459,10 +459,10 @@ surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
       wrap.py         /mem-wrap deterministic tail (prune → index → judge → landing → drift)
       rlvr_export.py  decision-context RLVR substrate export
               ▼
-   core/, retrieval/, synthesis/, sources/   ← knowledge layer
+   core/, retrieval/, synthesis/  acquisition/   ← knowledge + acquisition layers
 ```
 
-Dependency rule: operations may import from `core/`, `retrieval/`, `synthesis/`, `sources/`, but never from `surfaces/`. CLI and MCP handlers import from operations, not from the knowledge layer directly. So `cmd_add` (CLI) and `mem_create` (MCP) both delegate to `operations.notes.create_note(cfg, …)` — the same call, the same code path.
+Dependency rule: operations may import from `core/`, `retrieval/`, `synthesis/`, `acquisition/`, but never from `surfaces/`. CLI and MCP handlers import from operations, not from the knowledge layer directly. So `cmd_add` (CLI) and `mem_create` (MCP) both delegate to `operations.notes.create_note(cfg, …)` — the same call, the same code path.
 
 Operations functions take a `Config` (or `VaultManager` / `Indexer`) plus parameters and return data. They don't `print` and they don't call `sys.exit`. Surfaces own input shape (argparse / JSON) and output shape (text / JSON).
 
@@ -503,6 +503,6 @@ CARVE-OUT:
 
 Dual-route surfaces (`--via {inline,batch}`) pick between the wrapper (batch) and a CC skill (inline) via `operations/_backfill_route.choose_route`.
 
-## A note on the importers under `src/personal_mem/importers/`
+## A note on the importers under `src/personal_mem/acquisition/importers/`
 
 These are **one-shot CLI importers**, not skills. They're called via `mem import <source> <path>` and handle bulk migration from external formats: ChatGPT exports, claude-history databases, Messenger self-exports, plain text files. They live next to the knowledge layer because they speak directly to `VaultManager`, but they're not part of the capability model — a contributor adding a new source type should usually write a skill (procedural markdown) rather than a CLI importer (Python module). The importers exist because some source formats predate the skill model; new work should go through skills.

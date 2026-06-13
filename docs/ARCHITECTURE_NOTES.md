@@ -4,10 +4,10 @@ Contributor reference for material spilled out of `ARCHITECTURE.md` for readabil
 
 ## Canonical source frontmatter
 
-Every source note carries a canonical set of fields. The `build_source_frontmatter` helper in `src/personal_mem/sources/frontmatter.py` builds the dict with consistent ordering:
+Every source note carries a canonical set of fields. The `build_source_frontmatter` helper in `src/personal_mem/acquisition/sources/frontmatter.py` builds the dict with consistent ordering:
 
 ```python
-from personal_mem.sources import build_source_frontmatter
+from personal_mem.acquisition.sources import build_source_frontmatter
 
 fm = build_source_frontmatter(
     source_type="paper",
@@ -40,7 +40,7 @@ Worked example: `podcast`. Five steps end-to-end.
 
 ### 1. Register the source type
 
-Edit `src/personal_mem/sources/registry.py`:
+Edit `src/personal_mem/acquisition/sources/registry.py`:
 
 ```python
 "podcast": SourceTypeSpec(
@@ -57,7 +57,7 @@ Pick a layout: `flat` (single-file summary, no raw companion), `folder` (slug su
 
 ### 2. Add per-type config to `sources.yaml`
 
-In `src/personal_mem/sources/config.py:DEFAULT_CONFIG['sources']`:
+In `src/personal_mem/acquisition/sources/config.py:DEFAULT_CONFIG['sources']`:
 
 ```python
 "podcast": {
@@ -86,7 +86,7 @@ description: Ingest podcast transcripts (Overcast, Pocket Casts, Spotify).
 
 Implement the bespoke fetch + transcribe + summarise logic in the body — that's where per-source variation lives, and where the template warns against premature abstraction.
 
-If your source type needs a binary extraction step (transcripts, audio summaries), drop the helper under `src/personal_mem/sources/extractors/` and shell out from the worker via `python -m personal_mem.sources.extractors.<name>` (see the YouTube / podcast workers for the pattern).
+If your source type needs a binary extraction step (transcripts, audio summaries), drop the helper under `src/personal_mem/acquisition/sources/extractors/` and shell out from the worker via `python -m personal_mem.acquisition.sources.extractors.<name>` (see the YouTube / podcast workers for the pattern).
 
 ### 4. Add a research subskill (optional)
 
@@ -108,7 +108,7 @@ The framework ships with a deliberately small default set: `paper`, `repo`, `art
 
 ## sources.yaml vs source_types.yaml
 
-The shipped `DEFAULT_CONFIG` lives in `src/personal_mem/sources/config.py` and seeds **two** overlay files that can both live under `vault/config/`:
+The shipped `DEFAULT_CONFIG` lives in `src/personal_mem/acquisition/sources/config.py` and seeds **two** overlay files that can both live under `vault/config/`:
 
 | File | Loads what | Loaded by |
 |---|---|---|

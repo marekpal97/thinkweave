@@ -68,7 +68,7 @@ This is a success — the orchestrator will archive the queue item as `done`. **
 Call the transcript-extraction helper. It pulls YouTube's own captions (auto-generated or human-authored) plus per-segment timings — no API key, no auth, no rate-limit pain.
 
 ```bash
-uv run python -m personal_mem.sources.extractors.transcript_extract youtube "<url>"
+uv run python -m personal_mem.acquisition.sources.extractors.transcript_extract youtube "<url>"
 ```
 
 The command prints **exactly one JSON line** on stdout. Parse it and branch on the `ok` field:

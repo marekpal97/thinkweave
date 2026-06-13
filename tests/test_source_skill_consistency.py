@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.sources import DEFAULT_CONFIG
-from personal_mem.sources.registry import all_specs
+from personal_mem.acquisition.sources import DEFAULT_CONFIG
+from personal_mem.acquisition.sources.registry import all_specs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMANDS_DIR = REPO_ROOT / "commands"

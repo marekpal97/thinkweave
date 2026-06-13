@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from personal_mem.discover.strategies.mail_poll import MailPollStrategy
+from personal_mem.acquisition.discover.strategies.mail_poll import MailPollStrategy
 
 
 def _cfg(**source_overrides):

@@ -383,7 +383,7 @@ def cmd_import(args: argparse.Namespace) -> None:
     if args.source == "claude-history":
         from pathlib import Path as _Path
 
-        from personal_mem.importers.claude_history import import_claude_history
+        from personal_mem.acquisition.importers.claude_history import import_claude_history
 
         db_path = _Path(args.db_path) if args.db_path else None
         stats = import_claude_history(
@@ -443,7 +443,7 @@ def cmd_import(args: argparse.Namespace) -> None:
             )
             return
 
-        from personal_mem.importers.chatgpt import import_chatgpt
+        from personal_mem.acquisition.importers.chatgpt import import_chatgpt
 
         stats = import_chatgpt(
             cfg,
@@ -466,7 +466,7 @@ def cmd_import(args: argparse.Namespace) -> None:
         if not args.path:
             print("File path required for 'file' import.")
             sys.exit(1)
-        from personal_mem.importers.transcript import import_transcript
+        from personal_mem.acquisition.importers.transcript import import_transcript
 
         path = import_transcript(
             cfg,
@@ -481,7 +481,7 @@ def cmd_import(args: argparse.Namespace) -> None:
             print("File path required. Usage: mem import messenger <path-to-export.json>")
             sys.exit(1)
 
-        from personal_mem.importers.messenger import import_messenger
+        from personal_mem.acquisition.importers.messenger import import_messenger
 
         stats = import_messenger(
             cfg,

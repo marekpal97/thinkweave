@@ -269,8 +269,8 @@ def cmd_project(args: argparse.Namespace) -> None:
 
 def cmd_backlog(args: argparse.Namespace) -> None:
     from personal_mem.retrieval.search import Search
-    from personal_mem.sources import all_specs
-    from personal_mem.sources.queue import Queue
+    from personal_mem.acquisition.sources import all_specs
+    from personal_mem.acquisition.sources.queue import Queue
 
     cfg = load_config()
     s = Search(config=cfg)

@@ -778,7 +778,7 @@ def _collect_knowledge_delta(
 
     from personal_mem.core.indexer import Indexer
     from personal_mem.operations.prompts import recent_probe_pressure
-    from personal_mem.sources import registry as source_registry
+    from personal_mem.acquisition.sources import registry as source_registry
 
     if window_hours is None:
         window_hours = int(getattr(cfg, "dream_knowledge_delta_hours", 24) or 24)
@@ -2232,7 +2232,7 @@ def apply(
     # to the cycle's log counter. Errors are per-entry and don't cascade.
     _t = time.perf_counter()
     try:
-        from personal_mem.sources.queue import Queue
+        from personal_mem.acquisition.sources.queue import Queue
 
         signals = plan.get("priority_signals") or []
         enqueue_gate = bool(

@@ -222,7 +222,7 @@ def detect_signals(
     import json as _json
 
     from personal_mem.core.indexer import Indexer
-    from personal_mem.sources import registry as source_registry
+    from personal_mem.acquisition.sources import registry as source_registry
 
     if recent_days is None:
         recent_days = int(

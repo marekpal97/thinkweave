@@ -50,7 +50,7 @@ def cmd_drain(args: argparse.Namespace) -> None:
                 "picked from sources.yaml::sources.<type>.drain_strategy."
             )
             sys.exit(2)
-        from personal_mem.sources import load_user_config
+        from personal_mem.acquisition.sources import load_user_config
 
         sources_cfg = load_user_config(cfg.vault_root).get("sources", {})
         skill = (
@@ -68,7 +68,7 @@ def cmd_drain(args: argparse.Namespace) -> None:
         return
 
     if args.source == "claude-history":
-        from personal_mem.importers.claude_history import import_claude_history
+        from personal_mem.acquisition.importers.claude_history import import_claude_history
 
         stats = import_claude_history(
             cfg, db_path=None, project_filter="", dry_run=args.dry_run
@@ -108,8 +108,8 @@ def cmd_discover(args: argparse.Namespace) -> None:
     import json
 
     from personal_mem.core.vault import VaultManager
-    from personal_mem.discover import get, names
-    from personal_mem.sources import load_user_config
+    from personal_mem.acquisition.discover import get, names
+    from personal_mem.acquisition.sources import load_user_config
 
     if getattr(args, "list", False):
         for n in names():

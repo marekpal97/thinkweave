@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from personal_mem.core.config import Config
-from personal_mem.importers.claude_history import (
+from personal_mem.acquisition.importers.claude_history import (
     META_CONCEPT_TO_TAG,
     PROJECT_MAP,
     _build_session_map,

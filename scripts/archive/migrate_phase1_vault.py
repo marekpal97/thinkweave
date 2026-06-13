@@ -35,7 +35,7 @@ sys.path.insert(0, "/home/marekpal97/python_projects/personal_mem/src")
 
 from personal_mem.core.config import load_config
 from personal_mem.core.vault import parse_frontmatter, render_frontmatter
-from personal_mem.sources import registry as source_registry
+from personal_mem.acquisition.sources import registry as source_registry
 from personal_mem.synthesis.hub import (
     ALLOWED_FLAGS,
     CATALYST_LOG_HEADING,

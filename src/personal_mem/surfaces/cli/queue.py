@@ -11,8 +11,8 @@ from personal_mem.core.config import load_config
 
 def cmd_queue(args: argparse.Namespace) -> None:
     """Inspect per-source-type acquisition queues."""
-    from personal_mem.sources import all_specs
-    from personal_mem.sources.queue import Queue
+    from personal_mem.acquisition.sources import all_specs
+    from personal_mem.acquisition.sources.queue import Queue
 
     cfg = load_config()
     action = args.action

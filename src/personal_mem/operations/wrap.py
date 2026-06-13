@@ -95,7 +95,7 @@ def finalize_wrap(
     if prune:
         _t = time.perf_counter()
         try:
-            from personal_mem.prune import find_orphans, prune_orphans
+            from personal_mem.operations.prune import find_orphans, prune_orphans
 
             orphans = find_orphans(
                 cfg, project=project, current_session_id=session_id
