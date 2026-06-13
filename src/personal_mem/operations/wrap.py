@@ -132,13 +132,37 @@ def finalize_wrap(
     # 3. judge extracted decisions + write back verdict/status ------------
     _t = time.perf_counter()
     try:
-        from personal_mem.operations.decisions import judge_and_writeback
+        from personal_mem.operations.decisions import (
+            judge_and_writeback,
+            rejudge_supersession_predecessors,
+        )
 
         judged = judge_and_writeback(cfg, session_id=session_id)
         result.decisions_judged = len(judged)
         for _dec, res in judged:
             verdict = res.get("verdict", "unknown")
             result.verdicts[verdict] = result.verdicts.get(verdict, 0) + 1
+
+        # Evidence-gated supersession flip. mem_extract only *enqueues* a
+        # predecessor when a new decision declares ``supersedes: [dec-X]`` —
+        # it never flips status. The wrap worker holds this session's commits,
+        # so re-judge every such predecessor now: blame survival decides
+        # whether the predecessor's lines were actually replaced (→
+        # ``superseded``) or still co-contribute (→ ``kept``). Predecessors
+        # whose successor isn't committed yet stay put and wait for a later
+        # cycle (dream apply drains the headless/deferred backlog).
+        pred_ids: list[str] = []
+        for _dec, _res in judged:
+            sup = _dec.frontmatter.get("supersedes") or []
+            if isinstance(sup, str):
+                sup = [sup]
+            pred_ids.extend(str(s) for s in sup if s)
+        if pred_ids:
+            pred_judged = rejudge_supersession_predecessors(cfg, pred_ids)
+            result.decisions_judged += len(pred_judged)
+            for _dec, res in pred_judged:
+                verdict = res.get("verdict", "unknown")
+                result.verdicts[verdict] = result.verdicts.get(verdict, 0) + 1
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"judge: {e}")
     finally:

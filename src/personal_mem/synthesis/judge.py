@@ -190,13 +190,31 @@ def _check_re_edited(
     file_paths: list[str],
     all_decisions: list[NoteMeta],
 ) -> str | None:
-    """Check if any later decision modifies the same files."""
+    """Check if any later decision modifies the same files.
+
+    **Same-session sibling guard.** Decisions extracted in one ``/mem-wrap``
+    batch are co-equal siblings, not supersessions — they routinely share
+    ``file_paths`` (the same module touched by several facets of one feature)
+    and carry near-identical timestamps. The file-overlap heuristic alone
+    would flag the earlier siblings as "re-edited" by the later ones, and
+    when the work isn't committed yet the blame-survival co-contributor
+    rescue can't fire (no commit to blame), so they'd fall through to a
+    *false* ``superseded`` verdict. Decisions sharing ``source_session`` are
+    therefore skipped here — only a different-session re-edit (or an explicit
+    ``supersedes:`` frontmatter declaration, handled on its own path) marks a
+    genuine supersession. Guards against the unvalidatable-lifecycle trap:
+    never write a status transition without an evidence source.
+    """
     if not file_paths:
         return None
     decision_files = set(file_paths)
+    my_session = str(decision.frontmatter.get("source_session") or "")
     for other in all_decisions:
         if other.id == decision.id:
             continue
+        other_session = str(other.frontmatter.get("source_session") or "")
+        if my_session and other_session and my_session == other_session:
+            continue  # sibling from the same wrap — never a supersession
         if other.date and decision.date and other.date > decision.date:
             other_files = set(as_list(other.frontmatter.get("file_paths")))
             if decision_files & other_files:

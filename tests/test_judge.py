@@ -86,6 +86,33 @@ class TestCheckReEdited:
         dec2 = _make_decision("dec-2", date="2026-04-02", file_paths=["a.py"])
         assert _check_re_edited(dec1, [], [dec1, dec2]) is None
 
+    def test_same_session_siblings_not_superseded(self):
+        # Two decisions from one /mem-wrap batch sharing a file are co-equal
+        # siblings, not a supersession — the file-overlap heuristic must not
+        # fire when source_session matches.
+        dec1 = _make_decision(
+            "dec-1", date="2026-04-01T00:00:01", file_paths=["a.py"],
+            source_session="ses-wrap1",
+        )
+        dec2 = _make_decision(
+            "dec-2", date="2026-04-01T00:00:02", file_paths=["a.py"],
+            source_session="ses-wrap1",
+        )
+        assert _check_re_edited(dec1, ["a.py"], [dec1, dec2]) is None
+
+    def test_different_session_still_supersedes(self):
+        # A later decision from a DIFFERENT session re-editing the same file
+        # is still a genuine supersession candidate.
+        dec1 = _make_decision(
+            "dec-1", date="2026-04-01", file_paths=["a.py"],
+            source_session="ses-wrap1",
+        )
+        dec2 = _make_decision(
+            "dec-2", date="2026-04-02", file_paths=["a.py"],
+            source_session="ses-wrap2",
+        )
+        assert _check_re_edited(dec1, ["a.py"], [dec1, dec2]) == "dec-2"
+
 
 class TestCheckTested:
     def test_passing_tests(self):

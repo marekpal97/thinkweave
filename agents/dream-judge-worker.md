@@ -136,6 +136,6 @@ Anything other than the JSON line is allowed above it — a one-line preamble pe
 
 - Do NOT use `Bash` or `Grep` — they aren't in your tool list. Pointer-types requiring those tools route to `unevaluable` (see step B). The standalone `/judge-prediction` skill remains available for interactive Bash-evidence work.
 - Do NOT modify the decision body — only frontmatter (`prediction_history`, `prediction_match`, `judged_at`).
-- Do NOT flip `status: superseded` on predecessors — that's `operations/extract.py`'s job within the wrap context, and `operations/notes.create_note` already enqueues the rejudge_queue entry you're consuming. Status flip stays out of scope.
+- Do NOT flip `status: superseded` on predecessors — that's the *structural* judge's job, not yours (you're the prediction judge). A `supersedes:` declaration only enqueues the predecessor; the evidence-gated flip runs deterministically in `mem wrap-finalize` (the wrap worker, with the session's commits) and in `mem dream apply`'s rejudge hand-off step (the headless/deferred backlog) via `decisions.rejudge_supersession_predecessors`, where git-blame survival decides `superseded` vs `kept`. You only ever write `prediction_match` / `prediction_history` / `judged_at`. Status flip stays out of scope.
 - Do NOT re-judge anything outside the input `rejudge_queue` list.
 - Do NOT spawn subagents. Single inline pass.

@@ -150,6 +150,30 @@ def _build_decision_body(rationale: str, title: str, outcome: str) -> str:
     return body
 
 
+def _match_session_commits(dec_note: NoteMeta, session_commits: list) -> list[str]:
+    """Commit hashes whose touched files intersect a decision's ``file_paths``.
+
+    Basename-level intersection (paths may be repo-relative on one side and
+    vault-relative on the other). Returns ``[]`` when the decision declares no
+    files or no session commit touches them — i.e. there is no git evidence
+    that this decision actually landed. Shared by the up-flip-to-`accepted`
+    pass and the supersession evidence gate so both judge landing identically.
+    """
+    dec_files = dec_note.frontmatter.get("file_paths", [])
+    if not dec_files:
+        return []
+    dec_basenames = {Path(fp).name for fp in dec_files}
+    matched: list[str] = []
+    for commit in session_commits:
+        commit_files = commit.get("files", [])
+        commit_hash = commit.get("hash", "")
+        if not commit_hash or not commit_files:
+            continue
+        if dec_basenames & {Path(f).name for f in commit_files}:
+            matched.append(commit_hash)
+    return matched
+
+
 # ---------------------------------------------------------------------------
 # Main operation
 # ---------------------------------------------------------------------------
@@ -289,6 +313,12 @@ def extract_session(
         idx.index_file(path)
         outcome.created_notes.append(vm.read_note(path))
 
+    # Commits the session hooks captured. The single source of git evidence
+    # for this wrap pass — it both up-flips committed decisions to `accepted`
+    # and gates whether a `supersedes:` declaration is allowed to flip its
+    # predecessors to `superseded` (see the supersession block below).
+    session_commits = session_note.frontmatter.get("commits", [])
+
     for dec in decisions_in:
         outcome_value = dec.get("outcome", "committed")
         # Tightened semantics (B8, 2026-05-29): every decision lands as
@@ -368,12 +398,21 @@ def extract_session(
         supersedes_raw = dec.get("supersedes") or []
         if isinstance(supersedes_raw, str):
             supersedes_raw = [supersedes_raw]
+
+        # Passive supersession. A bare `supersedes:` declaration is a
+        # re-judge *trigger*, not proof the replacement landed — so we only
+        # enqueue the predecessor here and never flip its `status` from this
+        # turn (symmetric with the headless ``operations/notes.py`` path; the
+        # old eager assertion-based flip is gone). The evidence-bearing
+        # structural judge owns the flip: ``wrap-finalize`` re-judges these
+        # predecessors with this session's commits in hand, and ``dream
+        # apply`` does the same for the headless/deferred backlog. Either way
+        # the ``superseded`` badge only lands when git-blame survival shows
+        # the predecessor's committed lines were actually replaced — keeping
+        # it as load-bearing as the B8-gated ``accepted`` badge.
         for target_id in supersedes_raw:
-            # Always enqueue first — the judge skill's worklist is what
-            # actually drives re-judgment, and we want it populated even if
-            # the structural status-flip below fails (missing file, stale
-            # indexer row, etc.). Idempotent on decision_id, so re-extracts
-            # of the same session don't pile up entries.
+            # Idempotent on decision_id, so re-extracts of the same session
+            # don't pile up entries.
             try:
                 rejudge_queue.enqueue(
                     cfg,
@@ -383,39 +422,10 @@ def extract_session(
                 )
             except Exception:
                 pass
-            try:
-                row = idx.db.execute(
-                    "SELECT path FROM notes WHERE id = ?", (target_id,)
-                ).fetchone()
-                if row is None:
-                    continue
-                target_path = vm.root / row["path"]
-                if not target_path.exists():
-                    continue
-                vm.update_note(
-                    target_path,
-                    frontmatter_updates={"status": "superseded"},
-                )
-                idx.index_file(target_path)
-            except Exception:
-                continue
 
-    session_commits = session_note.frontmatter.get("commits", [])
     if outcome.created_decisions and session_commits:
         for dec_note in outcome.created_decisions:
-            dec_files = dec_note.frontmatter.get("file_paths", [])
-            if not dec_files:
-                continue
-            dec_basenames = {Path(fp).name for fp in dec_files}
-            matched_hashes = []
-            for commit in session_commits:
-                commit_files = commit.get("files", [])
-                commit_hash = commit.get("hash", "")
-                if not commit_hash or not commit_files:
-                    continue
-                commit_basenames = {Path(f).name for f in commit_files}
-                if dec_basenames & commit_basenames:
-                    matched_hashes.append(commit_hash)
+            matched_hashes = _match_session_commits(dec_note, session_commits)
             if matched_hashes:
                 # Tightened semantics (B8): the up-flip to `accepted`
                 # happens here, gated on real commit evidence. Decisions
