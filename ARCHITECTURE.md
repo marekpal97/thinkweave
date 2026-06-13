@@ -7,7 +7,7 @@
 | `README.md` | New users | Pitch, quickstart, install. |
 | `CLAUDE.md` | Agents in-session | Retrieval contract, lifecycles, operational rules. |
 | `ARCHITECTURE.md` (this) | Contributors | Layer boundaries, source primitive, capability lanes, coherence mechanics. |
-| `ARCHITECTURE_NOTES.md` | Contributors (deep-dive) | Worked examples, mechanism deep-dives, historical decisions spilled out of this doc. |
+| `docs/ARCHITECTURE_NOTES.md` | Contributors (deep-dive) | Worked examples, mechanism deep-dives, historical decisions spilled out of this doc. |
 
 If you're answering a user question in-session, read `CLAUDE.md` first. If you're reading code or adding a new source type, you're in the right place.
 
@@ -64,7 +64,7 @@ SourceTypeSpec(
 
 **The registry is open-world** — a source with an unregistered `source_type` falls through to the `folder` layout with an empty bucket. Behaviour (drain, dedup, queue path) is closed-world — `/drain --source-type undeclared` errors. This asymmetry is intentional: experimentation is cheap, but production paths require a registry entry.
 
-See [ARCHITECTURE_NOTES.md §"Canonical source frontmatter"](ARCHITECTURE_NOTES.md#canonical-source-frontmatter) for the full frontmatter table.
+See [ARCHITECTURE_NOTES.md §"Canonical source frontmatter"](docs/ARCHITECTURE_NOTES.md#canonical-source-frontmatter) for the full frontmatter table.
 
 ## Capability lanes
 
@@ -151,7 +151,7 @@ The shipped `ontology.yaml` is a minimal seed. The framework is opinion-free abo
 
 ## Adding a new source type
 
-The five-step pattern — registry entry → config defaults → skill file → optional research subskill → smoke test — is documented end-to-end in [ARCHITECTURE_NOTES.md §"Adding a new source type"](ARCHITECTURE_NOTES.md#adding-a-new-source-type) with a worked `podcast` example. Nothing else in the framework should need to change.
+The five-step pattern — registry entry → config defaults → skill file → optional research subskill → smoke test — is documented end-to-end in [ARCHITECTURE_NOTES.md §"Adding a new source type"](docs/ARCHITECTURE_NOTES.md#adding-a-new-source-type) with a worked `podcast` example. Nothing else in the framework should need to change.
 
 ## Themes vs concept hubs
 
@@ -309,7 +309,7 @@ landing_files:                 # filename overrides
 auto_todo_extraction: true
 ```
 
-The optional `vault/config/source_types.yaml` overlay (loaded by `sources/registry.py`) registers new `SourceTypeSpec` entries at runtime — vault-side source-type extensions without forking the framework. See [ARCHITECTURE_NOTES.md §"sources.yaml vs source_types.yaml"](ARCHITECTURE_NOTES.md#sourcesyaml-vs-source_typesyaml) for the open/closed asymmetry.
+The optional `vault/config/source_types.yaml` overlay (loaded by `sources/registry.py`) registers new `SourceTypeSpec` entries at runtime — vault-side source-type extensions without forking the framework. See [ARCHITECTURE_NOTES.md §"sources.yaml vs source_types.yaml"](docs/ARCHITECTURE_NOTES.md#sourcesyaml-vs-source_typesyaml) for the open/closed asymmetry.
 
 `mem_sources_config` MCP exposes the merged dict to skills that don't want to re-parse the YAML themselves. The CLI exposes `mem sources list` / `mem sources show <slug>` for the registry view.
 
@@ -345,7 +345,7 @@ stateDiagram-v2
 
 - `synthesis/judge.py` is **read-only** — emits a verdict (`kept`/`superseded`/`reverted`/`unknown`) from structural evidence (was the file committed? did tests pass? was it re-edited later?). Never writes back. Verdict-to-status writeback lives in `operations/decisions.mem_judge_and_writeback` (`kept→accepted`, `superseded→superseded`, `reverted→deprecated`, `unknown→no change`).
 - The only auto-flip in the system is the `supersedes`-declared one above, where the writer made the relationship explicit.
-- Decisions can carry a `predicted_outcome:` prose string with claim + manifestation pointer. The `/judge-prediction` skill (not an API call — the running session IS the judge) writes verdicts to `prediction_history`. See [ARCHITECTURE_NOTES.md §"RLVR substrate"](ARCHITECTURE_NOTES.md#rlvr-substrate--decision-context-capture) for the projection and export pipeline.
+- Decisions can carry a `predicted_outcome:` prose string with claim + manifestation pointer. The `/judge-prediction` skill (not an API call — the running session IS the judge) writes verdicts to `prediction_history`. See [ARCHITECTURE_NOTES.md §"RLVR substrate"](docs/ARCHITECTURE_NOTES.md#rlvr-substrate--decision-context-capture) for the projection and export pipeline.
 
 Note frontmatter is open-set — the indexer preserves unrecognized keys without modification, so downstream consumers can extend the schema (e.g. with `pipeline`, `run_id`, or other integration-specific keys) without forking the framework.
 
