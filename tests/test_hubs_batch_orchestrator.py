@@ -2,7 +2,7 @@
 
 After C2 (2026-06-06, ``go-back-to-the-scalable-firefly.md``), neither
 orchestrator carries provider-Batches submission/poll/fetch logic. Both
-delegate to :func:`personal_mem.core.agent_client.batch_completions_sync`.
+delegate to :func:`thinkweave.core.agent_client.batch_completions_sync`.
 
 These tests verify the new contract:
 
@@ -29,10 +29,10 @@ import pytest
 
 
 def test_run_hubs_batch_empty_plan_short_circuits(tmp_path: Path, monkeypatch):
-    from personal_mem.core.config import Config
-    from personal_mem.operations.hubs_batch import run_hubs_batch
+    from thinkweave.core.config import Config
+    from thinkweave.operations.hubs_batch import run_hubs_batch
 
-    plan_path = tmp_path / ".mem" / "hubs_plan.json"
+    plan_path = tmp_path / ".weave" / "hubs_plan.json"
     plan_path.parent.mkdir()
     plan_path.write_text(json.dumps({"concepts": []}), encoding="utf-8")
 
@@ -42,8 +42,8 @@ def test_run_hubs_batch_empty_plan_short_circuits(tmp_path: Path, monkeypatch):
 
 
 def test_run_hubs_batch_missing_plan_exits(tmp_path: Path, monkeypatch):
-    from personal_mem.core.config import Config
-    from personal_mem.operations.hubs_batch import run_hubs_batch
+    from thinkweave.core.config import Config
+    from thinkweave.operations.hubs_batch import run_hubs_batch
 
     cfg = Config(vault_root=tmp_path)
     with pytest.raises(SystemExit) as excinfo:
@@ -68,7 +68,7 @@ def test_run_hubs_batch_passes_resolved_provider_to_wrapper(
         encoding="utf-8",
     )
     # Seed a plan with one note.
-    plan_path = tmp_path / ".mem" / "hubs_plan.json"
+    plan_path = tmp_path / ".weave" / "hubs_plan.json"
     plan_path.parent.mkdir()
     plan_path.write_text(
         json.dumps({
@@ -105,11 +105,11 @@ def test_run_hubs_batch_passes_resolved_provider_to_wrapper(
                 for _ in prompts]
 
     monkeypatch.setattr(
-        "personal_mem.core.agent_client.batch_completions_sync", fake_batch
+        "thinkweave.core.agent_client.batch_completions_sync", fake_batch
     )
 
-    from personal_mem.core.config import Config
-    from personal_mem.operations.hubs_batch import run_hubs_batch
+    from thinkweave.core.config import Config
+    from thinkweave.operations.hubs_batch import run_hubs_batch
 
     cfg = Config(vault_root=tmp_path)
     stats = run_hubs_batch(cfg, plan_path=plan_path)
@@ -122,7 +122,7 @@ def test_run_hubs_batch_passes_resolved_provider_to_wrapper(
 def test_run_hubs_batch_dry_run_does_not_call_wrapper(
     tmp_path: Path, monkeypatch
 ):
-    plan_path = tmp_path / ".mem" / "hubs_plan.json"
+    plan_path = tmp_path / ".weave" / "hubs_plan.json"
     plan_path.parent.mkdir()
     plan_path.write_text(
         json.dumps({
@@ -150,11 +150,11 @@ def test_run_hubs_batch_dry_run_does_not_call_wrapper(
         return []
 
     monkeypatch.setattr(
-        "personal_mem.core.agent_client.batch_completions_sync", fake_batch
+        "thinkweave.core.agent_client.batch_completions_sync", fake_batch
     )
 
-    from personal_mem.core.config import Config
-    from personal_mem.operations.hubs_batch import run_hubs_batch
+    from thinkweave.core.config import Config
+    from thinkweave.operations.hubs_batch import run_hubs_batch
 
     cfg = Config(vault_root=tmp_path)
     stats = run_hubs_batch(cfg, plan_path=plan_path, dry_run=True)
@@ -168,8 +168,8 @@ def test_run_hubs_batch_dry_run_does_not_call_wrapper(
 
 
 def test_run_enrichment_batch_empty_short_circuits(tmp_path: Path, monkeypatch):
-    from personal_mem.core.config import Config
-    from personal_mem.onboarding.enrich_batch import run_enrichment_batch
+    from thinkweave.core.config import Config
+    from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
     # No vault/projects/ → no pending sessions.
     cfg = Config(vault_root=tmp_path)
@@ -193,7 +193,7 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
     )
 
     # Mint one pending session.
-    from personal_mem.onboarding.enrich_batch import PendingSession
+    from thinkweave.onboarding.enrich_batch import PendingSession
     sessions = [
         PendingSession(
             note_id="ses-abc",
@@ -204,7 +204,7 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
         )
     ]
     monkeypatch.setattr(
-        "personal_mem.onboarding.enrich_batch.find_pending_sessions",
+        "thinkweave.onboarding.enrich_batch.find_pending_sessions",
         lambda *a, **k: sessions,
     )
 
@@ -218,16 +218,16 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
                 for _ in prompts]
 
     monkeypatch.setattr(
-        "personal_mem.core.agent_client.batch_completions_sync", fake_batch
+        "thinkweave.core.agent_client.batch_completions_sync", fake_batch
     )
     # Stub the writeback so we don't touch real Indexer/VaultManager.
     monkeypatch.setattr(
-        "personal_mem.onboarding.enrich_batch._writeback_one",
+        "thinkweave.onboarding.enrich_batch._writeback_one",
         lambda *a, **k: {"decisions_created": 0, "insights_appended": 0},
     )
 
-    from personal_mem.core.config import Config
-    from personal_mem.onboarding.enrich_batch import run_enrichment_batch
+    from thinkweave.core.config import Config
+    from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
     cfg = Config(vault_root=tmp_path)
     stats = run_enrichment_batch(cfg)
@@ -240,7 +240,7 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
 def test_run_enrichment_batch_dry_run_does_not_call_wrapper(
     tmp_path: Path, monkeypatch
 ):
-    from personal_mem.onboarding.enrich_batch import PendingSession
+    from thinkweave.onboarding.enrich_batch import PendingSession
     sessions = [
         PendingSession(
             note_id="ses-abc",
@@ -251,17 +251,17 @@ def test_run_enrichment_batch_dry_run_does_not_call_wrapper(
         )
     ]
     monkeypatch.setattr(
-        "personal_mem.onboarding.enrich_batch.find_pending_sessions",
+        "thinkweave.onboarding.enrich_batch.find_pending_sessions",
         lambda *a, **k: sessions,
     )
     called = {"n": 0}
     monkeypatch.setattr(
-        "personal_mem.core.agent_client.batch_completions_sync",
+        "thinkweave.core.agent_client.batch_completions_sync",
         lambda *a, **k: (called.__setitem__("n", called["n"] + 1) or []),
     )
 
-    from personal_mem.core.config import Config
-    from personal_mem.onboarding.enrich_batch import run_enrichment_batch
+    from thinkweave.core.config import Config
+    from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
     cfg = Config(vault_root=tmp_path)
     stats = run_enrichment_batch(cfg, dry_run=True)
@@ -274,13 +274,13 @@ def test_run_enrichment_batch_handles_exception_per_item(
 ):
     """``return_exceptions=True`` from the wrapper surfaces per-item
     failures into stats['errors'] without breaking the batch."""
-    from personal_mem.onboarding.enrich_batch import PendingSession
+    from thinkweave.onboarding.enrich_batch import PendingSession
     sessions = [
         PendingSession(note_id=f"ses-{i}", project="p", note_path=tmp_path / f"x{i}.md",
                        transcript="t", title="t") for i in range(3)
     ]
     monkeypatch.setattr(
-        "personal_mem.onboarding.enrich_batch.find_pending_sessions",
+        "thinkweave.onboarding.enrich_batch.find_pending_sessions",
         lambda *a, **k: sessions,
     )
 
@@ -292,15 +292,15 @@ def test_run_enrichment_batch_handles_exception_per_item(
         ]
 
     monkeypatch.setattr(
-        "personal_mem.core.agent_client.batch_completions_sync", fake_batch
+        "thinkweave.core.agent_client.batch_completions_sync", fake_batch
     )
     monkeypatch.setattr(
-        "personal_mem.onboarding.enrich_batch._writeback_one",
+        "thinkweave.onboarding.enrich_batch._writeback_one",
         lambda *a, **k: {"decisions_created": 0, "insights_appended": 0},
     )
 
-    from personal_mem.core.config import Config
-    from personal_mem.onboarding.enrich_batch import run_enrichment_batch
+    from thinkweave.core.config import Config
+    from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
     cfg = Config(vault_root=tmp_path)
     stats = run_enrichment_batch(cfg)

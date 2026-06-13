@@ -1,6 +1,6 @@
 """Tests for synthesis/geometry.py — the drift-v2 embedding substrate.
 
-Centroids are computed from a hand-seeded ``.mem/embeddings.db`` (packed
+Centroids are computed from a hand-seeded ``.weave/embeddings.db`` (packed
 float vectors, same writer as ``EmbeddingSearch``), so no API calls and
 fully deterministic cosines.
 """
@@ -13,12 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.embeddings import EMBEDDINGS_SCHEMA, _pack_embedding
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
-from personal_mem.synthesis import geometry
+from thinkweave.core.config import Config
+from thinkweave.core.embeddings import EMBEDDINGS_SCHEMA, _pack_embedding
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
+from thinkweave.synthesis import geometry
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def _index(config: Config) -> None:
 
 
 def _seed_embeddings(config: Config, vectors: dict[str, list[float]]) -> None:
-    config.mem_dir.mkdir(parents=True, exist_ok=True)
+    config.weave_dir.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(config.embeddings_db))
     db.executescript(EMBEDDINGS_SCHEMA)
     for note_id, vec in vectors.items():
@@ -142,7 +142,7 @@ class TestEvidence:
         _index(config)
         # Fake ontology: alpha and beta share a domain.
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts.load_ontology",
+            "thinkweave.synthesis.concepts.load_ontology",
             lambda path=None: {"dom-x": ["alpha", "beta"], "dom-y": ["beta"]},
         )
         packets = geometry.build_concept_evidence(
@@ -159,7 +159,7 @@ class TestEvidence:
 
 class TestJudgedPairs:
     def _write_maintenance(self, config: Config, verdicts: dict) -> None:
-        from personal_mem.operations.dream import append_maintenance_log
+        from thinkweave.operations.dream import append_maintenance_log
 
         append_maintenance_log(
             config, {"ts": "2026-06-11", "cycle_id": "c1", "verdicts": verdicts}
@@ -184,7 +184,7 @@ class TestJudgedPairs:
         )
 
     def test_corrupt_and_legacy_lines_skipped(self, config, vault):
-        from personal_mem.operations.dream import maintenance_log_path
+        from thinkweave.operations.dream import maintenance_log_path
 
         path = maintenance_log_path(config)
         path.parent.mkdir(parents=True, exist_ok=True)

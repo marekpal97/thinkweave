@@ -6,7 +6,7 @@ skeleton to ``synthesis/hub.py``. Deleting the spine should break tests
 on both surfaces identically — that's the integration property.
 
 Also covers the idempotent ``## Learning log`` → ``## Catalyst log``
-migration wired into ``mem index --full``.
+migration wired into ``weave index --full``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.synthesis.hub import (
+from thinkweave.synthesis.hub import (
     ALLOWED_FLAGS,
     CATALYST_LOG_HEADING,
     LEGACY_LEARNING_LOG_HEADING,
@@ -333,17 +333,17 @@ class TestMigrateHubLogHeading:
 class TestSpineSharedAcrossSurfaces:
     def test_concept_hub_module_re_exports_unified_types(self):
         """LogEntry on the concept-hub module is the unified ``HubLogEntry``."""
-        from personal_mem.synthesis.concept_hub import LogEntry as CHLogEntry
+        from thinkweave.synthesis.concept_hub import LogEntry as CHLogEntry
 
         assert CHLogEntry is HubLogEntry
 
     def test_theme_hub_module_re_exports_unified_types(self):
-        from personal_mem.synthesis.theme_hub import LogEntry as THLogEntry
+        from thinkweave.synthesis.theme_hub import LogEntry as THLogEntry
 
         assert THLogEntry is HubLogEntry
 
     def test_concept_hub_uses_canonical_catalyst_log_heading(self):
-        from personal_mem.synthesis import concept_hub as ch
+        from thinkweave.synthesis import concept_hub as ch
 
         # The historical alias still resolves, but it points to the
         # canonical heading from hub.py.

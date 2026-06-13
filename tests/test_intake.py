@@ -1,4 +1,4 @@
-"""Tests for ``personal_mem.acquisition.sources.intake`` — drop-folder enumerate +
+"""Tests for ``thinkweave.acquisition.sources.intake`` — drop-folder enumerate +
 archive helpers shared by ``/substack`` and future drop-folder importers.
 """
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.acquisition.sources.intake import (
+from thinkweave.acquisition.sources.intake import (
     InboxEntry,
     archive_to_processed,
     enumerate_inbox,

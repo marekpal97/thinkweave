@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-import personal_mem.operations.prompt_time_retrieval as ptr
+from thinkweave.core.config import Config
+import thinkweave.operations.prompt_time_retrieval as ptr
 
 
 class _FakeResult:
@@ -37,7 +37,7 @@ def _cfg(tmp_path: Path) -> Config:
 
 
 def _write_buffer(cfg: Config, session_id: str, events: list[dict]) -> None:
-    buf = cfg.mem_dir / "buffer" / f"{session_id}.jsonl"
+    buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     buf.parent.mkdir(parents=True, exist_ok=True)
     buf.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
 
@@ -191,7 +191,7 @@ class _FakeSearch:
 
 def _patch_search(monkeypatch, fake):
     monkeypatch.setattr(
-        "personal_mem.retrieval.search.Search", lambda config=None: fake
+        "thinkweave.retrieval.search.Search", lambda config=None: fake
     )
 
 

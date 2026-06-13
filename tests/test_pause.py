@@ -1,4 +1,4 @@
-"""Regression tests for `mem pause` / `mem resume`.
+"""Regression tests for `weave pause` / `weave resume`.
 
 The helpers must round-trip cleanly: pause → resume must restore the
 machine to (logically) the pre-pause state, and the CLAUDE.md block
@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.surfaces.cli import install as install_mod
-from personal_mem.surfaces.cli import pause as pause_mod
+from thinkweave.surfaces.cli import install as install_mod
+from thinkweave.surfaces.cli import pause as pause_mod
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def fake_claude_home(tmp_path, monkeypatch):
     fake_home.mkdir()
     claude_json = fake_home / ".claude.json"
     claude_md = fake_home / ".claude" / "CLAUDE.md"
-    marker = fake_home / ".claude" / "personal_mem_paused.json"
+    marker = fake_home / ".claude" / "thinkweave_paused.json"
     monkeypatch.setattr(install_mod, "CLAUDE_JSON", claude_json)
     monkeypatch.setattr(install_mod, "CLAUDE_MD", claude_md)
     monkeypatch.setattr(install_mod, "MARKER", marker)
@@ -73,7 +73,7 @@ class TestMcpEntryRemoval:
         )
         assert install_mod._remove_mcp_entry() is False
 
-    def test_remove_strips_only_personal_mem(self, fake_claude_home):
+    def test_remove_strips_only_thinkweave(self, fake_claude_home):
         cj = fake_claude_home["claude_json"]
         cj.write_text(
             json.dumps(
@@ -98,7 +98,7 @@ class TestMcpEntryRemoval:
         cfg = json.loads(fake_claude_home["claude_json"].read_text())
         assert install_mod.SERVER_NAME in cfg["mcpServers"]
         entry = cfg["mcpServers"][install_mod.SERVER_NAME]
-        assert entry["args"][-1] == "mem-mcp"
+        assert entry["args"][-1] == "weave-mcp"
 
     def test_restore_preserves_other_servers(self, fake_claude_home):
         cj = fake_claude_home["claude_json"]

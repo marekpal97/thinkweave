@@ -2,19 +2,19 @@
 name: tighten
 owns_mechanic: ontology_hygiene
 description: On-demand ontology-tightening front door for BOTH hub families — review drift-v2 dedup pairs AND N-ary grain-coarsening clusters (concepts + themes) in one approval table, then the per-family structural tails (promotion, dead-vocab, catalyst/title backfill). One process; the nightly /dream runs the same mechanism unattended.
-tools: [Read, Edit, Bash, mem_concepts, mem_search, mem_read, mem_update]
+tools: [Read, Edit, Bash, weave_concepts, weave_search, weave_read, weave_update]
 ---
 
 # /tighten — Ontology tightening (unified front door)
 
 The single on-demand front door over the same mechanism the nightly `/dream`
-runs unattended. It replaces the split between `/mem-resolve-concepts` and
+runs unattended. It replaces the split between `/weave-resolve-concepts` and
 `/themes-resolve` — tightening is **one process** (a structural audit feeding
 a dedup/coarsen step), symmetric across concept hubs and themes.
 
 > **Why one skill.** The nightly `dream-merge-worker` already judges both
 > families and both grains (pairwise merges + N-ary coarsenings). This skill
-> is the *interactive, approval-gated* front of the identical `mem dream
+> is the *interactive, approval-gated* front of the identical `weave dream
 > apply` path — run it for an immediate pass, to apply coarsenings when
 > `dream.coarsen_apply` is off (surface-only posture), to re-litigate a
 > recorded `distinct` ruling, or for the harder structural work the nightly
@@ -26,8 +26,8 @@ Designed to run in a few minutes. Steps below; apply only on approval.
 ## 1. Scan (shared, both families)
 
 ```bash
-uv run mem dream scan --json > /tmp/tighten-scan.json   # all surfaces
-uv run mem doctor                                       # tag/concept overlap, DEAD vocab
+uv run weave dream scan --json > /tmp/tighten-scan.json   # all surfaces
+uv run weave doctor                                       # tag/concept overlap, DEAD vocab
 ```
 
 The scan payload carries, for this skill:
@@ -39,7 +39,7 @@ The scan payload carries, for this skill:
 
 Judged items (past merges / coarsenings / distinct rulings) are excluded via
 the maintenance-log verdict history. To re-open them, re-run with
-`mem dream scan --rejudge`.
+`weave dream scan --rejudge`.
 
 ## 2. Cluster review — one approval table (both families)
 
@@ -66,13 +66,13 @@ nightly posture `dream.coarsen_apply` is false):
 
 ```bash
 echo '<plan json: merges/coarsenings/theme_merges/theme_coarsenings/distinct_pairs/distinct_clusters>' \
-  | uv run mem dream apply --plan - --force-coarsen --no-strict
+  | uv run weave dream apply --plan - --force-coarsen --no-strict
 ```
 
 Apply folds each loser hub into the winner (log preserved, archived
 `merged-into:` tombstone), writes any new coarse term to `ontology.yaml`,
 and records the verdict (with the `member_note_ids` + `fold_dates` snapshot
-that makes `mem dream revert-coarsen <target>` an exact re-split). Distinct
+that makes `weave dream revert-coarsen <target>` an exact re-split). Distinct
 rulings are recorded permanently.
 
 ## 3. Concept structural tail (audit the nightly loop leaves alone)
@@ -80,14 +80,14 @@ rulings are recorded permanently.
 These need source-file edits and human approval, so they live here, not in
 `/dream`. Run as needed:
 
-- **Promotions** — `uv run mem concepts proposed-counts --min-count 5`, pipe
-  through `filter_promotion_candidates`, then `uv run mem concepts promote <term> --domain <d>` per approved row.
-- **Singleton prune** — `uv run mem concepts prune-singletons --dry-run` then apply (`concepts:` only; `proposed_concepts:` is sanctuary).
-- **Dead vocabulary** — from `mem doctor`, remove clearly-dead terms from `ontology.yaml` by hand (leave aspirational ones).
+- **Promotions** — `uv run weave concepts proposed-counts --min-count 5`, pipe
+  through `filter_promotion_candidates`, then `uv run weave concepts promote <term> --domain <d>` per approved row.
+- **Singleton prune** — `uv run weave concepts prune-singletons --dry-run` then apply (`concepts:` only; `proposed_concepts:` is sanctuary).
+- **Dead vocabulary** — from `weave doctor`, remove clearly-dead terms from `ontology.yaml` by hand (leave aspirational ones).
 - **Hub splits** — read 10–15 hubs; if a learning log drifted across distinct sub-concepts, propose `split: <c> → [child…]` (manual ontology edit + hub split). Present, don't autofix.
-- **Orphan hubs** — `uv run mem concepts hubs --prune --apply`.
+- **Orphan hubs** — `uv run weave concepts hubs --prune --apply`.
 
-(These mirror the old `/mem-resolve-concepts` steps verbatim — same helpers.)
+(These mirror the old `/weave-resolve-concepts` steps verbatim — same helpers.)
 
 ## 4. Theme structural tail
 
@@ -96,11 +96,11 @@ These need source-file edits and human approval, so they live here, not in
 
 ## 5. Rebuild + report
 
-`mem dream apply` already rebuilt the index for the cluster step. After any
+`weave dream apply` already rebuilt the index for the cluster step. After any
 manual Step 3/4 edits, rebuild once:
 
 ```bash
-uv run mem index --full
+uv run weave index --full
 ```
 
 Report (3 lines): merges/coarsenings applied (per family), promotions/dead-vocab/splits, theme essence/catalyst fixes, concept count before → after.

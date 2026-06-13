@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.operations.flows import (
+from thinkweave.core.config import Config
+from thinkweave.operations.flows import (
     FlowSpec,
     FlowStage,
     _build_argv,
@@ -87,7 +87,7 @@ class TestFlowsYamlParser:
         text = (
             "flows:\n"
             "  x:\n"
-            "    log: ~/.cache/personal_mem/flow.log\n"
+            "    log: ~/.cache/thinkweave/flow.log\n"
             "    stages:\n"
             "      - run: \"/a\"\n"
         )
@@ -150,8 +150,8 @@ class TestBuildCommand:
         # shlex.quote wraps the whole thing in single quotes.
         assert "'/discover (gap cap of 10)'" in cmd
 
-    def test_respects_PERSONAL_MEM_CLAUDE_BIN(self, monkeypatch):
-        monkeypatch.setenv("PERSONAL_MEM_CLAUDE_BIN", "/custom/claude")
+    def test_respects_THINKWEAVE_CLAUDE_BIN(self, monkeypatch):
+        monkeypatch.setenv("THINKWEAVE_CLAUDE_BIN", "/custom/claude")
         cmd = _build_command("/x")
         assert cmd.startswith("/custom/claude ")
 
@@ -160,16 +160,16 @@ class TestBuildCommand:
         # (plugin commands have no bare-name aliasing).
         import json
 
-        from personal_mem.core import plugin_route
+        from thinkweave.core import plugin_route
 
         manifest = tmp_path / "installed_plugins.json"
         manifest.write_text(
-            json.dumps({"version": 2, "plugins": {"personal-mem@mp": []}}),
+            json.dumps({"version": 2, "plugins": {"thinkweave@mp": []}}),
             encoding="utf-8",
         )
         monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
         argv = _build_argv("/discover --strategy rss_poll")
-        assert "/personal-mem:discover --strategy rss_poll" in argv
+        assert "/thinkweave:discover --strategy rss_poll" in argv
 
 
 class TestBuildArgv:
@@ -194,7 +194,7 @@ class TestBuildArgv:
         assert argv[4] == "/x C:\\Users\\me\\f.md"
 
     def test_argv_respects_bin_override(self, monkeypatch):
-        monkeypatch.setenv("PERSONAL_MEM_CLAUDE_BIN", "/custom/claude")
+        monkeypatch.setenv("THINKWEAVE_CLAUDE_BIN", "/custom/claude")
         assert _build_argv("/x")[0] == "/custom/claude"
 
 

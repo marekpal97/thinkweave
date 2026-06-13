@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.scheduling import (
+from thinkweave.core.config import Config
+from thinkweave.scheduling import (
     CrontabBackend,
     TaskSchedulerBackend,
     cron_to_schtasks,
     load_jobs,
     select_backend,
 )
-from personal_mem.scheduling.cron import FENCE_END, FENCE_START, _splice
-from personal_mem.scheduling.registry import ScheduledJob, _parse, resolve_command
+from thinkweave.scheduling.cron import FENCE_END, FENCE_START, _splice
+from thinkweave.scheduling.registry import ScheduledJob, _parse, resolve_command
 
 
 @pytest.fixture
@@ -97,7 +97,7 @@ class TestRegistry:
         assert job.enabled is True
 
     def test_defaults(self):
-        jobs = _parse({"jobs": {"x": {"cadence": "0 3 * * *", "command": "mem foo"}}})
+        jobs = _parse({"jobs": {"x": {"cadence": "0 3 * * *", "command": "weave foo"}}})
         job = jobs["x"]
         assert job.runner == "uv"  # default
         assert job.env == ()
@@ -106,7 +106,7 @@ class TestRegistry:
 
     def test_enabled_false_honored(self):
         jobs = _parse(
-            {"jobs": {"x": {"cadence": "0 3 * * *", "command": "mem foo", "enabled": False}}}
+            {"jobs": {"x": {"cadence": "0 3 * * *", "command": "weave foo", "enabled": False}}}
         )
         assert jobs["x"].enabled is False
 
@@ -120,7 +120,7 @@ class TestRegistry:
     def test_load_from_template(self, config):
         # The shipped vault template should parse cleanly with the dream +
         # embeddings jobs enabled by default.
-        pkg = Path(__file__).resolve().parents[1] / "src" / "personal_mem"
+        pkg = Path(__file__).resolve().parents[1] / "src" / "thinkweave"
         template = pkg / "vault_templates" / "config" / "scheduling.yaml"
         jobs = load_jobs(config, path=template)
         assert "dream" in jobs and jobs["dream"].enabled
@@ -137,27 +137,27 @@ class TestRegistry:
 class TestResolveCommand:
     def test_direct_resolves_claude(self, monkeypatch):
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which",
+            "thinkweave.scheduling.registry.shutil.which",
             lambda name: "/abs/claude" if name == "claude" else None,
         )
         job = ScheduledJob("dream", "0 3 * * *", "claude -p /dream", runner="direct")
         assert resolve_command(job) == "/abs/claude -p /dream"
 
-    def test_uv_resolves_mem(self, monkeypatch):
+    def test_uv_resolves_weave(self, monkeypatch):
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which",
-            lambda name: "/abs/mem" if name == "mem" else None,
+            "thinkweave.scheduling.registry.shutil.which",
+            lambda name: "/abs/weave" if name == "weave" else None,
         )
-        job = ScheduledJob("x", "0 3 * * *", "mem index --embed", runner="uv")
-        assert resolve_command(job) == "/abs/mem index --embed"
+        job = ScheduledJob("x", "0 3 * * *", "weave index --embed", runner="uv")
+        assert resolve_command(job) == "/abs/weave index --embed"
 
     def test_uv_falls_back_to_uv_run(self, monkeypatch):
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which", lambda name: None
+            "thinkweave.scheduling.registry.shutil.which", lambda name: None
         )
-        job = ScheduledJob("x", "0 3 * * *", "mem index --embed", runner="uv")
+        job = ScheduledJob("x", "0 3 * * *", "weave index --embed", runner="uv")
         out = resolve_command(job, repo_root=Path("/repo"))
-        assert out == "uv run --project /repo mem index --embed"
+        assert out == "uv run --project /repo weave index --embed"
 
     def test_direct_namespaces_skill_under_plugin_route(
         self, monkeypatch, tmp_path
@@ -166,16 +166,16 @@ class TestResolveCommand:
         # (plugin commands have no bare-name aliasing).
         import json
 
-        from personal_mem.core import plugin_route
+        from thinkweave.core import plugin_route
 
         manifest = tmp_path / "installed_plugins.json"
         manifest.write_text(
-            json.dumps({"version": 2, "plugins": {"personal-mem@mp": []}}),
+            json.dumps({"version": 2, "plugins": {"thinkweave@mp": []}}),
             encoding="utf-8",
         )
         monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which",
+            "thinkweave.scheduling.registry.shutil.which",
             lambda name: "/abs/claude" if name == "claude" else None,
         )
         job = ScheduledJob(
@@ -186,27 +186,27 @@ class TestResolveCommand:
         )
         out = resolve_command(job)
         assert out == (
-            "/abs/claude --model sonnet -p /personal-mem:dream"
+            "/abs/claude --model sonnet -p /thinkweave:dream"
             " --dangerously-skip-permissions"
         )
 
     def test_uv_jobs_unaffected_by_plugin_route(self, monkeypatch, tmp_path):
         import json
 
-        from personal_mem.core import plugin_route
+        from thinkweave.core import plugin_route
 
         manifest = tmp_path / "installed_plugins.json"
         manifest.write_text(
-            json.dumps({"version": 2, "plugins": {"personal-mem@mp": []}}),
+            json.dumps({"version": 2, "plugins": {"thinkweave@mp": []}}),
             encoding="utf-8",
         )
         monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which",
-            lambda name: "/abs/mem" if name == "mem" else None,
+            "thinkweave.scheduling.registry.shutil.which",
+            lambda name: "/abs/weave" if name == "weave" else None,
         )
-        job = ScheduledJob("x", "0 3 * * *", "mem index --embed", runner="uv")
-        assert resolve_command(job) == "/abs/mem index --embed"
+        job = ScheduledJob("x", "0 3 * * *", "weave index --embed", runner="uv")
+        assert resolve_command(job) == "/abs/weave index --embed"
 
 
 # --------------------------------------------------------------------------- #
@@ -222,7 +222,7 @@ class TestCrontabBackend:
                 env=("ANTHROPIC_API_KEY",), log="dream.log",
             ),
             ScheduledJob(
-                "embeddings", "15 */4 * * *", "mem index --embed --only-new",
+                "embeddings", "15 */4 * * *", "weave index --embed --only-new",
                 runner="uv", env=("OPENAI_API_KEY",), log="embed-warm.log",
             ),
             ScheduledJob(
@@ -233,11 +233,11 @@ class TestCrontabBackend:
 
     def test_render_reproduces_crontab_semantics(self, config, monkeypatch):
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which",
+            "thinkweave.scheduling.registry.shutil.which",
             lambda name: f"/abs/{name}",
         )
         monkeypatch.setattr(
-            "personal_mem.scheduling.cron.user_cache_dir", lambda: Path("/cache/pm")
+            "thinkweave.scheduling.cron.user_cache_dir", lambda: Path("/cache/pm")
         )
         block = CrontabBackend(config).render(self._jobs())
         assert block.startswith(FENCE_START)
@@ -249,7 +249,7 @@ class TestCrontabBackend:
             ">> /cache/pm/dream.log 2>&1" in block
         )
         assert (
-            '15 */4 * * * OPENAI_API_KEY="${OPENAI_API_KEY}" /abs/mem index --embed '
+            '15 */4 * * * OPENAI_API_KEY="${OPENAI_API_KEY}" /abs/weave index --embed '
             "--only-new >> /cache/pm/embed-warm.log 2>&1" in block
         )
         # disabled job rendered commented
@@ -267,7 +267,7 @@ class TestCrontabBackend:
         monkeypatch.setattr(CrontabBackend, "_read_crontab", fake_read)
         monkeypatch.setattr(CrontabBackend, "_write_crontab", fake_write)
         monkeypatch.setattr(
-            "personal_mem.scheduling.cron.user_cache_dir",
+            "thinkweave.scheduling.cron.user_cache_dir",
             lambda: config.vault_root / "cache",
         )
         CrontabBackend(config).install(self._jobs())
@@ -289,7 +289,7 @@ class TestCrontabBackend:
             CrontabBackend, "_write_crontab", lambda self, content: None
         )
         monkeypatch.setattr(
-            "personal_mem.scheduling.cron.user_cache_dir",
+            "thinkweave.scheduling.cron.user_cache_dir",
             lambda: config.vault_root / "cache",
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/pidof")
@@ -315,7 +315,7 @@ class TestCrontabBackend:
             CrontabBackend, "_write_crontab", lambda self, content: None
         )
         monkeypatch.setattr(
-            "personal_mem.scheduling.cron.user_cache_dir",
+            "thinkweave.scheduling.cron.user_cache_dir",
             lambda: config.vault_root / "cache",
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/pidof")
@@ -365,11 +365,11 @@ class TestCrontabBackend:
 class TestTaskSchedulerBackend:
     def test_build_create_argv(self, config, monkeypatch):
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which",
+            "thinkweave.scheduling.registry.shutil.which",
             lambda name: f"C:\\bin\\{name}.exe",
         )
         monkeypatch.setattr(
-            "personal_mem.scheduling.taskscheduler.user_cache_dir",
+            "thinkweave.scheduling.taskscheduler.user_cache_dir",
             lambda: Path("C:/cache/pm"),
         )
         job = ScheduledJob(
@@ -397,7 +397,7 @@ class TestTaskSchedulerBackend:
     def test_env_warning_for_unset_var(self, config, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         job = ScheduledJob(
-            "embeddings", "15 */4 * * *", "mem index", runner="uv",
+            "embeddings", "15 */4 * * *", "weave index", runner="uv",
             env=("OPENAI_API_KEY",),
         )
         warnings = TaskSchedulerBackend(config).env_warnings([job])
@@ -415,15 +415,15 @@ class TestTaskSchedulerBackend:
     def test_install_calls_schtasks(self, config, monkeypatch):
         calls = []
         monkeypatch.setattr(
-            "personal_mem.scheduling.taskscheduler.subprocess.run",
+            "thinkweave.scheduling.taskscheduler.subprocess.run",
             lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0),
         )
         monkeypatch.setattr(
-            "personal_mem.scheduling.taskscheduler.user_cache_dir",
+            "thinkweave.scheduling.taskscheduler.user_cache_dir",
             lambda: config.vault_root / "cache",
         )
         monkeypatch.setattr(
-            "personal_mem.scheduling.registry.shutil.which", lambda name: f"/abs/{name}"
+            "thinkweave.scheduling.registry.shutil.which", lambda name: f"/abs/{name}"
         )
         jobs = [
             ScheduledJob("dream", "0 3 * * *", "claude -p /dream", runner="direct"),
@@ -443,14 +443,14 @@ class TestTaskSchedulerBackend:
 class TestSelectBackend:
     def test_windows(self, config, monkeypatch):
         monkeypatch.setattr(
-            "personal_mem.scheduling.platform.system", lambda: "Windows"
+            "thinkweave.scheduling.platform.system", lambda: "Windows"
         )
         assert isinstance(select_backend(config), TaskSchedulerBackend)
 
     def test_linux(self, config, monkeypatch):
-        monkeypatch.setattr("personal_mem.scheduling.platform.system", lambda: "Linux")
+        monkeypatch.setattr("thinkweave.scheduling.platform.system", lambda: "Linux")
         assert isinstance(select_backend(config), CrontabBackend)
 
     def test_darwin(self, config, monkeypatch):
-        monkeypatch.setattr("personal_mem.scheduling.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("thinkweave.scheduling.platform.system", lambda: "Darwin")
         assert isinstance(select_backend(config), CrontabBackend)

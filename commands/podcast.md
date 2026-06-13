@@ -3,13 +3,13 @@ name: podcast
 owns_mechanic: podcast_inbox
 source_type: podcast-events, podcast-concepts
 capabilities: [acquire]
-consumes: [mem_sources_config, mem_queue]
-produces: [vault/.mem/queues/podcast-events.jsonl, vault/.mem/queues/podcast-concepts.jsonl, vault/sources/podcast-events/**, vault/sources/podcast-concepts/**]
+consumes: [weave_sources_config, weave_queue]
+produces: [vault/.weave/queues/podcast-events.jsonl, vault/.weave/queues/podcast-concepts.jsonl, vault/sources/podcast-events/**, vault/sources/podcast-concepts/**]
 tools:
   - Read
   - Bash
-  - mem_queue
-  - mem_sources_config
+  - weave_queue
+  - weave_sources_config
 description: Thin orchestrator over the podcast intake rails. Calls the `rss_poll` discover strategy to enqueue from per-show RSS feeds, then `/drain --source-type podcast-*` to fan out writer subagents. Headless-safe.
 ---
 
@@ -17,7 +17,7 @@ description: Thin orchestrator over the podcast intake rails. Calls the `rss_pol
 
 `/podcast` is a thin orchestrator that wires two existing rails:
 
-1. **Discover** — `mem discover --strategy rss_poll --source-type <slug>` polls every show's RSS feed for each `podcast-*` source type and enqueues new episodes (dedup against queue + indexer happens inside the strategy).
+1. **Discover** — `weave discover --strategy rss_poll --source-type <slug>` polls every show's RSS feed for each `podcast-*` source type and enqueues new episodes (dedup against queue + indexer happens inside the strategy).
 2. **Drain** — `/drain --source-type <slug>` peeks the queue and fans out `research-podcast-worker` Sonnet subagents. Each worker downloads the MP3 enclosure and hands it to Gemini Flash via the Files API for a structured brief.
 
 No RSS-parsing code or writer-spawn logic lives in this skill — both rails are reusable for any source family. This file just sequences them and aggregates the reports.
@@ -31,7 +31,7 @@ No RSS-parsing code or writer-spawn logic lives in this skill — both rails are
 ## Step 0 — Discover the source-type set
 
 ```
-mem_sources_config()
+weave_sources_config()
 ```
 
 Pick every key under `sources.` whose slug starts with `podcast-`. If `<source-type>` was passed, filter to just that one. If no `podcast-*` types are configured, stop with `"No podcast source types in sources.yaml — nothing to do."`.
@@ -47,7 +47,7 @@ For each type, check that the file pointed at by `feed_config:` exists and conta
 For each `podcast-*` type with at least one configured outlet:
 
 ```bash
-uv run mem discover --strategy rss_poll --source-type <slug>
+uv run weave discover --strategy rss_poll --source-type <slug>
 ```
 
 The strategy:
@@ -56,7 +56,7 @@ The strategy:
 - Extracts the `<enclosure>` audio URL, `<itunes:duration>`, `<itunes:episode>`, and `<guid>` per item,
 - Applies `lookback_days` cutoff and per-outlet `daily_cap`,
 - Dedups against active queue + recent archive + the SQLite indexer (URLs already noted),
-- Enqueues new items into `vault/.mem/queues/<slug>.jsonl`.
+- Enqueues new items into `vault/.weave/queues/<slug>.jsonl`.
 
 Stdout is a JSON list of descriptors. Two kinds matter here:
 
@@ -79,7 +79,7 @@ For each type that got fresh items:
 Skill(skill="drain", args="--source-type <slug> [--limit N]")
 ```
 
-Under the plugin install, skills resolve namespaced — if `Skill(skill="drain")` fails with an unknown skill, retry as `personal-mem:drain`.
+Under the plugin install, skills resolve namespaced — if `Skill(skill="drain")` fails with an unknown skill, retry as `thinkweave:drain`.
 
 `/drain` handles Path B (writer-only, no triage) for `podcast-*` — it peeks the queue, fans out `research-podcast-worker` subagents at `drain_parallelism` (default 2 — Gemini Files API uploads are bandwidth-bound), validates allowed-failure prefixes, and archives outcomes.
 
@@ -114,7 +114,7 @@ Event-grain podcast sources are indexed at write time; clusters surface via `det
 For your own debugging — if you ever wonder why a re-run skipped or wrote something, the guards live in the two rails:
 
 1. **`rss_poll` strategy dedups against active queue + recent archive + indexer URLs.** An episode whose URL is already a `type: source` note in the vault won't re-enqueue, even months later. `entry_id` (the RSS `<guid>`) is the most stable key — `audio_url` can change when a show migrates CDNs.
-2. **`research-podcast-worker` idempotent_skip.** A `mem_search(entry_id)` hit short-circuits to `status="done"` no-op — covers the case where the queue was wiped but the vault note exists.
+2. **`research-podcast-worker` idempotent_skip.** A `weave_search(entry_id)` hit short-circuits to `status="done"` no-op — covers the case where the queue was wiped but the vault note exists.
 
 Podcasts have no equivalent to newsletter's `processed_label` (RSS feeds carry no server-side state). Guards 1 and 2 together cover what mail's three-layer guard does.
 
@@ -136,7 +136,7 @@ The `url_patterns` for both `podcast-events` and `podcast-concepts` overlap inte
 |---|---|
 | `/podcast` | Discover (rss_poll) + drain all `podcast-*` queues in one shot |
 | `/podcast podcast-events` | Same, limited to one source type |
-| `mem discover --strategy rss_poll --source-type podcast-events` | Discover only (no drain) — useful in cron flows that drain separately |
+| `weave discover --strategy rss_poll --source-type podcast-events` | Discover only (no drain) — useful in cron flows that drain separately |
 | `/drain --source-type podcast-events` | Drain only (queue was already filled) |
 | `/research <rss-url>` | One-off URL paste — enqueue + drain one episode || `/source-fit` | Diagnose whether a new show shape fits the existing two types |
 
@@ -158,8 +158,8 @@ The `url_patterns` for both `podcast-events` and `podcast-concepts` overlap inte
 
 The audio-extraction step (inside `research-podcast-worker`) requires:
 
-1. `pip install personal-mem[gemini]` — installs `google-genai>=1.0`.
-2. `GOOGLE_API_KEY` env var (or `.env` in `$PERSONAL_MEM_VAULT` / CWD).
+1. `pip install thinkweave[gemini]` — installs `google-genai>=1.0`.
+2. `GOOGLE_API_KEY` env var (or `.env` in `$THINKWEAVE_VAULT` / CWD).
 
 If the SDK is missing or the key is unset, drain workers return `api_error: missing_sdk` / `api_error: missing_api_key` — surface in the report and leave the queue items pending until fixed.
 

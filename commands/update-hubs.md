@@ -1,15 +1,15 @@
 ---
 name: update-hubs
 owns_mechanic: concept_hubs
-consumes: [mem_search, mem_read, mem_graph]
+consumes: [weave_search, weave_read, weave_graph]
 produces: [vault/concepts/topics/*.md]
 tools:
   - Read
   - Edit
   - Bash
-  - mem_search
-  - mem_read
-  - mem_graph
+  - weave_search
+  - weave_read
+  - weave_graph
 description: Concept-hub sync — incremental (default) for daily deltas, or `--bulk [inline|batch]` for backfill on fresh / long-untended vaults.
 ---
 
@@ -22,9 +22,9 @@ Owns the synthesis-side update of `vault/concepts/topics/*.md`. Two modes:
   deltas (0–20 new notes × a few concepts each).
 - **`--bulk` — backfill.** Walks the full hub plan with a per-invocation cap.
   Two sub-modes:
-  - `--bulk` or `--bulk inline` — runs `mem drain --target hubs --via inline`
+  - `--bulk` or `--bulk inline` — runs `weave drain --target hubs --via inline`
     (Claude Code session, interactive review, current LLM does the extraction).
-  - `--bulk batch` — runs `mem drain --target hubs --via batch` (OpenAI
+  - `--bulk batch` — runs `weave drain --target hubs --via batch` (OpenAI
     Batches API + gpt-5-mini, 50% discount, async, no interactive review).
 
 **Cap policy.** Bulk mode is the right tool when the plan has 100+ unprocessed
@@ -37,7 +37,7 @@ isn't worth it for a handful of items.
 Each concept in the ontology has a hub page at `vault/concepts/topics/{concept}.md` with two sections:
 
 - **Essence** — ≤500w working mental model, slow-moving
-- **Catalyst log** — append-only list of learning artifacts extracted from vault notes, each citing its source via `[[note-id]]` (was `## Learning log` pre-rename; `migrate_hub_log_heading` rewrites on `mem index --full`)
+- **Catalyst log** — append-only list of learning artifacts extracted from vault notes, each citing its source via `[[note-id]]` (was `## Learning log` pre-rename; `migrate_hub_log_heading` rewrites on `weave index --full`)
 
 The hub page *is* the processed ledger: notes already cited in the log are done, notes tagged with the concept but not yet cited are unprocessed. No frontmatter markers on source notes.
 
@@ -49,7 +49,7 @@ This skill processes the unprocessed. Cross-type (sources, sessions, decisions, 
 
 ### 1. Survey scope
 
-Run `mem hubs status` to see per-concept processed state. Look at the `todo` column.
+Run `weave hubs status` to see per-concept processed state. Look at the `todo` column.
 
 If `todo` is small (roughly 1–20 notes across a handful of concepts, a normal daily delta), continue here.
 
@@ -62,7 +62,7 @@ to process a backfill in incremental mode; the per-invocation cap and the
 
 Default: process all concepts with any `todo`. If the user scopes to a specific concept (`/update-hubs agentic-harness`), only process that one.
 
-For each concept, run `mem hubs plan --concept <concept>` to get the list of unprocessed notes. This writes a plan file to `.mem/hubs_plan.json` — read it.
+For each concept, run `weave hubs plan --concept <concept>` to get the list of unprocessed notes. This writes a plan file to `.weave/hubs_plan.json` — read it.
 
 ### 3. Process notes inline
 
@@ -101,18 +101,18 @@ For each hub page that gained entries, use `Edit` to insert the new log entries 
 - Frontmatter (all of it)
 - `# {concept}` title line
 - Domain link line (if present)
-- `## Essence` section body (never rewrite during daily sync — flag to user if you think it needs rewriting, and let them run `/mem-resolve-concepts` to handle it)
+- `## Essence` section body (never rewrite during daily sync — flag to user if you think it needs rewriting, and let them run `/weave-resolve-concepts` to handle it)
 - Existing log entries
 
 If the hub page has `*No entries yet.*` as its log content, replace that line with the first entry you're adding.
 
 ### 5. Mark essences flagged for revision (if any)
 
-If any concept's essence should be revised, don't rewrite it here. Note the flagged concepts in your final report and suggest `/mem-resolve-concepts` to handle the revisions.
+If any concept's essence should be revised, don't rewrite it here. Note the flagged concepts in your final report and suggest `/weave-resolve-concepts` to handle the revisions.
 
 ### 6. Reindex
 
-Run `mem index` (incremental — don't pass `--full`). Only the touched hub pages will be re-indexed; SHA-256 hash dedup skips the rest.
+Run `weave index` (incremental — don't pass `--full`). Only the touched hub pages will be re-indexed; SHA-256 hash dedup skips the rest.
 
 ### 7. Report
 
@@ -122,7 +122,7 @@ One short paragraph:
 Processed N notes across M concepts.
 Appended X learning-log entries.
 Essence revision flagged for: [list concepts, or "none"].
-Run `/mem-resolve-concepts` to handle essence revisions.
+Run `/weave-resolve-concepts` to handle essence revisions.
 ```
 
 That's it. No lists of individual entries, no diffs — the user can read the hub pages in Obsidian.
@@ -131,7 +131,7 @@ That's it. No lists of individual entries, no diffs — the user can read the hu
 
 ## `--bulk` mode (backfill)
 
-Bulk concept-hub backfill. Walks `.mem/hubs_plan.json` and processes every
+Bulk concept-hub backfill. Walks `.weave/hubs_plan.json` and processes every
 unprocessed `(concept, note)` pair, appending learning artifacts. Use when
 the plan has 100+ pairs (fresh vault, long-untended vault, or a re-onboarded
 project) — incremental mode is the wrong shape for that.
@@ -142,7 +142,7 @@ project) — incremental mode is the wrong shape for that.
   hint then this skill body takes over and processes pairs in-session
   with full Claude oversight.
   ```
-  Bash("uv run mem drain --target hubs --via inline")
+  Bash("uv run weave drain --target hubs --via inline")
   ```
   Then proceed with the per-pair flow below.
 - **`--bulk batch`** — non-interactive bulk path. The CLI runs entirely in
@@ -150,15 +150,15 @@ project) — incremental mode is the wrong shape for that.
   OpenAI Batches API with gpt-5-mini, polls for completion, and applies the
   appended log entries. No Claude Code work to do beyond launching it.
   ```
-  Bash("uv run mem drain --target hubs --via batch")
+  Bash("uv run weave drain --target hubs --via batch")
   ```
   Report the CLI's stdout verbatim and stop.
 
 ### B1. Load or build the plan (inline sub-mode only)
 
-If `.mem/hubs_plan.json` already exists, `Read` it. Otherwise run:
+If `.weave/hubs_plan.json` already exists, `Read` it. Otherwise run:
 ```
-mem hubs plan [--concept X] [--project Y] [--limit-notes N] [--limit-concepts M]
+weave hubs plan [--concept X] [--project Y] [--limit-notes N] [--limit-concepts M]
 ```
 
 The plan is a JSON object:
@@ -206,7 +206,7 @@ For each pair:
 ### B3. Reindex and report
 
 ```
-mem index
+weave index
 ```
 
 Report:
@@ -221,7 +221,7 @@ Pairs remaining: Z. Run /update-hubs --bulk again to continue.
 
 ## Scope guardrails (both modes)
 
-- **Never rewrite the essence** in this skill. That's `/mem-resolve-concepts` territory.
+- **Never rewrite the essence** in this skill. That's `/weave-resolve-concepts` territory.
 - **Never delete log entries** — the log is append-only by design. If an entry is wrong, the user can hand-edit.
 - **Never mutate source-note frontmatter** to mark it "processed." The hub page is the ledger.
 - **Don't spawn Explore agents** to crawl the vault for related context — the plan file already has the list of notes to process, and the hub page already has its current state. Everything you need is in the per-pair reads.

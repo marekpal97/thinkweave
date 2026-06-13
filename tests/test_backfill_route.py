@@ -13,16 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.operations._backfill_route import choose_route
+from thinkweave.operations._backfill_route import choose_route
 
 
 @pytest.fixture
 def with_openai_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Seed an OpenAI key and isolate .env lookup."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
     monkeypatch.chdir(tmp_path)
-    from personal_mem.core import api_keys
+    from thinkweave.core import api_keys
     monkeypatch.setattr(api_keys, "_PROJECT_ROOT", tmp_path)
     yield monkeypatch
 
@@ -32,11 +32,11 @@ def without_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Strip all provider keys + isolate .env lookup."""
     for var in (
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY", "GOOGLE_API_KEY", "PERSONAL_MEM_VAULT",
+        "GEMINI_API_KEY", "GOOGLE_API_KEY", "THINKWEAVE_VAULT",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path)
-    from personal_mem.core import api_keys
+    from thinkweave.core import api_keys
     monkeypatch.setattr(api_keys, "_PROJECT_ROOT", tmp_path)
     yield monkeypatch
 
@@ -126,11 +126,11 @@ def test_provider_arg_determines_which_key_is_checked(
 ):
     # ANTHROPIC key is set; OPENAI is not.
     for var in ("OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                "PERSONAL_MEM_VAULT"):
+                "THINKWEAVE_VAULT"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anth")
     monkeypatch.chdir(tmp_path)
-    from personal_mem.core import api_keys
+    from thinkweave.core import api_keys
     monkeypatch.setattr(api_keys, "_PROJECT_ROOT", tmp_path)
 
     # provider=anthropic → batch (key present)

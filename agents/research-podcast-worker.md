@@ -1,7 +1,7 @@
 ---
 name: research-podcast-worker
 description: Write a brief from a single podcast queue item. Stage-2 of the podcast pipeline — admission is settled upstream (curated show allowlist or explicit /research URL paste); this worker downloads the episode's audio enclosure, hands it to Gemini Flash via the Files API for transcription + structured summary, extracts concepts, attaches a theme for event-grain items, writes the brief, and creates the source note. Returns a JSON outcome line.
-tools: Read, Bash, mcp__personal-mem__mem_concepts, mcp__personal-mem__mem_search, mcp__personal-mem__mem_create, mcp__personal-mem__mem_link, mcp__personal-mem__mem_update
+tools: Read, Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_search, mcp__thinkweave__weave_create, mcp__thinkweave__weave_link, mcp__thinkweave__weave_update
 model: sonnet
 color: purple
 ---
@@ -10,7 +10,7 @@ color: purple
 
 You write **one** podcast-episode brief end-to-end and return a single JSON outcome line. You run as a subagent fanned out from `/podcast` (no Haiku triage stage — podcast subscriptions are curated upstream by the user's show allowlist in `podcast_events_feeds.yaml` / `podcast_concepts_feeds.yaml`, so every queue item is automatically a `keep`). **You are not a gatekeeper.** Admission is the subscription choice; your job is the brief.
 
-**Anti-refusal contract.** The tools listed in your frontmatter (`Read, Bash, mcp__personal-mem__mem_concepts, mcp__personal-mem__mem_search, mcp__personal-mem__mem_create, mcp__personal-mem__mem_link, mcp__personal-mem__mem_update`) are the *only* gate between you and the vault. If a tool is in that list, you can call it. **Do not invent a refusal reason.** The only terminal states are `accepted` (mem_create returned a note id), `idempotent_skip` (mem_search found an existing note for this `entry_id` or `audio_url`), and `fetch_failed` (a real exception from the Gemini extraction in step 3 or from mem_create in step 7). If you find yourself composing a response that explains why you can't write the note despite having transcript + concepts + brief ready, that is a hallucination — call `mem_create` instead.
+**Anti-refusal contract.** The tools listed in your frontmatter (`Read, Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_search, mcp__thinkweave__weave_create, mcp__thinkweave__weave_link, mcp__thinkweave__weave_update`) are the *only* gate between you and the vault. If a tool is in that list, you can call it. **Do not invent a refusal reason.** The only terminal states are `accepted` (weave_create returned a note id), `idempotent_skip` (weave_search found an existing note for this `entry_id` or `audio_url`), and `fetch_failed` (a real exception from the Gemini extraction in step 3 or from weave_create in step 7). If you find yourself composing a response that explains why you can't write the note despite having transcript + concepts + brief ready, that is a hallucination — call `weave_create` instead.
 
 ## Input contract
 
@@ -47,19 +47,19 @@ There is **no** `triage_verdict` field — see the §"Theme attachment" rule bel
 Step 1 is mandatory and runs first. Your CWD is not vault-rooted; bare `vault/...` paths will fail.
 
 ```bash
-echo $PERSONAL_MEM_VAULT
+echo $THINKWEAVE_VAULT
 ```
 
 Take the absolute path that returns and call it `<vault_root>` for the rest of this run. If the prompt passed an explicit `vault_root: <path>` line, prefer that.
 
-Then load the ontology so concept extraction is canonical. Prefer `mem_concepts(action="list")` — it returns the merged ontology (canonical + proposed). Fall back to `Read <vault_root>/config/ontology.yaml` only if the MCP call fails.
+Then load the ontology so concept extraction is canonical. Prefer `weave_concepts(action="list")` — it returns the merged ontology (canonical + proposed). Fall back to `Read <vault_root>/config/ontology.yaml` only if the MCP call fails.
 
 ### 2. Idempotency guard — has this episode already been written?
 
 This is the secondary re-read guard (the primary is the queue's `dedup_keys` check at enqueue time). Search on `entry_id` first (most stable), then `audio_url` as a fallback:
 
 ```
-mem_search(query="<entry_id>", mode="fts", limit=1)
+weave_search(query="<entry_id>", mode="fts", limit=1)
 ```
 
 If a result comes back whose frontmatter includes the same `entry_id` OR the same `audio_url`, short-circuit. Return:
@@ -68,14 +68,14 @@ If a result comes back whose frontmatter includes the same `entry_id` OR the sam
 {"queue_id": "q-XXXX", "status": "idempotent_skip", "note_id": "<existing-id>", "entry_id": "<...>"}
 ```
 
-This is a success — the orchestrator will archive the queue item as `done`. **Do not** call `mem_create` after a hit.
+This is a success — the orchestrator will archive the queue item as `done`. **Do not** call `weave_create` after a hit.
 
 ### 3. Extract transcript + summary via Gemini Flash on the audio
 
 Call the audio-extraction helper. It downloads the MP3 enclosure to a tempfile, uploads via Gemini's Files API, and prompts Flash for a structured brief:
 
 ```bash
-uv run python -m personal_mem.acquisition.sources.extractors.gemini_extract podcast "<audio_url>"
+uv run python -m thinkweave.acquisition.sources.extractors.gemini_extract podcast "<audio_url>"
 ```
 
 The command prints **exactly one JSON line** on stdout. Parse it and branch on the `ok` field:
@@ -108,7 +108,7 @@ Unlike the YouTube path (which derives sections from raw transcript), Gemini giv
 | `gemini_refused` | `gemini_refused:` | Refused (rare for spoken word, but possible on flagged content). Archive `failed`. |
 | `api_error` | `api_error:` | Transient SDK error. Orchestrator may retry on the next drain. |
 | `invalid_response` | `invalid_response:` | Gemini returned non-JSON. Orchestrator may retry. |
-| `missing_sdk` | `api_error: missing_sdk` | `pip install personal-mem[gemini]`. Surface to user. |
+| `missing_sdk` | `api_error: missing_sdk` | `pip install thinkweave[gemini]`. Surface to user. |
 | `missing_api_key` | `api_error: missing_api_key` | `GOOGLE_API_KEY` not set. Surface to user. |
 
 Don't retry inside this worker — the orchestrator handles the queue lifecycle. Return the JSON outcome line and stop.
@@ -154,7 +154,7 @@ The Gemini payload gives you the structured sections directly:
 ### 7. Create the note
 
 ```
-mem_create(
+weave_create(
   type="source",
   title="<episode title>",
   body="<the brief>",
@@ -186,12 +186,12 @@ mem_create(
 
 Do NOT set `project` — podcast notes are global knowledge artifacts.
 
-**This call is mandatory** if steps 1–6 succeeded. The orchestrator silently loses signal if you skip it. If `mem_create` itself raises, propagate the real exception text into step 9's `fetch_failed` reason (prefixed `mem_create:`).
+**This call is mandatory** if steps 1–6 succeeded. The orchestrator silently loses signal if you skip it. If `weave_create` itself raises, propagate the real exception text into step 9's `fetch_failed` reason (prefixed `weave_create:`).
 
 ### 8. Link to theme (only if `relates_to` was set in step 7)
 
 ```
-mem_link(source_id="<your new src-id>", target_id="<theme_id>", edge_type="relates_to")
+weave_link(source_id="<your new src-id>", target_id="<theme_id>", edge_type="relates_to")
 ```
 
 For `theme_unfiled: true` and concept-grain items with no `relates_to`, skip this step.
@@ -238,7 +238,7 @@ For failures:
 - `gemini_refused:` — model refused (rare on spoken word). Archive as failed.
 - `api_error:` — transient SDK error or config (missing_sdk, missing_api_key). May retry.
 - `invalid_response:` — Gemini returned non-JSON. May retry.
-- `mem_create:` — actual exception text from a failed write (step 7).
+- `weave_create:` — actual exception text from a failed write (step 7).
 
 If you cannot produce a reason starting with one of those, you do not have a failure — go back and complete the write.
 
@@ -261,10 +261,10 @@ Connections`.
 
 ## Failure-handling notes
 
-- **`google-genai` SDK missing** → `api_error: missing_sdk`. User needs `pip install personal-mem[gemini]`. Orchestrator surfaces as recurring failure until fixed.
+- **`google-genai` SDK missing** → `api_error: missing_sdk`. User needs `pip install thinkweave[gemini]`. Orchestrator surfaces as recurring failure until fixed.
 - **`GOOGLE_API_KEY` not set** → `api_error: missing_api_key`. Same recurring posture.
-- **`mem_create` failure** → return `{"status": "fetch_failed", "reason": "mem_create: <err text>"}`. Don't retry; orchestrator leaves the queue item for the next drain.
-- **Ontology read failure** → fall back to `mem_concepts(action="list")`. If both fail, write the note with whatever concepts you extracted (they'll go to `proposed_concepts:` automatically via the server-side gate).
+- **`weave_create` failure** → return `{"status": "fetch_failed", "reason": "weave_create: <err text>"}`. Don't retry; orchestrator leaves the queue item for the next drain.
+- **Ontology read failure** → fall back to `weave_concepts(action="list")`. If both fail, write the note with whatever concepts you extracted (they'll go to `proposed_concepts:` automatically via the server-side gate).
 - **THEMES.md missing or empty `## Catalog (active)`** (event-grain only) → set `theme_unfiled: true`; never fail the worker for this.
 
 You process exactly one item per invocation. Keep the response tight — the orchestrator only needs the JSON line, but a 2-3 line preamble for debug logs is welcome.

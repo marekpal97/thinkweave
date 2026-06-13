@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.acquisition.discover.strategies.mail_poll import MailPollStrategy
+from thinkweave.acquisition.discover.strategies.mail_poll import MailPollStrategy
 
 
 class _FakeVault:
@@ -28,7 +28,7 @@ def _write_priorities(vault_root: Path, body: str) -> None:
 def _newsletter_spec() -> dict:
     return {
         "mail_provider": "gmail",
-        "processed_label": "mem-processed",
+        "processed_label": "weave-processed",
         "lookback_days": 30,
         "senders": ["legacy@spec.com"],  # legacy inline senders
     }

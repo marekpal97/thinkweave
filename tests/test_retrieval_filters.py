@@ -1,7 +1,7 @@
 """Tests for the new retrieval filter parity (Workstream F2).
 
 Covers:
-- `mem_search`/`Search.search` with `concepts=[…]` filter (text + concept).
+- `weave_search`/`Search.search` with `concepts=[…]` filter (text + concept).
 - `since` / `until` ISO date filters on search, get_context, search_by_concept.
 - `note_type` / `project` projection filters on get_related (graph).
 - Empty-query list mode under various filter combinations.
@@ -14,12 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.retrieval.search import Search
-from personal_mem.synthesis.theme_hub import build_theme_frontmatter, render_theme_body_skeleton
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.retrieval.search import Search
+from thinkweave.synthesis.theme_hub import build_theme_frontmatter, render_theme_body_skeleton
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ def search(config: Config):
 
 
 # ---------------------------------------------------------------------------
-# `concepts` filter on mem_search
+# `concepts` filter on weave_search
 # ---------------------------------------------------------------------------
 
 
@@ -289,7 +289,7 @@ class TestThemesInRetrieval:
     def test_project_snapshot_includes_active_themes(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.retrieval.context import build_project_context
+        from thinkweave.retrieval.context import build_project_context
 
         vault.create_note(
             note_type=NoteType.THEME,

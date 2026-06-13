@@ -10,7 +10,7 @@ index warm; ``detect_signals`` reads from the index and surfaces raw
 clusters as JSON for /dream to name from the cluster + active themes.
 
 These tests pin both halves: (1) creates still index the source so it's
-visible to ``mem_search`` immediately, and (2) ``detect_signals``
+visible to ``weave_search`` immediately, and (2) ``detect_signals``
 surfaces the right clusters and skips the wrong ones.
 """
 
@@ -21,10 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.synthesis.theme_candidates import detect_signals
+from thinkweave.core.config import Config
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.synthesis.theme_candidates import detect_signals
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ def test_indexer_failure_does_not_block_create(
 ):
     """If the incremental indexer raises, the create itself must still
     succeed. The hook is opportunistic — write contract is sacred."""
-    from personal_mem.core import indexer as indexer_module
+    from thinkweave.core import indexer as indexer_module
 
     real_indexer = indexer_module.Indexer
 

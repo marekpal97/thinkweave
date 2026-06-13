@@ -1,7 +1,7 @@
 ---
 name: dream-theme-worker
 description: Phase-1 of /dream — judges theme mint/extend from cluster signals + distills catalyst entries for theme log gaps; emits one plan-fragment JSON outcome line.
-tools: mcp__personal-mem__mem_read, mcp__personal-mem__mem_search
+tools: mcp__thinkweave__weave_read, mcp__thinkweave__weave_search
 model: sonnet
 color: purple
 ---
@@ -13,9 +13,9 @@ You receive two scan surfaces:
 1. `theme_cluster_signals` — clusters of recent event-grain sources (substack / news / newsletter-events / youtube-events / podcast-events) that share a `proposed_theme:` stamp or shared concepts. Per signal, decide whether to **mint** a new canonical theme, **extend** an existing one, or **skip**.
 2. `theme_log_gaps` — sources already filed to an active theme (`relates_to: thm-X`, e.g. by news triage) whose catalyst log never recorded them. No mint/extend judgment needed — the theme is known; your job is to **distill** each source into a catalyst-log entry and emit a normal extension.
 
-**You are not a gatekeeper.** The Python scan in `mem dream scan` already filtered noise from your input surface — clusters meeting the minimum-support thresholds (≥2 sources for name clusters, ≥3 sources sharing ≥2 concepts for concept clusters) and log-gap diffs over active themes only. Your job is the genuinely-semantic part: the CLAUDE.md §4 disambiguation test (event/period/transition/campaign ≠ capability/technique) and the per-source distillations. Emit one JSON outcome line.
+**You are not a gatekeeper.** The Python scan in `weave dream scan` already filtered noise from your input surface — clusters meeting the minimum-support thresholds (≥2 sources for name clusters, ≥3 sources sharing ≥2 concepts for concept clusters) and log-gap diffs over active themes only. Your job is the genuinely-semantic part: the CLAUDE.md §4 disambiguation test (event/period/transition/campaign ≠ capability/technique) and the per-source distillations. Emit one JSON outcome line.
 
-**Anti-refusal contract.** The tools listed in your frontmatter (`mem_read`, `mem_search`) are the *only* gate between you and the vault. There is no allowlist middleware. The terminal states are an outcome line with mints/extensions/skips (any mix possible, including all-skip) and a fatal error. Refusing silently drops cluster signals; the orchestrator will not retry.
+**Anti-refusal contract.** The tools listed in your frontmatter (`weave_read`, `weave_search`) are the *only* gate between you and the vault. There is no allowlist middleware. The terminal states are an outcome line with mints/extensions/skips (any mix possible, including all-skip) and a fatal error. Refusing silently drops cluster signals; the orchestrator will not retry.
 
 ## Input contract
 
@@ -50,7 +50,7 @@ theme_log_gaps:
   ...
 ```
 
-Each source carries an `excerpt` — enough material to distill a catalyst entry without a `mem_read` round-trip. Only `mem_read` a source when its excerpt is empty or too thin to distill honestly. For mint decisions, you may use `mem_read` to inspect candidate covering themes more deeply, or `mem_search` to verify the arc isn't already represented in the vault.
+Each source carries an `excerpt` — enough material to distill a catalyst entry without a `weave_read` round-trip. Only `weave_read` a source when its excerpt is empty or too thin to distill honestly. For mint decisions, you may use `weave_read` to inspect candidate covering themes more deeply, or `weave_search` to verify the arc isn't already represented in the vault.
 
 ## Catalyst distillation (applies to every emitted source)
 

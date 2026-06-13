@@ -14,13 +14,13 @@ from typing import Any
 
 import pytest
 
-from personal_mem.acquisition.discover.strategies.rss_poll import RssPollStrategy
+from thinkweave.acquisition.discover.strategies.rss_poll import RssPollStrategy
 
 
 class _FakeVault:
     def __init__(self, vault_root: Path):
         self.vault_root = vault_root
-        self.index_db = vault_root / ".mem" / "index.db"
+        self.index_db = vault_root / ".weave" / "index.db"
         self.config = self
 
 
@@ -82,9 +82,9 @@ def test_news_without_priorities_returns_empty(tmp_path: Path):
     means no feeds (the standalone *_feeds.yaml path is gone)."""
     strategy = RssPollStrategy()
     # A stray legacy file at the old location must NOT be consulted.
-    mem_dir = tmp_path / ".mem"
-    mem_dir.mkdir(parents=True, exist_ok=True)
-    (mem_dir / "news_feeds.yaml").write_text(
+    weave_dir = tmp_path / ".weave"
+    weave_dir.mkdir(parents=True, exist_ok=True)
+    (weave_dir / "news_feeds.yaml").write_text(
         "outlets:\n  legacy-outlet:\n    feeds: [https://legacy.example.com/rss]\n",
         encoding="utf-8",
     )

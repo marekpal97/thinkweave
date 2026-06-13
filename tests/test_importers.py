@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.acquisition.importers.claude_history import (
+from thinkweave.core.config import Config
+from thinkweave.acquisition.importers.claude_history import (
     META_CONCEPT_TO_TAG,
     PROJECT_MAP,
     _build_session_map,
@@ -28,8 +28,8 @@ from personal_mem.acquisition.importers.claude_history import (
     import_claude_history,
     normalize_project,
 )
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 
 
 # ── Fixtures ──────────────────────────────────────────────────────
@@ -460,7 +460,7 @@ class TestImportClaudeMem:
         assert (projects_dir / "code_graph" / "sessions").exists()
 
         # Check that the manifest was saved
-        manifest = _load_manifest(config.mem_dir)
+        manifest = _load_manifest(config.weave_dir)
         assert len(manifest["imported_ids"]) == 8  # 4 sessions + 4 observations
 
     def test_idempotency(self, config: Config, claude_mem_db: Path):
@@ -578,7 +578,7 @@ class TestImportClaudeMem:
         assert fm["date"].startswith("2026-01-25")
 
 
-# ── CLI parser flags for `mem import claude-code` ────────────────────
+# ── CLI parser flags for `weave import claude-code` ────────────────────
 
 
 class TestImportClaudeCodeParserFlags:
@@ -594,7 +594,7 @@ class TestImportClaudeCodeParserFlags:
     """
 
     def test_sample_only_flag_parses(self):
-        from personal_mem.surfaces.cli.parser import build_parser
+        from thinkweave.surfaces.cli.parser import build_parser
 
         parser = build_parser()
         args = parser.parse_args(
@@ -606,7 +606,7 @@ class TestImportClaudeCodeParserFlags:
         assert args.since == ""
 
     def test_since_and_limit_parse_for_claude_code(self):
-        from personal_mem.surfaces.cli.parser import build_parser
+        from thinkweave.surfaces.cli.parser import build_parser
 
         parser = build_parser()
         args = parser.parse_args(
@@ -624,8 +624,8 @@ class TestImportClaudeCodeParserFlags:
         assert args.sample_only is False
 
     def test_sample_only_default_false(self):
-        """Bare ``mem import claude-code`` leaves sample_only off."""
-        from personal_mem.surfaces.cli.parser import build_parser
+        """Bare ``weave import claude-code`` leaves sample_only off."""
+        from thinkweave.surfaces.cli.parser import build_parser
 
         parser = build_parser()
         args = parser.parse_args(["import", "claude-code"])
@@ -642,8 +642,8 @@ class TestImportClaudeCodeFlagWiring:
     def _captured_kwargs(self, argv: list[str], monkeypatch) -> dict:
         """Run cmd_import with import_claude_code stubbed; return the
         kwargs the real function would have received."""
-        from personal_mem.surfaces.cli import index as cli_index
-        from personal_mem.surfaces.cli.parser import build_parser
+        from thinkweave.surfaces.cli import index as cli_index
+        from thinkweave.surfaces.cli.parser import build_parser
 
         captured: dict = {}
 
@@ -661,7 +661,7 @@ class TestImportClaudeCodeFlagWiring:
             }
 
         monkeypatch.setattr(
-            "personal_mem.onboarding.claude_code_seed.import_claude_code",
+            "thinkweave.onboarding.claude_code_seed.import_claude_code",
             fake_import_claude_code,
         )
         # cmd_import does a `from ... import import_claude_code` inside the
@@ -673,7 +673,7 @@ class TestImportClaudeCodeFlagWiring:
         return captured
 
     def test_sample_only_translates_to_limit_50(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
         kwargs = self._captured_kwargs(
             ["import", "claude-code", "--sample-only", "--dry-run"],
             monkeypatch,
@@ -684,7 +684,7 @@ class TestImportClaudeCodeFlagWiring:
     def test_explicit_limit_wins_over_sample_only(self, tmp_path, monkeypatch):
         """When both flags are passed, --limit is the explicit user intent
         and should override the --sample-only shorthand."""
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
         kwargs = self._captured_kwargs(
             [
                 "import",
@@ -699,14 +699,14 @@ class TestImportClaudeCodeFlagWiring:
         assert kwargs["limit"] == 200
 
     def test_neither_flag_leaves_limit_zero(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
         kwargs = self._captured_kwargs(
             ["import", "claude-code", "--dry-run"], monkeypatch
         )
         assert kwargs["limit"] == 0
 
     def test_since_passes_through(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
         kwargs = self._captured_kwargs(
             ["import", "claude-code", "--since", "2025-06-01", "--dry-run"],
             monkeypatch,

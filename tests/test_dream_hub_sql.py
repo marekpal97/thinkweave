@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
-from personal_mem.operations.dream import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
+from thinkweave.operations.dream import (
     _collect_essence_candidates,
     _collect_knowledge_delta,
     _collect_theme_log_gaps,
@@ -42,7 +42,7 @@ def _ref_log(body: str):
     fallback, no path→id map) so equivalence is asserted against the exact
     logic the SQL reads replaced.
     """
-    from personal_mem.synthesis.hub import (
+    from thinkweave.synthesis.hub import (
         CATALYST_LOG_HEADING,
         LEGACY_LEARNING_LOG_HEADING,
         parse_log_section,

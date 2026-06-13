@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.acquisition.discover.strategies import focus_research
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.acquisition.discover.strategies import focus_research
 
 
 @pytest.fixture
@@ -158,11 +158,11 @@ class TestSubstrateExemplars:
         ])
         _seed_session_with_log(vault, "test", [
             {"ts": datetime.now(timezone.utc).isoformat(), "type": "retrieval",
-             "tool": "mem_search", "returned_ids": [id2]},
+             "tool": "weave_search", "returned_ids": [id2]},
         ])
         _seed_session_with_log(vault, "test", [
             {"ts": datetime.now(timezone.utc).isoformat(), "type": "retrieval",
-             "tool": "mem_search", "returned_ids": [id2]},
+             "tool": "weave_search", "returned_ids": [id2]},
         ])
         indexer.rebuild(full=True)
 
@@ -195,7 +195,7 @@ class TestSubstrateExemplars:
         ])
         _seed_session_with_log(vault, "test", [
             {"ts": datetime.now(timezone.utc).isoformat(), "type": "retrieval",
-             "tool": "mem_search", "returned_ids": [nB]},
+             "tool": "weave_search", "returned_ids": [nB]},
         ])
         indexer.rebuild(full=True)
 
@@ -255,7 +255,7 @@ class TestProbeExemplars:
                  "text": "What is dense-retrieval and how does it differ?"},
             ],
             retrieval_log=[
-                {"ts": ts, "type": "retrieval", "tool": "mem_search",
+                {"ts": ts, "type": "retrieval", "tool": "weave_search",
                  "returned_ids": [tagged]},
             ],
         )
@@ -282,7 +282,7 @@ class TestProbeExemplars:
         ts = datetime.now(timezone.utc).isoformat()
         # Served but no probe — exemplar_probed should be empty.
         _seed_session_with_log(vault, "test", [
-            {"ts": ts, "type": "retrieval", "tool": "mem_search",
+            {"ts": ts, "type": "retrieval", "tool": "weave_search",
              "returned_ids": [tagged]},
         ])
         indexer.rebuild(full=True)
@@ -297,7 +297,7 @@ class TestProbeExemplars:
 
 
 def test_strategy_is_registered():
-    from personal_mem.acquisition.discover import get, names
+    from thinkweave.acquisition.discover import get, names
 
     assert "focus_research" in names()
     s = get("focus_research")

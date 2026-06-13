@@ -1,4 +1,4 @@
-"""Tests for ``mem judge`` — Phase-3 prediction-judge CLI surface.
+"""Tests for ``weave judge`` — Phase-3 prediction-judge CLI surface.
 
 Exercises the three flags (``--drain``, ``--rejudge``, ``--list-pending``)
 and the worklist JSON shape that ``/judge-prediction`` consumes.
@@ -13,11 +13,11 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations import rejudge_queue
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations import rejudge_queue
 
 
 @pytest.fixture
@@ -89,8 +89,8 @@ def _args(**kwargs):
 
 
 def _run_judge(cfg: Config, monkeypatch, capsys, **kwargs):
-    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(cfg.vault_root))
-    from personal_mem.surfaces.cli.judge import cmd_judge
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(cfg.vault_root))
+    from thinkweave.surfaces.cli.judge import cmd_judge
     cmd_judge(_args(**kwargs))
     return capsys.readouterr()
 
@@ -162,12 +162,12 @@ def test_rejudge_enqueues_and_invokes_subprocess(
         predicted_outcome="will land",
     )
     _index(cfg)
-    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(cfg.vault_root))
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(cfg.vault_root))
 
     fake_result = type("R", (), {"returncode": 0})()
     with patch("subprocess.run", return_value=fake_result) as mock_run:
         with pytest.raises(SystemExit) as exc:
-            from personal_mem.surfaces.cli.judge import cmd_judge
+            from thinkweave.surfaces.cli.judge import cmd_judge
             cmd_judge(_args(rejudge=dec_id))
         assert exc.value.code == 0
 

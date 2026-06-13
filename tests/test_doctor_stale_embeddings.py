@@ -1,4 +1,4 @@
-"""Tests for the ``mem doctor`` stale-embeddings advisory.
+"""Tests for the ``weave doctor`` stale-embeddings advisory.
 
 Warns when ``embeddings.db`` mtime is older than
 ``STALE_EMBEDDINGS_DAYS`` AND ``OPENAI_API_KEY`` is in the
@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.vault import VaultManager
-from personal_mem.synthesis.concepts import (
+from thinkweave.core.config import Config
+from thinkweave.core.vault import VaultManager
+from thinkweave.synthesis.concepts import (
     STALE_EMBEDDINGS_DAYS,
     doctor_report,
     find_stale_embeddings_db,
@@ -50,7 +50,7 @@ class TestStaleEmbeddingsCheck:
     ):
         """A stale embeddings.db (mtime > threshold) with
         ``OPENAI_API_KEY`` set should surface in the doctor report."""
-        config.mem_dir.mkdir(parents=True, exist_ok=True)
+        config.weave_dir.mkdir(parents=True, exist_ok=True)
         db_path = config.embeddings_db
         db_path.write_bytes(b"")
         # Backdate the mtime by 10 days.
@@ -69,7 +69,7 @@ class TestStaleEmbeddingsCheck:
         assert report.get("stale_embeddings_db") is not None
         text = format_doctor_report(report)
         assert "Stale embeddings DB" in text
-        assert "mem index --embed --only-new" in text
+        assert "weave index --embed --only-new" in text
 
     def test_no_warn_when_api_key_missing(
         self,
@@ -79,7 +79,7 @@ class TestStaleEmbeddingsCheck:
     ):
         """Without ``OPENAI_API_KEY``, the keep-warm cron can't run
         regardless — don't nag."""
-        config.mem_dir.mkdir(parents=True, exist_ok=True)
+        config.weave_dir.mkdir(parents=True, exist_ok=True)
         db_path = config.embeddings_db
         db_path.write_bytes(b"")
         old_ts = time.time() - 30 * 86400
@@ -107,7 +107,7 @@ class TestStaleEmbeddingsCheck:
         monkeypatch,
     ):
         """A freshly-touched embeddings.db should pass cleanly."""
-        config.mem_dir.mkdir(parents=True, exist_ok=True)
+        config.weave_dir.mkdir(parents=True, exist_ok=True)
         db_path = config.embeddings_db
         db_path.write_bytes(b"")
         # mtime = now (default for newly-written file).

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from personal_mem.core.api_config import (
+from thinkweave.core.api_config import (
     DEFAULT_CONFIG,
     api_config_path,
     embeddings_config,
@@ -47,7 +47,7 @@ def test_load_api_config_malformed_yaml_returns_defaults(tmp_path: Path):
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir()
     (cfg_dir / "api.yaml").write_text(
-        # block-style list — the personal_mem reader rejects this
+        # block-style list — the thinkweave reader rejects this
         # mid-document with a ValueError, which the loader swallows.
         "completion:\n  - bad\n  - shape\n",
         encoding="utf-8",

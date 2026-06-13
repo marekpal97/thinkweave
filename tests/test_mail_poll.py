@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from personal_mem.acquisition.discover.strategies.mail_poll import MailPollStrategy
+from thinkweave.acquisition.discover.strategies.mail_poll import MailPollStrategy
 
 
 def _cfg(**source_overrides):
@@ -20,7 +20,7 @@ def _cfg(**source_overrides):
         "mail_connector": "gmail",
         "senders": ["news@stratechery.com", "matt@levine.com"],
         "mail_query": "is:unread",
-        "processed_label": "mem-processed",
+        "processed_label": "weave-processed",
         "lookback_days": 30,
         "dedup_keys": ["message_id", "url"],
     }
@@ -35,7 +35,7 @@ def test_emits_mail_fetch_needed_for_gmail() -> None:
     assert d["kind"] == "mail_fetch_needed"
     assert d["source_type"] == "newsletter-events"
     assert d["connector"] == "gmail"
-    assert d["processed_label"] == "mem-processed"
+    assert d["processed_label"] == "weave-processed"
     assert d["lookback_days"] == 30
     assert d["dedup_keys"] == ["message_id", "url"]
 
@@ -45,7 +45,7 @@ def test_composes_gmail_query_from_senders_and_extras() -> None:
     q = d["effective_query"]
     assert "from:(news@stratechery.com OR matt@levine.com)" in q
     assert "is:unread" in q
-    assert "-label:mem-processed" in q
+    assert "-label:weave-processed" in q
     assert "newer_than:30d" in q
 
 
@@ -54,7 +54,7 @@ def test_composes_query_without_extras() -> None:
     q = d["effective_query"]
     assert "from:(news@stratechery.com OR matt@levine.com)" in q
     assert " is:unread" not in q
-    assert "-label:mem-processed" in q
+    assert "-label:weave-processed" in q
     assert "newer_than:30d" in q
 
 
@@ -109,11 +109,11 @@ def test_skips_sources_without_mail_connector() -> None:
     """Non-mail sources (paper, repo, etc.) are skipped silently."""
     cfg = {
         "sources": {
-            "paper": {"queue": "vault/.mem/queues/papers.jsonl"},
+            "paper": {"queue": "vault/.weave/queues/papers.jsonl"},
             "newsletter-events": {
                 "mail_connector": "gmail",
                 "senders": ["x@y.com"],
-                "processed_label": "mem-processed",
+                "processed_label": "weave-processed",
                 "lookback_days": 30,
             },
         }
@@ -130,13 +130,13 @@ def test_runtime_source_type_filter() -> None:
             "newsletter-events": {
                 "mail_connector": "gmail",
                 "senders": ["x@y.com"],
-                "processed_label": "mem-processed",
+                "processed_label": "weave-processed",
                 "lookback_days": 30,
             },
             "newsletter-concepts": {
                 "mail_connector": "gmail",
                 "senders": ["z@w.com"],
-                "processed_label": "mem-processed",
+                "processed_label": "weave-processed",
                 "lookback_days": 90,
             },
         },
@@ -159,7 +159,7 @@ def test_dedup_keys_default() -> None:
             "newsletter-events": {
                 "mail_connector": "gmail",
                 "senders": ["x@y.com"],
-                "processed_label": "mem-processed",
+                "processed_label": "weave-processed",
                 "lookback_days": 30,
             }
         }

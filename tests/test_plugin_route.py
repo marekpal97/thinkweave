@@ -2,7 +2,7 @@
 namespacing.
 
 Claude Code registers plugin-shipped commands/agents namespaced
-(``/personal-mem:dream``) with no bare-name aliasing (verified empirically
+(``/thinkweave:dream``) with no bare-name aliasing (verified empirically
 2026-06-12), so deterministic renderers (cron block, flow stages) rewrite
 the skill token when — and only when — the plugin route is active.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.plugin_route import namespace_prompt, plugin_namespace
+from thinkweave.core.plugin_route import namespace_prompt, plugin_namespace
 
 
 # --------------------------------------------------------------------------- #
@@ -26,21 +26,21 @@ class TestNamespacePrompt:
     @pytest.mark.parametrize(
         ("arg", "expected"),
         [
-            ("/dream", "/personal-mem:dream"),
-            ("/dream --essence-cap 0", "/personal-mem:dream --essence-cap 0"),
+            ("/dream", "/thinkweave:dream"),
+            ("/dream --essence-cap 0", "/thinkweave:dream --essence-cap 0"),
             (
                 "/discover --strategy rss_poll --source-type news",
-                "/personal-mem:discover --strategy rss_poll --source-type news",
+                "/thinkweave:discover --strategy rss_poll --source-type news",
             ),
         ],
     )
     def test_bare_skill_tokens_get_prefixed(self, arg: str, expected: str):
-        assert namespace_prompt(arg, "personal-mem") == expected
+        assert namespace_prompt(arg, "thinkweave") == expected
 
     @pytest.mark.parametrize(
         "arg",
         [
-            "/personal-mem:dream",          # already namespaced
+            "/thinkweave:dream",          # already namespaced
             "/home/user/notes.md",          # filesystem path, not a skill
             "summarize this please",        # plain prompt, no skill token
             "run /dream for me",            # skill token not in head position
@@ -48,7 +48,7 @@ class TestNamespacePrompt:
         ],
     )
     def test_non_bare_tokens_pass_through(self, arg: str):
-        assert namespace_prompt(arg, "personal-mem") == arg
+        assert namespace_prompt(arg, "thinkweave") == arg
 
     def test_none_namespace_is_noop(self):
         assert namespace_prompt("/dream", None) == "/dream"
@@ -70,15 +70,15 @@ class TestPluginNamespace:
     def test_detects_marketplace_key(self, tmp_path: Path):
         m = _write_manifest(
             tmp_path / "installed_plugins.json",
-            {"personal-mem@marekpal97": [{"scope": "user"}]},
+            {"thinkweave@marekpal97": [{"scope": "user"}]},
         )
-        assert plugin_namespace(manifest=m) == "personal-mem"
+        assert plugin_namespace(manifest=m) == "thinkweave"
 
     def test_detects_bare_key(self, tmp_path: Path):
         m = _write_manifest(
-            tmp_path / "installed_plugins.json", {"personal-mem": []}
+            tmp_path / "installed_plugins.json", {"thinkweave": []}
         )
-        assert plugin_namespace(manifest=m) == "personal-mem"
+        assert plugin_namespace(manifest=m) == "thinkweave"
 
     def test_other_plugins_do_not_match(self, tmp_path: Path):
         m = _write_manifest(

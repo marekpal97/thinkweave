@@ -29,8 +29,8 @@ from typing import Any
 
 import pytest
 
-from personal_mem.acquisition.discover.strategies import rss_poll
-from personal_mem.acquisition.discover.strategies.rss_poll import (
+from thinkweave.acquisition.discover.strategies import rss_poll
+from thinkweave.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_news_item,
 )
@@ -220,14 +220,14 @@ def test_strategy_enqueues_new_entries(tmp_path, fake_feedparser, monkeypatch) -
     assert stats["dup_queue"] == 0
     assert stats["dup_indexer"] == 0
 
-    queue_path = tmp_path / ".mem" / "queues" / "news.jsonl"
+    queue_path = tmp_path / ".weave" / "queues" / "news.jsonl"
     assert queue_path.exists()
     lines = queue_path.read_text().strip().splitlines()
     assert len(lines) == 2
 
 
 def test_strategy_dedups_against_queue(tmp_path, fake_feedparser, monkeypatch) -> None:
-    from personal_mem.acquisition.sources.queue import Queue
+    from thinkweave.acquisition.sources.queue import Queue
 
     q = Queue.for_source_type("news", tmp_path)
     q.enqueue(
@@ -247,7 +247,7 @@ def test_strategy_dedups_against_queue(tmp_path, fake_feedparser, monkeypatch) -
 
 def test_strategy_dedups_against_indexer(tmp_path, fake_feedparser, monkeypatch) -> None:
     """A URL already a source note in the indexer should not re-enqueue."""
-    db_path = tmp_path / ".mem" / "index.db"
+    db_path = tmp_path / ".weave" / "index.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE notes (id TEXT, type TEXT, frontmatter TEXT)")

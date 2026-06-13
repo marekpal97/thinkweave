@@ -22,10 +22,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.dream import DreamCycleScan
-from personal_mem.operations.dream_tasks import (
+from thinkweave.core.config import Config
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations.dream import DreamCycleScan
+from thinkweave.operations.dream_tasks import (
     REGISTRY,
     DreamTaskSpec,
     enabled_tasks,
@@ -239,7 +239,7 @@ class TestEnabledTasks:
     def test_disabled_spec_is_filtered(self, monkeypatch):
         # Build a synthetic disabled-promotion REGISTRY and verify
         # enabled_tasks honors the gate without removing the entry.
-        from personal_mem.operations import dream_tasks as dt
+        from thinkweave.operations import dream_tasks as dt
 
         patched = tuple(
             replace(spec, enabled=False)
@@ -304,17 +304,17 @@ class TestEnabledTasks:
 
 
 class TestDreamTasksCLI:
-    """``mem dream tasks --phase N --json`` is the contract the orchestrator
+    """``weave dream tasks --phase N --json`` is the contract the orchestrator
     consumes. Invoking the handler in-process keeps the test fast and free
     of subprocess plumbing while exercising the full path."""
 
     def test_phase1_json_empty_vault_emits_empty_list(
         self, config: Config, vault: VaultManager, monkeypatch, capsys
     ):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
-        from personal_mem.surfaces.cli.dream import cmd_dream_tasks
+        from thinkweave.surfaces.cli.dream import cmd_dream_tasks
 
         args = SimpleNamespace(
             phase=1,
@@ -336,7 +336,7 @@ class TestDreamTasksCLI:
     def test_phase1_json_from_scan_file(
         self, config: Config, monkeypatch, capsys, tmp_path
     ):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
         scan_path = tmp_path / "scan.json"
         scan_path.write_text(
             json.dumps({
@@ -350,7 +350,7 @@ class TestDreamTasksCLI:
             encoding="utf-8",
         )
 
-        from personal_mem.surfaces.cli.dream import cmd_dream_tasks
+        from thinkweave.surfaces.cli.dream import cmd_dream_tasks
 
         args = SimpleNamespace(
             phase=1,
@@ -372,7 +372,7 @@ class TestDreamTasksCLI:
     def test_phase2_json_from_populated_scan_file(
         self, config: Config, monkeypatch, capsys, tmp_path
     ):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
         # Scan file carries phase-2 surfaces as extra keys — the CLI
         # must surface them as plain attributes (the rehydration path).
         scan_path = tmp_path / "scan.json"
@@ -416,7 +416,7 @@ class TestDreamTasksCLI:
             encoding="utf-8",
         )
 
-        from personal_mem.surfaces.cli.dream import cmd_dream_tasks
+        from thinkweave.surfaces.cli.dream import cmd_dream_tasks
 
         args = SimpleNamespace(
             phase=2,
@@ -443,7 +443,7 @@ class TestDreamTasksCLI:
     def test_human_readable_table_when_no_json_flag(
         self, config: Config, monkeypatch, capsys, tmp_path
     ):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
         scan_path = tmp_path / "scan.json"
         scan_path.write_text(
             json.dumps({
@@ -457,7 +457,7 @@ class TestDreamTasksCLI:
             encoding="utf-8",
         )
 
-        from personal_mem.surfaces.cli.dream import cmd_dream_tasks
+        from thinkweave.surfaces.cli.dream import cmd_dream_tasks
 
         args = SimpleNamespace(
             phase=1,

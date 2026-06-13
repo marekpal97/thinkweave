@@ -3,15 +3,15 @@ name: news
 owns_mechanic: news_url_ingest
 source_type: news
 capabilities: [import]
-consumes: [mem_concepts, mem_create, mem_link]
+consumes: [weave_concepts, weave_create, weave_link]
 produces: [vault/sources/news/**]
 tools:
   - Read
   - Bash
   - Task
-  - mem_concepts
-  - mem_create
-  - mem_link
+  - weave_concepts
+  - weave_create
+  - weave_link
 description: One-off URL ingest for news articles, mid-conversation. Dispatches a Sonnet writer directly; no triage gate (you've already decided this is worth briefing).
 ---
 
@@ -72,15 +72,15 @@ Task({
   subagent_type: "research-news-worker",
   model: "sonnet",
   description: "Write news brief: <hostname>",
-  prompt: "<the JSON item above>\n\ntriage_verdict: keep_unfiled\ntheme_id: null\ntriage_reason: \"one-off user ingest\"\n\nProcess this single news item end-to-end. The vault root is <PERSONAL_MEM_VAULT — pass the absolute path>. Return your standard one-line JSON outcome as the final non-empty line of your response."
+  prompt: "<the JSON item above>\n\ntriage_verdict: keep_unfiled\ntheme_id: null\ntriage_reason: \"one-off user ingest\"\n\nProcess this single news item end-to-end. The vault root is <THINKWEAVE_VAULT — pass the absolute path>. Return your standard one-line JSON outcome as the final non-empty line of your response."
 })
 ```
 
-Under the plugin install the worker is registered as `personal-mem:research-news-worker` — if the bare type doesn't resolve, retry once with the prefix.
+Under the plugin install the worker is registered as `thinkweave:research-news-worker` — if the bare type doesn't resolve, retry once with the prefix.
 
-The synthesized `triage_verdict: keep_unfiled` mirrors what the cron drain emits for items that didn't theme-match — the writer files the note with `theme_unfiled: true` so the periodic theme-review pass can pick it up. If the user wants to file the new note under an explicit theme later, that's a manual `mem_link source_id target_id --type relates_to` call after the writer returns.
+The synthesized `triage_verdict: keep_unfiled` mirrors what the cron drain emits for items that didn't theme-match — the writer files the note with `theme_unfiled: true` so the periodic theme-review pass can pick it up. If the user wants to file the new note under an explicit theme later, that's a manual `weave_link source_id target_id --type relates_to` call after the writer returns.
 
-The writer fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note.
+The writer fetches the article, extracts ontology-gated concepts, writes the brief, and `weave_create`s the source note.
 
 ### 4. Report
 
@@ -107,4 +107,4 @@ If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `PRIORITIES.ya
 
 - For Polish-language URLs (`bankier.pl`, etc.): the writer translates inline and stashes the original in `<source_dir>/raw.md`. The user-facing brief is in English.
 - No queue archive — the synthetic item never enters the queue.
-- The writer subagent's `mem_create` call goes through `VaultManager.create_note`, which incrementally indexes the new event-grain source so `detect_signals` sees it on the next `/dream` scan. Theme naming is `/dream`'s job: it reads the enriched cluster signal (raw `proposed_theme:` tally + overlapping active themes) and either mints a new theme (`theme_mints`) or extends an existing one (`theme_extensions`).
+- The writer subagent's `weave_create` call goes through `VaultManager.create_note`, which incrementally indexes the new event-grain source so `detect_signals` sees it on the next `/dream` scan. Theme naming is `/dream`'s job: it reads the enriched cluster signal (raw `proposed_theme:` tally + overlapping active themes) and either mints a new theme (`theme_mints`) or extends an existing one (`theme_extensions`).

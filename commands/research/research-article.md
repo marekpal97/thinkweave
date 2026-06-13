@@ -7,13 +7,13 @@ tools:
   - Write
   - WebFetch
   - WebSearch
-  - mem_search
-  - mem_concepts
-  - mem_graph
-  - mem_create
-  - mem_update
-  - mem_link
-  - mem_queue
+  - weave_search
+  - weave_concepts
+  - weave_graph
+  - weave_create
+  - weave_update
+  - weave_link
+  - weave_queue
 description: Fetch a web article, extract argument + claims + evidence, write it as a `source_type: article` note. Called from `/research` (router) or `/drain --source-type article`.
 ---
 
@@ -40,16 +40,16 @@ republished elsewhere). If still nothing useful, skip — log the URL.
 ### 2. Load ontology + check vault
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
-mem_search(query="<key terms>", mode="hybrid", limit=5)
-mem_graph(filter="concept_walk", concepts=["<best-fit>"], match_mode="any", limit=5)
+Read src/thinkweave/ontology.yaml
+weave_concepts(min_count=2)
+weave_search(query="<key terms>", mode="hybrid", limit=5)
+weave_graph(filter="concept_walk", concepts=["<best-fit>"], match_mode="any", limit=5)
 ```
 
 ### 3. Write the source note
 
 ```
-mem_create(
+weave_create(
   type="source",
   title="<article title>",
   body="<argument + evidence brief — structured per vault/config/note_formats/article.md>",
@@ -68,7 +68,7 @@ mem_create(
 Save the fetched text to the source directory:
 ```
 Write <source_dir>/raw.md
-mem_update(note_id="<src-id>", frontmatter_updates={"raw_path": "raw.md"})
+weave_update(note_id="<src-id>", frontmatter_updates={"raw_path": "raw.md"})
 ```
 
 ### 4. Link + archive queue

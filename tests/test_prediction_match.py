@@ -7,7 +7,7 @@ Claude Code skill. The Python side now only:
 - Seeds a ``pending`` entry into ``prediction_history`` at decision
   creation time (``operations/extract.py``) when ``predicted_outcome``
   is set.
-- Lets the structural judge writeback (``mem_judge_and_writeback``) run
+- Lets the structural judge writeback (``weave_judge_and_writeback``) run
   without touching ``prediction_match`` at all.
 
 The skill (out of scope for these tests) is what eventually appends
@@ -20,10 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def _index(config: Config) -> None:
 
 
 def _reload_decision(config: Config, session_id: str):
-    from personal_mem.synthesis.judge import find_decisions
+    from thinkweave.synthesis.judge import find_decisions
 
     idx = Indexer(config=config)
     try:
@@ -107,14 +107,14 @@ class TestJudgeWritebackPrediction:
     def test_writeback_does_not_emit_prediction_match(
         self, config: Config, vault: VaultManager
     ):
-        """``mem_judge_and_writeback`` only handles structural verdict now.
+        """``weave_judge_and_writeback`` only handles structural verdict now.
 
         The decision carries a ``predicted_outcome``, but the structural
         judge must not write ``prediction_match`` — that's the
         /judge-prediction skill's job. The structural verdict (status,
         committed, judged_at) still gets written.
         """
-        from personal_mem.operations.decisions import judge_and_writeback
+        from thinkweave.operations.decisions import judge_and_writeback
 
         session_id = _seed(
             vault,
@@ -142,7 +142,7 @@ class TestJudgeWritebackPrediction:
     def test_writeback_runs_without_predicted_outcome(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.operations.decisions import judge_and_writeback
+        from thinkweave.operations.decisions import judge_and_writeback
 
         session_id = _seed(vault, predicted=None)
         _index(config)
@@ -162,7 +162,7 @@ class TestExtractPredictionPassthrough:
     def test_predicted_outcome_seeds_pending_history(
         self, config: Config, vault: VaultManager
     ):
-        """``mem_extract`` with ``predicted_outcome`` seeds ``pending``.
+        """``weave_extract`` with ``predicted_outcome`` seeds ``pending``.
 
         The cron-driven /judge-prediction skill scans for `pending`
         entries; the decision file must land with that seed already
@@ -180,7 +180,7 @@ class TestExtractPredictionPassthrough:
 
         _index(config)
 
-        from personal_mem.operations.extract import extract_session
+        from thinkweave.operations.extract import extract_session
 
         predicted = "tests will pass on next CI run for this branch"
         out = extract_session(
@@ -233,7 +233,7 @@ class TestExtractPredictionPassthrough:
 
         _index(config)
 
-        from personal_mem.operations.extract import extract_session
+        from thinkweave.operations.extract import extract_session
 
         out = extract_session(
             config,

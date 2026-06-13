@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.core.agent_client import (
+from thinkweave.core.agent_client import (
     ProviderError,
     batch_completions,
     batch_completions_sync,
@@ -179,13 +179,13 @@ def test_get_completion_missing_key_raises(patched_sdk, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     # Also isolate .env lookup paths so we don't accidentally pick up
     # the project root's real key.
-    from personal_mem.core import api_keys
+    from thinkweave.core import api_keys
     monkeypatch.setattr(api_keys, "_PROJECT_ROOT", monkeypatch.__class__.__module__)  # placeholder; replaced below
     import tempfile, os
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setattr(api_keys, "_PROJECT_ROOT", __import__("pathlib").Path(td))
         monkeypatch.chdir(td)
-        monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
+        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         with pytest.raises(ProviderError, match="no API key found"):
             asyncio.run(
                 get_completion("p", provider="openai", model="m")

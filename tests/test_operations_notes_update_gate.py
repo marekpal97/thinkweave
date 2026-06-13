@@ -2,8 +2,8 @@
 
 The concept-write gate that ``create_note`` enforces (canonical terms in
 ``concepts:``, everything else routed to ``proposed_concepts:`` for later
-promotion via ``/mem-resolve-concepts``) must also fire on the headless
-``mem_update`` path. Without it, a caller passing ``frontmatter_updates=
+promotion via ``/weave-resolve-concepts``) must also fire on the headless
+``weave_update`` path. Without it, a caller passing ``frontmatter_updates=
 {"concepts": [...]}`` can land arbitrary strings as canonical concepts —
 the bypass A3 of the pre-shipping audit flagged.
 
@@ -18,11 +18,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations import notes as ops_notes
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations import notes as ops_notes
 
 
 @pytest.fixture
@@ -48,13 +48,13 @@ def _write_ontology(monkeypatch, content: str) -> Path:
     path = Path(tempfile.mkdtemp()) / "ontology.yaml"
     path.write_text(content, encoding="utf-8")
     monkeypatch.setattr(
-        "personal_mem.synthesis.concepts._seed_ontology_path", lambda: path
+        "thinkweave.synthesis.concepts._seed_ontology_path", lambda: path
     )
     monkeypatch.setattr(
-        "personal_mem.synthesis.concepts._vault_ontology_path", lambda: path
+        "thinkweave.synthesis.concepts._vault_ontology_path", lambda: path
     )
     monkeypatch.setattr(
-        "personal_mem.synthesis.concepts._ontology_path", lambda: path
+        "thinkweave.synthesis.concepts._ontology_path", lambda: path
     )
     return path
 

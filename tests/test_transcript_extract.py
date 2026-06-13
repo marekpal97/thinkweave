@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from personal_mem.acquisition.sources.extractors import transcript_extract as te
+from thinkweave.acquisition.sources.extractors import transcript_extract as te
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ def test_missing_sdk_returns_structured_failure(monkeypatch):
     result = te.extract_youtube_transcript("https://youtu.be/NKwIX3CiRgU")
     assert result["ok"] is False
     assert result["error"] == te.ERR_MISSING_SDK
-    assert "personal-mem[youtube]" in result["reason"]
+    assert "thinkweave[youtube]" in result["reason"]
 
 
 def test_unexpected_exception_classified_as_api_error(monkeypatch):

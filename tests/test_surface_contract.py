@@ -2,15 +2,15 @@
 
 The MCP <-> CLI boundary is principled — MCP = agent operations; CLI =
 admin / cron / orchestration plus exactly four narrow agent-Bash entries
-(`mem wrap-finalize`, `mem hubs apply-linkage`, `mem landing --doc`,
-`mem judge --rejudge/--drain`) — but recent contract breaks (rejudge-queue
+(`weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`,
+`weave judge --rejudge/--drain`) — but recent contract breaks (rejudge-queue
 prose vs behavior, digest path drift) were only caught by manual audit.
 These tests pin the contract mechanically:
 
 - every MCP tool the server registers has a resolvable handler;
-- every `mem <subcommand>` referenced in skill/agent markdown exists in
+- every `weave <subcommand>` referenced in skill/agent markdown exists in
   the CLI dispatch table;
-- every `mcp__personal-mem__mem_*` name in worker tool allowlists exists
+- every `mcp__thinkweave__weave_*` name in worker tool allowlists exists
   on the MCP server;
 - both surfaces' name sets are pinned against their documented inventory
   (ARCHITECTURE.md "Invocation surface" / CLAUDE.md §7).
@@ -27,9 +27,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.surfaces.cli import _DISPATCH, build_parser
-from personal_mem.surfaces.mcp.tools import DISPATCH as MCP_DISPATCH
-from personal_mem.surfaces.mcp.tools import all_schemas
+from thinkweave.surfaces.cli import _DISPATCH, build_parser
+from thinkweave.surfaces.mcp.tools import DISPATCH as MCP_DISPATCH
+from thinkweave.surfaces.mcp.tools import all_schemas
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,24 +37,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # ("Invocation surface"). If you add/remove a tool, update BOTH docs and
 # this pin in the same change — that's the point of the pin.
 DOCUMENTED_MCP_TOOLS = {
-    "mem_search",
-    "mem_create",
-    "mem_read",
-    "mem_update",
-    "mem_link",
-    "mem_unlink",
-    "mem_context",
-    "mem_graph",
-    "mem_concepts",
-    "mem_extract",
-    "mem_judge",
-    "mem_landing",
-    "mem_enrich",
-    "mem_timeline",
-    "mem_project_snapshot",
-    "mem_queue",
-    "mem_sources_config",
-    "mem_prompts",
+    "weave_search",
+    "weave_create",
+    "weave_read",
+    "weave_update",
+    "weave_link",
+    "weave_unlink",
+    "weave_context",
+    "weave_graph",
+    "weave_concepts",
+    "weave_extract",
+    "weave_judge",
+    "weave_landing",
+    "weave_enrich",
+    "weave_timeline",
+    "weave_project_snapshot",
+    "weave_queue",
+    "weave_sources_config",
+    "weave_prompts",
 }
 
 
@@ -79,7 +79,7 @@ class TestMcpSurface:
         for name, handler in MCP_DISPATCH.items():
             assert callable(handler), f"{name} handler is not callable"
             assert handler.__module__.startswith(
-                "personal_mem.surfaces.mcp.tools."
+                "thinkweave.surfaces.mcp.tools."
             ), f"{name} handler lives in unexpected module {handler.__module__}"
 
     def test_tool_inventory_pinned_to_docs(self):
@@ -94,24 +94,24 @@ class TestCliSurface:
         # Moved here from tests/test_rlvr_cli.py (pre-ship audit 4b) —
         # the count pin is a surface-contract concern, not an RLVR one.
         # History of the number:
-        # P1-4 dropped ``mem connect`` (deprecation alias): 34 → 33.
-        # `mem dream` (vault-hygiene cycle) and `mem news-stats`
+        # P1-4 dropped ``weave connect`` (deprecation alias): 34 → 33.
+        # `weave dream` (vault-hygiene cycle) and `weave news-stats`
         # (per-outlet drain stats) added later: 33 → 35.
-        # Phase-3 prediction-judge rework adds `mem judge`: 35 → 36.
+        # Phase-3 prediction-judge rework adds `weave judge`: 35 → 36.
         # C24 CLI parity (Slice 4) adds unlink, timeline,
         # project-snapshot, prompts: 36 → 40.
-        # `mem pause` / `mem resume` (hook pause toggle) + `mem themes`
+        # `weave pause` / `weave resume` (hook pause toggle) + `weave themes`
         # (themes registry rebuild) added later: 40 → 43.
-        # `mem schedule` (cross-platform scheduler — crontab / Task
+        # `weave schedule` (cross-platform scheduler — crontab / Task
         # Scheduler) added: 43 → 44.
-        # Cost-tracking (`mem spend`) shipped 2026-06-01 and was removed
+        # Cost-tracking (`weave spend`) shipped 2026-06-01 and was removed
         # 2026-06-10 — net zero on the count.
-        # `mem news-stats` removed in the 2026-06-13 pre-ship dead-code
+        # `weave news-stats` removed in the 2026-06-13 pre-ship dead-code
         # sweep (zero callers in skills/docs/crontab): 44 → 43.
-        # `mem seam` (CC-auto-memory↔vault reconciliation — the
+        # `weave seam` (CC-auto-memory↔vault reconciliation — the
         # dream-seam-worker's surface/commit hands) added 2026-06-13:
         # 43 → 44.
-        # (A `mem note-format` subcommand was briefly added then dropped
+        # (A `weave note-format` subcommand was briefly added then dropped
         # 2026-06-13 — note-format skeletons are seeded into the vault at
         # init and the writers Read them directly, so no CLI is needed.)
         # CLAUDE.md §7 reflects the same count; if either slips, the
@@ -120,7 +120,7 @@ class TestCliSurface:
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():
-            assert callable(handler), f"mem {name} handler is not callable"
+            assert callable(handler), f"weave {name} handler is not callable"
 
     def test_parser_and_dispatch_agree(self):
         # A subcommand registered in parser.py but missing from _DISPATCH
@@ -146,17 +146,17 @@ def _skill_and_agent_files() -> list[Path]:
 
 
 class TestDocReferences:
-    # Conservative patterns: only count a `mem <word>` as a CLI invocation
-    # when it is backticked (`mem foo ...`) or sits at the start of a line
+    # Conservative patterns: only count a `weave <word>` as a CLI invocation
+    # when it is backticked (`weave foo ...`) or sits at the start of a line
     # inside a fenced block (optionally prefixed by `uv run`). Prose like
-    # "the mem CLI" or placeholders like `mem <command>` never match.
-    _BACKTICK = re.compile(r"`(?:uv run )?mem ([a-z][a-z0-9-]*)")
-    _LINE_START = re.compile(r"^\s*(?:uv run )?mem ([a-z][a-z0-9-]*)", re.M)
-    _MCP_TOOL = re.compile(r"mcp__personal-mem__(mem_[a-z_]+)")
+    # "the weave CLI" or placeholders like `weave <command>` never match.
+    _BACKTICK = re.compile(r"`(?:uv run )?weave ([a-z][a-z0-9-]*)")
+    _LINE_START = re.compile(r"^\s*(?:uv run )?weave ([a-z][a-z0-9-]*)", re.M)
+    _MCP_TOOL = re.compile(r"mcp__thinkweave__(weave_[a-z_]+)")
 
     def test_doc_cli_invocations_exist_in_dispatch(self):
-        # Only the first token after `mem` is checked — multi-word forms
-        # (`mem hubs apply-linkage`, `mem dream scan`) are sub-actions of
+        # Only the first token after `weave` is checked — multi-word forms
+        # (`weave hubs apply-linkage`, `weave dream scan`) are sub-actions of
         # their first token, which is the dispatch key.
         unknown: dict[str, set[str]] = {}
         for md in _skill_and_agent_files():
@@ -168,13 +168,13 @@ class TestDocReferences:
                     str(md.relative_to(REPO_ROOT))
                 )
         assert not unknown, (
-            "skill/agent markdown references `mem` subcommands that are "
+            "skill/agent markdown references `weave` subcommands that are "
             f"not in _DISPATCH: {unknown}"
         )
 
     def test_agent_allowlisted_mcp_tools_exist(self):
         # Worker frontmatter allowlists tools as
-        # `mcp__personal-mem__mem_*`; every such name must be a tool the
+        # `mcp__thinkweave__weave_*`; every such name must be a tool the
         # server actually registers, or the worker silently loses it.
         unknown: dict[str, set[str]] = {}
         for md in _skill_and_agent_files():

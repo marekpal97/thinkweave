@@ -3,8 +3,8 @@
 Three paths can write a decision with ``supersedes: [dec-X]``:
 
 1. ``operations.extract.extract_session`` (wrap context)
-2. ``operations.notes.create_note`` (headless ``mem_create``)
-3. ``operations.notes.update_note`` (headless ``mem_update`` extending fm)
+2. ``operations.notes.create_note`` (headless ``weave_create``)
+3. ``operations.notes.update_note`` (headless ``weave_update`` extending fm)
 
 All three only **enqueue** the predecessor for re-judgment — *none* flip its
 ``status``. A ``supersedes:`` declaration is a re-judge trigger, not proof
@@ -22,13 +22,13 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations import notes as ops_notes
-from personal_mem.operations import rejudge_queue
-from personal_mem.operations.decisions import rejudge_supersession_predecessors
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations import notes as ops_notes
+from thinkweave.operations import rejudge_queue
+from thinkweave.operations.decisions import rejudge_supersession_predecessors
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ def _index(cfg: Config) -> None:
 def test_extract_session_enqueues_supersedes(
     cfg: Config, vault: VaultManager
 ) -> None:
-    """`mem_extract` writing a decision with supersedes:[X] enqueues X."""
+    """`weave_extract` writing a decision with supersedes:[X] enqueues X."""
     pred_id = _seed_predecessor(vault)
     _index(cfg)
 
@@ -89,7 +89,7 @@ def test_extract_session_enqueues_supersedes(
     sess_id = vault.read_note(sess_path).id
     _index(cfg)
 
-    from personal_mem.operations.extract import extract_session
+    from thinkweave.operations.extract import extract_session
     out = extract_session(
         cfg,
         session_id=sess_id,
@@ -116,7 +116,7 @@ def test_extract_session_enqueues_supersedes(
 
 
 def test_create_note_enqueues_supersedes(cfg: Config, vault: VaultManager) -> None:
-    """`mem_create` (operations.notes.create_note) with supersedes enqueues."""
+    """`weave_create` (operations.notes.create_note) with supersedes enqueues."""
     pred_id = _seed_predecessor(vault)
     _index(cfg)
 
@@ -144,7 +144,7 @@ def test_create_note_enqueues_supersedes(cfg: Config, vault: VaultManager) -> No
 def test_update_note_adding_supersedes_enqueues(
     cfg: Config, vault: VaultManager
 ) -> None:
-    """`mem_update` extending supersedes:[] enqueues the newly-added entry."""
+    """`weave_update` extending supersedes:[] enqueues the newly-added entry."""
     pred_id = _seed_predecessor(vault)
 
     # Create a decision *without* supersedes, then add it via update.
@@ -205,7 +205,7 @@ def test_supersession_idempotent_across_writes(
 def test_extract_session_does_not_flip_predecessor(
     cfg: Config, vault: VaultManager
 ) -> None:
-    """`mem_extract` is passive: it enqueues but never flips the predecessor.
+    """`weave_extract` is passive: it enqueues but never flips the predecessor.
 
     The old eager flip set ``status: superseded`` on the bare declaration;
     post evidence-gating, extract leaves the predecessor untouched (the flip
@@ -221,7 +221,7 @@ def test_extract_session_does_not_flip_predecessor(
     sess_id = vault.read_note(sess_path).id
     _index(cfg)
 
-    from personal_mem.operations.extract import extract_session
+    from thinkweave.operations.extract import extract_session
     out = extract_session(
         cfg, session_id=sess_id, project="t", summary="ok", insights=[],
         decisions=[{
@@ -282,8 +282,8 @@ def _seed_pred_and_successor(vault: VaultManager, cfg: Config) -> tuple[str, str
     return pred_id, succ_id
 
 
-@patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
-@patch("personal_mem.synthesis.judge._check_blame_survival", return_value=0)
+@patch("thinkweave.synthesis.judge._check_committed_via_git", return_value={})
+@patch("thinkweave.synthesis.judge._check_blame_survival", return_value=0)
 def test_predecessor_flips_when_lines_replaced(
     _mock_blame, _mock_git, cfg: Config, vault: VaultManager
 ) -> None:
@@ -298,8 +298,8 @@ def test_predecessor_flips_when_lines_replaced(
     assert pred_row.frontmatter.get("status") == "superseded"
 
 
-@patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
-@patch("personal_mem.synthesis.judge._check_blame_survival", return_value=12)
+@patch("thinkweave.synthesis.judge._check_committed_via_git", return_value={})
+@patch("thinkweave.synthesis.judge._check_blame_survival", return_value=12)
 def test_predecessor_stays_when_lines_survive(
     _mock_blame, _mock_git, cfg: Config, vault: VaultManager
 ) -> None:

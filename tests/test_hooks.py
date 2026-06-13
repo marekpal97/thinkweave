@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.surfaces.hooks.handler import (
+from thinkweave.core.config import Config
+from thinkweave.surfaces.hooks.handler import (
     _buffer_event,
     _build_auto_summary,
     _build_event,
@@ -32,14 +32,14 @@ from personal_mem.surfaces.hooks.handler import (
     archive_buffer,
     cleanup_buffer,
 )
-from personal_mem.surfaces.hooks.install import install_hooks, uninstall_hooks
+from thinkweave.surfaces.hooks.install import install_hooks, uninstall_hooks
 
 
 class TestHookHelpers:
     def test_is_internal(self):
         assert _is_internal("/home/user/.claude/settings.json")
         assert _is_internal("/project/CLAUDE.md")
-        assert _is_internal("/project/.mem/index.db")
+        assert _is_internal("/project/.weave/index.db")
         assert not _is_internal("/project/src/main.py")
         assert not _is_internal("/project/README.md")
 
@@ -54,7 +54,7 @@ class TestHookHelpers:
 
     def test_detect_project(self, tmp_path: Path):
         # Env var takes priority
-        with patch.dict("os.environ", {"PERSONAL_MEM_PROJECT": "from-env"}):
+        with patch.dict("os.environ", {"THINKWEAVE_PROJECT": "from-env"}):
             assert _detect_project({"cwd": "/anywhere"}) == "from-env"
 
         # Git repo detection: walk up to .git
@@ -102,7 +102,7 @@ class TestHookInstaller:
         # Two PostToolUse entries: action-tool gate + MCP-tool gate.
         matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
         assert "Write|Edit|Bash" in matchers
-        assert "mcp__personal-mem__.*" in matchers
+        assert "mcp__thinkweave__.*" in matchers
         for entry in settings["hooks"]["PostToolUse"]:
             assert entry["hooks"][0]["timeout"] == 5
 
@@ -132,23 +132,23 @@ class TestHookInstaller:
         settings = json.loads((claude_dir / "settings.local.json").read_text())
         # Existing permission preserved
         assert "Bash(ls)" in settings["permissions"]["allow"]
-        # Foreign PreToolUse hook left intact, no personal_mem entry added
+        # Foreign PreToolUse hook left intact, no thinkweave entry added
         assert len(settings["hooks"]["PreToolUse"]) == 1
-        assert not any("mem-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
-        # Foreign PostToolUse preserved + two personal_mem PostToolUse
+        assert not any("weave-hook" in str(entry) for entry in settings["hooks"]["PreToolUse"])
+        # Foreign PostToolUse preserved + two thinkweave PostToolUse
         # entries appended (action gate + MCP gate).
         assert len(settings["hooks"]["PostToolUse"]) == 3
-        mem_entries = [
+        weave_entries = [
             e for e in settings["hooks"]["PostToolUse"]
-            if "mem-hook" in str(e)
+            if "weave-hook" in str(e)
         ]
-        assert len(mem_entries) == 2
-        mem_matchers = {e["matcher"] for e in mem_entries}
-        assert mem_matchers == {"Write|Edit|Bash", "mcp__personal-mem__.*"}
+        assert len(weave_entries) == 2
+        weave_matchers = {e["matcher"] for e in weave_entries}
+        assert weave_matchers == {"Write|Edit|Bash", "mcp__thinkweave__.*"}
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
-        mem-hook) gets rewritten to the current absolute-path form for
+        weave-hook) gets rewritten to the current absolute-path form for
         retained phases. The retired PreToolUse phase is stripped instead."""
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
@@ -174,9 +174,9 @@ class TestHookInstaller:
                         "hooks": [
                             {
                                 "type": "command",
-                                # Bare `mem-hook` form from the brief pre-
+                                # Bare `weave-hook` form from the brief pre-
                                 # absolute-path iteration of install.py.
-                                "command": "mem-hook post_tool_use",
+                                "command": "weave-hook post_tool_use",
                                 "timeout": 5,
                             }
                         ],
@@ -188,7 +188,7 @@ class TestHookInstaller:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "python3 -m personal_mem.surfaces.hooks.handler stop",
+                                "command": "python3 -m thinkweave.surfaces.hooks.handler stop",
                                 "timeout": 5,
                             }
                         ],
@@ -216,19 +216,19 @@ class TestHookInstaller:
         # Identify the action vs MCP PostToolUse entry by matcher.
         post_entries = settings["hooks"]["PostToolUse"]
         action_entry = next(e for e in post_entries if e["matcher"] == "Write|Edit|Bash")
-        mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__personal-mem__.*")
+        mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__thinkweave__.*")
         action_cmd = action_entry["hooks"][0]["command"]
         mcp_cmd = mcp_entry["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
 
-        # New form: absolute path ending in `mem-hook[.exe] <phase>`.
+        # New form: absolute path ending in `weave-hook[.exe] <phase>`.
         for cmd, phase in [
             (action_cmd, "post_tool_use"),
             (mcp_cmd, "post_tool_use"),
             (stop_cmd, "stop"),
         ]:
             assert cmd.endswith(f" {phase}")
-            assert "mem-hook" in cmd
+            assert "weave-hook" in cmd
             # Absolute path, not bare name (Unix: starts with /;
             # Windows: drive letter like C:\). Accept either.
             head = cmd.rsplit(" ", 1)[0]
@@ -240,7 +240,7 @@ class TestHookInstaller:
         assert "python3" not in stop_cmd
 
     def test_install_strips_retired_pretooluse_but_keeps_foreign(self, tmp_path: Path):
-        """Re-running install must remove a stale personal_mem PreToolUse
+        """Re-running install must remove a stale thinkweave PreToolUse
         entry without disturbing PreToolUse hooks owned by other tools."""
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
@@ -254,7 +254,7 @@ class TestHookInstaller:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/abs/path/to/mem-hook pre_tool_use",
+                                "command": "/abs/path/to/weave-hook pre_tool_use",
                                 "timeout": 5,
                             }
                         ],
@@ -277,9 +277,9 @@ class TestHookInstaller:
         )
         pre = settings["hooks"]["PreToolUse"]
         assert len(pre) == 1
-        # The personal_mem entry is gone; the foreign one is intact.
+        # The thinkweave entry is gone; the foreign one is intact.
         assert pre[0]["matcher"] == "Bash"
-        assert "mem-hook" not in str(pre)
+        assert "weave-hook" not in str(pre)
 
     def test_install_writes_absolute_path(self, tmp_path: Path):
         """Fresh install writes an absolute path so /bin/sh can exec
@@ -297,7 +297,7 @@ class TestHookInstaller:
             for entry in settings["hooks"][hook_type]:
                 cmd = entry["hooks"][0]["command"]
                 head = cmd.rsplit(" ", 1)[0]
-                assert "mem-hook" in head
+                assert "weave-hook" in head
                 assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
                     f"{hook_type}: expected absolute path, got {head!r}"
                 )
@@ -322,7 +322,7 @@ class TestHookInstaller:
         # within slot. Single-matcher phases stay at exactly one.
         assert len(settings["hooks"]["PostToolUse"]) == 2
         post_matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
-        assert post_matchers == {"Write|Edit|Bash", "mcp__personal-mem__.*"}
+        assert post_matchers == {"Write|Edit|Bash", "mcp__thinkweave__.*"}
         assert len(settings["hooks"]["SessionStart"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
 
@@ -357,9 +357,9 @@ class TestHookInstaller:
 
         Claude Code matches PostToolUse entries against the dispatched
         tool's ``tool_name`` string. MCP calls arrive with names like
-        ``mcp__personal-mem__mem_search`` — they don't match
+        ``mcp__thinkweave__weave_search`` — they don't match
         ``Write|Edit|Bash``. Without a second matcher targeting
-        ``mcp__personal-mem__.*``, ``_handle_post``'s retrieval branch
+        ``mcp__thinkweave__.*``, ``_handle_post``'s retrieval branch
         (see operations/retrieval_log.RETRIEVAL_TOOLS) never fires and
         ``retrieval_log.jsonl`` only contains the SessionStart entry.
 
@@ -377,7 +377,7 @@ class TestHookInstaller:
         post_entries = settings["hooks"]["PostToolUse"]
         # The MCP-matcher entry must be present.
         mcp_entry = next(
-            (e for e in post_entries if e["matcher"] == "mcp__personal-mem__.*"),
+            (e for e in post_entries if e["matcher"] == "mcp__thinkweave__.*"),
             None,
         )
         assert mcp_entry is not None, (
@@ -385,7 +385,7 @@ class TestHookInstaller:
             f"{[e['matcher'] for e in post_entries]!r}"
         )
         # It must dispatch to the same handler entry point as the action gate.
-        assert "mem-hook" in mcp_entry["hooks"][0]["command"]
+        assert "weave-hook" in mcp_entry["hooks"][0]["command"]
         assert mcp_entry["hooks"][0]["command"].endswith(" post_tool_use")
 
     def test_install_idempotent_for_mcp_matcher(self, tmp_path: Path):
@@ -400,7 +400,7 @@ class TestHookInstaller:
         )
         mcp_entries = [
             e for e in settings["hooks"]["PostToolUse"]
-            if e["matcher"] == "mcp__personal-mem__.*"
+            if e["matcher"] == "mcp__thinkweave__.*"
         ]
         assert len(mcp_entries) == 1
 
@@ -426,7 +426,7 @@ class TestHookInstaller:
         fake_home.mkdir()
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
 
-        from personal_mem.surfaces.hooks.install import install_hooks
+        from thinkweave.surfaces.hooks.install import install_hooks
 
         install_hooks(scope="user", project_dir="")
 
@@ -444,11 +444,11 @@ class TestHookInstaller:
 
     def test_install_project_scope_unchanged(self, tmp_path: Path):
         """Default ``scope='project'`` keeps the historical settings.local.json
-        target (backwards compat for scripts calling ``mem hooks install``)."""
+        target (backwards compat for scripts calling ``weave hooks install``)."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        from personal_mem.surfaces.hooks.install import install_hooks
+        from thinkweave.surfaces.hooks.install import install_hooks
 
         install_hooks(scope="project", project_dir=str(project_dir))
 
@@ -464,7 +464,7 @@ class TestHookInstaller:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        from personal_mem.surfaces.hooks.install import install_hooks
+        from thinkweave.surfaces.hooks.install import install_hooks
 
         install_hooks(scope="project", project_dir=str(project_dir), dry_run=True)
 
@@ -483,7 +483,7 @@ class TestHookInstaller:
 
     def test_install_invalid_scope_raises(self, tmp_path: Path):
         """Unknown scope value must fail loud at the helper boundary."""
-        from personal_mem.surfaces.hooks.install import install_hooks
+        from thinkweave.surfaces.hooks.install import install_hooks
 
         with pytest.raises(ValueError, match="unknown scope"):
             install_hooks(scope="garbage", project_dir=str(tmp_path))
@@ -498,7 +498,7 @@ class TestHookInstaller:
         fake_home.mkdir()
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
 
-        from personal_mem.surfaces.hooks.install import install_hooks
+        from thinkweave.surfaces.hooks.install import install_hooks
 
         install_hooks(scope="user", project_dir="")
         target = fake_home / ".claude" / "settings.json"
@@ -513,7 +513,7 @@ class TestHookInstaller:
         assert len(second["hooks"]["PostToolUse"]) == 2
 
     def test_cli_smoke_install_scope_user_dry_run(self, tmp_path: Path, monkeypatch):
-        """``mem hooks install --scope user --dry-run`` reaches ``cmd_hooks``
+        """``weave hooks install --scope user --dry-run`` reaches ``cmd_hooks``
         with both flags set on the argparse Namespace."""
         # Redirect home so even if the dry-run did write (it shouldn't),
         # it wouldn't hit the real machine.
@@ -521,7 +521,7 @@ class TestHookInstaller:
         fake_home.mkdir()
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
 
-        from personal_mem.surfaces.cli.parser import build_parser
+        from thinkweave.surfaces.cli.parser import build_parser
 
         parser = build_parser()
         args = parser.parse_args(
@@ -532,7 +532,7 @@ class TestHookInstaller:
         assert args.dry_run is True
 
         # cmd_hooks should accept these flags and run without writing.
-        from personal_mem.surfaces.cli.hooks import cmd_hooks
+        from thinkweave.surfaces.cli.hooks import cmd_hooks
 
         cmd_hooks(args)
         # No file written.
@@ -667,22 +667,22 @@ class TestHandlePostCommitCapture:
     """
 
     def test_bash_commit_lands_in_buffer(self, tmp_path: Path, monkeypatch):
-        from personal_mem.core.config import Config
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.core.config import Config
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
-        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
 
         # Avoid the eager session-note creation path; A1 lives in the buffer
         # write, not in the session note materialisation.
         monkeypatch.setattr(
-            "personal_mem.surfaces.hooks.handler._ensure_session",
+            "thinkweave.surfaces.hooks.handler._ensure_session",
             lambda *a, **k: None,
         )
         # Don't shell out to git for the file list — return a stable fixture.
         monkeypatch.setattr(
-            "personal_mem.surfaces.hooks.handler._get_commit_files",
+            "thinkweave.surfaces.hooks.handler._get_commit_files",
             lambda h: ["src/a.py", "src/b.py"],
         )
 
@@ -700,7 +700,7 @@ class TestHandlePostCommitCapture:
         }
         handler_mod._handle_post("Bash", payload)
 
-        buf_file = cfg.mem_dir / "buffer" / "ses-cc-a1.jsonl"
+        buf_file = cfg.weave_dir / "buffer" / "ses-cc-a1.jsonl"
         assert buf_file.exists(), "expected a buffer line for the Bash event"
         rows = [json.loads(l) for l in buf_file.read_text().splitlines() if l.strip()]
         assert len(rows) == 1
@@ -720,16 +720,16 @@ class TestHandlePostCommitCapture:
         Pins the full pipeline from the audit's empirical finding all the
         way to the session note frontmatter.
         """
-        from personal_mem.core.config import Config
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.core.config import Config
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
-        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
         monkeypatch.setattr(
-            "personal_mem.surfaces.hooks.handler._get_commit_files",
+            "thinkweave.surfaces.hooks.handler._get_commit_files",
             lambda h: ["src/a.py", "src/b.py", "src/c.py"],
         )
 
@@ -764,7 +764,7 @@ class TestHandlePostCommitCapture:
         handler_mod._handle_stop({"session_id": "ses-cc-a1-e2e"})
 
         # The session note must now carry commits[] in its frontmatter.
-        from personal_mem.core.schemas import NoteType as _NT
+        from thinkweave.core.schemas import NoteType as _NT
 
         ses = next(
             n for n in vm.list_notes(note_type=_NT.SESSION, limit=10)
@@ -779,20 +779,20 @@ class TestHandlePostCommitCapture:
 
 class TestStopHookNoEmbed:
     """A1 (2026-06-06): the Stop hook no longer fires opportunistic
-    embeddings. The cron path (``mem index --embed --only-new``) is the
+    embeddings. The cron path (``weave index --embed --only-new``) is the
     sole driver. This guard test asserts the regression — if anyone
     re-adds a ``compute_all`` call to ``_handle_stop``, the test trips.
     """
 
     def test_stop_hook_does_not_call_compute_all(self, tmp_path: Path, monkeypatch):
-        from personal_mem.core.config import Config
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.core.config import Config
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
-        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
         vm = VaultManager(config=cfg)
         vm.ensure_dirs()
         vm.create_note(
@@ -801,7 +801,7 @@ class TestStopHookNoEmbed:
             project="alpha",
             extra_frontmatter={"source_session": "ses-embed-test"},
         )
-        buf = cfg.mem_dir / "buffer" / "ses-embed-test.jsonl"
+        buf = cfg.weave_dir / "buffer" / "ses-embed-test.jsonl"
         buf.parent.mkdir(parents=True, exist_ok=True)
         buf.write_text(
             json.dumps({
@@ -826,7 +826,7 @@ class TestStopHookNoEmbed:
                 calls.append(kw)
                 return {}
 
-        monkeypatch.setattr("personal_mem.core.embeddings.EmbeddingSearch", _Tripwire)
+        monkeypatch.setattr("thinkweave.core.embeddings.EmbeddingSearch", _Tripwire)
 
         handler_mod._handle_stop({"session_id": "ses-embed-test"})
 
@@ -898,7 +898,7 @@ class TestGitCommitDetection:
 
 
 class TestGetCommitFiles:
-    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
+    @patch("thinkweave.surfaces.hooks.handler.subprocess.run")
     def test_returns_file_list(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "src/a.py\nsrc/b.py\n"
@@ -906,24 +906,24 @@ class TestGetCommitFiles:
         assert result == ["src/a.py", "src/b.py"]
         mock_run.assert_called_once()
 
-    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
+    @patch("thinkweave.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_error(self, mock_run):
         mock_run.side_effect = FileNotFoundError("git not found")
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
+    @patch("thinkweave.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_timeout(self, mock_run):
         import subprocess as sp
         mock_run.side_effect = sp.TimeoutExpired("git", 5)
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
+    @patch("thinkweave.surfaces.hooks.handler.subprocess.run")
     def test_returns_empty_on_nonzero_exit(self, mock_run):
         mock_run.return_value.returncode = 1
         mock_run.return_value.stdout = ""
         assert _get_commit_files("abc1234") == []
 
-    @patch("personal_mem.surfaces.hooks.handler.subprocess.run")
+    @patch("thinkweave.surfaces.hooks.handler.subprocess.run")
     def test_filters_blank_lines(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "src/a.py\n\n  \nsrc/b.py\n"
@@ -932,13 +932,13 @@ class TestGetCommitFiles:
 
 
 class TestBuildEventCommitFiles:
-    @patch("personal_mem.surfaces.hooks.handler._get_commit_files", return_value=["src/a.py", "src/b.py"])
+    @patch("thinkweave.surfaces.hooks.handler._get_commit_files", return_value=["src/a.py", "src/b.py"])
     def test_commit_event_includes_files(self, mock_files):
         output = "[main abc1234] Fix bug\n 2 files changed\n"
         event = _build_event("Bash", {"command": "git commit -m 'Fix bug'"}, output, "14:00")
         assert event["commit"]["files"] == ["src/a.py", "src/b.py"]
 
-    @patch("personal_mem.surfaces.hooks.handler._get_commit_files", return_value=[])
+    @patch("thinkweave.surfaces.hooks.handler._get_commit_files", return_value=[])
     def test_commit_event_no_files_key_when_empty(self, mock_files):
         output = "[main abc1234] Fix bug\n 2 files changed\n"
         event = _build_event("Bash", {"command": "git commit -m 'Fix bug'"}, output, "14:00")
@@ -1140,10 +1140,10 @@ class TestSummarizeEvents:
 class TestHookErrorLogging:
     def test_log_error_creates_file(self, tmp_path):
         cfg = Config(vault_root=tmp_path / "vault")
-        with patch("personal_mem.core.config.load_config", return_value=cfg):
+        with patch("thinkweave.core.config.load_config", return_value=cfg):
             _log_error("test_hook", ValueError("test error"))
 
-        log_path = cfg.mem_dir / "hooks.log"
+        log_path = cfg.weave_dir / "hooks.log"
         assert log_path.exists()
         content = log_path.read_text()
         assert "test_hook" in content
@@ -1151,18 +1151,18 @@ class TestHookErrorLogging:
 
     def test_log_error_appends(self, tmp_path):
         cfg = Config(vault_root=tmp_path / "vault")
-        with patch("personal_mem.core.config.load_config", return_value=cfg):
+        with patch("thinkweave.core.config.load_config", return_value=cfg):
             _log_error("hook1", ValueError("error1"))
             _log_error("hook2", RuntimeError("error2"))
 
-        content = (cfg.mem_dir / "hooks.log").read_text()
+        content = (cfg.weave_dir / "hooks.log").read_text()
         assert "error1" in content
         assert "error2" in content
 
     def test_log_error_never_raises(self):
         # Even if everything fails inside, _log_error should not raise
         # Force a failure by making the import path invalid
-        with patch.dict("sys.modules", {"personal_mem.core.config": None}):
+        with patch.dict("sys.modules", {"thinkweave.core.config": None}):
             _log_error("test", ValueError("err"))  # Should not raise
 
 
@@ -1199,16 +1199,16 @@ class TestSessionStartHandler:
         """Invoke _handle_session_start with a stubbed config + project, capture stdout."""
         import io
 
-        from personal_mem.core.config import Config
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.core.config import Config
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         cfg = Config(vault_root=vault_dir)
         # Force our config through load_config so the handler uses the tmp vault
         monkeypatch.setattr(
-            "personal_mem.core.config.load_config", lambda: cfg
+            "thinkweave.core.config.load_config", lambda: cfg
         )
         monkeypatch.setattr(
-            "personal_mem.surfaces.hooks.handler._detect_project",
+            "thinkweave.surfaces.hooks.handler._detect_project",
             lambda hook_input: project,
         )
 
@@ -1220,7 +1220,7 @@ class TestSessionStartHandler:
     def test_empty_vault_emits_valid_response(self, tmp_path: Path, monkeypatch):
         vault_dir = tmp_path / "vault"
         vault_dir.mkdir()
-        (vault_dir / ".mem").mkdir()
+        (vault_dir / ".weave").mkdir()
 
         result = self._run(vault_dir, "ghost", monkeypatch)
         # Either empty (no payload) or contains hookSpecificOutput
@@ -1232,10 +1232,10 @@ class TestSessionStartHandler:
     def test_populated_vault_emits_additional_context(
         self, tmp_path: Path, monkeypatch
     ):
-        from personal_mem.core.indexer import Indexer
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.core.config import Config
 
         vault_dir = tmp_path / "vault"
         cfg = Config(vault_root=vault_dir)
@@ -1274,13 +1274,13 @@ class TestSessionStartHandler:
         """Hook must always exit cleanly, even if the payload builder raises."""
         import io
 
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         def boom(*args, **kwargs):
             raise RuntimeError("synthetic failure")
 
         monkeypatch.setattr(
-            "personal_mem.retrieval.context.build_project_context", boom
+            "thinkweave.retrieval.context.build_project_context", boom
         )
         buf = io.StringIO()
         monkeypatch.setattr("sys.stdout", buf)
@@ -1298,17 +1298,17 @@ class TestUserPromptSubmitHook:
     """Phase 4 E1 — UserPromptSubmit captures every prompt to the JSONL buffer."""
 
     def test_appends_prompt_event(self, tmp_path: Path, monkeypatch):
-        from personal_mem.core.config import Config
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.core.config import Config
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
-        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
 
         # Avoid the eager session-note creation path (it indexes/writes to
         # the vault) — for this unit test we only care about the JSONL line.
         monkeypatch.setattr(
-            "personal_mem.surfaces.hooks.handler._ensure_session",
+            "thinkweave.surfaces.hooks.handler._ensure_session",
             lambda *a, **k: None,
         )
 
@@ -1320,7 +1320,7 @@ class TestUserPromptSubmitHook:
             }
         )
 
-        buf_file = cfg.mem_dir / "buffer" / "ses-cc-1.jsonl"
+        buf_file = cfg.weave_dir / "buffer" / "ses-cc-1.jsonl"
         assert buf_file.exists()
         lines = buf_file.read_text().splitlines()
         assert len(lines) == 1
@@ -1332,14 +1332,14 @@ class TestUserPromptSubmitHook:
         assert row["ts"]  # populated
 
     def test_missing_text_skipped(self, tmp_path: Path, monkeypatch):
-        from personal_mem.core.config import Config
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.core.config import Config
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
-        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
         monkeypatch.setattr(
-            "personal_mem.surfaces.hooks.handler._ensure_session",
+            "thinkweave.surfaces.hooks.handler._ensure_session",
             lambda *a, **k: None,
         )
 
@@ -1348,7 +1348,7 @@ class TestUserPromptSubmitHook:
         )
 
         # No buffer should have been created
-        assert not (cfg.mem_dir / "buffer" / "ses-cc-2.jsonl").exists()
+        assert not (cfg.weave_dir / "buffer" / "ses-cc-2.jsonl").exists()
 
     def test_install_registers_user_prompt_submit(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -1361,7 +1361,7 @@ class TestUserPromptSubmitHook:
         assert "UserPromptSubmit" in settings["hooks"]
         ups = settings["hooks"]["UserPromptSubmit"][0]
         assert "user_prompt_submit" in ups["hooks"][0]["command"]
-        assert "mem-hook" in ups["hooks"][0]["command"]
+        assert "weave-hook" in ups["hooks"][0]["command"]
 
     def test_install_idempotent_with_user_prompt_submit(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -1404,12 +1404,12 @@ class TestPromptTimeEnrichment:
     """R2 — UserPromptSubmit prepends a bounded, deduped vault block."""
 
     def _cfg(self, tmp_path: Path, monkeypatch):
-        from personal_mem.core.config import Config
+        from thinkweave.core.config import Config
 
         cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("personal_mem.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
         monkeypatch.setattr(
-            "personal_mem.surfaces.hooks.handler._ensure_session",
+            "thinkweave.surfaces.hooks.handler._ensure_session",
             lambda *a, **k: None,
         )
         return cfg
@@ -1417,12 +1417,12 @@ class TestPromptTimeEnrichment:
     def test_emits_additional_context_and_writes_back(
         self, tmp_path: Path, monkeypatch, capsys
     ):
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         cfg = self._cfg(tmp_path, monkeypatch)
         block = "📎 Possibly relevant from your vault (optional):\n- [[n-aaaaaa01]] (note) — X"
         monkeypatch.setattr(
-            "personal_mem.operations.prompt_time_retrieval.build_enrichment",
+            "thinkweave.operations.prompt_time_retrieval.build_enrichment",
             lambda *a, **k: (block, ["n-aaaaaa01"]),
         )
 
@@ -1437,7 +1437,7 @@ class TestPromptTimeEnrichment:
         # Buffer carries the prompt event AND the prompt-time write-back.
         lines = [
             json.loads(x)
-            for x in (cfg.mem_dir / "buffer" / "ses-r2.jsonl")
+            for x in (cfg.weave_dir / "buffer" / "ses-r2.jsonl")
             .read_text().splitlines()
             if x.strip()
         ]
@@ -1451,7 +1451,7 @@ class TestPromptTimeEnrichment:
     def test_noop_emits_plain_and_no_writeback(
         self, tmp_path: Path, monkeypatch, capsys
     ):
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         cfg = self._cfg(tmp_path, monkeypatch)
         # Real module path, but disabled → guaranteed no-op without any search.
@@ -1464,7 +1464,7 @@ class TestPromptTimeEnrichment:
         assert json.loads(capsys.readouterr().out) == {}
         lines = [
             json.loads(x)
-            for x in (cfg.mem_dir / "buffer" / "ses-r2b.jsonl")
+            for x in (cfg.weave_dir / "buffer" / "ses-r2b.jsonl")
             .read_text().splitlines()
             if x.strip()
         ]
@@ -1473,7 +1473,7 @@ class TestPromptTimeEnrichment:
     def test_enrichment_failure_never_breaks_turn(
         self, tmp_path: Path, monkeypatch, capsys
     ):
-        from personal_mem.surfaces.hooks import handler as handler_mod
+        from thinkweave.surfaces.hooks import handler as handler_mod
 
         cfg = self._cfg(tmp_path, monkeypatch)
 
@@ -1481,7 +1481,7 @@ class TestPromptTimeEnrichment:
             raise RuntimeError("search exploded")
 
         monkeypatch.setattr(
-            "personal_mem.operations.prompt_time_retrieval.build_enrichment", _boom
+            "thinkweave.operations.prompt_time_retrieval.build_enrichment", _boom
         )
 
         # Must not raise; emits a plain response; prompt event still captured.
@@ -1489,4 +1489,4 @@ class TestPromptTimeEnrichment:
             {"session_id": "ses-r2c", "prompt": "a real substantive question here"}
         )
         assert json.loads(capsys.readouterr().out) == {}
-        assert (cfg.mem_dir / "buffer" / "ses-r2c.jsonl").exists()
+        assert (cfg.weave_dir / "buffer" / "ses-r2c.jsonl").exists()

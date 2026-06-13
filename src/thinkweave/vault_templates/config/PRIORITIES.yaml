@@ -1,0 +1,65 @@
+# vault/config/PRIORITIES.yaml
+#
+# Two-section file. Edit monthly.
+#
+#   focus  — what to surface (`/discover` bias + STATE.md emphasis)
+#   intake — what to pull in (registries the rss_poll + mail_poll
+#            strategies enqueue from)
+#
+# Inline list syntax only (`[a, b, c]`) — the thinkweave YAML reader
+# silently parses block-style `- item` lists as empty.
+
+# ──────────────────────────────────────────────────────────────────────
+# focus — discover bias + landing-doc foregrounding
+# ──────────────────────────────────────────────────────────────────────
+
+focus:
+  # Projects foreground in landing docs.
+  active_projects: []
+
+  # Theme IDs (thm-*) surfaced in STATE.md "Active themes" and biased
+  # by /discover. Empty list = no explicit pin; STATE.md still renders
+  # active themes by recency.
+  watch_themes: []
+
+# ──────────────────────────────────────────────────────────────────────
+# intake — what external-trigger strategies enqueue
+# ──────────────────────────────────────────────────────────────────────
+
+intake:
+
+  # News (single-grain)
+  news:
+    drain_window_days: 7
+    outlets: {}
+    # Example outlet shape:
+    # outlets:
+    #   reuters:
+    #     name: Reuters
+    #     feeds: [https://www.reuters.com/rssFeed/topNews]
+    #     tier: 1
+    #     region: global
+    #     prefer_embedded: true
+    #     daily_cap: 5
+
+  # Podcasts (event vs concept grain)
+  podcast_events:
+    outlets: {}
+  podcast_concepts:
+    outlets: {}
+
+  # YouTube (event vs concept grain) — channels by ID (UC…)
+  youtube_events:
+    channels: []
+    lookback_days: 1
+    drain_batch_max: 5
+  youtube_concepts:
+    channels: []
+    lookback_days: 1
+    drain_batch_max: 5
+
+  # Newsletters (event vs concept grain) — Gmail sender allowlists
+  newsletter_events:
+    senders: []
+  newsletter_concepts:
+    senders: []

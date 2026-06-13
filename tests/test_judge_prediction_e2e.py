@@ -4,9 +4,9 @@ Tests the full CLI loop the ``/judge-prediction`` skill orchestrates:
 
 1. Seed decisions with ``predicted_outcome`` + ``pending`` history.
 2. Enqueue rejudge requests (simulates supersession trigger).
-3. ``mem judge --drain`` returns the worklist the skill consumes.
-4. Apply synthetic verdicts via ``mem update`` (the skill's write step).
-5. ``mem rlvr export`` reflects the new verdicts.
+3. ``weave judge --drain`` returns the worklist the skill consumes.
+4. Apply synthetic verdicts via ``weave update`` (the skill's write step).
+5. ``weave rlvr export`` reflects the new verdicts.
 
 The skill itself is a Claude-Code slash command, so the LLM-judgment
 turn is *not* run here — the test exercises the CLI/data boundaries
@@ -24,21 +24,21 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
-from personal_mem.operations import rejudge_queue
-from personal_mem.surfaces.cli.judge import cmd_judge
-from personal_mem.surfaces.cli.notes import cmd_update
-from personal_mem.surfaces.cli.rlvr import cmd_rlvr
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter, render_frontmatter
+from thinkweave.operations import rejudge_queue
+from thinkweave.surfaces.cli.judge import cmd_judge
+from thinkweave.surfaces.cli.notes import cmd_update
+from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 
 
 @pytest.fixture
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     vault = tmp_path / "vault"
-    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
-    monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+    monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
     return Config(vault_root=vault, default_project="t")
 
 
@@ -71,7 +71,7 @@ def _seed_decision_with_prediction(
                 {
                     "match": "pending",
                     "judged_at": "",
-                    "reason": "initialized by /mem-wrap",
+                    "reason": "initialized by /weave-wrap",
                 }
             ],
             "prediction_match": "pending",
@@ -82,7 +82,7 @@ def _seed_decision_with_prediction(
     return fm["id"]
 
 
-def _apply_verdict_via_mem_update(
+def _apply_verdict_via_weave_update(
     cfg: Config,
     *,
     decision_id: str,
@@ -133,14 +133,14 @@ class TestJudgePredictionE2E:
         dec_id = _seed_decision_with_prediction(
             vault,
             title="Use WAL mode for SQLite writers",
-            predicted_outcome="Concurrent reads no longer block. Check that wrap-finalize takes <1s after the next /mem-wrap.",
+            predicted_outcome="Concurrent reads no longer block. Check that wrap-finalize takes <1s after the next /weave-wrap.",
         )
         Indexer(config=cfg).rebuild(full=True)
         rejudge_queue.enqueue(
             cfg, decision_id=dec_id, reason="supersession", source="supersession"
         )
 
-        # mem judge --drain → JSON worklist
+        # weave judge --drain → JSON worklist
         cmd_judge(argparse.Namespace(
             drain=True, rejudge=None, list_pending=False,
             max=20, json=True, verdict=None,
@@ -163,13 +163,13 @@ class TestJudgePredictionE2E:
         Indexer(config=cfg).rebuild(full=True)
 
         # Simulate skill applying verdict.
-        _apply_verdict_via_mem_update(
+        _apply_verdict_via_weave_update(
             cfg, decision_id=dec_id,
             verdict="confirmed",
             reason="Synthetic verdict (test).",
         )
 
-        # mem rlvr export → JSONL on stdout
+        # weave rlvr export → JSONL on stdout
         cmd_rlvr(argparse.Namespace(
             rlvr_action="export",
             project="",

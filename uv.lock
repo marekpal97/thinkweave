@@ -1725,84 +1725,6 @@ wheels = [
 ]
 
 [[package]]
-name = "personal-mem"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "pyyaml" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "feedparser" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "mcp" },
-    { name = "openai" },
-    { name = "readability-lxml" },
-    { name = "youtube-transcript-api" },
-]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-embeddings = [
-    { name = "httpx" },
-    { name = "openai" },
-]
-embeddings-litellm = [
-    { name = "litellm" },
-]
-embeddings-local = [
-    { name = "sentence-transformers" },
-]
-gemini = [
-    { name = "google-genai" },
-]
-hubs = [
-    { name = "openai" },
-]
-mcp = [
-    { name = "mcp" },
-]
-news = [
-    { name = "feedparser" },
-    { name = "httpx" },
-    { name = "readability-lxml" },
-]
-youtube = [
-    { name = "youtube-transcript-api" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "feedparser", marker = "extra == 'news'", specifier = ">=6.0" },
-    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
-    { name = "httpx", marker = "extra == 'embeddings'" },
-    { name = "httpx", marker = "extra == 'news'" },
-    { name = "litellm", marker = "extra == 'embeddings-litellm'", specifier = ">=1.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
-    { name = "openai", marker = "extra == 'embeddings'", specifier = ">=1.50" },
-    { name = "openai", marker = "extra == 'hubs'", specifier = ">=1.50" },
-    { name = "personal-mem", extras = ["mcp", "embeddings", "hubs", "news", "gemini", "youtube"], marker = "extra == 'all'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "readability-lxml", marker = "extra == 'news'", specifier = ">=0.8.1" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "sentence-transformers", marker = "extra == 'embeddings-local'", specifier = ">=2.5" },
-    { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = ">=1.0" },
-]
-provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm", "hubs", "news", "gemini", "youtube", "all", "dev"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
-
-[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2738,6 +2660,84 @@ sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
 ]
+
+[[package]]
+name = "thinkweave"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "feedparser" },
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "mcp" },
+    { name = "openai" },
+    { name = "readability-lxml" },
+    { name = "youtube-transcript-api" },
+]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+embeddings = [
+    { name = "httpx" },
+    { name = "openai" },
+]
+embeddings-litellm = [
+    { name = "litellm" },
+]
+embeddings-local = [
+    { name = "sentence-transformers" },
+]
+gemini = [
+    { name = "google-genai" },
+]
+hubs = [
+    { name = "openai" },
+]
+mcp = [
+    { name = "mcp" },
+]
+news = [
+    { name = "feedparser" },
+    { name = "httpx" },
+    { name = "readability-lxml" },
+]
+youtube = [
+    { name = "youtube-transcript-api" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "feedparser", marker = "extra == 'news'", specifier = ">=6.0" },
+    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
+    { name = "httpx", marker = "extra == 'embeddings'" },
+    { name = "httpx", marker = "extra == 'news'" },
+    { name = "litellm", marker = "extra == 'embeddings-litellm'", specifier = ">=1.0" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "openai", marker = "extra == 'embeddings'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'hubs'", specifier = ">=1.50" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "readability-lxml", marker = "extra == 'news'", specifier = ">=0.8.1" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "sentence-transformers", marker = "extra == 'embeddings-local'", specifier = ">=2.5" },
+    { name = "thinkweave", extras = ["mcp", "embeddings", "hubs", "news", "gemini", "youtube"], marker = "extra == 'all'" },
+    { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = ">=1.0" },
+]
+provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm", "hubs", "news", "gemini", "youtube", "all", "dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
 name = "threadpoolctl"

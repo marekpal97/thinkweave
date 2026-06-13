@@ -3,18 +3,18 @@ name: discover
 owns_mechanic: research_discovery
 source_type: [paper, repo, article, news, youtube-events, youtube-concepts, newsletter-events, newsletter-concepts]
 capabilities: [discover]
-consumes: [mem_concepts, mem_search, mem_timeline, mem_queue]
-produces: [vault/.mem/queues/*.jsonl, vault/reports/discover/*]
+consumes: [weave_concepts, weave_search, weave_timeline, weave_queue]
+produces: [vault/.weave/queues/*.jsonl, vault/reports/discover/*]
 tools:
   - Read
   - Bash
   - WebSearch
-  - mem_concepts
-  - mem_search
-  - mem_read
-  - mem_timeline
-  - mem_queue
-  - mem_sources_config
+  - weave_concepts
+  - weave_search
+  - weave_read
+  - weave_timeline
+  - weave_queue
+  - weave_sources_config
 description: Strategy-driven discovery. Runs the configured strategy list; strategies emit gap descriptors and (for external-trigger ones) directly enqueue. The single producer rail in the discover→drain spine.
 ---
 
@@ -33,7 +33,7 @@ Both flavors share the same `run(vault, project, config)` contract.
 
 The two flavors are **not** a TODO to merge. Gap-emitters scan vault state and report what's missing; enqueue-emitters observe outside signals and write the queue directly. Each emits a fundamentally different shape:
 
-- Gap-emitter output (`kind: "gap"`) carries concept/decision metadata and *describes* a need. The skill decides what to do about it (WebSearch + `mem_queue`, or surfacing in the report). Forcing gap-emitters to enqueue would conflate "scan and report" with "decide what to do" — the strategies would need synthesis logic that legitimately lives in this skill.
+- Gap-emitter output (`kind: "gap"`) carries concept/decision metadata and *describes* a need. The skill decides what to do about it (WebSearch + `weave_queue`, or surfacing in the report). Forcing gap-emitters to enqueue would conflate "scan and report" with "decide what to do" — the strategies would need synthesis logic that legitimately lives in this skill.
 - Enqueue-emitter output (`kind: "enqueued"` / `kind: "mail_fetch_needed"`) is already a queue item or a plan for one. The skill just records what happened.
 
 Future strategies that emit gap descriptors stay gap-emitters; future strategies that observe external signals enqueue directly. The split is healthy separation of concerns, not duplication.
@@ -70,15 +70,15 @@ projects:
 ### 1. Fetch the descriptor list
 
 ```
-mem discover --project <name>                              # configured strategies
-mem discover --strategy decision_review                    # one strategy, all projects
-mem discover --strategy rss_poll --source-type news        # one strategy, one source type
-mem discover --strategy mail_poll --source-type newsletter-events
+weave discover --project <name>                              # configured strategies
+weave discover --strategy decision_review                    # one strategy, all projects
+weave discover --strategy rss_poll --source-type news        # one strategy, one source type
+weave discover --strategy mail_poll --source-type newsletter-events
 ```
 
 `--source-type X` is read by external-trigger strategies (rss_poll, mail_poll) to limit work to one type; internal-state strategies ignore it.
 
-`mem discover` returns a JSON list — one entry per descriptor. Each entry has a `strategy` field, a `kind`, and strategy-specific keys.
+`weave discover` returns a JSON list — one entry per descriptor. Each entry has a `strategy` field, a `kind`, and strategy-specific keys.
 
 If the list is empty, report "no descriptors this run" and exit.
 
@@ -86,13 +86,13 @@ If the list is empty, report "no descriptors this run" and exit.
 
 Dispatch on `kind`:
 
-- **`kind: review` (decision_review)** — surface the decision in the run report; do not auto-queue. The user inspects via `mem show <decision_id>` and decides whether to flip status or schedule a re-discussion. If `focus.watch_themes` in `PRIORITIES.yaml` is non-empty and the decision's `implements:` intersects it, mark the row "(watched theme)" in the report.
+- **`kind: review` (decision_review)** — surface the decision in the run report; do not auto-queue. The user inspects via `weave show <decision_id>` and decides whether to flip status or schedule a re-discussion. If `focus.watch_themes` in `PRIORITIES.yaml` is non-empty and the decision's `implements:` intersects it, mark the row "(watched theme)" in the report.
 
-- **`kind: ontology_proposal` (prompt_gap)** — the user has probed about a hyphenated-compound term not in the ontology. Surface as a candidate for `/mem-resolve-concepts` to canonicalise; do not WebSearch or enqueue research items from it.
+- **`kind: ontology_proposal` (prompt_gap)** — the user has probed about a hyphenated-compound term not in the ontology. Surface as a candidate for `/weave-resolve-concepts` to canonicalise; do not WebSearch or enqueue research items from it.
 
-- **`kind: research_focus` (focus_research)** — a declared focus concept with its substrate exemplars, probe evidence, and `source_coverage` partition. If coverage shows a real gap (e.g. zero sources of a type the concept plausibly needs), resolve it: compose a WebSearch from the concept, **tightened by `probe_texts`** (the user's verbatim open questions — search what they asked, not just the slug), and enqueue the best hit via `mem_queue` with `concept`, `url`, `title`, and the `probes` field carried over so the drain-side writer keeps the angle. If coverage looks adequate, surface the row in the report only. This is the discover-rail twin of `/dream`'s `queue_item.probes`.
+- **`kind: research_focus` (focus_research)** — a declared focus concept with its substrate exemplars, probe evidence, and `source_coverage` partition. If coverage shows a real gap (e.g. zero sources of a type the concept plausibly needs), resolve it: compose a WebSearch from the concept, **tightened by `probe_texts`** (the user's verbatim open questions — search what they asked, not just the slug), and enqueue the best hit via `weave_queue` with `concept`, `url`, `title`, and the `probes` field carried over so the drain-side writer keeps the angle. If coverage looks adequate, surface the row in the report only. This is the discover-rail twin of `/dream`'s `queue_item.probes`.
 
-- **`kind: external` (external_tool_runner)** — payloads are user-shaped. If they look like queue items (have `url` / `title` fields), enqueue via `mem_queue`. Otherwise pass through to the run report.
+- **`kind: external` (external_tool_runner)** — payloads are user-shaped. If they look like queue items (have `url` / `title` fields), enqueue via `weave_queue`. Otherwise pass through to the run report.
 
 - **`kind: enqueued` (rss_poll)** — the strategy already enqueued. Surface the row in the report (title, url, outlet/channel, queue_item_id); no further action.
 
@@ -137,7 +137,7 @@ Headless cron runs make this the **only** durable record of internal-state findi
 
 ## Adding a new strategy
 
-Drop a file under `src/personal_mem/acquisition/discover/strategies/` exposing a module-level `STRATEGY` instance, then add one `register()` call in `src/personal_mem/acquisition/discover/strategies/__init__.py`. The strategy implements:
+Drop a file under `src/thinkweave/acquisition/discover/strategies/` exposing a module-level `STRATEGY` instance, then add one `register()` call in `src/thinkweave/acquisition/discover/strategies/__init__.py`. The strategy implements:
 
 ```python
 class MyStrategy:
@@ -150,7 +150,7 @@ class MyStrategy:
 
 For external-trigger strategies, read `config.get("_runtime", {}).get("source_type")` to honor the CLI `--source-type` filter.
 
-No edits to the CLI, the MCP surface, or this skill are needed. Mention the new strategy in the project's `discover_strategies` list in `sources.yaml` (if it should run by default) and `mem discover` will pick it up.
+No edits to the CLI, the MCP surface, or this skill are needed. Mention the new strategy in the project's `discover_strategies` list in `sources.yaml` (if it should run by default) and `weave discover` will pick it up.
 
 ## Notes
 

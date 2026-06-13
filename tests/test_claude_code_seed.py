@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.onboarding.claude_code_seed import (
+from thinkweave.onboarding.claude_code_seed import (
     UNSCOPED_PROJECT,
     normalize_project,
 )

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from personal_mem.acquisition.importers.chatgpt import (
+from thinkweave.acquisition.importers.chatgpt import (
     Message,
     Thread,
     _build_body,
@@ -119,7 +119,7 @@ def conversations_file(tmp_path: Path) -> Path:
 @pytest.fixture
 def vault_config(tmp_path: Path):
     """Create a minimal vault config pointing to a temp directory."""
-    from personal_mem.core.config import Config
+    from thinkweave.core.config import Config
 
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
@@ -379,7 +379,7 @@ class TestImportChatgpt:
         )
         assert stats["total"] == 1  # Only conv-002
 
-    @patch("personal_mem.acquisition.importers.chatgpt.summarize_thread")
+    @patch("thinkweave.acquisition.importers.chatgpt.summarize_thread")
     def test_full_import(self, mock_summarize, conversations_file, vault_config):
         mock_summarize.return_value = {
             "summary": "Test summary.",
@@ -410,7 +410,7 @@ class TestImportChatgpt:
         assert "imported_from: chatgpt" in content
         assert "Test summary." in content
 
-    @patch("personal_mem.acquisition.importers.chatgpt.summarize_thread")
+    @patch("thinkweave.acquisition.importers.chatgpt.summarize_thread")
     def test_idempotency(self, mock_summarize, conversations_file, vault_config):
         mock_summarize.return_value = {
             "summary": "S", "key_questions": "", "key_insights": "", "concepts": [],

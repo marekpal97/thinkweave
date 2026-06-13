@@ -3,7 +3,7 @@
 Covers:
 
 - ``operations.search.query_prompts`` over project session JSONL buffers.
-- ``mem_prompts`` MCP tool wrapper.
+- ``weave_prompts`` MCP tool wrapper.
 - STATE.md "Open Probes" rendering with no probe-tagged notes (only
   classified prompts).
 """
@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.search import query_prompts
-from personal_mem.synthesis.landing import state_of_play
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations.search import query_prompts
+from thinkweave.synthesis.landing import state_of_play
 
 
 def _write_events(path: Path, rows: list[dict]) -> None:
@@ -98,7 +98,7 @@ class TestQueryPrompts:
         self, cfg: Config, vault: VaultManager
     ):
         """E2E from the verification gate: simulate a buffer being killed
-        mid-session (no events.jsonl archive yet) and verify mem_prompts
+        mid-session (no events.jsonl archive yet) and verify weave_prompts
         still surfaces prior prompts."""
         # Create a session note that maps cc-uuid → proj_a so the buffer
         # gets project-scoped correctly.
@@ -110,7 +110,7 @@ class TestQueryPrompts:
         )
 
         # Active buffer (not yet archived)
-        buf_file = cfg.mem_dir / "buffer" / "cc-uuid-mid.jsonl"
+        buf_file = cfg.weave_dir / "buffer" / "cc-uuid-mid.jsonl"
         _write_events(
             buf_file,
             [
@@ -141,7 +141,7 @@ class TestQueryPrompts:
             project="proj_b",
             extra_frontmatter={"source_session": "cc-otherproj"},
         )
-        buf_file = cfg.mem_dir / "buffer" / "cc-otherproj.jsonl"
+        buf_file = cfg.weave_dir / "buffer" / "cc-otherproj.jsonl"
         _write_events(
             buf_file,
             [
@@ -211,7 +211,7 @@ class TestPromptClassification:
     def test_extract_prompts_populates_classification(
         self, cfg: Config, tmp_path: Path
     ):
-        from personal_mem.core.events import extract_prompts
+        from thinkweave.core.events import extract_prompts
 
         events_file = tmp_path / "events.jsonl"
         # Lookahead window is 3 events. Probe goes LAST so its lookahead

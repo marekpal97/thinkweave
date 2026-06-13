@@ -1,7 +1,7 @@
 """Tests for the model/dimension guard in ``EmbeddingSearch.search``.
 
 A cache can hold rows from more than one embedding model mid-migration
-(before ``mem index --embed --reset``). Cosine across models — even at
+(before ``weave index --embed --reset``). Cosine across models — even at
 equal dimensionality — is meaningless, and across dimensionalities the
 stdlib ``zip`` in ``cosine_similarity`` would silently truncate to the
 shorter vector and return a plausible-but-wrong score. ``search`` must
@@ -17,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.embeddings import EmbeddingSearch
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.embeddings import EmbeddingSearch
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture

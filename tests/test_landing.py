@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.synthesis.landing import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.synthesis.landing import (
     DEFAULT_LANDING_FILENAMES,
     LANDING_FILENAMES,
     backlog_summary,
@@ -20,8 +20,8 @@ from personal_mem.synthesis.landing import (
     state_of_play_context,
     write_landing_docs,
 )
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -386,7 +386,7 @@ class TestIndexerExclusion:
         stats = indexer.rebuild(full=True)
 
         # Landing docs should NOT be in the index
-        from personal_mem.retrieval.search import Search
+        from thinkweave.retrieval.search import Search
         s = Search(config=config)
         for fname in LANDING_FILENAMES:
             results = s.search(query=fname.replace(".md", ""), limit=10)
@@ -554,7 +554,7 @@ class TestProbeCapsFromConfig:
         import json as _json
         from datetime import datetime, timedelta, timezone
 
-        from personal_mem.synthesis.landing import _gather_prompt_probes
+        from thinkweave.synthesis.landing import _gather_prompt_probes
 
         sess_dir = (
             config.vault_root / "projects" / "test_proj" / "sessions" / "s1"

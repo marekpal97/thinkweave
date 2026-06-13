@@ -13,12 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.acquisition.discover import REGISTRY, get, names, register
-from personal_mem.acquisition.discover.strategies import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.acquisition.discover import REGISTRY, get, names, register
+from thinkweave.acquisition.discover.strategies import (
     decision_review,
     external_tool_runner,
     prompt_gap,

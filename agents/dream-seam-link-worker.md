@@ -1,7 +1,7 @@
 ---
 name: dream-seam-link-worker
-description: Phase-2 of /dream — drains the seam-link queue; judges cross-parent catalyst pairs on freshly-folded hubs and writes ref-dates via `mem hubs apply-linkage`; emits one outcome JSON line.
-tools: Read, Bash, mcp__personal-mem__mem_read
+description: Phase-2 of /dream — drains the seam-link queue; judges cross-parent catalyst pairs on freshly-folded hubs and writes ref-dates via `weave hubs apply-linkage`; emits one outcome JSON line.
+tools: Read, Bash, mcp__thinkweave__weave_read
 model: sonnet
 color: cyan
 ---
@@ -12,7 +12,7 @@ When a hub merge folds one catalyst log into another (concept merge or theme mer
 
 **You are not a gatekeeper.** Admission happened upstream (the merge was already judged and applied). Your job is the linkage rubric — the same one `/hubs-link` uses — restricted to the seam.
 
-**Anti-refusal contract.** The tools in your frontmatter (`Read, Bash, mcp__personal-mem__mem_read`) are the only gate between you and the vault. `Bash` exists so you can call `uv run mem hubs apply-linkage` — the validated write path — and nothing blocks that call. Every queue item must end in a terminal state: `linked` (apply-linkage ran, stamps cleared) or `error` (a real exception text). Refusing leaves the hub stamped `fold_pending_*` forever.
+**Anti-refusal contract.** The tools in your frontmatter (`Read, Bash, mcp__thinkweave__weave_read`) are the only gate between you and the vault. `Bash` exists so you can call `uv run weave hubs apply-linkage` — the validated write path — and nothing blocks that call. Every queue item must end in a terminal state: `linked` (apply-linkage ran, stamps cleared) or `error` (a real exception text). Refusing leaves the hub stamped `fold_pending_*` forever.
 
 ## Input contract
 
@@ -41,8 +41,8 @@ Capped at `dream_seam_link_cap` (default 10). Process every entry in input order
 
 ### Step A — Read the hub
 
-- `hub_kind: concept` → `Read` the file at `concepts/topics/<hub_id>.md` (vault root comes from the orchestrator prompt) or `mem_read(id=...)` won't work for concept hubs — use `Read`.
-- `hub_kind: theme` → `mem_read(id="<hub_id>")` or `Read` the theme file.
+- `hub_kind: concept` → `Read` the file at `concepts/topics/<hub_id>.md` (vault root comes from the orchestrator prompt) or `weave_read(id=...)` won't work for concept hubs — use `Read`.
+- `hub_kind: theme` → `weave_read(id="<hub_id>")` or `Read` the theme file.
 
 Parse the `## Catalyst log`. Identify the **seam sides**: entries whose date is in `fold_dates` came from the folded-in parent; everything else is the host log. (Same-date collisions are possible — when a date appears on both sides, treat its entries conservatively: judge only pairs you can clearly attribute by content.)
 
@@ -67,7 +67,7 @@ Compose the revisions JSON and apply with one Bash call per hub:
 cd <repo> && echo '{"revisions": [
   {"date": "2026-05-05", "citation": "n-cccc3333", "flag": "agrees",
    "ref": "2026-05-01", "ref_quote": "verbatim quote from the cited entry text"}
-]}' | uv run mem hubs apply-linkage --hub <hub_id> --kind <hub_kind> --revisions - --clear-fold --json
+]}' | uv run weave hubs apply-linkage --hub <hub_id> --kind <hub_kind> --revisions - --clear-fold --json
 ```
 
 `apply-linkage` runs every revision through `validate_linkage_revision` (flag allowlist, ref < entry date, quote anchored in the cited entry) — invalid revisions demote to `new`, never error. `--clear-fold` drops the `fold_pending_*` stamps; pass it on your one call per hub. If you judged ZERO cross-parent links for a hub, still call apply-linkage with an empty revisions list and `--clear-fold` — the stamp must clear either way.

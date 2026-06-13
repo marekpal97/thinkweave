@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from personal_mem.core import embedding_provider as ep
-from personal_mem.core.embedding_provider import (
+from thinkweave.core import embedding_provider as ep
+from thinkweave.core.embedding_provider import (
     LiteLLMEmbeddingProvider,
     OpenAIEmbeddingProvider,
     SentenceTransformerProvider,
@@ -147,8 +147,8 @@ def test_openai_provider_empty_texts_is_noop(fake_httpx):
 def test_openai_provider_missing_key_raises(monkeypatch, fake_httpx):
     # Strip key + isolate .env lookups.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
-    from personal_mem.core import api_keys
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+    from thinkweave.core import api_keys
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setattr(api_keys, "_PROJECT_ROOT", Path(td))
@@ -203,7 +203,7 @@ def test_sentence_transformer_lazy_load_error_when_missing(monkeypatch):
 
 
 def test_all_providers_conform_to_protocol():
-    from personal_mem.core.embedding_provider import EmbeddingProvider
+    from thinkweave.core.embedding_provider import EmbeddingProvider
     for p in (
         OpenAIEmbeddingProvider(),
         SentenceTransformerProvider(),

@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.acquisition.discover.strategies.rss_poll import (
+from thinkweave.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_podcast_item,
     _parse_itunes_duration,
@@ -291,7 +291,7 @@ def test_strategy_polls_podcast_feeds_and_enqueues(
     assert summaries[0]["stats"]["enqueued"] == 2
     assert all(d["source_type"] == "podcast-events" for d in enqueued)
 
-    queue_path = tmp_path / ".mem" / "queues" / "podcast-events.jsonl"
+    queue_path = tmp_path / ".weave" / "queues" / "podcast-events.jsonl"
     assert queue_path.exists()
     body = queue_path.read_text(encoding="utf-8")
     assert "https://cdn.example.com/a.mp3" in body

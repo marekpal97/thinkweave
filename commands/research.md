@@ -3,15 +3,15 @@ name: research
 owns_mechanic: url_routing
 source_type: [paper, repo, article, news]
 capabilities: [import, acquire]
-consumes: [mem_queue, mem_sources_config, mem_search]
+consumes: [weave_queue, weave_sources_config, weave_search]
 produces: [vault/sources/papers/**, vault/sources/repos/**, vault/sources/articles/**, vault/sources/news/**]
 tools:
   - Read
   - Bash
   - WebSearch
-  - mem_queue
-  - mem_sources_config
-  - mem_search
+  - weave_queue
+  - weave_sources_config
+  - weave_search
 description: Router skill — classifies URLs and dispatches to research-paper / research-repo / research-article (or /news for news outlets). For queue drain use `/drain --source-type <slug>`.
 ---
 
@@ -19,15 +19,15 @@ description: Router skill — classifies URLs and dispatches to research-paper /
 
 Thin URL classifier. For each URL the user passes:
 
-1. Read `mem_sources_config()` once — gives you the `url_patterns` per
+1. Read `weave_sources_config()` once — gives you the `url_patterns` per
    source type.
 2. Match the URL against patterns. First match wins.
 3. Dispatch to the matching subskill via `Skill(skill="research-<type>")`.
    Under the plugin install, skills resolve namespaced — if the bare name
-   fails with an unknown skill, retry as `personal-mem:research-<type>`
+   fails with an unknown skill, retry as `thinkweave:research-<type>`
    (same rule for every `Skill` dispatch in this file).
 
-The actual fetch + summarize + `mem_create` lives in the subskills, where
+The actual fetch + summarize + `weave_create` lives in the subskills, where
 each source type's quirks (PDF extraction for papers, `gh repo view`
 metadata for repos, JS-heavy SPA fallbacks for articles) live alongside
 their fetcher.
@@ -74,11 +74,11 @@ queue they meant or default to `paper` (the most common case).
 
 ## What this skill does NOT do
 
-- No fetching. No summarization. No `mem_create`. All of that lives in
+- No fetching. No summarization. No `weave_create`. All of that lives in
   the subskills. This file is ~50 LOC by design — pure dispatch.
 - No URL resolution (`needs-url`). That mode is folded into the new
   queue model — items in the queue already have URLs. Legacy
-  `todo+research+needs-url` notes are migrated by `mem doctor --migrate`.
+  `todo+research+needs-url` notes are migrated by `weave doctor --migrate`.
 
 ## Reporting
 

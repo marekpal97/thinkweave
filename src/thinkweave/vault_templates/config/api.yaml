@@ -1,0 +1,57 @@
+# vault/config/api.yaml
+#
+# LLM completion + embedding provider infrastructure for thinkweave.
+# Edit when swapping providers (e.g. OpenAI → Anthropic for backfills) or
+# embedding backends (OpenAI → local sentence-transformers).
+#
+# This file is plumbing — it does NOT replace PRIORITIES.yaml, which
+# carries research/discover signals (focus + intake).
+#
+# Inline list / map syntax only (`[a, b, c]`, `{k: v}`). The thinkweave
+# YAML reader silently parses block-style `- item` lists as empty.
+
+# ──────────────────────────────────────────────────────────────────────
+# completion — what `weave enrich`, `weave hubs run`, etc. talk to
+# ──────────────────────────────────────────────────────────────────────
+
+completion:
+  provider: openai            # openai | anthropic | gemini
+  model: gpt-5-mini           # provider-specific model name
+  max_tokens: 8000
+  batch_concurrency: 20       # async fan-out semaphore cap
+
+# ──────────────────────────────────────────────────────────────────────
+# embeddings — what `weave index --embed` + `weave_search(mode='similar')` use
+# ──────────────────────────────────────────────────────────────────────
+#
+# Switching providers requires re-embed (dimensionality differs).
+# After changing this block, run:
+#     weave index --embed --reset
+# to clear embeddings.db and re-embed under the new provider.
+
+embeddings:
+  provider: openai                  # openai | sentence_transformer | litellm
+  model: text-embedding-3-small     # provider-specific
+
+# ──────────────────────────────────────────────────────────────────────
+# overrides — per-op {provider, model, max_tokens, batch_concurrency}
+# ──────────────────────────────────────────────────────────────────────
+#
+# Each block is sparse: anything omitted falls through to completion.*
+# above. Known op names:
+#
+#   hubs_run            — concept-hub essence synthesis (heavy)
+#   hubs_link           — concept-hub link extraction (light)
+#   enrich              — concept tagging for notes lacking concepts
+#   chatgpt_import      — ChatGPT export ingestion + summarisation
+#   claude_code_enrich  — historical Claude Code session enrichment
+
+overrides: {}
+
+# Example overrides (uncomment + edit to taste):
+# overrides:
+#   hubs_run:
+#     model: gpt-5
+#   claude_code_enrich:
+#     provider: anthropic
+#     model: claude-haiku-4-5-20251001

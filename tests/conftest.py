@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core import plugin_route
+from thinkweave.core import plugin_route
 
 
 @pytest.fixture(autouse=True)

@@ -3,7 +3,7 @@
 The evolution-DAG substrate: every catalyst-log entry on a concept hub or
 theme is projected into SQLite so dated/flagged hub history is queryable
 without parsing markdown. Markdown stays truth — the table is rebuilt by
-``mem index --full`` and kept fresh by per-file re-index.
+``weave index --full`` and kept fresh by per-file re-index.
 """
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ class TestConceptHubProjection:
         assert rows[0]["flag"] == "new"
         assert rows[0]["cited_note_id"] == "n-aaaa1111"
         assert rows[0]["text"] == "first artifact"
-        # Intra-log ref (mem hubs link temporal DAG) survives projection.
+        # Intra-log ref (weave hubs link temporal DAG) survives projection.
         assert rows[1]["flag"] == "extends"
         assert rows[1]["ref_date"] == d1
         assert rows[1]["cited_note_id"] == "n-bbbb2222"
@@ -105,7 +105,7 @@ class TestConceptHubProjection:
         self, config: Config, vault: VaultManager
     ):
         """Entries collapsed into <details> by the fold still project."""
-        from personal_mem.synthesis.hub import (
+        from thinkweave.synthesis.hub import (
             FLAG_NEW,
             Hub,
             HubLogEntry,

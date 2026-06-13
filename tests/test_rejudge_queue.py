@@ -1,7 +1,7 @@
 """Tests for the per-vault rejudge queue primitive.
 
 The queue is the spine of Phase-3 prediction-judge work — supersession
-triggers and the cron ``pending_due`` sweep both feed it; ``mem judge
+triggers and the cron ``pending_due`` sweep both feed it; ``weave judge
 --drain`` consumes it. These tests pin the dedupe semantics, the atomic
 drain, and the SQL-driven ``pending_due`` filter.
 """
@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations import rejudge_queue
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations import rejudge_queue
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def test_drain_all_returns_items_and_truncates(cfg: Config) -> None:
     drained = rejudge_queue.drain_all(cfg)
     assert len(drained) == 2
     # File is left present but empty (truncate-to-zero, not delete).
-    queue_path = Path(cfg.vault_root) / ".mem" / "rejudge_queue.jsonl"
+    queue_path = Path(cfg.vault_root) / ".weave" / "rejudge_queue.jsonl"
     assert queue_path.exists()
     assert queue_path.read_text(encoding="utf-8") == ""
     # Second drain yields nothing.

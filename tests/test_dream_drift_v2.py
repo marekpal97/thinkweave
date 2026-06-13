@@ -15,19 +15,19 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.embeddings import EMBEDDINGS_SCHEMA, _pack_embedding
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
-from personal_mem.operations import seam_link_queue
-from personal_mem.operations.dream import (
+from thinkweave.core.config import Config
+from thinkweave.core.embeddings import EMBEDDINGS_SCHEMA, _pack_embedding
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
+from thinkweave.operations import seam_link_queue
+from thinkweave.operations.dream import (
     apply,
     maintenance_log_path,
     scan,
     validate_plan_fragment,
 )
-from personal_mem.synthesis import geometry
+from thinkweave.synthesis import geometry
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ def _index(config: Config) -> None:
 
 
 def _seed_embeddings(config: Config, vectors: dict[str, list[float]]) -> None:
-    config.mem_dir.mkdir(parents=True, exist_ok=True)
+    config.weave_dir.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(config.embeddings_db))
     db.executescript(EMBEDDINGS_SCHEMA)
     for note_id, vec in vectors.items():
@@ -163,7 +163,7 @@ class TestScanDriftV2:
         _notes_with_concept(vault, "derivatives", 1)
         _index(config)
         # Record a distinct ruling the way apply does.
-        from personal_mem.operations.dream import append_maintenance_log
+        from thinkweave.operations.dream import append_maintenance_log
 
         append_maintenance_log(
             config,
@@ -229,7 +229,7 @@ class TestThemeDupCandidates:
             vault, "arc b",
             entries=["- 2026-05-02 · *new* — y. — [[src-bbbb2222]]"],
         )
-        from personal_mem.synthesis.hub import set_frontmatter_keys
+        from thinkweave.synthesis.hub import set_frontmatter_keys
 
         set_frontmatter_keys(path_b, {"status": f"merged-into:{tid_a}"})
         _index(config)
@@ -331,7 +331,7 @@ class TestApplyDriftV2:
             for it in items
         )
         # Registry tombstone.
-        from personal_mem.synthesis import theme_registry
+        from thinkweave.synthesis import theme_registry
 
         reg = theme_registry.load(config)
         assert reg[tid_a]["status"] == f"merged-into:{tid_b}"
@@ -457,7 +457,7 @@ class TestCoarsen:
         # After a coarsening verdict, the cluster's members are stale and a
         # candidate touching them is dropped (the anti-oscillation guard).
         _clique(config, vault)
-        from personal_mem.operations.dream import append_maintenance_log
+        from thinkweave.operations.dream import append_maintenance_log
         append_maintenance_log(config, {
             "cycle_id": "c0",
             "verdicts": {"coarsenings": [
@@ -478,7 +478,7 @@ class TestCoarsen:
             "target_domain": "finance-options", "target_is_new": True,
             "reason": "r", "min_cosine": 0.99,
         }]}, project="t")
-        from personal_mem.synthesis.concepts import revert_coarsening
+        from thinkweave.synthesis.concepts import revert_coarsening
         stats = revert_coarsening(config, "vol-greeks")
         assert set(stats["restored"]) == {"theta", "vega", "gamma"}
         assert stats["notes_demoted"] >= 9

@@ -2,23 +2,23 @@
 name: onboard
 owns_mechanic: project_bootstrap
 capabilities: [bootstrap]
-consumes: [mem_sources_config, mem_landing, mem_concepts]
-produces: [~/.config/personal-mem/config.toml (vault_root), vault/config/sources.yaml (projects.<name>), vault/config/PRIORITIES.yaml (focus.active_projects + intake.* seeds), vault/config/ontology.yaml, .claude/settings.json or ~/.claude/settings.json hooks, per-project landing docs, scheduled jobs via `mem schedule` (crontab on Linux/macOS or Task Scheduler on Windows, opt-in)]
+consumes: [weave_sources_config, weave_landing, weave_concepts]
+produces: [~/.config/thinkweave/config.toml (vault_root), vault/config/sources.yaml (projects.<name>), vault/config/PRIORITIES.yaml (focus.active_projects + intake.* seeds), vault/config/ontology.yaml, .claude/settings.json or ~/.claude/settings.json hooks, per-project landing docs, scheduled jobs via `weave schedule` (crontab on Linux/macOS or Task Scheduler on Windows, opt-in)]
 tools:
   - Read
   - Write
   - Edit
   - Bash
   - AskUserQuestion
-  - mem_sources_config
-  - mem_landing
-  - mem_concepts
+  - weave_sources_config
+  - weave_landing
+  - weave_concepts
 description: First-run onboarding — pre-flight checks, vault wiring, seed vault from prior Claude Code history, bootstrap ontology, configure focus + sources (validated against user-supplied sample files), install hooks (global by default), optionally install cron block, run end-to-end smoke test, emit landing docs.
 ---
 
-# /onboard — make existing work legible to mem
+# /onboard — make existing work legible to weave
 
-Personal_mem's first-run flow. Owns vault-path selection and `mem init`,
+Thinkweave's first-run flow. Owns vault-path selection and `weave init`,
 seeds the vault from your historical Claude Code conversations, then
 layers ontology, focus, source types, hooks, and (optionally) cron on
 top of that seed. Ends with a five-check smoke test.
@@ -44,13 +44,13 @@ exists:
 | Step | "Done" signal — skip when… |
 |---|---|
 | 0 — Pre-flight | always runs (cheap; the checks themselves are the value) |
-| 1 — Vault wiring | `is_vault_initialized(load_config())` returns True AND `~/.config/personal-mem/config.toml` exists |
-| 2 — Hook scope | hooks already present at the chosen scope (plugin manifest OR `~/.claude/settings.json` OR repo `.claude/settings.json`) with `personal-mem` markers |
-| 3 — CC import | `mem_search(type=['session'], limit=1)` returns ≥1 session note (vault already seeded) |
-| 4 — ontology bootstrap | `mem concepts list` has ≥10 canonical concepts AND `mem concepts proposed-counts --min-count 3` survivors list is empty |
+| 1 — Vault wiring | `is_vault_initialized(load_config())` returns True AND `~/.config/thinkweave/config.toml` exists |
+| 2 — Hook scope | hooks already present at the chosen scope (plugin manifest OR `~/.claude/settings.json` OR repo `.claude/settings.json`) with `thinkweave` markers |
+| 3 — CC import | `weave_search(type=['session'], limit=1)` returns ≥1 session note (vault already seeded) |
+| 4 — ontology bootstrap | `weave concepts list` has ≥10 canonical concepts AND `weave concepts proposed-counts --min-count 3` survivors list is empty |
 | 5 — focus | `focus.active_projects` already populated in `<vault>/config/PRIORITIES.yaml` for every discovered project |
 | 5 — source types | every enabled source type has its row in `sources.yaml` AND (for intake-driven types) a non-empty entry in `PRIORITIES.yaml::intake.<type>` |
-| 6 — Scheduler install | personal-mem jobs already registered (re-running `mem schedule install` replaces them; never duplicates). Linux/macOS: `# --- personal-mem cron block ---` fence in `crontab -l`. Windows: `PersonalMem\*` tasks in `schtasks /Query`. |
+| 6 — Scheduler install | thinkweave jobs already registered (re-running `weave schedule install` replaces them; never duplicates). Linux/macOS: `# --- thinkweave cron block ---` fence in `crontab -l`. Windows: `PersonalMem\*` tasks in `schtasks /Query`. |
 | 7 — Smoke test | always runs (the whole point is verification) |
 | Landing docs | `<vault>/projects/<project>/STATE.md` exists AND `mtime > 0` |
 
@@ -84,7 +84,7 @@ Then:
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "uv isn't on PATH. uv is the package manager personal_mem uses to run its CLI and MCP. Want me to install it for you?\n\nWill run: <the line above>",
+    "question": "uv isn't on PATH. uv is the package manager thinkweave uses to run its CLI and MCP. Want me to install it for you?\n\nWill run: <the line above>",
     "header": "uv install",
     "options": [
       {"label": "install now", "description": "Run the installer line above via Bash. Standard install — drops binaries in ~/.local/bin (Unix) or %USERPROFILE%\\.local\\bin (Windows)."},
@@ -107,7 +107,7 @@ AskUserQuestion({
 
 ### 0b. MCP roundtrip probe
 
-Call `mem_concepts(action='list', limit=1)`. The cheapest available
+Call `weave_concepts(action='list', limit=1)`. The cheapest available
 MCP tool; success confirms the MCP server is wired and Claude Code can
 reach it.
 
@@ -118,10 +118,10 @@ On failure, print exactly:
 
 HALT. Don't try to recover; the only fix is a Claude Code restart.
 
-### 0c. mem doctor --mcp
+### 0c. weave doctor --mcp
 
 ```bash
-uv run mem doctor --mcp
+uv run weave doctor --mcp
 ```
 
 Surface its output verbatim. This is the install diagnostic — covers
@@ -130,7 +130,7 @@ and config sanity.
 
 - **PASS**: continue to Step 1.
 - **FAIL**: print the doctor output's remediation lines and HALT with:
-  *"Pre-flight failed at mem doctor. Address the items above, then
+  *"Pre-flight failed at weave doctor. Address the items above, then
   re-run /onboard."*
 
 ---
@@ -144,7 +144,7 @@ hooks, and CLI without any shell-rc edits.
 ### 1a. Detect current state
 
 ```bash
-uv run python -c "from personal_mem.core.config import load_config, is_vault_initialized; cfg=load_config(); print('YES' if is_vault_initialized(cfg) else 'NO', cfg.vault_root)"
+uv run python -c "from thinkweave.core.config import load_config, is_vault_initialized; cfg=load_config(); print('YES' if is_vault_initialized(cfg) else 'NO', cfg.vault_root)"
 ```
 
 If output begins with `YES`, print *"Vault at `<path>` already
@@ -157,7 +157,7 @@ If `NO`, fall through to 1b.
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Where should your personal_mem vault live? This is one directory that holds every session note, decision, source brief, and concept hub across all your projects. The choice gets persisted to ~/.config/personal-mem/config.toml so the MCP server, hooks, and CLI all agree without you having to set any environment variables.",
+    "question": "Where should your thinkweave vault live? This is one directory that holds every session note, decision, source brief, and concept hub across all your projects. The choice gets persisted to ~/.config/thinkweave/config.toml so the MCP server, hooks, and CLI all agree without you having to set any environment variables.",
     "header": "Vault location",
     "options": [
       {"label": "~/vault (recommended)", "description": "Default. Lives in your home directory; survives system reinstalls if you back up $HOME."},
@@ -187,20 +187,20 @@ under `/tmp` are not allowed — they vanish on reboot."* and re-issue
 ### 1c. Persist the choice
 
 ```bash
-uv run python -c "from pathlib import Path; from personal_mem.core.config import write_user_config; write_user_config(Path('<chosen-path>'))"
+uv run python -c "from pathlib import Path; from thinkweave.core.config import write_user_config; write_user_config(Path('<chosen-path>'))"
 ```
 
-Writes `~/.config/personal-mem/config.toml` (XDG-respectful, atomic).
+Writes `~/.config/thinkweave/config.toml` (XDG-respectful, atomic).
 Confirm the file exists:
 
 ```bash
-test -f ~/.config/personal-mem/config.toml && echo "persisted" || echo "FAILED"
+test -f ~/.config/thinkweave/config.toml && echo "persisted" || echo "FAILED"
 ```
 
-### 1d. Run `mem init`
+### 1d. Run `weave init`
 
 ```bash
-PERSONAL_MEM_VAULT=<chosen-path> uv run mem init
+THINKWEAVE_VAULT=<chosen-path> uv run weave init
 ```
 
 This seeds `<vault>/config/sources.yaml`, `PRIORITIES.yaml`,
@@ -214,7 +214,7 @@ standalone `*_feeds.yaml` files.)
 Print verbatim:
 
 > Vault at `<chosen-path>` initialized. Persisted to
-> `~/.config/personal-mem/config.toml` — this choice will survive
+> `~/.config/thinkweave/config.toml` — this choice will survive
 > Claude Code restarts.
 
 ---
@@ -227,15 +227,15 @@ repo (per-project).
 
 ### 2a. Detect current install scope
 
-Parse `mem doctor --mcp` output from Step 0c for the scope summary
+Parse `weave doctor --mcp` output from Step 0c for the scope summary
 line. Three cases:
 
 - Contains `plugin` scope (e.g. `1 scope (plugin)`): the plugin
   manifest wires **both** the MCP server *and* the four hook events
   (SessionStart, UserPromptSubmit, PostToolUse × {Write|Edit|Bash,
-  mcp__personal-mem__.*}, Stop) globally via `.claude-plugin/plugin.json`.
+  mcp__thinkweave__.*}, Stop) globally via `.claude-plugin/plugin.json`.
   Print *"Hooks installed via plugin manifest — already global."* and
-  proceed to Step 3. **No `mem hooks install` needed for plugin users.**
+  proceed to Step 3. **No `weave hooks install` needed for plugin users.**
 - Contains `user` scope already: print *"Global hooks already
   installed at ~/.claude/settings.json."* and proceed to Step 3.
 - Otherwise (non-plugin install / legacy / per-project): fall through
@@ -269,10 +269,10 @@ the user sees what would change:
 
 ```bash
 # Every session:
-uv run mem hooks install --scope user --dry-run
+uv run weave hooks install --scope user --dry-run
 
 # Only this repo:
-uv run mem hooks install --dry-run
+uv run weave hooks install --dry-run
 ```
 
 Display the planned diff, then ask:
@@ -280,28 +280,28 @@ Display the planned diff, then ask:
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "The diff above shows what mem hooks install would change in <target>. Apply it?",
+    "question": "The diff above shows what weave hooks install would change in <target>. Apply it?",
     "header": "Apply hook install?",
     "options": [
-      {"label": "yes, apply", "description": "Run the install for real. The merge logic preserves any non-personal-mem hooks already in the file."},
-      {"label": "skip", "description": "Don't touch the settings file. Re-run /onboard or `mem hooks install` later."}
+      {"label": "yes, apply", "description": "Run the install for real. The merge logic preserves any non-thinkweave hooks already in the file."},
+      {"label": "skip", "description": "Don't touch the settings file. Re-run /onboard or `weave hooks install` later."}
     ],
     "multiSelect": false
   }]
 })
 ```
 
-On `skip`: print *"Skipped hook install — re-run /onboard or `mem
+On `skip`: print *"Skipped hook install — re-run /onboard or `weave
 hooks install` when ready."* and proceed to Step 3.
 
 ### 2d. Apply
 
 ```bash
 # Every session:
-uv run mem hooks install --scope user
+uv run weave hooks install --scope user
 
 # Only this repo:
-uv run mem hooks install
+uv run weave hooks install
 ```
 
 If no existing settings file was present in 2c, run directly here
@@ -317,18 +317,18 @@ in the eventual wrap-up that other active projects need their own
 
 This is the spine. Everything else in onboarding is configured *on top*
 of the seed — there's no skip, no "later." If the user has prior CC
-history, importing it is what makes mem useful from the first query.
+history, importing it is what makes weave useful from the first query.
 If they don't, this step short-circuits and Step 4 (ontology) is
 skipped too.
 
-**Idempotency check:** if `mem_search(type=['session'], limit=1)`
+**Idempotency check:** if `weave_search(type=['session'], limit=1)`
 returns ≥1 hit, the vault is already seeded — print one line and
 proceed to Step 4.
 
 ### 3a. Dry-run the import
 
 ```bash
-mem import claude-code --dry-run
+weave import claude-code --dry-run
 ```
 
 The dry-run reports per-project session counts (project names are
@@ -392,7 +392,7 @@ Recompute `N_effective` = sessions that survive the 3b' scope filter
 (use the dry-run output filtered locally; no need to re-shell).
 
 If `N_effective ≤ ~200`, the inline path is fine; skip the question and
-run `mem import claude-code` directly with the 3b' scope flags.
+run `weave import claude-code` directly with the 3b' scope flags.
 
 If `N_effective > ~200`, ask the user which mode to use:
 
@@ -420,8 +420,8 @@ If the user picks `--via batch` but the key is missing, fall back to
 Append any scope flags chosen in 3b' to the command:
 
 ```bash
-mem import claude-code [--since YYYY-MM-DD] [--sample-only] [--limit N]
-mem import claude-code --via batch [--since YYYY-MM-DD] [--sample-only] [--limit N]
+weave import claude-code [--since YYYY-MM-DD] [--sample-only] [--limit N]
+weave import claude-code --via batch [--since YYYY-MM-DD] [--sample-only] [--limit N]
 ```
 
 After import lands, the vault has session notes, decision notes, and
@@ -430,7 +430,7 @@ Step 4.
 
 If the user picked `sample 50 first` in 3b', flag at the start of the
 wrap-up: *"Sampled 50 sessions for ontology bootstrap. Re-run `/onboard`
-(or `mem import claude-code`) to materialise the remaining {N-50}."*
+(or `weave import claude-code`) to materialise the remaining {N-50}."*
 
 ---
 
@@ -444,8 +444,8 @@ instead of an empty seed.
 
 **Skipped entirely** if Step 3 took the empty-history branch.
 
-**Idempotency check:** if `mem concepts list` reports ≥10 canonical
-concepts AND `mem concepts proposed-counts --min-count 3` returns an
+**Idempotency check:** if `weave concepts list` reports ≥10 canonical
+concepts AND `weave concepts proposed-counts --min-count 3` returns an
 empty survivor list (after filtering), skip Step 4.
 
 ### 4a. Gather survivors
@@ -454,18 +454,18 @@ Use a lower threshold than periodic hygiene (3 vs. the standard 5) —
 fresh vaults need a faster ramp:
 
 ```bash
-uv run mem concepts proposed-counts --min-count 3
+uv run weave concepts proposed-counts --min-count 3
 ```
 
 Pipe through the deterministic filter (drops domain-path concepts,
 generic process terms, project-name leakage) before showing the user:
 
 ```python
-from personal_mem.synthesis.concepts import filter_promotion_candidates
+from thinkweave.synthesis.concepts import filter_promotion_candidates
 surviving = filter_promotion_candidates([c for c, _ in proposed_counts])
 ```
 
-Load the existing domain catalogue (`mem concepts list`) to anchor
+Load the existing domain catalogue (`weave concepts list`) to anchor
 domain suggestions in real namespaces.
 
 ### 4b. Confirm promotions in batches (AskUserQuestion)
@@ -499,7 +499,7 @@ AskUserQuestion({
 For each *checked* concept, run:
 
 ```bash
-mem concepts promote --concept <term> --domain <suggested-domain>
+weave concepts promote --concept <term> --domain <suggested-domain>
 ```
 
 If the user wants to change a suggested domain, they'll say so in the
@@ -517,7 +517,7 @@ the user has approved that plan.
 ### 5a. Active-project multi-select (AskUserQuestion)
 
 Read the projects discovered in Step 3's dry-run (or, if Step 3 was
-skipped via empty-history, run `mem project list` to enumerate — likely
+skipped via empty-history, run `weave project list` to enumerate — likely
 empty, in which case ask the user to name the current repo's project
 as a free-form follow-up). Ask which are *active focuses* (vs.
 archived / one-off):
@@ -530,7 +530,7 @@ AskUserQuestion({
     "options": [
       {"label": "project-a", "description": "47 sessions imported. Last activity: 2026-04-12."},
       {"label": "project-b", "description": "23 sessions imported. Last activity: 2026-05-20."},
-      {"label": "personal-mem", "description": "8 sessions imported. Last activity: 2026-05-26."}
+      {"label": "thinkweave", "description": "8 sessions imported. Last activity: 2026-05-26."}
     ],
     "multiSelect": true
   }]
@@ -542,14 +542,14 @@ plan-for-approval in 5d covers all the writes at once.
 
 ### 5b. Source-type enable multi-select (AskUserQuestion)
 
-List registered types from `mem_sources_config()` and ask which ones to
+List registered types from `weave_sources_config()` and ask which ones to
 enable. `paper` / `repo` / `article` ship enabled-by-default — surface
 them as already-checked but still selectable.
 
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Which source types should mem actively acquire for you? You can enable more later by editing <vault>/config/sources.yaml or re-running /onboard.\n\nDefault-on: paper, repo, article (research URLs you'll hit /research on). Opt-in: the rest.",
+    "question": "Which source types should weave actively acquire for you? You can enable more later by editing <vault>/config/sources.yaml or re-running /onboard.\n\nDefault-on: paper, repo, article (research URLs you'll hit /research on). Opt-in: the rest.",
     "header": "Source types",
     "options": [
       {"label": "paper", "description": "Arxiv / OpenReview / PDF papers. /research <url> dispatches here. Disk intake folder."},
@@ -579,7 +579,7 @@ type ships with a default brief structure baked into its writer skill
 (`research-paper`, `research-news-worker`, `research-newsletter-worker`,
 etc.). The shipped formats are opinionated — a starting point, not a
 constraint — but they live inside the plugin's `commands/`, so editing
-them in place is **not** upgrade-safe (a `mem`/plugin upgrade overwrites
+them in place is **not** upgrade-safe (a `weave`/plugin upgrade overwrites
 them). The upgrade-safe way to shape what gets extracted is vault config,
 not skill edits: tune the per-type knobs in `vault/config/sources.yaml`,
 or `/source-scaffold` your own variant (its skill lands in
@@ -623,7 +623,7 @@ On `file on disk`: follow up with a free-form question asking for the
 filename, then run `test -f "<intake_folder>/<filename>"` to confirm.
 On `URL`: ask for the URL, then run `curl -sI -o /dev/null -w "%{http_code}"
 "<url>"` to confirm it resolves (200 / 301 / 302 ok). If a one-item
-dry-run is available (`mem queue add paper <url> --dry-run` returning
+dry-run is available (`weave queue add paper <url> --dry-run` returning
 spec-parse success), use that. Print "spec OK" or "spec WARN: <reason>"
 and continue.
 
@@ -778,7 +778,7 @@ counts, paths, and validation outcomes:
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Plan summary — about to apply the following:\n\n  Active projects:    {comma-list, e.g. project-a, personal-mem}\n  Source types:       {N enabled} ({comma-list})\n  Samples validated:  {K of N}\n  Writes to <vault>/config/sources.yaml:\n    - projects.<name> blocks ({new + updated entries})\n    - source-type blocks ({list of slugs})\n  Writes to <vault>/config/PRIORITIES.yaml:\n    - focus.active_projects: {active list}\n    - intake.news.outlets ({M outlets from samples})\n    - intake.{newsletter|youtube|podcast}_{events|concepts} ({per validated sample})\n  Landing docs:       STATE / BACKLOG / DECISIONS per active project, THEMES global\n\nConfirm?",
+    "question": "Plan summary — about to apply the following:\n\n  Active projects:    {comma-list, e.g. project-a, thinkweave}\n  Source types:       {N enabled} ({comma-list})\n  Samples validated:  {K of N}\n  Writes to <vault>/config/sources.yaml:\n    - projects.<name> blocks ({new + updated entries})\n    - source-type blocks ({list of slugs})\n  Writes to <vault>/config/PRIORITIES.yaml:\n    - focus.active_projects: {active list}\n    - intake.news.outlets ({M outlets from samples})\n    - intake.{newsletter|youtube|podcast}_{events|concepts} ({per validated sample})\n  Landing docs:       STATE / BACKLOG / DECISIONS per active project, THEMES global\n\nConfirm?",
     "header": "Plan for approval",
     "options": [
       {"label": "confirm", "description": "Apply the plan as shown."},
@@ -794,17 +794,17 @@ On `confirm`: apply via Edit on `vault/config/sources.yaml` (preserve
 existing config) AND on `vault/config/PRIORITIES.yaml`
 (`focus.active_projects` + the per-type `intake.<type>` seeds from
 validated samples in 5c). Both writes target the canonical
-`vault/config/` location — never `vault/.mem/` (which raises
+`vault/config/` location — never `vault/.weave/` (which raises
 `LegacyConfigLocationError` on read since Phase 3.1B).
 
 Then issue the landing docs pass:
 
 ```bash
 # Per active project (skip any whose STATE.md already exists):
-PERSONAL_MEM_VAULT=<vault> uv run mem landing --project <project> --doc all
+THINKWEAVE_VAULT=<vault> uv run weave landing --project <project> --doc all
 
 # Global themes refresh:
-uv run mem landing --doc themes
+uv run weave landing --doc themes
 ```
 
 Landing docs are derived and idempotent — the user already approved
@@ -825,7 +825,7 @@ cancelling here).
 
 Opt-in scheduling for the long-running automation: embeddings keep-warm,
 dream cycle, and per-source-type drain flows. **Cross-platform** — the
-`mem schedule` command renders the one `vault/config/scheduling.yaml` job
+`weave schedule` command renders the one `vault/config/scheduling.yaml` job
 registry onto whatever the host provides: crontab on Linux/macOS, Windows
 Task Scheduler (via `schtasks`) on Windows. The job bodies are identical
 across OSes; only the trigger mechanism differs. Idempotent.
@@ -850,7 +850,7 @@ Build a comma-separated `ONLY` string from the selected names, e.g.
 ### 6b. Preview (dry-run, OS-aware)
 
 ```bash
-uv run mem schedule install --dry-run --only "<ONLY>"
+uv run weave schedule install --dry-run --only "<ONLY>"
 ```
 
 This prints the resolved scheduler entries for **this** OS (the crontab
@@ -868,8 +868,8 @@ AskUserQuestion({
     "question": "Install the scheduled jobs shown above? Without them, embeddings keep-warm and the dream cycle don't run, and any enabled feed sources won't auto-drain.",
     "header": "Install scheduler?",
     "options": [
-      {"label": "yes, install", "description": "Install via the native scheduler (crontab on Linux/macOS, Task Scheduler on Windows). Idempotent — re-running replaces the personal-mem entries, never duplicates."},
-      {"label": "no thanks, I'll handle it myself", "description": "Nothing gets scheduled. You can run `mem schedule install` later, or edit vault/config/scheduling.yaml first."}
+      {"label": "yes, install", "description": "Install via the native scheduler (crontab on Linux/macOS, Task Scheduler on Windows). Idempotent — re-running replaces the thinkweave entries, never duplicates."},
+      {"label": "no thanks, I'll handle it myself", "description": "Nothing gets scheduled. You can run `weave schedule install` later, or edit vault/config/scheduling.yaml first."}
     ],
     "multiSelect": false
   }]
@@ -879,20 +879,20 @@ AskUserQuestion({
 ### 6d. Apply on "yes, install"
 
 ```bash
-uv run mem schedule install --only "<ONLY>"
+uv run weave schedule install --only "<ONLY>"
 ```
 
-Confirm by re-running `mem schedule list` (shows the backend) and, on
-Linux/macOS, `crontab -l | grep personal-mem` for the fence; on Windows,
+Confirm by re-running `weave schedule list` (shows the backend) and, on
+Linux/macOS, `crontab -l | grep thinkweave` for the fence; on Windows,
 `schtasks /Query /TN "PersonalMem\*"`.
 
 ### 6e. On "no thanks"
 
 Print one line:
 
-> Skipped scheduling. Run `mem schedule install` when ready, or edit
+> Skipped scheduling. Run `weave schedule install` when ready, or edit
 > `vault/config/scheduling.yaml` to toggle jobs first
-> (`mem schedule list` shows the menu).
+> (`weave schedule list` shows the menu).
 
 ---
 
@@ -903,7 +903,7 @@ HALTs with a remediation line.
 
 ### 7a. MCP responding
 
-Call `mem_concepts(action='list', limit=1)`. PASS on no error.
+Call `weave_concepts(action='list', limit=1)`. PASS on no error.
 FAIL → *"MCP didn't respond. Restart Claude Code and re-run /onboard."*
 
 ### 7b. Vault writable
@@ -917,9 +917,9 @@ permissions on the parent directory."*
 
 ### 7c. Index queryable
 
-Call `mem_search(query='', mode='fts', limit=1)`. PASS on no error
+Call `weave_search(query='', mode='fts', limit=1)`. PASS on no error
 (zero results is fine on a cold vault). FAIL → *"SQLite index isn't
-queryable. Run `mem index --full` and re-run /onboard."*
+queryable. Run `weave index --full` and re-run /onboard."*
 
 ### 7d. Hooks firing
 
@@ -937,7 +937,7 @@ firing in this session. Restart Claude Code and re-run /onboard."*
 Only if the user provided a sample paper/article URL in 5c (and didn't
 pick `skip validation`):
 
-Call `mem_search(query='<sample-title>', limit=1, type=['source'])`.
+Call `weave_search(query='<sample-title>', limit=1, type=['source'])`.
 Note: this check is best-effort — if the sample URL was provided but
 the source brief hasn't been generated yet (the user hasn't run
 `/research <sample-url>` between 5c and now), report it as INFO not
@@ -947,7 +947,7 @@ FAIL: *"Sample URL noted but no source note yet — run `/research
 ### 7e'. Embedding posture (INFO, never FAIL)
 
 ```bash
-uv run mem doctor 2>/dev/null | sed -n '/^Embedding posture:/,/^$/p'
+uv run weave doctor 2>/dev/null | sed -n '/^Embedding posture:/,/^$/p'
 ```
 
 Surface the `Embedding posture:` block verbatim. This is **INFO**, never a
@@ -986,8 +986,8 @@ session."
   any research workers — `agents/` in the plugin, `.claude/agents/`
   on a clone) won't load until restart — `/clear` does **not** reload
   them. Exit claude and re-launch after `/onboard` completes. Plugin
-  installs register them namespaced (`personal-mem:<worker>`).
-- The MCP server is process-bound. Any future `mem install` upgrade
+  installs register them namespaced (`thinkweave:<worker>`).
+- The MCP server is process-bound. Any future `weave install` upgrade
   or change to MCP-exposed schemas/enums (new `NoteType` values, new
   tools, new enum members) requires the same restart to pick up.
 - The cron `claude -p` path (used by the dream cycle and drain flows
@@ -1012,24 +1012,24 @@ Hooks:       installed (scope: <global|repo>)   (or "skipped per your choice")
 Landing:     STATE/BACKLOG/DECISIONS for active projects, THEMES global
 
 Your config:
-  vault_root:   <path>      (~/.config/personal-mem/config.toml)
+  vault_root:   <path>      (~/.config/thinkweave/config.toml)
   hook scope:   <global|repo>
   scheduler:    <installed via crontab|Task Scheduler|skipped>
 
 The next time you sit down to work in this repo:
 
-  • /mem-wrap         before /clear, so the session feeds the vault
+  • /weave-wrap         before /clear, so the session feeds the vault
   • /research <url>   to ingest a paper / repo / article
   • /ingest <thing>   for anything else (file, text, ID)
 
 Cross-vault hygiene (run when things feel noisy):
 
-  • /mem-resolve-concepts   — concept dedup, ontology pruning
+  • /weave-resolve-concepts   — concept dedup, ontology pruning
   • /themes-resolve         — theme dedup, essence rewrites
 
 Reset / debug:
 
-  • mem doctor --all      — full health check
+  • weave doctor --all      — full health check
   • /onboard              — idempotent; safe to re-run
 
 If you hit a new input shape that the defaults don't cover:

@@ -7,13 +7,13 @@ tools:
   - Write
   - WebFetch
   - Bash
-  - mem_search
-  - mem_concepts
-  - mem_concept_search
-  - mem_create
-  - mem_update
-  - mem_link
-  - mem_queue
+  - weave_search
+  - weave_concepts
+  - weave_concept_search
+  - weave_create
+  - weave_update
+  - weave_link
+  - weave_queue
 description: Fetch a GitHub / GitLab repo, extract architectural summary + key files, write it as a `source_type: repo` note. Called from `/research` (router) or `/drain --source-type repo`.
 ---
 
@@ -59,15 +59,15 @@ Bash("rm -rf /tmp/research_clone_<slug>")
 ### 4. Load ontology + check vault
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
-mem_search(query="<repo description>", mode="hybrid", limit=5)
+Read src/thinkweave/ontology.yaml
+weave_concepts(min_count=2)
+weave_search(query="<repo description>", mode="hybrid", limit=5)
 ```
 
 ### 5. Write the source note
 
 ```
-mem_create(
+weave_create(
   type="source",
   title="<repo name — short tagline>",
   body="<architectural brief — structured per vault/config/note_formats/repo.md>",
@@ -88,7 +88,7 @@ mem_create(
 Save `snapshot.md` to the source directory:
 ```
 Write <source_dir>/snapshot.md
-mem_update(note_id="<src-id>", frontmatter_updates={"raw_path": "snapshot.md"})
+weave_update(note_id="<src-id>", frontmatter_updates={"raw_path": "snapshot.md"})
 ```
 
 ### 6. Link + archive queue

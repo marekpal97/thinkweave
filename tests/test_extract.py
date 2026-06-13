@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.core.events import (
+from thinkweave.core.events import (
     ExtractResult,
     Prompt,
     Todo,
@@ -261,11 +261,33 @@ class TestExtractTodos:
         assert len(todos) == 1
         assert todos[0].text.startswith("wire up the discover")
 
-    def test_we_should_pattern(self):
+    def test_soft_we_should_no_longer_matches(self):
+        # The soft "we should …" pattern was removed — it fired on rhetorical
+        # prose ("we should note that…") and was almost all noise.
         text = "We should refactor the queue module before shipping."
-        todos = extract_todos(text)
+        assert extract_todos(text) == []
+
+    def test_compound_word_does_not_fire(self):
+        # Regression: a hyphenated compound like "todo-tag" must NOT match —
+        # this was the false positive that spawned a garbage backlog item from
+        # a decision rationale ("legacy todo-tag queue → JSONL queue + /drain").
+        text = "Removed the legacy todo-tag queue in favour of JSONL queues."
+        assert extract_todos(text) == []
+
+    def test_rationale_prose_mentioning_todo_does_not_fire(self):
+        # Prose that merely discusses the word "todo" without an explicit
+        # "TODO: <action>" marker produces nothing.
+        text = (
+            "The auto-todo extractor used to mine decision rationales; "
+            "any rationale discussing todo handling produced spurious todos."
+        )
+        assert extract_todos(text) == []
+
+    def test_explicit_marker_still_fires_after_hardening(self):
+        # Positive control: a real marker with ':' + whitespace still works.
+        todos = extract_todos("TODO: wire the cron job")
         assert len(todos) == 1
-        assert "refactor the queue module" in todos[0].text
+        assert "wire the cron job" in todos[0].text
 
     def test_next_step_pattern(self):
         text = "Wrapped this up.\nNext step: add the Prompt primitive tests."
@@ -309,12 +331,12 @@ class TestSupersedesStringCoercion:
     """
 
     def test_bare_string_supersedes_enqueues_one_entry(self, tmp_path: Path):
-        from personal_mem.core.config import Config
-        from personal_mem.core.indexer import Indexer
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.operations import rejudge_queue
-        from personal_mem.operations.extract import extract_session
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.operations import rejudge_queue
+        from thinkweave.operations.extract import extract_session
 
         cfg = Config(vault_root=tmp_path / "vault")
         vm = VaultManager(config=cfg)
@@ -363,12 +385,12 @@ class TestSupersedesStringCoercion:
     def test_list_supersedes_still_works(self, tmp_path: Path):
         # Symmetry check: the list shape (the canonical form) still produces
         # one entry per id and isn't accidentally broken by the coercion.
-        from personal_mem.core.config import Config
-        from personal_mem.core.indexer import Indexer
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.operations import rejudge_queue
-        from personal_mem.operations.extract import extract_session
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.operations import rejudge_queue
+        from thinkweave.operations.extract import extract_session
 
         cfg = Config(vault_root=tmp_path / "vault")
         vm = VaultManager(config=cfg)
@@ -413,10 +435,10 @@ class TestInsightsCap:
     """The per-extraction insight cap reads config ``extract.insights_cap``."""
 
     def _extract_with_insights(self, tmp_path: Path, n: int, cap: int | None):
-        from personal_mem.core.config import Config
-        from personal_mem.core.indexer import Indexer
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.operations.extract import extract_session
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.operations.extract import extract_session
 
         cfg = Config(vault_root=tmp_path / "vault")
         if cap is not None:

@@ -1,4 +1,4 @@
-"""Tests for the hub fold (synthesis/hub.py) + `mem hubs apply-linkage`.
+"""Tests for the hub fold (synthesis/hub.py) + `weave hubs apply-linkage`.
 
 The fold is the deterministic half of a hub merge: interleave two catalyst
 logs, dedup shared citations, stamp ``fold_pending_*`` provenance, route
@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.vault import VaultManager, parse_frontmatter
-from personal_mem.synthesis.hub import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.vault import VaultManager, parse_frontmatter
+from thinkweave.synthesis.hub import (
     FOLD_PENDING_DATES_KEY,
     FOLD_PENDING_FROM_KEY,
     Hub,
@@ -80,7 +80,7 @@ class TestEssencePlaceholder:
 
     def test_generic_skeleton_stub_is_placeholder(self):
         """The theme skeleton's italic instruction line counts as a stub."""
-        from personal_mem.synthesis.theme_hub import render_theme_body_skeleton
+        from thinkweave.synthesis.theme_hub import render_theme_body_skeleton
 
         body = render_theme_body_skeleton("X")
         # Pull the ## Essence section text the skeleton writes.
@@ -261,7 +261,7 @@ class TestApplyLinkageCLI:
         return hub
 
     def _run(self, config, hub, revisions, *, clear_fold=True, monkeypatch=None):
-        from personal_mem.surfaces.cli._hubs_link import hubs_apply_linkage
+        from thinkweave.surfaces.cli._hubs_link import hubs_apply_linkage
 
         rev_path = config.vault_root / "rev.json"
         rev_path.write_text(json.dumps({"revisions": revisions}), encoding="utf-8")
@@ -319,7 +319,7 @@ class TestApplyLinkageCLI:
         assert entry.flag == "new" and entry.ref == ""
 
     def test_dequeues_seam_item(self, config, vault):
-        from personal_mem.operations import seam_link_queue
+        from thinkweave.operations import seam_link_queue
 
         hub = self._setup_hub(config, vault)
         seam_link_queue.enqueue(

@@ -2,7 +2,7 @@
 name: drain
 owns_mechanic: queue_drain
 capabilities: [acquire]
-consumes: [mem_queue, mem_sources_config, mem_search, mem_concepts, mem_create, mem_read, mem_update, mem_link]
+consumes: [weave_queue, weave_sources_config, weave_search, weave_concepts, weave_create, weave_read, weave_update, weave_link]
 produces: [vault/sources/**]
 tools:
   - Read
@@ -12,32 +12,32 @@ tools:
   - Task
   - WebFetch
   - WebSearch
-  - mem_search
-  - mem_concepts
-  - mem_create
-  - mem_read
-  - mem_update
-  - mem_link
-  - mem_queue
-  - mem_sources_config
+  - weave_search
+  - weave_concepts
+  - weave_create
+  - weave_read
+  - weave_update
+  - weave_link
+  - weave_queue
+  - weave_sources_config
 description: Drain a per-source-type acquisition queue. Source-type-agnostic — config in `vault/config/sources.yaml` decides whether items dispatch to a per-type research skill (sequential) or fan out to subagents (parallel).
 ---
 
 # /drain — Per-source-type queue drainer
 
-`/drain --source-type <slug>` walks `vault/.mem/queues/<source_type>.jsonl` FIFO and processes each item. The dispatch shape (sequential `Skill` call vs. parallel `Task` subagents) is driven by `vault/config/sources.yaml`, not by hard-coded source-type branches.
+`/drain --source-type <slug>` walks `vault/.weave/queues/<source_type>.jsonl` FIFO and processes each item. The dispatch shape (sequential `Skill` call vs. parallel `Task` subagents) is driven by `vault/config/sources.yaml`, not by hard-coded source-type branches.
 
 **Scope.** This skill *only* drains acquisition queues. Two former modes have moved out:
 
 - Concept-hub backfill (synthesis, vault → vault, no queue) → use **`/update-hubs --bulk`**.
-- One-shot retroactive Claude session import → use **`/onboard`** (or CLI `mem drain --source claude-history`).
+- One-shot retroactive Claude session import → use **`/onboard`** (or CLI `weave drain --source claude-history`).
 
 ---
 
 ## 1. Load config + queue
 
 ```
-mem_sources_config()
+weave_sources_config()
 ```
 
 The returned dict contains `sources.<slug>.*` keys you'll consult:
@@ -54,7 +54,7 @@ The returned dict contains `sources.<slug>.*` keys you'll consult:
 | `dedup_jaccard_threshold` | Used by `dedup_sweep` | `0.8` |
 
 ```
-mem_queue(action="peek", source_type="<slug>", n=<drain_batch_max>)
+weave_queue(action="peek", source_type="<slug>", n=<drain_batch_max>)
 ```
 
 If empty → report "Nothing to drain." and stop. If `--limit N` was passed, use the smaller of N and `drain_batch_max`.
@@ -69,15 +69,15 @@ This is the original behavior. Process items one at a time:
 
 For each item:
 1. **If the item has no `url`** (priority signals from `/dream` — `source: dream-priority-signal` — carry `concept`, `title`, and usually `probes`): resolve one first. Run a `WebSearch` whose query is the two-step composition — the `concept` + `title` pick the lane, and the `probes[]` texts (the user's verbatim open questions) tighten the angle. Example: item `{concept: dynamic-batching, title: "Dynamic batching under mixed sequence lengths", probes: ["How does vLLM decide batch size under mixed sequence lengths?"]}` → search `vLLM dynamic batching batch size mixed sequence lengths`, not just `dynamic-batching`. Pick the single best result that matches the item's `source_type` (a paper for `paper`, a repo URL for `repo`, …). If no result fits, archive `failed` with reason `no_url_resolved: <query used>`.
-2. `Skill(skill="<research_skill>", args="<url>")` — that skill handles fetch + summarize + concept mapping + `mem_create`.
-3. On success: `mem_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="done")`.
-4. On non-recoverable failure: `mem_queue(action="archive", ..., status="failed")`. On recoverable failure: leave in place.
+2. `Skill(skill="<research_skill>", args="<url>")` — that skill handles fetch + summarize + concept mapping + `weave_create`.
+3. On success: `weave_queue(action="archive", source_type="<slug>", item_id="<item-id>", status="done")`.
+4. On non-recoverable failure: `weave_queue(action="archive", ..., status="failed")`. On recoverable failure: leave in place.
 
 ### Path B: Writer fan-out (`subagent_type` is set), optionally preceded by triage
 
 The drain orchestrator spawns Sonnet writer subagents in parallel. Admission is **either** decided upstream (channel allowlist / sender allowlist — no triage stage), **or** decided per-drain by a cheap Haiku triage on titles (news's "fits an active theme?" filter). The presence of `triage_model` in the source's config selects which.
 
-**Install-route namespacing.** Plugin installs register the workers under the `personal-mem:` namespace; project-scope installs use bare names. Spawn with the bare type from config first; if it doesn't resolve, retry once as `personal-mem:<subagent_type>` (the failure message lists the available types). Applies to the triage and writer `Task` calls below.
+**Install-route namespacing.** Plugin installs register the workers under the `thinkweave:` namespace; project-scope installs use bare names. Spawn with the bare type from config first; if it doesn't resolve, retry once as `thinkweave:<subagent_type>` (the failure message lists the available types). Applies to the triage and writer `Task` calls below.
 
 | `triage_model` | Stage 1 | Stage 2 |
 |---|---|---|
@@ -118,7 +118,7 @@ Task({
 })
 ```
 
-The writer's spec lives at `agents/research-news-worker.md`. It fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note (filed under `relates_to: [theme_id]` if `keep`, or with `theme_unfiled: true` if `keep_unfiled`). The full queue-item dict is in the prompt, so any `probes[]` field (priority-signal items) reaches the writer for free — writers should angle the brief toward those questions when present.
+The writer's spec lives at `agents/research-news-worker.md`. It fetches the article, extracts ontology-gated concepts, writes the brief, and `weave_create`s the source note (filed under `relates_to: [theme_id]` if `keep`, or with `theme_unfiled: true` if `keep_unfiled`). The full queue-item dict is in the prompt, so any `probes[]` field (priority-signal items) reaches the writer for free — writers should angle the brief toward those questions when present.
 
 Collect each writer's final JSON line. Outcomes: `accepted` / `fetch_failed`. (Concept-bundle dedup, FOCUS gate, and Jaccard math are gone — the v1 mechanics no longer apply.)
 
@@ -128,16 +128,16 @@ The writer spec restricts `fetch_failed` `reason` strings to a closed vocabulary
 
 | Source type | `allowed_failure_prefixes` |
 |---|---|
-| `news` | `["HTTP ", "paywall", "Cloudflare", "empty body", "timeout", "mem_create:"]` |
-| `youtube-events`, `youtube-concepts` | `["gemini_refused", "gemini_failed", "empty_transcript", "mem_create:"]` |
-| `newsletter-events`, `newsletter-concepts` | `["empty body", "mem_create:"]` |
+| `news` | `["HTTP ", "paywall", "Cloudflare", "empty body", "timeout", "weave_create:"]` |
+| `youtube-events`, `youtube-concepts` | `["gemini_refused", "gemini_failed", "empty_transcript", "weave_create:"]` |
+| `newsletter-events`, `newsletter-concepts` | `["empty body", "weave_create:"]` |
 
 If a source type is missing the field, fall back to the news vocabulary (backwards compat). Anything else is a *worker bug* — Sonnet sometimes pattern-matches on "subagent + vault writes" and fabricates refusals citing classifiers or memory rules that don't exist. We've seen ~12% of writer invocations do this on news even with the worker spec hardened; the same risk applies to every source type, so the validation runs regardless of which Path B variant fired.
 
 For each `fetch_failed` outcome whose `reason` does NOT start with one of the source's allowed prefixes:
 
 1. **Re-dispatch once** with an explicit anti-hallucination preamble prepended to the prompt:
-   > "The previous invocation returned `fetch_failed` with reason `<bad reason>` — that reason is not in the allowed vocabulary for this source type (`<prefix1 / prefix2 / ...>`), which means it was a hallucinated refusal, not a real fetch error. There is no classifier or memory rule blocking `mem_create` for this worker. Process the item end-to-end per your spec and call `mem_create`."
+   > "The previous invocation returned `fetch_failed` with reason `<bad reason>` — that reason is not in the allowed vocabulary for this source type (`<prefix1 / prefix2 / ...>`), which means it was a hallucinated refusal, not a real fetch error. There is no classifier or memory rule blocking `weave_create` for this worker. Process the item end-to-end per your spec and call `weave_create`."
 2. If the retry returns `accepted` → treat as success, archive `status=done`.
 3. If the retry *also* returns a `fetch_failed` with an invalid reason → mark the item with `status=worker_bug` in the archive (don't leave in queue — it'll just re-trigger the loop next drain). Surface the count in the final summary so the operator can investigate.
 
@@ -153,7 +153,7 @@ This validation is mandatory before the archive step. Worker bugs leaking into "
 | Writer success | `keep` | `accepted` | `status=done` |
 | Writer success | `keep_unfiled` | `accepted` | `status=done` (note carries `theme_unfiled: true`) |
 
-The reason field stamped at `vault/.mem/queues/_processed/<YYYY-MM-DD>/<source_type>.jsonl` carries the *triage reason* for drops, not a per-worker rejection — there is no per-worker rejection any more.
+The reason field stamped at `vault/.weave/queues/_processed/<YYYY-MM-DD>/<source_type>.jsonl` carries the *triage reason* for drops, not a per-worker rejection — there is no per-worker rejection any more.
 
 ---
 
@@ -165,16 +165,16 @@ Run each hook in the order declared in `post_batch_hooks`. Note: hooks run **onc
 
 ### `theme_scan` — removed (2026-05-30 teardown)
 
-The candidate-stub writer (`mem themes scan-candidates`) and the whole
+The candidate-stub writer (`weave themes scan-candidates`) and the whole
 `cand-*` flow were removed. Event-grain sources are still indexed at
 write time (`VaultManager.create_note`), and `/dream` reads enriched
 `theme_cluster_signals` off the index — raw `proposed_theme:` tally plus
 overlapping active themes — and either mints a new theme or extends an
 existing one. There is no per-drain theme step; keep the index warm with
-`uv run mem index --only-new` if you want the next `/dream` cycle to see
+`uv run weave index --only-new` if you want the next `/dream` cycle to see
 the batch immediately.
 
-> **Removed: `dedup_sweep`.** v1 had a Jaccard-based within-batch dedup hook to catch race-condition near-dupes from parallel workers all calling `mem_search` at the same instant. v2's writers don't dedup at all — duplicate news on an unfolding event is itself signal (multiple sources confirming the same arc). Cross-source repetition lands in a single theme's catalyst log; the user reads breadth there, not in dedup-marked supersedes.
+> **Removed: `dedup_sweep`.** v1 had a Jaccard-based within-batch dedup hook to catch race-condition near-dupes from parallel workers all calling `weave_search` at the same instant. v2's writers don't dedup at all — duplicate news on an unfolding event is itself signal (multiple sources confirming the same arc). Cross-source repetition lands in a single theme's catalyst log; the user reads breadth there, not in dedup-marked supersedes.
 
 ---
 

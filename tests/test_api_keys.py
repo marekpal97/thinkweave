@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core import api_keys
-from personal_mem.core.api_keys import get_provider_key
+from thinkweave.core import api_keys
+from thinkweave.core.api_keys import get_provider_key
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPath
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
-        "PERSONAL_MEM_VAULT",
+        "THINKWEAVE_VAULT",
     ):
         monkeypatch.delenv(var, raising=False)
     # Repoint the project-root fallback at an empty dir so the checkout's
@@ -73,7 +73,7 @@ def test_loads_from_vault_env_file(
     clean_env: pytest.MonkeyPatch, tmp_path: Path
 ):
     (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-from-vault\n", encoding="utf-8")
-    clean_env.setenv("PERSONAL_MEM_VAULT", str(tmp_path))
+    clean_env.setenv("THINKWEAVE_VAULT", str(tmp_path))
     assert get_provider_key("openai") == "sk-from-vault"
     # Side effect: populated os.environ for downstream SDK consumers.
     assert os.environ.get("OPENAI_API_KEY") == "sk-from-vault"
@@ -91,13 +91,13 @@ def test_env_file_does_not_override_already_set(
     clean_env: pytest.MonkeyPatch, tmp_path: Path
 ):
     (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-from-file\n", encoding="utf-8")
-    clean_env.setenv("PERSONAL_MEM_VAULT", str(tmp_path))
+    clean_env.setenv("THINKWEAVE_VAULT", str(tmp_path))
     clean_env.setenv("OPENAI_API_KEY", "sk-already-set")
     assert get_provider_key("openai") == "sk-already-set"
 
 
 def test_missing_env_file_returns_none(clean_env: pytest.MonkeyPatch, tmp_path: Path):
-    clean_env.setenv("PERSONAL_MEM_VAULT", str(tmp_path))  # no .env in it
+    clean_env.setenv("THINKWEAVE_VAULT", str(tmp_path))  # no .env in it
     clean_env.chdir(tmp_path)  # also isolate cwd fallback
     assert get_provider_key("openai") is None
 
@@ -112,7 +112,7 @@ def test_malformed_env_file_is_silent(
         "no_equals_sign\n",
         encoding="utf-8",
     )
-    clean_env.setenv("PERSONAL_MEM_VAULT", str(tmp_path))
+    clean_env.setenv("THINKWEAVE_VAULT", str(tmp_path))
     assert get_provider_key("openai") == "sk-still-works"
 
 
@@ -122,7 +122,7 @@ def test_env_file_strips_quotes(clean_env: pytest.MonkeyPatch, tmp_path: Path):
         "ANTHROPIC_API_KEY='sk-single'\n",
         encoding="utf-8",
     )
-    clean_env.setenv("PERSONAL_MEM_VAULT", str(tmp_path))
+    clean_env.setenv("THINKWEAVE_VAULT", str(tmp_path))
     assert get_provider_key("openai") == "sk-quoted"
     assert get_provider_key("anthropic") == "sk-single"
 
@@ -134,7 +134,7 @@ def test_load_env_files_is_idempotent(
     clean_env: pytest.MonkeyPatch, tmp_path: Path
 ):
     (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-once\n", encoding="utf-8")
-    clean_env.setenv("PERSONAL_MEM_VAULT", str(tmp_path))
+    clean_env.setenv("THINKWEAVE_VAULT", str(tmp_path))
     api_keys._load_env_files()
     # Manually overwrite to verify the second call doesn't undo it.
     os.environ["OPENAI_API_KEY"] = "sk-changed-by-caller"

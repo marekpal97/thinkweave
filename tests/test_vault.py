@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.schemas import DecisionStatus, NoteType
-from personal_mem.core.vault import (
+from thinkweave.core.config import Config
+from thinkweave.core.schemas import DecisionStatus, NoteType
+from thinkweave.core.vault import (
     VaultManager,
     content_hash,
     extract_wikilinks,
@@ -263,24 +263,24 @@ class TestWikilinkIds:
     """
 
     def test_bare_id(self):
-        from personal_mem.core.vault import extract_wikilink_ids
+        from thinkweave.core.vault import extract_wikilink_ids
 
         assert extract_wikilink_ids("see [[dec-9988aaff]]") == ["dec-9988aaff"]
 
     def test_path_based_id_from_display(self):
-        from personal_mem.core.vault import extract_wikilink_ids
+        from thinkweave.core.vault import extract_wikilink_ids
 
         ids = extract_wikilink_ids("see [[notes/foo/bar|n-abc123ef]]")
         assert ids == ["n-abc123ef"]
 
     def test_title_link_returns_raw_target(self):
-        from personal_mem.core.vault import extract_wikilink_ids
+        from thinkweave.core.vault import extract_wikilink_ids
 
         # Not id-shaped on either side — caller (e.g. RLVR) filters it out.
         assert extract_wikilink_ids("see [[Some Title]]") == ["Some Title"]
 
     def test_mixed(self):
-        from personal_mem.core.vault import extract_wikilink_ids
+        from thinkweave.core.vault import extract_wikilink_ids
 
         body = "[[notes/x|n-aaaaaa11]] then [[dec-bbbbbb22]] and [[concepts/finance|Finance]]"
         ids = extract_wikilink_ids(body)
@@ -300,7 +300,7 @@ class TestContentHash:
 
 class TestVaultManager:
     def test_ensure_dirs(self, vault: VaultManager):
-        assert (vault.root / ".mem").is_dir()
+        assert (vault.root / ".weave").is_dir()
         assert (vault.root / "projects").is_dir()
         assert (vault.root / "daily").is_dir()
         assert (vault.root / "sources").is_dir()
@@ -326,7 +326,7 @@ class TestVaultManager:
             "SQLite WAL Gotcha",
             body="WAL mode requires exclusive lock for checkpointing.",
             tags=["gotcha", "sqlite"],
-            project="personal_mem",
+            project="thinkweave",
         )
         assert path.exists()
         assert path.suffix == ".md"
@@ -337,7 +337,7 @@ class TestVaultManager:
         assert note.title == "SQLite WAL Gotcha"
         assert "gotcha" in note.tags
         assert "sqlite" in note.tags
-        assert note.project == "personal_mem"
+        assert note.project == "thinkweave"
         assert "exclusive lock" in note.body
 
     def test_create_note_normalizes_project(self, vault: VaultManager):
@@ -369,7 +369,7 @@ class TestVaultManager:
             NoteType.DECISION,
             "Use markdown-first storage",
             body="## Context\nNeed portable storage.\n\n## Decision\nMarkdown + SQLite.",
-            project="personal_mem",
+            project="thinkweave",
             tags=["architecture"],
         )
         note = vault.read_note(path)
@@ -716,7 +716,7 @@ class TestSeedVaultTemplates:
     """`_seed_vault_templates` must copy every shipped config template into the vault."""
 
     def test_all_shipped_templates_seeded(self, tmp_path: Path):
-        from personal_mem.surfaces.cli.util import _seed_vault_templates
+        from thinkweave.surfaces.cli.util import _seed_vault_templates
 
         _seed_vault_templates(tmp_path)
         config_dir = tmp_path / "config"

@@ -1,7 +1,7 @@
 ---
 name: dream-merge-worker
 description: Phase-1 of /dream — judges concept drift pairs, theme dup candidates, AND N-ary grain-coarsening clusters (drift v2, cosine-evidenced); emits one plan-fragment JSON outcome line.
-tools: mcp__personal-mem__mem_concepts, mcp__personal-mem__mem_read
+tools: mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read
 model: sonnet
 color: blue
 ---
@@ -50,7 +50,7 @@ theme_coarsen_clusters:
   ...
 ```
 
-For deeper disambiguation call `mem_concepts(action="notes", concept="<term>")` (concepts) or `mem_read(id="thm-…")` (themes) — but the packet usually suffices.
+For deeper disambiguation call `weave_concepts(action="notes", concept="<term>")` (concepts) or `weave_read(id="thm-…")` (themes) — but the packet usually suffices.
 
 ## Decision rules — concept pairs
 
@@ -78,7 +78,7 @@ This is the part that goes **beyond synonym dedup**: a `coarsen_clusters` item i
 
 **Theme coarsening** (`theme_coarsen_clusters`): same shape over arcs. **Collapse** (`plan_fragment.theme_coarsenings`, `{"members": [thm-ids], "survivor_id": "thm-X", "reason": "..."}`) when the themes are facets of ONE larger arc that was over-split (survivor = best essence + richest log). **Distinct** (`distinct_clusters`, kind `"theme"`) when they're separate arcs.
 
-The disambiguation test gates a collapse: if the members are a *capability/technique* family (no umbrella concept that reads as ontology-grade), prefer distinct. Coarsening is destructive to vocabulary (reversible by `mem dream revert-coarsen`, but still a fold) — only collapse when the umbrella term is genuinely the right grain.
+The disambiguation test gates a collapse: if the members are a *capability/technique* family (no umbrella concept that reads as ontology-grade), prefer distinct. Coarsening is destructive to vocabulary (reversible by `weave dream revert-coarsen`, but still a fold) — only collapse when the umbrella term is genuinely the right grain.
 
 ## Output contract
 
@@ -121,7 +121,7 @@ Output exactly one line of JSON as the final non-empty line of your response:
 }
 ```
 
-The orchestrator merges all plan keys into the overall plan. `distinct_pairs` / `distinct_clusters` rulings AND applied `coarsenings` / `theme_coarsenings` are written to the maintenance-log verdict history by apply — they permanently stop the item from re-surfacing (reopen only via `mem dream scan --rejudge`). For coarsenings, a folded member literally vanishes from the next scan (its notes are re-tagged to the target), so the cluster can't oscillate. `skipped` is diagnostic only and re-surfaces next cycle. Emit only the keys you have rulings for.
+The orchestrator merges all plan keys into the overall plan. `distinct_pairs` / `distinct_clusters` rulings AND applied `coarsenings` / `theme_coarsenings` are written to the maintenance-log verdict history by apply — they permanently stop the item from re-surfacing (reopen only via `weave dream scan --rejudge`). For coarsenings, a folded member literally vanishes from the next scan (its notes are re-tagged to the target), so the cluster can't oscillate. `skipped` is diagnostic only and re-surfaces next cycle. Emit only the keys you have rulings for.
 
 ## Common failure modes
 

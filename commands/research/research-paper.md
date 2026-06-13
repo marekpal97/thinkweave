@@ -7,13 +7,13 @@ tools:
   - Write
   - WebFetch
   - Bash
-  - mem_search
-  - mem_concepts
-  - mem_graph
-  - mem_create
-  - mem_update
-  - mem_link
-  - mem_queue
+  - weave_search
+  - weave_concepts
+  - weave_graph
+  - weave_create
+  - weave_update
+  - weave_link
+  - weave_queue
 description: Fetch a paper (arxiv / openreview / PDF), extract a technical brief, write it as a `source_type: paper` note. Called from `/research` (router) or `/drain --source-type paper`.
 ---
 
@@ -41,13 +41,13 @@ like a book (`/book/`, Google Books, Project Gutenberg), skip — log
 ### 2. Load ontology + check vault
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
+Read src/thinkweave/ontology.yaml
+weave_concepts(min_count=2)
 ```
 
 ```
-mem_search(query="<key terms from abstract>", mode="hybrid", limit=5)
-mem_graph(filter="concept_walk", concepts=["<best-fit concept>", …], match_mode="any", limit=5)
+weave_search(query="<key terms from abstract>", mode="hybrid", limit=5)
+weave_graph(filter="concept_walk", concepts=["<best-fit concept>", …], match_mode="any", limit=5)
 ```
 
 Note related notes for the **Vault Connections** section.
@@ -55,7 +55,7 @@ Note related notes for the **Vault Connections** section.
 ### 3. Dedup against the queue
 
 ```
-mem_queue(action="peek", source_type="paper", n=50)
+weave_queue(action="peek", source_type="paper", n=50)
 ```
 
 If the URL or the arxiv id matches an unclaimed queue item, that's the
@@ -64,11 +64,11 @@ already-archived item, skip — we've ingested this.
 
 ### 4. Write the source note
 
-Use `mem_create` with `type="source"` and `source_type="paper"`.
+Use `weave_create` with `type="source"` and `source_type="paper"`.
 Required frontmatter:
 
 ```
-mem_create(
+weave_create(
   type="source",
   title="<descriptive title>",
   body="<technical brief — structured per vault/config/note_formats/paper.md>",
@@ -86,12 +86,12 @@ mem_create(
 )
 ```
 
-`mem_create` returns the source directory path. Save the raw extracted
+`weave_create` returns the source directory path. Save the raw extracted
 text alongside as `raw.txt` and update the note's `raw_path`:
 
 ```
 Write <source_dir>/raw.txt
-mem_update(note_id="<src-id>", frontmatter_updates={"raw_path": "raw.txt"})
+weave_update(note_id="<src-id>", frontmatter_updates={"raw_path": "raw.txt"})
 ```
 
 **Do NOT set `project`** — sources are global.
@@ -100,7 +100,7 @@ mem_update(note_id="<src-id>", frontmatter_updates={"raw_path": "raw.txt"})
 
 For papers that cite vault sources you found in step 2:
 ```
-mem_link(source_id="<new-src-id>", target_id="<cited-src-id>", edge_type="cites")
+weave_link(source_id="<new-src-id>", target_id="<cited-src-id>", edge_type="cites")
 ```
 For weaker connections: `relates_to`.
 
@@ -109,7 +109,7 @@ For weaker connections: `relates_to`.
 If you were called by `/drain --source-type paper`, archive the queue
 item:
 ```
-mem_queue(action="archive", source_type="paper", item_id="<queue-id>", status="done")
+weave_queue(action="archive", source_type="paper", item_id="<queue-id>", status="done")
 ```
 
 ### 7. Report

@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.synthesis import memory_seam as ms
+from thinkweave.core.config import Config
+from thinkweave.synthesis import memory_seam as ms
 
 
 # ---------------------------------------------------------------------------
@@ -26,12 +26,12 @@ from personal_mem.synthesis import memory_seam as ms
 
 
 def _write_fact(
-    mem_dir: Path, slug: str, *, mem_type: str, desc: str, body: str = "body text"
+    weave_dir: Path, slug: str, *, weave_type: str, desc: str, body: str = "body text"
 ) -> Path:
-    mem_dir.mkdir(parents=True, exist_ok=True)
-    p = mem_dir / f"{slug}.md"
+    weave_dir.mkdir(parents=True, exist_ok=True)
+    p = weave_dir / f"{slug}.md"
     p.write_text(
-        f"---\nname: {slug}\ndescription: {desc}\nmetadata:\n  type: {mem_type}\n"
+        f"---\nname: {slug}\ndescription: {desc}\nmetadata:\n  type: {weave_type}\n"
         f"---\n\n{body}\n",
         encoding="utf-8",
     )
@@ -43,9 +43,9 @@ def cc_tree(tmp_path: Path, monkeypatch):
     """A fake ~/.claude/projects/<proj>/memory tree with two facts."""
     projects = tmp_path / "projects"
     proj_mem = projects / "-home-x-python-projects-demo" / "memory"
-    _write_fact(proj_mem, "feedback-style", mem_type="feedback",
+    _write_fact(proj_mem, "feedback-style", weave_type="feedback",
                 desc="prefer linear flows")
-    _write_fact(proj_mem, "proj-status", mem_type="project",
+    _write_fact(proj_mem, "proj-status", weave_type="project",
                 desc="14 tools as of April")
     # A MEMORY.md index that must be ignored.
     (proj_mem / "MEMORY.md").write_text("# index\n- pointer", encoding="utf-8")
@@ -69,7 +69,7 @@ def test_collect_walks_facts_and_skips_index(cc_tree):
     slugs = {f["slug"] for f in facts}
     assert slugs == {"feedback-style", "proj-status"}  # MEMORY.md skipped
     f = next(f for f in facts if f["slug"] == "proj-status")
-    assert f["mem_type"] == "project"
+    assert f["weave_type"] == "project"
     assert f["key"].endswith("::proj-status")
     assert f["content_hash"]  # non-empty hash
     assert "14 tools" in f["query"]
@@ -77,7 +77,7 @@ def test_collect_walks_facts_and_skips_index(cc_tree):
 
 def test_content_hash_changes_on_edit(cc_tree):
     h1 = {f["slug"]: f["content_hash"] for f in ms.collect_cc_facts()}
-    _write_fact(cc_tree, "proj-status", mem_type="project",
+    _write_fact(cc_tree, "proj-status", weave_type="project",
                 desc="18 tools as of June")
     h2 = {f["slug"]: f["content_hash"] for f in ms.collect_cc_facts()}
     assert h1["proj-status"] != h2["proj-status"]
@@ -94,14 +94,14 @@ def test_stale_prior_only_old_project_facts():
     old = now.timestamp() - 40 * 86400
     fresh = now.timestamp() - 5 * 86400
     assert ms.stale_prior(
-        {"mem_type": "project", "mtime": old}, stale_age_days=30, now=now
+        {"weave_type": "project", "mtime": old}, stale_age_days=30, now=now
     )
     assert not ms.stale_prior(
-        {"mem_type": "project", "mtime": fresh}, stale_age_days=30, now=now
+        {"weave_type": "project", "mtime": fresh}, stale_age_days=30, now=now
     )
     # feedback never flags, even when ancient
     assert not ms.stale_prior(
-        {"mem_type": "feedback", "mtime": old}, stale_age_days=30, now=now
+        {"weave_type": "feedback", "mtime": old}, stale_age_days=30, now=now
     )
 
 

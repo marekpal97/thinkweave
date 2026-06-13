@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from personal_mem.acquisition.sources.priorities import (
+from thinkweave.acquisition.sources.priorities import (
     focus_active_projects,
     focus_watch_themes,
     intake_for,
@@ -41,14 +41,14 @@ def test_load_priorities_parses_focus_block(tmp_path: Path):
     cfg_dir.mkdir()
     (cfg_dir / "PRIORITIES.yaml").write_text(
         "focus:\n"
-        "  active_projects: [personal_mem, research]\n"
+        "  active_projects: [thinkweave, research]\n"
         "  watch_themes: [thm-aaaa1111]\n",
         encoding="utf-8",
     )
 
     doc = load_priorities(tmp_path)
     assert "focus" in doc
-    assert doc["focus"]["active_projects"] == ["personal_mem", "research"]
+    assert doc["focus"]["active_projects"] == ["thinkweave", "research"]
     assert doc["focus"]["watch_themes"] == ["thm-aaaa1111"]
 
 

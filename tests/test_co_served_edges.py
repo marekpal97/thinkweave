@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def _seed_session(vault: VaultManager, project: str, returned_ids: list[str]) ->
         json.dumps({
             "ts": ts,
             "type": "retrieval",
-            "tool": "mem_search",
+            "tool": "weave_search",
             "returned_ids": returned_ids,
         }) + "\n",
         encoding="utf-8",
@@ -177,12 +177,12 @@ class TestCoServedProjection:
 
 
 class TestEdgeTypesPassthrough:
-    """Verify mem_graph honors edge_types filter for co_served."""
+    """Verify weave_graph honors edge_types filter for co_served."""
 
     def test_get_related_excludes_co_served_when_not_requested(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.retrieval.search import Search
+        from thinkweave.retrieval.search import Search
 
         a = vault.read_note(vault.create_note(NoteType.NOTE, "A", project="t")).id
         b = vault.read_note(vault.create_note(NoteType.NOTE, "B", project="t")).id

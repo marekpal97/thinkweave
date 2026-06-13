@@ -1,7 +1,7 @@
-"""Regression tests for ``mem install`` and the project-scope ``.mcp.json``.
+"""Regression tests for ``weave install`` and the project-scope ``.mcp.json``.
 
 The three MCP-registration paths — project-scope ``.mcp.json``, machine-
-scope ``~/.claude.json`` (written by ``mem install``), and the plugin
+scope ``~/.claude.json`` (written by ``weave install``), and the plugin
 manifests under ``.claude-plugin/`` — must all produce equivalent server
 entries so that Claude Code's MCP launcher sees the same invocation
 regardless of how the user installed the package.
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.surfaces.cli import install as install_mod
-from personal_mem.surfaces.cli.install import (
+from thinkweave.surfaces.cli import install as install_mod
+from thinkweave.surfaces.cli.install import (
     CLAUDE_MD_BLOCK_BODY,
     CLAUDE_MD_BLOCK_END,
     CLAUDE_MD_BLOCK_START,
@@ -41,7 +41,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_MCP_JSON = REPO_ROOT / ".mcp.json"
 PLUGIN_MANIFEST_ROOT = REPO_ROOT / ".claude-plugin" / "plugin.json"
 PLUGIN_MANIFEST_NESTED = (
-    REPO_ROOT / ".claude" / "plugins" / "personal-mem" / ".claude-plugin" / "plugin.json"
+    REPO_ROOT / ".claude" / "plugins" / "thinkweave" / ".claude-plugin" / "plugin.json"
 )
 
 
@@ -72,13 +72,13 @@ def _entry_from_install() -> dict:
 
 def _entry_from_mcp_json() -> dict:
     data = json.loads(PROJECT_MCP_JSON.read_text(encoding="utf-8"))
-    return data["mcpServers"]["personal-mem"]
+    return data["mcpServers"]["thinkweave"]
 
 
 def _entry_from_plugin_manifest(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert "mcpServers" in data, f"{path} must declare mcpServers inline"
-    return data["mcpServers"]["personal-mem"]
+    return data["mcpServers"]["thinkweave"]
 
 
 class TestMcpInvocationConsistency:
@@ -90,15 +90,15 @@ class TestMcpInvocationConsistency:
         assert entry["args"][:2] == ["run", "--project"]
         assert "--extra" in entry["args"]
         assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "mem-mcp"
+        assert entry["args"][-1] == "weave-mcp"
 
-    def test_mem_install_uses_uv_run_shape(self):
+    def test_weave_install_uses_uv_run_shape(self):
         entry = _entry_from_install()
         assert _command_basename(entry["command"]) == "uv"
         assert entry["args"][:2] == ["run", "--project"]
         assert "--extra" in entry["args"]
         assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "mem-mcp"
+        assert entry["args"][-1] == "weave-mcp"
 
     def test_plugin_manifest_root_uses_uv_run_shape(self):
         entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
@@ -106,7 +106,7 @@ class TestMcpInvocationConsistency:
         assert entry["args"][:2] == ["run", "--project"]
         assert "--extra" in entry["args"]
         assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "mem-mcp"
+        assert entry["args"][-1] == "weave-mcp"
 
     def test_plugin_manifest_nested_uses_uv_run_shape(self):
         entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_NESTED)
@@ -114,7 +114,7 @@ class TestMcpInvocationConsistency:
         assert entry["args"][:2] == ["run", "--project"]
         assert "--extra" in entry["args"]
         assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "mem-mcp"
+        assert entry["args"][-1] == "weave-mcp"
 
     def test_all_scopes_normalise_to_same_args_shape(self):
         """Once the per-scope project path is replaced with a sentinel,
@@ -138,7 +138,7 @@ class TestMcpInvocationConsistency:
             f"  plugin/nested={norm_nested}"
         )
 
-        # env keys (not values — install may inject PERSONAL_MEM_VAULT)
+        # env keys (not values — install may inject THINKWEAVE_VAULT)
         for entry in (mcp_entry, plugin_root_entry, plugin_nested_entry):
             assert entry.get("env", {}) == {}, (
                 f"checked-in manifest must not bake env vars: {entry}"
@@ -228,7 +228,7 @@ class TestMcpJsonSyntax:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert isinstance(data, dict)
         assert "mcpServers" in data
-        assert "personal-mem" in data["mcpServers"]
+        assert "thinkweave" in data["mcpServers"]
 
 
 @pytest.fixture
@@ -237,7 +237,7 @@ def stub_install_validators(monkeypatch):
     `_check_pyproject_reachable`, `_uv_sync`) so cmd_install tests don't
     require uv on PATH, a real pyproject in the sandbox, or pay sync time.
     Tests that specifically validate these helpers don't use this fixture."""
-    from personal_mem.surfaces.cli import install as inst
+    from thinkweave.surfaces.cli import install as inst
     monkeypatch.setattr(inst, "_check_uv_available", lambda: None)
     monkeypatch.setattr(inst, "_check_pyproject_reachable", lambda root: None)
     monkeypatch.setattr(inst, "_uv_sync", lambda root: None)
@@ -252,7 +252,7 @@ def fake_claude_home(tmp_path, monkeypatch):
     fake.mkdir()
     claude_json = fake / ".claude.json"
     claude_md = fake / ".claude" / "CLAUDE.md"
-    marker = fake / ".claude" / "personal_mem_paused.json"
+    marker = fake / ".claude" / "thinkweave_paused.json"
     plugins_root = fake / ".claude" / "plugins"
     monkeypatch.setattr(install_mod, "CLAUDE_JSON", claude_json)
     monkeypatch.setattr(install_mod, "CLAUDE_MD", claude_md)
@@ -266,14 +266,14 @@ def fake_claude_home(tmp_path, monkeypatch):
     }
 
 
-def _write_plugin_manifest(plugins_root: Path, name: str, declares_personal_mem: bool):
+def _write_plugin_manifest(plugins_root: Path, name: str, declares_thinkweave: bool):
     """Helper: stub a plugin manifest under
     ``<plugins_root>/<name>/.claude-plugin/plugin.json``."""
     manifest_dir = plugins_root / name / ".claude-plugin"
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest = manifest_dir / "plugin.json"
     data: dict = {"name": name, "version": "0.0.1"}
-    if declares_personal_mem:
+    if declares_thinkweave:
         data["mcpServers"] = {SERVER_NAME: {"type": "stdio", "command": "uv", "args": []}}
     manifest.write_text(json.dumps(data), encoding="utf-8")
     return manifest
@@ -288,7 +288,7 @@ def _ns(**kw):
 
 
 class TestUninstall:
-    """`mem uninstall` is the inverse of `mem install`. It must:
+    """`weave uninstall` is the inverse of `weave install`. It must:
     no-op cleanly when nothing was installed; require --yes before
     touching files; preserve sibling MCP servers and surrounding
     CLAUDE.md content; and clean up any leftover pause marker."""
@@ -381,7 +381,7 @@ class TestUninstall:
 
 class TestPluginDetection:
     """`_plugin_provides_mcp` is the parity bridge: when an installed
-    plugin manifest declares the personal-mem MCP server, `mem install`
+    plugin manifest declares the thinkweave MCP server, `weave install`
     must skip the ~/.claude.json write to avoid duplicate registration,
     but still add the CLAUDE.md nudge."""
 
@@ -389,37 +389,37 @@ class TestPluginDetection:
         # plugins_root doesn't exist by default in the fixture
         assert _plugin_provides_mcp() is None
 
-    def test_returns_none_when_no_manifest_declares_personal_mem(
+    def test_returns_none_when_no_manifest_declares_thinkweave(
         self, fake_claude_home
     ):
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "other-plugin",
-            declares_personal_mem=False,
+            declares_thinkweave=False,
         )
         assert _plugin_provides_mcp() is None
 
-    def test_returns_manifest_path_when_plugin_claims_personal_mem(
+    def test_returns_manifest_path_when_plugin_claims_thinkweave(
         self, fake_claude_home
     ):
         manifest = _write_plugin_manifest(
-            fake_claude_home["plugins_root"], "personal-mem",
-            declares_personal_mem=True,
+            fake_claude_home["plugins_root"], "thinkweave",
+            declares_thinkweave=True,
         )
         result = _plugin_provides_mcp()
         assert result == manifest
 
-    def test_finds_personal_mem_among_multiple_plugins(self, fake_claude_home):
+    def test_finds_thinkweave_among_multiple_plugins(self, fake_claude_home):
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "other-1",
-            declares_personal_mem=False,
+            declares_thinkweave=False,
         )
         target = _write_plugin_manifest(
-            fake_claude_home["plugins_root"], "personal-mem",
-            declares_personal_mem=True,
+            fake_claude_home["plugins_root"], "thinkweave",
+            declares_thinkweave=True,
         )
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "other-2",
-            declares_personal_mem=False,
+            declares_thinkweave=False,
         )
         assert _plugin_provides_mcp() == target
 
@@ -430,8 +430,8 @@ class TestPluginDetection:
         corrupt_dir.mkdir(parents=True)
         (corrupt_dir / "plugin.json").write_text("{ not valid json", encoding="utf-8")
         target = _write_plugin_manifest(
-            fake_claude_home["plugins_root"], "personal-mem",
-            declares_personal_mem=True,
+            fake_claude_home["plugins_root"], "thinkweave",
+            declares_thinkweave=True,
         )
         assert _plugin_provides_mcp() == target
 
@@ -444,12 +444,12 @@ class TestPluginRouteInstall:
     def test_plugin_route_skips_mcp_write_and_does_claude_md(
         self, fake_claude_home, stub_install_validators, monkeypatch, capsys
     ):
-        # stub the script availability check (we don't install personal-mem
+        # stub the script availability check (we don't install thinkweave
         # console scripts in CI's test env via this fixture)
         monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
         _write_plugin_manifest(
-            fake_claude_home["plugins_root"], "personal-mem",
-            declares_personal_mem=True,
+            fake_claude_home["plugins_root"], "thinkweave",
+            declares_thinkweave=True,
         )
 
         cmd_install(_ns(yes=True))
@@ -470,8 +470,8 @@ class TestPluginRouteInstall:
     ):
         monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
         _write_plugin_manifest(
-            fake_claude_home["plugins_root"], "personal-mem",
-            declares_personal_mem=True,
+            fake_claude_home["plugins_root"], "thinkweave",
+            declares_thinkweave=True,
         )
 
         cmd_install(_ns(yes=True, no_claude_md=True))
@@ -487,8 +487,8 @@ class TestPluginRouteInstall:
         ignoring."""
         monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
         _write_plugin_manifest(
-            fake_claude_home["plugins_root"], "personal-mem",
-            declares_personal_mem=True,
+            fake_claude_home["plugins_root"], "thinkweave",
+            declares_thinkweave=True,
         )
 
         cmd_install(_ns(yes=True, vault="/some/vault"))
@@ -511,7 +511,7 @@ class TestPluginRouteInstall:
 
 class TestUvValidation:
     """`_check_uv_available` fails fast when uv is missing from PATH —
-    without this check, `mem install` silently writes a config whose
+    without this check, `weave install` silently writes a config whose
     `command: "uv"` fails at every Claude Code session start."""
 
     def test_exits_when_uv_missing(self, monkeypatch, capsys):
@@ -608,7 +608,7 @@ class TestPluginManifestContract:
     """
 
     MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
-    HOOK_LAUNCHER = 'uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra mcp mem-hook '
+    HOOK_LAUNCHER = 'uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra mcp weave-hook '
 
     def test_no_post_install(self):
         data = json.loads(self.MANIFEST.read_text(encoding="utf-8"))
@@ -631,7 +631,7 @@ class TestPluginManifestContract:
         for cmd in commands:
             assert cmd.startswith(self.HOOK_LAUNCHER), (
                 f"hook command {cmd!r} bypasses the canonical uv launcher — "
-                "bare `mem-hook` is not on PATH for plugin-route users"
+                "bare `weave-hook` is not on PATH for plugin-route users"
             )
 
     def test_agents_shipped_at_plugin_root(self):
@@ -639,7 +639,7 @@ class TestPluginManifestContract:
         Path B writers) must exist under the auto-discovered `agents/`
         dir, or plugin users get 'Agent type not found' from /dream and
         every fan-out drain."""
-        from personal_mem.operations.dream_tasks import REGISTRY
+        from thinkweave.operations.dream_tasks import REGISTRY
 
         shipped = {p.stem for p in (REPO_ROOT / "agents").glob("*.md")}
         assert shipped, "plugin ships no subagent workers"

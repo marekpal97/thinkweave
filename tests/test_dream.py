@@ -1,7 +1,7 @@
 """Tests for the dream cycle (operations/dream.py + CLI).
 
-``mem dream`` is the deterministic backbone of ``/dream`` — the cron-friendly
-successor to ``/mem-resolve-concepts`` and ``/themes-resolve``. These tests
+``weave dream`` is the deterministic backbone of ``/dream`` — the cron-friendly
+successor to ``/weave-resolve-concepts`` and ``/themes-resolve``. These tests
 build a tmp vault with seeded proposed concepts + event-grain source clusters,
 then exercise both the scan and apply phases.
 
@@ -18,11 +18,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
-from personal_mem.operations.dream import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
+from thinkweave.operations.dream import (
     DreamCycleResult,
     DreamCycleScan,
     PlanValidationError,
@@ -241,7 +241,7 @@ class TestScan:
         t = matching[0]
         assert t["hub_kind"] == "theme"
         assert t["title"] == "AI capex"
-        # Essence section is pre-loaded — worker doesn't need to mem_read.
+        # Essence section is pre-loaded — worker doesn't need to weave_read.
         assert "essence" in t
         assert t["essence_is_placeholder"] is False
         # No essence_updated stamp yet ⇒ everything counts as since-essence.
@@ -476,8 +476,8 @@ class TestScan:
     def test_rejudge_queue_drains_disk_entries(
         self, config: Config, vault: VaultManager
     ):
-        """Entries on ``.mem/rejudge_queue.jsonl`` surface in the scan."""
-        queue_path = config.vault_root / ".mem" / "rejudge_queue.jsonl"
+        """Entries on ``.weave/rejudge_queue.jsonl`` surface in the scan."""
+        queue_path = config.vault_root / ".weave" / "rejudge_queue.jsonl"
         queue_path.parent.mkdir(parents=True, exist_ok=True)
         queue_path.write_text(
             json.dumps({
@@ -594,7 +594,7 @@ class TestScan:
             1,
         )
         # That replacement is a bit aggressive — rewrite frontmatter cleanly.
-        from personal_mem.core.vault import parse_frontmatter as _pf
+        from thinkweave.core.vault import parse_frontmatter as _pf
         fm, body = _pf(path.read_text(encoding="utf-8"))
         fm["date"] = "2020-01-01T00:00:00+00:00"
         import yaml as _yaml
@@ -695,7 +695,7 @@ class TestApply:
         assert isinstance(result, DreamCycleResult)
         assert result.promotions_applied == 1
         # ontology was updated
-        from personal_mem.synthesis.concepts import load_ontology
+        from thinkweave.synthesis.concepts import load_ontology
 
         ontology = load_ontology()
         all_terms = {t.lower() for terms in ontology.values() for t in terms}
@@ -811,7 +811,7 @@ class TestApply:
         self, config: Config, vault: VaultManager
     ):
         """Judged (handed-off) entries leave the queue; overflow survives."""
-        from personal_mem.operations import rejudge_queue
+        from thinkweave.operations import rejudge_queue
 
         # 22 entries — two beyond the scan hand-off cap of 20.
         for i in range(22):
@@ -891,7 +891,7 @@ class TestApply:
         self, config: Config, vault: VaultManager, monkeypatch
     ):
         """Re-promoting a canonical concept is a sweep, not growth."""
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
         _seed_proposed_concept(vault, "diagnostics", 6)
         _index(config)
 
@@ -924,7 +924,7 @@ class TestApply:
         self, config: Config, vault: VaultManager, monkeypatch
     ):
         """Promoting a term *not* in the seed ontology flips ``ontology_grew``."""
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
         _seed_proposed_concept(vault, "synaptic-pruning-2026", 6)
         _index(config)
 
@@ -1023,7 +1023,7 @@ class TestMaintenanceLog:
         entry = {"cycle_id": "dream-test", "summary": {}, "ts": "2026-05-23"}
         path = append_maintenance_log(config, entry)
         assert path.exists()
-        assert path.parent.name == ".mem"
+        assert path.parent.name == ".weave"
         loaded = json.loads(path.read_text(encoding="utf-8").strip())
         assert loaded["cycle_id"] == "dream-test"
 
@@ -1038,7 +1038,7 @@ class TestMaintenanceLog:
 
 
 class TestDreamReport:
-    """Per-cycle markdown report at vault/.mem/dream_reports/<cycle_id>.md."""
+    """Per-cycle markdown report at vault/.weave/dream_reports/<cycle_id>.md."""
 
     def test_summary_table_always_rendered(
         self, config: Config, vault: VaultManager
@@ -1148,7 +1148,7 @@ class TestStateOfPlayMaintenance:
     def test_no_section_when_no_reports(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.synthesis.landing import state_of_play
+        from thinkweave.synthesis.landing import state_of_play
 
         _index(config)
         out = state_of_play(config, "t")
@@ -1157,7 +1157,7 @@ class TestStateOfPlayMaintenance:
     def test_section_present_with_link_when_report_exists(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.synthesis.landing import state_of_play
+        from thinkweave.synthesis.landing import state_of_play
 
         r = DreamCycleResult(cycle_id="dream-state-test", project="t")
         write_dream_report(config, r, plan={})
@@ -1171,8 +1171,8 @@ class TestStateOfPlayMaintenance:
     def test_discover_reports_listed_alongside_dream(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.operations.reports import recent_reports, reports_dir
-        from personal_mem.synthesis.landing import state_of_play
+        from thinkweave.operations.reports import recent_reports, reports_dir
+        from thinkweave.synthesis.landing import state_of_play
 
         r = DreamCycleResult(cycle_id="dream-state-test", project="t")
         write_dream_report(config, r, plan={})
@@ -1200,10 +1200,10 @@ class TestDreamCLI:
         _seed_proposed_concept(vault, "diagnostics", 6)
         _index(config)
 
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
-        from personal_mem.surfaces.cli.dream import cmd_dream
+        from thinkweave.surfaces.cli.dream import cmd_dream
 
         args = type(
             "Args",
@@ -1231,8 +1231,8 @@ class TestDreamCLI:
     ):
         _seed_proposed_concept(vault, "diagnostics", 6)
         _index(config)
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
         plan_path = tmp_path / "plan.json"
         plan_path.write_text(
@@ -1242,7 +1242,7 @@ class TestDreamCLI:
             encoding="utf-8",
         )
 
-        from personal_mem.surfaces.cli.dream import cmd_dream
+        from thinkweave.surfaces.cli.dream import cmd_dream
 
         args = type(
             "Args",
@@ -1340,7 +1340,7 @@ class TestPrioritySignalsApply:
         # Gate disabled → counts as logged, no queue mutation.
         assert r.priority_signals_enqueued == 0
         assert r.priority_signals_logged == 1
-        queue_file = config.vault_root / ".mem" / "queues" / "article.jsonl"
+        queue_file = config.vault_root / ".weave" / "queues" / "article.jsonl"
         assert not queue_file.exists()
 
     def test_enqueue_with_gate_hot_writes_queue(
@@ -1363,7 +1363,7 @@ class TestPrioritySignalsApply:
         r = apply(config, plan=plan, project="t")
         assert r.priority_signals_enqueued == 1
         assert r.priority_signals_logged == 0
-        queue_file = config.vault_root / ".mem" / "queues" / "article.jsonl"
+        queue_file = config.vault_root / ".weave" / "queues" / "article.jsonl"
         assert queue_file.exists()
         lines = [
             json.loads(line)
@@ -1816,7 +1816,7 @@ class TestThemeLogGaps:
     def test_extended_source_is_not_a_gap(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.synthesis.theme_candidates import (
+        from thinkweave.synthesis.theme_candidates import (
             extend_theme_with_sources,
         )
 
@@ -2067,7 +2067,7 @@ class TestPolicyKnobOverrides:
     ):
         """dream.probe_window_days steers the recent_probes payload AND the
         knowledge-delta probe-match slice — the two sites can't diverge."""
-        import personal_mem.operations.prompts as prompts_mod
+        import thinkweave.operations.prompts as prompts_mod
 
         calls: dict[str, int] = {}
 
@@ -2092,7 +2092,7 @@ class TestPolicyKnobOverrides:
         self, config: Config, vault: VaultManager
     ):
         """dream.rejudge_cap bounds the scan hand-off AND apply's consumption."""
-        from personal_mem.operations import rejudge_queue
+        from thinkweave.operations import rejudge_queue
 
         for i in range(5):
             rejudge_queue.enqueue(
@@ -2118,7 +2118,7 @@ class TestPolicyKnobOverrides:
     ):
         from datetime import datetime
 
-        from personal_mem.operations.dream import _collect_knowledge_delta
+        from thinkweave.operations.dream import _collect_knowledge_delta
 
         _index(config)
         config.dream_knowledge_delta_hours = 48

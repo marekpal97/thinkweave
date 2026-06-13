@@ -12,21 +12,21 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.acquisition.sources import DEFAULT_CONFIG, load_user_config
-from personal_mem.acquisition.sources.config import _parse_simple_yaml
+from thinkweave.acquisition.sources import DEFAULT_CONFIG, load_user_config
+from thinkweave.acquisition.sources.config import _parse_simple_yaml
 
 
 def test_defaults_when_no_file(tmp_path: Path) -> None:
     cfg = load_user_config(tmp_path)
     assert cfg["auto_todo_extraction"] is True
-    assert cfg["sources"]["paper"]["queue"] == "vault/.mem/queues/papers.jsonl"
+    assert cfg["sources"]["paper"]["queue"] == "vault/.weave/queues/papers.jsonl"
     assert cfg["landing_files"]["state"] == "STATE.md"
 
 
 def test_returns_deep_copy(tmp_path: Path) -> None:
     cfg = load_user_config(tmp_path)
     cfg["sources"]["paper"]["queue"] = "mutated"
-    assert DEFAULT_CONFIG["sources"]["paper"]["queue"] == "vault/.mem/queues/papers.jsonl"
+    assert DEFAULT_CONFIG["sources"]["paper"]["queue"] == "vault/.weave/queues/papers.jsonl"
 
 
 def test_user_override_merges_with_defaults(tmp_path: Path) -> None:
@@ -48,7 +48,7 @@ auto_todo_extraction: false
     assert cfg["auto_todo_extraction"] is False
     # Defaults preserved:
     assert cfg["sources"]["paper"]["research_skill"] == "research-paper"
-    assert cfg["sources"]["repo"]["queue"] == "vault/.mem/queues/repos.jsonl"
+    assert cfg["sources"]["repo"]["queue"] == "vault/.weave/queues/repos.jsonl"
 
 
 def test_list_overwrites_wholesale(tmp_path: Path) -> None:
@@ -74,7 +74,7 @@ def test_malformed_falls_back_to_defaults(tmp_path: Path) -> None:
     (cfg_dir / "sources.yaml").write_text("not valid yaml here\n", encoding="utf-8")
 
     cfg = load_user_config(tmp_path)
-    assert cfg["sources"]["paper"]["queue"] == "vault/.mem/queues/papers.jsonl"
+    assert cfg["sources"]["paper"]["queue"] == "vault/.weave/queues/papers.jsonl"
 
 
 def test_parser_handles_inline_lists_and_scalars() -> None:
@@ -119,7 +119,7 @@ sources:
 
 # ---------------------------------------------------------------------------
 # Newsletter source-type config — pins the per-type shape in DEFAULT_CONFIG
-# and proves the shipped vault_templates/.mem/sources.yaml still parses with
+# and proves the shipped vault_templates/.weave/sources.yaml still parses with
 # the two newsletter blocks in place.
 # ---------------------------------------------------------------------------
 
@@ -129,7 +129,7 @@ def test_default_config_has_newsletter_events() -> None:
     assert cfg["drain_strategy"] == "subagent"
     assert cfg["subagent_type"] == "research-newsletter-worker"
     assert cfg["mail_provider"] == "gmail"
-    assert cfg["processed_label"] == "mem-processed"
+    assert cfg["processed_label"] == "weave-processed"
     assert cfg["lookback_days"] == 30
     assert "message_id" in cfg["dedup_keys"]
     # senders: [] is the canonical allowlist — must exist as an empty list
@@ -157,9 +157,9 @@ def test_shipped_template_parses_with_newsletter_blocks() -> None:
     this file into PRIORITIES.yaml — assertion narrows to the processing
     knobs that still live here. Guards against accidental YAML breakage
     when the template is hand-edited."""
-    import personal_mem
+    import thinkweave
 
-    pkg_root = Path(personal_mem.__file__).parent
+    pkg_root = Path(thinkweave.__file__).parent
     template = pkg_root / "vault_templates" / "config" / "sources.yaml"
     parsed = _parse_simple_yaml(template.read_text(encoding="utf-8"))
     sources = parsed["sources"]
@@ -192,4 +192,4 @@ sources:
     assert senders == ["alerts@bloomberg.com", "levine@bloomberg.net", "stratechery.com"]
     # Other defaults preserved.
     assert cfg["sources"]["newsletter-events"]["mail_provider"] == "gmail"
-    assert cfg["sources"]["newsletter-events"]["processed_label"] == "mem-processed"
+    assert cfg["sources"]["newsletter-events"]["processed_label"] == "weave-processed"

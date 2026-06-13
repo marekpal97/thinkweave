@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.retrieval.search import Search
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.retrieval.search import Search
+from thinkweave.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +680,7 @@ class TestConceptSourceCounts:
 
 
 class TestCrossProjectActivity:
-    """Cross-project mem_timeline ranking mode."""
+    """Cross-project weave_timeline ranking mode."""
 
     def test_ranks_by_total_activity_desc(
         self, vault: VaultManager, indexer: Indexer, config: Config
@@ -791,7 +791,7 @@ class TestRrfKFromConfig:
 
     @staticmethod
     def _result(nid: str) -> "SearchResult":
-        from personal_mem.retrieval.search import SearchResult
+        from thinkweave.retrieval.search import SearchResult
 
         return SearchResult(
             id=nid, type="note", title=nid, path=f"{nid}.md",

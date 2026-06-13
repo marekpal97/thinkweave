@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.acquisition.sources.extractors import gemini_extract as ge
+from thinkweave.acquisition.sources.extractors import gemini_extract as ge
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ def test_missing_sdk_returns_structured_failure(monkeypatch):
     result = ge.extract_youtube("https://youtu.be/abc", api_key="k")
     assert result["ok"] is False
     assert result["error"] == ge.ERR_MISSING_SDK
-    assert "personal-mem[gemini]" in result["reason"]
+    assert "thinkweave[gemini]" in result["reason"]
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ prompt events into ``prompts(session_id, seq, ts, text, classification,
 project)``, attributing concepts (``prompt_concepts``) to probe rows via
 the same substring rule the live probe-pressure path uses
 (``core.events.match_probe_concepts``). JSONL stays truth — the table is
-rebuilt by ``mem index --full`` and kept fresh by per-file re-index.
+rebuilt by ``weave index --full`` and kept fresh by per-file re-index.
 """
 
 from __future__ import annotations
@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.events import match_probe_concepts
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.events import match_probe_concepts
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture

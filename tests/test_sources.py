@@ -1,4 +1,4 @@
-"""Tests for `mem sources scaffold` and the user-side registry overlay.
+"""Tests for `weave sources scaffold` and the user-side registry overlay.
 
 Covers:
   1. The CLI scaffold writes all three artifacts with the right content.
@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.acquisition.sources import REGISTRY, get_spec, load_user_specs
-from personal_mem.surfaces.cli.util import cmd_sources
+from thinkweave.acquisition.sources import REGISTRY, get_spec, load_user_specs
+from thinkweave.surfaces.cli.util import cmd_sources
 
 
 def _scaffold_args(
@@ -49,7 +49,7 @@ def isolated_commands_dir(monkeypatch, tmp_path: Path):
 
     The scaffold path resolves ``commands/`` from the package location
     (four levels up from ``surfaces/cli/util.py``). To intercept that we
-    overlay an isolated tree containing a fresh ``src/personal_mem/...``
+    overlay an isolated tree containing a fresh ``src/thinkweave/...``
     layout, then point the scaffold at it by patching ``__file__``-based
     path resolution.
 
@@ -62,12 +62,12 @@ def isolated_commands_dir(monkeypatch, tmp_path: Path):
     # rather than fight that, redirect the repo_root by symlinking the
     # template into our tmp tree and constructing a "fake repo" layout.
     fake_repo = tmp_path / "_fake_repo"
-    fake_pkg = fake_repo / "src" / "personal_mem"
+    fake_pkg = fake_repo / "src" / "thinkweave"
     fake_pkg.mkdir(parents=True)
 
     # Copy the vault_templates we depend on.
     src_pkg = (
-        Path(__file__).resolve().parents[1] / "src" / "personal_mem"
+        Path(__file__).resolve().parents[1] / "src" / "thinkweave"
     )
     shutil.copytree(src_pkg / "vault_templates", fake_pkg / "vault_templates")
 
@@ -79,7 +79,7 @@ def isolated_commands_dir(monkeypatch, tmp_path: Path):
     fake_util.write_text("# stub", encoding="utf-8")
 
     # The scaffold reads its own __file__. Patch it.
-    import personal_mem.surfaces.cli.util as util_mod
+    import thinkweave.surfaces.cli.util as util_mod
 
     original_file = util_mod.__file__
     monkeypatch.setattr(util_mod, "__file__", str(fake_util))
@@ -89,10 +89,10 @@ def isolated_commands_dir(monkeypatch, tmp_path: Path):
 
 @pytest.fixture
 def vault(monkeypatch, tmp_path: Path) -> Path:
-    """A throwaway vault root, exposed via PERSONAL_MEM_VAULT."""
+    """A throwaway vault root, exposed via THINKWEAVE_VAULT."""
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
-    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault_root))
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault_root))
     return vault_root
 
 
@@ -131,7 +131,7 @@ def test_scaffold_writes_all_three_artifacts(
     assert "{slug}" not in skill_text
     assert "{bucket}" not in skill_text
     assert "{layout}" not in skill_text
-    # Escaped braces in mem_create({{...}}) should resolve to single braces.
+    # Escaped braces in weave_create({{...}}) should resolve to single braces.
     assert "frontmatter={" in skill_text
     assert 'frontmatter={{' not in skill_text
 
@@ -146,7 +146,7 @@ def test_scaffold_writes_all_three_artifacts(
 
     # The shipped template must be left untouched.
     template_sources = (
-        isolated_commands_dir / "src" / "personal_mem" / "vault_templates"
+        isolated_commands_dir / "src" / "thinkweave" / "vault_templates"
         / "config" / "sources.yaml"
     )
     assert "  demo:" not in template_sources.read_text(encoding="utf-8")

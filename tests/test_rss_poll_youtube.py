@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.acquisition.discover.strategies.rss_poll import (
+from thinkweave.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_youtube_item,
 )
@@ -142,7 +142,7 @@ def test_strategy_polls_channels_and_enqueues(tmp_path, fake_feedparser, monkeyp
     assert summaries[0]["stats"]["enqueued"] == 2
     assert all(d["source_type"] == "youtube-events" for d in enqueued)
 
-    queue_path = tmp_path / ".mem" / "queues" / "youtube-events.jsonl"
+    queue_path = tmp_path / ".weave" / "queues" / "youtube-events.jsonl"
     assert queue_path.exists()
 
 
@@ -194,7 +194,7 @@ def test_strategy_dedups_against_indexer_by_video_id(
     import json as _json
     import sqlite3 as _sqlite3
 
-    db_path = tmp_path / ".mem" / "index.db"
+    db_path = tmp_path / ".weave" / "index.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = _sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE notes (id TEXT, type TEXT, frontmatter TEXT)")
@@ -245,7 +245,7 @@ def test_indexer_dedup_honours_per_type_keys_only(
     import json as _json
     import sqlite3 as _sqlite3
 
-    db_path = tmp_path / ".mem" / "index.db"
+    db_path = tmp_path / ".weave" / "index.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = _sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE notes (id TEXT, type TEXT, frontmatter TEXT)")

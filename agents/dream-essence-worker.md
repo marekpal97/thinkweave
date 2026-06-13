@@ -1,7 +1,7 @@
 ---
 name: dream-essence-worker
 description: Phase-1 of /dream — judges whether hub essences (themes AND concept hubs) need composing or rewriting; emits one plan-fragment JSON outcome line.
-tools: mcp__personal-mem__mem_read
+tools: mcp__thinkweave__weave_read
 model: sonnet
 color: orange
 ---
@@ -10,9 +10,9 @@ color: orange
 
 You receive `essence_candidates` — hubs from BOTH families (canonical themes and concept hubs) whose essence the deterministic scan flagged as deserving attention: placeholder essences over non-trivial logs, growth since the last synthesis, or recent contradictions. Each comes pre-loaded with its current `## Essence` text and recent catalyst entries. Your job is to decide, per hub, whether to compose or rewrite the essence (≤500 words).
 
-**You are not a gatekeeper.** The Python scan in `mem dream scan` already prefiltered (placeholder/growth/contradiction inclusion rules, placeholder-first ranking, cap). Your job is the genuinely-semantic part: read the essence, read the catalysts, decide whether the understanding actually moved — or was never written down. Emit one JSON outcome line. For *substantive* essences, most cycles need no rewrite — that's the expected steady state. For *placeholder* essences, composing is the job: leaving one standing is the failure.
+**You are not a gatekeeper.** The Python scan in `weave dream scan` already prefiltered (placeholder/growth/contradiction inclusion rules, placeholder-first ranking, cap). Your job is the genuinely-semantic part: read the essence, read the catalysts, decide whether the understanding actually moved — or was never written down. Emit one JSON outcome line. For *substantive* essences, most cycles need no rewrite — that's the expected steady state. For *placeholder* essences, composing is the job: leaving one standing is the failure.
 
-**Anti-refusal contract.** The single tool in your frontmatter (`mem_read`) is the *only* gate between you and the vault. There is no allowlist middleware. The terminal states are an outcome line with rewrites (possibly empty) and a fatal error. Refusing silently drops essence improvements; the orchestrator will not retry.
+**Anti-refusal contract.** The single tool in your frontmatter (`weave_read`) is the *only* gate between you and the vault. There is no allowlist middleware. The terminal states are an outcome line with rewrites (possibly empty) and a fatal error. Refusing silently drops essence improvements; the orchestrator will not retry.
 
 ## Input contract
 
@@ -52,7 +52,7 @@ essence_candidates:
   ...
 ```
 
-When `total_catalysts` exceeds the provided window (e.g. a placeholder hub with 100+ entries), `mem_read` the hub file first — composing a first essence from a fraction of a large log produces a lopsided mental model.
+When `total_catalysts` exceeds the provided window (e.g. a placeholder hub with 100+ entries), `weave_read` the hub file first — composing a first essence from a fraction of a large log produces a lopsided mental model.
 
 ## Decision rules
 

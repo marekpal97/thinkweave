@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.operations import seam_link_queue as slq
+from thinkweave.core.config import Config
+from thinkweave.operations import seam_link_queue as slq
 
 
 @pytest.fixture
@@ -83,7 +83,7 @@ class TestDrainDequeue:
 
 class TestRobustness:
     def test_corrupt_lines_skipped(self, config):
-        path = config.vault_root / ".mem" / "seam_link_queue.jsonl"
+        path = config.vault_root / ".weave" / "seam_link_queue.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('not json\n{"hub_kind": "theme", "hub_id": "thm-x"}\n')
         items = slq.peek(config)

@@ -3,7 +3,7 @@
 These are the shared core both hub-execution paths rely on:
 
 - ``/drain --target hubs --via inline`` + ``/update-hubs`` skills — inline Claude Code path
-- ``mem drain --target hubs --via batch`` — OpenAI Batches API path (gpt-5-mini)
+- ``weave drain --target hubs --via batch`` — OpenAI Batches API path (gpt-5-mini)
 
 Both paths call ``append_log_entries`` / ``parse_concept_hub`` /
 ``unprocessed_notes_for_concept`` after producing LLM output, so a
@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.synthesis.concept_hub import (
+from thinkweave.core.config import Config
+from thinkweave.synthesis.concept_hub import (
     LogEntry,
     _strip_inline_wikilinks,
     append_log_entries,
@@ -32,9 +32,9 @@ from personal_mem.synthesis.concept_hub import (
     parse_llm_response,
     unprocessed_notes_for_concept,
 )
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -163,7 +163,7 @@ class TestHubDiffContract:
 
         # Citations now render title-aliased ([[path|Title]]) when the index is
         # populated, so the parser needs the path->id map to recover the id.
-        from personal_mem.synthesis.hub import build_id_path_map
+        from thinkweave.synthesis.hub import build_id_path_map
 
         path_to_id = {p: i for i, p in build_id_path_map(idx.db).items()}
         hub = parse_concept_hub(
@@ -181,7 +181,7 @@ class TestFoldedLogPreservesEdges:
     """
 
     def test_citations_inside_details_still_index_as_edges(self, vault_setup):
-        from personal_mem.synthesis.hub import LOG_FOLD_THRESHOLD
+        from thinkweave.synthesis.hub import LOG_FOLD_THRESHOLD
 
         cfg, vm, idx = vault_setup
         n = LOG_FOLD_THRESHOLD + 5  # force a fold: 5 oldest anchors collapse
@@ -301,17 +301,17 @@ class TestParseLLMResponseUsesNoteDate:
 
 
 class TestLinkageHelpers:
-    """Part 3 regression for `mem hubs link`: the pure helpers that build
+    """Part 3 regression for `weave hubs link`: the pure helpers that build
     per-hub prompts and parse the LLM's linkage revisions. Exercised
     without any LLM call — contract is (input shape) → (output shape).
     """
 
     def _build_prompt(self, concept, essence, entries):
-        from personal_mem.surfaces.cli import _build_linkage_user_prompt
+        from thinkweave.surfaces.cli import _build_linkage_user_prompt
         return _build_linkage_user_prompt(concept, essence, entries)
 
     def _parse(self, raw):
-        from personal_mem.surfaces.cli import _parse_linkage_response
+        from thinkweave.surfaces.cli import _parse_linkage_response
         return _parse_linkage_response(raw)
 
     def test_prompt_preserves_chronological_order(self):
@@ -372,7 +372,7 @@ class TestValidateLinkageRevision:
     """
 
     def _validate(self, entry_date, flag, ref):
-        from personal_mem.surfaces.cli import _validate_linkage_revision
+        from thinkweave.surfaces.cli import _validate_linkage_revision
         return _validate_linkage_revision(entry_date, flag, ref)
 
     def test_unknown_flag_returns_none(self):
@@ -439,7 +439,7 @@ class TestValidateLinkageRevision:
         assert ref == ""
 
     def test_quote_validation_passes_when_substring_matches(self):
-        from personal_mem.surfaces.cli import _validate_linkage_revision
+        from thinkweave.surfaces.cli import _validate_linkage_revision
         flag, ref, quote = _validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="pytest-bdd lets you write Gherkin scenarios",
@@ -452,7 +452,7 @@ class TestValidateLinkageRevision:
         assert "pytest-bdd" in quote
 
     def test_quote_validation_downgrades_when_quote_absent(self):
-        from personal_mem.surfaces.cli import _validate_linkage_revision
+        from thinkweave.surfaces.cli import _validate_linkage_revision
         flag, ref, _ = _validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="something the model invented out of thin air",
@@ -464,7 +464,7 @@ class TestValidateLinkageRevision:
         assert ref == ""
 
     def test_quote_validation_downgrades_when_quote_too_short(self):
-        from personal_mem.surfaces.cli import _validate_linkage_revision
+        from thinkweave.surfaces.cli import _validate_linkage_revision
         flag, ref, _ = _validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="pytest",  # < 20 chars, untrustworthy

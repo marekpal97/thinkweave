@@ -2,7 +2,7 @@
 
 Design (2026-06-13): the brief skeleton each research writer follows is a plain
 markdown file. Shipped defaults live in ``vault_templates/note_formats/`` and are
-seeded into ``vault/config/note_formats/`` at ``mem init``; the writers ``Read``
+seeded into ``vault/config/note_formats/`` at ``weave init``; the writers ``Read``
 that vault copy directly and the user edits it in place. No CLI, no resolver —
 just a file in the vault.
 """
@@ -11,15 +11,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from personal_mem.surfaces.cli.util import _seed_vault_templates
+from thinkweave.surfaces.cli.util import _seed_vault_templates
 
 EXPECTED_KEYS = {"paper", "repo", "article", "news", "newsletter", "youtube", "podcast"}
 
 
 def _shipped_dir() -> Path:
-    import personal_mem
+    import thinkweave
 
-    return Path(personal_mem.__file__).resolve().parent / "vault_templates" / "note_formats"
+    return Path(thinkweave.__file__).resolve().parent / "vault_templates" / "note_formats"
 
 
 def test_every_writer_family_ships_a_default():
@@ -32,7 +32,7 @@ def test_shipped_defaults_are_nonempty_markdown():
         text = (_shipped_dir() / f"{key}.md").read_text(encoding="utf-8")
         assert "## " in text, f"{key} default has no markdown sections"
         # No dangling reference to the removed CLI.
-        assert "mem note-format" not in text, f"{key} still mentions the dropped CLI"
+        assert "weave note-format" not in text, f"{key} still mentions the dropped CLI"
 
 
 def test_seed_copies_note_formats_into_vault(tmp_path: Path):

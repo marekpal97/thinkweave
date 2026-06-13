@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from personal_mem.retrieval.temporal import (
+from thinkweave.retrieval.temporal import (
     TemporalEdge,
     TemporalGraph,
     TemporalNode,
