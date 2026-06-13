@@ -22,8 +22,8 @@ The orchestrator passes the queue item plus the triage verdict in the prompt bod
   "url": "https://...",
   "title": "...",
   "summary": "...",
-  "outlet": "zerohedge",                  # slug
-  "outlet_name": "ZeroHedge",             # display name → drives folder layout
+  "outlet": "example-outlet",             # slug (invented example)
+  "outlet_name": "Example Outlet",        # display name → drives folder layout
   "tier": 2,                               # 1=trusted, 2=secondary (informational)
   "region": "global",                     # or "poland"
   "language": "en",                        # or "pl" (Polish, translate inline)
@@ -51,7 +51,7 @@ echo $PERSONAL_MEM_VAULT
 
 Take the absolute path that returns and call it `<vault_root>` for the rest of this run. If the prompt passed an explicit `vault_root: <path>` line, prefer that.
 
-Then load the ontology so concept extraction is canonical. Prefer `mem_concepts(action="list")` — it returns the merged ontology (canonical + proposed) the server has loaded. Fall back to `Read <vault_root>/.mem/ontology.yaml` only if the MCP call fails.
+Then load the ontology so concept extraction is canonical. Prefer `mem_concepts(action="list")` — it returns the merged ontology (canonical + proposed) the server has loaded. Fall back to `Read <vault_root>/config/ontology.yaml` only if the MCP call fails.
 
 ### 2. Get article body
 
@@ -76,7 +76,7 @@ Identify ≥3 concepts that fit the article. **Strict rule:** only ontology-list
 
 Concepts here are **for graph + concept-hub catalysts**, not for admission. Admission already happened. So extract liberally — pick concepts that genuinely describe what the article is about, not what would have made it pass a gate.
 
-For news, lean on `finance/*` and `ml/*` namespaces. Polish-economy items will accumulate proposed concepts like `geo/poland`, `pl/macro` — those promote naturally via `/mem-resolve-concepts` once they hit critical mass.
+For news, lean on the event-shaped domains of the vault's ontology (e.g. `finance-*`, `ml-*` prefix families). Region-specific items (e.g. `language == "pl"` Polish-economy coverage) will accumulate proposed concepts like `geo-poland`, `poland-macro` — those promote naturally via `/mem-resolve-concepts` once they hit critical mass.
 
 ### 5. Write the brief
 

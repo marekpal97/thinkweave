@@ -19,8 +19,8 @@ The orchestrator passes two artifacts in the prompt body:
 
 ```json
 [
-  {"id": "q-0001", "title": "Fed signals October rate cut", "outlet": "reuters", "tier": 1},
-  {"id": "q-0002", "title": "Crypto memecoin sees 4000% pump on Twitter shill", "outlet": "zerohedge", "tier": 2}
+  {"id": "q-0001", "title": "Fed signals October rate cut", "outlet": "example-wire", "tier": 1},
+  {"id": "q-0002", "title": "Crypto memecoin sees 4000% pump on Twitter shill", "outlet": "example-aggregator", "tier": 2}
 ]
 ```
 
@@ -34,8 +34,8 @@ For each item, decide which of THREE verdicts applies:
 
 ## Calibration cues
 
-- **Tier 1 outlets (Reuters, FT, Bloomberg, WSJ)** lean toward `keep` / `keep_unfiled` — they don't run pure clickbait.
-- **Tier 2 outlets (ZeroHedge, regional aggregators)** need a stronger signal — `drop` is a reasonable default when the title is sensational and no theme matches.
+- **Tier 1 outlets** (the feeds the user's feed config marks as high-trust — wire services, papers of record) lean toward `keep` / `keep_unfiled` — they don't run pure clickbait.
+- **Tier 2 outlets** (lower-trust feeds — aggregators, sensational or opinion-heavy outlets) need a stronger signal — `drop` is a reasonable default when the title is sensational and no theme matches.
 - **Be conservative on `drop`** — a false reject means a real signal is lost forever. A false admit gets caught by Stage-2 producing a thin brief, which the user can review periodically.
 - **`reason` field** — a short (≤80 char) human-readable rationale. For `keep`, name the matched theme. For `keep_unfiled`, say what makes it substantive. For `drop`, name the noise pattern (e.g. "celebrity gossip", "rumor without primary source").
 

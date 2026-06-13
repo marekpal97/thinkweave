@@ -27,7 +27,7 @@ promotion_candidates:
   ...
 ```
 
-You may also load `~/vault/.mem/ontology.yaml` directly (preferred) or via `mem_concepts(action="list")` to get the canonical domain → concept-prefix map.
+Load the canonical domain → concept-prefix map via `mem_concepts(action="list")`, or Read `<vault_root>/config/ontology.yaml` directly if the prompt passed a `vault_root` (the vault root is env-configurable via `PERSONAL_MEM_VAULT`; never assume a literal path).
 
 ## Decision rules
 

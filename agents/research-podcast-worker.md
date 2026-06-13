@@ -29,8 +29,8 @@ The orchestrator passes the queue item in the prompt body:
   "entry_id": "<RSS <guid> — primary dedup key>",
   "duration_sec": 3540,                                # parsed from <itunes:duration>, may be 0
   "episode_number": 142,                               # from <itunes:episode>, may be null
-  "outlet": "macro-trading-floor",                     # outlet slug → author_folder layout
-  "outlet_name": "The Macro Trading Floor",
+  "outlet": "example-macro-show",                      # outlet slug → author_folder layout (invented example)
+  "outlet_name": "The Example Macro Show",
   "tier": 1,
   "language": "en",
   "source_type": "podcast-events" | "podcast-concepts",
@@ -52,7 +52,7 @@ echo $PERSONAL_MEM_VAULT
 
 Take the absolute path that returns and call it `<vault_root>` for the rest of this run. If the prompt passed an explicit `vault_root: <path>` line, prefer that.
 
-Then load the ontology so concept extraction is canonical. Prefer `mem_concepts(action="list")` — it returns the merged ontology (canonical + proposed). Fall back to `Read <vault_root>/.mem/ontology.yaml` only if the MCP call fails.
+Then load the ontology so concept extraction is canonical. Prefer `mem_concepts(action="list")` — it returns the merged ontology (canonical + proposed). Fall back to `Read <vault_root>/config/ontology.yaml` only if the MCP call fails.
 
 ### 2. Idempotency guard — has this episode already been written?
 
@@ -117,11 +117,11 @@ Don't retry inside this worker — the orchestrator handles the queue lifecycle.
 
 Identify ≥3 concepts that fit the episode by reading the Gemini summary + key_developments from step 3. **Strict rule:** only ontology-listed concepts go in `concepts:`. Anything new goes in `proposed_concepts:`.
 
-Concepts are **for graph + concept-hub catalysts**. Extract liberally and specifically — pick concepts that genuinely describe what the episode covers, grounded in what the speakers actually say (not just the title). For `podcast-events`, lean on `finance/*`, `macro/*`, `geo/*` (Macro Trading Floor, Odd Lots, Forward Guidance). For `podcast-concepts`, lean on `ml/*`, `swe/*`, methodology namespaces (Dwarkesh, MLST, Latent Space).
+Concepts are **for graph + concept-hub catalysts**. Extract liberally and specifically — pick concepts that genuinely describe what the episode covers, grounded in what the speakers actually say (not just the title). For `podcast-events`, lean on the event-shaped domains of the vault's ontology (e.g. `finance-*`, `macro-*`, `geo-*` prefix families — markets/macro and current-events shows). For `podcast-concepts`, lean on the technique/methodology domains (e.g. `ml-*`, `swe-*` — technical interview shows, paper-discussion shows, lecture series).
 
 Use `topic_tags` from the Gemini payload as candidate concepts but always validate against the ontology — Gemini doesn't know your concept vocabulary.
 
-Cross-grain concepts are fine — an event-grain markets pod discussing an AI model still carries `ml/*` concepts and will reach those hubs. The source type only controls theme-floating, not which hubs concepts populate.
+Cross-grain concepts are fine — an event-grain markets pod discussing an AI model still carries `ml-*` concepts and will reach those hubs. The source type only controls theme-floating, not which hubs concepts populate.
 
 ### 5. Theme attachment — branches on `temporal_grain`
 

@@ -45,7 +45,7 @@ echo $PERSONAL_MEM_VAULT
 
 Take the absolute path that returns and call it `<vault_root>` for the rest of this run. If the prompt passed an explicit `vault_root: <path>` line, prefer that.
 
-Then load the ontology so concept extraction is canonical. Prefer `mem_concepts(action="list")` — it returns the merged ontology (canonical + proposed). Fall back to `Read <vault_root>/.mem/ontology.yaml` only if the MCP call fails.
+Then load the ontology so concept extraction is canonical. Prefer `mem_concepts(action="list")` — it returns the merged ontology (canonical + proposed). Fall back to `Read <vault_root>/config/ontology.yaml` only if the MCP call fails.
 
 ### 2. Idempotency guard — has this `video_id` already been written?
 
@@ -105,9 +105,9 @@ Don't retry inside this worker — the orchestrator handles the queue lifecycle.
 
 Identify ≥3 concepts that fit the video by reading the transcript text from step 3. **Strict rule:** only ontology-listed concepts go in `concepts:`. Anything new goes in `proposed_concepts:`.
 
-Concepts are **for graph + concept-hub catalysts**. Extract liberally and specifically — pick concepts that genuinely describe what the video is about, grounded in what the speaker actually says (not just the title). For `youtube-events`, lean on `finance/*`, `macro/*`, `geo/*` (think TLDR News, Bloomberg Markets, market recap channels). For `youtube-concepts`, lean on `ml/*`, `swe/*`, methodology namespaces (think Two Minute Papers, ThePrimeagen, lecture series).
+Concepts are **for graph + concept-hub catalysts**. Extract liberally and specifically — pick concepts that genuinely describe what the video is about, grounded in what the speaker actually says (not just the title). For `youtube-events`, lean on the event-shaped domains of the vault's ontology (e.g. `finance-*`, `macro-*`, `geo-*` prefix families — think news recap / market recap channels). For `youtube-concepts`, lean on the technique/methodology domains (e.g. `ml-*`, `swe-*` — think paper explainers, engineering channels, lecture series).
 
-Cross-grain concepts are fine — a `youtube-events` market recap discussing an AI model still carries `ml/*` concepts and will reach those hubs. The source type only controls theme-floating, not which hubs concepts populate.
+Cross-grain concepts are fine — a `youtube-events` market recap discussing an AI model still carries `ml-*` concepts and will reach those hubs. The source type only controls theme-floating, not which hubs concepts populate.
 
 ### 5. Theme attachment — branches on `temporal_grain`
 

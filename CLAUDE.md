@@ -131,7 +131,7 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 | Skill | owns_mechanic | source_type | capabilities | Purpose |
 |---|---|---|---|---|
 | `/mem-wrap` | session_extraction | — | — | Inline-compose insights/decisions → `mem_extract` → `mem wrap-finalize` deterministic tail (prune → index → judge → landing → drift). Live mode interactively; catch-up mode is invoked nightly by `dream-wrap-worker` (no separate cron). |
-| `/dream` | vault_synthesis | — | — | Two-phase subagent orchestrator. **Phase 1** (synthesis) fans out 5 workers in parallel — `dream-{promotion,merge,theme,essence,priority}-worker` — merges plan fragments, runs `mem dream apply` (one index rebuild, one maintenance.jsonl line). **Phase 2** (composition + consumption) fans out 4 workers in dependency waves — `dream-wrap-worker` (catch-up unwrapped sessions) + `dream-judge-worker` (drain rejudge queue) + `dream-seam-link-worker` (stitch cross-parent linkage on freshly-folded hubs via `mem hubs apply-linkage`) in parallel, then `dream-digest-worker` (compose `type: digest` note at `vault/projects/<p>/digests/YYYY-MM-DD.md`). One cron entry replaces three (`/dream`, `/mem-wrap` catch-up, `/judge-prediction --drain`). Headless-safe; never prompts. |
+| `/dream` | vault_synthesis | — | — | Two-phase subagent orchestrator. **Phase 1** (synthesis) fans out 5 workers in parallel — `dream-{promotion,merge,theme,essence,priority}-worker` — merges plan fragments, runs `mem dream apply` (one index rebuild, one maintenance.jsonl line). **Phase 2** (composition + consumption) fans out 4 workers in dependency waves — `dream-wrap-worker` (catch-up unwrapped sessions) + `dream-judge-worker` (drain rejudge queue) + `dream-seam-link-worker` (stitch cross-parent linkage on freshly-folded hubs via `mem hubs apply-linkage`) in parallel, then `dream-digest-worker` (compose vault-global `type: digest` notes at `vault/digests/YYYY-MM-DD-<grain>.md`, one per non-empty grain). One cron entry replaces three (`/dream`, `/mem-wrap` catch-up, `/judge-prediction --drain`). Headless-safe; never prompts. |
 | `/mem-resolve-concepts` | ontology_hygiene | — | — | On-demand concept/ontology hygiene front door (same helpers as dream). Routine promotion + drift-v2 merges run inside `/dream` phase 1 via `dream-promotion-worker` + `dream-merge-worker`. |
 | `/themes-resolve` | theme_synthesis | — | — | On-demand theme hygiene front door (`merge_theme_into` is the shared helper; routine dedup runs in `/dream`), plus the one-time catalyst-text repair / title backfill step. Note: routine essence composition + rewrites for BOTH hub families (themes and concept hubs — placeholder/growth/contradiction triggers, `essence_updated` stamp, cap 12/cycle via `dream.essence_cap` or `--essence-cap`) run inside `/dream` phase 1 via `dream-essence-worker`; this skill is for the harder dedup work. |
 | `/ingest` | input_routing | * | import | Universal input router — URL / file / text / structured-id → dispatch to specialist skill. |
@@ -168,7 +168,7 @@ Generated from `commands/*.md` frontmatter. Re-run `mem skill list` to regenerat
 
 ## 7. CLI reference (Bash)
 
-The CLI exposes **44 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
+The CLI exposes **43 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity.
 
 Consolidations to keep in mind: wikilink materialisation lives under
 `mem index --materialize-links` (was `mem connect`, deleted 2026-05-21);
@@ -188,7 +188,7 @@ mem index [--full] [--embed] [--only-new|--since DATE] [--materialize-links]
 mem search "q" [--type X] [--concept Y]     # FTS / similarity / hybrid
 mem graph <id>                              # local graph
 mem context "q" [--type X]                  # 3-layer retrieval (FTS → concept → recency)
-mem stats                                   # vault health
+mem stats                                   # vault health (deprecated → mem doctor)
 mem doctor [--migrate]                      # coherence linter (+ optional data migrations)
 mem backlog [--project X]                   # todo notes + active queue items
 mem decisions [--file <path>] [--project X] # decision ledger lookup

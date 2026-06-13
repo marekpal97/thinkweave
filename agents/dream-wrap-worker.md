@@ -122,7 +122,7 @@ Anything other than the JSON line is allowed above it — a one-line preamble pe
 
 - **Session frontmatter lock / concurrent writer** → skip the session, record `{"session_id": "...", "reason": "frontmatter lock"}` under `outcome.errors`, move on. Never block other sessions.
 - **`events.jsonl` empty after read** → record `{"session_id": "...", "reason": "events.jsonl empty"}`. Skip; the next cycle will retry if events accumulate.
-- **Session note missing** (`session.md` not present alongside `events.jsonl`) → `mem_extract` will auto-create it from your inputs; you do not need to mint one by hand. Pass `force=false` (the session was never wrapped) and let the operation create the note. If `mem_extract` itself raises, record the real exception text under `outcome.errors`.
+- **Session note missing** (`session.md` not present alongside `events.jsonl`) → `mem_extract` will auto-create it from your inputs; you do not need to mint one by hand. Keep `force=true` (as always in catch-up mode — it is a no-op when the session was never wrapped) and let the operation create the note. If `mem_extract` itself raises, record the real exception text under `outcome.errors`.
 - **Vault root unset** → top-level error, abort the run with `{"errors": ["PERSONAL_MEM_VAULT unset; cannot resolve vault"], "outcome": {"wrapped_sessions": [], "errors": []}}`.
 - **`mem wrap-finalize` non-zero** → record the exit code + stderr first line under `outcome.errors` for that session; the session is still counted as `wrapped_sessions` because `mem_extract` succeeded (the deterministic tail is recoverable on the next cron pass).
 

@@ -27,7 +27,7 @@ recent_probes: {
                "Is dynamic-batching worth it below 10 req/s?"]
   },
   "embeddings": {"count": 5, "probes": ["..."]},
-  "rust": {"count": 2, "probes": ["..."]},
+  "rust": {"count": 1, "probes": ["..."]},
   ...
 }
 ```
@@ -94,7 +94,7 @@ Output exactly one line of JSON as the final non-empty line:
     ]
   },
   "skipped": [
-    {"item": "rust", "reason": "probe_count == 2; thin signal, defer"}
+    {"item": "rust", "reason": "probe_count == 1; thin signal, defer"}
   ],
   "notes": "1 enqueue, 1 log, 2 skipped. Cap not reached."
 }
