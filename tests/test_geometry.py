@@ -206,3 +206,47 @@ class TestJudgedPairs:
         assert geometry.pair_key("concept", "a", "b") != geometry.pair_key(
             "theme", "a", "b"
         )
+
+
+class TestClusters:
+    """N-ary near-clique generation for grain coarsening (2026-06-13)."""
+
+    @staticmethod
+    def _unit(v):
+        import math
+        n = math.sqrt(sum(x * x for x in v))
+        return [x / n for x in v]
+
+    def test_tight_clique_forms_and_does_not_chain(self):
+        u = self._unit
+        # a,b,c mutually ~1.0; d is far from a (chaining trap via shared b/c).
+        vecs = {
+            "a": u([1.0, 0.02, 0.0]),
+            "b": u([0.99, 0.05, 0.0]),
+            "c": u([0.98, 0.08, 0.0]),
+            "d": u([0.0, 1.0, 0.0]),
+            "x": u([0.5, 0.0, 0.86]),  # singleton — no qualifying edge
+        }
+        clusters = geometry.concept_clusters(vecs, threshold=0.85)
+        assert clusters == [(["a", "b", "c"], pytest.approx(0.999, abs=0.01),
+                             pytest.approx(0.998, abs=0.01))]
+
+    def test_pair_is_degenerate_two_cluster(self):
+        u = self._unit
+        vecs = {"p": u([1.0, 0.01]), "q": u([0.99, 0.02]), "z": u([0.0, 1.0])}
+        clusters = geometry.concept_clusters(vecs, threshold=0.85)
+        assert [c[0] for c in clusters] == [["p", "q"]]
+
+    def test_coarsen_threshold_stricter_than_cosine(self):
+        assert geometry.DEFAULT_COARSEN_THRESHOLD > geometry.DEFAULT_COSINE_THRESHOLD
+
+    def test_max_size_bounds_cluster(self):
+        u = self._unit
+        # five coincident vectors; max_size=3 caps membership.
+        vecs = {k: u([1.0, 0.001 * i]) for i, k in enumerate("abcde")}
+        clusters = geometry.concept_clusters(vecs, threshold=0.85, max_size=3)
+        assert all(len(c[0]) <= 3 for c in clusters)
+
+    def test_cluster_key_order_insensitive(self):
+        assert geometry.cluster_key("concept", ["B", "a", "c"]) == \
+            geometry.cluster_key("concept", ["c", "A", "b"])

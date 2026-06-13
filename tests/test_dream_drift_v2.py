@@ -354,3 +354,180 @@ class TestApplyDriftV2:
         assert (
             geometry.pair_key("concept", "derivative", "derivatives") in judged
         )
+
+
+# ---------------------------------------------------------------------------
+# Grain coarsening (drift v2, N-ary) — clusters, apply fold, anti-oscillation,
+# revert/re-split, the coarsen_apply posture gate. 2026-06-13.
+# ---------------------------------------------------------------------------
+
+
+def _clique(config: Config, vault: VaultManager,
+            concepts=("theta", "vega", "gamma")) -> dict[str, list[str]]:
+    """Three fine concepts whose note centroids coincide → a near-clique."""
+    ids = {c: _notes_with_concept(vault, c, 3) for c in concepts}
+    _index(config)
+    vecs = {nid: [1.0, 0.01] for nid_list in ids.values() for nid in nid_list}
+    _seed_embeddings(config, vecs)
+    return ids
+
+
+class TestCoarsen:
+    def test_scan_surfaces_coarsen_cluster(self, config, vault):
+        _clique(config, vault)
+        result = scan(config, project="t")
+        assert result.coarsen_clusters, "expected a coarsen cluster"
+        members = set(result.coarsen_clusters[0]["members"])
+        assert {"theta", "vega", "gamma"} <= members
+        assert result.coarsen_clusters[0]["min_cosine"] >= 0.85
+        assert result.stats["coarsen_clusters"] == len(result.coarsen_clusters)
+
+    def test_apply_coarsening_folds_and_snapshots(self, config, vault):
+        _clique(config, vault)
+        for c in ("theta", "vega", "gamma"):
+            _hub_file(config, c,
+                      [f"- 2026-01-01 · *new* — seed {c}. — [[src-{c}]]"])
+        _index(config)
+        plan = {"coarsenings": [{
+            "members": ["theta", "vega", "gamma"], "target": "vol-greeks",
+            "target_domain": "finance-options", "target_is_new": True,
+            "reason": "greeks family", "min_cosine": 0.99,
+        }]}
+        result = apply(config, plan=plan, project="t")
+        assert result.coarsenings_applied == 1
+        idx = Indexer(config=config)
+        try:
+            n_greeks = idx.db.execute(
+                "SELECT COUNT(*) n FROM note_concepts WHERE concept='vol-greeks'"
+            ).fetchone()["n"]
+            n_theta = idx.db.execute(
+                "SELECT COUNT(*) n FROM note_concepts WHERE concept='theta'"
+            ).fetchone()["n"]
+        finally:
+            idx.close()
+        assert n_greeks >= 9 and n_theta == 0
+        assert "vol-greeks" in (config.config_dir / "ontology.yaml").read_text()
+        assert (config.vault_root / "concepts" / "topics" / "_archive"
+                / "theta.md").exists()
+        v = result.recorded_coarsenings[0]
+        assert v["target"] == "vol-greeks" and v["target_was_new"] is True
+        assert v["member_note_ids"]["theta"]  # snapshot present
+        # ontology growth fires the hub-regen branch
+        assert result.ontology_grew is True
+
+    def test_coarsen_apply_gate_off_skips_but_force_overrides(
+        self, config, vault
+    ):
+        _clique(config, vault)
+        config.dream_coarsen_apply = False
+        plan = {"coarsenings": [{
+            "members": ["theta", "vega", "gamma"], "target": "vol-greeks",
+            "target_domain": "finance-options", "target_is_new": True,
+        }]}
+        r1 = apply(config, plan=plan, project="t")
+        assert r1.coarsenings_applied == 0
+        assert any("coarsen_apply" in e for e in r1.errors)
+        r2 = apply(config, plan=plan, project="t", force_coarsen=True)
+        assert r2.coarsenings_applied == 1
+
+    def test_distinct_cluster_recorded_and_excluded_until_rejudge(
+        self, config, vault
+    ):
+        _clique(config, vault)
+        plan = {"distinct_clusters": [{
+            "kind": "concept", "members": ["theta", "vega", "gamma"],
+            "reason": "genuinely distinct greeks", "min_cosine": 0.99,
+        }]}
+        r = apply(config, plan=plan, project="t")
+        assert r.distinct_clusters_recorded == 1
+        target = geometry.cluster_key("concept", ["theta", "vega", "gamma"])
+        keys = {
+            geometry.cluster_key("concept", c["members"])
+            for c in scan(config, project="t").coarsen_clusters
+        }
+        assert target not in keys
+        keys_rj = {
+            geometry.cluster_key("concept", c["members"])
+            for c in scan(config, project="t",
+                          rejudge_pairs=True).coarsen_clusters
+        }
+        assert target in keys_rj
+
+    def test_coarsened_members_excluded_next_scan(self, config, vault):
+        # After a coarsening verdict, the cluster's members are stale and a
+        # candidate touching them is dropped (the anti-oscillation guard).
+        _clique(config, vault)
+        from personal_mem.operations.dream import append_maintenance_log
+        append_maintenance_log(config, {
+            "cycle_id": "c0",
+            "verdicts": {"coarsenings": [
+                {"members": ["theta", "vega", "gamma"], "target": "greeks"}
+            ]},
+        })
+        coarsened, _ = geometry.judged_clusters(config)
+        assert ("concept", "theta") in coarsened
+
+    def test_revert_coarsening_resplits(self, config, vault):
+        _clique(config, vault)
+        for c in ("theta", "vega", "gamma"):
+            _hub_file(config, c,
+                      [f"- 2026-01-01 · *new* — seed {c}. — [[src-{c}]]"])
+        _index(config)
+        apply(config, plan={"coarsenings": [{
+            "members": ["theta", "vega", "gamma"], "target": "vol-greeks",
+            "target_domain": "finance-options", "target_is_new": True,
+            "reason": "r", "min_cosine": 0.99,
+        }]}, project="t")
+        from personal_mem.synthesis.concepts import revert_coarsening
+        stats = revert_coarsening(config, "vol-greeks")
+        assert set(stats["restored"]) == {"theta", "vega", "gamma"}
+        assert stats["notes_demoted"] >= 9
+        assert stats["ontology_removed"] is True
+        assert (config.vault_root / "concepts" / "topics" / "theta.md").exists()
+        idx = Indexer(config=config)
+        try:
+            assert idx.db.execute(
+                "SELECT COUNT(*) n FROM note_concepts WHERE concept='theta'"
+            ).fetchone()["n"] >= 3
+            assert idx.db.execute(
+                "SELECT COUNT(*) n FROM note_concepts WHERE concept='vol-greeks'"
+            ).fetchone()["n"] == 0
+        finally:
+            idx.close()
+        assert "vol-greeks" not in (config.config_dir / "ontology.yaml").read_text()
+
+
+class TestStalenessResolve:
+    def test_stale_active_theme_auto_resolves(self, config, vault):
+        _, path = _make_theme(
+            vault, "Old arc",
+            entries=["- 2026-01-01 · *new* — old seed. — [[src-aaaa1111]]"],
+        )
+        _index(config)
+        result = apply(config, plan={}, project="t")
+        assert result.themes_resolved == 1
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fm["status"] == "resolved"
+
+    def test_fresh_active_theme_not_resolved(self, config, vault):
+        from datetime import date
+        _, path = _make_theme(
+            vault, "Fresh arc",
+            entries=[f"- {date.today().isoformat()} · *new* — recent. "
+                     "— [[src-aaaa1111]]"],
+        )
+        _index(config)
+        result = apply(config, plan={}, project="t")
+        assert result.themes_resolved == 0
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fm["status"] == "active"
+
+    def test_disabled_when_zero(self, config, vault):
+        config.theme_resolve_after_days = 0
+        _, path = _make_theme(
+            vault, "Old arc",
+            entries=["- 2026-01-01 · *new* — old. — [[src-aaaa1111]]"],
+        )
+        _index(config)
+        result = apply(config, plan={}, project="t")
+        assert result.themes_resolved == 0

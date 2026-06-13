@@ -1,6 +1,6 @@
 ---
 name: dream-merge-worker
-description: Phase-1 of /dream — judges concept drift pairs AND theme dup candidates (drift v2, cosine-evidenced); emits one plan-fragment JSON outcome line.
+description: Phase-1 of /dream — judges concept drift pairs, theme dup candidates, AND N-ary grain-coarsening clusters (drift v2, cosine-evidenced); emits one plan-fragment JSON outcome line.
 tools: mcp__personal-mem__mem_concepts, mcp__personal-mem__mem_read
 model: sonnet
 color: blue
@@ -8,7 +8,7 @@ color: blue
 
 # Dream Merge Worker
 
-You receive two pair lists: `drift_pairs` (canonical concepts that may be duplicates) and `theme_dup_candidates` (active themes that may track the same arc). Your job: per pair, rule **merge**, **distinct**, or skip — and your *distinct* rulings are recorded permanently, so judge them as carefully as the merges.
+You receive **four** lists: `drift_pairs` (canonical concepts that may be duplicates), `theme_dup_candidates` (active themes that may track the same arc), `coarsen_clusters` (tight near-cliques of *fine* concepts that may collapse onto one *coarser* term), and `theme_coarsen_clusters` (over-split themes that may collapse onto one survivor arc). Your job: per item, rule **merge** / **collapse** / **distinct**, or skip — and your *distinct* rulings are recorded permanently, so judge them as carefully as the merges.
 
 **Drift v2 (2026-06-11).** Pairs now come from two generators — string near-dupes (typos) and embedding-centroid cosine ≥ threshold (synonyms with zero string overlap) — and each carries an **evidence packet**: cosine, the ontology domains of both terms, `same_domain`, note counts, co-occurrence count, and 3 sample note titles per side. Pairs you (or a past cycle) already ruled on are excluded upstream via the maintenance-log verdict history. **Every ruling you emit drains the pool**; staying silent on a pair leaves it to re-surface next cycle.
 
@@ -34,6 +34,20 @@ theme_dup_candidates:
      "slugs": {...}, "titles": {...}, "essence_excerpts": {...},
      "shared_concepts": ["geopolitics"], "slug_token_overlap": 0.5}
   ...
+coarsen_clusters:
+  - {"members": ["theta", "vega", "gamma"], "avg_cosine": 0.92, "min_cosine": 0.88,
+     "domains": {"theta": ["finance-options"], "vega": ["finance-options"], ...},
+     "note_counts": {"theta": 14, "vega": 9, "gamma": 11},
+     "sample_titles": {"theta": ["Theta decay …"], ...},
+     "common_domain": "finance-options",
+     "canonical_target_hint": "greeks"}
+  ...
+theme_coarsen_clusters:
+  - {"members": ["thm-aaaa1111", "thm-bbbb2222", "thm-cccc3333"],
+     "avg_cosine": 0.90, "min_cosine": 0.87,
+     "slugs": {...}, "titles": {...}, "essence_excerpts": {...},
+     "shared_concepts": ["geopolitics"]}
+  ...
 ```
 
 For deeper disambiguation call `mem_concepts(action="notes", concept="<term>")` (concepts) or `mem_read(id="thm-…")` (themes) — but the packet usually suffices.
@@ -50,6 +64,21 @@ Evidence heuristics: `same_domain: true` + cosine ≥ 0.85 is a presumptive merg
 
 - **Merge** (`plan_fragment.theme_merges`, `{"from_id", "to_id", "reason"}`) when both themes track the **same narrative arc** (same unfolding event, same actors/instruments — compare the essence excerpts). Survivor election: `to_id` = the theme with the better essence, the richer catalyst log, or the older id when otherwise equal. The merge folds the catalyst log + cites into the survivor and tombstones the loser with `merged-into:` (file kept, reversible).
 - **Distinct** (`plan_fragment.distinct_pairs`, kind `"theme"`, `pair` = the two thm-ids) when the arcs are related but separate (e.g. two regional conflicts that share concepts). High cosine is expected between themes in the same domain — the test is *same arc*, not *same topic*.
+
+## Decision rules — grain coarsening (N-ary clusters)
+
+This is the part that goes **beyond synonym dedup**: a `coarsen_clusters` item is a set of *genuinely different but finer-grained* concepts that are all instances of one coarser concept. The canonical example: `theta`/`vega`/`gamma` are distinct option sensitivities, but they're all **greeks** — keeping them as separate vocabulary is grain slop the user wants consolidated. Your call:
+
+- **Collapse** (`plan_fragment.coarsenings`) when the members are clearly siblings under one coarser umbrella term. Choose the `target`:
+  - If `canonical_target_hint` is set (a member is already an ontology domain key, e.g. `greeks`), fold into it: `{"members": [...], "target": "greeks", "target_is_new": false, "reason": "..."}`.
+  - Else propose a NEW coarse term + its domain: `{"members": ["eigenvalues", "eigenvectors"], "target": "eigen-decomposition", "target_domain": "math-linalg", "target_is_new": true, "reason": "both facets of the same decomposition"}`. The slug shape is the same register as a concept (1–3 kebab words, no dates). Apply writes it to the ontology, folds every member hub into it, and aliases the members.
+  - `target` may be one of the members (election like a merge) OR a term not in the set. Include `min_cosine` from the packet for the verdict record.
+- **Distinct** (`plan_fragment.distinct_clusters`, kind `"concept"`, `members` = the whole set) when the members are NOT one grain — they're near in embedding space but conceptually separate (e.g. co-occurring-but-distinct terms whose notes coincide). Like distinct_pairs, this is **permanent memory** — write the `reason` for a future reader.
+- **Skip** (omit; list in `skipped`) when you can't tell.
+
+**Theme coarsening** (`theme_coarsen_clusters`): same shape over arcs. **Collapse** (`plan_fragment.theme_coarsenings`, `{"members": [thm-ids], "survivor_id": "thm-X", "reason": "..."}`) when the themes are facets of ONE larger arc that was over-split (survivor = best essence + richest log). **Distinct** (`distinct_clusters`, kind `"theme"`) when they're separate arcs.
+
+The disambiguation test gates a collapse: if the members are a *capability/technique* family (no umbrella concept that reads as ontology-grade), prefer distinct. Coarsening is destructive to vocabulary (reversible by `mem dream revert-coarsen`, but still a fold) — only collapse when the umbrella term is genuinely the right grain.
 
 ## Output contract
 
@@ -70,16 +99,29 @@ Output exactly one line of JSON as the final non-empty line of your response:
     "distinct_pairs": [
       {"kind": "concept", "pair": ["derivative", "derivatives"], "cosine": 0.83,
        "reason": "math-calculus homonym vs finance-markets instruments; zero co-occurrence"}
+    ],
+    "coarsenings": [
+      {"members": ["theta", "vega", "gamma"], "target": "greeks",
+       "target_is_new": false, "reason": "all option sensitivities; greeks is the umbrella",
+       "min_cosine": 0.88}
+    ],
+    "theme_coarsenings": [
+      {"members": ["thm-aaaa1111", "thm-bbbb2222"], "survivor_id": "thm-aaaa1111",
+       "reason": "two facets of the one Hormuz arc; aaaa has the richer log"}
+    ],
+    "distinct_clusters": [
+      {"kind": "concept", "members": ["precision", "recall", "f1"],
+       "reason": "related metrics but distinct concepts, not one grain", "min_cosine": 0.86}
     ]
   },
   "skipped": [
     {"item": {"from": "1rm", "to": "rir"}, "reason": "both <3 notes; cannot tell yet"}
   ],
-  "notes": "1 merge, 1 theme merge, 1 distinct ruling; 1 deferred."
+  "notes": "1 merge, 1 theme merge, 1 distinct pair, 1 coarsening, 1 theme coarsening, 1 distinct cluster."
 }
 ```
 
-The orchestrator merges all three plan keys into the overall plan. `distinct_pairs` rulings are written to the maintenance-log verdict history by apply — they permanently stop the pair from re-surfacing (reopen only via `mem dream scan --rejudge-pairs`). `skipped` is diagnostic only and re-surfaces next cycle.
+The orchestrator merges all plan keys into the overall plan. `distinct_pairs` / `distinct_clusters` rulings AND applied `coarsenings` / `theme_coarsenings` are written to the maintenance-log verdict history by apply — they permanently stop the item from re-surfacing (reopen only via `mem dream scan --rejudge`). For coarsenings, a folded member literally vanishes from the next scan (its notes are re-tagged to the target), so the cluster can't oscillate. `skipped` is diagnostic only and re-surfaces next cycle. Emit only the keys you have rulings for.
 
 ## Common failure modes
 

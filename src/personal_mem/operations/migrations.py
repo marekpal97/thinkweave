@@ -18,6 +18,33 @@ from personal_mem.acquisition.sources.queue import Queue
 from personal_mem.acquisition.sources.registry import normalize
 
 
+def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
+    """Flip any ``status: dormant`` theme to ``resolved`` (2026-06-13 collapse).
+
+    ``dormant`` and ``resolved`` were a display-only distinction — both
+    just freeze the theme. The state was collapsed to a single terminal
+    ``resolved``; this normalises straggler files on disk (the landing doc
+    already folds dormant into the Resolved group, so this is cosmetic but
+    keeps the vault honest). Idempotent. Returns the count flipped.
+    """
+    from personal_mem.synthesis.hub import set_frontmatter_keys
+
+    root = Path(vault_root)
+    themes_dir = root / "themes"
+    if not themes_dir.exists():
+        return 0
+    flipped = 0
+    for path in themes_dir.glob("*.md"):
+        try:
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        if str(fm.get("status") or "").strip() == "dormant":
+            set_frontmatter_keys(path, {"status": "resolved"})
+            flipped += 1
+    return flipped
+
+
 def migrate_todo_research_to_queue(vault_root: Path) -> int:
     """Move ``todo+research`` notes with a ``source_type`` into per-type queues.
 

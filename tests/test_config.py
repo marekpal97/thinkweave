@@ -388,3 +388,81 @@ def test_rrf_k_override_coexists_with_prompt_time_block(
     cfg = load_config()
     assert cfg.retrieval_rrf_k == 30
     assert cfg.retrieval_prompt_time.enabled is False
+
+
+def test_config_toml_canonical_location_is_config_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """config.toml at vault/config/ (the canonical home as of 2026-06-13) is read."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / "config").mkdir(parents=True)
+    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+    (vault / "config" / "config.toml").write_text(
+        "[retrieval]\nrrf_k = 42\n", encoding="utf-8"
+    )
+
+    cfg = load_config()
+    assert cfg.config_path == vault / "config" / "config.toml"
+    assert cfg.retrieval_rrf_k == 42
+
+
+def test_config_toml_canonical_wins_over_legacy_mem_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """When both locations exist, vault/config/config.toml wins; the legacy
+    vault/.mem/config.toml is only a fallback for un-migrated vaults."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / "config").mkdir(parents=True)
+    (vault / ".mem").mkdir(parents=True)
+    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+    (vault / ".mem" / "config.toml").write_text(
+        "[retrieval]\nrrf_k = 11\n", encoding="utf-8"
+    )
+    (vault / "config" / "config.toml").write_text(
+        "[retrieval]\nrrf_k = 99\n", encoding="utf-8"
+    )
+
+    cfg = load_config()
+    assert cfg.config_path == vault / "config" / "config.toml"
+    assert cfg.retrieval_rrf_k == 99
+
+
+def test_load_config_parses_coarsen_and_resolve_knobs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """[dream] coarsen knobs + [themes] resolve_after_days override defaults."""
+    monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
+    user_path = _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / ".mem").mkdir(parents=True)
+    (vault / ".mem" / "config.toml").write_text(
+        "[dream]\n"
+        "coarsen_threshold = 0.9\n"
+        "coarsen_cap = 7\n"
+        "coarsen_max_size = 4\n"
+        "coarsen_apply = false\n"
+        "[themes]\n"
+        "resolve_after_days = 30\n",
+        encoding="utf-8",
+    )
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+
+    cfg = load_config()
+    assert cfg.dream_coarsen_threshold == 0.9
+    assert cfg.dream_coarsen_cap == 7
+    assert cfg.dream_coarsen_max_size == 4
+    assert cfg.dream_coarsen_apply is False
+    assert cfg.theme_resolve_after_days == 30
+
+
+def test_coarsen_knob_defaults():
+    """Absent [dream]/[themes] blocks → shipped defaults unchanged."""
+    cfg = Config(vault_root=Path("/tmp"))
+    assert cfg.dream_coarsen_threshold == 0.85
+    assert cfg.dream_coarsen_cap == 3
+    assert cfg.dream_coarsen_max_size == 6
+    assert cfg.dream_coarsen_apply is True
+    assert cfg.theme_resolve_after_days == 60

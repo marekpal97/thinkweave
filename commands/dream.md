@@ -11,14 +11,14 @@ tools:
   - mem_search
   - mem_read
   - mem_update
-description: Periodic dream cycle — two-phase subagent orchestrator. Phase 1 fans out 5 synthesis workers (promotion/merge/theme/essence/priority), merges plan fragments, applies. Phase 2 fans out 4 composition workers (wrap catch-up, prediction judge, hub seam-link, knowledge digest). One cron entry, nine workers, single maintenance.jsonl line per cycle. Owns routine ontology dedup for BOTH hub families (drift v2: cosine + verdict memory). Self-deciding, headless-safe.
+description: Periodic dream cycle — two-phase subagent orchestrator. Phase 1 fans out 5 synthesis workers (promotion/merge/theme/essence/priority), merges plan fragments, applies. Phase 2 fans out 5 composition workers (wrap catch-up, prediction judge, hub seam-link, memory seam, knowledge digest). One cron entry, ten workers, single maintenance.jsonl line per cycle. Owns routine ontology dedup for BOTH hub families (drift v2: cosine + verdict memory) AND CC-auto-memory↔vault reconciliation (the memory seam). Self-deciding, headless-safe.
 ---
 
 # /dream — Two-phase synthesis + composition cycle
 
-The cron-friendly synthesis orchestrator. Phase 1 is **synthesis** (concept hygiene + theme mint/extend + essence rewrites + priority signals → plan → apply). Phase 2 is **composition + consumption** (catch-up unwrapped sessions, drain the rejudge queue, compose the day's knowledge digest).
+The cron-friendly synthesis orchestrator. Phase 1 is **synthesis** (concept hygiene + theme mint/extend + essence rewrites + priority signals → plan → apply). Phase 2 is **composition + consumption** (catch-up unwrapped sessions, drain the rejudge queue, stitch folded-hub seams, reconcile the CC-auto-memory↔vault seam, compose the day's knowledge digest).
 
-**One cron entry replaces three** — what used to be three nightly jobs (`/dream`, `/mem-wrap` catch-up, `/judge-prediction --drain`) is now one orchestrator that fans out 9 workers across two phases.
+**One cron entry replaces three** — what used to be three nightly jobs (`/dream`, `/mem-wrap` catch-up, `/judge-prediction --drain`) is now one orchestrator that fans out 10 workers across two phases.
 
 **Dream owns routine ontology guarding (2026-06-11 doctrine).** Concept dedup AND theme dedup run here — automated, logged in the maintenance line + report, reversible (folded hubs are archived/tombstoned, never deleted; theme losers keep their file with `merged-into:` status). `/mem-resolve-concepts` and `/themes-resolve` remain as on-demand front doors over the same helpers.
 
@@ -54,7 +54,7 @@ uv run mem dream scan --json > "$CYCLE_TMP/scan.json"
 
 Returns a `DreamCycleScan` JSON payload with all phase-1 scan surfaces (`promotion_candidates`, `drift_pairs`, `theme_cluster_signals`, `theme_dup_candidates`, `theme_log_gaps`, `essence_candidates`, `recent_probes`, plus phase-2 surfaces `unwrapped_sessions`, `rejudge_queue`, `seam_link_queue`, `knowledge_delta`).
 
-Drift v2: `drift_pairs` are cosine-ranked evidence packets (string ∪ centroid-cosine generators, judged pairs excluded via the maintenance-log verdict history — pass `--rejudge-pairs` to re-open them); `theme_dup_candidates` is the theme-family analog. The `cycle_id` field is the cycle identity — carry it through to apply and into worker prompts.
+Drift v2: `drift_pairs` are cosine-ranked evidence packets (string ∪ centroid-cosine generators, judged pairs excluded via the maintenance-log verdict history — pass `--rejudge` to re-open them); `theme_dup_candidates` is the theme-family analog. `coarsen_clusters` / `theme_coarsen_clusters` are the N-ary grain-coarsening surfaces (tight near-cliques, stricter `dream.coarsen_threshold`, capped at `dream.coarsen_cap` per family). The `cycle_id` field is the cycle identity — carry it through to apply and into worker prompts.
 
 For a one-shot essence backfill (heal every placeholder hub in one cycle instead of the nightly `dream.essence_cap` drip (default 12)), add `--essence-cap 0` (or pass `/dream --essence-cap N` and forward it here).
 
@@ -107,7 +107,7 @@ The promotion worker additionally needs the contents of the active ontology — 
 
 The theme worker reads **two** scan slices — embed both `theme_cluster_signals` and `theme_log_gaps` in its prompt (the second is the directly-filed-sources catch-up; the worker turns each gap into a `theme_extensions` item with distilled `catalysts`).
 
-The merge worker also reads **two** scan slices — embed both `drift_pairs` and `theme_dup_candidates`. It emits up to three plan keys: `merges`, `theme_merges`, and `distinct_pairs` (leave-with-memory rulings that apply records into the maintenance-log verdict history so the pair never re-surfaces).
+The merge worker reads **four** scan slices — embed `drift_pairs`, `theme_dup_candidates`, `coarsen_clusters`, and `theme_coarsen_clusters`. It emits up to six plan keys: `merges`, `theme_merges`, `distinct_pairs` (pairwise dedup) plus `coarsenings`, `theme_coarsenings`, `distinct_clusters` (N-ary grain coarsening — collapse a fine near-clique onto one coarser term, or rule the cluster genuinely-distinct). All distinct/applied rulings are recorded into the maintenance-log verdict history so the item never re-surfaces (reopen via `mem dream scan --rejudge`). Nightly coarsening folds auto-apply when `dream.coarsen_apply` is true (default); with it false, apply records nothing and the clusters wait for `/tighten`.
 
 **Essence sharding rule:** if `essence_candidates` has more than 15 entries (a backfill run with a raised `--essence-cap`), split it into chunks of ≤15 and spawn one `dream-essence-worker` Task per chunk **in the same parallel message**. Their `essence_rewrites` lists merge by simple concatenation in step 1.4 — entries are per-hub independent, so there are no cross-chunk collisions.
 
@@ -155,7 +155,7 @@ Same shape as phase-1 tasks; each entry now potentially carries a `depends_on: [
 
 Walk the task list and group by dependency wave:
 
-- **Wave A** — every task whose `depends_on` is empty (or all its named workers are not in the enabled list). For the current registry this is `dream-wrap-worker`, `dream-judge-worker`, and `dream-seam-link-worker` (the seam worker stitches cross-parent catalyst linkage on hubs folded by this or an earlier cycle's merges; it drains its own queue via `mem hubs apply-linkage --clear-fold`).
+- **Wave A** — every task whose `depends_on` is empty (or all its named workers are not in the enabled list). For the current registry this is `dream-wrap-worker`, `dream-judge-worker`, `dream-seam-link-worker` (stitches cross-parent catalyst linkage on hubs folded by this or an earlier cycle's merges; drains its own queue via `mem hubs apply-linkage --clear-fold`), and `dream-seam-worker` (reconciles the CC-auto-memory↔vault **memory seam** — resolves each dirty CC fact's vault twin via `mem_search(mode='similar')`, rules confirmed-fresh / stale / diverged / durable-unique, and writes the durable map + report via `mem seam commit`). The memory-seam surface is computed embedding-free in the scan; its `dirty` list is the per-fact judgment payload.
 - **Wave B** — every task whose `depends_on` is non-empty (and at least one named worker is in the enabled list). For v1 this is `dream-digest-worker`.
 
 **Spawn Wave A in parallel** (single message, one `Task` per enabled worker):

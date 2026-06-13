@@ -204,7 +204,10 @@ PERSONAL_MEM_VAULT=<chosen-path> uv run mem init
 ```
 
 This seeds `<vault>/config/sources.yaml`, `PRIORITIES.yaml`,
-`ontology.yaml`, `news_feeds.yaml`, and the rest of the template tree.
+`ontology.yaml`, `scheduling.yaml`, and the rest of the template tree.
+(Feed registries — news/podcast outlets, youtube channels, newsletter
+senders — all live under `PRIORITIES.yaml::intake`; there are no
+standalone `*_feeds.yaml` files.)
 
 ### 1e. Confirm
 
@@ -573,15 +576,17 @@ non-listed pattern), point them at `/source-fit "<description>"` after
 
 **Output-format note (advisory, not gating).** Each enabled source
 type ships with a default brief structure baked into its writer skill
-(`commands/research-paper.md`, `commands/research-news-worker.md`,
-`commands/research-newsletter-worker.md`, etc.). The shipped formats
-are opinionated — they're a starting point, not a constraint. After
-`/onboard` completes, the user can edit the corresponding writer
-skill markdown to change what gets extracted, how sections are
-named, or what gets dropped entirely. Mention this once in the
-wrap-up; don't drag it into a confirmation step. Full per-source
-output customization (templates, fragments, per-project overrides)
-is tracked in `.claude/plans/source-output-customization.md`.
+(`research-paper`, `research-news-worker`, `research-newsletter-worker`,
+etc.). The shipped formats are opinionated — a starting point, not a
+constraint — but they live inside the plugin's `commands/`, so editing
+them in place is **not** upgrade-safe (a `mem`/plugin upgrade overwrites
+them). The upgrade-safe way to shape what gets extracted is vault config,
+not skill edits: tune the per-type knobs in `vault/config/sources.yaml`,
+or `/source-scaffold` your own variant (its skill lands in
+`~/.claude/commands/`, which upgrades don't touch). Full per-source brief
+templating (vault-side override templates, per-project overrides) is the
+designed-but-deferred feature in `.claude/plans/source-output-customization.md`.
+Mention this once in the wrap-up; don't drag it into a confirmation step.
 
 ### 5c. Sample-file validation per enabled type (AskUserQuestion, one per type)
 
@@ -939,6 +944,20 @@ the source brief hasn't been generated yet (the user hasn't run
 FAIL: *"Sample URL noted but no source note yet — run `/research
 <sample-url>` to verify the brief generation path."*
 
+### 7e'. Embedding posture (INFO, never FAIL)
+
+```bash
+uv run mem doctor 2>/dev/null | sed -n '/^Embedding posture:/,/^$/p'
+```
+
+Surface the `Embedding posture:` block verbatim. This is **INFO**, never a
+FAIL — keyword search (BM25/FTS) always works, so a vault with no embedding
+key is fully functional, just without semantic/hybrid recall. The block
+already carries the free keyless fallback (local `sentence_transformer`) when
+`OPENAI_API_KEY` is missing on the default OpenAI provider. Don't editorialize
+beyond it; the user picks whether the free local path is worth the extra
+install.
+
 ### 7f. Print checklist
 
 ```
@@ -948,6 +967,7 @@ Verifying everything is wired:
   ✓ Index queryable
   ✓ Hooks firing
   ✓ Sample brief landed   (or INFO line if no /research run yet)
+  · Embedding posture     (INFO — semantic on, or BM25-only + free local path)
 ```
 
 On all PASS (or PASS + INFO), proceed to wrap-up. On any FAIL, print

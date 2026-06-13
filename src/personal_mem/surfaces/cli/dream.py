@@ -36,9 +36,35 @@ def cmd_dream(args: argparse.Namespace) -> None:
         _cmd_apply(args)
     elif action == "tasks":
         cmd_dream_tasks(args)
+    elif action == "revert-coarsen":
+        _cmd_revert_coarsen(args)
     else:
-        print("Usage: mem dream {scan|apply|tasks}", file=sys.stderr)
+        print("Usage: mem dream {scan|apply|tasks|revert-coarsen}", file=sys.stderr)
         sys.exit(2)
+
+
+def _cmd_revert_coarsen(args: argparse.Namespace) -> None:
+    """Re-split a coarsened concept cluster back into its members."""
+    import json as _json
+
+    from personal_mem.core.config import load_config
+    from personal_mem.synthesis.concepts import revert_coarsening
+
+    cfg = load_config()
+    target = getattr(args, "target", "")
+    stats = revert_coarsening(cfg, target)
+    if getattr(args, "json", False):
+        print(_json.dumps(stats, indent=2))
+        return
+    print(f"revert-coarsen · {target}")
+    print(f"  restored hubs: {', '.join(stats['restored']) or '—'}")
+    print(f"  notes demoted: {stats['notes_demoted']}")
+    print(f"  winner entries stripped: {stats['winner_entries_stripped']}")
+    print(f"  ontology term removed: {stats['ontology_removed']}")
+    for e in stats.get("errors", []):
+        print(f"  ! {e}", file=sys.stderr)
+    if stats.get("errors"):
+        sys.exit(1)
 
 
 def _cmd_scan(args: argparse.Namespace) -> None:
@@ -185,6 +211,7 @@ def _cmd_apply(args: argparse.Namespace) -> None:
     try:
         result = apply(
             cfg, plan=plan, project=project, cycle_id=cycle_id, strict=strict,
+            force_coarsen=bool(getattr(args, "force_coarsen", False)),
         )
     except PlanValidationError as e:
         # Strict-mode failure: surface every warning on stderr and exit

@@ -40,9 +40,9 @@ build-backend = "hatchling.build"
 packages = ["src/personal_mem"]
 
 [tool.hatch.build.targets.wheel.force-include]
+# ontology.yaml now lives under vault_templates/config/, so this single
+# directory include ships the whole config-template surface (seed + examples).
 "src/personal_mem/vault_templates" = "personal_mem/vault_templates"
-"src/personal_mem/ontology.yaml" = "personal_mem/ontology.yaml"
-"src/personal_mem/ontology.example.yaml" = "personal_mem/ontology.example.yaml"
 
 [tool.ruff]
 line-length = 100

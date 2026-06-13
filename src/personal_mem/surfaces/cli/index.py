@@ -63,6 +63,12 @@ def cmd_index(args: argparse.Namespace) -> None:
         try:
             from personal_mem.core.embeddings import EmbeddingSearch
             es = EmbeddingSearch(config=cfg)
+            if getattr(args, "reset", False):
+                removed = es.clear()
+                print(
+                    f"Embeddings cache reset: {removed} vector(s) cleared "
+                    f"(full re-embed follows)."
+                )
             only_new = bool(getattr(args, "only_new", False))
             since = getattr(args, "since", "") or ""
             embed_stats = es.compute_all(only_new=only_new, since=since)
@@ -113,6 +119,59 @@ def cmd_stats(args: argparse.Namespace) -> None:
         print(f"  {label}: {value}")
 
 
+def _embedding_posture_lines(cfg) -> list[str]:
+    """Human-readable embedding posture for ``mem doctor``.
+
+    Reports the configured provider/model, whether the required key is
+    reachable, and the cache size — then, when no key is present on the
+    OpenAI path, points at the free local fallback. The goal: make the
+    silent "similarity degraded to BM25/FTS" state visible, and give a
+    keyless user a concrete free path instead of a dead end.
+    """
+    from personal_mem.core.api_config import embeddings_config, load_api_config
+
+    emb = embeddings_config(load_api_config(cfg.vault_root))
+    provider, model = emb["provider"], emb["model"]
+    lines = ["Embedding posture:", f"  provider/model : {provider} / {model}"]
+
+    show_hint = False
+    if provider == "openai":
+        from personal_mem.core.api_keys import get_provider_key
+
+        key_present = bool(get_provider_key("openai"))
+        lines.append(f"  api key        : OPENAI_API_KEY {'present' if key_present else 'MISSING'}")
+        show_hint = not key_present
+    elif provider == "litellm":
+        lines.append("  api key        : provider-specific (LiteLLM env vars)")
+    else:  # sentence_transformer / local
+        lines.append("  api key        : not required (local, free)")
+
+    n = 0
+    if cfg.embeddings_db.exists():
+        import sqlite3
+
+        try:
+            db = sqlite3.connect(str(cfg.embeddings_db))
+            n = int(db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0])
+            db.close()
+        except sqlite3.Error:
+            n = 0
+    lines.append(f"  cache          : {n} vector(s) at {cfg.embeddings_db}")
+
+    if show_hint:
+        lines += [
+            "  ⚠ No OPENAI_API_KEY → semantic/hybrid search is OFF; retrieval falls",
+            "    back to BM25 keyword (FTS), which always works. For free semantic",
+            "    search with no key (local):",
+            "      pip install personal-mem[embeddings-local]",
+            "      set  embeddings.provider: sentence_transformer  in vault/config/api.yaml",
+            "      run  mem index --embed --reset",
+        ]
+    elif n == 0:
+        lines.append("  ⚠ Cache empty → run: mem index --embed")
+    return lines
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     """Run coherence + MCP-wiring checks (read-only by default).
 
@@ -148,10 +207,15 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         if getattr(args, "migrate", False):
-            from personal_mem.operations.migrations import migrate_todo_research_to_queue
+            from personal_mem.operations.migrations import (
+                migrate_dormant_themes_to_resolved,
+                migrate_todo_research_to_queue,
+            )
 
             moved = migrate_todo_research_to_queue(cfg.vault_root)
             print(f"migrate_todo_research_to_queue: {moved} note(s) moved to queues")
+            flipped = migrate_dormant_themes_to_resolved(cfg.vault_root)
+            print(f"migrate_dormant_themes_to_resolved: {flipped} theme(s) flipped")
 
         include_isolation = bool(getattr(args, "isolation", False))
         report = doctor_report(cfg, include_isolation=include_isolation)
@@ -168,6 +232,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             report = doctor_report(cfg, include_isolation=include_isolation)
 
         print(format_doctor_report(report))
+
+        print()
+        for line in _embedding_posture_lines(cfg):
+            print(line)
 
     if do_mcp:
         if do_vault:
@@ -238,7 +306,7 @@ def _count_enrichment_candidates(
 def cmd_enrich(args: argparse.Namespace) -> None:
     """LLM-assisted concept enrichment for notes missing concepts."""
     from personal_mem.core.indexer import Indexer
-    from personal_mem.enrich import enrich
+    from personal_mem.synthesis.enrich import enrich
     from personal_mem.operations._backfill_route import choose_route
 
     cfg = load_config()

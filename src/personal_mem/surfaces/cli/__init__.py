@@ -57,6 +57,7 @@ from personal_mem.surfaces.cli.parser import build_parser
 from personal_mem.surfaces.cli.queue import cmd_queue
 from personal_mem.surfaces.cli.rlvr import cmd_rlvr
 from personal_mem.surfaces.cli.schedule import cmd_schedule
+from personal_mem.surfaces.cli.seam import cmd_seam
 from personal_mem.surfaces.cli.skill import cmd_skill
 from personal_mem.surfaces.cli.themes import cmd_themes
 from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
@@ -95,7 +96,7 @@ _DISPATCH = {
     "project": cmd_project,
     # ── Cron & orchestration ──────────────────────────────────────────
     # Invoked by cron flows and headless skill orchestrators (/dream,
-    # /drain, /mem-resolve-concepts, …) — pipeline verbs plus the write
+    # /drain, /tighten, …) — pipeline verbs plus the write
     # surface headless flows use (`mem add/update/link/unlink`; live
     # agents use the mem_create/update/link/unlink MCP tools instead).
     "index": cmd_index,
@@ -105,6 +106,7 @@ _DISPATCH = {
     "discover": cmd_discover,
     "drain": cmd_drain,
     "intake": cmd_intake,
+    "seam": cmd_seam,
     "queue": cmd_queue,
     "flow": cmd_flow,
     "concepts": cmd_concepts,

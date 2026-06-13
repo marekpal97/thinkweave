@@ -148,7 +148,7 @@ This validation is mandatory before the archive step. Worker bugs leaking into "
 | Path | Triage verdict | Writer status | Archive |
 |---|---|---|---|
 | Triage drop | `drop` | (writer not spawned) | `status=rejected, reason="<triage reason>"` |
-| Writer real fetch fail | `keep` / `keep_unfiled` | `fetch_failed` (reason in allowed vocab) | leave in queue (transient) — except `Cloudflare` / `paywall` for outlets dropped from `news_feeds.yaml`, which should be `status=failed` to flush queue cruft |
+| Writer real fetch fail | `keep` / `keep_unfiled` | `fetch_failed` (reason in allowed vocab) | leave in queue (transient) — except `Cloudflare` / `paywall` for outlets dropped from `PRIORITIES.yaml::intake.news.outlets`, which should be `status=failed` to flush queue cruft |
 | Writer hallucinated refusal | `keep` / `keep_unfiled` | `fetch_failed` (reason invalid) → retry → still invalid | `status=worker_bug`, surface count |
 | Writer success | `keep` | `accepted` | `status=done` |
 | Writer success | `keep_unfiled` | `accepted` | `status=done` (note carries `theme_unfiled: true`) |

@@ -4,11 +4,8 @@
 # notes in the knowledge graph; any two notes sharing 2+ concepts auto-link.
 #
 # This file ships as a minimal seed. It is meant to grow as you use the
-# vault — every time you run /mem-resolve-concepts, proposed concepts from
-# recent notes get canonicalized and (with your approval) folded in here.
-#
-# For a fuller reference of how the ontology looks after months of use see
-# `ontology.example.yaml` in the same directory.
+# vault — every time you run /tighten, proposed concepts from recent notes
+# get canonicalized and (with your approval) folded in here.
 #
 # Rules of thumb:
 #   - Concepts must be kebab-case, lowercase.

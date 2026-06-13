@@ -85,14 +85,15 @@ This is the common steady-state case. Apply backfills `relates_to:` on each sour
 For mint, compose:
 - **`slug`** — for a **name** cluster, use `label` directly (variants are already folded into `related_names`). For a **concept** cluster (label empty), compose a fresh slug from `sources` titles. Rules: 1–3 kebab words, label-shaped (`iran-war`, `bond-vigilantes`, `memory-chip-supercycle`). No dates, no parentheticals, not a concatenation of the cluster's concepts.
 - **`title`** — a human display title in headline register ("Iran–Hormuz supply shock"). No dates unless the date defines the arc. Becomes the H1 + `title:` frontmatter; the slug stays the filename.
-- **`essence`** — 2-4 sentence narrative description of the arc's state: what's unfolding, what's driving it, what would resolve it. **Mandatory** — apply rejects mints whose essence is under 5 words, and the cluster only re-surfaces next cycle.
 - **`concepts`** — top-3 from `shared_concepts`.
 - **`source_ids`** — every source in the cluster.
 - **`catalysts`** — one distillation per source (see above; seed entries use them instead of the generic "cluster seed").
 
+**Do NOT compose an essence.** Mint is cheap (2026-06-13 symmetry closure): it's a registry-add + stub + seeded catalyst log, exactly like concept promotion. The stub gets a placeholder essence and the dual-family `dream-essence-worker` composes the real one on a later cycle (a placeholder essence is its explicit inclusion trigger). Your job is the mint/extend/skip *decision* + slug/title + catalyst distillation — not synthesis. There is no essence guard any more; a mint without an essence is correct, not a failure.
+
 Add to `plan_fragment.theme_mints`:
 ```json
-{"slug": "iran-war", "title": "Iran–Israel escalation", "essence": "...",
+{"slug": "iran-war", "title": "Iran–Israel escalation",
  "source_ids": [...], "concepts": [...],
  "catalysts": [{"source_id": "src-aaa", "text": "...", "flag": "new"}, ...]}
 ```
@@ -115,7 +116,6 @@ Output exactly one line of JSON as the final non-empty line:
   "plan_fragment": {
     "theme_mints": [
       {"slug": "iran-war", "title": "Iran–Israel escalation",
-       "essence": "Spring 2026 Iran-Israel escalation arc, oil supply at risk via Hormuz; resolution hinges on a negotiated corridor.",
        "source_ids": ["src-aaa", "src-bbb"], "concepts": ["geopolitics", "oil"],
        "catalysts": [
          {"source_id": "src-aaa", "text": "Strikes on Kharg loading berths take ~1.2mbd offline; first physical supply hit of the arc.", "flag": "new"},
@@ -141,7 +141,7 @@ The orchestrator merges both keys (`theme_mints` and `theme_extensions`) into th
 
 - **Emitting bare source_ids without `catalysts`** — apply then falls back to the generic "extend"/"cluster seed" log lines this field exists to replace. Every emitted source gets a distillation.
 - **Headline-restating instead of distilling** — the log line already renders the source title; `text` must say what the source *adds to the arc*.
-- **Skipping the essence on a mint** — apply rejects essence-less mints; the mint just doesn't happen.
+- **Composing an essence on a mint** — don't. Mint is cheap; the essence worker owns synthesis. Emitting an `essence` field is allowed but pointless work the essence worker redoes.
 - **Minting capability/technique clusters** — `cluster_kind: concept` with a label like "dynamic-batching" or "rag-pipelines" is a concept hub's job, not a theme. Skip these.
 - **Composing slugs with dates or topical concatenations** — `iran-war-2026` or `geopolitics-oil-arc` both violate the slug rules; use `iran-war` or `oil-shock`.
 - **Trusting concept-only `covering_themes` without title check** — `overlap: 1, name_match: 0` is weak; the score reflects only concept Jaccard, not narrative fit.

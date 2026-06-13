@@ -1,5 +1,5 @@
-"""Concept-enrichment operation — thin orchestrator over the root-level
-``personal_mem.enrich`` module.
+"""Concept-enrichment operation — thin orchestrator over the
+``personal_mem.synthesis.enrich`` module.
 
 Wraps the LLM concept-tagging pass and the post-enrichment reindex /
 wikilink-materialization step that the MCP ``mem_enrich`` tool needs to run
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from personal_mem.core.config import Config
 from personal_mem.core.indexer import Indexer
-from personal_mem.enrich import enrich as _enrich
+from personal_mem.synthesis.enrich import enrich as _enrich
 
 
 @dataclass

@@ -21,7 +21,10 @@ The theme-hub *specialisation* (vs concept hubs):
 - **Identity**: UUID-shaped (``thm-XXXX``), not a vocabulary term.
 - **Auto-update**: none. Catalysts are authored manually (or by skills
   like ``/themes-resolve``), not extracted from sessions on every run.
-- **Lifecycle**: ``active`` → ``dormant`` / ``resolved`` / ``merged-into:thm-X``.
+- **Lifecycle**: ``active`` → ``resolved`` / ``merged-into:thm-X``. (The
+  display-only ``dormant`` state was collapsed into ``resolved`` 2026-06-13 —
+  both just mean "frozen"; the active-vs-terminal freeze is the load-bearing
+  distinction.)
 - **Citation direction**: notes cite a theme via ``relates_to: [thm-X]``,
   not via ``concepts: [...]``.
 - **Storage**: ``vault/themes/`` (global), never project-nested.
@@ -41,13 +44,17 @@ LogEntry = HubLogEntry
 
 # Canonical lifecycle states for themes. ``merged-into:thm-XXXXXXXX`` is a
 # sentinel form for survivors-with-a-reference, written by the dedup skill.
+# The active-vs-terminal freeze is the only behavioural distinction: a
+# non-active theme is skipped by essence composition, log-gap backfill,
+# dedup, news triage, and extension. ``dormant`` was collapsed into
+# ``resolved`` 2026-06-13 (display-only difference); ``DORMANT_LEGACY`` is
+# retained so readers can still recognise + migrate straggler files.
 THEME_STATUS_ACTIVE = "active"
-THEME_STATUS_DORMANT = "dormant"
 THEME_STATUS_RESOLVED = "resolved"
+THEME_STATUS_DORMANT_LEGACY = "dormant"
 
 THEME_STATUSES = (
     THEME_STATUS_ACTIVE,
-    THEME_STATUS_DORMANT,
     THEME_STATUS_RESOLVED,
 )
 

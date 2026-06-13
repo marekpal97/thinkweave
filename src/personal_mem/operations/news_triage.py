@@ -255,7 +255,7 @@ def triage_items(
     (drop → archive rejected; keep / keep_unfiled → dispatch to writer).
 
     Reads ``OPENAI_API_KEY`` from env or the project ``.env`` via
-    ``personal_mem.enrich.load_openai_api_key``. Uses httpx for the
+    ``personal_mem.synthesis.enrich.load_openai_api_key``. Uses httpx for the
     POST — no ``openai`` SDK import needed, matching the pattern in
     ``enrich.py`` and ``surfaces/cli/_hubs_link.py``.
     """
@@ -272,7 +272,7 @@ def triage_items(
     if api_key:
         key = api_key
     else:
-        from personal_mem.enrich import load_openai_api_key
+        from personal_mem.synthesis.enrich import load_openai_api_key
         key = load_openai_api_key() or os.environ.get("OPENAI_API_KEY", "")
     if not key:
         raise RuntimeError(

@@ -68,6 +68,20 @@ class EmbeddingSearch:
             self._db.close()
             self._db = None
 
+    def clear(self) -> int:
+        """Delete every cached embedding; return the row count removed.
+
+        Backs ``mem index --embed --reset`` — the escape hatch for a
+        provider/model switch, where cached vectors live in the wrong
+        space (and usually the wrong dimensionality). Schema is kept;
+        only rows are dropped, so the following ``compute_all`` re-embeds
+        the whole vault from scratch.
+        """
+        removed = int(self.db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0])
+        self.db.execute("DELETE FROM embeddings")
+        self.db.commit()
+        return removed
+
     def latest_embedded_at(self) -> str | None:
         """Return the ISO timestamp of the most-recently-cached embedding.
 
@@ -149,6 +163,13 @@ class EmbeddingSearch:
             text = f"{note['title']}\n\n{note['body_text'] or ''}"
             batch_texts.append((note["id"], text, note["content_hash"]))
 
+        # Stamp the *provider's* actual model into each row — not
+        # ``config.embedding_model`` (a legacy default that can disagree
+        # with ``api.yaml::embeddings.model``). ``search()`` filters the
+        # cache on this column, so it must name the space the vectors
+        # actually live in.
+        model_name = self._provider().model
+
         # Compute in batches
         batch_size = 20
         for i in range(0, len(batch_texts), batch_size):
@@ -162,7 +183,7 @@ class EmbeddingSearch:
                         """INSERT OR REPLACE INTO embeddings
                            (note_id, content_hash, embedding, model, created_at)
                            VALUES (?, ?, ?, ?, ?)""",
-                        (note_id, chash, _pack_embedding(emb), self.config.embedding_model, now),
+                        (note_id, chash, _pack_embedding(emb), model_name, now),
                     )
                     stats["computed"] += 1
                 self.db.commit()
@@ -192,6 +213,15 @@ class EmbeddingSearch:
         Filtered by joining against the main index; requires ``index.db`` to exist.
         """
         query_emb = self._call_api([query])[0]
+        # The query was embedded by the configured provider, so it lives
+        # in that model's vector space. Only compare against cache rows
+        # from the *same* model — cosine across models (even at equal
+        # dim, e.g. ada-002 vs 3-small) is meaningless, and across dims
+        # ``cosine_similarity``'s ``zip`` would silently truncate. This
+        # makes a mixed cache (mid-migration, or pre-``--reset``) degrade
+        # to "fewer results" rather than "plausible-but-wrong scores".
+        query_model = self._provider().model
+        query_dim = len(query_emb)
 
         # Build the set of allowed note_ids if filters are requested
         allowed: set[str] | None = None
@@ -229,10 +259,15 @@ class EmbeddingSearch:
                 return []
 
         results: list[tuple[str, float]] = []
-        for row in self.db.execute("SELECT note_id, embedding FROM embeddings"):
+        for row in self.db.execute(
+            "SELECT note_id, embedding FROM embeddings WHERE model = ?",
+            (query_model,),
+        ):
             if allowed is not None and row["note_id"] not in allowed:
                 continue
             cached_emb = _unpack_embedding(row["embedding"])
+            if len(cached_emb) != query_dim:  # belt-and-suspenders vs a mislabelled row
+                continue
             score = cosine_similarity(query_emb, cached_emb)
             results.append((row["note_id"], score))
 

@@ -71,8 +71,9 @@ class TestThemeSchema:
     def test_status_constants(self):
         assert THEME_STATUS_ACTIVE == "active"
         assert "active" in THEME_STATUSES
-        assert "dormant" in THEME_STATUSES
         assert "resolved" in THEME_STATUSES
+        # dormant was collapsed into resolved 2026-06-13 (display-only).
+        assert "dormant" not in THEME_STATUSES
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +213,11 @@ class TestThemesLanding:
         assert "trade_ideas" in content
         assert "Last catalyst" in content
 
-    def test_dormant_themes_in_collapsed_section(
+    def test_legacy_dormant_themes_fold_into_resolved(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
+        # dormant collapsed into resolved 2026-06-13 — a straggler dormant
+        # file renders under the single Resolved group, not its own.
         vault.create_note(
             note_type=NoteType.THEME,
             title="Dormant theme",
@@ -224,7 +227,8 @@ class TestThemesLanding:
         )
         indexer.rebuild()
         content = themes_ledger(config)
-        assert "<details><summary>Dormant (1)</summary>" in content
+        assert "<details><summary>Resolved (1)</summary>" in content
+        assert "Dormant (" not in content
 
     def test_write_landing_docs_themes(
         self, vault: VaultManager, indexer: Indexer, config: Config, vault_dir: Path

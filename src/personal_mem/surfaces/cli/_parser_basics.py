@@ -135,6 +135,16 @@ def add_index_subparsers(sub) -> None:
         ),
     )
     p_index.add_argument(
+        "--reset",
+        action="store_true",
+        help=(
+            "With --embed: clear the embeddings cache before computing, forcing "
+            "a full re-embed. Use when switching embedding provider/model — "
+            "vectors live in a different space (and usually a different "
+            "dimensionality), so the old cache must be discarded."
+        ),
+    )
+    p_index.add_argument(
         "--materialize-links",
         action="store_true",
         help="After indexing, write SQLite edges as wikilinks (## See Also) for Obsidian.",
@@ -621,9 +631,10 @@ def add_admin_subparsers(sub) -> None:
         "scaffold",
         help=(
             "Register a new source type without editing Python. Writes a "
-            "SourceTypeSpec entry to <vault>/.mem/source_types.yaml, a "
-            "skill at commands/<slug>.md, and a config block to "
-            "vault_templates/.mem/sources.yaml."
+            "SourceTypeSpec entry to <vault>/config/source_types.yaml, a "
+            "skill at ~/.claude/commands/<slug>.md, and a behaviour-config "
+            "block to <vault>/config/sources.yaml. All upgrade-safe — nothing "
+            "is written inside the installed package."
         ),
     )
     p_sources_scaffold.add_argument("slug", help="Canonical source_type slug (e.g. podcast, email)")
@@ -721,12 +732,13 @@ def add_admin_subparsers(sub) -> None:
         ),
     )
     p_dream_scan.add_argument(
-        "--rejudge-pairs", action="store_true",
+        "--rejudge-pairs", "--rejudge", dest="rejudge_pairs",
+        action="store_true",
         help=(
-            "Re-surface drift/dup pairs a past cycle already ruled on "
-            "(merged or distinct, per the maintenance-log verdicts "
-            "block). Default: judged pairs are excluded so the pool "
-            "drains."
+            "Re-surface drift/dup pairs AND coarsen clusters a past cycle "
+            "already ruled on (merged, coarsened, or distinct, per the "
+            "maintenance-log verdicts block). Default: judged pairs/clusters "
+            "are excluded so the pool drains."
         ),
     )
     p_dream_scan.add_argument(
@@ -774,6 +786,30 @@ def add_admin_subparsers(sub) -> None:
             "shouldn't abort the cycle."
         ),
     )
+    p_dream_apply.add_argument(
+        "--force-coarsen", dest="force_coarsen", action="store_true",
+        help=(
+            "Apply grain-coarsening folds even when dream_coarsen_apply is "
+            "false (the on-demand /tighten front door uses this to apply "
+            "approved coarsenings regardless of the nightly posture)."
+        ),
+    )
+
+    p_dream_revert = dream_sub.add_parser(
+        "revert-coarsen",
+        help=(
+            "Re-split a coarsened concept cluster back into its members, "
+            "using the durable provenance snapshot in the maintenance log "
+            "(restores archived hubs, strips member-exclusive winner "
+            "entries, demotes notes, removes a new ontology term)."
+        ),
+    )
+    p_dream_revert.add_argument(
+        "target", help="The coarse target concept to un-coarsen"
+    )
+    p_dream_revert.add_argument(
+        "--json", action="store_true", help="Emit raw JSON stats"
+    )
 
     p_dream_tasks = dream_sub.add_parser(
         "tasks",
@@ -807,6 +843,50 @@ def add_admin_subparsers(sub) -> None:
     p_dream_tasks.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON for skill/headless consumption",
+    )
+
+    # --- Memory seam (CC auto-memory ↔ vault reconciliation) --------------
+    p_seam = sub.add_parser(
+        "seam",
+        help=(
+            "Memory-seam maintenance: surface (cheap dirty-diff of Claude "
+            "Code auto-memory vs the durable map) and commit (write the "
+            "dream-seam-worker's verdicts to memory_seam.{json,md})."
+        ),
+    )
+    seam_sub = p_seam.add_subparsers(dest="seam_action")
+    p_seam_surface = seam_sub.add_parser(
+        "surface",
+        help=(
+            "Emit the embedding-free dirty diff (new / edited / unresolved / "
+            "recheck-due CC facts) the dream scan carries as memory_seam."
+        ),
+    )
+    p_seam_surface.add_argument(
+        "--cap", type=int, default=None,
+        help=(
+            "Override the per-cycle dirty cap (config seam.cap, default 20). "
+            "0 = unlimited — the populate-backlog lever."
+        ),
+    )
+    p_seam_surface.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON for worker/headless consumption",
+    )
+    p_seam_commit = seam_sub.add_parser(
+        "commit",
+        help=(
+            "Write the worker's verdicts to the durable map + report. Reads "
+            "JSON ({key: {verdict, reason, twin}}) from --verdicts path or '-'."
+        ),
+    )
+    p_seam_commit.add_argument(
+        "--verdicts", required=True,
+        help="Path to a JSON verdicts file, or '-' to read from stdin",
+    )
+    p_seam_commit.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON result on stdout",
     )
 
     # --- C24: CLI parity for MCP-only tools -------------------------------

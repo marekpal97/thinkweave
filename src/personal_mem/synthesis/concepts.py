@@ -304,12 +304,12 @@ def suggest_similar(new_concept: str, existing: list[str], max_suggestions: int 
 def _seed_ontology_path() -> Path:
     """Path to the read-only ontology seed shipped with the package.
 
-    The seed lives at ``src/personal_mem/ontology.yaml`` — one directory up
-    from this module. Earlier the path used ``Path(__file__).parent`` which
-    resolved to ``synthesis/ontology.yaml`` and silently never existed,
-    leaving the system running on the vault override only.
+    The seed lives alongside every other shipped config template at
+    ``src/personal_mem/vault_templates/config/ontology.yaml`` (moved there in
+    the 2026-06-13 pre-ship sweep so the whole user-config surface sits in one
+    place). It layers beneath the vault override at ``vault/config/ontology.yaml``.
     """
-    return Path(__file__).parent.parent / "ontology.yaml"
+    return Path(__file__).parent.parent / "vault_templates" / "config" / "ontology.yaml"
 
 
 def _vault_ontology_path() -> Path | None:
@@ -1469,6 +1469,256 @@ def fold_concept_hub_on_merge(
     except Exception as e:  # noqa: BLE001
         stats["error"] = str(e)
     return stats
+
+
+def remove_ontology_term(config: Config, term: str) -> bool:
+    """Remove ``term`` from the vault-override ontology (all domains).
+
+    The inverse of :func:`promote_proposed_concept`'s ontology write —
+    used by coarsening revert when the coarse ``target`` was a brand-new
+    term. Touches only the user-editable ``vault/config/ontology.yaml``
+    override, never the shipped seed. Idempotent; returns whether anything
+    changed.
+    """
+    term_l = term.lower().strip()
+    if not term_l:
+        return False
+    override_path = config.config_dir / "ontology.yaml"
+    if not override_path.exists():
+        return False
+    existing = _parse_yaml_file(override_path) or {}
+    changed = False
+    for d in list(existing):
+        kept = [c for c in existing[d] if c.lower() != term_l]
+        if len(kept) != len(existing[d]):
+            existing[d] = kept
+            changed = True
+    if not changed:
+        return False
+    lines: list[str] = []
+    for d in sorted(existing):
+        items = sorted({c.lower() for c in existing[d]})
+        lines.append(f"{d}: [{', '.join(items)}]" if items else f"{d}: []")
+    override_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
+def _latest_coarsening_verdict(config: Config, target: str) -> dict | None:
+    """Most-recent ``coarsenings`` verdict for ``target`` from the dream log."""
+    from personal_mem.operations.dream import maintenance_log_path
+
+    target_l = target.lower().strip()
+    path = maintenance_log_path(config)
+    if not path.exists():
+        return None
+    found: dict | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for c in (entry.get("verdicts") or {}).get("coarsenings") or []:
+            if isinstance(c, dict) and str(c.get("target") or "").lower().strip() == target_l:
+                found = c  # keep walking → last wins (most recent)
+    return found
+
+
+def revert_coarsening(config: Config, target: str) -> dict:
+    """Re-split a coarsened concept cluster back into its members.
+
+    Reverses a ``coarsenings`` verdict using its durable provenance
+    snapshot (``member_note_ids`` + ``fold_dates`` +
+    ``winner_citations_pre_fold``), so the re-split is exact even after the
+    seam-link worker cleared the transient ``fold_pending_*`` stamps. Steps:
+
+    1. Restore each member hub from ``topics/_archive/`` (strip
+       ``merged-into:``) — the archived loser carries its original log.
+    2. Strip from the winner the *member-exclusive* catalyst entries
+       (date ∈ ``fold_dates`` and citation ∉ ``winner_citations_pre_fold``);
+       shared citations stay.
+    3. Demote the snapshotted notes' ``concepts:`` ``target → member``.
+    4. Drop the member alias entries; if the target was a new term, remove
+       it from the ontology override.
+    5. Clear the winner's ``essence_updated`` and re-enqueue it + the
+       revived members for seam-link repair.
+    6. Rebuild the index once.
+
+    Returns a stats dict. Best-effort per step; partial failures are
+    collected under ``errors``.
+    """
+    import shutil
+
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.synthesis.concept_hub import (
+        _safe_hub_maps,
+        concept_hub_path,
+        parse_concept_hub,
+        write_concept_hub,
+    )
+    from personal_mem.synthesis.hub import set_frontmatter_keys
+
+    stats: dict = {
+        "target": target,
+        "restored": [],
+        "notes_demoted": 0,
+        "winner_entries_stripped": 0,
+        "ontology_removed": False,
+        "errors": [],
+    }
+    verdict = _latest_coarsening_verdict(config, target)
+    if verdict is None:
+        stats["errors"].append(f"no coarsening verdict found for {target!r}")
+        return stats
+
+    target_l = str(verdict.get("target") or target).lower().strip()
+    members = [str(m).lower().strip() for m in (verdict.get("members") or [])]
+    losers = [m for m in members if m and m != target_l]
+    member_note_ids = verdict.get("member_note_ids") or {}
+    fold_dates = set(verdict.get("fold_dates") or [])
+    winner_citations = set(verdict.get("winner_citations_pre_fold") or [])
+
+    archive_dir = hub_archive_dir(config)
+
+    # 1. restore member hubs from the archive
+    for m in losers:
+        try:
+            src = archive_dir / f"{m}.md"
+            if src.exists():
+                dst = concept_hub_path(config, m)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                set_frontmatter_keys(dst, {"merged-into": None})
+                stats["restored"].append(m)
+        except Exception as e:  # noqa: BLE001
+            stats["errors"].append(f"restore {m}: {e}")
+
+    # 2. strip member-exclusive entries from the winner hub
+    try:
+        wp = concept_hub_path(config, target_l)
+        if wp.exists() and fold_dates:
+            idmap, title_map, path_to_id = _safe_hub_maps(config)
+            hub = parse_concept_hub(wp, concept=target_l, path_to_id=path_to_id)
+            before = len(hub.log_entries)
+            hub.log_entries = [
+                e
+                for e in hub.log_entries
+                if not (e.date in fold_dates and e.citation not in winner_citations)
+            ]
+            stripped = before - len(hub.log_entries)
+            if stripped:
+                write_concept_hub(
+                    hub, idmap=idmap, title_map=title_map
+                )
+                stats["winner_entries_stripped"] = stripped
+    except Exception as e:  # noqa: BLE001
+        stats["errors"].append(f"winner strip: {e}")
+
+    # 3. demote notes target → member
+    for m, note_ids in member_note_ids.items():
+        for nid in note_ids or []:
+            try:
+                if _demote_note_concept(config, nid, from_c=target_l, to_c=m):
+                    stats["notes_demoted"] += 1
+            except Exception as e:  # noqa: BLE001
+                stats["errors"].append(f"demote {nid} {target_l}→{m}: {e}")
+
+    # 4. aliases + ontology
+    try:
+        aliases = load_aliases(config)
+        if target_l in aliases:
+            aliases[target_l] = [a for a in aliases[target_l] if a not in losers]
+            if not aliases[target_l]:
+                aliases.pop(target_l)
+            save_aliases(config, aliases)
+    except Exception as e:  # noqa: BLE001
+        stats["errors"].append(f"aliases: {e}")
+    if verdict.get("target_was_new"):
+        try:
+            stats["ontology_removed"] = remove_ontology_term(config, target_l)
+        except Exception as e:  # noqa: BLE001
+            stats["errors"].append(f"ontology remove: {e}")
+
+    # 5. clear winner essence stamp + re-enqueue seam-link repair
+    try:
+        wp = concept_hub_path(config, target_l)
+        if wp.exists():
+            set_frontmatter_keys(wp, {"essence_updated": None})
+        from personal_mem.operations import seam_link_queue
+
+        for hid in [target_l, *stats["restored"]]:
+            seam_link_queue.enqueue(
+                config,
+                hub_kind="concept",
+                hub_id=hid,
+                folded_from="",
+                fold_dates=sorted(fold_dates),
+                reason="coarsen_reverted",
+            )
+    except Exception as e:  # noqa: BLE001
+        stats["errors"].append(f"seam re-enqueue: {e}")
+
+    # 6. one rebuild
+    try:
+        idx = Indexer(config=config)
+        try:
+            idx.rebuild(full=True)
+        finally:
+            idx.close()
+    except Exception as e:  # noqa: BLE001
+        stats["errors"].append(f"rebuild: {e}")
+
+    return stats
+
+
+def _demote_note_concept(
+    config: Config, note_id: str, *, from_c: str, to_c: str
+) -> bool:
+    """Rewrite a single note's ``concepts:`` ``from_c → to_c`` (revert helper).
+
+    Resolves the note id to a path via the index, swaps the concept in the
+    frontmatter list (idempotent — no-op if ``from_c`` absent or ``to_c``
+    already present), and writes back. Returns whether the file changed.
+    """
+    import sqlite3
+
+    from personal_mem.core.vault import parse_frontmatter, render_frontmatter
+
+    if not config.index_db.exists():
+        return False
+    db = sqlite3.connect(str(config.index_db))
+    db.row_factory = sqlite3.Row
+    try:
+        row = db.execute(
+            "SELECT path FROM notes WHERE id = ?", (note_id,)
+        ).fetchone()
+    finally:
+        db.close()
+    if not row:
+        return False
+    path = config.vault_root / str(row["path"])
+    if not path.exists():
+        return False
+    fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    concepts = fm.get("concepts") or []
+    if isinstance(concepts, str):
+        concepts = [c.strip() for c in concepts.split(",") if c.strip()]
+    lowered = [c.lower() for c in concepts]
+    if from_c not in lowered:
+        return False
+    new_concepts = []
+    seen = set()
+    for c in concepts:
+        repl = to_c if c.lower() == from_c else c
+        if repl.lower() not in seen:
+            new_concepts.append(repl)
+            seen.add(repl.lower())
+    fm["concepts"] = new_concepts
+    path.write_text(
+        render_frontmatter(fm) + "\n\n" + body.lstrip("\n"), encoding="utf-8"
+    )
+    return True
 
 
 HUB_ARCHIVE_DIRNAME = "_archive"

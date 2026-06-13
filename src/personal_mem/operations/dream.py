@@ -175,6 +175,15 @@ class DreamCycleScan:
     # the ``theme_merges`` plan key (worker payload only — nothing new on
     # disk).
     theme_dup_candidates: list = field(default_factory=list)
+    # Grain-coarsening clusters (drift v2, N-ary) — tight near-cliques of
+    # fine concepts / themes that may collapse onto one coarser term. The
+    # merge worker rules COLLAPSE (→ ``coarsenings`` / ``theme_coarsenings``)
+    # or DISTINCT (→ ``distinct_clusters``). Cosine-cohesion-ranked, capped
+    # at ``dream_coarsen_cap`` per family, history-excluded via
+    # ``geometry.judged_clusters``. Concept members carry domain hints + a
+    # ``canonical_target_hint``; theme members are thm-ids with slug/essence.
+    coarsen_clusters: list = field(default_factory=list)
+    theme_coarsen_clusters: list = field(default_factory=list)
     # Hubs whose folded logs await cross-parent linkage — the phase-2
     # ``dream-seam-link-worker`` input, peeked (not drained) from
     # ``.mem/seam_link_queue.jsonl``. The worker drains for real; the scan
@@ -188,6 +197,14 @@ class DreamCycleScan:
     # predictions_landed_24h, plus a ``theme_mutations_this_cycle`` slot
     # the orchestrator fills in after apply.
     knowledge_delta: dict = field(default_factory=dict)
+    # Memory-seam dirty surface — the phase-2 ``dream-seam-worker`` input.
+    # Cheap, embedding-free diff of CC auto-memory facts against the durable
+    # state map (``vault/.mem/memory_seam.json``): which facts are new /
+    # edited / unresolved / recheck-due. Twin resolution + judgment happen
+    # in the worker turn (via ``mem_search(mode='similar')``) — the scan
+    # stays API-free. ``has_signal`` fires when ``dirty`` or ``removed`` is
+    # non-empty.
+    memory_seam: dict = field(default_factory=dict)
     timings: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
 
@@ -1007,23 +1024,49 @@ def _collect_knowledge_delta(
     return delta
 
 
-def _collect_theme_dup_candidates(
-    cfg: Config, *, rejudge_pairs: bool = False
-) -> list[dict]:
-    """Near-duplicate ACTIVE theme pairs by embedding cosine (drift v2).
+def _collect_memory_seam(cfg: Config) -> dict:
+    """Cheap dirty-diff of CC auto-memory against the durable seam map.
 
-    Themes are embedded whole (essence + catalyst log ride in
-    ``body_text``), so their cached vectors already encode content.
-    All-pairs is fine at theme scale. Each candidate carries slugs,
-    titles, essence excerpts, shared concepts, and a slug-token Jaccard —
-    enough for the merge worker to elect a survivor without ``mem_read``
-    round-trips. Pairs a past cycle ruled on are excluded via the
-    maintenance-log history unless ``rejudge_pairs``.
+    Phase-2 ``dream-seam-worker`` input. Delegates to
+    :mod:`personal_mem.synthesis.memory_seam` — walks the CC memory dirs,
+    diffs each fact's content hash against ``vault/.mem/memory_seam.json``,
+    and returns which facts need (re)judgment this cycle (``new`` /
+    ``content_changed`` / ``prior_unresolved`` / ``recheck_due``), capped at
+    ``seam.cap``. Embedding-free: twin resolution + verdicts live in the
+    worker's turn, keeping the scan phase's API-free contract intact.
+
+    The surface carries the cosine ``thresholds`` and file paths the worker
+    needs so it can resolve twins (``mem_search(mode='similar')``), judge,
+    and write back via ``mem seam commit`` without re-deriving config.
+    """
+    from personal_mem.synthesis import memory_seam
+
+    facts = memory_seam.collect_cc_facts()
+    state = memory_seam.load_state(cfg)
+    surface = memory_seam.detect_dirty(
+        facts,
+        state,
+        stale_age_days=int(getattr(cfg, "seam_stale_age_days", 30) or 30),
+        recheck_days=int(getattr(cfg, "seam_recheck_days", 14) or 14),
+        cap=int(getattr(cfg, "seam_cap", 20) or 0),
+    )
+    surface["thresholds"] = {
+        "twin": float(getattr(cfg, "seam_cosine_twin", 0.70) or 0.70),
+        "none": float(getattr(cfg, "seam_cosine_none", 0.55) or 0.55),
+    }
+    surface["report_path"] = str(memory_seam.report_path(cfg))
+    surface["state_path"] = str(memory_seam.state_path(cfg))
+    return surface
+
+
+def _active_theme_meta(cfg: Config) -> dict[str, dict]:
+    """thm-id → {slug, title, essence_excerpt, concepts} for ACTIVE themes.
+
+    Shared by the theme dedup-pair and coarsen-cluster collectors so both
+    judge from the same content slice. Non-active (resolved / merged)
+    themes are excluded — they're frozen and never re-litigated.
     """
     from personal_mem.core.indexer import Indexer
-    from personal_mem.synthesis import geometry
-
-    threshold = float(getattr(cfg, "dream_cosine_threshold", 0.8) or 0.8)
 
     idx = Indexer(config=cfg)
     try:
@@ -1040,7 +1083,7 @@ def _collect_theme_dup_candidates(
             fm = json.loads(row["frontmatter"] or "{}")
         except (json.JSONDecodeError, TypeError):
             fm = {}
-        status = str(fm.get("status") or "active")
+        status = str(fm.get("status") or "active").split(":")[0]
         if status != "active":
             continue
         essence = _hub_essence(row["body_text"] or "")
@@ -1054,6 +1097,27 @@ def _collect_theme_dup_candidates(
             "essence_excerpt": essence[:300],
             "concepts": [str(c).lower() for c in concepts],
         }
+    return meta
+
+
+def _collect_theme_dup_candidates(
+    cfg: Config, *, rejudge_pairs: bool = False
+) -> list[dict]:
+    """Near-duplicate ACTIVE theme pairs by embedding cosine (drift v2).
+
+    Themes are embedded whole (essence + catalyst log ride in
+    ``body_text``), so their cached vectors already encode content.
+    All-pairs is fine at theme scale. Each candidate carries slugs,
+    titles, essence excerpts, shared concepts, and a slug-token Jaccard —
+    enough for the merge worker to elect a survivor without ``mem_read``
+    round-trips. Pairs a past cycle ruled on are excluded via the
+    maintenance-log history unless ``rejudge_pairs``.
+    """
+    from personal_mem.synthesis import geometry
+
+    threshold = float(getattr(cfg, "dream_cosine_threshold", 0.8) or 0.8)
+
+    meta = _active_theme_meta(cfg)
 
     vectors = {
         tid: vec
@@ -1092,6 +1156,72 @@ def _collect_theme_dup_candidates(
                 "slug_token_overlap": round(
                     len(ta & tb) / len(union), 3
                 ) if union else 0.0,
+            }
+        )
+    return out
+
+
+def _collect_theme_coarsen_clusters(
+    cfg: Config, *, rejudge_pairs: bool = False
+) -> list[dict]:
+    """Grain-coarsening clusters over ACTIVE themes (drift v2, N-ary).
+
+    Tight near-cliques of themes that may track one over-split arc and
+    collapse onto a single survivor. Mirrors the concept coarsen surface;
+    members are thm-ids carrying slug / title / essence excerpt. Excludes
+    clusters that touch a folded-away theme (overlap) or that were ruled
+    DISTINCT (exact key) via ``geometry.judged_clusters``.
+    """
+    from personal_mem.synthesis import geometry
+
+    coarsen_threshold = float(
+        getattr(cfg, "dream_coarsen_threshold", 0.85) or 0.85
+    )
+    coarsen_cap = int(getattr(cfg, "dream_coarsen_cap", 3) or 0)
+    coarsen_max_size = int(getattr(cfg, "dream_coarsen_max_size", 6) or 6)
+
+    meta = _active_theme_meta(cfg)
+    vectors = {
+        tid: vec
+        for tid, vec in geometry.theme_vectors(cfg).items()
+        if tid in meta
+    }
+    if len(vectors) < 2:
+        return []
+
+    coarsened_members, distinct_keys = (
+        (set(), set()) if rejudge_pairs else geometry.judged_clusters(cfg)
+    )
+    clusters = geometry.theme_clusters(
+        vectors, threshold=coarsen_threshold, max_size=coarsen_max_size
+    )
+    clusters = [
+        c
+        for c in clusters
+        if geometry.cluster_key("theme", c[0]) not in distinct_keys
+        and not any(("theme", m) in coarsened_members for m in c[0])
+    ]
+    if coarsen_cap:
+        clusters = clusters[:coarsen_cap]
+
+    out: list[dict] = []
+    for members, avg, mn in clusters:
+        shared = (
+            set.intersection(*[set(meta[t]["concepts"]) for t in members])
+            if members
+            else set()
+        )
+        out.append(
+            {
+                "members": members,
+                "avg_cosine": avg,
+                "min_cosine": mn,
+                "slugs": {t: meta[t]["slug"] for t in members},
+                "titles": {t: meta[t]["title"] for t in members},
+                "essence_excerpts": {
+                    t: meta[t]["essence_excerpt"] for t in members
+                },
+                "shared_concepts": sorted(shared),
             }
         )
     return out
@@ -1223,6 +1353,34 @@ def scan(
         if drift_cap:
             surviving = surviving[:drift_cap]
         result.drift_pairs = geometry.build_concept_evidence(cfg, surviving)
+
+        # Grain-coarsening clusters — N-ary near-cliques over the SAME
+        # centroids (no recompute). Stricter threshold than synonym merge.
+        # Exclude clusters that touch a folded-away term (overlap) or that
+        # were already ruled DISTINCT (exact key) — the anti-oscillation
+        # guard from geometry.judged_clusters.
+        coarsen_threshold = float(
+            getattr(cfg, "dream_coarsen_threshold", 0.85) or 0.85
+        )
+        coarsen_cap = int(getattr(cfg, "dream_coarsen_cap", 3) or 0)
+        coarsen_max_size = int(getattr(cfg, "dream_coarsen_max_size", 6) or 6)
+        coarsened_members, distinct_keys = (
+            (set(), set()) if rejudge_pairs else geometry.judged_clusters(cfg)
+        )
+        clusters = geometry.concept_clusters(
+            centroids, threshold=coarsen_threshold, max_size=coarsen_max_size
+        )
+        clusters = [
+            c
+            for c in clusters
+            if geometry.cluster_key("concept", c[0]) not in distinct_keys
+            and not any(("concept", m) in coarsened_members for m in c[0])
+        ]
+        if coarsen_cap:
+            clusters = clusters[:coarsen_cap]
+        result.coarsen_clusters = geometry.build_concept_cluster_evidence(
+            cfg, clusters
+        )
     except Exception as e:  # noqa: BLE001 — best-effort scan step
         result.errors.append(f"drift: {e}")
     finally:
@@ -1300,6 +1458,17 @@ def scan(
         result.errors.append(f"theme_dup_candidates: {e}")
     finally:
         result.timings["theme_dup_candidates"] = time.perf_counter() - _t
+
+    # 3c. theme coarsen clusters (drift v2, N-ary, theme family) ----------
+    _t = time.perf_counter()
+    try:
+        result.theme_coarsen_clusters = _collect_theme_coarsen_clusters(
+            cfg, rejudge_pairs=rejudge_pairs
+        )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_coarsen_clusters: {e}")
+    finally:
+        result.timings["theme_coarsen_clusters"] = time.perf_counter() - _t
 
     # 4. probe pressure ---------------------------------------------------
     # Aggregate probe-classified prompts into per-concept pressure over
@@ -1394,6 +1563,16 @@ def scan(
     finally:
         result.timings["knowledge_delta"] = time.perf_counter() - _t
 
+    # 9. memory seam (phase-2 dream-seam-worker input) -------------------
+    # Cheap, embedding-free: diff CC auto-memory against the durable map.
+    _t = time.perf_counter()
+    try:
+        result.memory_seam = _collect_memory_seam(cfg)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"memory_seam: {e}")
+    finally:
+        result.timings["memory_seam"] = time.perf_counter() - _t
+
     # ``knowledge_delta`` stats are sub-keyed by grain (``concept`` /
     # ``event``) so cycle telemetry can see at a glance whether the cycle
     # has work for both digest variants, just one, or neither.
@@ -1411,6 +1590,8 @@ def scan(
 
     result.stats = {
         "drift_pairs": len(result.drift_pairs),
+        "coarsen_clusters": len(result.coarsen_clusters),
+        "theme_coarsen_clusters": len(result.theme_coarsen_clusters),
         "promotion_candidates": len(result.promotion_candidates),
         "theme_cluster_signals": len(result.theme_cluster_signals),
         "theme_dup_candidates": len(result.theme_dup_candidates),
@@ -1420,6 +1601,11 @@ def scan(
         "unwrapped_sessions": len(result.unwrapped_sessions),
         "rejudge_queue": len(result.rejudge_queue),
         "seam_link_queue": len(result.seam_link_queue),
+        "memory_seam": {
+            "dirty": len((result.memory_seam or {}).get("dirty", [])),
+            "removed": len((result.memory_seam or {}).get("removed", [])),
+            "carried": (result.memory_seam or {}).get("carried_count", 0),
+        },
         "knowledge_delta": {
             "concept": _grain_stats("concept"),
             "event": _grain_stats("event"),
@@ -1444,6 +1630,9 @@ def scan(
 _VALID_PLAN_TOP_KEYS: frozenset[str] = frozenset({
     "cycle_id",
     "merges",
+    "coarsenings",
+    "theme_coarsenings",
+    "distinct_clusters",
     "promotions",
     "theme_mints",
     "theme_extensions",
@@ -1464,6 +1653,28 @@ _VALID_PLAN_TOP_KEYS: frozenset[str] = frozenset({
 # in a dedicated nested map below.
 _VALID_PLAN_ITEM_KEYS: dict[str, frozenset[str]] = {
     "merges": frozenset({"from", "to", "reason"}),
+    # Grain coarsening (drift v2, N-ary). COLLAPSE a tight near-clique of
+    # fine concepts onto ``target`` (a member, an existing canonical term
+    # in another domain, or a NEW term + ``target_domain`` when
+    # ``target_is_new``). Apply folds each member hub into the target,
+    # writes the ontology when new, and snapshots ``member`` provenance
+    # for reversible re-split.
+    "coarsenings": frozenset({
+        "members",
+        "target",
+        "target_domain",
+        "target_is_new",
+        "reason",
+        "min_cosine",
+    }),
+    # Theme arc coarsening: collapse N over-split themes into one
+    # ``survivor_id`` via ``merge_theme_into`` (fold + tombstone). No
+    # ontology write — themes have no ontology.
+    "theme_coarsenings": frozenset({"members", "survivor_id", "reason"}),
+    # N-ary leave-with-memory verdict: a cluster the worker judged to be
+    # genuinely-distinct grains. Recorded (exact member set) so it never
+    # re-surfaces; reopen via ``mem dream scan --rejudge``.
+    "distinct_clusters": frozenset({"kind", "members", "reason", "min_cosine"}),
     "promotions": frozenset({"concept", "domain", "reason"}),
     "theme_mints": frozenset({
         "slug",
@@ -1674,12 +1885,26 @@ class DreamCycleResult:
     priority_signals_logged: int = 0
     theme_merges_applied: int = 0
     distinct_pairs_recorded: int = 0
+    # Grain coarsening (drift v2, N-ary) — concept cluster collapses, theme
+    # cluster collapses, and N-ary distinct rulings recorded this cycle.
+    coarsenings_applied: int = 0
+    theme_coarsenings_applied: int = 0
+    distinct_clusters_recorded: int = 0
+    # Deterministic staleness auto-resolve (C2) — active themes flipped to
+    # ``resolved`` because their newest catalyst entry aged past
+    # ``theme_resolve_after_days``.
+    themes_resolved: int = 0
     seams_enqueued: int = 0
     # Rejudge-queue hand-off consumption — entries removed from
     # ``.mem/rejudge_queue.jsonl`` because the scan surfaced them into the
     # phase-2 ``dream-judge-worker``'s prompt (apply is the hand-off
     # point; entries beyond the scan cap survive for the next cycle).
     rejudge_consumed: int = 0
+    # Evidence-gated supersession flips this cycle — predecessors a
+    # ``supersedes:`` declaration enqueued, re-judged by the structural
+    # blame-survival judge and flipped to ``superseded`` (the headless/
+    # deferred counterpart of wrap-finalize's flip).
+    supersession_flips: int = 0
     ontology_grew: bool = False
     indexed: int = 0
     removed: int = 0
@@ -1701,6 +1926,13 @@ class DreamCycleResult:
     applied_merges: list = field(default_factory=list)
     applied_theme_merges: list = field(default_factory=list)
     recorded_distinct_pairs: list = field(default_factory=list)
+    # N-ary coarsening verdicts (drift v2). ``recorded_coarsenings`` items
+    # carry the reversibility snapshot — ``{members, target, target_was_new,
+    # member_note_ids, fold_dates, winner_citations_pre_fold, reason,
+    # min_cosine}`` — so ``mem dream revert-coarsen`` can re-split exactly.
+    recorded_coarsenings: list = field(default_factory=list)
+    recorded_theme_coarsenings: list = field(default_factory=list)
+    recorded_distinct_clusters: list = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     log_path: str = ""
@@ -1731,8 +1963,13 @@ class DreamCycleResult:
                 "themes_extended": self.themes_extended,
                 "theme_merges": self.theme_merges_applied,
                 "distinct_pairs": self.distinct_pairs_recorded,
+                "coarsenings": self.coarsenings_applied,
+                "theme_coarsenings": self.theme_coarsenings_applied,
+                "distinct_clusters": self.distinct_clusters_recorded,
+                "themes_resolved": self.themes_resolved,
                 "seams_enqueued": self.seams_enqueued,
                 "rejudge_consumed": self.rejudge_consumed,
+                "supersession_flips": self.supersession_flips,
                 "essence_rewrites": self.essence_rewrites_applied,
                 "priority_signals_enqueued": self.priority_signals_enqueued,
                 "priority_signals_logged": self.priority_signals_logged,
@@ -1742,6 +1979,9 @@ class DreamCycleResult:
                 "merges": list(self.applied_merges),
                 "theme_merges": list(self.applied_theme_merges),
                 "distinct_pairs": list(self.recorded_distinct_pairs),
+                "coarsenings": list(self.recorded_coarsenings),
+                "theme_coarsenings": list(self.recorded_theme_coarsenings),
+                "distinct_clusters": list(self.recorded_distinct_clusters),
             },
             "index": {
                 "indexed": self.indexed,
@@ -1754,6 +1994,79 @@ class DreamCycleResult:
         }
 
 
+def _auto_resolve_stale_themes(cfg: Config, result: "DreamCycleResult") -> None:
+    """Flip ``active`` themes with no recent catalyst entry to ``resolved``.
+
+    Deterministic (no LLM). The newest ``hub_log_entries.entry_date`` for a
+    theme is its activity clock; an empty stub falls back to its created
+    ``date``. Past ``theme_resolve_after_days`` (config, default 60; ``0``
+    disables) the theme is frozen. Mutates the file frontmatter + registry;
+    the caller's tail rebuild reindexes. Reversible by hand (flip back to
+    active) and self-correcting (any new entry resets the clock).
+    """
+    resolve_after = int(getattr(cfg, "theme_resolve_after_days", 60) or 0)
+    if resolve_after <= 0:
+        return
+
+    from personal_mem.core.indexer import Indexer
+    from personal_mem.synthesis import theme_registry
+    from personal_mem.synthesis.hub import set_frontmatter_keys
+
+    today = datetime.now(timezone.utc).date()
+
+    idx = Indexer(config=cfg)
+    try:
+        theme_rows = idx.db.execute(
+            "SELECT id, path, frontmatter FROM notes WHERE type = 'theme'"
+        ).fetchall()
+        for row in theme_rows:
+            try:
+                fm = json.loads(row["frontmatter"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                fm = {}
+            if str(fm.get("status") or "active").split(":")[0] != "active":
+                continue
+            last = idx.db.execute(
+                "SELECT MAX(entry_date) AS d FROM hub_log_entries "
+                "WHERE hub_id = ?",
+                (row["id"],),
+            ).fetchone()
+            ref = (last["d"] if last else None) or str(fm.get("date") or "")
+            ref_date = _parse_iso_date(ref)
+            if ref_date is None:
+                continue  # unparseable → leave it alone
+            if (today - ref_date).days <= resolve_after:
+                continue
+            theme_path = cfg.vault_root / str(row["path"])
+            if not theme_path.exists():
+                continue
+            set_frontmatter_keys(theme_path, {"status": "resolved"})
+            try:
+                theme_registry.upsert(cfg, row["id"], {"status": "resolved"})
+            except Exception as e:  # noqa: BLE001 — registry drift is non-fatal
+                result.errors.append(
+                    f"auto_resolve {row['id']}: registry upsert: {e}"
+                )
+            result.themes_resolved += 1
+    finally:
+        idx.close()
+
+
+def _parse_iso_date(value: str):
+    """Best-effort ``YYYY-MM-DD`` / ISO-datetime → ``date`` (None on failure)."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def apply(
     cfg: Config,
     *,
@@ -1761,6 +2074,7 @@ def apply(
     project: str = "",
     cycle_id: str | None = None,
     strict: bool = True,
+    force_coarsen: bool = False,
 ) -> DreamCycleResult:
     """Execute the LLM-decided structural changes for one dream cycle.
 
@@ -1983,18 +2297,13 @@ def apply(
                         f"theme_mint: missing slug/source_ids in {tm}"
                     )
                     continue
-                # Mint-time essence guard: a theme born without a real
-                # essence stays a placeholder forever in the worst case
-                # (the live-vault ai-capex failure mode). Skip the mint;
-                # the cluster signal re-surfaces next cycle, so the
-                # worker gets another shot at composing one.
+                # Cheap mint (2026-06-13 symmetry closure): essence is
+                # optional. An empty/short essence is NOT a rejection any
+                # more — the stub gets the placeholder and the dual-family
+                # essence worker composes it on a later cycle (same as a
+                # freshly-promoted concept hub). The old ``<5 words`` guard
+                # that re-queued the whole cluster is gone.
                 essence = (tm.get("essence") or "").strip()
-                if len(essence.split()) < 5:
-                    result.errors.append(
-                        f"theme_mint {slug}: empty/placeholder essence — "
-                        "re-emit with a composed essence (≥5 words)"
-                    )
-                    continue
                 mint_path = mint_theme_from_signal(
                     cfg,
                     slug=slug,
@@ -2152,6 +2461,218 @@ def apply(
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"distinct_pairs: {e}")
 
+    # 3b4. concept coarsenings (drift v2, N-ary) --------------------------
+    # COLLAPSE a tight near-clique of fine concepts onto one coarser
+    # ``target``. Runs AFTER pairwise merges (shares the alias map + note
+    # frontmatter). Each member folds into the target via the same
+    # merge_concept_in_notes + alias + fold_concept_hub_on_merge path as a
+    # pairwise merge; a NEW target is written to the ontology first. Before
+    # any mutation we snapshot ``member_note_ids`` + the winner's pre-fold
+    # citations so ``mem dream revert-coarsen`` can re-split exactly even
+    # after the seam-link worker clears the transient fold stamps. The
+    # ``dream_coarsen_apply`` gate (or ``force_coarsen`` from /tighten)
+    # decides whether the fold runs; with the gate off, nothing is recorded
+    # so the cluster re-surfaces for the on-demand front door.
+    _t = time.perf_counter()
+    do_coarsen = force_coarsen or bool(getattr(cfg, "dream_coarsen_apply", True))
+    try:
+        coarsenings = plan.get("coarsenings") or []
+        if coarsenings and not do_coarsen:
+            result.errors.append(
+                f"coarsenings: surfaced {len(coarsenings)} cluster(s) but "
+                "dream_coarsen_apply=false — apply via /tighten"
+            )
+        elif coarsenings:
+            from personal_mem.core.indexer import Indexer
+            from personal_mem.synthesis.concept_hub import (
+                _safe_hub_maps,
+                concept_hub_path,
+                parse_concept_hub,
+            )
+            from personal_mem.synthesis.concepts import (
+                fold_concept_hub_on_merge,
+                load_aliases,
+                merge_concept_in_notes,
+                promote_proposed_concept,
+                save_aliases,
+            )
+
+            _, _, path_to_id = _safe_hub_maps(cfg)
+            idx = Indexer(config=cfg)
+            aliases = load_aliases(cfg)
+            did_fold = False
+            try:
+                for c in coarsenings:
+                    try:
+                        target = (c.get("target") or "").lower().strip()
+                        members = [
+                            str(m).lower().strip()
+                            for m in (c.get("members") or [])
+                            if str(m).strip()
+                        ]
+                        losers = [m for m in members if m != target]
+                        if not target or not losers:
+                            result.errors.append(
+                                f"coarsen: empty target/members in {c}"
+                            )
+                            continue
+                        target_is_new = bool(c.get("target_is_new"))
+                        target_domain = (
+                            c.get("target_domain") or ""
+                        ).lower().strip()
+
+                        # Reversibility snapshot — BEFORE any mutation.
+                        member_note_ids = {
+                            m: [
+                                r["note_id"]
+                                for r in idx.db.execute(
+                                    "SELECT note_id FROM note_concepts "
+                                    "WHERE concept = ?",
+                                    (m,),
+                                )
+                            ]
+                            for m in losers
+                        }
+                        hp = concept_hub_path(cfg, target)
+                        winner_citations = sorted(
+                            parse_concept_hub(
+                                hp, path_to_id=path_to_id
+                            ).cited_ids
+                        )
+
+                        if target_is_new and target_domain:
+                            stats = promote_proposed_concept(
+                                cfg,
+                                target,
+                                domain=target_domain,
+                                rebuild_index=False,
+                            )
+                            if stats.get("ontology_updated"):
+                                result.ontology_grew = True
+
+                        fold_dates_all: list[str] = []
+                        for m in losers:
+                            merge_concept_in_notes(cfg.vault_root, m, target)
+                            existing = aliases.get(target, [])
+                            if m not in existing:
+                                existing.append(m)
+                            if m in aliases:
+                                for old in aliases.pop(m):
+                                    if old != target and old not in existing:
+                                        existing.append(old)
+                            aliases[target] = existing
+                            fold_stats = fold_concept_hub_on_merge(cfg, m, target)
+                            if fold_stats.get("error"):
+                                result.errors.append(
+                                    f"coarsen {m}→{target} fold: "
+                                    f"{fold_stats['error']}"
+                                )
+                            if fold_stats.get("fold_dates"):
+                                fold_dates_all.extend(fold_stats["fold_dates"])
+                                result.seams_enqueued += 1
+                            did_fold = True
+
+                        result.recorded_coarsenings.append(
+                            {
+                                "members": members,
+                                "target": target,
+                                "target_was_new": target_is_new,
+                                "member_note_ids": member_note_ids,
+                                "winner_citations_pre_fold": winner_citations,
+                                "fold_dates": sorted(set(fold_dates_all)),
+                                "reason": str(c.get("reason") or ""),
+                                "min_cosine": c.get("min_cosine"),
+                            }
+                        )
+                        result.coarsenings_applied += 1
+                    except Exception as e:  # noqa: BLE001
+                        result.errors.append(
+                            f"coarsen {c.get('target', '?')}: {e}"
+                        )
+                if did_fold:
+                    save_aliases(cfg, aliases)
+            finally:
+                idx.close()
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"coarsenings: {e}")
+    finally:
+        result.timings["coarsenings"] = time.perf_counter() - _t
+
+    # 3b5. theme coarsenings (drift v2, N-ary) ----------------------------
+    # Collapse N over-split themes into one ``survivor_id`` — N-1 folds via
+    # merge_theme_into (tombstone, reversible). No ontology write.
+    _t = time.perf_counter()
+    try:
+        theme_coarsenings = plan.get("theme_coarsenings") or []
+        if theme_coarsenings and not do_coarsen:
+            result.errors.append(
+                f"theme_coarsenings: surfaced {len(theme_coarsenings)} "
+                "cluster(s) but dream_coarsen_apply=false — apply via /tighten"
+            )
+        elif theme_coarsenings:
+            from personal_mem.synthesis.theme_candidates import merge_theme_into
+
+            for c in theme_coarsenings:
+                try:
+                    survivor = (c.get("survivor_id") or "").strip()
+                    members = [
+                        str(m).strip()
+                        for m in (c.get("members") or [])
+                        if str(m).strip()
+                    ]
+                    losers = [m for m in members if m != survivor]
+                    if not survivor or not losers:
+                        result.errors.append(
+                            f"theme_coarsen: empty survivor/members in {c}"
+                        )
+                        continue
+                    fold_dates_all: list[str] = []
+                    for m in losers:
+                        m_stats = merge_theme_into(
+                            cfg, from_id=m, to_id=survivor, rebuild_index=False
+                        )
+                        if m_stats.get("fold_dates"):
+                            fold_dates_all.extend(m_stats["fold_dates"])
+                            result.seams_enqueued += 1
+                    result.recorded_theme_coarsenings.append(
+                        {
+                            "members": members,
+                            "survivor_id": survivor,
+                            "fold_dates": sorted(set(fold_dates_all)),
+                            "reason": str(c.get("reason") or ""),
+                        }
+                    )
+                    result.theme_coarsenings_applied += 1
+                except Exception as e:  # noqa: BLE001
+                    result.errors.append(
+                        f"theme_coarsen {c.get('survivor_id', '?')}: {e}"
+                    )
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_coarsenings: {e}")
+    finally:
+        result.timings["theme_coarsenings"] = time.perf_counter() - _t
+
+    # 3b6. distinct clusters — N-ary verdict memory, no mutation ----------
+    # Clusters the worker judged genuinely-distinct grains. Recorded (exact
+    # member set) so geometry.judged_clusters stops re-surfacing them.
+    try:
+        for dc in plan.get("distinct_clusters") or []:
+            members = dc.get("members") or []
+            if not isinstance(members, list) or len(members) < 2:
+                result.errors.append(f"distinct_cluster: bad members in {dc}")
+                continue
+            result.recorded_distinct_clusters.append(
+                {
+                    "kind": str(dc.get("kind") or "concept"),
+                    "members": [str(m) for m in members],
+                    "reason": str(dc.get("reason") or ""),
+                    "min_cosine": dc.get("min_cosine"),
+                }
+            )
+            result.distinct_clusters_recorded += 1
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"distinct_clusters: {e}")
+
     # 3c. essence rewrites — joint shape: rewrite-and-log when an entry
     # carries ``new_essence``; log-only for legacy entries that don't.
     # Per-entry errors don't cascade — the rest of the step still runs.
@@ -2284,15 +2805,57 @@ def apply(
     try:
         from personal_mem.operations import rejudge_queue as _rq
 
-        handed = [
-            e.get("decision_id") for e in _rq.peek(cfg)[: _rejudge_cap(cfg)]
+        handed_entries = _rq.peek(cfg)[: _rejudge_cap(cfg)]
+        handed = [e.get("decision_id") for e in handed_entries]
+
+        # Evidence-gated supersession flip (headless/deferred recovery).
+        # mem_extract / mem_create only *enqueue* a predecessor on a
+        # ``supersedes:`` declaration; the dream cycle is where those flip,
+        # now that a commit may have landed. Re-judge each supersession
+        # predecessor structurally — blame survival decides ``superseded``
+        # (lines replaced) vs ``kept`` (still co-contributing). Runs before
+        # the hand-off removal below so we judge the same entries the
+        # phase-2 prediction worker will see (the two consumers write
+        # different fields — status here, prediction_match there).
+        super_ids = [
+            e.get("decision_id")
+            for e in handed_entries
+            if e.get("source") == "supersession" and e.get("decision_id")
         ]
+        if super_ids:
+            try:
+                from personal_mem.operations.decisions import (
+                    rejudge_supersession_predecessors,
+                )
+
+                flipped = rejudge_supersession_predecessors(cfg, super_ids)
+                result.supersession_flips = sum(
+                    1 for _d, r in flipped if r.get("verdict") == "superseded"
+                )
+            except Exception as e:  # noqa: BLE001
+                result.errors.append(f"supersession_flip: {e}")
+
         if handed:
             result.rejudge_consumed = _rq.remove(cfg, handed)
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"rejudge_consume: {e}")
     finally:
         result.timings["rejudge_consume"] = time.perf_counter() - _t
+
+    # 3f. deterministic staleness auto-resolve (C2) -----------------------
+    # An ``active`` theme whose newest catalyst-log entry (or, for an empty
+    # stub, its created date) has aged past ``theme_resolve_after_days`` is
+    # flipped to ``resolved`` — the one automatic theme-lifecycle trigger,
+    # and mechanically observable (no semantic inference). Runs after all
+    # the structural theme steps so a theme touched this cycle (its entry
+    # date refreshed) is correctly seen as fresh. ``0`` disables.
+    _t = time.perf_counter()
+    try:
+        _auto_resolve_stale_themes(cfg, result)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"theme_auto_resolve: {e}")
+    finally:
+        result.timings["theme_auto_resolve"] = time.perf_counter() - _t
 
     # 4. one index rebuild + concept-hub maintenance ----------------------
     _t = time.perf_counter()
@@ -2302,6 +2865,9 @@ def apply(
         + result.themes_minted
         + result.themes_extended
         + result.theme_merges_applied
+        + result.coarsenings_applied
+        + result.theme_coarsenings_applied
+        + result.themes_resolved
         + result.essence_rewrites_applied
         + result.priority_signals_enqueued
     )

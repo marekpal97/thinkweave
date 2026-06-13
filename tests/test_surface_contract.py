@@ -108,9 +108,15 @@ class TestCliSurface:
         # 2026-06-10 — net zero on the count.
         # `mem news-stats` removed in the 2026-06-13 pre-ship dead-code
         # sweep (zero callers in skills/docs/crontab): 44 → 43.
+        # `mem seam` (CC-auto-memory↔vault reconciliation — the
+        # dream-seam-worker's surface/commit hands) added 2026-06-13:
+        # 43 → 44.
+        # (A `mem note-format` subcommand was briefly added then dropped
+        # 2026-06-13 — note-format skeletons are seeded into the vault at
+        # init and the writers Read them directly, so no CLI is needed.)
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
-        assert len(_DISPATCH) == 43
+        assert len(_DISPATCH) == 44
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():

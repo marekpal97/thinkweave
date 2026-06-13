@@ -83,6 +83,17 @@ def _has_seam_link_queue(scan: Any) -> bool:
     return bool(getattr(scan, "seam_link_queue", None))
 
 
+def _has_memory_seam(scan: Any) -> bool:
+    """Fire the seam worker when any CC fact is dirty or a fact was removed.
+
+    ``dirty`` = new / edited / unresolved / recheck-due facts needing
+    (re)judgment; ``removed`` = facts whose CC file is gone (the report
+    must drop them). A fully-clean cycle (the steady state) spawns nothing.
+    """
+    surface = getattr(scan, "memory_seam", None) or {}
+    return bool(surface.get("dirty") or surface.get("removed"))
+
+
 def _has_knowledge_delta(scan: Any) -> bool:
     """Only fire the digest worker when SOMETHING substantive landed in 24h.
 
@@ -115,10 +126,25 @@ REGISTRY: tuple[DreamTaskSpec, ...] = (
         phase=1,
     ),
     DreamTaskSpec(
+        # Reads four surfaces — concept drift pairs, theme dup pairs, and
+        # the N-ary grain-coarsening clusters for both families — and rules
+        # merge / collapse / distinct on each. Spawns when ANY is non-empty.
         surface_key="drift_pairs",
         worker_name="dream-merge-worker",
-        plan_keys=("merges",),
-        has_signal=lambda s: bool(getattr(s, "drift_pairs", None)),
+        plan_keys=(
+            "merges",
+            "theme_merges",
+            "distinct_pairs",
+            "coarsenings",
+            "theme_coarsenings",
+            "distinct_clusters",
+        ),
+        has_signal=lambda s: bool(
+            getattr(s, "drift_pairs", None)
+            or getattr(s, "theme_dup_candidates", None)
+            or getattr(s, "coarsen_clusters", None)
+            or getattr(s, "theme_coarsen_clusters", None)
+        ),
         phase=1,
     ),
     DreamTaskSpec(
@@ -170,6 +196,17 @@ REGISTRY: tuple[DreamTaskSpec, ...] = (
         surface_key="seam_link_queue",
         worker_name="dream-seam-link-worker",
         has_signal=_has_seam_link_queue,
+        phase=2,
+    ),
+    DreamTaskSpec(
+        # CC auto-memory ↔ vault reconciliation. Reads the cheap dirty-diff
+        # surface, resolves each dirty fact's vault twin via
+        # mem_search(mode='similar'), judges confirmed-fresh / stale /
+        # diverged / durable-unique, and writes the durable map +
+        # report through `mem seam commit`. No deps — Wave A.
+        surface_key="memory_seam",
+        worker_name="dream-seam-worker",
+        has_signal=_has_memory_seam,
         phase=2,
     ),
     DreamTaskSpec(

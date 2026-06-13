@@ -90,6 +90,7 @@ def _populated_scan() -> SimpleNamespace:
         # Phase-2 surfaces — populated to exercise the phase-2 path too.
         unwrapped_sessions=[{"session_id": "ses-zzz"}],
         rejudge_queue=[{"decision_id": "dec-zzz"}],
+        memory_seam={"dirty": [{"key": "proj::fact-a"}], "removed": []},
         # Post-2026-06-07 grain split: knowledge_delta is {concept,event} →
         # has_signal needs at least one substantive bucket on *either* slice.
         knowledge_delta={
@@ -129,8 +130,8 @@ def _populated_scan() -> SimpleNamespace:
 class TestRegistrySanity:
     """The shape-correctness contract every spec promises."""
 
-    def test_registry_has_nine_specs(self):
-        assert len(REGISTRY) == 9
+    def test_registry_has_ten_specs(self):
+        assert len(REGISTRY) == 10
 
     def test_every_spec_has_nonempty_surface_and_worker(self):
         for spec in REGISTRY:
@@ -175,6 +176,7 @@ class TestRegistrySanity:
             "dream-wrap-worker",
             "dream-judge-worker",
             "dream-seam-link-worker",
+            "dream-seam-worker",
             "dream-digest-worker",
         }
         assert names == expected, f"registry missing {expected - names}"
@@ -213,12 +215,15 @@ class TestEnabledTasks:
             "dream-priority-worker",
         }
 
-    def test_populated_scan_phase2_emits_all_three(self):
+    def test_populated_scan_phase2_emits_all_four(self):
+        # seam-link is absent (no seam_link_queue on the populated scan);
+        # the memory-seam worker fires on the populated memory_seam.dirty.
         tasks = enabled_tasks(_populated_scan(), phase=2)
         names = {t["worker_name"] for t in tasks}
         assert names == {
             "dream-wrap-worker",
             "dream-judge-worker",
+            "dream-seam-worker",
             "dream-digest-worker",
         }
 

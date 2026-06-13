@@ -1,8 +1,9 @@
 """LLM-assisted concept enrichment for vault notes.
 
-Sends batches of notes to the OpenAI API (gpt-5-mini) and assigns
-concepts from the ontology vocabulary. Writes concepts directly to markdown
-frontmatter — permanent, visible in Obsidian.
+Sends batches of notes to the configured completion provider (resolved from
+``vault/config/api.yaml::overrides.enrich`` via ``core.agent_client``; default
+gpt-5-mini) and assigns concepts from the ontology vocabulary. Writes concepts
+directly to markdown frontmatter — permanent, visible in Obsidian.
 
 Covers all note types including sessions (0% coverage) and imported sources.
 
@@ -20,12 +21,11 @@ import time
 from personal_mem.core.config import Config, load_config
 from personal_mem.core.vault import VaultManager, parse_frontmatter, render_frontmatter
 
-# OpenAI API constants
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+# Env var named in the "no key configured" error message. Provider + model
+# are resolved at call time from api.yaml::overrides.enrich, not hardcoded here.
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
-ENRICH_MODEL = "gpt-5-mini"
 
-BATCH_SIZE = 25  # notes per API call
+BATCH_SIZE = 25  # notes per provider call
 BODY_PREVIEW_CHARS = 500  # chars of body to include per note
 
 
@@ -34,7 +34,7 @@ def _build_ontology_text(ontology: dict[str, list[str]]) -> str:
 
     The dict is the same shape returned by ``load_ontology()`` (seed layered
     beneath the vault override), so the prompt always reflects the user's
-    most recent ``/mem-resolve-concepts`` cleanup, not just the shipped seed.
+    most recent ``/tighten`` cleanup, not just the shipped seed.
     """
     if not ontology:
         return "(no ontology found)"
@@ -54,7 +54,7 @@ def _ontology_concept_set(ontology: dict[str, list[str]]) -> set[str]:
     Used to validate the LLM's output server-side: anything outside this set
     is treated as a *proposed* concept, not a canonical one — keeps invented
     vocabulary out of the live ``concepts:`` field while still capturing it
-    for ``/mem-resolve-concepts`` to review.
+    for ``/tighten`` to review.
     """
     valid: set[str] = set()
     for domain, concepts in ontology.items():
@@ -110,7 +110,7 @@ def load_openai_api_key() -> str:
 _load_api_key = load_openai_api_key
 
 
-def _call_openai(
+def _call_enrich_model(
     notes: list[dict],
     ontology_text: str,
     api_key: str,  # accepted for back-compat — get_provider_key resolves internally
@@ -254,7 +254,7 @@ def enrich(
         )
 
     # Load the merged ontology (seed + vault override) so the prompt reflects
-    # the user's most recent /mem-resolve-concepts cleanup, not just the seed.
+    # the user's most recent /tighten cleanup, not just the seed.
     from personal_mem.synthesis.concepts import load_ontology
 
     ontology = load_ontology()
@@ -333,7 +333,7 @@ def enrich(
             progress_cb(batch_start, total, batch_rows[0]["title"])
 
         try:
-            results = _call_openai(
+            results = _call_enrich_model(
                 notes_payload, ontology_text, api_key, dry_run=dry_run
             )
         except Exception as e:

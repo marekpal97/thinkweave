@@ -3,7 +3,8 @@
 Priority (vault_root resolution):
 1. ``PERSONAL_MEM_VAULT`` env var
 2. ``~/.config/personal-mem/config.toml`` (XDG-respectful user-scope file)
-3. ``vault/.mem/config.toml`` (vault-internal — also owns embedding/edge/dream)
+3. ``vault/config/config.toml`` (vault-internal — also owns embedding/edge/dream;
+   a pre-2026-06-13 file at ``vault/.mem/config.toml`` is read as a fallback)
 4. Built-in defaults
 
 The user-scope tier (2) only ever provides ``vault_root``; vault-internal
@@ -110,6 +111,20 @@ class Config:
     dream_cosine_threshold: float = 0.8
     dream_drift_cap: int = 15
 
+    # Grain coarsening (drift v2, N-ary). The tighten worker may collapse a
+    # tight near-clique of fine concepts/themes onto one coarser term.
+    # ``coarsen_threshold``: complete-linkage floor — stricter than the
+    # pairwise ``cosine_threshold`` because a fold is destructive.
+    # ``coarsen_cap``: clusters surfaced per scan, per family (cohesion-ranked).
+    # ``coarsen_max_size``: bounds the greedy clique-grow.
+    # ``coarsen_apply``: True = nightly applies the fold; False = surface-only
+    # (the worker still judges and the verdict is recorded, but apply skips
+    # the fold so the on-demand ``/tighten`` front door applies on approval).
+    dream_coarsen_threshold: float = 0.85
+    dream_coarsen_cap: int = 3
+    dream_coarsen_max_size: int = 6
+    dream_coarsen_apply: bool = True
+
     # Max folded hubs the phase-2 seam-link worker drains per cycle.
     dream_seam_link_cap: int = 10
 
@@ -141,6 +156,20 @@ class Config:
     dream_essence_max_catalysts: int = 10
     dream_essence_placeholder_max_catalysts: int = 25
 
+    # Memory seam (CC auto-memory ↔ vault reconciliation, phase-2
+    # ``dream-seam-worker``). ``cosine_twin`` / ``cosine_none`` are the
+    # calibrated bands the worker reads off ``mem_search(mode='similar')``
+    # (≥twin = real twin, <none = no twin; the gap is an LLM read).
+    # ``stale_age_days`` is the project-type stale prior (a ``project`` CC
+    # fact untouched this long is a stale-state risk). ``recheck_days``
+    # re-validates resolved verdicts periodically so vault drift is caught.
+    # ``cap`` bounds how many dirty facts one cycle hands the worker.
+    seam_cosine_twin: float = 0.70
+    seam_cosine_none: float = 0.55
+    seam_stale_age_days: int = 30
+    seam_recheck_days: int = 14
+    seam_cap: int = 20
+
     # Extraction — max insight notes one ``mem_extract`` call creates.
     extract_insights_cap: int = 3
 
@@ -156,6 +185,13 @@ class Config:
     theme_min_shared_concepts: int = 2
     theme_name_family_jaccard: float = 0.5
     theme_generic_concept_ratio: float = 0.5
+
+    # Deterministic staleness auto-resolve: an ``active`` theme whose newest
+    # catalyst-log entry (or, for an empty stub, its created date) is older
+    # than this many days is auto-marked ``resolved`` by the dream apply
+    # phase. 0 disables. The only automatic theme-lifecycle trigger — and
+    # mechanically observable (no semantic inference).
+    theme_resolve_after_days: int = 60
 
     # Landing docs — ``open_probes_cap``: classified prompt-probes gathered
     # into the landing context; ``probes_display_cap``: probes the rendered
@@ -190,7 +226,21 @@ class Config:
 
     @property
     def config_path(self) -> Path:
-        return self.mem_dir / "config.toml"
+        """Vault-internal tunables file (embedding / edge / dream knobs).
+
+        Canonical home is ``vault/config/config.toml`` — alongside the other
+        user-editable config (2026-06-13: moved out of ``.mem/`` so the whole
+        config surface lives in one folder). A pre-move file at
+        ``vault/.mem/config.toml`` is still read as a transparent fallback;
+        move it to ``config/`` when convenient.
+        """
+        canonical = self.config_dir / "config.toml"
+        if canonical.exists():
+            return canonical
+        legacy = self.mem_dir / "config.toml"
+        if legacy.exists():
+            return legacy
+        return canonical  # neither exists — return canonical so writes commit forward
 
     @property
     def templates_dir(self) -> Path:
@@ -287,8 +337,9 @@ def write_user_config(vault_root: Path) -> None:
     interrupted write never leaves a half-written TOML behind.
 
     The file shape is intentionally minimal — one key — because the
-    vault-internal ``config.toml`` (tier 3) remains the home for
-    embedding / edge / dream fields. This tier only ever sets the path.
+    vault-internal ``config.toml`` (tier 3, at ``vault/config/config.toml``)
+    remains the home for embedding / edge / dream fields. This tier only
+    ever sets the path.
     """
     path = user_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,7 +404,7 @@ def load_config() -> Config:
     Vault-root precedence (high → low):
     1. ``PERSONAL_MEM_VAULT`` env var
     2. ``~/.config/personal-mem/config.toml`` (or ``$XDG_CONFIG_HOME``)
-    3. ``vault/.mem/config.toml``
+    3. ``vault/config/config.toml`` (fallback: legacy ``vault/.mem/config.toml``)
     4. Built-in default (``~/vault``)
     """
     cfg = Config()
@@ -416,6 +467,14 @@ def load_config() -> Config:
             cfg.dream_cosine_threshold = float(dream_cfg["cosine_threshold"])
         if "drift_cap" in dream_cfg:
             cfg.dream_drift_cap = int(dream_cfg["drift_cap"])
+        if "coarsen_threshold" in dream_cfg:
+            cfg.dream_coarsen_threshold = float(dream_cfg["coarsen_threshold"])
+        if "coarsen_cap" in dream_cfg:
+            cfg.dream_coarsen_cap = int(dream_cfg["coarsen_cap"])
+        if "coarsen_max_size" in dream_cfg:
+            cfg.dream_coarsen_max_size = int(dream_cfg["coarsen_max_size"])
+        if "coarsen_apply" in dream_cfg:
+            cfg.dream_coarsen_apply = bool(dream_cfg["coarsen_apply"])
         if "seam_link_cap" in dream_cfg:
             cfg.dream_seam_link_cap = int(dream_cfg["seam_link_cap"])
         if "promotion_threshold" in dream_cfg:
@@ -438,6 +497,19 @@ def load_config() -> Config:
             cfg.dream_essence_placeholder_max_catalysts = int(
                 dream_cfg["essence_placeholder_max_catalysts"]
             )
+
+        # Memory seam ([seam])
+        seam_cfg = data.get("seam", {})
+        if "cosine_twin" in seam_cfg:
+            cfg.seam_cosine_twin = float(seam_cfg["cosine_twin"])
+        if "cosine_none" in seam_cfg:
+            cfg.seam_cosine_none = float(seam_cfg["cosine_none"])
+        if "stale_age_days" in seam_cfg:
+            cfg.seam_stale_age_days = int(seam_cfg["stale_age_days"])
+        if "recheck_days" in seam_cfg:
+            cfg.seam_recheck_days = int(seam_cfg["recheck_days"])
+        if "cap" in seam_cfg:
+            cfg.seam_cap = int(seam_cfg["cap"])
 
         # Extraction policy
         extract_cfg = data.get("extract", {})
@@ -462,6 +534,8 @@ def load_config() -> Config:
             cfg.theme_generic_concept_ratio = float(
                 themes_cfg["generic_concept_ratio"]
             )
+        if "resolve_after_days" in themes_cfg:
+            cfg.theme_resolve_after_days = int(themes_cfg["resolve_after_days"])
 
         # Landing docs
         landing_cfg = data.get("landing", {})

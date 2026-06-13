@@ -46,6 +46,15 @@ MIN_NOTES_FOR_CENTROID = 3
 #: Default surface threshold — pairs at or above go to the model.
 DEFAULT_COSINE_THRESHOLD = 0.8
 
+#: Grain-coarsening near-clique floor. Stricter than the pairwise merge
+#: threshold because collapsing N fine terms onto one coarse term is a
+#: destructive fold — a false-positive member costs more than a missed
+#: cluster (which simply re-surfaces next cycle).
+DEFAULT_COARSEN_THRESHOLD = 0.85
+
+#: Default cap on members in one coarsening cluster (bounds clique-grow).
+DEFAULT_COARSEN_MAX_SIZE = 6
+
 
 def _dot(a: list[float], b: list[float]) -> float:
     sumprod = getattr(math, "sumprod", None)
@@ -212,6 +221,92 @@ def cosine_pairs(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Grain coarsening — N-ary near-clique clusters (drift v2)
+# ---------------------------------------------------------------------------
+
+
+def _greedy_cliques(
+    vectors: dict[str, list[float]],
+    threshold: float,
+    max_size: int,
+) -> list[tuple[list[str], float, float]]:
+    """Greedy complete-linkage near-cliques over the cosine graph.
+
+    A cluster is a set where **every** pairwise cosine ≥ ``threshold`` — a
+    near-clique, not a connected component, so it cannot chain (``a~b~c~d``
+    with ``a⊥d`` never forms one cluster). Seeds from the tightest unclaimed
+    edge and grows by the candidate that cliques with all current members,
+    highest min-cosine first. Deterministic (sorted tie-breaks). Each node
+    lands in at most one cluster. 2-member cliques (plain pairs) are emitted
+    too. Returns ``[(sorted_members, avg_cos, min_cos), ...]`` ranked by
+    ``min_cos`` (cohesion) descending.
+    """
+    edges = cosine_pairs(vectors, threshold=threshold)
+    adj: dict[str, dict[str, float]] = {}
+    for a, b, cos in edges:
+        adj.setdefault(a, {})[b] = cos
+        adj.setdefault(b, {})[a] = cos
+
+    claimed: set[str] = set()
+    clusters: list[tuple[list[str], float, float]] = []
+    for a, b, _cos in edges:
+        if a in claimed or b in claimed:
+            continue
+        members = [a, b]
+        while len(members) < max_size:
+            common: set[str] | None = None
+            for m in members:
+                nbrs = set(adj.get(m, {}))
+                common = nbrs if common is None else (common & nbrs)
+            common = (common or set()) - set(members) - claimed
+            if not common:
+                break
+            best: str | None = None
+            best_mincos = -1.0
+            for c in sorted(common):  # sorted → deterministic tie-break
+                mc = min(adj[c][m] for m in members)
+                if mc > best_mincos:
+                    best_mincos = mc
+                    best = c
+            if best is None:
+                break
+            members.append(best)
+
+        pair_coss = [
+            adj[members[i]][members[j]]
+            for i in range(len(members))
+            for j in range(i + 1, len(members))
+        ]
+        avg = round(sum(pair_coss) / len(pair_coss), 4)
+        mn = round(min(pair_coss), 4)
+        claimed.update(members)
+        clusters.append((sorted(members), avg, mn))
+
+    clusters.sort(key=lambda t: t[2], reverse=True)
+    return clusters
+
+
+def concept_clusters(
+    vectors: dict[str, list[float]],
+    *,
+    threshold: float = DEFAULT_COARSEN_THRESHOLD,
+    max_size: int = DEFAULT_COARSEN_MAX_SIZE,
+) -> list[tuple[list[str], float, float]]:
+    """Near-clique concept clusters for grain coarsening (see :func:`_greedy_cliques`)."""
+    return _greedy_cliques(vectors, threshold, max_size)
+
+
+def theme_clusters(
+    vectors: dict[str, list[float]],
+    *,
+    threshold: float = DEFAULT_COARSEN_THRESHOLD,
+    max_size: int = DEFAULT_COARSEN_MAX_SIZE,
+) -> list[tuple[list[str], float, float]]:
+    """Near-clique theme clusters (thm-id members) for arc coarsening."""
+    return _greedy_cliques(vectors, threshold, max_size)
+
+
 def concept_domain_map(ontology: dict[str, list[str]]) -> dict[str, list[str]]:
     """concept → [domains it appears under] (domain keys map to themselves)."""
     out: dict[str, list[str]] = {}
@@ -303,11 +398,81 @@ def build_concept_evidence(
     return out
 
 
+def build_concept_cluster_evidence(
+    cfg: Config,
+    clusters: list[tuple[list[str], float, float]],
+    *,
+    sample_titles: int = 3,
+) -> list[dict[str, Any]]:
+    """Evidence packets for concept coarsening clusters.
+
+    Per cluster the worker sees, for each member: its ontology domains,
+    note count, and recent sample titles; plus ``common_domain`` (the
+    intersection of all members' domains, a strong COLLAPSE signal) and
+    ``canonical_target_hint`` (a member that is itself an ontology domain
+    key, e.g. ``greeks`` — the obvious fold target; ``None`` → the worker
+    proposes a new coarse term). Hint only; the worker owns the target.
+    """
+    from personal_mem.synthesis.concepts import load_ontology
+
+    ontology = load_ontology()
+    dmap = concept_domain_map(ontology)
+    domain_keys = {d.lower() for d in ontology}
+
+    members_all = {m for members, _, _ in clusters for m in members}
+    counts: dict[str, int] = {}
+    titles: dict[str, list[str]] = {}
+    if cfg.index_db.exists() and members_all:
+        db = sqlite3.connect(str(cfg.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            for c in members_all:
+                row = db.execute(
+                    "SELECT COUNT(*) AS n FROM note_concepts WHERE concept = ?",
+                    (c,),
+                ).fetchone()
+                counts[c] = row["n"] if row else 0
+                titles[c] = [
+                    r["title"]
+                    for r in db.execute(
+                        """
+                        SELECT n.title FROM notes n
+                        JOIN note_concepts nc ON nc.note_id = n.id
+                        WHERE nc.concept = ?
+                        ORDER BY n.date DESC LIMIT ?
+                        """,
+                        (c, sample_titles),
+                    )
+                ]
+        finally:
+            db.close()
+
+    out: list[dict[str, Any]] = []
+    for members, avg, mn in clusters:
+        common = set.intersection(*[set(dmap.get(m, [])) for m in members]) if members else set()
+        out.append(
+            {
+                "members": members,
+                "avg_cosine": avg,
+                "min_cosine": mn,
+                "domains": {m: dmap.get(m, []) for m in members},
+                "note_counts": {m: counts.get(m, 0) for m in members},
+                "sample_titles": {m: titles.get(m, []) for m in members},
+                "common_domain": sorted(common)[0] if common else None,
+                "canonical_target_hint": next(
+                    (m for m in members if m in domain_keys), None
+                ),
+            }
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Judgment memory — read back from the dream maintenance log
 # ---------------------------------------------------------------------------
 
 PairKey = tuple[str, frozenset]
+ClusterKey = tuple[str, frozenset]
 
 
 def pair_key(kind: str, a: str, b: str) -> PairKey:
@@ -355,3 +520,78 @@ def judged_pairs(cfg: Config) -> set[PairKey]:
             if len(pair) == 2:
                 out.add(pair_key(str(d.get("kind") or "concept"), pair[0], pair[1]))
     return out
+
+
+def cluster_key(kind: str, members: list[str]) -> ClusterKey:
+    """Canonical exclusion key for an N-ary cluster — order-insensitive."""
+    return (kind, frozenset(str(m).lower().strip() for m in members))
+
+
+def judged_clusters(cfg: Config) -> tuple[set[tuple[str, str]], set[ClusterKey]]:
+    """Cluster-scope verdict memory, read back from the maintenance log.
+
+    Returns ``(coarsened_members, distinct_cluster_keys)``:
+
+    - ``coarsened_members`` — ``{(kind, term)}`` for every term folded away
+      (coarsening members minus the target, theme-coarsening members minus
+      the survivor, plus pairwise ``merges`` ``from`` / ``theme_merges``
+      ``from_id``). A candidate cluster touching any of these is **stale**
+      (the term no longer exists) → drop on overlap.
+    - ``distinct_cluster_keys`` — exact :func:`cluster_key` set for clusters
+      ruled DISTINCT. Drop only on exact match (the members stay live and
+      may legitimately re-cluster differently later).
+
+    This pair of sets is the anti-oscillation guard: once a cluster is
+    COLLAPSEd or ruled DISTINCT it cannot re-surface in the nightly loop.
+    """
+    from personal_mem.operations.dream import maintenance_log_path
+
+    coarsened: set[tuple[str, str]] = set()
+    distinct_keys: set[ClusterKey] = set()
+    path = maintenance_log_path(cfg)
+    if not path.exists():
+        return coarsened, distinct_keys
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        verdicts = entry.get("verdicts") or {}
+        if not isinstance(verdicts, dict):
+            continue
+        for m in verdicts.get("merges") or []:
+            if isinstance(m, dict) and m.get("from"):
+                coarsened.add(("concept", str(m["from"]).lower().strip()))
+        for m in verdicts.get("theme_merges") or []:
+            if isinstance(m, dict) and m.get("from_id"):
+                coarsened.add(("theme", str(m["from_id"]).lower().strip()))
+        for c in verdicts.get("coarsenings") or []:
+            if not isinstance(c, dict):
+                continue
+            target = str(c.get("target") or "").lower().strip()
+            for mem in c.get("members") or []:
+                ml = str(mem).lower().strip()
+                if ml and ml != target:
+                    coarsened.add(("concept", ml))
+        for c in verdicts.get("theme_coarsenings") or []:
+            if not isinstance(c, dict):
+                continue
+            surv = str(c.get("survivor_id") or "").lower().strip()
+            for mem in c.get("members") or []:
+                ml = str(mem).lower().strip()
+                if ml and ml != surv:
+                    coarsened.add(("theme", ml))
+        for d in verdicts.get("distinct_clusters") or []:
+            if not isinstance(d, dict):
+                continue
+            members = d.get("members") or []
+            if len(members) >= 2:
+                distinct_keys.add(
+                    cluster_key(str(d.get("kind") or "concept"), members)
+                )
+    return coarsened, distinct_keys

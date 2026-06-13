@@ -888,16 +888,35 @@ def _handle_session_start(hook_input: dict) -> None:
         from personal_mem.core.config import load_config
         from personal_mem.retrieval.context import build_project_context
 
+        from personal_mem.operations.retrieval_log import parse_returned_ids
+
         cfg = load_config()
         project = _detect_project(hook_input)
         payload = build_project_context(cfg, project, budget_tokens=10000)
+
+        # Served note ids — computed once, reused for the RLVR startup event
+        # AND the memory-seam guard. (Parsed from the payload *before* the
+        # guard is prepended, so the guard's own [[twin]] wikilinks — which
+        # reference already-served notes — don't double-count.)
+        served_ids = parse_returned_ids(payload)
+
+        # Memory-seam serving lens — NOT a whole-seam dump. Cross-matches the
+        # served notes against the flagged-twin index and injects a small
+        # guard ONLY when a note in this session's context is the twin of a
+        # durable CC memory flagged stale/diverged. Empty string = inject
+        # nothing (the common case). Best-effort; never blocks the payload.
+        try:
+            from personal_mem.synthesis.memory_seam import session_guard_section
+
+            guard = session_guard_section(cfg, served_ids)
+        except Exception as e:
+            _log_error("session_start_seam", e)
+            guard = ""
 
         # Record the startup event regardless of whether we emit the payload —
         # an empty payload (cold vault) is itself a fact the RLVR row should
         # carry (n_retrievals_onthefly stays 0, startup_token_est = 0).
         try:
-            from personal_mem.operations.retrieval_log import parse_returned_ids
-
             session_id = hook_input.get(
                 "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
             )
@@ -905,7 +924,7 @@ def _handle_session_start(hook_input: dict) -> None:
                 event = {
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "type": "startup",
-                    "returned_ids": parse_returned_ids(payload),
+                    "returned_ids": served_ids,
                     # Rough token estimate — matches the SessionStart budget
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
@@ -915,12 +934,15 @@ def _handle_session_start(hook_input: dict) -> None:
             # Capture is best-effort; never block the payload injection.
             _log_error("session_start_capture", e)
 
-        if not payload.strip():
+        if not payload.strip() and not guard:
             _output()
             return
 
+        # Guard rides at the TOP — it's a correctness interrupt on notes the
+        # model is about to rely on, so it must be seen before the context.
+        full = f"{guard}\n{payload}" if guard else payload
         _output(
-            additional_context=payload,
+            additional_context=full,
             hook_event_name="SessionStart",
         )
     except Exception as e:

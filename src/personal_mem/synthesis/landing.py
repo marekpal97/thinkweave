@@ -1038,8 +1038,8 @@ def _last_catalyst_date(body: str) -> str:
 def themes_ledger(config: Config) -> str:
     """Generate the global themes landing doc.
 
-    Lists active themes (table), dormant themes (collapsed), resolved
-    themes (collapsed). Each theme row links to its full page where the
+    Lists active themes (table) and resolved themes (collapsed; legacy
+    ``dormant`` files fold in here). Each theme row links to its full page where the
     Essence and Catalyst log live. The per-theme temporal DAG (Workstream
     C) renders on the theme page itself, not here.
     """
@@ -1065,8 +1065,12 @@ def themes_ledger(config: Config) -> str:
         return "\n".join(lines) + "\n"
 
     active = [t for t in themes if t["status"] == "active"]
-    dormant = [t for t in themes if t["status"] == "dormant"]
-    resolved = [t for t in themes if t["status"] == "resolved"]
+    # ``dormant`` was collapsed into ``resolved`` 2026-06-13 — both are
+    # "frozen". Straggler dormant files (pre-migration) still render under
+    # Resolved so nothing silently disappears.
+    resolved = [
+        t for t in themes if t["status"] in ("resolved", "dormant")
+    ]
     merged = [t for t in themes if str(t["status"]).startswith("merged-into")]
     other = [
         t for t in themes
@@ -1140,7 +1144,7 @@ def themes_ledger(config: Config) -> str:
                 lines.append(section)
                 lines.append("")
 
-    for label, group in (("Dormant", dormant), ("Resolved", resolved)):
+    for label, group in (("Resolved", resolved),):
         if group:
             lines.append(f"<details><summary>{label} ({len(group)})</summary>")
             lines.append("")

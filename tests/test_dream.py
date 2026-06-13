@@ -1930,9 +1930,12 @@ class TestApplyHubEssence:
         # The other sections survive the splice.
         assert "## Catalyst log" in body and "## Open questions" in body
 
-    def test_mint_with_empty_essence_rejected(
+    def test_mint_with_empty_essence_creates_placeholder_stub(
         self, config: Config, vault: VaultManager
     ):
+        # Cheap mint (2026-06-13): an empty essence no longer rejects the
+        # mint — it creates a placeholder stub the essence worker drains
+        # later, exactly like a freshly-promoted concept hub.
         paths = [
             _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
             for i in range(3)
@@ -1949,9 +1952,13 @@ class TestApplyHubEssence:
             ]
         }
         result = apply(config, plan=plan, project="t")
-        assert result.themes_minted == 0
-        assert any("essence" in e for e in result.errors)
-        assert list((config.vault_root / "themes").glob("*.md")) == []
+        assert result.themes_minted == 1
+        theme_path = next((config.vault_root / "themes").glob("*.md"))
+        fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        # Placeholder essence, and NOT stamped essence_updated → the
+        # essence worker will see it as a placeholder candidate.
+        assert "_Awaiting first synthesis pass._" in body
+        assert "essence_updated" not in fm
 
 
 class TestPlanValidationNewKeys:

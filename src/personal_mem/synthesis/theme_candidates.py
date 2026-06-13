@@ -639,7 +639,7 @@ def mint_theme_from_signal(
     config: Config,
     *,
     slug: str,
-    essence: str,
+    essence: str = "",
     cluster_source_ids: list[str],
     cluster_concepts: list[str],
     candidacy: str = "inferred-from-signal",
@@ -649,12 +649,20 @@ def mint_theme_from_signal(
     catalysts: list[dict] | None = None,
     rebuild_index: bool = True,
 ) -> Path:
-    """Mint a canonical theme from a cluster signal.
+    """Promote a canonical theme from a cluster signal (registry + stub + seed).
 
     Writes ``vault/themes/{thm-XXXX}-{slug}.md`` and backfills
     ``relates_to: [thm-id]`` on each cluster source so source→theme edges
     exist in both directions. Returns the new theme path. Used by the
     ``/dream`` apply phase's ``theme_mints`` plan key.
+
+    **Cheap by design (2026-06-13 symmetry closure).** ``essence`` is
+    optional; when empty the stub carries the ``_Awaiting first synthesis
+    pass._`` placeholder and is NOT stamped ``essence_updated`` — so the
+    dual-family ``dream-essence-worker`` picks it up as a placeholder
+    candidate and composes the essence on a later cycle, exactly as a
+    freshly-promoted concept hub backfills. This mirrors concept promotion
+    (registry-add + seed) — no synchronous essence composition required.
 
     ``title`` (optional) is a human display title ("Iran–Hormuz supply
     shock") written to ``title:`` frontmatter and the H1; the slug stays
