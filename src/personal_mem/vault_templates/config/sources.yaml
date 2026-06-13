@@ -5,12 +5,15 @@
 # this file to retarget queues, swap importers, change drain strategies,
 # or add new source-type entries without forking personal_mem.
 #
-# Adding a new source type (e.g. podcast):
-#   1. Add a SourceTypeSpec entry to src/personal_mem/acquisition/sources/registry.py
-#   2. Add a `sources:` block here with `queue`, `research_skill`,
-#      `dedup_keys`, `url_patterns`, `drain_strategy` (defaults below).
-#   3. Drop a `commands/research/research-podcast.md` skill alongside.
-# No edits to vault.py, queue.py, or the CLI are required.
+# Adding a new source type: run `/source-scaffold <slug>` (or `mem sources
+# scaffold <slug> --bucket … --layout …`). It writes three upgrade-safe
+# artifacts — none inside the installed package:
+#   1. identity   → vault/config/source_types.yaml  (bucket, layout, aliases)
+#   2. behaviour  → this file (vault/config/sources.yaml), a block like below
+#   3. writer     → ~/.claude/commands/<slug>.md      (machine-global skill)
+# Then fill in the FETCH STRATEGY section of the generated skill. No edits to
+# registry.py, vault.py, queue.py, or the CLI are required.
+# (Editing registry.py + repo commands/ is the contributor path, not the user one.)
 
 sources:
   paper:
@@ -18,7 +21,6 @@ sources:
     research_skill: research-paper
     drain_strategy: anthropic_batch
     intake_folder: ~/papers_inbox
-    summarize_format: technical_brief
     dedup_keys: [arxiv_id, doi, url, title]
     url_patterns: [arxiv.org, openreview.net]
   repo:
@@ -46,8 +48,8 @@ sources:
     lookback_days: 7
     # v2 admission: Haiku title-triage against the active-themes catalog
     # rendered in vault/THEMES.md (## Catalog (active) section). The
-    # legacy focus_manifest path is no longer consulted; FOCUS.md is a
-    # deprecated stub.
+    # legacy focus_manifest path / FOCUS.md gate was removed 2026-06-13 —
+    # broaden or narrow admission by editing theme essences, not a file.
     triage_model: claude-haiku-4-5
     themes_catalog: vault/THEMES.md
     dedup_keys: [url, entry_id]
@@ -153,8 +155,8 @@ sources:
     url_patterns: [feeds.megaphone.fm, feeds.libsyn.com, feeds.transistor.fm, feeds.simplecast.com, anchor.fm, omny.fm, rss.art19.com, spreaker.com]
     research_skill: podcast
     # No `triage_model` set — admission is the per-show subscription
-    # decision (an outlet entry in podcast_feeds.yaml), not per-episode
-    # triage. /drain Path B fans out workers directly.
+    # decision (an outlet entry in PRIORITIES.yaml::intake.podcast_events),
+    # not per-episode triage. /drain Path B fans out workers directly.
     allowed_failure_prefixes: [audio_fetch_failed, audio_too_large, audio_upload_failed, audio_processing_failed, gemini_refused, api_error, invalid_response, "mem_create:"]
   podcast-concepts:
     # Concept-grain sibling — deep-dives, lecture-style shows, technical

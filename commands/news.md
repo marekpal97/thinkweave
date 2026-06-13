@@ -42,7 +42,7 @@ Read `vault/config/PRIORITIES.yaml (intake.news.outlets)` and find the outlet wh
 - `language`
 - `prefer_embedded` (set false here — we don't have a feed entry, the worker fetches via curl)
 
-If no outlet matches the host: build a minimal stub — `outlet_name = <hostname>`, `outlet = <hostname-slug>`, `tier = 2` (untrusted by default), `region = "global"`, `language = "en"`. Surface this fact in the report so the user can decide whether to add the outlet to `news_feeds.yaml` for future cron pickup.
+If no outlet matches the host: build a minimal stub — `outlet_name = <hostname>`, `outlet = <hostname-slug>`, `tier = 2` (untrusted by default), `region = "global"`, `language = "en"`. Surface this fact in the report so the user can decide whether to add the outlet to `PRIORITIES.yaml::intake.news.outlets` for future cron pickup.
 
 ### 2. Build a synthetic queue item
 
@@ -89,7 +89,7 @@ Parse the writer's JSON outcome:
 - **`accepted`** → "Created `<src-id>` from `<outlet>`. Filed as **theme-unfiled** for periodic review. Concepts: `<list>`."
 - **`fetch_failed`** → "Couldn't fetch the article — paywall, network failure, or bot wall. Source URL: `<url>`. Try saving the page text manually and using `/capture`."
 
-If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `news_feeds.yaml`. Add it if you want this source pulled by cron."*
+If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `PRIORITIES.yaml::intake.news.outlets`. Add it if you want this source pulled by cron."*
 
 ---
 

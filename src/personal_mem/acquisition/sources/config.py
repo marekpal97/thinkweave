@@ -29,7 +29,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "research_skill": "research-paper",
             "drain_strategy": "anthropic_batch",
             "intake_folder": "~/papers_inbox",
-            "summarize_format": "technical_brief",
             "dedup_keys": ["arxiv_id", "doi", "title"],
             "url_patterns": ["arxiv.org", "openreview.net"],
         },
@@ -53,11 +52,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "news": {
             "queue": "vault/.mem/queues/news.jsonl",
-            "feed_config": "vault/.mem/news_feeds.yaml",
+            # Outlets registry → PRIORITIES.yaml::intake.news.outlets.
             # v2 admission: Haiku title-triage against the active-themes
             # catalog rendered in vault/THEMES.md (## Catalog (active)).
             # The legacy focus_manifest field is intentionally absent —
-            # FOCUS.md is a deprecated stub.
+            # the FOCUS.md admission gate was removed 2026-06-13.
             "triage_model": "claude-haiku-4-5",
             "themes_catalog": "vault/THEMES.md",
             "dedup_keys": ["url", "entry_id"],
@@ -194,14 +193,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "podcast-events": {
             # Event-grain podcasts (markets, macro, interview shows).
-            # Each show is one outlet entry in podcast_events_feeds.yaml;
-            # the rss_poll strategy pulls the <enclosure> audio URL per
-            # episode, and the worker hands the MP3 to Gemini Flash via
-            # the Files API. Theme candidate floater fires on create.
-            # See commands/podcast.md and
+            # Each show is one outlet entry in
+            # PRIORITIES.yaml::intake.podcast_events.outlets; the rss_poll
+            # strategy pulls the <enclosure> audio URL per episode, and the
+            # worker hands the MP3 to Gemini Flash via the Files API. Theme
+            # candidate floater fires on create. See commands/podcast.md and
             # agents/research-podcast-worker.md.
             "queue": "vault/.mem/queues/podcast-events.jsonl",
-            "feed_config": "vault/.mem/podcast_events_feeds.yaml",
             "drain_strategy": "subagent",
             "subagent_type": "research-podcast-worker",
             "subagent_model": "sonnet",
@@ -226,8 +224,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "research_skill": "podcast",
             "post_batch_hooks": [],
             # No `triage_model` — admission is the per-show subscription
-            # decision (an outlet in podcast_events_feeds.yaml), not
-            # per-episode triage. /drain Path B fans out directly.
+            # decision (an outlet in PRIORITIES.yaml::intake.podcast_events),
+            # not per-episode triage. /drain Path B fans out directly.
             "allowed_failure_prefixes": [
                 "audio_fetch_failed",
                 "audio_too_large",
@@ -244,8 +242,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # technical explainer pods. Same Gemini audio extraction;
             # no theme floating. Longer lookback than events because
             # durable content is worth backfilling further.
+            # Outlets registry → PRIORITIES.yaml::intake.podcast_concepts.outlets.
             "queue": "vault/.mem/queues/podcast-concepts.jsonl",
-            "feed_config": "vault/.mem/podcast_concepts_feeds.yaml",
             "drain_strategy": "subagent",
             "subagent_type": "research-podcast-worker",
             "subagent_model": "sonnet",

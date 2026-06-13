@@ -1,8 +1,9 @@
 """Tests for the ``rss_poll`` discover strategy — podcast flavor.
 
-The podcast flavor uses ``feed_config: <path>`` (outlets YAML, like news)
-but is dispatched by source-type slug prefix (``podcast-*``). Per entry
-the strategy extracts:
+The podcast flavor reads outlets from
+``PRIORITIES.yaml::intake.podcast_events.outlets`` (like news) and is
+dispatched by source-type slug prefix (``podcast-*``). Per entry the
+strategy extracts:
 - the <enclosure> audio URL into ``audio_url``,
 - <itunes:duration> parsed to seconds,
 - <itunes:episode> as episode_number,
@@ -224,15 +225,19 @@ def test_build_podcast_item_fallback_id_uses_link() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_feeds_yaml(path: Path, outlet_slug: str, feeds: list[str], **outlet_extra: Any) -> None:
-    """Write a minimal podcast feed-config YAML to ``path``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["outlets:", f"  {outlet_slug}:"]
+def _write_priorities_podcast(
+    vault_root: Path, outlet_slug: str, feeds: list[str], **outlet_extra: Any
+) -> None:
+    """Seed ``config/PRIORITIES.yaml::intake.podcast_events.outlets`` with one show."""
+    (vault_root / "config").mkdir(parents=True, exist_ok=True)
+    lines = ["intake:", "  podcast_events:", "    outlets:", f"      {outlet_slug}:"]
     for k, v in {"name": outlet_slug, **outlet_extra}.items():
-        lines.append(f"    {k}: {v}")
+        lines.append(f"        {k}: {v}")
     feeds_inline = ", ".join(feeds)
-    lines.append(f"    feeds: [{feeds_inline}]")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines.append(f"        feeds: [{feeds_inline}]")
+    (vault_root / "config" / "PRIORITIES.yaml").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
 
 
 def test_strategy_polls_podcast_feeds_and_enqueues(
@@ -261,9 +266,8 @@ def test_strategy_polls_podcast_feeds_and_enqueues(
     ]
     monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(entries))
 
-    feed_path = tmp_path / ".mem" / "podcast_events_feeds.yaml"
-    _write_feeds_yaml(
-        feed_path,
+    _write_priorities_podcast(
+        tmp_path,
         outlet_slug="macro-trading-floor",
         feeds=["https://feeds.example.com/macro-trading-floor"],
         tier=1,
@@ -274,7 +278,6 @@ def test_strategy_polls_podcast_feeds_and_enqueues(
     config = {
         "sources": {
             "podcast-events": {
-                "feed_config": ".mem/podcast_events_feeds.yaml",
                 "lookback_days": 7,
                 "dedup_keys": ["entry_id", "audio_url", "url"],
             }
@@ -321,15 +324,13 @@ def test_strategy_podcast_lookback_filters_stale(
     ]
     monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(entries))
 
-    feed_path = tmp_path / ".mem" / "podcast_events_feeds.yaml"
-    _write_feeds_yaml(
-        feed_path, outlet_slug="show", feeds=["https://feeds.example.com/show"]
+    _write_priorities_podcast(
+        tmp_path, outlet_slug="show", feeds=["https://feeds.example.com/show"]
     )
 
     config = {
         "sources": {
             "podcast-events": {
-                "feed_config": ".mem/podcast_events_feeds.yaml",
                 "lookback_days": 7,
                 "dedup_keys": ["entry_id"],
             }
@@ -358,9 +359,8 @@ def test_strategy_podcast_daily_cap_enforced(
     ]
     monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(entries))
 
-    feed_path = tmp_path / ".mem" / "podcast_events_feeds.yaml"
-    _write_feeds_yaml(
-        feed_path,
+    _write_priorities_podcast(
+        tmp_path,
         outlet_slug="show",
         feeds=["https://feeds.example.com/show"],
         daily_cap=2,  # cap at 2 even though 5 are fresh
@@ -369,7 +369,6 @@ def test_strategy_podcast_daily_cap_enforced(
     config = {
         "sources": {
             "podcast-events": {
-                "feed_config": ".mem/podcast_events_feeds.yaml",
                 "lookback_days": 7,
                 "dedup_keys": ["entry_id"],
             }

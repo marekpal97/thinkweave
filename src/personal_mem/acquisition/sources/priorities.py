@@ -38,9 +38,11 @@ only (`[a, b, c]`) — the personal_mem YAML reader silently parses
 block-style `- item` lists as empty.
 
 PRIORITIES.yaml lives only at ``vault/config/PRIORITIES.yaml`` — there
-is no legacy fallback location. Before the user creates the file, the
-strategies' legacy reads (`news_feeds.yaml`, inline `sources.yaml`
-fields) supply the data.
+is no legacy fallback location. It is the sole feed registry for
+news/podcast outlets and newsletter senders; the standalone
+``*_feeds.yaml`` files were retired 2026-06-13. Inline ``channels:`` in
+``sources.yaml`` survives only as the youtube fallback when the
+``intake.<slug>.channels`` block is unset.
 """
 
 from __future__ import annotations

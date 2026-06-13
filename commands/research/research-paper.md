@@ -71,7 +71,7 @@ Required frontmatter:
 mem_create(
   type="source",
   title="<descriptive title>",
-  body="<technical brief — see template below>",
+  body="<technical brief — structured per vault/config/note_formats/paper.md>",
   tags=["paper"],
   concepts=["<≥3 ontology concepts>"],
   frontmatter={
@@ -126,34 +126,13 @@ related: [<src-/n-IDs from vault connections>]
 
 ## Body template (paper)
 
-```markdown
-## Abstract
-[verbatim from paper]
-
-## Methods & Technical Approach
-[architecture, loss functions, training regime, optimization]
-[prior work this builds on — the specific technical foundation]
-[key assumptions and constraints]
-
-## Key Claims & Results
-- [specific claim + quantitative evidence: "94.2% on X, up from 91.1%"]
-- [ablation findings]
-- [scaling behavior if relevant]
-
-## Technical Underpinnings
-[core insight or mechanism that makes this work]
-[theoretical grounding]
-
-## Limitations & Open Questions
-- [what authors acknowledge doesn't work]
-- [assumptions that may not hold]
-
-## Vault Connections
-- Relates to [[existing-note-title]] — [why]
-
-## Raw Content
-[[<slug>/raw.txt]]
-```
+`Read` `<vault_root>/config/note_formats/paper.md` and compose the body to
+the sections it lists. That file is seeded at init and **user-editable** —
+the user reshapes every paper brief (rename/add/drop sections) by editing it
+directly, no skill change. Keep `## Vault Connections` and `## Raw Content`
+so graph links and the raw pointer land. If the file is missing, fall back
+to a clear, well-structured technical brief that ends with a `## Vault
+Connections` and `## Raw Content` section.
 
 ## Concept rules
 

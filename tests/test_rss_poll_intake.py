@@ -1,9 +1,10 @@
 """Tests for PRIORITIES.yaml intake reads in the rss_poll strategy.
 
 Verifies that ``intake.<slug>.outlets`` (news/podcast) and
-``intake.<slug>.channels`` (youtube) supersede the legacy reads from
-``news_feeds.yaml``, ``podcast_events_feeds.yaml``, and inline
-``channels:`` in ``sources.yaml``.
+``intake.<slug>.channels`` (youtube) drive feed discovery, and that
+inline ``channels:`` in ``sources.yaml`` survives as the youtube
+fallback when PRIORITIES is unset. The standalone ``*_feeds.yaml``
+``feed_config`` pointer was retired 2026-06-13.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ def _write_priorities(vault_root: Path, body: str) -> None:
 
 
 def test_news_outlets_from_priorities(tmp_path: Path):
-    """When intake.news.outlets is set, the strategy uses it (not feed_config)."""
+    """When intake.news.outlets is set, the strategy uses it for feed discovery."""
     _write_priorities(
         tmp_path,
         "intake:\n"
@@ -42,14 +43,11 @@ def test_news_outlets_from_priorities(tmp_path: Path):
         "        tier: 1\n"
         "        daily_cap: 5\n",
     )
-    vault = _FakeVault(tmp_path)
     strategy = RssPollStrategy()
-    # The legacy news_feeds.yaml does NOT exist — old route would return []
-    sources = {"news": {"feed_config": "vault/.mem/news_feeds.yaml"}}
 
     feeds = strategy._feed_urls_for(
         "news",
-        sources["news"],
+        {"dedup_keys": ["url"]},
         tmp_path,
         intake_block=(
             {"outlets": {"reuters": {"name": "Reuters", "feeds": ["https://example.com/rss"], "tier": 1, "daily_cap": 5}}}
@@ -79,27 +77,20 @@ def test_youtube_channels_from_priorities(tmp_path: Path):
     assert "https://www.youtube.com/feeds/videos.xml?channel_id=UCold-legacy-id" not in urls
 
 
-def test_legacy_feed_config_fallback(tmp_path: Path):
-    """When PRIORITIES.yaml intake block is empty, fall back to feed_config."""
-    # Place a legacy news_feeds.yaml at the legacy location
+def test_news_without_priorities_returns_empty(tmp_path: Path):
+    """News flavor has no fallback once feed_config is retired — empty intake
+    means no feeds (the standalone *_feeds.yaml path is gone)."""
+    strategy = RssPollStrategy()
+    # A stray legacy file at the old location must NOT be consulted.
     mem_dir = tmp_path / ".mem"
     mem_dir.mkdir(parents=True, exist_ok=True)
     (mem_dir / "news_feeds.yaml").write_text(
-        "outlets:\n"
-        "  legacy-outlet:\n"
-        "    name: Legacy\n"
-        "    feeds: [https://legacy.example.com/rss]\n"
-        "    tier: 2\n",
+        "outlets:\n  legacy-outlet:\n    feeds: [https://legacy.example.com/rss]\n",
         encoding="utf-8",
     )
 
-    strategy = RssPollStrategy()
-    spec = {"feed_config": "vault/.mem/news_feeds.yaml"}
-    feeds = strategy._feed_urls_for("news", spec, tmp_path, intake_block={})
-
-    urls = [f[0] for f in feeds]
-    assert "https://legacy.example.com/rss" in urls
-    assert feeds[0][1]["outlet_slug"] == "legacy-outlet"
+    feeds = strategy._feed_urls_for("news", {"dedup_keys": ["url"]}, tmp_path, intake_block={})
+    assert feeds == []
 
 
 def test_legacy_channels_inline_fallback(tmp_path: Path):

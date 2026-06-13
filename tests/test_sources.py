@@ -135,15 +135,21 @@ def test_scaffold_writes_all_three_artifacts(
     assert "frontmatter={" in skill_text
     assert 'frontmatter={{' not in skill_text
 
-    # 3. default config block in vault_templates/config/sources.yaml
+    # 3. default behaviour-config block in the LIVE vault overlay the runtime
+    #    reads — <vault>/config/sources.yaml — NOT the shipped package template
+    #    (which is seed-only and clobbered on upgrade).
+    vault_sources = vault / "config" / "sources.yaml"
+    assert vault_sources.exists()
+    vault_sources_text = vault_sources.read_text(encoding="utf-8")
+    assert "  demo:" in vault_sources_text
+    assert "drain_strategy: inline" in vault_sources_text
+
+    # The shipped template must be left untouched.
     template_sources = (
         isolated_commands_dir / "src" / "personal_mem" / "vault_templates"
         / "config" / "sources.yaml"
     )
-    assert template_sources.exists()
-    template_text = template_sources.read_text(encoding="utf-8")
-    assert "  demo:" in template_text
-    assert "drain_strategy: inline" in template_text
+    assert "  demo:" not in template_sources.read_text(encoding="utf-8")
 
 
 def test_load_user_specs_returns_scaffolded_entry(

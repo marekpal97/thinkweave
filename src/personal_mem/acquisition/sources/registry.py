@@ -205,8 +205,8 @@ REGISTRY: dict[str, SourceTypeSpec] = {
         bucket="podcast-events",
         layout="author_folder",
         # Podcasts with event-shaped content (markets / macro / interview
-        # shows where the per-episode signal matters). Per-show RSS feed
-        # in podcast_feeds.yaml; rss_poll picks the <enclosure> audio URL
+        # shows where the per-episode signal matters). Per-show RSS feed in
+        # PRIORITIES.yaml::intake.podcast_events; rss_poll picks the <enclosure> audio URL
         # off each item and the worker hands the MP3 to Gemini Flash
         # via the Files API. Show name drives the author_folder layout.
         # See commands/podcast.md and agents/research-podcast-worker.md.

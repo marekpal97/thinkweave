@@ -141,7 +141,7 @@ No theme catalog read. Concepts flow to hubs via the `concepts:` frontmatter reg
 
 ### 6. Write the brief
 
-Use the body template at the bottom of this file. Dense, evidence-rich, ~400–700 words.
+`Read` `<vault_root>/config/note_formats/podcast.md` for the brief's section skeleton — it carries both grain blocks (`podcast-events` and `podcast-concepts`); compose to the one matching this item's `source_type`. That file is seeded at init and user-editable. Dense, evidence-rich, ~400–700 words.
 
 The Gemini payload gives you the structured sections directly:
 
@@ -248,66 +248,14 @@ The orchestrator parses the JSON line. **Anything other than the JSON line is al
 
 ## Brief body templates
 
-### `podcast-events` (event-grain — markets, macro, interview shows)
-
-```markdown
-## Lead
-[Single-sentence "what the episode argues" — the angle the host/guest is pushing]
-
-## Key Developments
-- [Specific data, quotes, sources cited] — "<verbatim quote>" (host/guest)
-- [Distinguish reporting from analysis/opinion]
-- [What's new this episode vs. running coverage]
-
-## Market / Signal Implication
-- [Sectors, asset classes, tickers, currencies touched]
-- [Direction (bullish/bearish/ambiguous) the piece argues for]
-- [Timeframe the implication operates on]
-
-## Key Moments
-- `MM:SS` — [description from Gemini's key_moments]
-- `MM:SS` — [...]
-
-## Mentioned
-- [<link 1>](url) — [one-line context, why it came up]
-- [<link 2>](url) — [...]
-*(Secondary — what the speakers cited; not the main subject.)*
-
-## Vault Connections
-- Relates to [[<theme_id>]] — [why, in 1 line]   ← only if relates_to was set
-- *Theme-unfiled — review pile.*                  ← only if theme_unfiled: true
-```
-
-### `podcast-concepts` (concept-grain — deep-dives, lectures, technical explainers)
-
-```markdown
-## Lead
-[Single-sentence "what the episode explains / argues / demonstrates"]
-
-## Key Developments
-- [The main thread — what was built/measured/argued]
-- [Specific evidence, examples, named techniques] — "<verbatim quote>"
-
-## Why It Matters
-- [Where this fits in the broader space — what it changes about practice]
-- [Who should care, and for what]
-
-## Concepts in Play
-- `<ontology-concept-1>` — [how the episode touches it]
-- `<ontology-concept-2>` — [...]
-
-## Key Moments
-- `MM:SS` — [description from Gemini's key_moments]
-- `MM:SS` — [...]
-
-## Mentioned
-- [<link 1>](url) — [one-line context]
-*(Secondary — listed for later research, not the main thread.)*
-
-## Vault Connections
-- Relates to [[<theme_id>]] — [why]               ← only if relates_to was set
-- See concept hub [[<concept>]] for related items
-```
+The skeletons live in vault config, not here — `Read`
+`<vault_root>/config/note_formats/podcast.md`. It carries both grain blocks
+(`podcast-events` and `podcast-concepts`); compose to the one matching this
+item's `source_type`. That file is seeded at init and edited in place, so the
+brief shape is user-owned without touching this worker. Both blocks keep a
+`## Key Moments` section fed from Gemini's `key_moments`. If the file is
+missing, fall back to a clear brief with `## Key Moments` and `## Vault
+Connections`.
 
 ---
 

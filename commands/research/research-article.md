@@ -52,7 +52,7 @@ mem_graph(filter="concept_walk", concepts=["<best-fit>"], match_mode="any", limi
 mem_create(
   type="source",
   title="<article title>",
-  body="<argument + evidence brief — see template below>",
+  body="<argument + evidence brief — structured per vault/config/note_formats/article.md>",
   tags=["article"],
   concepts=["<≥3 ontology concepts>"],
   frontmatter={
@@ -84,25 +84,13 @@ archive the queue item with status `done`.
 
 ## Body template (article)
 
-```markdown
-## Core Argument
-[the thesis, not just the topic]
-
-## Key Claims & Evidence
-- [specific claim + evidence]
-- [distinguish data-backed claims from opinion / anecdote]
-- [quantitative findings or benchmarks cited]
-
-## Technical Detail
-[methods, frameworks, approaches discussed]
-[concrete examples or case studies]
-
-## Vault Connections
-- Relates to [[existing-note-title]] — [why]
-
-## Raw Content
-[[<slug>/raw.md]]
-```
+`Read` `<vault_root>/config/note_formats/article.md` and compose the body to
+the sections it lists. That file is seeded at init and **user-editable** —
+the user reshapes every article brief by editing it directly, no skill
+change. Keep `## Vault Connections` and `## Raw Content` so graph links and
+the raw pointer land. If the file is missing, fall back to a clear,
+well-structured argument brief ending with `## Vault Connections` and
+`## Raw Content`.
 
 ## Concept rules
 

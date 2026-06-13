@@ -127,7 +127,7 @@ No theme catalog read. Concepts flow to hubs via the `concepts:` frontmatter reg
 
 ### 6. Write the brief
 
-Use the body template at the bottom of this file. Dense, evidence-rich, ~400–700 words.
+`Read` `<vault_root>/config/note_formats/youtube.md` for the brief's section skeleton — it carries both grain blocks (`youtube-events` and `youtube-concepts`); compose to the one matching this item's `source_type`. That file is seeded at init and user-editable. Dense, evidence-rich, ~400–700 words.
 
 The transcript from step 3 is raw text — you derive each structured section by reading it carefully:
 
@@ -230,66 +230,14 @@ The orchestrator parses the JSON line. **Anything other than the JSON line is al
 
 ## Brief body templates
 
-### `youtube-events` (event-grain — markets, macro, tech-news recaps)
-
-```markdown
-## Lead
-[Single-sentence "what the video is about" — the angle the presenter is pushing]
-
-## Key Developments
-- [Specific data, quotes, sources cited]
-- [Distinguish reporting from analysis/opinion]
-- [What's new this video vs. running coverage]
-
-## Market / Signal Implication
-- [Sectors, asset classes, tickers touched]
-- [Direction (bullish/bearish/ambiguous) the piece argues for]
-- [Timeframe the implication operates on]
-
-## Key Moments
-- `MM:SS` — [description from Gemini's key_moments]
-- `MM:SS` — [...]
-
-## Follow-ups
-- [<link 1>](url) — [one-line context, why it caught your eye]
-- [<link 2>](url) — [...]
-*(Secondary — extracted from the transcript; not the main subject of the video.)*
-
-## Vault Connections
-- Relates to [[<theme_id>]] — [why, in 1 line]   ← only if relates_to was set
-- *Theme-unfiled — review pile.*                  ← only if theme_unfiled: true
-```
-
-### `youtube-concepts` (concept-grain — tutorials, lectures, explainers)
-
-```markdown
-## Lead
-[Single-sentence "what the video explains / argues / demos"]
-
-## Key Developments
-- [The main thread — what was built/measured/demonstrated]
-- [Specific evidence, code, benchmarks, citations]
-
-## Why It Matters
-- [Where this fits in the broader space — what it changes about practice]
-- [Who should care, and for what]
-
-## Concepts in Play
-- `<ontology-concept-1>` — [how the video touches it]
-- `<ontology-concept-2>` — [...]
-
-## Key Moments
-- `MM:SS` — [description from Gemini's key_moments]
-- `MM:SS` — [...]
-
-## Follow-ups
-- [<link 1>](url) — [one-line context]
-*(Secondary — listed for later research, not the main thread.)*
-
-## Vault Connections
-- Relates to [[<theme_id>]] — [why]               ← only if relates_to was set
-- See concept hub [[<concept>]] for related items
-```
+The skeletons live in vault config, not here — `Read`
+`<vault_root>/config/note_formats/youtube.md`. It carries both grain blocks
+(`youtube-events` and `youtube-concepts`); compose to the one matching this
+item's `source_type`. That file is seeded at init and edited in place, so the
+brief shape is user-owned without touching this worker. Both blocks keep a
+`## Key Moments` section fed from Gemini's `key_moments`. If the file is
+missing, fall back to a clear brief with `## Key Moments` and `## Vault
+Connections`.
 
 ---
 

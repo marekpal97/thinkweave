@@ -80,7 +80,7 @@ For news, lean on the event-shaped domains of the vault's ontology (e.g. `financ
 
 ### 5. Write the brief
 
-Use the body template at the bottom of this file. Dense, evidence-rich, ~400-700 words. The brief is the *consumable* artifact; the URL is the receipt.
+`Read` `<vault_root>/config/note_formats/news.md` and compose the body to the sections it lists (seeded at init, user-editable — the reader reshapes every news brief by editing that file directly). Dense, evidence-rich, ~400-700 words. The brief is the *consumable* artifact; the URL is the receipt.
 
 For Polish-language items: write the brief in English. Cite the original article URL. Add a translation note at the top of the body: `*Brief generated from Polish original; raw text in [[raw.md]].*`
 
@@ -191,31 +191,13 @@ The orchestrator parses this JSON line. **Anything other than the JSON line is a
 
 ## Brief body template
 
-```markdown
-## Lead
-[The single-sentence "what happened" — who, what, when, where]
-
-## Claim & Evidence
-- [The article's main claim or argument]
-- [Specific data, quotes, sources cited]
-- [Distinguish reporting from analysis/opinion]
-
-## Market Implication
-- [Sectors, asset classes, tickers touched]
-- [Direction (bullish/bearish/ambiguous) the piece argues for]
-- [Timeframe the implication operates on (intraday / weeks / quarters)]
-
-## Watchlist
-- [Tickers, central banks, currencies named in the article]
-
-## Risks / What Would Falsify
-- [What the article acknowledges could go wrong]
-- [Counter-narratives or competing readings]
-
-## Vault Connections
-- Relates to [[<theme_id>]] — [why, in 1 line]   ← only if triage_verdict == "keep"
-- *Theme-unfiled — review pile.*                  ← only if triage_verdict == "keep_unfiled"
-```
+The skeleton lives in vault config, not here — `Read`
+`<vault_root>/config/note_formats/news.md` and compose to the sections it
+lists. That file is seeded at init and edited in place, so the brief shape is
+user-owned without touching this worker. Keep `## Vault Connections` (the two
+variants are picked by `triage_verdict`: filled for `keep`, the review-pile
+note for `keep_unfiled`). If the file is missing, fall back to a clear,
+evidence-rich brief ending with `## Vault Connections`.
 
 ---
 

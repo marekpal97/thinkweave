@@ -722,9 +722,11 @@ class TestSeedVaultTemplates:
         config_dir = tmp_path / "config"
         for filename in (
             "sources.yaml",
-            "news_feeds.yaml",
             "PRIORITIES.yaml",
-            "podcast_events_feeds.yaml",
-            "podcast_concepts_feeds.yaml",
+            "scheduling.yaml",
         ):
             assert (config_dir / filename).exists(), f"{filename} not seeded"
+        # Standalone feed registries were folded into PRIORITIES.yaml::intake
+        # (retired 2026-06-13) — they must no longer be seeded.
+        for gone in ("news_feeds.yaml", "podcast_events_feeds.yaml", "podcast_concepts_feeds.yaml"):
+            assert not (config_dir / gone).exists(), f"{gone} should not be seeded"

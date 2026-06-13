@@ -50,11 +50,10 @@ You are ingesting {slug} entries into the personal_mem vault. Each ingested entr
 Every source-ingestion skill starts here. Concept consistency is what makes the knowledge graph work — new sources must reuse existing vocabulary when possible.
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
+mem_concepts(action="list", min_count=2)
 ```
 
-Load the ontology **once at the start of the batch**, not per item. Map concepts to existing ontology terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — `/mem-resolve-concepts` will canonicalise proposals in a later pass. Minimum 2 concepts per source note.
+This returns the existing canonical labels (the ontology lives at `<vault>/config/ontology.yaml`, but you query it through `mem_concepts`, never by reading the file). Load them **once at the start of the batch**, not per item. Map concepts to existing terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — the strict ontology gate shunts unknown terms there automatically, and `/mem-resolve-concepts` canonicalises them in a later pass. Minimum 2 concepts per source note.
 
 ---
 
@@ -118,13 +117,13 @@ Batch: drain a queue or inbox into multiple source notes.
 
 Two common patterns:
 
-**Semantic queue (notes tagged `todo`+`research`)**:
+**Acquisition queue (the standard rail)**: a per-source-type JSONL queue at `vault/.mem/queues/<slug>.jsonl`, populated by `/discover` and drained by `/drain --source-type {slug}`. Peek pending items with:
 ```
-mem_search(query="", tags=["todo", "research"], type="note", limit=<batch>)
+mem_queue(action="peek", source_type="{slug}", limit=<batch>)
 ```
-Exclude items already tagged `processing`. Process FIFO (oldest first).
+The queue carries its own dedup (active + recently-archived items); `/drain` archives each item `done`/`failed` after the worker returns. If your skill is invoked by `/drain` you receive items directly — you don't re-peek.
 
-**Disk inbox (files on disk)**:
+**Disk inbox (files on disk)**: for content captured outside Claude Code (browser clip, email export) where a drop-folder is simpler than a queue (this is how `/substack` works):
 ```
 Bash("ls $MY_INBOX/*.md 2>/dev/null")
 ```
@@ -138,7 +137,7 @@ For each claimed/enumerated item, run the **Import** pipeline above (fetch → d
 
 ### 3. Finalize
 
-**Queue**: re-tag `processing` → `done` after `mem_create` returns a `src-` ID.
+**Queue**: `/drain` archives the item to the queue's `_archive/` once `mem_create` returns a `src-` ID — return a structured outcome (`status: done` + the new id) and let the drain harness record it; don't mutate the queue yourself.
 **Inbox**: `Bash("mv <file> $MY_INBOX/_processed/$(date +%Y-%m-%d)/")`
 
 ---
@@ -150,8 +149,8 @@ Gap identification: analyse what's already in the vault, find what's missing, cr
 ### 1. Load signals
 
 TODO — describe your signal sources. Common ones:
-  - `Read vault/sources/RESEARCH_FOCUS.md` for user-declared priorities
-  - `mem_concept_source_counts(concepts=[...])` for per-concept coverage
+  - `Read vault/RESEARCH_FOCUS.md` for user-declared research priorities
+  - `mem_concepts(action="source_counts", concepts=[...])` for per-concept coverage
   - `mem_timeline(days=14)` for recent project activity
 
 ### 2. Identify gaps
@@ -160,16 +159,15 @@ TODO — describe your gap logic.
 
 ### 3. Propose queue items
 
-For each gap, create a `todo`+`research` tagged note that the import path can later drain:
+For each gap, enqueue an item onto this source type's acquisition queue (`vault/.mem/queues/{slug}.jsonl`) so `/drain --source-type {slug}` can pick it up later:
 ```
-mem_create(
-    note_type="note",
-    title="<what to look for>",
-    body="<url or search strategy>\n\n<why this matters>",
-    tags=["todo", "research"],
-    concepts=["<target concept>"],
-)
+mem_queue(action="enqueue", source_type="{slug}", item={{
+    "url": "<url or search strategy>",
+    "reason": "<why this matters — which concept/focus gap>",
+    "concepts": ["<target concept>"],
+}})
 ```
+Discover is the producer rail, drain is the consumer rail — keep them decoupled by writing the queue, not the source note, here.
 
 ---
 

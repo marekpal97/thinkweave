@@ -70,7 +70,7 @@ mem_search(query="<repo description>", mode="hybrid", limit=5)
 mem_create(
   type="source",
   title="<repo name — short tagline>",
-  body="<architectural brief — see template below>",
+  body="<architectural brief — structured per vault/config/note_formats/repo.md>",
   tags=["repo"],
   concepts=["<≥3 ontology concepts>"],
   frontmatter={
@@ -104,31 +104,13 @@ archive the queue item with status `done`.
 
 ## Body template (repo)
 
-```markdown
-## What It Does
-[one paragraph elevator pitch — problem solved, target user]
-
-## Architecture & Approach
-[key modules, data flow, entry points]
-[implementation choices that are technically interesting]
-[dependencies and design constraints]
-
-## Notable Patterns & Techniques
-- [specific algorithms / data structures / patterns worth remembering]
-- [design decisions that are instructive — why X over Y]
-- [performance characteristics if documented]
-
-## Limitations & Trade-offs
-- [what it doesn't handle]
-- [scalability constraints]
-- [known issues from README/issues]
-
-## Vault Connections
-- Relates to [[existing-note-title]] — [why]
-
-## Raw Content
-[[<slug>/snapshot.md]]
-```
+`Read` `<vault_root>/config/note_formats/repo.md` and compose the body to
+the sections it lists. That file is seeded at init and **user-editable** —
+the user reshapes every repo brief by editing it directly, no skill change.
+Keep `## Vault Connections` and `## Raw Content` so graph links and the
+snapshot pointer land. If the file is missing, fall back to a clear,
+well-structured architectural brief ending with `## Vault Connections` and
+`## Raw Content`.
 
 ## Concept rules
 

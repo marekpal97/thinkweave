@@ -93,7 +93,7 @@ No theme catalog read. Concepts flow to hubs via the `concepts:` frontmatter reg
 
 ### 6. Write the brief
 
-Use the body template at the bottom of this file. Dense, evidence-rich, ~400–700 words. Always include the `## Follow-ups` section — extract notable links from `embedded_body` (excluding unsubscribe / footer / tracking pixels) with one line of context each, explicitly flagged as not the issue's main subject.
+`Read` `<vault_root>/config/note_formats/newsletter.md` for the brief's section skeleton — it carries both grain blocks (`newsletter-events` and `newsletter-concepts`); compose to the one matching this item's `source_type`. That file is seeded at init and user-editable. Dense, evidence-rich, ~400–700 words. Always include the `## Follow-ups` section — extract notable links from `embedded_body` (excluding unsubscribe / footer / tracking pixels) with one line of context each, explicitly flagged as not the issue's main subject.
 
 ### 7. Create the note
 
@@ -181,61 +181,13 @@ The orchestrator parses the JSON line. **Anything other than the JSON line is al
 
 ## Brief body templates
 
-### `newsletter-events` (event-grain — markets, macro, dealflow)
-
-```markdown
-## Lead
-[Single-sentence "what the issue is about" — the angle the author is pushing]
-
-## Key Developments
-- [Specific data, quotes, sources cited]
-- [Distinguish reporting from analysis/opinion]
-- [What's new this issue vs. running coverage]
-
-## Market Implication
-- [Sectors, asset classes, tickers touched]
-- [Direction (bullish/bearish/ambiguous) the piece argues for]
-- [Timeframe the implication operates on (intraday / weeks / quarters)]
-
-## Watchlist
-- [Tickers, central banks, currencies, levels named in the piece]
-
-## Follow-ups
-- [<link 1>](url) — [one-line context, why it caught your eye]
-- [<link 2>](url) — [...]
-*(Secondary — not the main subject of the issue. Listed for later research.)*
-
-## Vault Connections
-- Relates to [[<theme_id>]] — [why, in 1 line]   ← only if relates_to was set
-- *Theme-unfiled — review pile.*                  ← only if theme_unfiled: true
-```
-
-### `newsletter-concepts` (concept-grain — technical, methodology, philosophy)
-
-```markdown
-## Lead
-[Single-sentence "what the issue argues / explains"]
-
-## Key Developments
-- [The piece's main thread — what was built/measured/observed]
-- [Specific evidence, code, benchmarks, citations]
-
-## Why It Matters
-- [Where this fits in the broader space — what it changes about practice]
-- [Who should care, and for what]
-
-## Concepts in Play
-- `<ontology-concept-1>` — [how the piece touches it]
-- `<ontology-concept-2>` — [...]
-
-## Follow-ups
-- [<link 1>](url) — [one-line context]
-*(Secondary — listed for later research, not the main thread.)*
-
-## Vault Connections
-- Relates to [[<theme_id>]] — [why]               ← only if relates_to was set
-- See concept hub [[<concept>]] for related items
-```
+The skeletons live in vault config, not here — `Read`
+`<vault_root>/config/note_formats/newsletter.md`. It carries both grain blocks
+(`newsletter-events` and `newsletter-concepts`); compose to the one matching
+this item's `source_type`. That file is seeded at init and edited in place, so
+the brief shape is user-owned without touching this worker. If it's missing,
+fall back to a clear brief with a `## Follow-ups` and `## Vault Connections`
+section.
 
 ---
 

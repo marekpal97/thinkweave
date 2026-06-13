@@ -2,9 +2,9 @@
 
 Replaces the old ``scripts/pull_news_feeds.py`` tests after the lift into
 ``discover/strategies/rss_poll.py``. The strategy is generic over
-source_type; this file covers the **news flavor** (`feed_config:` →
-``vault/.mem/news_feeds.yaml`` outlets). YouTube flavor coverage lives in
-``test_rss_poll_youtube.py``.
+source_type; this file covers the **news flavor** (outlets from
+``PRIORITIES.yaml::intake.news.outlets``). YouTube flavor coverage lives
+in ``test_rss_poll_youtube.py``.
 
 Mocks ``feedparser.parse`` so the suite is hermetic. Covers:
 
@@ -72,21 +72,22 @@ def _entry(
     return e
 
 
-def _seed_feeds_yaml(vault_root: Path, outlets: dict[str, dict]) -> None:
-    """Write a minimal news_feeds.yaml the tiny YAML parser accepts."""
-    (vault_root / ".mem").mkdir(parents=True, exist_ok=True)
-    lines = ["outlets:"]
+def _seed_priorities_news(vault_root: Path, outlets: dict[str, dict]) -> None:
+    """Write outlets into ``config/PRIORITIES.yaml::intake.news.outlets``,
+    the canonical registry the tiny YAML parser accepts."""
+    (vault_root / "config").mkdir(parents=True, exist_ok=True)
+    lines = ["intake:", "  news:", "    outlets:"]
     for slug, conf in outlets.items():
-        lines.append(f"  {slug}:")
+        lines.append(f"      {slug}:")
         for k, v in conf.items():
             if isinstance(v, list):
                 items = ", ".join(str(x) for x in v)
-                lines.append(f"    {k}: [{items}]")
+                lines.append(f"        {k}: [{items}]")
             elif isinstance(v, bool):
-                lines.append(f"    {k}: {'true' if v else 'false'}")
+                lines.append(f"        {k}: {'true' if v else 'false'}")
             else:
-                lines.append(f"    {k}: {v}")
-    (vault_root / ".mem" / "news_feeds.yaml").write_text(
+                lines.append(f"        {k}: {v}")
+    (vault_root / "config" / "PRIORITIES.yaml").write_text(
         "\n".join(lines), encoding="utf-8"
     )
 
@@ -121,11 +122,10 @@ def _run_news(
     outlets = {"reuters": _basic_outlet(daily_cap=daily_cap, prefer_embedded=prefer_embedded)}
     if extra_outlets:
         outlets.update(extra_outlets)
-    _seed_feeds_yaml(tmp_path, outlets)
+    _seed_priorities_news(tmp_path, outlets)
     config = {
         "sources": {
             "news": {
-                "feed_config": ".mem/news_feeds.yaml",
                 "dedup_keys": ["url", "entry_id"],
             }
         }
@@ -295,13 +295,11 @@ def test_strategy_bozo_feed_logged_and_skipped(tmp_path, fake_feedparser, monkey
 
 def test_strategy_no_outlets_returns_empty(tmp_path, fake_feedparser) -> None:
     """Empty outlets section — strategy should emit no descriptors for news."""
-    (tmp_path / ".mem").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".mem" / "news_feeds.yaml").write_text("outlets:\n", encoding="utf-8")
-    config = {
-        "sources": {
-            "news": {"feed_config": ".mem/news_feeds.yaml", "dedup_keys": ["url"]}
-        }
-    }
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "PRIORITIES.yaml").write_text(
+        "intake:\n  news:\n    outlets:\n", encoding="utf-8"
+    )
+    config = {"sources": {"news": {"dedup_keys": ["url"]}}}
     descriptors = RssPollStrategy().run(_fake_vault(tmp_path), None, config)
     # No outlets → no feeds → no source row processed → no descriptors.
     assert descriptors == []
@@ -309,14 +307,14 @@ def test_strategy_no_outlets_returns_empty(tmp_path, fake_feedparser) -> None:
 
 def test_strategy_runtime_source_type_filters(tmp_path, fake_feedparser, monkeypatch) -> None:
     """`_runtime.source_type` limits polling to one source type."""
-    _seed_feeds_yaml(tmp_path, {"reuters": _basic_outlet()})
+    _seed_priorities_news(tmp_path, {"reuters": _basic_outlet()})
     fake_entries = [_entry(link="https://reuters.com/a", title="A", entry_id="r-1")]
     monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(fake_entries))
     config = {
         "_runtime": {"source_type": "paper"},  # not news → news skipped
         "sources": {
-            "news": {"feed_config": ".mem/news_feeds.yaml", "dedup_keys": ["url"]},
-            "paper": {"queue": "ignored"},  # no feed config, no channels
+            "news": {"dedup_keys": ["url"]},
+            "paper": {"queue": "ignored"},  # no outlets, no channels
         },
     }
     descriptors = RssPollStrategy().run(_fake_vault(tmp_path), None, config)

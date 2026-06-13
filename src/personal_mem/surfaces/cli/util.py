@@ -35,9 +35,10 @@ def _seed_vault_templates(vault_root: Path) -> None:
     """Copy any default files from the package-bundled ``vault_templates/``
     into the vault if they don't already exist.
 
-    Seeds ``vault/config/`` with the four shipped templates: sources.yaml,
-    PRIORITIES.yaml, and the two podcast-feeds stubs. The legacy
-    ``vault/.mem/`` location is no longer seeded as of Phase 3.1.
+    Seeds ``vault/config/`` with the shipped templates: sources.yaml,
+    PRIORITIES.yaml, scheduling.yaml. Feed registries (news / podcast
+    outlets) live in PRIORITIES.yaml::intake as of Phase 3.1 — the
+    standalone ``*_feeds.yaml`` stubs were retired 2026-06-13.
     """
     pkg_root = Path(__file__).resolve().parents[1].parent  # → .../src/personal_mem
     templates_dir = pkg_root / "vault_templates" / "config"
@@ -45,16 +46,26 @@ def _seed_vault_templates(vault_root: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for filename in (
         "sources.yaml",
-        "news_feeds.yaml",
         "PRIORITIES.yaml",
-        "podcast_events_feeds.yaml",
-        "podcast_concepts_feeds.yaml",
         "scheduling.yaml",
     ):
         source = templates_dir / filename
         target = target_dir / filename
         if source.exists() and not target.exists():
             shutil.copyfile(source, target)
+
+    # Per-source note-format skeletons → vault/config/note_formats/. The research
+    # writers Read these directly to shape their brief; the user edits them in
+    # place (plain markdown in the vault, Obsidian-native). Seeded once at init,
+    # then user-owned — survives upgrades like every other vault/config file.
+    nf_src = pkg_root / "vault_templates" / "note_formats"
+    if nf_src.exists():
+        nf_dst = target_dir / "note_formats"
+        nf_dst.mkdir(parents=True, exist_ok=True)
+        for tpl in nf_src.glob("*.md"):
+            target = nf_dst / tpl.name
+            if not target.exists():
+                shutil.copyfile(tpl, target)
 
 
 def cmd_prune_orphans(args: argparse.Namespace) -> None:
@@ -208,11 +219,15 @@ def _cmd_sources_scaffold(
 ) -> None:
     """Register a new source type via the vault-side YAML overlay.
 
-    Writes three artifacts and refuses on collisions:
+    Writes three artifacts and refuses on collisions. All three land in
+    upgrade-safe homes (the vault, or the user's machine-global commands dir) —
+    never inside the installed package:
       1. SourceTypeSpec entry → <vault>/config/source_types.yaml
-      2. Skill file → commands/<slug>.md  (from the parametrized template)
-      3. Default config block → vault_templates/config/sources.yaml (only if
-         not already present for the slug)
+      2. Skill file → ~/.claude/commands/<slug>.md (default --skill-target user;
+         'repo' targets the contributor checkout's commands/)
+      3. Default behaviour-config block → <vault>/config/sources.yaml (the live
+         overlay the runtime reads), seeded from the template if absent, only if
+         not already present for the slug
     """
     slug = args.slug.strip()
     if not slug:
@@ -309,32 +324,39 @@ def _cmd_sources_scaffold(
         skill_path.write_text(rendered, encoding="utf-8")
         written.append(skill_path)
 
-    # --- artifact 3: vault_templates/config/sources.yaml default block ---
-    template_sources = pkg_root / "vault_templates" / "config" / "sources.yaml"
-    if template_sources.exists():
-        existing = template_sources.read_text(encoding="utf-8")
-        marker = f"\n  {slug}:\n"
-        if marker not in existing and not existing.startswith(f"  {slug}:\n"):
-            block = (
-                f"  {slug}:\n"
-                f"    drain_strategy: inline\n"
-                f"    dedup_keys: [url, title]\n"
+    # --- artifact 3: behaviour-config block → <vault>/config/sources.yaml ---
+    # Write to the vault overlay the runtime actually reads (load_user_config →
+    # <vault>/config/sources.yaml), NOT the shipped package template. The template
+    # is seed-only — a block written there never reaches the running system and is
+    # clobbered on the next `mem`/plugin upgrade. Seed the vault file from the
+    # template on first use so it has the sources:/projects: skeleton, then append.
+    vault_sources = Path(vault_root) / "config" / "sources.yaml"
+    if not vault_sources.exists():
+        template_sources = pkg_root / "vault_templates" / "config" / "sources.yaml"
+        vault_sources.parent.mkdir(parents=True, exist_ok=True)
+        if template_sources.exists():
+            shutil.copyfile(template_sources, vault_sources)
+        else:
+            vault_sources.write_text("sources:\n\nprojects:\n", encoding="utf-8")
+    existing = vault_sources.read_text(encoding="utf-8")
+    marker = f"\n  {slug}:\n"
+    if marker not in existing and not existing.startswith(f"  {slug}:\n"):
+        block = (
+            f"  {slug}:\n"
+            f"    drain_strategy: inline\n"
+            f"    dedup_keys: [url, title]\n"
+        )
+        # Insert under the `sources:` mapping, just before the `projects:`
+        # boundary if present; otherwise append.
+        if "\nprojects:\n" in existing:
+            head, _, tail = existing.partition("\nprojects:\n")
+            head = head.rstrip("\n") + "\n" + block
+            vault_sources.write_text(head + "\nprojects:\n" + tail, encoding="utf-8")
+        else:
+            vault_sources.write_text(
+                existing.rstrip("\n") + "\n" + block, encoding="utf-8"
             )
-            # Insert under the `sources:` mapping. The template ships with
-            # a `projects:` block immediately after the sources map; insert
-            # our block just before that boundary if we can find it,
-            # otherwise append.
-            if "\nprojects:\n" in existing:
-                head, _, tail = existing.partition("\nprojects:\n")
-                head = head.rstrip("\n") + "\n" + block
-                template_sources.write_text(
-                    head + "\nprojects:\n" + tail, encoding="utf-8"
-                )
-            else:
-                template_sources.write_text(
-                    existing.rstrip("\n") + "\n" + block, encoding="utf-8"
-                )
-            written.append(template_sources)
+        written.append(vault_sources)
 
     # --- confirmation ---
     print(f"Scaffolded source type '{slug}':")
