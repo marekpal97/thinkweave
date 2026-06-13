@@ -948,17 +948,20 @@ class Search:
         project: str = "",
         note_type: str | list[str] = "",
         limit: int = 10,
-        rrf_k: int = 60,
+        rrf_k: int | None = None,
     ) -> list[SearchResult]:
         """Hybrid retrieval: run FTS + semantic, fuse with reciprocal rank fusion.
 
-        RRF score: ``Σ 1/(k + rank_i)`` across retrievers. k=60 is the
-        standard constant from the original RRF paper; it needs no tuning.
+        RRF score: ``Σ 1/(k + rank_i)`` across retrievers. k defaults to
+        config ``retrieval.rrf_k`` (60 — the standard constant from the
+        original RRF paper; it rarely needs tuning).
 
         Falls back gracefully: if embeddings are unavailable, returns
         FTS-only results. If FTS returns nothing (e.g. empty query), returns
         semantic-only.
         """
+        if rrf_k is None:
+            rrf_k = int(getattr(self.config, "retrieval_rrf_k", 60) or 60)
         # Run both retrievers independently
         fts_results = self.search(
             query, project=project, note_type=note_type, limit=max(limit * 2, 20)

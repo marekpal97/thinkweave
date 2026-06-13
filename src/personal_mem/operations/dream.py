@@ -166,7 +166,7 @@ class DreamCycleScan:
     # Decisions awaiting re-judgment — the phase-2 ``dream-judge-worker``
     # input. Composed from ``.mem/rejudge_queue.jsonl`` plus any stale
     # ``pending`` verdicts discovered via the index (judged_at missing or
-    # older than 7 days). Capped at 20 total.
+    # older than 7 days). Capped at ``dream.rejudge_cap`` (default 20) total.
     rejudge_queue: list = field(default_factory=list)
     # Near-duplicate THEME pairs (drift v2) — all-pairs cosine over the
     # themes' cached note embeddings, history-excluded via the maintenance
@@ -182,7 +182,8 @@ class DreamCycleScan:
     # at ``dream_seam_link_cap``.
     seam_link_queue: list = field(default_factory=list)
     # Composite knowledge-delta surface — the phase-2 ``dream-digest-worker``
-    # input. Pre-computed over a 24h window: landings_24h /
+    # input. Pre-computed over the configured window
+    # (``dream.knowledge_delta_hours``, default 24h): landings_24h /
     # catalyst_additions_24h / probe_matches_24h / verdict_flips_24h /
     # predictions_landed_24h, plus a ``theme_mutations_this_cycle`` slot
     # the orchestrator fills in after apply.
@@ -265,8 +266,8 @@ def _collect_essence_candidates(
     cfg: Config,
     *,
     recent_days: int = 30,
-    max_catalysts: int = 10,
-    placeholder_max_catalysts: int = 25,
+    max_catalysts: int | None = None,
+    placeholder_max_catalysts: int | None = None,
     cap: int = 12,
 ) -> list[dict]:
     """Hubs (themes AND concept hubs) whose essence deserves worker attention.
@@ -274,8 +275,10 @@ def _collect_essence_candidates(
     Returns enriched payloads the phase-1 essence-worker can judge in
     isolation — current ``## Essence`` text, recent catalyst entries
     (newest first; ``placeholder_max_catalysts`` for placeholder essences,
-    which need more material to compose fresh), total catalyst count, and
-    the growth fields the worker's decision rules key on.
+    which need more material to compose fresh — both default from config
+    ``dream.essence_max_catalysts`` / ``dream.essence_placeholder_max_catalysts``),
+    total catalyst count, and the growth fields the worker's decision
+    rules key on.
 
     Inclusion (deterministic prefilter — semantic judgment stays in the
     worker):
@@ -306,6 +309,15 @@ def _collect_essence_candidates(
 
     from personal_mem.core.indexer import Indexer
     from personal_mem.synthesis.hub import FLAG_CONTRADICTS
+
+    if max_catalysts is None:
+        max_catalysts = int(
+            getattr(cfg, "dream_essence_max_catalysts", 10) or 10
+        )
+    if placeholder_max_catalysts is None:
+        placeholder_max_catalysts = int(
+            getattr(cfg, "dream_essence_placeholder_max_catalysts", 25) or 25
+        )
 
     cutoff = (date.today() - timedelta(days=recent_days)).isoformat()
 
@@ -593,18 +605,35 @@ def _collect_unwrapped_sessions(
     return out
 
 
-#: How many rejudge entries one cycle hands to the phase-2 judge worker.
-#: Shared by the scan collector below AND apply's consumption step — apply
-#: removes exactly this prefix of the on-disk queue (the handed-off
-#: entries), so anything beyond the cap survives for the next cycle.
+#: Default for how many rejudge entries one cycle hands to the phase-2
+#: judge worker (config ``dream.rejudge_cap``). Shared by the scan
+#: collector below AND apply's consumption step — apply removes exactly
+#: this prefix of the on-disk queue (the handed-off entries), so anything
+#: beyond the cap survives for the next cycle. Both sites resolve through
+#: :func:`_rejudge_cap` so they can never disagree.
 _REJUDGE_CAP = 20
+
+
+def _rejudge_cap(cfg: Config) -> int:
+    """Per-cycle rejudge hand-off cap (config ``dream.rejudge_cap``)."""
+    return int(getattr(cfg, "dream_rejudge_cap", _REJUDGE_CAP) or 0)
+
+
+def _probe_window_days(cfg: Config) -> int:
+    """Probe-pressure lookback window (config ``dream.probe_window_days``).
+
+    Read by BOTH probe surfaces — the scan's ``recent_probes`` payload and
+    the knowledge-delta probe-match slice — so the two views always cover
+    the same window.
+    """
+    return int(getattr(cfg, "dream_probe_window_days", 14) or 14)
 
 
 def _collect_rejudge_queue(
     cfg: Config,
     *,
     stale_pending_age_days: int = 7,
-    cap: int = _REJUDGE_CAP,
+    cap: int | None = None,
 ) -> list[dict]:
     """Combine queued rejudge entries with stale ``pending`` decisions.
 
@@ -621,12 +650,21 @@ def _collect_rejudge_queue(
        Fabricated entries: ``predecessor_decision_id: null``,
        ``queued_at: <judged_at or "">``, ``reason: 'stale_pending'``.
 
-    Capped at ``cap`` total. Discovery uses the SQLite index
-    (``json_extract`` on the frontmatter blob) — no vault file crawl.
+    Capped at ``cap`` total (default: config ``dream.rejudge_cap``).
+    Discovery uses the SQLite index (``json_extract`` on the frontmatter
+    blob) — no vault file crawl.
     """
     from datetime import datetime, timedelta, timezone
 
     from personal_mem.core.indexer import Indexer
+
+    if cap is None:
+        cap = _rejudge_cap(cfg)
+    if cap <= 0:
+        # 0 disables the hand-off entirely — and must match apply's
+        # consumption slice ([:0] removes nothing) so no entry is ever
+        # consumed without being handed to the worker.
+        return []
 
     out: list[dict] = []
     seen_ids: set[str] = set()
@@ -705,9 +743,11 @@ def _collect_rejudge_queue(
 def _collect_knowledge_delta(
     cfg: Config,
     *,
-    window_hours: int = 24,
+    window_hours: int | None = None,
 ) -> dict:
-    """Composite 24h surface for the phase-2 ``dream-digest-worker``.
+    """Composite knowledge-delta surface for the phase-2 ``dream-digest-worker``.
+
+    Window defaults to config ``dream.knowledge_delta_hours`` (24).
 
     Returns a **grain-split** shape — ``{concept: {...}, event: {...}}`` —
     so the digest worker can compose two sibling notes:
@@ -739,6 +779,9 @@ def _collect_knowledge_delta(
     from personal_mem.core.indexer import Indexer
     from personal_mem.operations.prompts import recent_probe_pressure
     from personal_mem.sources import registry as source_registry
+
+    if window_hours is None:
+        window_hours = int(getattr(cfg, "dream_knowledge_delta_hours", 24) or 24)
 
     now = datetime.now(timezone.utc)
     cutoff_dt = now - timedelta(hours=window_hours)
@@ -861,7 +904,9 @@ def _collect_knowledge_delta(
         # Lives on the concept slice — probes are the user's "what am I
         # trying to learn" signal, knowledge-oriented by construction.
         try:
-            pressure = recent_probe_pressure(cfg, project="", window_days=14)
+            pressure = recent_probe_pressure(
+                cfg, project="", window_days=_probe_window_days(cfg)
+            )
         except Exception:  # noqa: BLE001
             pressure = {}
         for concept, probe_count in pressure.items():
@@ -1056,8 +1101,8 @@ def scan(
     cfg: Config,
     *,
     project: str = "",
-    promotion_cap: int = 20,
-    promotion_threshold: int = 5,
+    promotion_cap: int | None = None,
+    promotion_threshold: int | None = None,
     essence_cap: int | None = None,
     rejudge_pairs: bool = False,
 ) -> DreamCycleScan:
@@ -1071,10 +1116,11 @@ def scan(
        them); survivors are ranked by cosine descending, capped at
        ``dream_drift_cap``, and shipped with evidence packets.
     2. **promotion candidates** — ``proposed_concepts`` at ``count ≥
-       promotion_threshold`` (default 5), filtered through
-       ``filter_promotion_candidates`` (drops domain-paths, generic
-       process terms, underscore-bearing leakage), sorted by count desc,
-       capped at ``promotion_cap``.
+       promotion_threshold`` (default: config ``dream.promotion_threshold``,
+       5), filtered through ``filter_promotion_candidates`` (drops
+       domain-paths, generic process terms, underscore-bearing leakage),
+       sorted by count desc, capped at ``promotion_cap`` (default: config
+       ``dream.promotion_cap``, 20).
     3. **theme cluster signals** — ``detect_signals``: clusters of recent
        event-grain sources sharing concepts, each enriched with raw
        ``proposed_theme:`` stamps and overlapping active themes so the
@@ -1086,6 +1132,13 @@ def scan(
     Steps are wrapped: a failure in one is recorded in ``errors``; the
     rest still run. Returns :class:`DreamCycleScan`.
     """
+    if promotion_cap is None:
+        promotion_cap = int(getattr(cfg, "dream_promotion_cap", 20) or 0)
+    if promotion_threshold is None:
+        promotion_threshold = int(
+            getattr(cfg, "dream_promotion_threshold", 5) or 5
+        )
+
     result = DreamCycleScan(
         cycle_id=_new_cycle_id(),
         project=project,
@@ -1250,7 +1303,8 @@ def scan(
 
     # 4. probe pressure ---------------------------------------------------
     # Aggregate probe-classified prompts into per-concept pressure over
-    # a 14-day window — counts plus the most recent probe texts. The LLM
+    # the configured window (``dream.probe_window_days``, default 14 days)
+    # — counts plus the most recent probe texts. The LLM
     # judgment phase reads this to compose ``priority_signals`` —
     # concepts the user has been asking about that warrant attention
     # (enqueue or log) — and threads the texts into queue items.
@@ -1259,7 +1313,7 @@ def scan(
         from personal_mem.operations.prompts import recent_probe_details
 
         result.recent_probes = recent_probe_details(
-            cfg, project=project, window_days=14
+            cfg, project=project, window_days=_probe_window_days(cfg)
         )
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"recent_probes: {e}")
@@ -2217,7 +2271,7 @@ def apply(
         result.timings["priority_signals"] = time.perf_counter() - _t
 
     # 3e. rejudge-queue hand-off consumption -------------------------------
-    # The scan surfaced (capped at ``_REJUDGE_CAP``) queue entries into the
+    # The scan surfaced (capped at ``dream.rejudge_cap``) queue entries into the
     # phase-2 ``dream-judge-worker``'s prompt; apply is the cycle's point of
     # no return, so the handed-off prefix leaves the on-disk queue here —
     # mirroring ``mem judge --drain`` (consume at hand-off; the worker
@@ -2231,7 +2285,7 @@ def apply(
         from personal_mem.operations import rejudge_queue as _rq
 
         handed = [
-            e.get("decision_id") for e in _rq.peek(cfg)[:_REJUDGE_CAP]
+            e.get("decision_id") for e in _rq.peek(cfg)[: _rejudge_cap(cfg)]
         ]
         if handed:
             result.rejudge_consumed = _rq.remove(cfg, handed)

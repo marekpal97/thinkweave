@@ -252,7 +252,9 @@ def extract_session(
             continue
 
     insights_in = insights if insights else parse_candidate_insights(session_note.body)
-    insights_in = insights_in[:3]
+    # Cap how many insight notes one extraction creates (config
+    # ``extract.insights_cap``, default 3).
+    insights_in = insights_in[: int(getattr(cfg, "extract_insights_cap", 3))]
     decisions_in = decisions or []
 
     # Strict creation policy: terms not in the merged ontology (seed +

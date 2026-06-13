@@ -143,7 +143,7 @@ The ontology is what glues the knowledge layer together. Every note — regardle
 
 Loading is centralised in `src/personal_mem/synthesis/concepts.py:load_ontology` — a minimal YAML parser with no external dependencies. Skills read the file directly (no MCP round-trip) because it's small and changes rarely.
 
-New terms a skill encounters go into `proposed_concepts`, not `concepts`. The gate is **server-enforced** — `mem_extract`, `mem_create`, and the importers all run incoming concept lists through the merged ontology and shunt non-matches to `proposed_concepts` automatically. Promotion to canonical requires `/mem-resolve-concepts` review (default threshold: `count ≥ 5`).
+New terms a skill encounters go into `proposed_concepts`, not `concepts`. The gate is **server-enforced** — `mem_extract`, `mem_create`, and the importers all run incoming concept lists through the merged ontology and shunt non-matches to `proposed_concepts` automatically. Promotion to canonical requires `/mem-resolve-concepts` review (threshold: config `dream.promotion_threshold`, default `count ≥ 5`).
 
 The ontology ties everything together because it's the only vocabulary shared across sources, decisions, sessions, notes, and concept hubs. A concept named in any of these places is the same concept. That's how a paper's finding can inform a decision on an unrelated project — they share a concept, so the graph connects them.
 
@@ -211,12 +211,60 @@ vault/
 │   ├── themes.yaml                # theme registry (code appends mints)
 │   └── flows.yaml                 # cron flow definitions
 ├── .mem/                          # runtime state only
+│   ├── config.toml                # engine policy knobs (see below)
 │   ├── embeddings.db, index.db*, queues/, buffer/, hubs_*, …
-│   └── (no human-edit files)
+│   └── (no other human-edit files)
 └── …                              # vault content (concepts/, sources/, themes/, …)
 ```
 
 Loaders use a backwards-compatible fallback (`vault/config/<filename>` → `vault/.mem/<filename>`) so pre-Phase-3.1 vaults keep working. Writes always commit forward to `vault/config/`. Legacy-location reads emit a one-per-session stderr deprecation warning.
+
+### `vault/.mem/config.toml` — engine policy knobs
+
+The vault-internal TOML (tier 3 of `core/config.py:load_config`) owns the engine-level policy values: embedding provider, edge-generation thresholds, and the behavioural knobs below. Every knob has a built-in default equal to the value the engine shipped with — an absent file or block changes nothing. This file is deliberately **not** PRIORITIES.yaml (research focus + intake registries) and not sources.yaml (per-source-type operational tuning); it is the "how the machine behaves" layer.
+
+```toml
+[embeddings]      # model, api_key_env, api_url
+
+[edges]           # concept_threshold (1), concept_max_freq_pct (0.05),
+                  # tag_threshold (2), tag_max_freq_pct (0.10), tag_exclude
+
+[dream]
+enqueue_priority_signals = false   # gate: priority signals may write queues
+compute_pagerank = false           # per-concept PageRank after rebuilds
+essence_cap = 12                   # essence candidates surfaced per scan (0 = unlimited)
+cosine_threshold = 0.8             # drift-v2 centroid-cosine merge floor
+drift_cap = 15                     # drift pairs surfaced per scan (0 = unlimited)
+seam_link_cap = 10                 # folded hubs the seam-link worker drains per cycle
+promotion_threshold = 5            # min proposed-concept count for promotion eligibility
+promotion_cap = 20                 # promotion candidates surfaced per scan
+probe_window_days = 14             # probe-pressure lookback (recent_probes + knowledge-delta)
+rejudge_cap = 20                   # rejudge entries handed to the judge worker per cycle
+knowledge_delta_hours = 24         # digest-worker knowledge-delta window
+essence_max_catalysts = 10         # catalysts shipped per essence candidate
+essence_placeholder_max_catalysts = 25  # …for placeholder essences (compose-fresh needs more)
+
+[extract]
+insights_cap = 3                   # max insight notes per mem_extract call
+
+[themes]                           # cluster detection (synthesis/theme_candidates)
+min_cluster_size = 3               # smallest concept cluster that surfaces a signal
+recent_days = 30                   # event-grain source lookback
+min_shared_concepts = 2            # concepts a concept-cluster must share
+name_family_jaccard = 0.5          # slug-token Jaccard that folds proposed_theme variants
+generic_concept_ratio = 0.5        # df ratio above which a concept is "generic"
+
+[landing]
+open_probes_cap = 20               # prompt-probes gathered into the landing context
+probes_display_cap = 10            # probes shown in STATE.md "Open Probes"
+
+[retrieval]
+rrf_k = 60                         # RRF fusion constant for hybrid search
+
+[retrieval.prompt_time]            # R2 enrichment (enabled, min_similarity, caps, …)
+```
+
+The `mem dream scan` flags (`--promotion-cap`, `--promotion-threshold`, `--essence-cap`) override their config fields per-invocation; cron (which passes no flags) is steered by the file.
 
 ### `PRIORITIES.yaml` — discover bias + intake registries
 

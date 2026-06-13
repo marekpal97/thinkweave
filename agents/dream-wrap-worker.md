@@ -62,7 +62,7 @@ Accept the quality floor of working from events + git alone — that's the headl
 Apply the live `/mem-wrap` §C content rules:
 
 - Summary: ≤400 chars (`summary=` arg). Name what was investigated and what changed; numbers if they fit. The decisions' rationales carry the detail — do not duplicate.
-- Insights: max 3 total. Body ≤1000 chars each (≈ 6 short lines). Capture personal experience, not textbook facts.
+- Insights: at most the configured cap (`extract.insights_cap`, default 3) total. Body ≤1000 chars each (≈ 6 short lines). Capture personal experience, not textbook facts.
 - Decisions: real Context / Decision / Consequences. Rationale ≤1500 chars. Required keys: `title`, `rationale`, `outcome` (`committed` / `abandoned` / `partial`), `file_paths`, `concepts` (≥2). Optional: `summary`, `predicted_outcome`, `supersedes`, `cites`.
 - Concepts: ≥2 per insight and decision. Pull from `mem_concepts(min_count=5)` if needed (one call per worker invocation is fine; results are reusable across sessions).
 - Tags: only `todo` (explicit future plans) and `probe` (substantive user questions). Otherwise omit.
@@ -79,7 +79,7 @@ mem_extract(
   session_id   = "<ses-id>",
   project      = "<project>",
   summary      = "<≤400 chars>",
-  insights     = [ {title, body, concepts, tags?}, ... ],   # ≤3 total
+  insights     = [ {title, body, concepts, tags?}, ... ],   # ≤ extract.insights_cap (default 3)
   decisions    = [ {title, rationale, outcome, file_paths, concepts, summary?, predicted_outcome?, supersedes?, cites?}, ... ],
   force        = true,
 )

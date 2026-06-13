@@ -50,8 +50,10 @@ def _cmd_scan(args: argparse.Namespace) -> None:
     result = scan(
         cfg,
         project=project,
-        promotion_cap=args.promotion_cap,
-        promotion_threshold=args.promotion_threshold,
+        # None → config defaults (dream.promotion_cap / .promotion_threshold
+        # / dream.essence_cap); the flags remain per-invocation overrides.
+        promotion_cap=getattr(args, "promotion_cap", None),
+        promotion_threshold=getattr(args, "promotion_threshold", None),
         essence_cap=getattr(args, "essence_cap", None),
         rejudge_pairs=getattr(args, "rejudge_pairs", False),
     )

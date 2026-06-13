@@ -699,12 +699,18 @@ def add_admin_subparsers(sub) -> None:
     )
     p_dream_scan.add_argument("--project", "-p", default="")
     p_dream_scan.add_argument(
-        "--promotion-cap", type=int, default=20,
-        help="Max promotion candidates to surface per cycle (default: 20)",
+        "--promotion-cap", type=int, default=None,
+        help=(
+            "Max promotion candidates to surface per cycle "
+            "(default: config dream.promotion_cap, 20)"
+        ),
     )
     p_dream_scan.add_argument(
-        "--promotion-threshold", type=int, default=5,
-        help="Min proposed-concept count for promotion eligibility (default: 5)",
+        "--promotion-threshold", type=int, default=None,
+        help=(
+            "Min proposed-concept count for promotion eligibility "
+            "(default: config dream.promotion_threshold, 5)"
+        ),
     )
     p_dream_scan.add_argument(
         "--essence-cap", type=int, default=None,

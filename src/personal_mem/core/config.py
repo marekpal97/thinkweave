@@ -113,6 +113,60 @@ class Config:
     # Max folded hubs the phase-2 seam-link worker drains per cycle.
     dream_seam_link_cap: int = 10
 
+    # Promotion gate (proposed → canonical concepts). ``threshold`` is the
+    # min proposed-concept count for promotion eligibility; ``cap`` bounds
+    # how many candidates one scan surfaces. The ``mem dream scan``
+    # ``--promotion-{threshold,cap}`` flags override per-invocation; these
+    # fields steer cron (which passes no flags).
+    dream_promotion_threshold: int = 5
+    dream_promotion_cap: int = 20
+
+    # Probe-pressure lookback window (days). Read by BOTH probe surfaces in
+    # the dream scan — the ``recent_probes`` payload (priority worker) and
+    # the knowledge-delta probe-match slice (digest worker).
+    dream_probe_window_days: int = 14
+
+    # How many rejudge entries one cycle hands to the phase-2 judge worker.
+    # Shared by the scan collector AND apply's consumption step — apply
+    # removes exactly this prefix of the on-disk queue, so anything beyond
+    # the cap survives for the next cycle.
+    dream_rejudge_cap: int = 20
+
+    # Knowledge-delta window (hours) for the phase-2 digest worker.
+    dream_knowledge_delta_hours: int = 24
+
+    # Catalyst entries shipped per essence candidate: ``max_catalysts``
+    # for substantive essences, ``placeholder_max_catalysts`` for
+    # placeholder ones (which need more material to compose fresh).
+    dream_essence_max_catalysts: int = 10
+    dream_essence_placeholder_max_catalysts: int = 25
+
+    # Extraction — max insight notes one ``mem_extract`` call creates.
+    extract_insights_cap: int = 3
+
+    # Theme cluster detection (synthesis/theme_candidates.detect_signals).
+    # ``min_cluster_size``: smallest concept cluster that surfaces a signal;
+    # ``recent_days``: event-grain source lookback; ``min_shared_concepts``:
+    # concepts a concept-cluster's sources must share; ``name_family_jaccard``:
+    # token-Jaccard at/above which two ``proposed_theme`` slugs join one arc
+    # family; ``generic_concept_ratio``: concepts on more than this fraction
+    # of the recent pool are "generic" and dropped from covering-theme scoring.
+    theme_min_cluster_size: int = 3
+    theme_recent_days: int = 30
+    theme_min_shared_concepts: int = 2
+    theme_name_family_jaccard: float = 0.5
+    theme_generic_concept_ratio: float = 0.5
+
+    # Landing docs — ``open_probes_cap``: classified prompt-probes gathered
+    # into the landing context; ``probes_display_cap``: probes the rendered
+    # STATE doc's "Open Probes" section displays.
+    landing_open_probes_cap: int = 20
+    landing_probes_display_cap: int = 10
+
+    # RRF fusion constant for hybrid search (Σ 1/(k + rank)). 60 is the
+    # standard constant from the original RRF paper.
+    retrieval_rrf_k: int = 60
+
     # R2 — prompt-time retrieval enrichment (see PromptTimeRetrieval).
     retrieval_prompt_time: PromptTimeRetrieval = field(
         default_factory=PromptTimeRetrieval
@@ -364,9 +418,67 @@ def load_config() -> Config:
             cfg.dream_drift_cap = int(dream_cfg["drift_cap"])
         if "seam_link_cap" in dream_cfg:
             cfg.dream_seam_link_cap = int(dream_cfg["seam_link_cap"])
+        if "promotion_threshold" in dream_cfg:
+            cfg.dream_promotion_threshold = int(dream_cfg["promotion_threshold"])
+        if "promotion_cap" in dream_cfg:
+            cfg.dream_promotion_cap = int(dream_cfg["promotion_cap"])
+        if "probe_window_days" in dream_cfg:
+            cfg.dream_probe_window_days = int(dream_cfg["probe_window_days"])
+        if "rejudge_cap" in dream_cfg:
+            cfg.dream_rejudge_cap = int(dream_cfg["rejudge_cap"])
+        if "knowledge_delta_hours" in dream_cfg:
+            cfg.dream_knowledge_delta_hours = int(
+                dream_cfg["knowledge_delta_hours"]
+            )
+        if "essence_max_catalysts" in dream_cfg:
+            cfg.dream_essence_max_catalysts = int(
+                dream_cfg["essence_max_catalysts"]
+            )
+        if "essence_placeholder_max_catalysts" in dream_cfg:
+            cfg.dream_essence_placeholder_max_catalysts = int(
+                dream_cfg["essence_placeholder_max_catalysts"]
+            )
+
+        # Extraction policy
+        extract_cfg = data.get("extract", {})
+        if "insights_cap" in extract_cfg:
+            cfg.extract_insights_cap = int(extract_cfg["insights_cap"])
+
+        # Theme cluster detection
+        themes_cfg = data.get("themes", {})
+        if "min_cluster_size" in themes_cfg:
+            cfg.theme_min_cluster_size = int(themes_cfg["min_cluster_size"])
+        if "recent_days" in themes_cfg:
+            cfg.theme_recent_days = int(themes_cfg["recent_days"])
+        if "min_shared_concepts" in themes_cfg:
+            cfg.theme_min_shared_concepts = int(
+                themes_cfg["min_shared_concepts"]
+            )
+        if "name_family_jaccard" in themes_cfg:
+            cfg.theme_name_family_jaccard = float(
+                themes_cfg["name_family_jaccard"]
+            )
+        if "generic_concept_ratio" in themes_cfg:
+            cfg.theme_generic_concept_ratio = float(
+                themes_cfg["generic_concept_ratio"]
+            )
+
+        # Landing docs
+        landing_cfg = data.get("landing", {})
+        if "open_probes_cap" in landing_cfg:
+            cfg.landing_open_probes_cap = int(landing_cfg["open_probes_cap"])
+        if "probes_display_cap" in landing_cfg:
+            cfg.landing_probes_display_cap = int(
+                landing_cfg["probes_display_cap"]
+            )
+
+        # Retrieval ([retrieval] top-level keys + [retrieval.prompt_time])
+        retrieval_cfg = data.get("retrieval", {})
+        if "rrf_k" in retrieval_cfg:
+            cfg.retrieval_rrf_k = int(retrieval_cfg["rrf_k"])
 
         # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
-        pt = data.get("retrieval", {}).get("prompt_time", {})
+        pt = retrieval_cfg.get("prompt_time", {})
         if pt:
             rpt = cfg.retrieval_prompt_time
             if "enabled" in pt:

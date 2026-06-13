@@ -8,7 +8,7 @@ color: red
 
 # Dream Priority Worker
 
-You receive `recent_probes` — a `{concept: {count, probes}}` aggregate over the last 14 days of probe-classified prompts (questions the user asked that the prompt-classifier flagged as exploratory). `count` is the probe-pressure tally; `probes` is up to 3 of the user's actual questions, most recent first. Your job is to decide which concepts warrant a priority signal — either an enqueue (write a queue item for `/drain` to consume) or a log (surface in the dream report only).
+You receive `recent_probes` — a `{concept: {count, probes}}` aggregate over the configured probe window (`dream.probe_window_days`, default 14 days) of probe-classified prompts (questions the user asked that the prompt-classifier flagged as exploratory). `count` is the probe-pressure tally; `probes` is up to 3 of the user's actual questions, most recent first. Your job is to decide which concepts warrant a priority signal — either an enqueue (write a queue item for `/drain` to consume) or a log (surface in the dream report only).
 
 **You are not a gatekeeper.** The Python scan in `mem dream scan` already aggregated probe events per concept. Your job is the genuinely-semantic part for this domain: per concept, is the vault's current coverage adequate for what the user keeps asking about? Emit one JSON outcome line. The cap is **5 signals per cycle** — pick the top of the queue, leave the rest for next cycle.
 
@@ -108,5 +108,5 @@ The orchestrator merges your `plan_fragment.priority_signals` into the overall p
 - **Exceeding the 5-signal cap** — the cap is intentional; the user reads each one in the report. More than 5 starts to noise the surface.
 - **Composing queue_item without a valid `source_type`** — slug must be one the vault recognizes (e.g. `article`, `paper`, `repo`, `news`, `newsletter-concepts`, ...). Apply errors out on missing/unknown types; check `mem sources list` if unsure.
 - **Dropping `probes` from the queue_item** — without them `/drain` falls back to slug-only search and the acquisition loses the angle the user actually asked about. Copy them verbatim; never paraphrase.
-- **Acting on `count == 1` signals** — single probes are too thin; defer to next cycle (the count accumulates over the 14-day window).
+- **Acting on `count == 1` signals** — single probes are too thin; defer to next cycle (the count accumulates over the probe window).
 - **Multi-line JSON for the outcome envelope** — must be exactly one line as the final non-empty line of your response.

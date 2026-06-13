@@ -407,3 +407,50 @@ class TestSupersedesStringCoercion:
         queued = rejudge_queue.peek(cfg)
         ids = {q["decision_id"] for q in queued}
         assert ids == {p1, p2}
+
+
+class TestInsightsCap:
+    """The per-extraction insight cap reads config ``extract.insights_cap``."""
+
+    def _extract_with_insights(self, tmp_path: Path, n: int, cap: int | None):
+        from personal_mem.core.config import Config
+        from personal_mem.core.indexer import Indexer
+        from personal_mem.core.vault import VaultManager
+        from personal_mem.operations.extract import extract_session
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        if cap is not None:
+            cfg.extract_insights_cap = cap
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+
+        insights = [
+            {
+                "title": f"Insight {i}",
+                "body": f"Body {i}",
+                "concepts": ["sqlite", "memory-system"],
+            }
+            for i in range(n)
+        ]
+        out = extract_session(
+            cfg,
+            session_id=f"ses-cap-{n}-{cap}",
+            project="t",
+            summary="x",
+            insights=insights,
+            decisions=[],
+        )
+        assert out.error == ""
+        return out
+
+    def test_default_cap_is_three(self, tmp_path: Path):
+        out = self._extract_with_insights(tmp_path, n=5, cap=None)
+        # Old literal: insights_in[:3].
+        assert len(out.created_notes) == 3
+
+    def test_config_override_reaches_extraction(self, tmp_path: Path):
+        out = self._extract_with_insights(tmp_path, n=5, cap=1)
+        assert len(out.created_notes) == 1

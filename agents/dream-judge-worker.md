@@ -33,7 +33,7 @@ The orchestrator passes the queue list in the prompt body:
 }
 ```
 
-The list is capped at 20 entries (read from `.mem/rejudge_queue.jsonl` plus stale `pending` verdicts found by the scan; phase 1's `mem dream apply` removes the handed-off file entries from the queue, so they won't resurface — entries beyond the cap survive for the next cycle). Process every entry in input order; do not sub-select.
+The list is capped at the configured `dream.rejudge_cap` (default 20) (read from `.mem/rejudge_queue.jsonl` plus stale `pending` verdicts found by the scan; phase 1's `mem dream apply` removes the handed-off file entries from the queue, so they won't resurface — entries beyond the cap survive for the next cycle). Process every entry in input order; do not sub-select.
 
 ## Job
 

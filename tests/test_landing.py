@@ -518,3 +518,67 @@ class TestLandingFilenamesConfig:
         # All overridden files exist on disk under the project dir
         assert (vault_root / "projects" / "any-proj" / "OVERVIEW.md").exists()
         assert (vault_root / "projects" / "any-proj" / "ADR.md").exists()
+
+
+class TestProbeCapsFromConfig:
+    """Bucket-3 audit: landing probe caps read config ``landing.*``."""
+
+    def test_open_probes_display_cap_override(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """STATE's "Open Probes" section displays at most
+        ``landing.probes_display_cap`` entries."""
+        for i in range(4):
+            vault.create_note(
+                NoteType.NOTE,
+                f"Probe question number {i}?",
+                body="exploratory",
+                project="test_proj",
+                tags=["probe"],
+            )
+        _index_all(vault, indexer)
+
+        config.landing_probes_display_cap = 2
+        result = state_of_play(config, "test_proj")
+        shown = [
+            ln for ln in result.splitlines()
+            if "Probe question number" in ln
+        ]
+        assert len(shown) == 2
+
+    def test_open_probes_gather_cap_override(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """``_gather_prompt_probes``'s default limit reads
+        ``landing.open_probes_cap``."""
+        import json as _json
+        from datetime import datetime, timedelta, timezone
+
+        from personal_mem.synthesis.landing import _gather_prompt_probes
+
+        sess_dir = (
+            config.vault_root / "projects" / "test_proj" / "sessions" / "s1"
+        )
+        sess_dir.mkdir(parents=True)
+        base = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+        rows = [
+            {
+                "type": "prompt",
+                "text": f"What about thing {i}?",
+                "session_id": "abc",
+                "ts": (base + timedelta(minutes=i)).isoformat(),
+            }
+            for i in range(5)
+        ]
+        (sess_dir / "events.jsonl").write_text(
+            "\n".join(_json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+        )
+
+        # Default config cap (20) returns all five probes.
+        assert len(_gather_prompt_probes(config, "test_proj")) == 5
+
+        config.landing_open_probes_cap = 3
+        probes = _gather_prompt_probes(config, "test_proj")
+        assert len(probes) == 3
+        # Explicit limit still overrides config.
+        assert len(_gather_prompt_probes(config, "test_proj", limit=1)) == 1

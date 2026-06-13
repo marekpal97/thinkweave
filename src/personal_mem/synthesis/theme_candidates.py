@@ -37,7 +37,9 @@ from personal_mem.core.config import Config
 
 # Defaults are intentionally conservative — the detector is supposed to be
 # quiet, not noisy. 3 is the smallest "this is a thing" cluster size; ≤30
-# days of event-grain drains comfortably hit that bar.
+# days of event-grain drains comfortably hit that bar. User-overridable via
+# config ``themes.recent_days`` / ``themes.min_cluster_size`` /
+# ``themes.min_shared_concepts`` (resolved in :func:`detect_signals`).
 DEFAULT_RECENT_DAYS = 30
 DEFAULT_MIN_CLUSTER_SIZE = 3
 DEFAULT_MIN_SHARED_CONCEPTS = 2
@@ -57,6 +59,7 @@ MAX_SIGNAL_SOURCES = 15
 # topical information, so it is dropped from covering-theme overlap
 # scoring. This is the D2 fix — without it, an arc routes to whichever
 # theme happens to share a generic concept (iran-war → housing-bust).
+# Config ``themes.generic_concept_ratio`` overrides.
 GENERIC_CONCEPT_DF_RATIO = 0.5
 
 # Tokens too generic to bind two ``proposed_theme`` slugs into one arc
@@ -74,6 +77,7 @@ _NAME_STOPWORDS = frozenset(
 # Two slugs join the same arc family when their significant-token sets
 # overlap at Jaccard ≥ this. iran-war vs iran-war-resolution → 2/3 = 0.67
 # (merge); condo-bust vs housing-deleveraging → 0 (left to the LLM).
+# Config ``themes.name_family_jaccard`` overrides.
 _NAME_FAMILY_JACCARD = 0.5
 
 
@@ -180,9 +184,9 @@ def detect_signals(
     config: Config,
     *,
     source_type: str = "",
-    recent_days: int = DEFAULT_RECENT_DAYS,
-    min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
-    min_shared_concepts: int = DEFAULT_MIN_SHARED_CONCEPTS,
+    recent_days: int | None = None,
+    min_cluster_size: int | None = None,
+    min_shared_concepts: int | None = None,
     min_name_cluster_size: int = DEFAULT_MIN_NAME_CLUSTER_SIZE,
 ) -> list[ThemeClusterSignal]:
     """Detect enriched theme cluster signals for ``/dream``.
@@ -208,11 +212,43 @@ def detect_signals(
 
     When ``source_type`` is given, restrict to that one type; otherwise
     scan every registered event-grain source type.
+
+    Detection thresholds default from config (``themes.recent_days`` /
+    ``themes.min_cluster_size`` / ``themes.min_shared_concepts``, plus
+    ``themes.name_family_jaccard`` and ``themes.generic_concept_ratio``
+    threaded into the family-merge / covering-theme helpers); explicit
+    kwargs override per-call.
     """
     import json as _json
 
     from personal_mem.core.indexer import Indexer
     from personal_mem.sources import registry as source_registry
+
+    if recent_days is None:
+        recent_days = int(
+            getattr(config, "theme_recent_days", DEFAULT_RECENT_DAYS)
+            or DEFAULT_RECENT_DAYS
+        )
+    if min_cluster_size is None:
+        min_cluster_size = int(
+            getattr(config, "theme_min_cluster_size", DEFAULT_MIN_CLUSTER_SIZE)
+            or DEFAULT_MIN_CLUSTER_SIZE
+        )
+    if min_shared_concepts is None:
+        min_shared_concepts = int(
+            getattr(
+                config, "theme_min_shared_concepts", DEFAULT_MIN_SHARED_CONCEPTS
+            )
+            or DEFAULT_MIN_SHARED_CONCEPTS
+        )
+    name_family_jaccard = float(
+        getattr(config, "theme_name_family_jaccard", _NAME_FAMILY_JACCARD)
+        or _NAME_FAMILY_JACCARD
+    )
+    generic_concept_ratio = float(
+        getattr(config, "theme_generic_concept_ratio", GENERIC_CONCEPT_DF_RATIO)
+        or GENERIC_CONCEPT_DF_RATIO
+    )
 
     # Which event-grain types to scan.
     if source_type:
@@ -309,7 +345,9 @@ def detect_signals(
     for st, sources in sources_by_type.items():
         # 1. PRIMARY — name clusters on proposed_theme (concept-free).
         for label, members, name_tally in _cluster_by_proposed_theme(
-            sources, min_cluster_size=min_name_cluster_size
+            sources,
+            min_cluster_size=min_name_cluster_size,
+            family_jaccard=name_family_jaccard,
         ):
             signals.append(
                 _build_signal(
@@ -321,6 +359,7 @@ def detect_signals(
                     kind="name",
                     label=label,
                     name_tally=name_tally,
+                    generic_ratio=generic_concept_ratio,
                 )
             )
 
@@ -346,6 +385,7 @@ def detect_signals(
                         pool_size,
                         kind="concept",
                         forced_concepts=list(cluster.shared_concepts),
+                        generic_ratio=generic_concept_ratio,
                     )
                 )
     return signals
@@ -362,6 +402,7 @@ def _build_signal(
     label: str = "",
     name_tally: dict | None = None,
     forced_concepts: list[str] | None = None,
+    generic_ratio: float = GENERIC_CONCEPT_DF_RATIO,
 ) -> ThemeClusterSignal:
     """Assemble a :class:`ThemeClusterSignal` from a cluster's members."""
     members = sorted(members, key=lambda s: s.get("date", ""), reverse=True)
@@ -400,7 +441,8 @@ def _build_signal(
         proposed_names, related_names = {}, {}
 
     covering = _rank_covering(
-        csupport, n, label, themes, concept_df, pool_size
+        csupport, n, label, themes, concept_df, pool_size,
+        generic_ratio=generic_ratio,
     )
 
     return ThemeClusterSignal(
@@ -422,6 +464,8 @@ def _rank_covering(
     themes: list[dict],
     concept_df: Counter,
     pool_size: int,
+    *,
+    generic_ratio: float = GENERIC_CONCEPT_DF_RATIO,
 ) -> list[dict]:
     """Rank active themes as EXTEND targets for a cluster (the D2 fix).
 
@@ -447,7 +491,7 @@ def _rank_covering(
         topical = 0  # non-generic shared concepts
         for c in shared:
             df = concept_df.get(c, 0)
-            if apply_generic and pool_size and df / pool_size > GENERIC_CONCEPT_DF_RATIO:
+            if apply_generic and pool_size and df / pool_size > generic_ratio:
                 continue  # generic concept — no topical signal
             topical += 1
             idf = math.log((pool_size + 1) / (df + 1)) + 1.0
@@ -495,7 +539,10 @@ def _name_tokens(slug: str) -> set[str]:
 
 
 def _cluster_by_proposed_theme(
-    sources: list[dict], *, min_cluster_size: int
+    sources: list[dict],
+    *,
+    min_cluster_size: int,
+    family_jaccard: float = _NAME_FAMILY_JACCARD,
 ) -> list[tuple[str, list[dict], dict]]:
     """Group *stamped* sources into arc families on ``proposed_theme``.
 
@@ -532,7 +579,7 @@ def _cluster_by_proposed_theme(
             tj = toks[names[j]]
             if not tj:
                 continue
-            if len(ti & tj) / len(ti | tj) >= _NAME_FAMILY_JACCARD:
+            if len(ti & tj) / len(ti | tj) >= family_jaccard:
                 parent[find(names[i])] = find(names[j])
 
     fams: dict[str, list[str]] = {}

@@ -429,7 +429,7 @@ def backlog_summary(config: Config, project: str) -> str:
 def _gather_prompt_probes(
     config: Config,
     project: str,
-    limit: int = 10,
+    limit: int | None = None,
 ) -> list[dict]:
     """Walk a project's session JSONL buffers and return classified probes.
 
@@ -437,13 +437,17 @@ def _gather_prompt_probes(
     ``.mem/buffer/<session>.jsonl`` files mapped to this project, lifts
     prompt events via ``extract.extract_prompts``, runs them through
     ``extract.classify_probe``, and returns the most recent ``limit``
-    probes. Each entry is shaped like a ``probes`` row from the SQL path
-    so the renderer can merge both sources.
+    probes (default: config ``landing.open_probes_cap``, 20). Each entry
+    is shaped like a ``probes`` row from the SQL path so the renderer can
+    merge both sources.
 
     This deliberately does no SQL query — prompt events live in JSONL,
     not the index. Failures (missing dirs, bad JSON) degrade silently.
     """
     from personal_mem.core.events import classify_probe, extract_prompts
+
+    if limit is None:
+        limit = int(getattr(config, "landing_open_probes_cap", 20) or 20)
 
     project_root = config.vault_root / "projects" / project
     sessions_root = project_root / "sessions"
@@ -614,7 +618,7 @@ def _gather_state_context(config: Config, project: str) -> dict:
     # the user explicitly tagged a prompt-derived note as `probe`, the SQL
     # row wins (it has a real id to link to).
     seen_titles = {p["title"].strip().lower() for p in probes if p.get("title")}
-    for prompt_probe in _gather_prompt_probes(config, project, limit=20):
+    for prompt_probe in _gather_prompt_probes(config, project):
         key = prompt_probe["title"].strip().lower()
         if key in seen_titles:
             continue
@@ -781,7 +785,10 @@ def state_of_play(config: Config, project: str) -> str:
     if probes:
         lines.append("## Open Probes")
         lines.append("")
-        for p in probes[:10]:
+        display_cap = int(
+            getattr(config, "landing_probes_display_cap", 10) or 10
+        )
+        for p in probes[:display_cap]:
             session = p.get("session", "")
             sess_ref = f", {_reflink(idmap, session)}" if session else ""
             tag = ""

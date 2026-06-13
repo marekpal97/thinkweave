@@ -168,3 +168,44 @@ def test_post_create_latency_is_acceptable(
         f"post-create hook took {elapsed:.3f}s — investigate before "
         "shipping."
     )
+
+
+class TestDetectionKnobsFromConfig:
+    """Bucket-3 audit: detection thresholds default from config ``themes.*``."""
+
+    def test_min_cluster_size_override_lowers_the_bar(
+        self, vault: VaultManager, config: Config
+    ):
+        """Two sources don't cluster at the default (3) but do at 2."""
+        _make_news_source(vault, "Story A", concepts=["ai-policy", "regulation"])
+        _make_news_source(vault, "Story B", concepts=["ai-policy", "regulation"])
+
+        assert detect_signals(config) == []
+
+        config.theme_min_cluster_size = 2
+        signals = detect_signals(config)
+        assert len(signals) == 1
+        assert len(signals[0].cluster_source_ids) == 2
+
+    def test_min_shared_concepts_override_raises_the_bar(
+        self, vault: VaultManager, config: Config
+    ):
+        """Three sources sharing exactly 2 concepts stop clustering at 3."""
+        for i in range(3):
+            _make_news_source(
+                vault, f"Story {i}", concepts=["ai-policy", "regulation"]
+            )
+
+        assert len(detect_signals(config)) == 1
+
+        config.theme_min_shared_concepts = 3
+        assert detect_signals(config) == []
+
+    def test_explicit_kwarg_overrides_config(
+        self, vault: VaultManager, config: Config
+    ):
+        _make_news_source(vault, "Story A", concepts=["ai-policy", "regulation"])
+        _make_news_source(vault, "Story B", concepts=["ai-policy", "regulation"])
+        config.theme_min_cluster_size = 2
+
+        assert detect_signals(config, min_cluster_size=3) == []

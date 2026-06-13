@@ -2001,3 +2001,139 @@ class TestPlanValidationNewKeys:
         }
         warnings = validate_plan_fragment(plan)
         assert any("catalysts is not a list" in w for w in warnings)
+
+
+class TestPolicyKnobOverrides:
+    """Bucket-3 audit: dream.* policy knobs steer scan/apply via config.
+
+    Defaults are pinned table-style in ``test_config.py``
+    (``test_policy_knob_defaults_match_old_literals``); these tests prove
+    each override actually reaches the consuming function.
+    """
+
+    def test_promotion_threshold_from_config(
+        self, config: Config, vault: VaultManager
+    ):
+        """A 3-count proposed term needs dream.promotion_threshold ≤ 3."""
+        _seed_proposed_concept(vault, "diagnostics", 3)
+        _index(config)
+
+        # Default threshold (5): below the bar.
+        result = scan(config, project="t")
+        assert not any(
+            p["concept"] == "diagnostics" for p in result.promotion_candidates
+        )
+
+        config.dream_promotion_threshold = 3
+        result = scan(config, project="t")
+        assert any(
+            p["concept"] == "diagnostics" for p in result.promotion_candidates
+        )
+
+    def test_promotion_threshold_flag_overrides_config(
+        self, config: Config, vault: VaultManager
+    ):
+        """Explicit kwarg (the CLI flag) wins over the config field."""
+        _seed_proposed_concept(vault, "diagnostics", 3)
+        _index(config)
+        config.dream_promotion_threshold = 3
+
+        result = scan(config, project="t", promotion_threshold=5)
+        assert not any(
+            p["concept"] == "diagnostics" for p in result.promotion_candidates
+        )
+
+    def test_promotion_cap_from_config(
+        self, config: Config, vault: VaultManager
+    ):
+        for i in range(6):
+            _seed_proposed_concept(vault, f"term-x{i:02d}", 6)
+        _index(config)
+        config.dream_promotion_cap = 2
+
+        result = scan(config, project="t")
+        assert len(result.promotion_candidates) == 2
+        assert result.promotion_cap == 2
+
+    def test_probe_window_days_reaches_both_surfaces(
+        self, config: Config, vault: VaultManager, monkeypatch
+    ):
+        """dream.probe_window_days steers the recent_probes payload AND the
+        knowledge-delta probe-match slice — the two sites can't diverge."""
+        import personal_mem.operations.prompts as prompts_mod
+
+        calls: dict[str, int] = {}
+
+        def fake_details(cfg, project="", window_days=None, **kw):
+            calls["details"] = window_days
+            return {}
+
+        def fake_pressure(cfg, project="", window_days=None, **kw):
+            calls["pressure"] = window_days
+            return {}
+
+        monkeypatch.setattr(prompts_mod, "recent_probe_details", fake_details)
+        monkeypatch.setattr(prompts_mod, "recent_probe_pressure", fake_pressure)
+        _index(config)
+        config.dream_probe_window_days = 99
+
+        result = scan(config, project="t")
+        assert result.errors == []
+        assert calls == {"details": 99, "pressure": 99}
+
+    def test_rejudge_cap_from_config_scan_and_apply_agree(
+        self, config: Config, vault: VaultManager
+    ):
+        """dream.rejudge_cap bounds the scan hand-off AND apply's consumption."""
+        from personal_mem.operations import rejudge_queue
+
+        for i in range(5):
+            rejudge_queue.enqueue(
+                config, decision_id=f"dec-{i:04d}", reason="r", source="manual"
+            )
+        _index(config)
+        config.dream_rejudge_cap = 2
+
+        result = scan(config, project="t")
+        assert [e["decision_id"] for e in result.rejudge_queue] == [
+            "dec-0000", "dec-0001",
+        ]
+
+        applied = apply(config, plan={}, project="t")
+        assert applied.rejudge_consumed == 2
+        survivors = rejudge_queue.peek(config)
+        assert [s["decision_id"] for s in survivors] == [
+            "dec-0002", "dec-0003", "dec-0004",
+        ]
+
+    def test_knowledge_delta_hours_from_config(
+        self, config: Config, vault: VaultManager
+    ):
+        from datetime import datetime
+
+        from personal_mem.operations.dream import _collect_knowledge_delta
+
+        _index(config)
+        config.dream_knowledge_delta_hours = 48
+
+        delta = _collect_knowledge_delta(config)
+        start = datetime.fromisoformat(delta["window_start"])
+        end = datetime.fromisoformat(delta["window_end"])
+        assert (end - start).total_seconds() == pytest.approx(48 * 3600)
+
+    def test_essence_catalyst_caps_from_config(
+        self, config: Config, vault: VaultManager
+    ):
+        """dream.essence_max_catalysts bounds recent_catalysts per candidate."""
+        _make_active_theme(vault, "Busy arc", concepts=["ai-capex"])
+        theme_path = next((config.vault_root / "themes").glob("*.md"))
+        for d in range(3):
+            _add_catalyst(theme_path, days_ago=d, citation=f"n-aaaa111{d}")
+        _index(config)
+        config.dream_essence_max_catalysts = 1
+
+        result = scan(config, project="t")
+        assert len(result.essence_candidates) == 1
+        cand = result.essence_candidates[0]
+        assert cand["total_catalysts"] == 3
+        assert len(cand["recent_catalysts"]) == 1

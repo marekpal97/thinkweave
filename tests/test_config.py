@@ -297,3 +297,94 @@ def test_load_config_ignores_malformed_user_config(
     cfg = load_config()
     # Falls through to the built-in default — same as a fresh Config().
     assert cfg.vault_root == Config().vault_root
+
+
+# ---------------------------------------------------------------------------
+# Policy knobs (2026-06 bucket-3 audit) — defaults + toml override path
+# ---------------------------------------------------------------------------
+
+# (field, old hardcoded literal, toml block, toml key) — the table is the
+# contract: each default must equal the literal it replaced, and each key
+# must round-trip through ``load_config``.
+_POLICY_KNOBS = [
+    ("dream_promotion_threshold", 5, "dream", "promotion_threshold"),
+    ("dream_promotion_cap", 20, "dream", "promotion_cap"),
+    ("dream_probe_window_days", 14, "dream", "probe_window_days"),
+    ("dream_rejudge_cap", 20, "dream", "rejudge_cap"),
+    ("dream_knowledge_delta_hours", 24, "dream", "knowledge_delta_hours"),
+    ("dream_essence_max_catalysts", 10, "dream", "essence_max_catalysts"),
+    (
+        "dream_essence_placeholder_max_catalysts",
+        25,
+        "dream",
+        "essence_placeholder_max_catalysts",
+    ),
+    ("extract_insights_cap", 3, "extract", "insights_cap"),
+    ("theme_min_cluster_size", 3, "themes", "min_cluster_size"),
+    ("theme_recent_days", 30, "themes", "recent_days"),
+    ("theme_min_shared_concepts", 2, "themes", "min_shared_concepts"),
+    ("theme_name_family_jaccard", 0.5, "themes", "name_family_jaccard"),
+    ("theme_generic_concept_ratio", 0.5, "themes", "generic_concept_ratio"),
+    ("landing_open_probes_cap", 20, "landing", "open_probes_cap"),
+    ("landing_probes_display_cap", 10, "landing", "probes_display_cap"),
+    ("retrieval_rrf_k", 60, "retrieval", "rrf_k"),
+]
+
+
+def test_policy_knob_defaults_match_old_literals():
+    """Each new Config field defaults to the literal it replaced."""
+    cfg = Config()
+    for field_name, old_literal, _block, _key in _POLICY_KNOBS:
+        assert getattr(cfg, field_name) == old_literal, field_name
+
+
+def test_load_config_parses_policy_knob_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Every policy knob is overridable from vault-internal config.toml."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / ".mem").mkdir(parents=True)
+    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+
+    # Distinct non-default value per knob: int knobs get literal+1,
+    # float knobs get literal+0.25.
+    overrides = {
+        field_name: (
+            old + 0.25 if isinstance(old, float) else old + 1
+        )
+        for field_name, old, _b, _k in _POLICY_KNOBS
+    }
+    blocks: dict[str, list[str]] = {}
+    for field_name, _old, block, key in _POLICY_KNOBS:
+        blocks.setdefault(block, []).append(
+            f"{key} = {overrides[field_name]}"
+        )
+    toml_text = "\n".join(
+        f"[{block}]\n" + "\n".join(lines) + "\n"
+        for block, lines in blocks.items()
+    )
+    (vault / ".mem" / "config.toml").write_text(toml_text, encoding="utf-8")
+
+    cfg = load_config()
+    for field_name, _old, _block, _key in _POLICY_KNOBS:
+        assert getattr(cfg, field_name) == overrides[field_name], field_name
+
+
+def test_rrf_k_override_coexists_with_prompt_time_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """[retrieval] rrf_k and [retrieval.prompt_time] parse side by side."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / ".mem").mkdir(parents=True)
+    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+    (vault / ".mem" / "config.toml").write_text(
+        "[retrieval]\nrrf_k = 30\n\n"
+        "[retrieval.prompt_time]\nenabled = false\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+    assert cfg.retrieval_rrf_k == 30
+    assert cfg.retrieval_prompt_time.enabled is False

@@ -49,14 +49,14 @@ You'll write the scan JSON and per-phase task lists there so workers can read th
 ### Step 1.1 — Scan
 
 ```bash
-uv run mem dream scan --promotion-cap 20 --json > "$CYCLE_TMP/scan.json"
+uv run mem dream scan --json > "$CYCLE_TMP/scan.json"
 ```
 
 Returns a `DreamCycleScan` JSON payload with all phase-1 scan surfaces (`promotion_candidates`, `drift_pairs`, `theme_cluster_signals`, `theme_dup_candidates`, `theme_log_gaps`, `essence_candidates`, `recent_probes`, plus phase-2 surfaces `unwrapped_sessions`, `rejudge_queue`, `seam_link_queue`, `knowledge_delta`).
 
 Drift v2: `drift_pairs` are cosine-ranked evidence packets (string ∪ centroid-cosine generators, judged pairs excluded via the maintenance-log verdict history — pass `--rejudge-pairs` to re-open them); `theme_dup_candidates` is the theme-family analog. The `cycle_id` field is the cycle identity — carry it through to apply and into worker prompts.
 
-For a one-shot essence backfill (heal every placeholder hub in one cycle instead of the nightly cap-12 drip), add `--essence-cap 0` (or pass `/dream --essence-cap N` and forward it here).
+For a one-shot essence backfill (heal every placeholder hub in one cycle instead of the nightly `dream.essence_cap` drip (default 12)), add `--essence-cap 0` (or pass `/dream --essence-cap N` and forward it here).
 
 ### Step 1.2 — Load phase-1 tasks
 
@@ -216,7 +216,7 @@ rm -rf "$CYCLE_TMP"
 
 ## Notes
 
-- **First cycle on a vault with backlog will hit the 20-promotion cap.** This is fine — the cycle drains across multiple nightly runs. Steady state is ~0-5 surfaced items per cycle per worker.
+- **First cycle on a vault with backlog will hit the promotion cap (`dream.promotion_cap`, default 20).** This is fine — the cycle drains across multiple nightly runs. Steady state is ~0-5 surfaced items per cycle per worker.
 - **The scan never crawls the filesystem from this skill.** All discovery is in the `mem dream scan` Bash call, which uses the SQLite index. Phase-2 surfaces follow the same rule: `unwrapped_sessions` / `rejudge_queue` / `knowledge_delta` are all index-driven.
 - **No prompts.** If a worker's input is ambiguous, it skips (capability-named theme clusters age out cheaply; false promotion costs a `/themes-resolve` fix-up later).
 - **Phase 2 is dependency-aware, not just sequential.** Wave A is parallel; Wave B waits for its `depends_on` workers. New workers added to the registry that declare additional dependency edges fit into the same topology — the orchestrator does not need a change.

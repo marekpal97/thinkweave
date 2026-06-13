@@ -47,14 +47,14 @@ Optionally add a `## Summary` section to an existing session note (2–3 sentenc
 
 ## 3. Call `mem_extract` once
 
-Apply the §C content rules below: load the concept vocabulary (`mem_concepts(min_count=5)`), then compose ≤3 insights + the decisions worth formalizing + the user's explicitly-stated future plans as `todo`-tagged insights. Then one call:
+Apply the §C content rules below: load the concept vocabulary (`mem_concepts(min_count=5)`), then compose at most `extract.insights_cap` (default 3) insights + the decisions worth formalizing + the user's explicitly-stated future plans as `todo`-tagged insights. Then one call:
 
 ```
 mem_extract(
   session_id   = <ses-id or minted id>,
   project      = <project>,                  # required if no session note exists
   summary      = "<≤400 chars — see C0>",
-  insights     = [ {title, body, concepts, tags?}, ... ],   # max 3 total (todos count)
+  insights     = [ {title, body, concepts, tags?}, ... ],   # capped at extract.insights_cap, default 3 (todos count)
   decisions    = [ {title, rationale, outcome, file_paths, concepts, summary?, predicted_outcome?, supersedes?, cites?}, ... ],
   force        = <true if the session is already processed/auto-extracted>,
 )
