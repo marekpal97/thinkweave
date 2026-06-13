@@ -97,6 +97,9 @@ def cmd_index(args: argparse.Namespace) -> None:
 def cmd_stats(args: argparse.Namespace) -> None:
     from personal_mem.core.indexer import Indexer
 
+    print("[deprecated] `mem stats` will be removed; use `mem doctor` for vault health.")
+    print()
+
     cfg = load_config()
     idx = Indexer(config=cfg)
     stats = idx.get_stats()

@@ -1797,7 +1797,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'embeddings-local'", specifier = ">=2.5" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = ">=1.0" },
 ]
-provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm", "hubs", "seed", "news", "gemini", "youtube", "all", "dev"]
+provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm", "hubs", "news", "gemini", "youtube", "all", "dev"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]

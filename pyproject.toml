@@ -17,9 +17,8 @@ embeddings-litellm = ["litellm>=1.0"]
 hubs = ["openai>=1.50"]
 # anthropic SDK retired 2026-06-06 (B5/C2): the Anthropic Batches path was
 # the only consumer; backfills now go through the openai SDK + Anthropic's
-# OpenAI-compat endpoint via core.agent_client. The [seed] extra is empty
-# but retained as an installable alias for back-compat with docs / scripts.
-seed = []
+# OpenAI-compat endpoint via core.agent_client. The empty [seed] back-compat
+# alias was removed in the 2026-06-13 pre-ship sweep (zero references).
 news = ["feedparser>=6.0", "readability-lxml>=0.8.1", "httpx"]
 gemini = ["google-genai>=1.0"]
 youtube = [

@@ -667,23 +667,6 @@ def add_admin_subparsers(sub) -> None:
     p_skill_show = skill_sub.add_parser("show", help="Show a skill's frontmatter + head")
     p_skill_show.add_argument("name", help="Skill name (without .md)")
 
-    p_news_stats = sub.add_parser(
-        "news-stats",
-        help=(
-            "Per-outlet drain stats from vault/.mem/queues/_processed/. "
-            "Surfaces drop/accept/fail rates so you can prune the "
-            "news_feeds.yaml registry on evidence."
-        ),
-    )
-    p_news_stats.add_argument(
-        "--days", type=int, default=30,
-        help="Window size in days (default: 30)",
-    )
-    p_news_stats.add_argument(
-        "--json", action="store_true",
-        help="Emit machine-readable JSON instead of the formatted table.",
-    )
-
     p_landing = sub.add_parser("landing", help="Generate landing documents")
     p_landing.add_argument(
         "--project", "-p", default="",

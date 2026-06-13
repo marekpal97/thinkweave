@@ -344,8 +344,10 @@ class TestDispatchTable:
         # Scheduler) added: 43 → 44.
         # Cost-tracking (`mem spend`) shipped 2026-06-01 and was removed
         # 2026-06-10 — net zero on the count.
+        # `mem news-stats` removed in the 2026-06-13 pre-ship dead-code
+        # sweep (zero callers in skills/docs/crontab): 44 → 43.
         # CLAUDE.md §7 reflects the same count (see CLAUDE.md §7); if
         # either slips, the other catches doc drift.
         from personal_mem.surfaces.cli import _DISPATCH
 
-        assert len(_DISPATCH) == 44
+        assert len(_DISPATCH) == 43
