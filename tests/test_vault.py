@@ -105,6 +105,42 @@ class TestRenderFrontmatter:
         assert "empty" not in rendered
         assert "none_val" not in rendered
 
+    def test_inner_double_quotes_roundtrip(self):
+        # Defect 5 regression: titles with inner double quotes used to be
+        # wrapped unescaped (or left bare and edge-stripped by the reader).
+        title = 'He said "no" — Q1 "pivot"'
+        rendered = render_frontmatter({"title": title, "type": "note"})
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["title"] == title
+        # Escaped YAML double-quote form on the wire
+        assert 'title: "He said \\"no\\" — Q1 \\"pivot\\""' in rendered
+
+    def test_quote_and_backslash_breakers_roundtrip(self):
+        for value in (
+            'mix: of "quotes" and [brackets]',
+            "trailing backslash \\",
+            '"leading quote',
+            "'single quoted'",
+            'back\\slash "mix"',
+            "C:\\already\\quoted: path",
+        ):
+            rendered = render_frontmatter({"title": value})
+            fm, _ = parse_frontmatter(rendered + "\n\nBody")
+            assert fm["title"] == value, rendered
+
+    def test_plain_scalars_unchanged(self):
+        # Escaping must not churn the output style for plain values.
+        rendered = render_frontmatter({"title": "plain title", "status": "active"})
+        assert "title: plain title" in rendered
+        assert "status: active" in rendered
+
+    def test_legacy_unescaped_quoted_backslash_still_parses(self):
+        # Files written before the writer escaped: quoted value with raw
+        # backslashes must keep parsing verbatim (no over-eager unescape).
+        text = '---\ntitle: "C:\\old\\style"\n---\n\nBody'
+        fm, _ = parse_frontmatter(text)
+        assert fm["title"] == "C:\\old\\style"
+
     def test_dict_values(self):
         data = {"context": {"prompt": "do something", "plan": "dec-123"}}
         rendered = render_frontmatter(data)

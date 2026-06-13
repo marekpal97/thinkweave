@@ -237,6 +237,43 @@ class TestMintThemeFromSignal:
             sfm, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
             assert thm_id in (sfm.get("relates_to") or [])
 
+    def test_quote_bearing_title_roundtrips(self, vault, indexer, config):
+        # Defect 4 regression: the mint emitter used to build frontmatter
+        # via f-strings (`title: "{display_title}"` unescaped), so a
+        # news-derived title containing double quotes broke the minted
+        # file's YAML. Mint with such a title, then load the file back
+        # through the vault reader and assert nothing was mangled.
+        paths = [
+            _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
+            for i in range(3)
+        ]
+        indexer.rebuild()
+        ids = _src_ids(paths)
+        title = 'He said "no" — Q1 "pivot"'
+
+        theme_path = mint_theme_from_signal(
+            config,
+            slug="q1-pivot",
+            essence="Quote-bearing title regression.",
+            cluster_source_ids=ids,
+            cluster_concepts=["ai-capex", "hyperscaler"],
+            project="alpha",
+            parent="thm-aaaa1111",
+            title=title,
+        )
+        fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert fm["title"] == title
+        # the rest of the frontmatter survives the quoted title intact
+        assert fm["type"] == "theme"
+        assert fm["status"] == "active"
+        assert fm["id"].startswith("thm-")
+        assert set(fm["cites"]) == set(ids)
+        assert set(fm["concepts"]) == {"ai-capex", "hyperscaler"}
+        assert fm["project"] == "alpha"
+        assert fm["parent"] == "thm-aaaa1111"
+        assert fm["aliases"] == [fm["id"]]
+        assert "## Essence" in body and "## Catalyst log" in body
+
     def test_parent_written(self, vault, indexer, config):
         paths = [
             _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])

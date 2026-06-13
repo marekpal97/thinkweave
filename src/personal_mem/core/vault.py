@@ -118,10 +118,37 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             except ValueError:
                 pass
 
-            # String (strip quotes)
-            result[key] = value.strip("\"'")
+            # String (unquote)
+            result[key] = _unquote_scalar(value)
 
     return result, body
+
+
+def _unquote_scalar(value: str) -> str:
+    """Undo frontmatter scalar quoting.
+
+    Properly double-quoted values get the YAML double-quote treatment:
+    outer quotes removed and ``\\"`` / ``\\\\`` escape sequences collapsed
+    (only those two — a lone backslash before any other character is kept
+    verbatim so legacy files written before the writer escaped, e.g.
+    ``"C:\\path"``, parse unchanged). Everything else falls back to the
+    legacy edge quote-strip.
+    """
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        inner = value[1:-1]
+        if "\\" not in inner:
+            return inner
+        out: list[str] = []
+        i = 0
+        while i < len(inner):
+            if inner[i] == "\\" and i + 1 < len(inner) and inner[i + 1] in ('"', "\\"):
+                out.append(inner[i + 1])
+                i += 2
+            else:
+                out.append(inner[i])
+                i += 1
+        return "".join(out)
+    return value.strip("\"'")
 
 
 def _coerce_list_field(value):
@@ -185,6 +212,29 @@ def _coerce_list_field(value):
     return [value]
 
 
+def quote_scalar(s: str) -> str:
+    """Render a string scalar for frontmatter, quoting + escaping when needed.
+
+    Plain scalars pass through untouched so existing output stays stable.
+    Values containing YAML-significant chars (``: # [ ] { }``), a double
+    quote, leading/trailing quote chars, or a trailing backslash are
+    wrapped in double quotes with ``\\`` and ``"`` backslash-escaped — the
+    YAML double-quote convention, mirrored by ``_unquote_scalar`` in
+    ``parse_frontmatter`` so values round-trip. Shared by every
+    frontmatter emitter (do not hand-roll ``f'{key}: "{value}"'``).
+    """
+    needs_quote = (
+        any(c in s for c in (":", "#", "[", "]", "{", "}", '"'))
+        or s[:1] in ('"', "'")
+        or s[-1:] in ('"', "'")
+        or s.endswith("\\")
+    )
+    if not needs_quote:
+        return s
+    escaped = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def render_frontmatter(data: dict) -> str:
     """Render a dict as YAML frontmatter string (between --- delimiters).
 
@@ -232,12 +282,7 @@ def render_frontmatter(data: dict) -> str:
         elif isinstance(value, (int, float)):
             lines.append(f"{key}: {value}")
         else:
-            # Quote strings containing special chars
-            s = str(value)
-            if any(c in s for c in (":", "#", "[", "]", "{", "}")):
-                lines.append(f'{key}: "{s}"')
-            else:
-                lines.append(f"{key}: {s}")
+            lines.append(f"{key}: {quote_scalar(str(value))}")
     lines.append("---")
     return "\n".join(lines)
 

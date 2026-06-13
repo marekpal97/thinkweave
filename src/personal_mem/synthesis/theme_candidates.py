@@ -632,32 +632,35 @@ def mint_theme_from_signal(
         _n += 1
     today = datetime.now(timezone.utc).isoformat()
 
+    from personal_mem.core.vault import render_frontmatter
+
     display_title = (title or "").strip() or slug
-    body_lines: list[str] = [
-        "---",
-        "type: theme",
-        f"id: {thm_id}",
-        f'date: "{today}"',
-        f'title: "{display_title}"',
-        "status: active",
-        f"promotion_origin: {candidacy}",
-    ]
+    # Emit through the shared escaping-aware renderer — news-derived
+    # display titles can carry double quotes / colons, and a hand-rolled
+    # f-string frontmatter block is a YAML-injection hole.
+    fm: dict = {
+        "type": "theme",
+        "id": thm_id,
+        "date": today,
+        "title": display_title,
+        "status": "active",
+        "promotion_origin": candidacy,
+    }
     if essence.strip():
         # Stamp only when a real essence was supplied — the placeholder
         # fallback below must still read as "never synthesised" to the
         # dream essence worker's candidate scan.
-        body_lines.append(f'essence_updated: "{today[:10]}"')
+        fm["essence_updated"] = today[:10]
     if cluster_concepts:
-        body_lines.append(f"concepts: [{', '.join(cluster_concepts)}]")
+        fm["concepts"] = list(cluster_concepts)
     if cluster_source_ids:
-        body_lines.append(f"cites: [{', '.join(cluster_source_ids)}]")
+        fm["cites"] = list(cluster_source_ids)
     if project:
-        body_lines.append(f"project: {project}")
+        fm["project"] = project
     if parent:
-        body_lines.append(f"parent: {parent}")
-    body_lines.append(f"aliases: [{thm_id}]")
-    body_lines.append("---")
-    frontmatter_block = "\n".join(body_lines)
+        fm["parent"] = parent
+    fm["aliases"] = [thm_id]
+    frontmatter_block = render_frontmatter(fm)
 
     # Body uses the shared Hub spine so the catalyst-log grammar is
     # byte-identical to concept hubs. (The previous hand-rolled
