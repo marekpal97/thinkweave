@@ -331,23 +331,5 @@ class TestDispatchTable:
 
         assert "rlvr" in _DISPATCH
 
-    def test_subcommand_count_bumped(self):
-        # P1-4 dropped ``mem connect`` (deprecation alias): 34 → 33.
-        # `mem dream` (vault-hygiene cycle) and `mem news-stats`
-        # (per-outlet drain stats) added later: 33 → 35.
-        # Phase-3 prediction-judge rework adds `mem judge`: 35 → 36.
-        # C24 CLI parity (Slice 4) adds unlink, timeline,
-        # project-snapshot, prompts: 36 → 40.
-        # `mem pause` / `mem resume` (hook pause toggle) + `mem themes`
-        # (themes registry rebuild) added later: 40 → 43.
-        # `mem schedule` (cross-platform scheduler — crontab / Task
-        # Scheduler) added: 43 → 44.
-        # Cost-tracking (`mem spend`) shipped 2026-06-01 and was removed
-        # 2026-06-10 — net zero on the count.
-        # `mem news-stats` removed in the 2026-06-13 pre-ship dead-code
-        # sweep (zero callers in skills/docs/crontab): 44 → 43.
-        # CLAUDE.md §7 reflects the same count (see CLAUDE.md §7); if
-        # either slips, the other catches doc drift.
-        from personal_mem.surfaces.cli import _DISPATCH
-
-        assert len(_DISPATCH) == 43
+    # The subcommand-count pin moved to tests/test_surface_contract.py
+    # (pre-ship audit 4b) — it is a surface-contract concern, not RLVR.

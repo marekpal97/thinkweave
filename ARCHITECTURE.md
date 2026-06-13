@@ -338,6 +338,57 @@ The framework's *internal* contracts (layer dependencies, operations seam, retri
 
 The rule: when restructuring internal modules, treat anything in this table as an immovable identifier. Internal layout (`personal_mem/foo/bar.py`) is private; the names here are the contract. If you must rename one, add a back-compat alias for one release before removing.
 
+### Surface contract — CLI ↔ MCP
+
+The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus exactly four narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `mem wrap-finalize`, `mem hubs apply-linkage`, `mem landing --doc`, and `mem judge --rejudge/--drain`. Everything else an agent needs goes through `mem_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see "Operations layer" below). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
+
+Full inventory — 43 CLI subcommands × 18 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
+
+| Operation | CLI subcommand | MCP tool | Audience |
+|---|---|---|---|
+| Search (FTS / similar / hybrid) | `mem search` | `mem_search` | both (CLI = retrieval debug) |
+| Budgeted context blob | `mem context` | `mem_context` | both (CLI = retrieval debug) |
+| Graph walk (filter-dispatched) | `mem graph` | `mem_graph` | both (CLI = retrieval debug) |
+| Read one note | `mem show` | `mem_read` | both (CLI = retrieval debug) |
+| Timeline window | `mem timeline` | `mem_timeline` | both (CLI = retrieval debug) |
+| Project snapshot | `mem project-snapshot` | `mem_project_snapshot` | both (CLI = retrieval debug) |
+| Prompt / probe surfacing | `mem prompts` | `mem_prompts` | both (CLI = retrieval debug) |
+| Create note | `mem add` | `mem_create` | both (CLI = headless flows) |
+| Update note | `mem update` | `mem_update` | both (CLI = headless flows) |
+| Add typed edge | `mem link` | `mem_link` | both (CLI = headless flows) |
+| Remove typed edge | `mem unlink` | `mem_unlink` | both (CLI = headless flows) |
+| Concept ops (action-dispatched) | `mem concepts` | `mem_concepts` | both (CLI = hygiene orchestration) |
+| Session extraction | — | `mem_extract` | agent |
+| Decision / prediction judging | `mem judge` | `mem_judge` | both — `--rejudge/--drain` is **agent-Bash** |
+| Landing docs regeneration | `mem landing` | `mem_landing` | both — `--doc` is **agent-Bash** |
+| Concept enrichment | `mem enrich` | `mem_enrich` | both (CLI = admin-cron backfill) |
+| Acquisition-queue inspection | `mem queue` | `mem_queue` | both |
+| Source-type registry | `mem sources` | `mem_sources_config` | both |
+| /mem-wrap deterministic tail | `mem wrap-finalize` | — | **agent-Bash** |
+| Hub backfill / linkage | `mem hubs` | — | admin-cron — `apply-linkage` is **agent-Bash** |
+| Decision ledger lookup | `mem decisions` | — | admin-cron |
+| Todo backlog | `mem backlog` | — | admin-cron |
+| SQLite index rebuild | `mem index` | — | admin-cron |
+| Importers (claude-mem / chatgpt / …) | `mem import` | — | admin-cron |
+| Vault health | `mem stats` | — | admin-cron |
+| Coherence linter | `mem doctor` | — | admin-cron |
+| Named workflow pipelines | `mem flow` | — | admin-cron |
+| Host scheduler render | `mem schedule` | — | admin-cron |
+| Hook install / status | `mem hooks` | — | admin-cron |
+| Vault init | `mem init` | — | admin-cron |
+| MCP server registration | `mem install` / `mem uninstall` | — | admin-cron |
+| Hook pause toggle | `mem pause` / `mem resume` | — | admin-cron |
+| MCP server entry point | `mem mcp` | — | admin-cron (infrastructure) |
+| Drop-folder intake helpers | `mem intake` | — | admin-cron |
+| Skill registry inspection | `mem skill` | — | admin-cron |
+| Queue drain (consumer rail) | `mem drain` | — | admin-cron (orchestration) |
+| Discovery strategies (producer rail) | `mem discover` | — | admin-cron (orchestration) |
+| Dream scan / apply | `mem dream` | — | admin-cron (orchestration) |
+| Themes registry rebuild | `mem themes` | — | admin-cron |
+| Project registry | `mem project` | — | admin-cron |
+| Orphan session pruning | `mem prune-orphans` | — | admin-cron |
+| RLVR substrate export | `mem rlvr` | — | admin-cron |
+
 ## Operations layer
 
 `src/personal_mem/operations/` is the seam between surfaces (CLI, MCP) and the knowledge layer (`core/`, `retrieval/`, `synthesis/`, `sources/`). Note creation, concept queries, hub backfill, etc. are implemented exactly once here, then consumed by both surfaces.

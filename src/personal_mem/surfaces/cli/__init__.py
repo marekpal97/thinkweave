@@ -63,47 +63,67 @@ from personal_mem.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans,
 from personal_mem.surfaces.cli.wrap import cmd_wrap_finalize
 
 
+# Grouped by audience (surface contract — see ARCHITECTURE.md "Invocation
+# surface" and tests/test_surface_contract.py). Grouping is documentation
+# only; dispatch is by key, order is irrelevant.
 _DISPATCH = {
-    "add": cmd_add,
-    "backlog": cmd_backlog,
-    "concepts": cmd_concepts,
-    "decisions": cmd_decisions,
+    # ── Agent-Bash entries ────────────────────────────────────────────
+    # The four narrow subcommands in-session agents / dream workers call
+    # from a Bash tool mid-flow (everything else agents reach via MCP):
+    # `mem wrap-finalize`, `mem hubs apply-linkage`, `mem landing --doc`,
+    # `mem judge --rejudge/--drain`. hubs / landing / judge double as
+    # admin surfaces for their other flags.
+    "wrap-finalize": cmd_wrap_finalize,
     "hubs": cmd_hubs,
     "landing": cmd_landing,
-    "project": cmd_project,
-    "prune-orphans": cmd_prune_orphans,
-    "enrich": cmd_enrich,
-    "search": cmd_search,
-    "show": cmd_show,
-    "link": cmd_link,
-    "graph": cmd_graph,
-    "index": cmd_index,
-    "import": cmd_import,
-    "context": cmd_context,
-    "stats": cmd_stats,
-    "doctor": cmd_doctor,
-    "flow": cmd_flow,
-    "schedule": cmd_schedule,
-    "hooks": cmd_hooks,
+    "judge": cmd_judge,
+    # ── Admin & setup ─────────────────────────────────────────────────
+    # Interactive machine / vault administration. No MCP parity by
+    # design; agents shouldn't run these (CLAUDE.md §7).
     "init": cmd_init,
     "install": cmd_install,
     "uninstall": cmd_uninstall,
+    "hooks": cmd_hooks,
+    "schedule": cmd_schedule,
+    "mcp": cmd_mcp,
     "pause": cmd_pause,
     "resume": cmd_resume,
-    "mcp": cmd_mcp,
-    "intake": cmd_intake,
-    "sources": cmd_sources,
+    "doctor": cmd_doctor,
+    "stats": cmd_stats,
     "skill": cmd_skill,
-    "queue": cmd_queue,
-    "drain": cmd_drain,
-    "discover": cmd_discover,
+    "sources": cmd_sources,
+    "project": cmd_project,
+    # ── Cron & orchestration ──────────────────────────────────────────
+    # Invoked by cron flows and headless skill orchestrators (/dream,
+    # /drain, /mem-resolve-concepts, …) — pipeline verbs plus the write
+    # surface headless flows use (`mem add/update/link/unlink`; live
+    # agents use the mem_create/update/link/unlink MCP tools instead).
+    "index": cmd_index,
+    "import": cmd_import,
+    "enrich": cmd_enrich,
     "dream": cmd_dream,
+    "discover": cmd_discover,
+    "drain": cmd_drain,
+    "intake": cmd_intake,
+    "queue": cmd_queue,
+    "flow": cmd_flow,
+    "concepts": cmd_concepts,
     "themes": cmd_themes,
-    "update": cmd_update,
-    "wrap-finalize": cmd_wrap_finalize,
+    "prune-orphans": cmd_prune_orphans,
     "rlvr": cmd_rlvr,
-    "judge": cmd_judge,
+    "add": cmd_add,
+    "update": cmd_update,
+    "link": cmd_link,
     "unlink": cmd_unlink,
+    # ── Retrieval-debug ───────────────────────────────────────────────
+    # Shell-side mirrors of the MCP read surface — for humans debugging
+    # retrieval; agents use the corresponding mem_* tools.
+    "search": cmd_search,
+    "context": cmd_context,
+    "graph": cmd_graph,
+    "show": cmd_show,
+    "backlog": cmd_backlog,
+    "decisions": cmd_decisions,
     "timeline": cmd_timeline,
     "project-snapshot": cmd_project_snapshot,
     "prompts": cmd_prompts,
