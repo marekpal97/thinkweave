@@ -8,7 +8,7 @@ tools: [Read, Edit, Bash, weave_concepts, weave_search, weave_read, weave_update
 # /tighten — Ontology tightening (unified front door)
 
 The single on-demand front door over the same mechanism the nightly `/dream`
-runs unattended. It replaces the split between `/weave-resolve-concepts` and
+runs unattended. It replaces the split between `/mem-resolve-concepts` and
 `/themes-resolve` — tightening is **one process** (a structural audit feeding
 a dedup/coarsen step), symmetric across concept hubs and themes.
 
@@ -87,7 +87,7 @@ These need source-file edits and human approval, so they live here, not in
 - **Hub splits** — read 10–15 hubs; if a learning log drifted across distinct sub-concepts, propose `split: <c> → [child…]` (manual ontology edit + hub split). Present, don't autofix.
 - **Orphan hubs** — `uv run weave concepts hubs --prune --apply`.
 
-(These mirror the old `/weave-resolve-concepts` steps verbatim — same helpers.)
+(These mirror the old `/mem-resolve-concepts` steps verbatim — same helpers.)
 
 ## 4. Theme structural tail
 

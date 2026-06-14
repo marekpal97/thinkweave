@@ -83,7 +83,7 @@ For any decision that carried a `predicted_outcome:` this wrap, `wrap-finalize` 
 
 Add `--json` for headless flows. The CLI exits non-zero if any step errored.
 
-**Does NOT** touch STATE.md (see step 5) and does NOT run `/weave-resolve-concepts`. If drift surfaces a proposed concept at threshold the report mentions it; promotion is `/weave-resolve-concepts`'s job, run separately.
+**Does NOT** touch STATE.md (see step 5) and does NOT run `/tighten`. If drift surfaces a proposed concept at threshold the report mentions it; promotion is `/tighten`'s job, run separately.
 
 ## 5. STATE.md — only if the big picture changed (live mode only)
 

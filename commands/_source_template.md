@@ -68,7 +68,7 @@ Read src/thinkweave/ontology.yaml
 weave_concepts(min_count=2)
 ```
 
-Load the ontology **once at the start of the batch**, not per item. Map concepts to existing ontology terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — `/weave-resolve-concepts` will canonicalise proposals in a later pass. Minimum 2 concepts per source note.
+Load the ontology **once at the start of the batch**, not per item. Map concepts to existing ontology terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — `/tighten` will canonicalise proposals in a later pass. Minimum 2 concepts per source note.
 
 ---
 
@@ -295,7 +295,7 @@ See [[<slug>/raw.md]] (or paper.pdf / snapshot.md / whichever companion file you
 
 ### Concepts
 - Existing: <count reused from ontology>
-- Proposed: <count of new terms needing /weave-resolve-concepts review>
+- Proposed: <count of new terms needing /tighten review>
 
 ### Next
 - <suggested follow-up command — e.g. "Run `/research --queue --batch N` to continue">

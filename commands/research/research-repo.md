@@ -9,7 +9,6 @@ tools:
   - Bash
   - weave_search
   - weave_concepts
-  - weave_concept_search
   - weave_create
   - weave_update
   - weave_link

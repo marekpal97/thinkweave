@@ -75,7 +75,7 @@ weave_concepts(min_count=2)
 
 Map the captured text to existing ontology terms. Minimum 2 concepts.
 New vocabulary goes to `proposed_concepts`, never `concepts` —
-`/weave-resolve-concepts` canonicalises proposals later.
+`/tighten` canonicalises proposals later.
 
 ### 5. Create the note
 

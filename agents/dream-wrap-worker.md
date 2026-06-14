@@ -130,6 +130,6 @@ Anything other than the JSON line is allowed above it — a one-line preamble pe
 
 - Do NOT touch sessions outside the `unwrapped_sessions` input list — the scan already filtered.
 - Do NOT regenerate STATE.md (`weave landing --doc state`) — live `/weave-wrap` does that in step 5, but catch-up mode lacks the conversation context to judge a big-picture change.
-- Do NOT run `/weave-resolve-concepts`. Concept hygiene is a separate cron.
+- Do NOT run `/tighten`. Concept hygiene is a separate cron.
 - Do NOT spawn subagents. Single inline pass per session.
 - Do NOT call `weave_judge` directly — `weave wrap-finalize` already runs `judge_and_writeback` on the freshly-extracted decisions in step D.

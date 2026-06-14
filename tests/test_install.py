@@ -40,9 +40,6 @@ from thinkweave.surfaces.cli.install import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_MCP_JSON = REPO_ROOT / ".mcp.json"
 PLUGIN_MANIFEST_ROOT = REPO_ROOT / ".claude-plugin" / "plugin.json"
-PLUGIN_MANIFEST_NESTED = (
-    REPO_ROOT / ".claude" / "plugins" / "thinkweave" / ".claude-plugin" / "plugin.json"
-)
 
 
 def _command_basename(cmd: str) -> str:
@@ -108,14 +105,6 @@ class TestMcpInvocationConsistency:
         assert "mcp" in entry["args"]
         assert entry["args"][-1] == "weave-mcp"
 
-    def test_plugin_manifest_nested_uses_uv_run_shape(self):
-        entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_NESTED)
-        assert _command_basename(entry["command"]) == "uv"
-        assert entry["args"][:2] == ["run", "--project"]
-        assert "--extra" in entry["args"]
-        assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "weave-mcp"
-
     def test_all_scopes_normalise_to_same_args_shape(self):
         """Once the per-scope project path is replaced with a sentinel,
         every config produces exactly the same args list and env keys."""
@@ -123,23 +112,20 @@ class TestMcpInvocationConsistency:
         install_entry = _entry_from_install()
         mcp_entry = _entry_from_mcp_json()
         plugin_root_entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
-        plugin_nested_entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_NESTED)
 
         norm_install = _normalise_args_for_compare(install_entry["args"], sentinel)
         norm_mcp = _normalise_args_for_compare(mcp_entry["args"], sentinel)
         norm_root = _normalise_args_for_compare(plugin_root_entry["args"], sentinel)
-        norm_nested = _normalise_args_for_compare(plugin_nested_entry["args"], sentinel)
 
-        assert norm_install == norm_mcp == norm_root == norm_nested, (
+        assert norm_install == norm_mcp == norm_root, (
             f"args shape diverged:\n"
             f"  install={norm_install}\n"
             f"  mcp.json={norm_mcp}\n"
-            f"  plugin/root={norm_root}\n"
-            f"  plugin/nested={norm_nested}"
+            f"  plugin/root={norm_root}"
         )
 
         # env keys (not values — install may inject THINKWEAVE_VAULT)
-        for entry in (mcp_entry, plugin_root_entry, plugin_nested_entry):
+        for entry in (mcp_entry, plugin_root_entry):
             assert entry.get("env", {}) == {}, (
                 f"checked-in manifest must not bake env vars: {entry}"
             )
@@ -221,7 +207,7 @@ class TestMcpJsonSyntax:
 
     @pytest.mark.parametrize(
         "path",
-        [PROJECT_MCP_JSON, PLUGIN_MANIFEST_ROOT, PLUGIN_MANIFEST_NESTED],
+        [PROJECT_MCP_JSON, PLUGIN_MANIFEST_ROOT],
         ids=lambda p: str(p.relative_to(REPO_ROOT)),
     )
     def test_file_is_valid_json(self, path: Path):

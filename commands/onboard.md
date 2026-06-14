@@ -1024,8 +1024,7 @@ The next time you sit down to work in this repo:
 
 Cross-vault hygiene (run when things feel noisy):
 
-  • /weave-resolve-concepts   — concept dedup, ontology pruning
-  • /themes-resolve         — theme dedup, essence rewrites
+  • /tighten              — concept + theme dedup, ontology pruning, essence
 
 Reset / debug:
 

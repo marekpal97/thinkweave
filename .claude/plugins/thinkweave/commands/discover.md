@@ -1,1 +1,0 @@
-../../../../commands/discover.md

@@ -1,1 +1,0 @@
-../../../../commands/research.md

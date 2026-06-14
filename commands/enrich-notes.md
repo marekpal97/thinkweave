@@ -1,5 +1,5 @@
 ---
-description: Inline concept enrichment — walk notes lacking concepts and assign ontology-gated concepts via the running model, one batch at a time. The /weave-enrich --via inline path; pairs with `weave enrich --via batch` which fans out via the API wrapper instead.
+description: Inline concept enrichment — walk notes lacking concepts and assign ontology-gated concepts via the running model, one batch at a time. The /enrich-notes --via inline path; pairs with `weave enrich --via batch` which fans out via the API wrapper instead.
 allowed-tools: Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read, mcp__thinkweave__weave_update, mcp__thinkweave__weave_search
 ---
 

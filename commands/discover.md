@@ -88,7 +88,7 @@ Dispatch on `kind`:
 
 - **`kind: review` (decision_review)** — surface the decision in the run report; do not auto-queue. The user inspects via `weave show <decision_id>` and decides whether to flip status or schedule a re-discussion. If `focus.watch_themes` in `PRIORITIES.yaml` is non-empty and the decision's `implements:` intersects it, mark the row "(watched theme)" in the report.
 
-- **`kind: ontology_proposal` (prompt_gap)** — the user has probed about a hyphenated-compound term not in the ontology. Surface as a candidate for `/weave-resolve-concepts` to canonicalise; do not WebSearch or enqueue research items from it.
+- **`kind: ontology_proposal` (prompt_gap)** — the user has probed about a hyphenated-compound term not in the ontology. Surface as a candidate for `/tighten` to canonicalise; do not WebSearch or enqueue research items from it.
 
 - **`kind: research_focus` (focus_research)** — a declared focus concept with its substrate exemplars, probe evidence, and `source_coverage` partition. If coverage shows a real gap (e.g. zero sources of a type the concept plausibly needs), resolve it: compose a WebSearch from the concept, **tightened by `probe_texts`** (the user's verbatim open questions — search what they asked, not just the slug), and enqueue the best hit via `weave_queue` with `concept`, `url`, `title`, and the `probes` field carried over so the drain-side writer keeps the angle. If coverage looks adequate, surface the row in the report only. This is the discover-rail twin of `/dream`'s `queue_item.probes`.
 

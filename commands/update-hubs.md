@@ -101,14 +101,14 @@ For each hub page that gained entries, use `Edit` to insert the new log entries 
 - Frontmatter (all of it)
 - `# {concept}` title line
 - Domain link line (if present)
-- `## Essence` section body (never rewrite during daily sync — flag to user if you think it needs rewriting, and let them run `/weave-resolve-concepts` to handle it)
+- `## Essence` section body (never rewrite during daily sync — flag to user if you think it needs rewriting, and let them run `/tighten` to handle it)
 - Existing log entries
 
 If the hub page has `*No entries yet.*` as its log content, replace that line with the first entry you're adding.
 
 ### 5. Mark essences flagged for revision (if any)
 
-If any concept's essence should be revised, don't rewrite it here. Note the flagged concepts in your final report and suggest `/weave-resolve-concepts` to handle the revisions.
+If any concept's essence should be revised, don't rewrite it here. Note the flagged concepts in your final report and suggest `/tighten` to handle the revisions.
 
 ### 6. Reindex
 
@@ -122,7 +122,7 @@ One short paragraph:
 Processed N notes across M concepts.
 Appended X learning-log entries.
 Essence revision flagged for: [list concepts, or "none"].
-Run `/weave-resolve-concepts` to handle essence revisions.
+Run `/tighten` to handle essence revisions.
 ```
 
 That's it. No lists of individual entries, no diffs — the user can read the hub pages in Obsidian.
@@ -221,7 +221,7 @@ Pairs remaining: Z. Run /update-hubs --bulk again to continue.
 
 ## Scope guardrails (both modes)
 
-- **Never rewrite the essence** in this skill. That's `/weave-resolve-concepts` territory.
+- **Never rewrite the essence** in this skill. That's `/tighten` territory.
 - **Never delete log entries** — the log is append-only by design. If an entry is wrong, the user can hand-edit.
 - **Never mutate source-note frontmatter** to mark it "processed." The hub page is the ledger.
 - **Don't spawn Explore agents** to crawl the vault for related context — the plan file already has the list of notes to process, and the hub page already has its current state. Everything you need is in the per-pair reads.

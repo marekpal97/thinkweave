@@ -20,7 +20,7 @@ The cron-friendly synthesis orchestrator. Phase 1 is **synthesis** (concept hygi
 
 **One cron entry replaces three** — what used to be three nightly jobs (`/dream`, `/weave-wrap` catch-up, `/judge-prediction --drain`) is now one orchestrator that fans out 10 workers across two phases.
 
-**Dream owns routine ontology guarding (2026-06-11 doctrine).** Concept dedup AND theme dedup run here — automated, logged in the maintenance line + report, reversible (folded hubs are archived/tombstoned, never deleted; theme losers keep their file with `merged-into:` status). `/weave-resolve-concepts` and `/themes-resolve` remain as on-demand front doors over the same helpers.
+**Dream owns routine ontology guarding (2026-06-11 doctrine).** Concept dedup AND theme dedup run here — automated, logged in the maintenance line + report, reversible (folded hubs are archived/tombstoned, never deleted; theme losers keep their file with `merged-into:` status). `/tighten` remains the on-demand front door over the same helpers.
 
 Self-deciding. **Never prompts the user.** Designed for `claude -p "/dream"` cron use; works the same interactively.
 
@@ -218,7 +218,7 @@ rm -rf "$CYCLE_TMP"
 
 - **First cycle on a vault with backlog will hit the promotion cap (`dream.promotion_cap`, default 20).** This is fine — the cycle drains across multiple nightly runs. Steady state is ~0-5 surfaced items per cycle per worker.
 - **The scan never crawls the filesystem from this skill.** All discovery is in the `weave dream scan` Bash call, which uses the SQLite index. Phase-2 surfaces follow the same rule: `unwrapped_sessions` / `rejudge_queue` / `knowledge_delta` are all index-driven.
-- **No prompts.** If a worker's input is ambiguous, it skips (capability-named theme clusters age out cheaply; false promotion costs a `/themes-resolve` fix-up later).
+- **No prompts.** If a worker's input is ambiguous, it skips (capability-named theme clusters age out cheaply; false promotion costs a `/tighten` fix-up later).
 - **Phase 2 is dependency-aware, not just sequential.** Wave A is parallel; Wave B waits for its `depends_on` workers. New workers added to the registry that declare additional dependency edges fit into the same topology — the orchestrator does not need a change.
 - **Worker models are owned by agent frontmatter, both phases.** No `Task` call in this skill passes `model:` — `agents/dream-*-worker.md` is where each worker's model is declared and retuned. (Contrast `/drain`, where `subagent_model` is config-driven via `sources.yaml` by design.)
 - **Workers are pure-output (phase 1) or write-with-receipt (phase 2).** Phase-1 workers never Edit files; the apply step does all writes. Phase-2 workers DO write directly (e.g. `dream-wrap-worker` calls `weave wrap-finalize`; `dream-digest-worker` calls `weave_create`), but emit a `side_effects` list so the orchestrator can include the receipts in the report.

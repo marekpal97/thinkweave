@@ -102,7 +102,7 @@ finance-focused publication maps onto `finance/*` branches; an
 ML-focused publication onto `ml/*`; a politics newsletter onto
 whichever domain you've added for that subject.) If you spot a gap
 in the ontology, propose new concepts in `proposed_concepts` and let
-`/weave-resolve-concepts` canonicalise them later.
+`/tighten` canonicalise them later.
 
 ### 4. Search vault for connections
 
@@ -139,7 +139,7 @@ Write the brief from the text body. Images are archived in `assets/` for later i
 
 - Map to whatever ontology branches actually fit the publication.
 - Propose new concepts aggressively — lowercase, hyphenated, specific. Examples by domain: finance → `rate-cycles`, `sector-rotation`; ML → `chain-of-thought`, `kv-cache`; policy → `industrial-policy`, `permitting-reform`. Put new proposals in `proposed_concepts`.
-- **Do NOT edit `ontology.yaml` inline** — consolidation happens via `/weave-resolve-concepts` later.
+- **Do NOT edit `ontology.yaml` inline** — consolidation happens via `/tighten` later.
 - Minimum 3 concepts per source (concepts are the primary linkage mechanism).
 
 ### 8. Call `weave_create`

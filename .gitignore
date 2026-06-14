@@ -22,13 +22,11 @@ build/
 # uv
 .python-version
 
-# Claude Code local state — but keep the plugin shell (it ships with the repo;
-# tests/test_install.py pins its manifest's MCP-invocation shape).
+# Claude Code local/dev state stays untracked.
 # Subagent worker specs live at the repo-root `agents/` dir (tracked), where the
 # plugin auto-discovers them; `.claude/agents/` holds dev-machine symlinks back
 # to them (same pattern as `.claude/commands/`) and stays untracked.
 .claude/*
-!.claude/plugins/
 
 # MCP config — .mcp.json IS the plugin's MCP server declaration
 # (shipped at the repo root per Claude Code plugin spec). Local dev

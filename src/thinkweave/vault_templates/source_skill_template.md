@@ -53,7 +53,7 @@ Every source-ingestion skill starts here. Concept consistency is what makes the 
 weave_concepts(action="list", min_count=2)
 ```
 
-This returns the existing canonical labels (the ontology lives at `<vault>/config/ontology.yaml`, but you query it through `weave_concepts`, never by reading the file). Load them **once at the start of the batch**, not per item. Map concepts to existing terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — the strict ontology gate shunts unknown terms there automatically, and `/weave-resolve-concepts` canonicalises them in a later pass. Minimum 2 concepts per source note.
+This returns the existing canonical labels (the ontology lives at `<vault>/config/ontology.yaml`, but you query it through `weave_concepts`, never by reading the file). Load them **once at the start of the batch**, not per item. Map concepts to existing terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — the strict ontology gate shunts unknown terms there automatically, and `/tighten` canonicalises them in a later pass. Minimum 2 concepts per source note.
 
 ---
 
@@ -221,7 +221,7 @@ See [[<slug>/raw.md]] (or paper.pdf / snapshot.md / whichever companion file you
 
 ### Concepts
 - Existing: <count reused from ontology>
-- Proposed: <count of new terms needing /weave-resolve-concepts review>
+- Proposed: <count of new terms needing /tighten review>
 
 ### Next
 - <suggested follow-up command>

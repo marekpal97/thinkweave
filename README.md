@@ -133,16 +133,21 @@ Two paths — the Claude Code plugin (recommended, one command) or a legacy
 
 ### Plugin install (recommended)
 
-Once per machine — collapses MCP registration, hook installation, and
-slash-command discovery into a single operation:
+Two steps, once per machine — add the marketplace, then install the plugin.
+The install collapses MCP registration, hook installation, and slash-command
+discovery into a single operation:
 
 ```bash
-claude plugin install thinkweave   # registers MCP server, hooks, commands
+claude plugin marketplace add marekpal97/thinkweave   # one-time: register the marketplace
+claude plugin install thinkweave@thinkweave           # registers MCP server, hooks, commands
 # → restart Claude Code so the plugin's MCP server is picked up
 ```
 
-The plugin manifest declares the MCP server inline (no separate `weave install`
-step) and ships the subagent workers that `/dream` and `/drain` fan out to.
+`thinkweave@thinkweave` is `plugin@marketplace` — this repo ships its own
+`.claude-plugin/marketplace.json`, so it *is* the marketplace (no separate
+listing to find). The plugin manifest declares the MCP server inline (no
+separate `weave install` step) and ships the subagent workers that `/dream`
+and `/drain` fan out to.
 
 **Namespacing.** Claude Code registers plugin commands under the plugin's
 namespace: type `/thinkweave:onboard`, not `/onboard` (tab-complete after
@@ -152,7 +157,7 @@ automatically when it detects the plugin route.
 ### Legacy install (clone / dev)
 
 ```bash
-git clone <your-fork-or-org>/thinkweave.git
+git clone https://github.com/marekpal97/thinkweave.git
 cd thinkweave
 uv sync --extra mcp        # installs weave, weave-hook, weave-mcp
 weave install --yes          # registers thinkweave in ~/.claude.json

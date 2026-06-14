@@ -114,7 +114,7 @@ Each lane maps to skill files under `commands/`:
 | import | `/research`, `/research-paper`, `/research-repo`, `/research-article`, `/news`, `/capture`, `/ingest-paper-file` (the last three are agent-internal — invoked by routers/workers, not symlinked as public `/` commands) | URL/file → one source note |
 | acquire | `/drain`, `/substack`, `/newsletter`, `/youtube`, `/podcast` | Queue/inbox → many source notes |
 | discover | `/discover` | Strategy registry: internal-state gap emitters (`decision_review`, `prompt_gap`) + external-trigger enqueuers (`rss_poll`, `mail_poll`, `external_tool_runner`) |
-| synthesis | `/update-hubs`, `/tighten`, `/dream`, `/weave-wrap` | Concept hubs, theme hubs, landing docs, ontology hygiene, session wrap (`/tighten` replaced the split `/weave-resolve-concepts` + `/themes-resolve` skills, 2026-06-13) |
+| synthesis | `/update-hubs`, `/tighten`, `/dream`, `/weave-wrap` | Concept hubs, theme hubs, landing docs, ontology hygiene, session wrap (`/tighten` replaced the split `/mem-resolve-concepts` + `/themes-resolve` skills, 2026-06-13) |
 
 The four lanes are verb-distinct on purpose. **Import** is one-shot (a URL or file the user hands you). **Acquire** is batch (a queue or inbox the user has been accumulating). **Discover** finds what's missing. **Synthesis** aggregates what's already in the vault — concept-hub backfill, theme dedup, landing-doc regeneration. None of these is a sub-mode of another; mixing them is what produced the historical naming drift the Phase 1 rename sweep (1.1) cleaned up.
 

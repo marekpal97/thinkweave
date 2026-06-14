@@ -76,7 +76,7 @@ Identify ≥3 concepts that fit the article. **Strict rule:** only ontology-list
 
 Concepts here are **for graph + concept-hub catalysts**, not for admission. Admission already happened. So extract liberally — pick concepts that genuinely describe what the article is about, not what would have made it pass a gate.
 
-For news, lean on the event-shaped domains of the vault's ontology (e.g. `finance-*`, `ml-*` prefix families). Region-specific items (e.g. `language == "pl"` Polish-economy coverage) will accumulate proposed concepts like `geo-poland`, `poland-macro` — those promote naturally via `/weave-resolve-concepts` once they hit critical mass.
+For news, lean on the event-shaped domains of the vault's ontology (e.g. `finance-*`, `ml-*` prefix families). Region-specific items (e.g. `language == "pl"` Polish-economy coverage) will accumulate proposed concepts like `geo-poland`, `poland-macro` — those promote naturally via `/tighten` once they hit critical mass.
 
 ### 5. Write the brief
 
