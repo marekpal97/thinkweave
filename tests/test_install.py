@@ -33,6 +33,8 @@ from thinkweave.surfaces.cli.install import (
     _plugin_provides_mcp,
     _render_claude_md_block,
     _splice_claude_md_block,
+    cmd_dev_link,
+    cmd_dev_unlink,
     cmd_install,
     cmd_uninstall,
 )
@@ -638,3 +640,80 @@ class TestPluginManifestContract:
         assert {n for n in shipped if n.startswith("research-")}, (
             "no drain Path B writer agents shipped"
         )
+
+
+class TestDevLink:
+    """`weave dev-link` symlinks the checkout into ~/.claude/skills/ so
+    Claude Code auto-loads it as the `thinkweave@skills-dir` plugin
+    (flagless, namespaced, live edits). It writes no ~/.claude.json entry,
+    refuses to shadow a marketplace install, and warns on a leftover raw
+    MCP entry that would double-register the server."""
+
+    @pytest.fixture
+    def dev_link_env(self, fake_claude_home, tmp_path, monkeypatch):
+        """Sandbox the dev-link touchpoints on top of fake_claude_home: a
+        fake checkout carrying a plugin manifest, plus SKILLS_DIR / DEV_LINK
+        under tmp, and a stubbed _detect_project_root pointing at it."""
+        checkout = tmp_path / "checkout"
+        (checkout / ".claude-plugin").mkdir(parents=True)
+        (checkout / ".claude-plugin" / "plugin.json").write_text(
+            json.dumps({"name": SERVER_NAME, "version": "0.1.0"}), encoding="utf-8"
+        )
+        skills_dir = tmp_path / "skills"
+        dev_link = skills_dir / SERVER_NAME
+        monkeypatch.setattr(install_mod, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(install_mod, "DEV_LINK", dev_link)
+        monkeypatch.setattr(install_mod, "_detect_project_root", lambda: checkout)
+        return {
+            **fake_claude_home,
+            "checkout": checkout,
+            "skills_dir": skills_dir,
+            "dev_link": dev_link,
+        }
+
+    def test_creates_symlink_to_checkout(self, dev_link_env, capsys):
+        cmd_dev_link(_ns())
+        link = dev_link_env["dev_link"]
+        assert link.is_symlink()
+        assert link.resolve() == dev_link_env["checkout"].resolve()
+        assert "Dev-linked" in capsys.readouterr().out
+
+    def test_refuses_when_marketplace_plugin_present(self, dev_link_env):
+        _write_plugin_manifest(
+            dev_link_env["plugins_root"], "thinkweave", declares_thinkweave=True
+        )
+        with pytest.raises(SystemExit):
+            cmd_dev_link(_ns())
+        assert not dev_link_env["dev_link"].is_symlink()
+
+    def test_errors_without_plugin_manifest(self, dev_link_env, tmp_path, monkeypatch):
+        bare = tmp_path / "not-a-checkout"
+        bare.mkdir()
+        monkeypatch.setattr(install_mod, "_detect_project_root", lambda: bare)
+        with pytest.raises(SystemExit):
+            cmd_dev_link(_ns())
+
+    def test_idempotent_when_already_linked(self, dev_link_env, capsys):
+        cmd_dev_link(_ns())
+        capsys.readouterr()
+        cmd_dev_link(_ns())
+        assert "Already dev-linked" in capsys.readouterr().out
+
+    def test_warns_on_leftover_raw_mcp_entry(self, dev_link_env, capsys):
+        install_mod._restore_mcp_entry()  # simulate a `weave install` leftover
+        cmd_dev_link(_ns())
+        err = capsys.readouterr().err
+        assert "twice" in err
+        # still links despite the warning (non-fatal)
+        assert dev_link_env["dev_link"].is_symlink()
+
+    def test_dev_unlink_removes_symlink(self, dev_link_env, capsys):
+        cmd_dev_link(_ns())
+        capsys.readouterr()
+        cmd_dev_unlink(_ns())
+        assert not dev_link_env["dev_link"].is_symlink()
+        assert "Removed dev-link" in capsys.readouterr().out
+
+    def test_dev_unlink_noop_when_absent(self, dev_link_env, capsys):
+        cmd_dev_unlink(_ns())
+        assert "No dev-link" in capsys.readouterr().out

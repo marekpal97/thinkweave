@@ -118,8 +118,16 @@ CLI/MCP contract).
 
 ## Install
 
-Two paths — the Claude Code plugin (recommended, one command) or a legacy
-`uv sync` + `weave install` flow for clones / private forks.
+Two paths, both Claude-Code-native: the **plugin** (recommended — marketplace
+install, fully namespaced) or a **clone + `weave dev-link`** for development /
+private forks (also flagless and namespaced, with live edits). Both are the
+*same plugin* — you either install a published copy or symlink your checkout in.
+
+> **Supported surface.** Claude Code is currently the only proven, recommended
+> way to use Thinkweave. The MCP server is a standard MCP stdio server, so other
+> agents (Codex, Cursor, Zed, Claude Desktop, …) *can in principle* connect — but
+> those paths are **unproven and unsupported at this stage**. See
+> [Other agents (experimental)](#other-agents-experimental) below.
 
 **Prerequisites either way:**
 
@@ -154,32 +162,60 @@ namespace: type `/thinkweave:onboard`, not `/onboard` (tab-complete after
 `/thinkweave:` lists everything). `weave schedule` renders namespaced cron lines
 automatically when it detects the plugin route.
 
-### Legacy install (clone / dev)
+### Clone / dev install
+
+For developing against the source or running a private fork. `weave dev-link`
+symlinks the checkout into `~/.claude/skills/`, where Claude Code auto-loads it
+every session as the `thinkweave@skills-dir` plugin — **flagless** (no
+`--plugin-dir` each launch), namespaced `/thinkweave:*`, and edits to the
+working tree are live:
 
 ```bash
 git clone https://github.com/marekpal97/thinkweave.git
 cd thinkweave
 uv sync --extra mcp        # installs weave, weave-hook, weave-mcp
-weave install --yes          # registers thinkweave in ~/.claude.json
-# → restart Claude Code now, before continuing
+weave dev-link             # symlink into ~/.claude/skills/ (flagless auto-load)
+# → restart Claude Code; commands are now /thinkweave:onboard, :tighten, …
 ```
 
-`weave install` is idempotent: it writes the MCP-server block into
-`~/.claude.json` if absent, or shows a diff and waits for `--yes` before
-overwriting. Pass `weave install --vault PATH --yes` to bake the vault path into
-the registered MCP entry now (otherwise `/onboard` asks and persists it later).
+Because it loads the same plugin manifest as the marketplace route, you get the
+MCP server, hooks, and subagent workers with no separate `weave install` step —
+the same namespaced surface end users see. Live-edit reload: `commands/*.md` and
+vault config are picked up immediately; changes to `hooks/`, `agents/`, or the
+manifest's `mcpServers` need `/reload-plugins`. `weave dev-link` is idempotent,
+refuses to shadow a marketplace install, warns if a leftover `weave install`
+entry would double-register the server, and is reversed by `weave dev-unlink`.
 
-Hooks are a separate step (`weave install` never touches `.claude/settings.json`)
-with two scopes, both offered by `/onboard`:
+<details><summary>Alternative: <code>weave install</code> (MCP-only, machine-scope)</summary>
 
-- `weave hooks install --scope user` → `~/.claude/settings.json` — **global**,
-  fires in every Claude Code session on the machine, mirroring what the plugin
-  manifest declares for plugin-route users.
-- `weave hooks install` (default `--scope project`) → `<repo>/.claude/settings.local.json`
-  — per-repo, fires only inside that project tree.
+If you want only the MCP server registered in `~/.claude.json` *without* the
+plugin — e.g. to wire the same server into another host — `weave install`
+writes just the `mcpServers.thinkweave` block (idempotent, diff-on-overwrite,
+`--vault PATH` to bake in the vault). This path installs **no** slash commands
+or hooks (those come from the plugin); add `weave hooks install --scope
+user|project` separately if you need the lifecycle hooks.
 
-So the clone/legacy path gets the same machine-wide hooks as the plugin path —
-just pick `--scope user`.
+</details>
+
+### Other agents (experimental)
+
+Thinkweave's MCP server (`weave-mcp`) is a standard MCP stdio server, so any
+MCP-capable host *can* connect — but **only Claude Code is proven and supported
+today.** Codex, Cursor, Zed, Claude Desktop, etc. are untested; treat them as
+experimental.
+
+The launch command is the one Claude Code uses; the repo-root `.mcp.json` is the
+canonical reference to copy into another agent's MCP config:
+
+```jsonc
+//   command: uv
+//   args:    ["run", "--project", "<path-to-clone>", "--extra", "mcp", "weave-mcp"]
+//   env:     { "THINKWEAVE_VAULT": "<your-vault>" }   // or rely on config.toml
+```
+
+Slash commands, hooks, and the SessionStart context payload are Claude-Code-only.
+Other agents get the MCP tools (search / create / graph / …) and the `weave`
+CLI — not the `/thinkweave:*` skills.
 
 ### Vault path
 

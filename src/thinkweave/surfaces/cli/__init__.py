@@ -31,7 +31,12 @@ from thinkweave.surfaces.cli.index import (
     cmd_index,
     cmd_stats,
 )
-from thinkweave.surfaces.cli.install import cmd_install, cmd_uninstall
+from thinkweave.surfaces.cli.install import (
+    cmd_dev_link,
+    cmd_dev_unlink,
+    cmd_install,
+    cmd_uninstall,
+)
 from thinkweave.surfaces.cli.pause import cmd_pause, cmd_resume
 from thinkweave.surfaces.cli.intake import cmd_intake
 from thinkweave.surfaces.cli.judge import cmd_judge
@@ -84,6 +89,8 @@ _DISPATCH = {
     "init": cmd_init,
     "install": cmd_install,
     "uninstall": cmd_uninstall,
+    "dev-link": cmd_dev_link,
+    "dev-unlink": cmd_dev_unlink,
     "hooks": cmd_hooks,
     "schedule": cmd_schedule,
     "mcp": cmd_mcp,

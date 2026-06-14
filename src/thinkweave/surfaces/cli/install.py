@@ -30,7 +30,9 @@ CLAUDE_JSON = Path.home() / ".claude.json"
 CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
 MARKER = Path.home() / ".claude" / "thinkweave_paused.json"
 PLUGINS_ROOT = Path.home() / ".claude" / "plugins"
+SKILLS_DIR = Path.home() / ".claude" / "skills"
 SERVER_NAME = "thinkweave"
+DEV_LINK = SKILLS_DIR / SERVER_NAME  # ~/.claude/skills/thinkweave (weave dev-link target)
 REQUIRED_SCRIPTS = ("weave", "weave-hook", "weave-mcp")
 
 CLAUDE_MD_BLOCK_START = "<!-- thinkweave:start -->"
@@ -485,3 +487,117 @@ def _print_next_steps() -> None:
     print()
     print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
     print("MCP server entry now; otherwise `/onboard` will ask and persist it.")
+
+
+def _raw_mcp_entry_present() -> bool:
+    """True if ``~/.claude.json`` carries a hand-written thinkweave MCP entry
+    (the ``weave install`` escape hatch). dev-link uses this to warn: the
+    plugin manifest already declares the server, so a leftover raw entry
+    would make Claude Code spawn ``thinkweave`` twice."""
+    if not CLAUDE_JSON.exists():
+        return False
+    try:
+        cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return SERVER_NAME in cfg.get("mcpServers", {})
+
+
+def _print_dev_link_next_steps() -> None:
+    print()
+    print("Restart Claude Code, then everything is namespaced under the plugin:")
+    print("  /thinkweave:onboard                         # first run")
+    print("  /thinkweave:weave-wrap, :tighten, :dream …  # the rest")
+    print()
+    print("The MCP server + hooks load from the plugin manifest — no `weave install`")
+    print("needed. After editing hooks/agents/mcpServers, run `/reload-plugins`.")
+    print("Undo with `weave dev-unlink`.")
+
+
+def cmd_dev_link(args: argparse.Namespace) -> None:
+    """Dev/clone setup — symlink this checkout into ``~/.claude/skills/`` so
+    Claude Code auto-loads it as a plugin every session (flagless, namespaced
+    ``/thinkweave:*``, live edits against the working tree).
+
+    The clone counterpart to the marketplace plugin install. It writes no
+    ``~/.claude.json`` MCP entry: the plugin manifest at the checkout root
+    declares the server, so the plugin runtime owns registration. Refuses to
+    shadow a real marketplace plugin install of the same name, and warns when
+    a leftover raw ``~/.claude.json`` entry would double-register the server.
+    """
+    repo = _detect_project_root()
+    if not (repo / ".claude-plugin" / "plugin.json").exists():
+        print(
+            f"error: no .claude-plugin/plugin.json under {repo}.\n"
+            "Run `weave dev-link` from a thinkweave checkout.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    claimed_by = _plugin_provides_mcp()
+    if claimed_by is not None:
+        print(
+            "note: a marketplace plugin already provides thinkweave\n"
+            f"  ({claimed_by}).\n"
+            "You don't need dev-link. Uninstall that plugin first if you want\n"
+            "to develop against this checkout instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Guard: a leftover raw `weave install` entry double-registers the server
+    # (the skills-dir plugin also declares it). Warn loudly; non-fatal because
+    # the user may have wired the raw entry into another host on purpose.
+    if _raw_mcp_entry_present():
+        print(
+            "warning: a raw thinkweave MCP entry is still in ~/.claude.json.\n"
+            "  Combined with the dev-linked plugin, Claude Code registers the\n"
+            "  `thinkweave` server twice. Run `weave uninstall` to drop the raw\n"
+            "  entry (the plugin manifest provides the server).",
+            file=sys.stderr,
+        )
+
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    if DEV_LINK.is_symlink():
+        if DEV_LINK.resolve() == repo.resolve():
+            print(f"Already dev-linked: {DEV_LINK} → {repo}")
+            _print_dev_link_next_steps()
+            return
+        if not getattr(args, "force", False):
+            print(
+                f"error: {DEV_LINK} already points at {DEV_LINK.resolve()}.\n"
+                f"Re-run with --force to repoint it at {repo}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        DEV_LINK.unlink()
+    elif DEV_LINK.exists():
+        print(
+            f"error: {DEV_LINK} exists and is not a symlink (a real plugin\n"
+            "dir?). Remove it by hand if you mean to dev-link this checkout.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    DEV_LINK.symlink_to(repo)
+    print(f"Dev-linked {DEV_LINK} → {repo}")
+    _print_dev_link_next_steps()
+
+
+def cmd_dev_unlink(args: argparse.Namespace) -> None:
+    """Reverse ``weave dev-link`` — remove the ``~/.claude/skills/thinkweave``
+    symlink. A real (non-symlink) install at that path is left untouched."""
+    if DEV_LINK.is_symlink():
+        target = DEV_LINK.resolve()
+        DEV_LINK.unlink()
+        print(f"Removed dev-link {DEV_LINK} (was → {target}).")
+        print("Restart Claude Code to drop the /thinkweave:* commands.")
+        return
+    if DEV_LINK.exists():
+        print(
+            f"note: {DEV_LINK} is not a symlink (real install?) — left untouched.",
+            file=sys.stderr,
+        )
+        return
+    print(f"No dev-link at {DEV_LINK} (nothing to remove).")

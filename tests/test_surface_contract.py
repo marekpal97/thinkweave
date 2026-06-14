@@ -114,9 +114,12 @@ class TestCliSurface:
         # (A `weave note-format` subcommand was briefly added then dropped
         # 2026-06-13 — note-format skeletons are seeded into the vault at
         # init and the writers Read them directly, so no CLI is needed.)
+        # `weave dev-link` / `dev-unlink` (clone-dev flagless plugin loading
+        # via a ~/.claude/skills/ symlink — the @skills-dir mechanism) added
+        # 2026-06-14: 44 → 46.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
-        assert len(_DISPATCH) == 44
+        assert len(_DISPATCH) == 46
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():
