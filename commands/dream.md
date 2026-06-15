@@ -26,7 +26,7 @@ Self-deciding. **Never prompts the user.** Designed for `claude -p "/dream"` cro
 
 The trust substrate is two artifacts per cycle:
 - `vault/.weave/maintenance.jsonl` — one JSON line summarising what apply did (phase 1) plus phase-2 outcomes.
-- `vault/digests/YYYY-MM-DD-{concept,event}.md` — up to two knowledge-first digests per cycle, one per non-empty grain slice (concept = "what you learned", event = "what happened"). Written by phase 2's `dream-digest-worker`. Vault-global, flat layout.
+- `vault/digests/YYYY-MM-DD-{concept,event}.md` — up to two knowledge-first digests per cycle, one per non-empty grain slice (concept = "what you learned", event = "what happened"). Each slice **leads with a narrative** — `## In brief` (the through-line in prose) + `## Most actionable` (today's arrivals ranked against *behavioral* focus — projects with recent sessions + concepts under probe pressure, computed fresh each cycle, no hand-maintained list) — over the inventory detail beneath. Written by phase 2's `dream-digest-worker`. Vault-global, flat layout.
 
 ## Posture
 
@@ -49,7 +49,7 @@ You'll write the scan JSON and per-phase task lists there so workers can read th
 ### Step 1.1 — Scan
 
 ```bash
-uv run weave dream scan --json > "$CYCLE_TMP/scan.json"
+weave dream scan --json > "$CYCLE_TMP/scan.json"
 ```
 
 Returns a `DreamCycleScan` JSON payload with all phase-1 scan surfaces (`promotion_candidates`, `drift_pairs`, `theme_cluster_signals`, `theme_dup_candidates`, `theme_log_gaps`, `essence_candidates`, `recent_probes`, plus phase-2 surfaces `unwrapped_sessions`, `rejudge_queue`, `seam_link_queue`, `knowledge_delta`).
@@ -61,7 +61,7 @@ For a one-shot essence backfill (heal every placeholder hub in one cycle instead
 ### Step 1.2 — Load phase-1 tasks
 
 ```bash
-uv run weave dream tasks --phase 1 --scan "$CYCLE_TMP/scan.json" --json > "$CYCLE_TMP/tasks-p1.json"
+weave dream tasks --phase 1 --scan "$CYCLE_TMP/scan.json" --json > "$CYCLE_TMP/tasks-p1.json"
 ```
 
 Emits a list of `{worker_name, surface_key, plan_keys, depends_on}` entries — only the phase-1 specs whose `has_signal(scan)` is True. Empty list means nothing to do this phase; skip to phase 2.
@@ -130,7 +130,7 @@ echo "<merged-plan-json>" > "$CYCLE_TMP/plan.json"
 ### Step 1.5 — Apply
 
 ```bash
-uv run weave dream apply --plan "$CYCLE_TMP/plan.json" --json > "$CYCLE_TMP/apply-result.json"
+weave dream apply --plan "$CYCLE_TMP/plan.json" --json > "$CYCLE_TMP/apply-result.json"
 ```
 
 The apply phase batches every structural change (merges → promotions → theme mints → theme extensions → theme merges → distinct-pair recording → essence rewrites → priority signals → one index rebuild → one maintenance.jsonl line). Concept merges FOLD the losing hub into the winner (log preserved, archived with a `merged-into:` stamp) and theme merges run `merge_theme_into` (fold + relates_to repoint + tombstone + registry); both enqueue the survivor on the seam-link queue for phase 2. The essence-rewrite plan key with `new_essence` actually mutates each hub's `## Essence` section (themes by `theme_id`; concept hubs by `hub_kind: "concept"` + `concept`) and stamps `essence_updated`. Theme mints/extensions write the worker's distilled `catalysts` as the log lines; mints without a composed essence are rejected. Returns a `DreamCycleResult` JSON.
@@ -144,7 +144,7 @@ Phase 2 runs **after** phase 1's apply so its workers see the post-apply state (
 ### Step 2.1 — Load phase-2 tasks
 
 ```bash
-uv run weave dream tasks --phase 2 --scan "$CYCLE_TMP/scan.json" --apply-result "$CYCLE_TMP/apply-result.json" --json > "$CYCLE_TMP/tasks-p2.json"
+weave dream tasks --phase 2 --scan "$CYCLE_TMP/scan.json" --apply-result "$CYCLE_TMP/apply-result.json" --json > "$CYCLE_TMP/tasks-p2.json"
 ```
 
 Same shape as phase-1 tasks; each entry now potentially carries a `depends_on: [<worker_name>, ...]` field. The registry encodes `dream-digest-worker.depends_on = ["dream-judge-worker"]` because the digest reads the day's verdict flips (including any just-applied this cycle).
@@ -174,7 +174,7 @@ Task({
 Task({
   subagent_type: "dream-digest-worker",
   description: "Dream phase-2 knowledge_delta",
-  prompt: "cycle_id: <cycle_id>\nphase: 2\nsurface_key: knowledge_delta\n\n<knowledge_delta from scan.json — already grain-split into concept/event slices. Fill in theme_mutations_this_cycle on the event slice from apply-result.json's theme_mints + theme_extensions.>\n\nverdict_flips_from_this_cycle: <list of judgments dream-judge-worker just performed, parsed from its outcome JSON; goes onto the concept slice>\n\nPer your worker spec, compose up to TWO knowledge-first digest notes (one per non-empty grain). Emit the outcome envelope as the final non-empty line."
+  prompt: "cycle_id: <cycle_id>\nphase: 2\nsurface_key: knowledge_delta\n\n<knowledge_delta from scan.json — already grain-split into concept/event slices, with active_focus (behavioral: projects with recent sessions + concepts under probe pressure) at its root for the narrative's Most-actionable section. Fill in theme_mutations_this_cycle on the event slice from apply-result.json's theme_mints + theme_extensions.>\n\nverdict_flips_from_this_cycle: <list of judgments dream-judge-worker just performed, parsed from its outcome JSON; goes onto the concept slice>\n\nPer your worker spec, compose up to TWO knowledge-first digest notes (one per non-empty grain) — each leading with the ## In brief + ## Most actionable narrative, then the inventory detail. Emit the outcome envelope as the final non-empty line."
 })
 ```
 

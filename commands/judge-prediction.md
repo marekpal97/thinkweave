@@ -49,13 +49,13 @@ Default worklist cap is **20**.
 ### 1. Scan (one Bash call)
 
 ```bash
-uv run weave judge --drain --json --max 20
+weave judge --drain --json --max 20
 ```
 
 For `--decision <id>` mode:
 
 ```bash
-uv run weave judge --decision <dec-id> --json
+weave judge --decision <dec-id> --json
 ```
 
 Returns a JSON array of decision items. Each item:

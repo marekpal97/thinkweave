@@ -51,7 +51,7 @@ Before starting, confirm inbox path: `echo $SUBSTACK_INBOX || echo ~/substack_in
 ### 1. Enumerate the inbox
 
 ```
-Bash("uv run weave intake enumerate ~/substack_inbox/")
+Bash("weave intake enumerate ~/substack_inbox/")
 ```
 
 Uses `weave intake` so `/email` and other drop-folder importers share the same enumeration semantics (`_processed/` skipped, flat vs folder classified, `<stem>-images/`/`<stem>_assets/` companion resolved).
@@ -235,7 +235,7 @@ weave_link(source_id="<new-src-id>", target_id="<related-id>", edge_type="relate
 Move the source from the inbox to a dated archive folder — never delete:
 
 ```
-Bash("uv run weave intake archive '<entry-path>' --inbox ~/substack_inbox/")
+Bash("weave intake archive '<entry-path>' --inbox ~/substack_inbox/")
 ```
 
 Uses `weave intake archive` so the dated-folder + companion-dir + collision-suffix logic is shared with `/email` and other drop-folder importers (and is unit-tested), instead of being open-coded in every skill.

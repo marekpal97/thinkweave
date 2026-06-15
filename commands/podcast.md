@@ -47,7 +47,7 @@ For each type, check that the file pointed at by `feed_config:` exists and conta
 For each `podcast-*` type with at least one configured outlet:
 
 ```bash
-uv run weave discover --strategy rss_poll --source-type <slug>
+weave discover --strategy rss_poll --source-type <slug>
 ```
 
 The strategy:

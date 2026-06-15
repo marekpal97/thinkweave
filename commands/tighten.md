@@ -26,8 +26,8 @@ Designed to run in a few minutes. Steps below; apply only on approval.
 ## 1. Scan (shared, both families)
 
 ```bash
-uv run weave dream scan --json > /tmp/tighten-scan.json   # all surfaces
-uv run weave doctor                                       # tag/concept overlap, DEAD vocab
+weave dream scan --json > /tmp/tighten-scan.json   # all surfaces
+weave doctor                                       # tag/concept overlap, DEAD vocab
 ```
 
 The scan payload carries, for this skill:
@@ -66,7 +66,7 @@ nightly posture `dream.coarsen_apply` is false):
 
 ```bash
 echo '<plan json: merges/coarsenings/theme_merges/theme_coarsenings/distinct_pairs/distinct_clusters>' \
-  | uv run weave dream apply --plan - --force-coarsen --no-strict
+  | weave dream apply --plan - --force-coarsen --no-strict
 ```
 
 Apply folds each loser hub into the winner (log preserved, archived
@@ -80,12 +80,12 @@ rulings are recorded permanently.
 These need source-file edits and human approval, so they live here, not in
 `/dream`. Run as needed:
 
-- **Promotions** — `uv run weave concepts proposed-counts --min-count 5`, pipe
-  through `filter_promotion_candidates`, then `uv run weave concepts promote <term> --domain <d>` per approved row.
-- **Singleton prune** — `uv run weave concepts prune-singletons --dry-run` then apply (`concepts:` only; `proposed_concepts:` is sanctuary).
+- **Promotions** — `weave concepts proposed-counts --min-count 5`, pipe
+  through `filter_promotion_candidates`, then `weave concepts promote <term> --domain <d>` per approved row.
+- **Singleton prune** — `weave concepts prune-singletons --dry-run` then apply (`concepts:` only; `proposed_concepts:` is sanctuary).
 - **Dead vocabulary** — from `weave doctor`, remove clearly-dead terms from `ontology.yaml` by hand (leave aspirational ones).
 - **Hub splits** — read 10–15 hubs; if a learning log drifted across distinct sub-concepts, propose `split: <c> → [child…]` (manual ontology edit + hub split). Present, don't autofix.
-- **Orphan hubs** — `uv run weave concepts hubs --prune --apply`.
+- **Orphan hubs** — `weave concepts hubs --prune --apply`.
 
 (These mirror the old `/mem-resolve-concepts` steps verbatim — same helpers.)
 
@@ -100,7 +100,7 @@ These need source-file edits and human approval, so they live here, not in
 manual Step 3/4 edits, rebuild once:
 
 ```bash
-uv run weave index --full
+weave index --full
 ```
 
 Report (3 lines): merges/coarsenings applied (per family), promotions/dead-vocab/splits, theme essence/catalyst fixes, concept count before → after.

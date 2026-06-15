@@ -53,7 +53,43 @@ markers = [
     "perf: performance regression assertion (may be skipped on slow CI hosts)",
 ]
 
+[tool.bumpversion]
+# One command bumps every version surface + commits + tags the release:
+#   uvx bump-my-version bump minor      # 0.1.0 → 0.2.0  (+ tag v0.2.0)
+# In 0.x the MINOR slot is the breaking one (SemVer community convention), so
+# stay on 0.x until the weave_* MCP + CLI surface is stable enough to promise
+# no breakage; flipping to 1.0.0 is `bump-my-version bump major`.
+# src/thinkweave/__init__.py is intentionally NOT a target: it derives the
+# version from installed package metadata, so pyproject is its single source.
+current_version = "0.1.0"
+commit = true
+tag = true
+tag_name = "v{new_version}"
+message = "chore: release v{new_version}"
+tag_message = "Release v{new_version}"
+allow_dirty = false
+
+# pyproject [project] version. Regex-anchored to the line start so it does NOT
+# also rewrite the `current_version` line above (which ends in `version = "…"`).
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = "(?m)^version = \"{current_version}\""
+replace = "version = \"{new_version}\""
+regex = true
+
+[[tool.bumpversion.files]]
+filename = ".claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+# Marketplace catalog version — kept lock-step with the plugin for simplicity.
+[[tool.bumpversion.files]]
+filename = ".claude-plugin/marketplace.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "bump-my-version>=0.28",
 ]

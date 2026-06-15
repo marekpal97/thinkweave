@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Plugin CLI shim.
+#
+# Claude Code adds an enabled plugin's bin/ to the Bash tool's PATH, so skills
+# and agents can invoke bare `weave …` and have it resolve from ANY working
+# directory — on both the marketplace and dev-link (@skills-dir) routes.
+#
+# This shim is necessary because ${CLAUDE_PLUGIN_ROOT} is substituted only in
+# hook commands and MCP/LSP configs — NOT in slash-command or subagent Bash
+# calls — and the `weave` console script lives in the plugin's own venv, not on
+# the user's PATH. We resolve the plugin root from this script's own location
+# (cd -P follows the dev-link symlink to the real checkout) and run the bundled
+# CLI via uv. `uv run weave` resolves the venv's console script, not this shim,
+# so there is no recursion.
+set -euo pipefail
+root="$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+exec uv run --project "$root" --extra mcp weave "$@"

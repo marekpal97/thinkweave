@@ -22,6 +22,13 @@ from typing import Any
 
 CLAUDE_JSON = Path.home() / ".claude.json"
 SERVER_NAME = "thinkweave"
+# HOME-scoped plugin install locations. A marketplace install copies the plugin
+# to ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/; `weave dev-link`
+# symlinks the checkout to ~/.claude/skills/<name>/. The plugin manifest there
+# declares the MCP server, so the doctor must scan these to recognise a clean
+# plugin-only install (no raw ~/.claude.json entry). Module-level for monkeypatch.
+PLUGINS_CACHE = Path.home() / ".claude" / "plugins" / "cache"
+SKILLS_DIR = Path.home() / ".claude" / "skills"
 
 # ---------- result types ----------
 
@@ -76,8 +83,15 @@ def _entry_from_project_mcp_json(cwd: Path) -> tuple[Path, dict | None]:
 
 
 def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
-    """Walk ``<cwd>/.claude/plugins/**/.claude-plugin/plugin.json`` and
-    ``<cwd>/.claude-plugin/plugin.json`` for inline mcpServers blocks.
+    """Collect thinkweave mcpServers blocks from every plugin manifest that
+    could be active: the cwd-relative project plugin (``<cwd>/.claude-plugin``,
+    ``<cwd>/.claude/plugins``) AND the HOME-scoped install locations — the
+    marketplace cache (``~/.claude/plugins/cache/<mkt>/<plugin>/<ver>``) and the
+    dev-link skills dir (``~/.claude/skills/<name>``).
+
+    Scanning HOME is what lets the doctor recognise a clean plugin-only install
+    (no raw ``~/.claude.json`` entry) — without it, a plugin-route user running
+    from an arbitrary cwd sees a false "not registered" FAIL.
     """
     candidates: list[Path] = []
     root_manifest = cwd / ".claude-plugin" / "plugin.json"
@@ -92,8 +106,27 @@ def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
             if manifest.exists():
                 candidates.append(manifest)
 
+    # HOME-scoped installs — where plugins actually live for real users.
+    if PLUGINS_CACHE.exists():
+        # cache/<marketplace>/<plugin>/<version>/.claude-plugin/plugin.json
+        candidates.extend(PLUGINS_CACHE.glob("*/*/*/.claude-plugin/plugin.json"))
+    if SKILLS_DIR.exists():
+        # <name>/.claude-plugin/plugin.json (dev-link / @skills-dir)
+        candidates.extend(SKILLS_DIR.glob("*/.claude-plugin/plugin.json"))
+
     entries: list[tuple[Path, dict]] = []
+    seen: set[Path] = set()
     for path in candidates:
+        # Dedup by physical path — a dev-link symlink can resolve to the same
+        # checkout as the cwd manifest; counting it twice would be a phantom
+        # "2 scopes" conflict.
+        try:
+            rp = path.resolve()
+        except OSError:
+            rp = path
+        if rp in seen:
+            continue
+        seen.add(rp)
         data = _safe_load_json(path)
         if data is None:
             continue

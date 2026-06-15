@@ -121,7 +121,7 @@ HALT. Don't try to recover; the only fix is a Claude Code restart.
 ### 0c. weave doctor --mcp
 
 ```bash
-uv run weave doctor --mcp
+weave doctor --mcp
 ```
 
 Surface its output verbatim. This is the install diagnostic — covers
@@ -200,7 +200,7 @@ test -f ~/.config/thinkweave/config.toml && echo "persisted" || echo "FAILED"
 ### 1d. Run `weave init`
 
 ```bash
-THINKWEAVE_VAULT=<chosen-path> uv run weave init
+THINKWEAVE_VAULT=<chosen-path> weave init
 ```
 
 This seeds `<vault>/config/sources.yaml`, `PRIORITIES.yaml`,
@@ -269,10 +269,10 @@ the user sees what would change:
 
 ```bash
 # Every session:
-uv run weave hooks install --scope user --dry-run
+weave hooks install --scope user --dry-run
 
 # Only this repo:
-uv run weave hooks install --dry-run
+weave hooks install --dry-run
 ```
 
 Display the planned diff, then ask:
@@ -298,10 +298,10 @@ hooks install` when ready."* and proceed to Step 3.
 
 ```bash
 # Every session:
-uv run weave hooks install --scope user
+weave hooks install --scope user
 
 # Only this repo:
-uv run weave hooks install
+weave hooks install
 ```
 
 If no existing settings file was present in 2c, run directly here
@@ -346,11 +346,27 @@ the dry-run reports zero usable sessions, print verbatim:
 Then **skip Step 4 entirely** (ontology bootstrap has nothing to chew
 on) and proceed directly to Step 5.
 
-### 3b. Check ANTHROPIC_API_KEY status (for --via batch viability)
+### 3b. Check the completion-provider key (for --via batch viability)
+
+The batch route needs the **configured** completion provider's key — read it
+from `api.yaml` rather than assuming Anthropic. The inline route needs no key
+at all.
 
 ```bash
-test -n "$ANTHROPIC_API_KEY" && echo "key set" || echo "key missing"
+python -c "
+from thinkweave.core.config import load_config
+from thinkweave.core.api_config import load_api_config, resolve_for_op
+from thinkweave.core.api_keys import get_provider_key
+op = resolve_for_op(load_api_config(load_config().vault_root), 'claude_code_enrich')
+prov = op['provider']
+env = {'openai':'OPENAI_API_KEY','anthropic':'ANTHROPIC_API_KEY','gemini':'GEMINI_API_KEY'}.get(prov, prov.upper()+'_API_KEY')
+print(f'provider={prov} key_env={env} status=' + ('set' if get_provider_key(prov) else 'missing'))
+"
 ```
+
+Parse `provider=`, `key_env=`, `status=` from the output — you'll surface
+them in the 3c mode question. (`get_provider_key` also reads `.env`, so a
+keyless shell with a vault `.env` still reports `set`.)
 
 ### 3b'. Decide import scope (AskUserQuestion — only if `N > ~500`)
 
@@ -386,51 +402,85 @@ AskUserQuestion({
 
 Hold the chosen flags in memory; they pipe into 3d.
 
-### 3c. Decide import mode (AskUserQuestion)
+### 3c. Decide synthesis mode (AskUserQuestion)
 
-Recompute `N_effective` = sessions that survive the 3b' scope filter
-(use the dry-run output filtered locally; no need to re-shell).
+Materialisation (the file-walk in 3d) always happens; this picks the
+**synthesis backend** that turns each materialised transcript into a
+summary + insight/decision notes + concepts. Recompute `N_effective` =
+sessions that survive the 3b' scope filter (use the dry-run output filtered
+locally; no need to re-shell).
 
-If `N_effective ≤ ~200`, the inline path is fine; skip the question and
-run `weave import claude-code` directly with the 3b' scope flags.
+If `N_effective ≤ ~200`, the inline backend is fine; skip the question and
+use `inline` in 3d.
 
-If `N_effective > ~200`, ask the user which mode to use:
+If `N_effective > ~200`, ask the user which backend to use:
+
+Substitute `{provider}` / `{key_env}` / `{status}` from 3b:
 
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Found {N} historical sessions across {M} projects:\n\n{per-project breakdown, one line each}\n\nWhich import mode? (inline = uses the running model, ~{N*5}s rough estimate; batch = Anthropic Batches API, faster on large histories but requires ANTHROPIC_API_KEY)\n\nANTHROPIC_API_KEY status: {set | missing}",
-    "header": "CC import mode",
+    "question": "Found {N} historical sessions across {M} projects:\n\n{per-project breakdown, one line each}\n\nWhich synthesis mode? (inline = uses the running model, no key; batch = {provider} via the API wrapper, faster on large histories but needs {key_env})\n\n{key_env} status: {status}",
+    "header": "CC synthesis mode",
     "options": [
-      {"label": "inline", "description": "Use the running model. Slower on >200 sessions but no extra API key required."},
-      {"label": "--via batch", "description": "Use Anthropic Batches API. Faster on large histories. REQUIRES ANTHROPIC_API_KEY to be set in the environment."},
-      {"label": "skip", "description": "Don't import historical sessions now (you can re-run /onboard later)."}
+      {"label": "inline", "description": "Synthesise via the running model (the /seed-enrich skill). Slower on >200 sessions but no extra API key required."},
+      {"label": "--via batch", "description": "Synthesise via {provider} through the API wrapper. Faster on large histories. Needs {key_env} set."},
+      {"label": "skip", "description": "Materialise the sessions but don't synthesise now (you can re-run /onboard or /seed-enrich later)."}
     ],
     "multiSelect": false
   }]
 })
 ```
 
-If the user picks `--via batch` but the key is missing, fall back to
-`inline` and tell them why in one line. If they pick `skip`, exit Step
-3 without importing.
+If the user picks `--via batch` but `{status}` is `missing`, fall back to
+`inline` and tell them why in one line. If they pick `skip`, materialise only
+(Step 3d still runs the import + index; synthesis is deferred).
 
-### 3d. Execute the import
+### 3d. Materialise → index → synthesise
 
-Append any scope flags chosen in 3b' to the command:
+Three steps. Materialisation is a pure file-walk (the note is born holding
+the verbatim transcript, no `processed` flag); **synthesis** is the LLM pass
+that turns each transcript into a summary + insight/decision notes +
+`proposed_concepts:` — and it's what Step 4 chews on. Skipping it leaves the
+ontology with nothing to bootstrap.
+
+**1. Materialise** (append any scope flags chosen in 3b'):
 
 ```bash
 weave import claude-code [--since YYYY-MM-DD] [--sample-only] [--limit N]
-weave import claude-code --via batch [--since YYYY-MM-DD] [--sample-only] [--limit N]
 ```
 
-After import lands, the vault has session notes, decision notes, and
-many `proposed_concepts:` entries from auto-enrichment. Those drive
-Step 4.
+**2. Index** so the new sessions are searchable and resolvable by id before
+synthesis runs (synthesis resolves each session through the index):
+
+```bash
+weave index
+```
+
+**3. Synthesise** per the 3c mode:
+
+- **inline** (or `skip`-becomes-inline-later): invoke the inline backend —
+  ```
+  /seed-enrich
+  ```
+  It walks every not-yet-`processed` import, composes the synthesis via the
+  running model, and writes it back through `weave_extract`. No key needed.
+- **--via batch**: fan out through the configured provider —
+  ```bash
+  weave import claude-code --enrich --via batch [--enrich-limit N]
+  ```
+- **skip**: leave synthesis for later (materialise + index only). Tell the
+  user: *"Sessions materialised but not synthesised — run `/seed-enrich` (or
+  `weave import claude-code --enrich`) when ready. Step 4 ontology bootstrap
+  has nothing to chew on until then."* and **skip Step 4**.
+
+After synthesis lands, the vault has session notes, derived decision/insight
+notes, and `proposed_concepts:` across them — those drive Step 4.
 
 If the user picked `sample 50 first` in 3b', flag at the start of the
-wrap-up: *"Sampled 50 sessions for ontology bootstrap. Re-run `/onboard`
-(or `weave import claude-code`) to materialise the remaining {N-50}."*
+wrap-up: *"Synthesised 50 sessions for ontology bootstrap. Re-run `/onboard`
+(or `weave import claude-code`) to materialise + synthesise the remaining
+{N-50}."*
 
 ---
 
@@ -444,6 +494,19 @@ instead of an empty seed.
 
 **Skipped entirely** if Step 3 took the empty-history branch.
 
+**Unsynthesised-guard.** This step only has input if Step 3 actually
+synthesised. Before bootstrapping, confirm there are no pending imports left
+behind:
+
+```bash
+weave import claude-code --enrich --dry-run
+```
+
+If that prints `PENDING` lines, synthesis was skipped (or partial) — say so
+plainly (*"{K} imported sessions aren't synthesised yet, so there are no
+concepts to bootstrap. Run `/seed-enrich` first, then re-run /onboard."*) and
+**skip Step 4** rather than silently producing an empty ontology.
+
 **Idempotency check:** if `weave concepts list` reports ≥10 canonical
 concepts AND `weave concepts proposed-counts --min-count 3` returns an
 empty survivor list (after filtering), skip Step 4.
@@ -454,7 +517,7 @@ Use a lower threshold than periodic hygiene (3 vs. the standard 5) —
 fresh vaults need a faster ramp:
 
 ```bash
-uv run weave concepts proposed-counts --min-count 3
+weave concepts proposed-counts --min-count 3
 ```
 
 Pipe through the deterministic filter (drops domain-path concepts,
@@ -801,10 +864,10 @@ Then issue the landing docs pass:
 
 ```bash
 # Per active project (skip any whose STATE.md already exists):
-THINKWEAVE_VAULT=<vault> uv run weave landing --project <project> --doc all
+THINKWEAVE_VAULT=<vault> weave landing --project <project> --doc all
 
 # Global themes refresh:
-uv run weave landing --doc themes
+weave landing --doc themes
 ```
 
 Landing docs are derived and idempotent — the user already approved
@@ -850,7 +913,7 @@ Build a comma-separated `ONLY` string from the selected names, e.g.
 ### 6b. Preview (dry-run, OS-aware)
 
 ```bash
-uv run weave schedule install --dry-run --only "<ONLY>"
+weave schedule install --dry-run --only "<ONLY>"
 ```
 
 This prints the resolved scheduler entries for **this** OS (the crontab
@@ -879,7 +942,7 @@ AskUserQuestion({
 ### 6d. Apply on "yes, install"
 
 ```bash
-uv run weave schedule install --only "<ONLY>"
+weave schedule install --only "<ONLY>"
 ```
 
 Confirm by re-running `weave schedule list` (shows the backend) and, on
@@ -923,14 +986,22 @@ queryable. Run `weave index --full` and re-run /onboard."*
 
 ### 7d. Hooks firing
 
+Check the **live** event buffer, not the post-wrap location. During a
+session, hooks append to `<vault>/.weave/buffer/<session-uuid>.jsonl`; the
+Stop hook / `weave_extract` only later *archives* that into the session
+folder as `events.jsonl`. On a fresh install nothing has been wrapped yet,
+so `sessions/*/*/events.jsonl` doesn't exist — checking it false-fails even
+when hooks are perfectly healthy.
+
 ```bash
-ls -t <vault>/sessions/*/*/events.jsonl 2>/dev/null | head -1
+ls -t <vault>/.weave/buffer/*.jsonl 2>/dev/null | head -1
 ```
 
-If the result is a non-empty file, hooks are firing (the current
-`/onboard` session itself has been emitting events since SessionStart).
-FAIL → *"No events.jsonl found under <vault>/sessions/. Hooks aren't
-firing in this session. Restart Claude Code and re-run /onboard."*
+If the result is a non-empty file, hooks are firing (this `/onboard`
+session has been buffering its own tool events since SessionStart). FAIL →
+*"No buffer file under <vault>/.weave/buffer/. Hooks aren't firing in this
+session. Re-run `weave hooks install`, restart Claude Code, and re-run
+/onboard."*
 
 ### 7e. Sample brief landed (conditional)
 
@@ -947,7 +1018,7 @@ FAIL: *"Sample URL noted but no source note yet — run `/research
 ### 7e'. Embedding posture (INFO, never FAIL)
 
 ```bash
-uv run weave doctor 2>/dev/null | sed -n '/^Embedding posture:/,/^$/p'
+weave doctor 2>/dev/null | sed -n '/^Embedding posture:/,/^$/p'
 ```
 
 Surface the `Embedding posture:` block verbatim. This is **INFO**, never a

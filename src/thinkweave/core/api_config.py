@@ -24,9 +24,13 @@ Schema::
       hubs_link:       {}
       enrich:          {}
       chatgpt_import:  {model: gpt-5-mini}
-      claude_code_enrich:
-        provider: anthropic
-        model: claude-haiku-4-5-20251001
+      claude_code_enrich: {}      # session synthesis; pin a block to override
+
+Every op falls through to ``completion.*`` unless its override block pins a
+field — there is **no** per-op hardcoded provider. (``claude_code_enrich``
+used to document an anthropic default; the seeded ``overrides: {}`` means it
+has always resolved to ``completion.provider``. Add an override block only to
+pin a different provider/model for session synthesis specifically.)
 
 ``resolve_for_op(cfg, op_name)`` merges the global ``completion`` block
 with the op's override. Override fields win; anything omitted falls

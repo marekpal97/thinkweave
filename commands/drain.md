@@ -171,7 +171,7 @@ write time (`VaultManager.create_note`), and `/dream` reads enriched
 `theme_cluster_signals` off the index — raw `proposed_theme:` tally plus
 overlapping active themes — and either mints a new theme or extends an
 existing one. There is no per-drain theme step; keep the index warm with
-`uv run weave index --only-new` if you want the next `/dream` cycle to see
+`weave index --only-new` if you want the next `/dream` cycle to see
 the batch immediately.
 
 > **Removed: `dedup_sweep`.** v1 had a Jaccard-based within-batch dedup hook to catch race-condition near-dupes from parallel workers all calling `weave_search` at the same instant. v2's writers don't dedup at all — duplicate news on an unfolding event is itself signal (multiple sources confirming the same arc). Cross-source repetition lands in a single theme's catalyst log; the user reads breadth there, not in dedup-marked supersedes.

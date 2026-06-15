@@ -46,11 +46,19 @@ uv run weave uninstall --yes        # start new-user-clean: removes any raw ~/.c
 
 ### 2a. Set up
 ```bash
-rm -rf ~/tw-test-vault                                   # fresh test vault
-claude plugin marketplace add marekpal97/thinkweave      # one-time: register the marketplace
-claude plugin install thinkweave@thinkweave              # install MCP + hooks + commands
+rm -rf ~/tw-test-vault                                          # fresh test vault
+# Add the marketplace from your LOCAL checkout — validates against your current
+# code with no push required.
+claude plugin marketplace add /path/to/thinkweave
+claude plugin install thinkweave@thinkweave                     # install MCP + hooks + commands
 ```
 > In-session equivalents also work: `/plugin marketplace add …`, `/plugin install …`.
+>
+> **Why local, not `marketplace add marekpal97/thinkweave`?** The GitHub shorthand
+> resolves the repo's **default branch (`main`)**, which lags this work and has no
+> `marketplace.json` yet — so it would fail. The GitHub form only works once the
+> manifest-bearing branch is merged to `main` **and** the repo is public; that's a
+> **release gate**, not part of local validation.
 
 ### 2b. Launch a fresh session against the test vault
 ```bash

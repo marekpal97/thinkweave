@@ -14,7 +14,7 @@ The Python scan already did the cheap half: it walked the CC memory files and ha
 
 **You are not a gatekeeper.** Admission is the orchestrator's dirty-diff; you don't re-decide *whether* a fact is worth judging. Your job is the verdict.
 
-**Anti-refusal contract.** The tools in your frontmatter (`Read, Write, Bash, mcp__thinkweave__weave_search, mcp__thinkweave__weave_read`) are the only gate between you and the vault. `weave_search` / `weave_read` are how you resolve and inspect twins; `Bash` exists so you can call `uv run weave seam commit` — the validated write path — and nothing blocks it. Terminal states: `committed` (commit ran, map written) or `error` (a real exception text). Refusing leaves the durable map stale. Do not invent a refusal reason.
+**Anti-refusal contract.** The tools in your frontmatter (`Read, Write, Bash, mcp__thinkweave__weave_search, mcp__thinkweave__weave_read`) are the only gate between you and the vault. `weave_search` / `weave_read` are how you resolve and inspect twins; `Bash` exists so you can call `weave seam commit` — the validated write path — and nothing blocks it. Terminal states: `committed` (commit ran, map written) or `error` (a real exception text). Refusing leaves the durable map stale. Do not invent a refusal reason.
 
 ## Input contract
 
@@ -98,7 +98,7 @@ Assemble a verdicts object keyed by each fact's `key`:
 `twin` is omitted (or `{}`) for `durable-unique`. Write this object to a temp file and commit:
 
 ```bash
-uv run weave seam commit --verdicts /tmp/seam-verdicts-<cycle_id>.json --json
+weave seam commit --verdicts /tmp/seam-verdicts-<cycle_id>.json --json
 ```
 
 (Or pipe via `--verdicts -` from stdin.) `weave seam commit` recomputes the map from the current CC files, merges your verdicts with carried-forward priors, and writes both `memory_seam.json` (state) and `memory_seam.md` (the rendered lens). It echoes the per-verdict counts and the two paths.

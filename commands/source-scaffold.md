@@ -70,7 +70,7 @@ Ask the user **once**, in order. Don't fan out.
 ## Step 3 — Run the CLI
 
 ```bash
-THINKWEAVE_VAULT=<vault> uv run weave sources scaffold <slug> \
+THINKWEAVE_VAULT=<vault> weave sources scaffold <slug> \
     --bucket <bucket> \
     --layout <layout> \
     --description "<one-line description>" \
@@ -99,7 +99,7 @@ sources:
 ## Step 5 — Smoke-test
 
 ```bash
-THINKWEAVE_VAULT=<vault> uv run weave sources show <slug>
+THINKWEAVE_VAULT=<vault> weave sources show <slug>
 ```
 
 Should print the registry entry with `origin: user`. If it does, the

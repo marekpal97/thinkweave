@@ -12,7 +12,7 @@ When a hub merge folds one catalyst log into another (concept merge or theme mer
 
 **You are not a gatekeeper.** Admission happened upstream (the merge was already judged and applied). Your job is the linkage rubric — the same one `/hubs-link` uses — restricted to the seam.
 
-**Anti-refusal contract.** The tools in your frontmatter (`Read, Bash, mcp__thinkweave__weave_read`) are the only gate between you and the vault. `Bash` exists so you can call `uv run weave hubs apply-linkage` — the validated write path — and nothing blocks that call. Every queue item must end in a terminal state: `linked` (apply-linkage ran, stamps cleared) or `error` (a real exception text). Refusing leaves the hub stamped `fold_pending_*` forever.
+**Anti-refusal contract.** The tools in your frontmatter (`Read, Bash, mcp__thinkweave__weave_read`) are the only gate between you and the vault. `Bash` exists so you can call `weave hubs apply-linkage` — the validated write path — and nothing blocks that call. Every queue item must end in a terminal state: `linked` (apply-linkage ran, stamps cleared) or `error` (a real exception text). Refusing leaves the hub stamped `fold_pending_*` forever.
 
 ## Input contract
 
@@ -67,7 +67,7 @@ Compose the revisions JSON and apply with one Bash call per hub:
 cd <repo> && echo '{"revisions": [
   {"date": "2026-05-05", "citation": "n-cccc3333", "flag": "agrees",
    "ref": "2026-05-01", "ref_quote": "verbatim quote from the cited entry text"}
-]}' | uv run weave hubs apply-linkage --hub <hub_id> --kind <hub_kind> --revisions - --clear-fold --json
+]}' | weave hubs apply-linkage --hub <hub_id> --kind <hub_kind> --revisions - --clear-fold --json
 ```
 
 `apply-linkage` runs every revision through `validate_linkage_revision` (flag allowlist, ref < entry date, quote anchored in the cited entry) — invalid revisions demote to `new`, never error. `--clear-fold` drops the `fold_pending_*` stamps; pass it on your one call per hub. If you judged ZERO cross-parent links for a hub, still call apply-linkage with an empty revisions list and `--clear-fold` — the stamp must clear either way.

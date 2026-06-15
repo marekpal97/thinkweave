@@ -142,7 +142,7 @@ project) — incremental mode is the wrong shape for that.
   hint then this skill body takes over and processes pairs in-session
   with full Claude oversight.
   ```
-  Bash("uv run weave drain --target hubs --via inline")
+  Bash("weave drain --target hubs --via inline")
   ```
   Then proceed with the per-pair flow below.
 - **`--bulk batch`** — non-interactive bulk path. The CLI runs entirely in
@@ -150,7 +150,7 @@ project) — incremental mode is the wrong shape for that.
   OpenAI Batches API with gpt-5-mini, polls for completion, and applies the
   appended log entries. No Claude Code work to do beyond launching it.
   ```
-  Bash("uv run weave drain --target hubs --via batch")
+  Bash("weave drain --target hubs --via batch")
   ```
   Report the CLI's stdout verbatim and stop.
 

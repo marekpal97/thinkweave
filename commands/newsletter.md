@@ -74,7 +74,7 @@ For `mail_provider: outlook` or `imap` (formerly `mail_connector:`; both names a
 For each `newsletter-*` type:
 
 ```bash
-uv run weave discover --strategy mail_poll --source-type <slug>
+weave discover --strategy mail_poll --source-type <slug>
 ```
 
 The strategy returns one descriptor:

@@ -831,15 +831,53 @@ def _collect_knowledge_delta(
             "predictions_landed_24h": [],
         }
 
+    # Behavioral current-focus — what the user is ACTUALLY working on, derived
+    # from observed activity rather than a hand-maintained list (which rots —
+    # PRIORITIES.yaml's focus.* drifted to a renamed-away project). Drives the
+    # digest's "## Most actionable" ranking. Cross-slice → delta root.
+    #   active_projects: projects with sessions in the last 14d (filled below,
+    #                    needs the index) — what you're hands-on with now.
+    #   probed_concepts: concepts under recent probe pressure — what you keep
+    #                    asking about.
+    # Both self-heal each cycle; a quiet period just yields empty lists, and
+    # the narrative honestly reports "nothing intersects your recent focus".
+    probed_concepts: list[str] = []
+    try:
+        pressure = recent_probe_pressure(cfg, window_days=14)  # {concept: count}
+        probed_concepts = [c for c, _ in sorted(pressure.items(), key=lambda kv: -kv[1])[:10]]
+    except Exception:  # noqa: BLE001 — probe load shouldn't kill scan
+        probed_concepts = []
+    active_focus = {"active_projects": [], "probed_concepts": probed_concepts}
+
     delta: dict = {
         "window_start": cutoff_iso,
         "window_end": now.isoformat(),
+        "active_focus": active_focus,
         "concept": _new_grain_bucket(),
         "event": _new_grain_bucket(),
     }
 
     idx = Indexer(config=cfg)
     try:
+        # 0. active_projects — behavioral focus: which projects saw sessions
+        #    in the last 14d (mutates the active_focus dict already on delta).
+        #    Excludes meta buckets (_unscoped/_personal/…). Self-heals: a
+        #    renamed or abandoned project simply stops appearing.
+        try:
+            cutoff_14d = (now - timedelta(days=14)).date().isoformat()
+            proj_rows = idx.db.execute(
+                "SELECT project, COUNT(*) AS c FROM notes "
+                "WHERE type = 'session' AND date >= ? "
+                "GROUP BY project ORDER BY c DESC",
+                (cutoff_14d,),
+            ).fetchall()
+            active_focus["active_projects"] = [
+                row["project"] for row in proj_rows
+                if row["project"] and not row["project"].startswith("_")
+            ][:8]
+        except Exception:  # noqa: BLE001 — focus is best-effort
+            pass
+
         # 1. Landings (sources created in window) -----------------------
         source_rows = idx.db.execute(
             "SELECT id, title, type, frontmatter, date "

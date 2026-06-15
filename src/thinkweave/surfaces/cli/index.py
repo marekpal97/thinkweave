@@ -329,7 +329,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
     )
     if decision.route == "inline":
         print(
-            f"Inline enrichment ({len(candidates)} candidate notes; "
+            f"Inline enrichment ({n_candidates} candidate notes; "
             f"{decision.reason}).\n"
             f"  Run:  /enrich-notes\n"
             f"  (skill walks candidates via the running model, no provider "
@@ -398,14 +398,46 @@ def cmd_import(args: argparse.Namespace) -> None:
         )
 
         if getattr(args, "enrich", False):
-            from thinkweave.onboarding.enrich_batch import run_enrichment_batch
+            from thinkweave.onboarding.enrich_batch import (
+                find_pending_sessions,
+                run_enrichment_batch,
+            )
+            from thinkweave.operations._backfill_route import choose_route
+
+            # --dry-run lists the pending set (the inline /seed-enrich skill
+            # parses it); route selection only governs real execution.
+            if args.dry_run:
+                run_enrichment_batch(
+                    cfg, project_filter=args.project, limit=args.enrich_limit, dry_run=True
+                )
+                return
+
+            n_pending = len(
+                find_pending_sessions(
+                    cfg, project_filter=args.project, limit=args.enrich_limit
+                )
+            )
+            if n_pending == 0:
+                print("No pending claude-code sessions found. Nothing to synthesise.")
+                return
+
+            decision = choose_route(via=getattr(args, "via", None), n_items=n_pending)
+            if decision.route == "inline":
+                print(
+                    f"Inline session synthesis ({n_pending} pending session(s); "
+                    f"{decision.reason}).\n"
+                    f"  Run:  /seed-enrich\n"
+                    f"  (synthesises each session via the running model, no "
+                    f"provider key required)."
+                )
+                return
 
             run_enrichment_batch(
                 cfg,
                 project_filter=args.project,
-                model=args.enrich_model,
+                model=args.enrich_model or None,
                 limit=args.enrich_limit,
-                dry_run=args.dry_run,
+                dry_run=False,
             )
             return
 

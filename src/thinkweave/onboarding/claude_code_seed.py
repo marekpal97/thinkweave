@@ -6,10 +6,14 @@ derives the canonical project name from each session's ``cwd`` field
 ``-``), and materialises one ``session`` note per JSONL.
 
 This module does **not** call any LLM. Materialisation is pure
-file-walk + frontmatter assembly. Optional enrichment (LLM extraction
-of decisions and concepts) is a separate pass — inline via
-``/weave-wrap`` per-session, or in bulk via Anthropic Batches (see
-``operations.hubs_batch.run_claude_code_batch``).
+file-walk + frontmatter assembly — the note is born holding the verbatim
+transcript and *no* ``processed`` flag. Synthesis (transcript → summary +
+insight/decision notes + concepts) is a separate pass, run by either
+backend over not-yet-``processed`` imports: inline via the keyless
+``/synthesize-sessions`` skill, or in bulk via
+``onboarding.enrich_batch.run_enrichment_batch`` (``--enrich``). Both
+converge on ``extract_session``, so a synthesised import is the same shape
+as a live ``/weave-wrap`` session.
 
 Idempotency: tracked via ``vault/.weave/onboarding/claude_code.json``
 (maps Claude Code session UUID → vault note id + project + import ts).
@@ -252,8 +256,9 @@ def _build_session_body(session: ClaudeCodeSession) -> str:
     """Render the session note's markdown body.
 
     The transcript is preserved verbatim (interleaved user/assistant
-    turns). Enrichment passes downstream read this body to extract
-    decisions/concepts; we don't pre-summarise here.
+    turns). The synthesis pass downstream reads this body to compose the
+    summary + insight/decision notes, then archives it to a
+    ``transcript.md`` companion; we don't pre-summarise here.
     """
     lines: list[str] = []
     lines.append("## Source")
@@ -307,7 +312,6 @@ def materialize_session(
         "original_jsonl": str(session.file_path) if session.file_path else "",
         "user_turn_count": len(session.user_turns),
         "assistant_turn_count": len(session.assistant_turns),
-        "enrichment_status": "pending",
     }
     if session.cwd:
         extra_fm["source_cwd"] = session.cwd

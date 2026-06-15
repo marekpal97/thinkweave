@@ -175,7 +175,7 @@ def test_run_enrichment_batch_empty_short_circuits(tmp_path: Path, monkeypatch):
     cfg = Config(vault_root=tmp_path)
     stats = run_enrichment_batch(cfg)
     assert stats["pending"] == 0
-    assert stats["enriched"] == 0
+    assert stats["synthesized"] == 0
 
 
 def test_run_enrichment_batch_resolves_provider_from_api_yaml(
@@ -222,8 +222,8 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
     )
     # Stub the writeback so we don't touch real Indexer/VaultManager.
     monkeypatch.setattr(
-        "thinkweave.onboarding.enrich_batch._writeback_one",
-        lambda *a, **k: {"decisions_created": 0, "insights_appended": 0},
+        "thinkweave.onboarding.enrich_batch._synthesize_one",
+        lambda *a, **k: {"decisions_created": 0, "insights_created": 0, "concepts_added": 0},
     )
 
     from thinkweave.core.config import Config
@@ -234,7 +234,7 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
     assert captured["provider"] == "openai"
     assert captured["model"] == "gpt-5-mini"
     assert stats["submitted"] == 1
-    assert stats["enriched"] == 1
+    assert stats["synthesized"] == 1
 
 
 def test_run_enrichment_batch_dry_run_does_not_call_wrapper(
@@ -266,7 +266,7 @@ def test_run_enrichment_batch_dry_run_does_not_call_wrapper(
     cfg = Config(vault_root=tmp_path)
     stats = run_enrichment_batch(cfg, dry_run=True)
     assert called["n"] == 0
-    assert stats["enriched"] == 0
+    assert stats["synthesized"] == 0
 
 
 def test_run_enrichment_batch_handles_exception_per_item(
@@ -295,8 +295,8 @@ def test_run_enrichment_batch_handles_exception_per_item(
         "thinkweave.core.agent_client.batch_completions_sync", fake_batch
     )
     monkeypatch.setattr(
-        "thinkweave.onboarding.enrich_batch._writeback_one",
-        lambda *a, **k: {"decisions_created": 0, "insights_appended": 0},
+        "thinkweave.onboarding.enrich_batch._synthesize_one",
+        lambda *a, **k: {"decisions_created": 0, "insights_created": 0, "concepts_added": 0},
     )
 
     from thinkweave.core.config import Config
@@ -304,6 +304,6 @@ def test_run_enrichment_batch_handles_exception_per_item(
 
     cfg = Config(vault_root=tmp_path)
     stats = run_enrichment_batch(cfg)
-    assert stats["enriched"] == 2
+    assert stats["synthesized"] == 2
     assert len(stats["errors"]) == 1
     assert "ses-1" in stats["errors"][0]

@@ -45,7 +45,7 @@ For each type, check that `channels:` is non-empty. Types with empty channel all
 For each `youtube-*` type with a non-empty `channels:` list:
 
 ```bash
-uv run weave discover --strategy rss_poll --source-type <slug>
+weave discover --strategy rss_poll --source-type <slug>
 ```
 
 The strategy:

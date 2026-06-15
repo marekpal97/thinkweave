@@ -633,6 +633,32 @@ class TestScan:
         assert result.stats["knowledge_delta"]["concept"]["landings_24h"] == 0
         assert result.stats["knowledge_delta"]["event"]["landings_24h"] == 0
 
+    def test_knowledge_delta_active_focus_empty_on_quiet_vault(
+        self, config: Config, vault: VaultManager
+    ):
+        """No recent sessions and no probes → both behavioral focus lists
+        empty (the narrative then honestly reports 'nothing intersects')."""
+        _index(config)
+        result = scan(config, project="t")
+        assert result.knowledge_delta["active_focus"] == {
+            "active_projects": [],
+            "probed_concepts": [],
+        }
+
+    def test_knowledge_delta_active_projects_from_recent_sessions(
+        self, config: Config, vault: VaultManager
+    ):
+        """``active_focus.active_projects`` is behavioral — projects with a
+        session in the last 14d, meta buckets (leading underscore) excluded.
+        Self-heals: no hand-maintained list to drift."""
+        vault.create_note(NoteType.SESSION, "alpha work", body="# alpha\n", project="alpha")
+        vault.create_note(NoteType.SESSION, "meta", body="# meta\n", project="_unscoped")
+        _index(config)
+        result = scan(config, project="t")
+        ap = result.knowledge_delta["active_focus"]["active_projects"]
+        assert "alpha" in ap
+        assert "_unscoped" not in ap
+
     def test_knowledge_delta_collects_recent_catalyst_additions(
         self, config: Config, vault: VaultManager
     ):

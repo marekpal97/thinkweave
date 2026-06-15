@@ -291,8 +291,12 @@ def add_index_subparsers(sub) -> None:
     )
     p_import.add_argument(
         "--enrich-model",
-        default="claude-haiku-4-5-20251001",
-        help="Claude model for batch enrichment.",
+        default="",
+        help=(
+            "Override the model for session synthesis. Default: empty → "
+            "resolved from api.yaml (overrides.claude_code_enrich, falling "
+            "through to completion.model). No hardcoded provider."
+        ),
     )
     p_import.add_argument(
         "--limit",
