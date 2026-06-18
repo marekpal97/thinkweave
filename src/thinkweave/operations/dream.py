@@ -135,14 +135,14 @@ class DreamCycleScan:
     # existing one (`theme_extensions`). No candidate stubs, no vote, no
     # lifecycle — themes change status only by hand.
     theme_cluster_signals: list = field(default_factory=list)
-    # Probe-pressure aggregate (Slice 1.5) — ``{concept: {"count": N,
-    # "probes": [text, ...]}}`` over the lookback window. Seeds the LLM
-    # judgment phase's ``priority_signals`` plan key: concepts the user
-    # has been probing about that the cycle should surface (enqueue or
-    # log). The texts ride along so the priority worker judges against
-    # the user's actual questions and copies them into
-    # ``queue_item.probes`` — `/drain` uses them to tighten its search.
-    recent_probes: dict = field(default_factory=dict)
+    # Recent probe QUESTIONS (flat, deduped, windowed) — the raw
+    # ``[{text, ts, session_id, project}]`` list the probe-distillation
+    # worker (``dream-priority-worker``) reasons over. Carrying the actual
+    # questions (not a ``{concept: count}`` aggregate) is what lets the
+    # worker gate operational/meta probes, tie clean ontology concepts,
+    # and restate terse questions into workable research queries whose
+    # ``queue_item.probes`` `/drain` uses to tighten its search.
+    recent_probes: list = field(default_factory=list)
     # Essence candidates across BOTH hub families (themes + concept hubs),
     # pre-loaded with their current ``## Essence`` text + recent catalyst
     # entries. The phase-1 essence-worker reads this directly so it never
@@ -841,12 +841,32 @@ def _collect_knowledge_delta(
     #                    asking about.
     # Both self-heal each cycle; a quiet period just yields empty lists, and
     # the narrative honestly reports "nothing intersects your recent focus".
+    # Optional pin layer over the behavioral signal: PRIORITIES.yaml ``focus.*``
+    # lists. Behavioral activity is the default ranking; pins are *appended*
+    # (not prepended) so the automatic signal leads, but a deliberately-watched
+    # yet currently-quiet project/concept still surfaces. Empty/missing
+    # PRIORITIES → pure behavioral, exactly as before.
+    from thinkweave.acquisition.sources.priorities import (
+        apply_pins,
+        focus_active_projects,
+        focus_concepts,
+        load_priorities,
+    )
+
+    priorities = load_priorities(getattr(cfg, "vault_root", None))
+    pinned_projects = focus_active_projects(priorities)
+    pinned_concepts = focus_concepts(priorities)
+    window_days = cfg.salience_activity_window_days
+
     probed_concepts: list[str] = []
     try:
-        pressure = recent_probe_pressure(cfg, window_days=14)  # {concept: count}
+        pressure = recent_probe_pressure(cfg, window_days=window_days)  # {concept: count}
         probed_concepts = [c for c, _ in sorted(pressure.items(), key=lambda kv: -kv[1])[:10]]
     except Exception:  # noqa: BLE001 — probe load shouldn't kill scan
         probed_concepts = []
+    # Pins are a floor: behavioural probe ranking leads, declared focus
+    # concepts are appended so a watched-but-quiet concept still surfaces.
+    probed_concepts = apply_pins(probed_concepts, pinned_concepts)
     active_focus = {"active_projects": [], "probed_concepts": probed_concepts}
 
     delta: dict = {
@@ -864,17 +884,20 @@ def _collect_knowledge_delta(
         #    Excludes meta buckets (_unscoped/_personal/…). Self-heals: a
         #    renamed or abandoned project simply stops appearing.
         try:
-            cutoff_14d = (now - timedelta(days=14)).date().isoformat()
+            cutoff_window = (now - timedelta(days=window_days)).date().isoformat()
             proj_rows = idx.db.execute(
                 "SELECT project, COUNT(*) AS c FROM notes "
                 "WHERE type = 'session' AND date >= ? "
                 "GROUP BY project ORDER BY c DESC",
-                (cutoff_14d,),
+                (cutoff_window,),
             ).fetchall()
-            active_focus["active_projects"] = [
+            behavioral_projects = [
                 row["project"] for row in proj_rows
                 if row["project"] and not row["project"].startswith("_")
             ][:8]
+            # Pins are a floor (see apply_pins): behavioural activity leads.
+            behavioral_projects = apply_pins(behavioral_projects, pinned_projects)
+            active_focus["active_projects"] = behavioral_projects
         except Exception:  # noqa: BLE001 — focus is best-effort
             pass
 
@@ -1508,18 +1531,18 @@ def scan(
     finally:
         result.timings["theme_coarsen_clusters"] = time.perf_counter() - _t
 
-    # 4. probe pressure ---------------------------------------------------
-    # Aggregate probe-classified prompts into per-concept pressure over
-    # the configured window (``dream.probe_window_days``, default 14 days)
-    # — counts plus the most recent probe texts. The LLM
-    # judgment phase reads this to compose ``priority_signals`` —
-    # concepts the user has been asking about that warrant attention
-    # (enqueue or log) — and threads the texts into queue items.
+    # 4. probe questions --------------------------------------------------
+    # Collect recent probe-classified prompt QUESTIONS (flat, deduped)
+    # over the configured window (``dream.probe_window_days``, default 14
+    # days). The probe-distillation worker reasons over the raw questions
+    # — gating operational/meta ones, tying clean ontology concepts, and
+    # restating them into workable research queries — then emits
+    # ``priority_signals`` whose queue items thread the verbatim probes.
     _t = time.perf_counter()
     try:
-        from thinkweave.operations.prompts import recent_probe_details
+        from thinkweave.operations.prompts import recent_probe_questions
 
-        result.recent_probes = recent_probe_details(
+        result.recent_probes = recent_probe_questions(
             cfg, project=project, window_days=_probe_window_days(cfg)
         )
     except Exception as e:  # noqa: BLE001

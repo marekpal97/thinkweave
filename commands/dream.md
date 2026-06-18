@@ -18,7 +18,7 @@ description: Periodic dream cycle — two-phase subagent orchestrator. Phase 1 f
 
 The cron-friendly synthesis orchestrator. Phase 1 is **synthesis** (concept hygiene + theme mint/extend + essence rewrites + priority signals → plan → apply). Phase 2 is **composition + consumption** (catch-up unwrapped sessions, drain the rejudge queue, stitch folded-hub seams, reconcile the CC-auto-memory↔vault seam, compose the day's knowledge digest).
 
-**One cron entry replaces three** — what used to be three nightly jobs (`/dream`, `/weave-wrap` catch-up, `/judge-prediction --drain`) is now one orchestrator that fans out 10 workers across two phases.
+**One cron entry replaces three** — what used to be three nightly jobs (`/dream`, `/wrap` catch-up, `/judge-prediction --drain`) is now one orchestrator that fans out 10 workers across two phases.
 
 **Dream owns routine ontology guarding (2026-06-11 doctrine).** Concept dedup AND theme dedup run here — automated, logged in the maintenance line + report, reversible (folded hubs are archived/tombstoned, never deleted; theme losers keep their file with `merged-into:` status). `/tighten` remains the on-demand front door over the same helpers.
 
@@ -104,6 +104,8 @@ JSON outcome as the final non-empty line of your response. Envelope:
 ```
 
 The promotion worker additionally needs the contents of the active ontology — Read `ontology.yaml` once and embed inline.
+
+The priority worker (the probe-distillation worker) receives the `recent_probes` slice — a **flat list of the user's recent probe questions** (`[{text, ts, session_id, project}]`), not a concept aggregate. Per its spec it gates operational/generic questions, ties clean ontology concepts, restates each kept lead into a workable query, checks coverage, and emits `priority_signals` whose `enqueue` queue items carry the verbatim probes for `/drain` to web-search.
 
 The theme worker reads **two** scan slices — embed both `theme_cluster_signals` and `theme_log_gaps` in its prompt (the second is the directly-filed-sources catch-up; the worker turns each gap into a `theme_extensions` item with distilled `catalysts`).
 
@@ -206,7 +208,7 @@ Logged to vault/.weave/maintenance.jsonl. Digests at vault/digests/YYYY-MM-DD-{c
 Cycle took <wall-time>s. Worker bugs: <worker_bug count or "none">.
 ```
 
-Mirror the `/weave-wrap` wrap-up format. Keep it tight — the maintenance log + digest note carry the detail.
+Mirror the `/wrap` wrap-up format. Keep it tight — the maintenance log + digest note carry the detail.
 
 Clean up the cycle temp:
 
@@ -223,7 +225,7 @@ rm -rf "$CYCLE_TMP"
 - **Worker models are owned by agent frontmatter, both phases.** No `Task` call in this skill passes `model:` — `agents/dream-*-worker.md` is where each worker's model is declared and retuned. (Contrast `/drain`, where `subagent_model` is config-driven via `sources.yaml` by design.)
 - **Workers are pure-output (phase 1) or write-with-receipt (phase 2).** Phase-1 workers never Edit files; the apply step does all writes. Phase-2 workers DO write directly (e.g. `dream-wrap-worker` calls `weave wrap-finalize`; `dream-digest-worker` calls `weave_create`), but emit a `side_effects` list so the orchestrator can include the receipts in the report.
 - **Hub fill is out of scope.** If a worker notices an empty concept hub during its judgment, it leaves it — `weave drain --target hubs` owns hub population, deliberately decoupled.
-- **Cron consolidation.** This skill replaces three former cron entries (`/dream`, `/weave-wrap` catch-up, `/judge-prediction --drain`). The standalone `/weave-wrap` and `/judge-prediction` skills remain available for interactive use; only their cron entries collapse into this orchestrator.
+- **Cron consolidation.** This skill replaces three former cron entries (`/dream`, `/wrap` catch-up, `/judge-prediction --drain`). The standalone `/wrap` and `/judge-prediction` skills remain available for interactive use; only their cron entries collapse into this orchestrator.
 
 ## Post-install / restart caveats
 

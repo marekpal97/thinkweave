@@ -158,3 +158,71 @@ def parse_theme(path, *, path_to_id: dict[str, str] | None = None) -> Hub:
     title-aliased citation recovery.
     """
     return Hub.parse(path, path_to_id=path_to_id)
+
+
+def refold_theme_catalyst_logs(config) -> int:
+    """Re-render every theme's ``## Catalyst log`` threaded, in place.
+
+    The theme analog of ``migrate_concept_hub_headings`` — heals existing
+    *flat* theme logs to the same indented temporal-DAG layout concept hubs
+    use (4-space indent + ``↳`` cue), via the shared
+    ``render_catalyst_log(threaded=True)``. New mints/extends already write
+    threaded (``theme_candidates``); this is the one-time backfill for themes
+    written before that, wired into ``weave index --full``.
+
+    Idempotent and surgical: only the ``## Catalyst log`` section is
+    rewritten (essence, open questions, frontmatter preserved), and a file is
+    only written when the rebuilt text actually differs — an already-threaded
+    theme re-renders byte-identically and is skipped, like
+    ``migrate_bare_id_links``. The rewrite also heals the section's citations
+    to path-based title-aliased links. Returns the number of theme files
+    rewritten on this invocation.
+    """
+    import sqlite3
+
+    from thinkweave.core.vault import parse_frontmatter, render_frontmatter
+    from thinkweave.synthesis.hub import (
+        build_id_path_map,
+        build_id_title_map,
+        render_catalyst_log,
+        replace_section_body,
+    )
+
+    themes_dir = config.vault_root / "themes"
+    if not themes_dir.exists():
+        return 0
+
+    idmap: dict[str, str] = {}
+    title_map: dict[str, str] = {}
+    path_to_id: dict[str, str] = {}
+    if config.index_db.exists():
+        db = sqlite3.connect(str(config.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            idmap = build_id_path_map(db)
+            title_map = build_id_title_map(db)
+            path_to_id = {p: i for i, p in idmap.items()}
+        except sqlite3.Error:
+            idmap, title_map, path_to_id = {}, {}, {}
+        finally:
+            db.close()
+
+    count = 0
+    for path in sorted(themes_dir.glob("*.md")):
+        hub = Hub.parse(path, path_to_id=path_to_id)
+        if not hub.log:
+            continue  # no catalyst entries → nothing to thread
+        original = path.read_text(encoding="utf-8")
+        fm, body = parse_frontmatter(original)
+        new_body = replace_section_body(
+            body,
+            CATALYST_LOG_HEADING,
+            render_catalyst_log(
+                hub.log, idmap=idmap, title_map=title_map, threaded=True
+            ),
+        )
+        rebuilt = render_frontmatter(fm) + "\n" + new_body.lstrip("\n")
+        if rebuilt != original:
+            path.write_text(rebuilt, encoding="utf-8")
+            count += 1
+    return count

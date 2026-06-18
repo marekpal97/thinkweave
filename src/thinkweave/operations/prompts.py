@@ -25,6 +25,68 @@ from thinkweave.core.events import match_probe_concepts
 # without dragging pasted code blocks along.
 _TEXTS_PER_CONCEPT = 3
 _TEXT_TRUNCATE = 240
+# A whole probe question carried by :func:`recent_probe_questions`. Wider
+# than the per-concept snippet (240) because the distillation worker needs
+# enough of the question to gate + restate it, but still bounded so a
+# pasted code block can't bloat the worker prompt.
+_QUESTION_TRUNCATE = 600
+
+
+def _collect_probe_rows(
+    cfg: Config,
+    project: str | None,
+    window_days: int,
+    limit: int = 500,
+) -> list[dict]:
+    """Recent probe-classified prompt rows — recency-sorted, capped.
+
+    Shared scope-resolution (explicit project > ``cfg.default_project`` >
+    vault-wide fan-in) for both :func:`recent_probe_details` (the
+    concept-aggregate) and :func:`recent_probe_questions` (the flat
+    question list). The vault-wide fallback (``project==""``) matters
+    because ``dream.scan`` and gap-emitter strategies often run without a
+    project context, and every other scan surface is vault-global.
+
+    Returns ``query_prompts`` row dicts
+    (``{ts, text, session_id, project, cwd, classification}``).
+    """
+    # Local import avoids circular wiring: this module is imported by
+    # discover strategies, which sit beneath the search/index layer.
+    from thinkweave.operations.search import query_prompts
+
+    scope_project = project if project is not None else cfg.default_project
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=window_days)
+    ).isoformat()
+
+    if scope_project:
+        rows = query_prompts(
+            cfg,
+            project=scope_project,
+            since=cutoff,
+            limit=limit,
+            classified_as="probe",
+        )
+    else:
+        # query_prompts is project-scoped (walks vault/projects/<p>/
+        # sessions/), so vault-wide reduces to a per-project fan-in.
+        rows = []
+        projects_root = cfg.vault_root / "projects"
+        if projects_root.exists():
+            for proj_dir in projects_root.iterdir():
+                if not proj_dir.is_dir():
+                    continue
+                rows.extend(
+                    query_prompts(
+                        cfg,
+                        project=proj_dir.name,
+                        since=cutoff,
+                        limit=limit,
+                        classified_as="probe",
+                    )
+                )
+    rows.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    return rows[:limit]
 
 
 def recent_probe_pressure(
@@ -101,63 +163,18 @@ def recent_probe_details(
         Dict ``{concept_slug: {"count": int, "probes": [text, ...]}}``.
         Empty when no probes in window or no vocabulary loaded.
     """
-    # Resolve scope: explicit project > cfg.default_project > vault-wide.
-    # The vault-wide fallback (project=="") matters because dream.scan
-    # and gap-emitter strategies often run without a project context;
-    # every other scan surface is vault-global, so probe pressure should
-    # match.
-    scope_project = project if project is not None else cfg.default_project
+    probes = _collect_probe_rows(cfg, project, window_days)
+    if not probes:
+        return {}
 
     # Local imports avoid circular wiring: this module is imported by
-    # discover strategies, which are imported during /discover, which
-    # sits beneath the indexer + ontology layer.
+    # discover strategies, which sit beneath the indexer + ontology layer.
     from thinkweave.core.indexer import Indexer
-    from thinkweave.operations.search import query_prompts
     from thinkweave.synthesis.concepts import (
         build_keep_set,
         get_all_proposed_concepts,
         load_ontology,
     )
-
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=window_days)
-    ).isoformat()
-
-    if scope_project:
-        probes = query_prompts(
-            cfg,
-            project=scope_project,
-            since=cutoff,
-            limit=500,
-            classified_as="probe",
-        )
-    else:
-        # Vault-wide: enumerate projects on disk and union their probes.
-        # query_prompts is project-scoped (it walks
-        # vault/projects/<p>/sessions/), so vault-wide reduces to a
-        # per-project fan-in with a final recency sort + cap.
-        probes = []
-        projects_root = cfg.vault_root / "projects"
-        if projects_root.exists():
-            for proj_dir in projects_root.iterdir():
-                if not proj_dir.is_dir():
-                    continue
-                probes.extend(
-                    query_prompts(
-                        cfg,
-                        project=proj_dir.name,
-                        since=cutoff,
-                        limit=500,
-                        classified_as="probe",
-                    )
-                )
-        # Recency-sort + global cap so we don't over-weight projects
-        # with deeper history.
-        probes.sort(key=lambda r: r.get("ts") or "", reverse=True)
-        probes = probes[:500]
-
-    if not probes:
-        return {}
 
     vocabulary: set[str] = build_keep_set(load_ontology())
     try:
@@ -172,11 +189,6 @@ def recent_probe_details(
 
     if not vocabulary:
         return {}
-
-    # Most-recent-first so the texts kept per concept are the freshest
-    # framing of the question (the vault-wide branch already sorted; the
-    # project-scoped branch returns walk order).
-    probes.sort(key=lambda r: r.get("ts") or "", reverse=True)
 
     details: dict[str, dict] = {}
     for row in probes:
@@ -198,3 +210,50 @@ def recent_probe_details(
                 detail["probes"].append(snippet)
 
     return details
+
+
+def recent_probe_questions(
+    cfg: Config,
+    project: str | None = None,
+    window_days: int = 14,
+    dedup: bool = True,
+    limit: int = 50,
+) -> list[dict]:
+    """Recent probe-classified prompts as a flat list of QUESTIONS.
+
+    The question-shaped counterpart to :func:`recent_probe_details` (which
+    aggregates to ``{concept: {count, probes}}`` and discards the
+    question). The probe-distillation worker (``dream-priority-worker``)
+    reasons over the actual questions — not concept tokens — so it can
+    gate operational/meta probes, tie clean ontology concepts via
+    ``weave_concepts``, and restate terse questions into workable research
+    queries.
+
+    Returns the most-recent ``limit`` probe rows, newest first, each
+    ``{text, ts, session_id, project}``. With ``dedup`` (default), exact
+    duplicate texts collapse to their most-recent occurrence. Scope
+    resolution matches :func:`recent_probe_details` (vault-wide when
+    ``project==""``).
+    """
+    rows = _collect_probe_rows(cfg, project, window_days)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        if dedup:
+            if text in seen:
+                continue
+            seen.add(text)
+        out.append(
+            {
+                "text": text[:_QUESTION_TRUNCATE],
+                "ts": row.get("ts") or "",
+                "session_id": row.get("session_id") or "",
+                "project": row.get("project") or "",
+            }
+        )
+        if len(out) >= limit:
+            break
+    return out

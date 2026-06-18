@@ -5,7 +5,7 @@ imported sessions (the other is the keyless ``/synthesize-sessions`` inline
 skill). Both run the *same* spec — :data:`thinkweave.synthesis.
 session_synthesis.SYNTHESIS_SYSTEM` — and both write back through
 :func:`thinkweave.operations.extract.extract_session`, so an imported-then-
-synthesised session is the same shape as a live ``/weave-wrap`` session:
+synthesised session is the same shape as a live ``/wrap`` session:
 ontology-gated concepts, commit-evidence decision flips, the lot.
 
 This backend fans the prompt out across pending sessions via
@@ -152,7 +152,7 @@ def _synthesize_one(cfg: Config, sess: PendingSession, inputs: dict) -> dict:
     idx.index_file(sess.note_path)
     idx.close()
 
-    # 3. The shared writeback — same path /weave-wrap uses. extract_session
+    # 3. The shared writeback — same path /wrap uses. extract_session
     #    archives the verbatim transcript to a companion (transcript → summary
     #    body) as part of synthesising an import.
     outcome = extract_session(
@@ -169,6 +169,28 @@ def _synthesize_one(cfg: Config, sess: PendingSession, inputs: dict) -> dict:
     }
 
 
+def fanout_plan(cfg: Config, n_pending: int) -> dict:
+    """How the inline ``/seed-enrich`` skill should process ``n_pending`` sessions.
+
+    ``mode='inline'`` when ``n_pending <= enrich_fanout_threshold`` (synthesise
+    in-process — no subagent spawn for a small backlog, per the "no subagent for
+    small wraps" finding). Otherwise ``mode='fanout'``: batch into groups of
+    ``enrich_batch_size`` and spawn up to ``enrich_parallelism`` workers at a
+    time. The skill reads this off the ``--dry-run`` ``FANOUT`` line so the
+    decision is deterministic and config-driven, not improvised by the model.
+    """
+    threshold = cfg.enrich_fanout_threshold
+    if n_pending <= threshold:
+        return {"mode": "inline", "threshold": threshold,
+                "batch_size": 0, "parallelism": 0}
+    return {
+        "mode": "fanout",
+        "threshold": threshold,
+        "batch_size": cfg.enrich_batch_size,
+        "parallelism": cfg.enrich_parallelism,
+    }
+
+
 def run_enrichment_batch(
     cfg: Config,
     *,
@@ -178,6 +200,7 @@ def run_enrichment_batch(
     poll_interval: int = 60,
     limit: int = 0,
     dry_run: bool = False,
+    finalize: bool = True,
 ) -> dict:
     """Synthesise pending imported sessions via the wrapper's async fan-out.
 
@@ -232,8 +255,14 @@ def run_enrichment_batch(
             f"  estimated input tokens (all sessions): "
             f"~{sum(len(s.transcript) for s in pending) // 4:,}"
         )
-        # Machine-parseable pending list — the inline /seed-enrich skill reads
-        # these to walk the same candidate set (one tab-separated line each).
+        # Machine-parseable plan + pending list — the inline /seed-enrich skill
+        # reads the FANOUT line to decide inline-vs-fan-out deterministically,
+        # then walks the PENDING lines as its worklist (one tab-separated each).
+        plan = fanout_plan(cfg, len(pending))
+        print(
+            f"FANOUT\t{plan['mode']}\t{plan['threshold']}\t"
+            f"{plan['batch_size']}\t{plan['parallelism']}"
+        )
         for s in pending:
             print(f"PENDING\t{s.note_id}\t{s.project}\t{s.title}")
         return stats
@@ -285,4 +314,29 @@ def run_enrichment_batch(
         print(f"  errors ({len(stats['errors'])}):")
         for err in stats["errors"][:10]:
             print(f"    {err}")
+
+    if finalize and stats["synthesized"] > 0:
+        # Batch-grain finalize. Per-session `extract_session` wrote the notes
+        # but skipped the deterministic tail — running prune/index/judge/landing
+        # per session across a large backfill is quadratic. Index once +
+        # refresh landing for the touched projects so the synthesised sessions
+        # are immediately retrievable and visible in DECISIONS/BACKLOG. This is
+        # the batch analogue of the per-session `weave wrap-finalize` that live
+        # /wrap and dream-wrap-worker run; the inline /seed-enrich skill
+        # does the same once after its fan-out. (Judge/drift are skipped:
+        # imported historical decisions carry no forward prediction to judge.)
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.operations.landing import render_landing
+
+        idx = Indexer(config=cfg)
+        istats = idx.rebuild(full=False)
+        idx.close()
+        touched = sorted({s.project for s in pending if s.project})
+        for proj in touched:
+            render_landing(cfg, project=proj, doc="all")
+        print(
+            f"Finalized: indexed {istats.get('indexed', 0)} note(s); "
+            f"refreshed landing for {len(touched)} project(s)."
+        )
+
     return stats

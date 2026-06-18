@@ -1,4 +1,4 @@
-"""``weave index`` / ``stats`` / ``doctor`` / ``enrich`` / ``import``.
+"""``weave index`` / ``stats`` / ``doctor`` / ``import``.
 
 The ``weave connect`` deprecation alias (folded into ``weave index
 --materialize-links``) was removed 2026-05-21; agents should call the
@@ -31,6 +31,16 @@ def cmd_index(args: argparse.Namespace) -> None:
             print(f"Migrated {migrated} concept hub(s) from `## Learning log` to `## Catalyst log`.")
 
     stats = idx.rebuild(full=args.full)
+
+    if args.full:
+        # Heal existing flat theme catalyst logs to the threaded temporal-DAG
+        # layout concept hubs use. Runs after rebuild so the id->path/title maps
+        # reflect current layout; idempotent (already-threaded themes skip).
+        from thinkweave.synthesis.theme_hub import refold_theme_catalyst_logs
+
+        rethreaded = refold_theme_catalyst_logs(cfg)
+        if rethreaded:
+            print(f"Re-threaded {rethreaded} theme catalyst log(s) to the indented DAG layout.")
     print(f"Indexed: {stats['indexed']}, Skipped: {stats['skipped']}, "
           f"Removed: {stats['removed']}, Edges: {stats['edges']}")
 
@@ -266,126 +276,6 @@ def _count_chatgpt_conversations(path: Path, limit: int) -> int:
     if limit > 0:
         n = min(n, limit)
     return n
-
-
-def _count_enrichment_candidates(
-    cfg, *, project: str, note_types: list[str], force: bool
-) -> int:
-    """Cheap row count for the same set ``enrich()`` would process.
-
-    Mirrors the WHERE clause in ``enrich.enrich()`` so the route picker
-    sees the actual candidate count, not a stale estimate.
-    """
-    import sqlite3
-
-    type_filter = note_types or ["note", "session", "decision", "source"]
-    placeholders = ",".join("?" for _ in type_filter)
-    where = [f"n.type IN ({placeholders})"]
-    params: list = list(type_filter)
-    if project:
-        where.append("n.project = ?")
-        params.append(project)
-    if not force:
-        where.append(
-            "(SELECT COUNT(*) FROM note_concepts WHERE note_id = n.id) < 1"
-        )
-    try:
-        db = sqlite3.connect(str(cfg.index_db))
-        try:
-            row = db.execute(
-                f"SELECT COUNT(*) FROM notes n WHERE {' AND '.join(where)}",
-                params,
-            ).fetchone()
-        finally:
-            db.close()
-    except sqlite3.Error:
-        return 0
-    return int((row or [0])[0] or 0)
-
-
-def cmd_enrich(args: argparse.Namespace) -> None:
-    """LLM-assisted concept enrichment for notes missing concepts."""
-    from thinkweave.core.indexer import Indexer
-    from thinkweave.synthesis.enrich import enrich
-    from thinkweave.operations._backfill_route import choose_route
-
-    cfg = load_config()
-
-    note_types = (
-        [t.strip() for t in args.note_types.split(",") if t.strip()]
-        if args.note_types
-        else ["session", "note", "decision", "source"]
-    )
-
-    # B3: --via {inline,batch} route selection.
-    # Quick COUNT to feed choose_route's size heuristic — no need to load
-    # the full candidate row set just to pick a route.
-    n_candidates = _count_enrichment_candidates(
-        cfg, project=args.project, note_types=note_types, force=args.force
-    )
-    decision = choose_route(
-        via=getattr(args, "via", None),
-        n_items=n_candidates,
-    )
-    if decision.route == "inline":
-        print(
-            f"Inline enrichment ({n_candidates} candidate notes; "
-            f"{decision.reason}).\n"
-            f"  Run:  /enrich-notes\n"
-            f"  (skill walks candidates via the running model, no provider "
-            f"key required)."
-        )
-        return
-
-    prefix = "[dry run] " if args.dry_run else ""
-    type_str = ",".join(note_types)
-    print(f"{prefix}Enriching {type_str} notes"
-          + (f" in project '{args.project}'" if args.project else " (all projects)")
-          + (f" (limit {args.limit})" if args.limit else "")
-          + f" via batch ({decision.reason})...")
-
-    def progress(current, total, title):
-        pct = current * 100 // max(total, 1)
-        print(f"  [{pct:3d}%] batch at note {current}/{total}: {title[:50]}")
-
-    stats = enrich(
-        cfg,
-        project=args.project,
-        note_types=note_types,
-        limit=args.limit,
-        force=args.force,
-        dry_run=args.dry_run,
-        progress_cb=progress,
-    )
-
-    print(
-        f"\n{prefix}Done — enriched: {stats['enriched']}, "
-        f"skipped: {stats['skipped']}, "
-        f"errors: {stats['errors']}, "
-        f"concepts assigned: {stats['new_concepts']}"
-    )
-
-    if not args.dry_run and stats["enriched"] > 0:
-        if args.reindex:
-            print("\nRebuilding index...")
-            idx = Indexer(config=cfg)
-            istats = idx.rebuild(full=True)
-            print(f"  Indexed: {istats['indexed']}, Edges: {istats['edges']}")
-            idx.close()
-
-        if args.connect:
-            print("\nMaterializing links for Obsidian...")
-            from thinkweave.core.indexer import Indexer as Idx2
-            idx2 = Idx2(config=cfg)
-            cstats = idx2.materialize_links(max_links=5)
-            print(f"  Updated: {cstats['notes_updated']}, Links: {cstats['links_written']}")
-            idx2.close()
-
-            print("\nFinal reindex to pick up new wikilinks...")
-            idx3 = Indexer(config=cfg)
-            fstats = idx3.rebuild(full=False)
-            print(f"  Edges: {fstats['edges']}")
-            idx3.close()
 
 
 def cmd_import(args: argparse.Namespace) -> None:

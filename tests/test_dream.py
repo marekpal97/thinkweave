@@ -659,6 +659,26 @@ class TestScan:
         assert "alpha" in ap
         assert "_unscoped" not in ap
 
+    def test_knowledge_delta_focus_pins_boost_behavioral(
+        self, config: Config, vault: VaultManager
+    ):
+        """PRIORITIES.yaml ``focus.*`` pins are appended on top of the
+        behavioural signal — a pinned-but-quiet project / concept still
+        surfaces in the active-focus block, even on an otherwise quiet vault."""
+        prio = config.vault_root / "config" / "PRIORITIES.yaml"
+        prio.parent.mkdir(parents=True, exist_ok=True)
+        prio.write_text(
+            "focus:\n"
+            "  active_projects: [pinned-proj]\n"
+            "  research_concepts: [pinned-concept]\n",
+            encoding="utf-8",
+        )
+        _index(config)
+        result = scan(config, project="t")
+        af = result.knowledge_delta["active_focus"]
+        assert "pinned-proj" in af["active_projects"]
+        assert "pinned-concept" in af["probed_concepts"]
+
     def test_knowledge_delta_collects_recent_catalyst_additions(
         self, config: Config, vault: VaultManager
     ):
@@ -1315,16 +1335,16 @@ class TestPrioritySignalsScan:
     def test_scan_attaches_recent_probes(
         self, config: Config, vault: VaultManager
     ):
-        # llm is canonical in the shipped ontology — a probe touching
-        # it lands in recent_probes with both the count and the probe
-        # text itself (the text rides through to queue_item.probes so
-        # /drain can tighten its search to the user's actual question).
+        # The recent_probes surface is now a FLAT list of the user's
+        # actual questions (the distillation worker reasons over the
+        # questions, not a concept aggregate). Each entry carries the
+        # verbatim text + provenance.
         _index(config)
         _seed_probe(config, "t", "How does the llm choose?")
         result = scan(config, project="t", promotion_cap=20)
-        detail = result.recent_probes.get("llm") or {}
-        assert detail.get("count", 0) == 1
-        assert detail.get("probes") == ["How does the llm choose?"]
+        assert isinstance(result.recent_probes, list)
+        texts = [q["text"] for q in result.recent_probes]
+        assert "How does the llm choose?" in texts
         assert result.stats.get("recent_probes", 0) == 1
 
 
@@ -2097,22 +2117,24 @@ class TestPolicyKnobOverrides:
 
         calls: dict[str, int] = {}
 
-        def fake_details(cfg, project="", window_days=None, **kw):
-            calls["details"] = window_days
-            return {}
+        def fake_questions(cfg, project="", window_days=None, **kw):
+            calls["questions"] = window_days
+            return []
 
         def fake_pressure(cfg, project="", window_days=None, **kw):
             calls["pressure"] = window_days
             return {}
 
-        monkeypatch.setattr(prompts_mod, "recent_probe_details", fake_details)
+        monkeypatch.setattr(
+            prompts_mod, "recent_probe_questions", fake_questions
+        )
         monkeypatch.setattr(prompts_mod, "recent_probe_pressure", fake_pressure)
         _index(config)
         config.dream_probe_window_days = 99
 
         result = scan(config, project="t")
         assert result.errors == []
-        assert calls == {"details": 99, "pressure": 99}
+        assert calls == {"questions": 99, "pressure": 99}
 
     def test_rejudge_cap_from_config_scan_and_apply_agree(
         self, config: Config, vault: VaultManager

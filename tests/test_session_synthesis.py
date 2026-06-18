@@ -104,7 +104,9 @@ def test_archive_transcript_moves_body_and_retires_enrichment_status(
 # ---------------------------------------------------------------------------
 
 
-def _materialize_one_session(config: Config, vault: VaultManager) -> str:
+def _materialize_one_session(
+    config: Config, vault: VaultManager, *, uuid: str = "cc-uuid-1", project: str = "proj"
+) -> str:
     """Materialise one imported CC session via the real seed path; return id."""
     from thinkweave.onboarding.claude_code_seed import (
         ClaudeCodeSession,
@@ -112,8 +114,8 @@ def _materialize_one_session(config: Config, vault: VaultManager) -> str:
     )
 
     sess = ClaudeCodeSession(
-        uuid="cc-uuid-1",
-        project="proj",
+        uuid=uuid,
+        project=project,
         cwd="/home/u/proj",
         git_branch="main",
         started_at=datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc),
@@ -199,6 +201,79 @@ def test_run_enrichment_batch_end_to_end(config: Config, vault: VaultManager, mo
 
     # No longer pending.
     assert len(find_pending_sessions(config)) == 0
+
+
+def test_fanout_plan_respects_threshold_and_knobs():
+    """The inline /seed-enrich skill reads fan-out topology off this plan, so
+    it must track the [enrich] knobs deterministically."""
+    from thinkweave.onboarding.enrich_batch import fanout_plan
+
+    cfg = Config(
+        vault_root=Path("/tmp/x"),
+        enrich_fanout_threshold=2,
+        enrich_batch_size=4,
+        enrich_parallelism=3,
+    )
+    assert fanout_plan(cfg, 2)["mode"] == "inline"          # at threshold → inline
+    plan = fanout_plan(cfg, 5)                              # above → fan out
+    assert plan["mode"] == "fanout"
+    assert plan["batch_size"] == 4 and plan["parallelism"] == 3
+
+
+def test_dry_run_emits_fanout_plan_and_pending_lines(
+    config: Config, vault: VaultManager, capsys
+):
+    """`--dry-run` is the CLI↔skill contract: one machine-parseable FANOUT
+    plan line plus one PENDING line per session awaiting synthesis."""
+    _materialize_one_session(config, vault)
+    Indexer(config=config).rebuild(full=True)
+
+    from thinkweave.onboarding.enrich_batch import run_enrichment_batch
+
+    run_enrichment_batch(config, dry_run=True)
+    lines = capsys.readouterr().out.splitlines()
+
+    fanout = [ln for ln in lines if ln.startswith("FANOUT\t")]
+    pending = [ln for ln in lines if ln.startswith("PENDING\t")]
+    assert len(fanout) == 1
+    # FANOUT <mode> <threshold> <batch_size> <parallelism>
+    _, mode, threshold, *_ = fanout[0].split("\t")
+    assert mode == "inline"          # 1 pending <= default threshold 12
+    assert threshold == "12"
+    assert len(pending) == 1
+
+
+def test_run_enrichment_batch_finalize_is_toggleable(
+    config: Config, vault: VaultManager, monkeypatch
+):
+    """Default run self-finalizes (the batch analogue of per-session
+    wrap-finalize); `finalize=False` skips it so onboard can run its own tail
+    without double work."""
+    synthesis_json = (
+        '{"summary": "x.", "concepts": ["fts5"], "insights": [], "decisions": []}'
+    )
+    monkeypatch.setattr(
+        "thinkweave.core.agent_client.batch_completions_sync",
+        lambda prompts, **kw: [(synthesis_json, {}) for _ in prompts],
+    )
+    import thinkweave.operations.landing as landing_mod
+
+    landed: list[str] = []
+    monkeypatch.setattr(
+        landing_mod, "render_landing", lambda cfg, **kw: landed.append(kw.get("project", ""))
+    )
+
+    from thinkweave.onboarding.enrich_batch import run_enrichment_batch
+
+    _materialize_one_session(config, vault, uuid="cc-1")
+    Indexer(config=config).rebuild(full=True)
+    run_enrichment_batch(config, finalize=False)
+    assert landed == []  # tail skipped
+
+    _materialize_one_session(config, vault, uuid="cc-2")
+    Indexer(config=config).rebuild(full=True)
+    run_enrichment_batch(config)  # finalize defaults True
+    assert landed == ["proj"]  # landing refreshed for the touched project
 
 
 def test_extract_session_archives_transcript_for_imports(config: Config, vault: VaultManager):

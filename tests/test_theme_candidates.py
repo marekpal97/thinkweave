@@ -465,6 +465,82 @@ class TestCatalystDistillation:
         assert not fm.get("essence_updated")
 
 
+class TestThemeCatalystThreading:
+    """Item 5 — theme catalyst logs render with the same threaded temporal-DAG
+    layout (4-space indent + ``↳`` cue) as concept hubs."""
+
+    def test_refold_threads_existing_flat_log(self, vault, indexer, config):
+        from thinkweave.synthesis.theme_hub import refold_theme_catalyst_logs
+
+        src_a, src_b = (
+            _make_source(vault, "Arc begins", concepts=["ai-capex"]),
+            _make_source(vault, "Arc continues", concepts=["ai-capex"]),
+        )
+        id_a, id_b = _src_ids([src_a, src_b])
+        # A flat log: an anchor and a later entry that *extends* it. Written
+        # the old (flat, un-threaded) way a pre-fix theme would carry.
+        theme_path = vault.create_note(
+            note_type=NoteType.THEME,
+            title="AI capex unwind",
+            body=(
+                "## Essence\n\nThesis.\n\n## Catalyst log\n\n"
+                f"- 2026-01-01 · *new* — Arc begins — [[{id_a}]]\n"
+                f"- 2026-02-01 · *extends 2026-01-01* — Arc continues — [[{id_b}]]\n"
+                "\n## Open questions\n"
+            ),
+            extra_frontmatter={"concepts": ["ai-capex"], "status": "active"},
+        )
+        indexer.rebuild()
+
+        n = refold_theme_catalyst_logs(config)
+        assert n == 1
+
+        _, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        # The extends-entry now nests under its predecessor: 4-space indent + ↳.
+        child = next(ln for ln in body.splitlines() if "Arc continues" in ln)
+        assert child.startswith("    - ↳ ")
+        # The anchor stays top-level. Essence + open questions are preserved.
+        assert "## Essence" in body and "Thesis." in body
+        assert "## Open questions" in body
+
+        # Idempotent: a second pass re-renders byte-identically → no rewrite.
+        assert refold_theme_catalyst_logs(config) == 0
+
+    def test_extend_rerenders_log_threaded(self, vault, indexer, config):
+        # A theme seeded with an extends-entry whose ref matches the seed date;
+        # extending it must re-render the *whole* log threaded, not flat-append.
+        src0 = _make_source(vault, "Seed", concepts=["ai-capex"])
+        indexer.rebuild()
+        theme_path = mint_theme_from_signal(
+            config,
+            slug="ai-capex-unwind",
+            essence="x",
+            cluster_source_ids=_src_ids([src0]),
+            cluster_concepts=["ai-capex"],
+        )
+        tfm, _ = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        theme_id = tfm["id"]
+        indexer.rebuild()
+
+        new_src = _make_source(vault, "Follow-up", concepts=["ai-capex"])
+        indexer.rebuild()
+        extend_theme_with_sources(
+            config,
+            theme_id=theme_id,
+            source_ids=_src_ids([new_src]),
+            catalysts=[
+                {"source_id": _src_ids([new_src])[0], "text": "Follows on", "flag": "new"},
+            ],
+        )
+        _, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        # Both the seed and the new entry are present in a single canonical
+        # ## Catalyst log section (re-rendered through the shared threaded
+        # renderer, not double-appended into a second section).
+        assert body.count("## Catalyst log") == 1
+        assert "Follows on" in body
+        assert "cluster seed" in body  # the original seed entry survived
+
+
 class TestSignalExcerpts:
     """S1 — detect_signals sources carry body excerpts for distillation."""
 

@@ -17,7 +17,7 @@ and re-serialized every value.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -373,7 +373,11 @@ class TestEssenceStampRoundTrip:
         close = lines.index("---", 1)
         fm_lines = lines[: close + 1]
         stamp_lines = [l for l in fm_lines if l.startswith("essence_updated:")]
-        assert stamp_lines == [f"essence_updated: {date.today().isoformat()}"]
+        # _rewrite_hub_essence stamps the UTC date (dream.py uses UTC throughout);
+        # assert against the same clock so the test doesn't flake when local time
+        # and UTC straddle midnight.
+        utc_today = datetime.now(timezone.utc).date().isoformat()
+        assert stamp_lines == [f"essence_updated: {utc_today}"]
         # Every other frontmatter byte — comment, empty key, quoting,
         # spacing, ordering — is exactly as authored.
         assert [l for l in fm_lines if not l.startswith("essence_updated:")] == FUNKY_FM
@@ -395,7 +399,8 @@ class TestEssenceStampRoundTrip:
         fm_after = lines[: close + 1]
         # Same line count, same position — replaced, not duplicated.
         assert len(fm_after) == len(fm)
-        assert fm_after[5] == f"essence_updated: {date.today().isoformat()}"
+        # UTC, matching dream.py's stamp clock (see note above).
+        assert fm_after[5] == f"essence_updated: {datetime.now(timezone.utc).date().isoformat()}"
         assert [l for i, l in enumerate(fm_after) if i != 5] == [
             l for i, l in enumerate(fm) if i != 5
         ]

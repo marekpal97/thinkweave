@@ -746,8 +746,15 @@ def mint_theme_from_signal(
     # [[src-id]] would resolve only via the fragile alias); title aliases so the
     # log shows the headline, not an opaque src-id.
     _mint_idmap, _mint_titles, _ = _safe_hub_maps(config)
+    # ``threaded=True`` so a minted theme's catalyst log renders with the same
+    # indented temporal-DAG layout as concept hubs (seed entries are mostly
+    # ``new`` so this is usually flat at mint, but a seeded ``extends`` entry
+    # threads correctly instead of rendering flat).
     body = hub.render(
-        include_open_questions=True, idmap=_mint_idmap, title_map=_mint_titles
+        include_open_questions=True,
+        threaded=True,
+        idmap=_mint_idmap,
+        title_map=_mint_titles,
     )
 
     target_path.write_text(frontmatter_block + "\n\n" + body + "\n", encoding="utf-8")
@@ -817,10 +824,14 @@ def extend_theme_with_sources(
             raise FileNotFoundError(f"theme file missing: {theme_path}")
 
         from thinkweave.synthesis.hub import (
+            CATALYST_LOG_HEADING,
             FLAG_NEW,
             HubLogEntry,
             build_id_path_map,
             build_id_title_map,
+            parse_log_section,
+            render_catalyst_log,
+            replace_section_body,
         )
 
         fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
@@ -835,9 +846,19 @@ def extend_theme_with_sources(
         # label and is just the bare flag verb.
         idmap = build_id_path_map(idx.db)
         title_map = build_id_title_map(idx.db)
+        path_to_id = {p: i for i, p in idmap.items()}
+
+        # Re-render the WHOLE catalyst log threaded (not flat-append) so theme
+        # pages get the same indented temporal-DAG display as concept hubs —
+        # both surfaces now route writes through render_catalyst_log(threaded=
+        # True). Parse the existing entries, add the new ones, replace the
+        # section. Existing flat logs heal to threaded on first extend.
+        existing_entries = parse_log_section(
+            body, CATALYST_LOG_HEADING, path_to_id=path_to_id
+        )
 
         cmap = _catalyst_map(catalysts)
-        new_lines: list[str] = []
+        new_entries: list[HubLogEntry] = []
         for src_id in source_ids:
             if src_id in existing:
                 continue
@@ -845,15 +866,23 @@ def extend_theme_with_sources(
             cites.append(src_id)
             existing.add(src_id)
             text, flag = cmap.get(src_id, ("extend", FLAG_NEW))
-            entry = HubLogEntry(
-                date=today, flag=flag, text=text, citation=src_id
+            new_entries.append(
+                HubLogEntry(date=today, flag=flag, text=text, citation=src_id)
             )
-            new_lines.append(entry.render(idmap=idmap, title_map=title_map))
             linked += 1
 
         if linked:
             fm["cites"] = cites
-            body = _append_catalyst_lines(body, new_lines)
+            body = replace_section_body(
+                body,
+                CATALYST_LOG_HEADING,
+                render_catalyst_log(
+                    existing_entries + new_entries,
+                    idmap=idmap,
+                    title_map=title_map,
+                    threaded=True,
+                ),
+            )
             theme_path.write_text(
                 render_frontmatter(fm) + "\n" + body, encoding="utf-8"
             )
@@ -1036,25 +1065,6 @@ def _repoint_relates_to(config, idx, from_id: str, to_id: str) -> int:
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
-
-
-def _append_catalyst_lines(body: str, lines: list[str]) -> str:
-    """Insert ``lines`` right after the ``## Catalyst log`` header.
-
-    Falls back to appending a fresh section if the header is absent.
-    """
-    if not lines:
-        return body
-    block = "\n".join(lines)
-    marker = "## Catalyst log"
-    idx = body.find(marker)
-    if idx == -1:
-        return body.rstrip() + f"\n\n{marker}\n\n{block}\n"
-    # Insert after the header line (and its trailing newline).
-    nl = body.find("\n", idx)
-    if nl == -1:
-        return body + f"\n{block}\n"
-    return body[: nl + 1] + "\n" + block + "\n" + body[nl + 1 :]
 
 
 def _backfill_relates_to(config, idx, source_ids, thm_id) -> dict:
