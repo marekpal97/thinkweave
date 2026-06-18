@@ -11,7 +11,7 @@ The full CLI subcommand reference, the MCP tool surface, the CLI↔MCP surface c
 
 ## CLI reference
 
-The CLI exposes **44 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
+The CLI exposes **45 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
 
 Consolidations to keep in mind: wikilink materialisation lives under `weave index --materialize-links` (was `weave connect`, deleted 2026-05-21); the `weave_concepts*` MCP tools are folded into `weave_concepts(action=...)`; `weave_source_lens` + `weave_decisions_for_file` are folded into `weave_graph(filter=...)`. The Phase-4-C deprecation aliases for both CLI and MCP names were removed 2026-05-21 — call the canonical names.
 
@@ -45,13 +45,12 @@ weave schedule {list|install|uninstall}       # render scheduling.yaml onto the 
                                             # [--dry-run] [--only j1,j2]
 weave skill {list|show <name>}                # inspect commands/*.md frontmatter
 weave sources {list|show <slug>}              # inspect source-type registry
-weave prune-orphans [--yes]                   # delete abandoned session folders (used by /weave-wrap)
-weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /weave-wrap: prune→index→judge→landing→drift (--json for headless)
+weave prune-orphans [--yes]                   # delete abandoned session folders (used by /wrap)
+weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: prune→index→judge→landing→drift (--json for headless)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (one per decision)
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
-weave enrich [--project X]                    # LLM concept enrichment (gpt-5-mini)
-weave import {claude-mem|chatgpt|file|messenger}
+weave import {claude-code|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
 weave intake {enumerate|archive}              # drop-folder helpers for /substack and friends
 weave discover [--project X]                  # cross-project research gap analysis
 weave show <id>                               # render a single note
@@ -60,19 +59,19 @@ weave install [--vault PATH] [--yes]          # register MCP server in ~/.claude
 weave mcp                                     # invoke the MCP server (used by ~/.claude.json)
 ```
 
-**Agents shouldn't run** `weave doctor`, `weave stats`, `weave flow`, `weave intake`, `weave enrich`, `weave import`, `weave prune-orphans`, `weave install`, `weave mcp`, `weave init`, `weave hooks`, `weave schedule` directly — they belong in cron flows or interactive admin. There is no MCP parity for these subcommands.
+**Agents shouldn't run** `weave doctor`, `weave stats`, `weave flow`, `weave intake`, `weave import`, `weave prune-orphans`, `weave install`, `weave mcp`, `weave init`, `weave hooks`, `weave schedule` directly — they belong in cron flows or interactive admin. There is no MCP parity for these subcommands.
 
 ## MCP tool surface
 
-The MCP server (id `thinkweave`, so tools are addressed `mcp__thinkweave__mem_*` and the short names stay `weave_*`) exposes 18 tools:
+The MCP server (id `thinkweave`, so tools are addressed `mcp__thinkweave__weave_*` and the short names stay `weave_*`) exposes 17 tools:
 
-`weave_search`, `weave_create`, `weave_read`, `weave_update`, `weave_link`, `weave_unlink`, `weave_context`, `weave_graph` (filter-dispatched), `weave_concepts` (action-dispatched), `weave_extract`, `weave_judge`, `weave_landing`, `weave_enrich`, `weave_timeline`, `weave_project_snapshot`, `weave_queue`, `weave_sources_config`, `weave_prompts`.
+`weave_search`, `weave_create`, `weave_read`, `weave_update`, `weave_link`, `weave_unlink`, `weave_context`, `weave_graph` (filter-dispatched), `weave_concepts` (action-dispatched), `weave_extract`, `weave_judge`, `weave_landing`, `weave_timeline`, `weave_project_snapshot`, `weave_queue`, `weave_sources_config`, `weave_prompts`.
 
 ## Surface contract — CLI ↔ MCP
 
 The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus exactly four narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, and `weave judge --rejudge/--drain`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-Full inventory — 43 CLI subcommands × 18 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
+Full inventory — 45 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
 
 | Operation | CLI subcommand | MCP tool | Audience |
 |---|---|---|---|
@@ -91,15 +90,14 @@ Full inventory — 43 CLI subcommands × 18 MCP tools (audience: *agent* = MCP-o
 | Session extraction | — | `weave_extract` | agent |
 | Decision / prediction judging | `weave judge` | `weave_judge` | both — `--rejudge/--drain` is **agent-Bash** |
 | Landing docs regeneration | `weave landing` | `weave_landing` | both — `--doc` is **agent-Bash** |
-| Concept enrichment | `weave enrich` | `weave_enrich` | both (CLI = admin-cron backfill) |
 | Acquisition-queue inspection | `weave queue` | `weave_queue` | both |
 | Source-type registry | `weave sources` | `weave_sources_config` | both |
-| /weave-wrap deterministic tail | `weave wrap-finalize` | — | **agent-Bash** |
+| /wrap deterministic tail | `weave wrap-finalize` | — | **agent-Bash** |
 | Hub backfill / linkage | `weave hubs` | — | admin-cron — `apply-linkage` is **agent-Bash** |
 | Decision ledger lookup | `weave decisions` | — | admin-cron |
 | Todo backlog | `weave backlog` | — | admin-cron |
 | SQLite index rebuild | `weave index` | — | admin-cron |
-| Importers (claude-weave / chatgpt / …) | `weave import` | — | admin-cron |
+| Importers (claude-code / chatgpt / …) | `weave import` | — | admin-cron |
 | Vault health | `weave stats` | — | admin-cron |
 | Coherence linter | `weave doctor` | — | admin-cron |
 | Named workflow pipelines | `weave flow` | — | admin-cron |
@@ -123,6 +121,6 @@ Full inventory — 43 CLI subcommands × 18 MCP tools (audience: *agent* = MCP-o
 
 - `THINKWEAVE_VAULT` — vault root (default `~/vault`). The legacy `PERSONAL_MEM_VAULT` is honored as a migration fallback.
 - `THINKWEAVE_PROJECT` — default project name. The legacy `PERSONAL_MEM_PROJECT` is honored as a migration fallback.
-- `OPENAI_API_KEY` — required by `weave enrich`, the ChatGPT importer, embeddings, and the hub batch backfill (`weave drain --target hubs --via batch`).
+- `OPENAI_API_KEY` — required by embeddings (`weave index --embed`), the ChatGPT importer, and the hub batch backfill (`weave hubs link --via batch`).
 
 After upgrading Thinkweave, re-run `weave hooks install` to pick up newly-added hooks (e.g. SessionStart).

@@ -34,6 +34,7 @@ The narrative reference hub. CLAUDE.md is the thin in-session operating guide; t
 | [`docs/LIFECYCLES.md`](docs/LIFECYCLES.md) | Contributors + agents | Full lifecycle deep-dives (session, concept, theme, decision, source, prompt, context-served). |
 | [`docs/SKILLS.md`](docs/SKILLS.md) | Contributors + agents | Skills catalog + subagent-worker roster + dual-route convention. |
 | [`docs/CLI-AND-MCP.md`](docs/CLI-AND-MCP.md) | Contributors + agents | CLI subcommand reference, MCP tool surface, CLI↔MCP contract, environment. |
+| [`docs/SCHEMA.md`](docs/SCHEMA.md) | Contributors | Every SQL table the index produces — name, purpose, key columns, `CREATE` site — plus the rebuild/migration story. |
 
 If you're answering a user question in-session, read `CLAUDE.md` first and follow its reference index. If you're reading code or adding a new source type, you're in the right place.
 
@@ -65,6 +66,8 @@ Thinkweave splits cleanly into two layers with a one-way dependency.
 Dependency rule: `core/` imports nothing from the rest; `retrieval/` and `synthesis/` import only from `core/` and their neighbors; `operations/` may import any of the above but never from `surfaces/`. Surfaces are thin shells that delegate to `operations/`. If you find yourself wanting to import `surfaces.*` from `core/`, you're mixing concerns.
 
 The Claude Code layer sits on top: hooks feed session events into the knowledge layer via the CLI; skills drive the knowledge layer via MCP tools. Both are clients of the knowledge API; neither is a peer.
+
+The knowledge layer's persisted state is two SQLite files (`index.db`, `embeddings.db`) under `vault/.weave/` — both derived and rebuildable from markdown via `weave index --full`. For the full table-by-table enumeration (name, purpose, key columns, `CREATE` site), see [`docs/SCHEMA.md`](docs/SCHEMA.md).
 
 ## The source primitive
 
@@ -114,7 +117,7 @@ Each lane maps to skill files under `commands/`:
 | import | `/research`, `/research-paper`, `/research-repo`, `/research-article`, `/news`, `/capture`, `/ingest-paper-file` (the last three are agent-internal — invoked by routers/workers, not symlinked as public `/` commands) | URL/file → one source note |
 | acquire | `/drain`, `/substack`, `/newsletter`, `/youtube`, `/podcast` | Queue/inbox → many source notes |
 | discover | `/discover` | Strategy registry: internal-state gap emitters (`decision_review`, `prompt_gap`) + external-trigger enqueuers (`rss_poll`, `mail_poll`, `external_tool_runner`) |
-| synthesis | `/update-hubs`, `/tighten`, `/dream`, `/weave-wrap` | Concept hubs, theme hubs, landing docs, ontology hygiene, session wrap (`/tighten` replaced the split `/mem-resolve-concepts` + `/themes-resolve` skills, 2026-06-13) |
+| synthesis | `/update-hubs`, `/tighten`, `/dream`, `/wrap` | Concept hubs, theme hubs, landing docs, ontology hygiene, session wrap (`/tighten` replaced the split `/mem-resolve-concepts` + `/themes-resolve` skills, 2026-06-13) |
 
 The four lanes are verb-distinct on purpose. **Import** is one-shot (a URL or file the user hands you). **Acquire** is batch (a queue or inbox the user has been accumulating). **Discover** finds what's missing. **Synthesis** aggregates what's already in the vault — concept-hub backfill, theme dedup, landing-doc regeneration. None of these is a sub-mode of another; mixing them is what produced the historical naming drift the Phase 1 rename sweep (1.1) cleaned up.
 
@@ -156,7 +159,7 @@ flowchart LR
 ```
 
 - **Phase 1 (synthesis)** — 5 workers in parallel: `dream-{promotion,merge,theme,essence,priority}-worker`. Each emits a `plan_fragment` JSON outcome. Orchestrator merges, calls `weave dream apply` (one index rebuild, one `maintenance.jsonl` line).
-- **Phase 2 (composition + consumption)** — 5 workers in dependency waves. Wave A in parallel: `dream-wrap-worker` (catch-up unwrapped sessions, subsumes the standalone `/weave-wrap` cron) + `dream-judge-worker` (drain rejudge queue, subsumes `/judge-prediction --drain`) + `dream-seam-link-worker` (drain `.weave/seam_link_queue.jsonl` — cross-parent catalyst linkage on hubs folded by merges) + `dream-seam-worker` (reconcile the CC-auto-memory↔vault **memory seam** — see below). Wave B after wave A: `dream-digest-worker` (compose up to two grain-split `type: digest` notes at `vault/digests/YYYY-MM-DD-{concept,event}.md`, each leading with a `## In brief` + `## Most actionable` narrative over the inventory detail). Phase-2 workers write directly; they emit a `side_effects` list, not plan fragments.
+- **Phase 2 (composition + consumption)** — 5 workers in dependency waves. Wave A in parallel: `dream-wrap-worker` (catch-up unwrapped sessions, subsumes the standalone `/wrap` cron) + `dream-judge-worker` (drain rejudge queue, subsumes `/judge-prediction --drain`) + `dream-seam-link-worker` (drain `.weave/seam_link_queue.jsonl` — cross-parent catalyst linkage on hubs folded by merges) + `dream-seam-worker` (reconcile the CC-auto-memory↔vault **memory seam** — see below). Wave B after wave A: `dream-digest-worker` (compose up to two grain-split `type: digest` notes at `vault/digests/YYYY-MM-DD-{concept,event}.md`, each leading with a `## In brief` + `## Most actionable` narrative over the inventory detail). Phase-2 workers write directly; they emit a `side_effects` list, not plan fragments.
 
 **Extensibility seam.** `src/thinkweave/operations/dream_tasks.py::DreamTaskSpec` is the typed registry, structurally analogous to `sources/registry.py::SourceTypeSpec`. A new judgment, composition, or consumption domain plugs in via one `REGISTRY` entry (`surface_key, worker_name, plan_keys, has_signal, phase, depends_on`) plus one `.claude/agents/<worker>.md` file — no skill-text or orchestrator-code edits. Dependency edges (`depends_on`) let the orchestrator topologically sort the fan-out without per-domain branching.
 
@@ -164,7 +167,7 @@ flowchart LR
 
 ### Memory seam — CC auto-memory ↔ vault reconciliation
 
-Two always-on knowledge channels feed every session and are assembled *independently*: **Claude Code auto-memory** (`~/.claude/projects/*/memory/*.md`, the *durable* layer — preferences, feedback, hard-won lessons) and **the vault SessionStart payload** (the *fresh* layer — recent sessions / decisions / state, regenerated each session). The seam is the missing reconciliation between them — an active correctness guard that keeps the durable layer from going **stale** against, or silently **duplicating**, the fresh layer (empirically, staleness concentrates in `project`-type CC facts that race the vault — "14 MCP tools" when the vault has 18 — and almost never in durable `feedback` facts).
+Two always-on knowledge channels feed every session and are assembled *independently*: **Claude Code auto-memory** (`~/.claude/projects/*/memory/*.md`, the *durable* layer — preferences, feedback, hard-won lessons) and **the vault SessionStart payload** (the *fresh* layer — recent sessions / decisions / state, regenerated each session). The seam is the missing reconciliation between them — an active correctness guard that keeps the durable layer from going **stale** against, or silently **duplicating**, the fresh layer (empirically, staleness concentrates in `project`-type CC facts that race the vault — "14 MCP tools" when the vault has 17 — and almost never in durable `feedback` facts).
 
 The mechanic splits deterministic-Python from agent-judgment, exactly like concepts/themes:
 
@@ -173,7 +176,7 @@ The mechanic splits deterministic-Python from agent-judgment, exactly like conce
 
 The map is incremental — steady-state cost is ~0 (a clean cycle spawns no worker). Verdicts persist in the JSON map; unresolved ones (`stale`/`diverged`) re-validate every cycle, resolved ones re-validate every `seam.recheck_days` to catch *vault* drift.
 
-**Serving is a session-scoped lens, not a banner.** The map is *not* dumped at SessionStart. `synthesis/memory_seam.py:session_guard_section` builds a reverse index (`twin_note_id → flagged fact`) over the `stale`/`diverged` verdicts and intersects it against the note ids the boot payload actually served (`parse_returned_ids(payload)` in the SessionStart hook). A guard line is injected at the top of the payload **only** when a note the model is about to rely on is the twin of a durable CC memory the seam flagged — "memory X may be stale: 14 tools vs 18 → cross-check `[[dec-…]]` (in your context)". No served twin matches → nothing injected (the common case). Because the intersection runs first, the live drift re-check (re-hash the CC file to flag "edited since this verdict") only touches the handful of facts whose twins are in context, not all ~138 — so the hook stays fast.
+**Serving is a session-scoped lens, not a banner.** The map is *not* dumped at SessionStart. `synthesis/memory_seam.py:session_guard_section` builds a reverse index (`twin_note_id → flagged fact`) over the `stale`/`diverged` verdicts and intersects it against the note ids the boot payload actually served (`parse_returned_ids(payload)` in the SessionStart hook). A guard line is injected at the top of the payload **only** when a note the model is about to rely on is the twin of a durable CC memory the seam flagged — "memory X may be stale: 14 tools vs 17 → cross-check `[[dec-…]]` (in your context)". No served twin matches → nothing injected (the common case). Because the intersection runs first, the live drift re-check (re-hash the CC file to flag "edited since this verdict") only touches the handful of facts whose twins are in context, not all ~138 — so the hook stays fast.
 
 **Two consumers, by design — and deliberately no third.** (1) The full `memory_seam.md` is the human-facing **maintenance report** — "these N durable CC memories have drifted from the vault, go fix the files" — which is where stale flags earn their keep. (2) The boot guard is a zero-cost-when-silent correctness interrupt for the rare case both a stale memory and its fresh counterpart land in the same boot context. A **mid-session on-the-fly guard was considered and rejected** (2026-06-13): it's redundant. The seam's `verdict_reason` carries the substance (the pointer id is disposable); within-session supersession chains are the model's own edits (it already knows); and cross-session-but-pre-dream supersessions are *recent decisions* that the standard boot payload (`build_project_context`) already serves via the `supersedes:` chain + STATE. The only residual case (model fetches an old twin whose contradiction is too subtle to read off the note itself) is too thin to justify a hook on every retrieval.
 
@@ -298,6 +301,14 @@ cap = 20                           # dirty CC facts handed to the seam worker pe
 [extract]
 insights_cap = 3                   # max insight notes per weave_extract call
 
+[salience]                         # behavioural active-focus window (digest "## Most actionable")
+activity_window_days = 14          # recent-session + probe-pressure lookback; PRIORITIES focus.* are pins on top
+
+[enrich]                           # inline CC backfill fan-out (/seed-enrich)
+fanout_threshold = 12              # pending ≤ this → synthesise in-process; above → fan out subagents
+batch_size = 6                     # sessions per fan-out worker
+parallelism = 3                    # max concurrent fan-out workers (distinct from api.yaml batch_concurrency)
+
 [themes]                           # cluster detection (synthesis/theme_candidates)
 min_cluster_size = 3               # smallest concept cluster that surfaces a signal
 recent_days = 30                   # event-grain source lookback
@@ -322,10 +333,13 @@ The `weave dream scan` flags (`--promotion-cap`, `--promotion-threshold`, `--ess
 
 Two-section file owning the user-steerable surface that governs `/discover` mechanics and what external-trigger strategies enqueue:
 
+`focus.*` is an **optional pin layer**, not the source of truth. "Active" projects / themes / concepts are computed *behaviourally* by default — recent session activity + probe pressure (the digest's "## Most actionable" block in `operations/dream.py`; the SessionStart active-themes section). The lists below are appended as pins/boosts so a deliberately-watched but currently-quiet entry still surfaces; an empty/missing `focus` block yields pure behavioural salience (steered by `[salience].activity_window_days`).
+
 ```yaml
-focus:
-  active_projects: [...]            # foreground in landing docs
-  watch_themes: [thm-...]           # surface in STATE.md + bias /discover
+focus:                              # optional pins — boost, don't replace, behavioural salience
+  active_projects: [...]            # surface even when momentarily quiet
+  watch_themes: [thm-...]           # float to top of active-themes + bias /discover
+  research_concepts: [...]          # interest-driven discovery (focus_research strategy)
 intake:
   news:               {outlets, drain_window_days}
   podcast_events:     {outlets}
@@ -431,7 +445,7 @@ The framework's *internal* contracts (layer dependencies, operations seam, retri
 | Console script | `weave` | stable | every shell invocation, every cron job, every `claude -p` autopilot line |
 | Console script | `weave-hook` | stable | every Claude Code session (registered in `.claude/settings.json` by `weave hooks install`) |
 | Console script | `weave-mcp` | stable | every MCP-server config that addresses the `thinkweave` MCP server |
-| MCP tool name | `weave_search`, `weave_create`, `weave_read`, `weave_update`, `weave_link`, `weave_unlink`, `weave_context`, `weave_graph`, `weave_concepts`, `weave_extract`, `weave_judge`, `weave_landing`, `weave_enrich`, `weave_timeline`, `weave_project_snapshot`, `weave_queue`, `weave_sources_config`, `weave_prompts` | stable | every skill that calls the tool by name |
+| MCP tool name | `weave_search`, `weave_create`, `weave_read`, `weave_update`, `weave_link`, `weave_unlink`, `weave_context`, `weave_graph`, `weave_concepts`, `weave_extract`, `weave_judge`, `weave_landing`, `weave_timeline`, `weave_project_snapshot`, `weave_queue`, `weave_sources_config`, `weave_prompts` | stable | every skill that calls the tool by name |
 | Module entry | `python -m thinkweave.surfaces.mcp.server` | stable | rare — prefer the `weave-mcp` console script |
 | Module entry | `python -m thinkweave.mcp.server` | back-compat shim | external configs that haven't migrated to `weave-mcp` yet |
 | Hook subcommands | `weave-hook {session_start,user_prompt_submit,pre_tool_use,post_tool_use,stop}` | stable | every entry in `.claude/settings.json` written by `weave hooks install` |
@@ -444,7 +458,7 @@ The rule: when restructuring internal modules, treat anything in this table as a
 
 The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus exactly four narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, and `weave judge --rejudge/--drain`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `weave`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see "Operations layer" below). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-The full inventory — 43 CLI subcommands × 18 MCP tools, with the per-operation audience labels (*agent* / *admin-cron* / *both* / *agent-Bash*) — lives in [docs/CLI-AND-MCP.md §"Surface contract"](docs/CLI-AND-MCP.md#surface-contract--cli--mcp).
+The full inventory — 45 CLI subcommands × 17 MCP tools, with the per-operation audience labels (*agent* / *admin-cron* / *both* / *agent-Bash*) — lives in [docs/CLI-AND-MCP.md §"Surface contract"](docs/CLI-AND-MCP.md#surface-contract--cli--mcp).
 
 ## Operations layer
 
@@ -464,7 +478,7 @@ surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
       hubs_batch.py   run_hubs_batch — orchestrator over agent_client.batch_completions_sync
       _backfill_route.py  choose_route — picks inline (CC skill) vs batch (wrapper fan-out)
       dream.py        scan + apply for /dream synthesis + hygiene cycle
-      wrap.py         /weave-wrap deterministic tail (prune → index → judge → landing → drift)
+      wrap.py         /wrap deterministic tail (prune → index → judge → landing → drift)
       rlvr_export.py  decision-context RLVR substrate export
               ▼
    core/, retrieval/, synthesis/  acquisition/   ← knowledge + acquisition layers
@@ -499,7 +513,6 @@ get_completion / batch_completions     embed(texts) -> vectors
    • operations/hubs_batch.py      • core/embeddings.py
    • onboarding/enrich_batch.py    • retrieval/search.py (mode='similar')
    • importers/chatgpt.py          • weave index --embed
-   • enrich.py
    • surfaces/cli/_hubs_link.py
    (news-triage subagent stays on
     CC Task path, not the wrapper)

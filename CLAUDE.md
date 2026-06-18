@@ -4,7 +4,7 @@ This file loads into your context every session. It is the lean operating surfac
 
 ## What Thinkweave is
 
-Thinkweave is an Obsidian-native memory layer: markdown is the source of truth, SQLite is a derived index. As an agent you do **not** crawl the vault filesystem — you query through the `weave_*` MCP tools (server id `thinkweave`, so tools are `mcp__thinkweave__weave_*`; the short names stay `weave_*`) or the `weave` CLI. Sessions, decisions, sources, themes, and concept hubs are all first-class notes connected by a shared concept ontology. Retrieve through the retrieval cheatsheet below; preserve session knowledge via `/weave-wrap` before clearing context.
+Thinkweave is an Obsidian-native memory layer: markdown is the source of truth, SQLite is a derived index. As an agent you do **not** crawl the vault filesystem — you query through the `weave_*` MCP tools (server id `thinkweave`, so tools are `mcp__thinkweave__weave_*`; the short names stay `weave_*`) or the `weave` CLI. Sessions, decisions, sources, themes, and concept hubs are all first-class notes connected by a shared concept ontology. Retrieve through the retrieval cheatsheet below; preserve session knowledge via `/wrap` before clearing context.
 
 ## Retrieval cheatsheet
 
@@ -35,8 +35,8 @@ All filters take `since` / `until` ISO dates; `weave_search` accepts `concepts=[
 
 - **No filesystem crawls.** Never `find`/`ls`/`grep` the vault from a Bash tool. Use the SessionStart context (already in your conversation), MCP tools, or a single `Read` of a known file path.
 - **One MCP call per question.** Pick the modality from the cheatsheet; don't fan out unless the first call is genuinely insufficient.
-- **Pre-`/clear`: run `/weave-wrap`.** There is no clear hook; this is the only way to preserve mid-session knowledge.
-- **`/weave-wrap` is zero-API; latency is two model turns + one Bash call.** `weave_extract` is pure Python; the whole deterministic tail (prune → index → judge → landing → drift) is one Bash call (`weave wrap-finalize`) with no model turns. The only LLM cost is composing the insights/decisions inline and the wrap-up report.
+- **Pre-`/clear`: run `/wrap`.** There is no clear hook; this is the only way to preserve mid-session knowledge.
+- **`/wrap` is zero-API; latency is two model turns + one Bash call.** `weave_extract` is pure Python; the whole deterministic tail (prune → index → judge → landing → drift) is one Bash call (`weave wrap-finalize`) with no model turns. The only LLM cost is composing the insights/decisions inline and the wrap-up report.
 - **Concepts mandatory.** Every note created via `weave_extract` must carry ≥2 concepts. Load existing labels via `weave_concepts` before assigning. Prefer specific terms (`ml/deep-learning` over `deep-learning`).
 - **Strict ontology gating.** Only ontology-listed terms may go in `concepts:`. Any new term goes in `proposed_concepts:`. The strict gate is server-enforced — `weave_extract`, `weave_create`, and the importers all run incoming concept lists through the merged ontology and shunt non-matches to `proposed_concepts:` automatically. Promotion (proposed → canonical) is `/tighten`'s job (and the nightly `dream-promotion-worker`), triggered when a proposed term reaches critical mass (`dream.promotion_threshold`, default `count ≥ 5`). You don't pre-canonicalise; you just attach concepts and let the gate sort them.
 - **Auto-todo only on request.** Never tag `todo` unless the user explicitly asks.
@@ -52,6 +52,7 @@ When you need depth, go here. CLAUDE.md tells you *how to operate*; these tell y
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The narrative reference: two layers, source primitive, capability lanes, acquisition spine, dream orchestrator, memory seam, ontology as joint vocabulary, themes-vs-concept-hubs, queue primitive, config layout, discovery strategies, coherence, operations layer, provider abstraction, surface contract. |
 | [docs/LIFECYCLES.md](docs/LIFECYCLES.md) | Full lifecycle deep-dives: session, concept (drift-v2 + seam-link invariant), theme (floating, registry, disambiguation), decision (4-state table + evidence-gated supersession + predicted-outcome/RLVR), source (acquisition spine, RSS/mail intake), prompt, context-served. |
 | [docs/SKILLS.md](docs/SKILLS.md) | The skills catalog (all `/` commands), the subagent-worker roster (dream phase-1/2, research, triage), and the `--via inline\|batch` dual-route convention. |
-| [docs/CLI-AND-MCP.md](docs/CLI-AND-MCP.md) | The `weave` CLI subcommand reference, the 18 MCP tools, the CLI↔MCP surface contract (which audience owns each operation), and the environment variables. |
+| [docs/CLI-AND-MCP.md](docs/CLI-AND-MCP.md) | The `weave` CLI subcommand reference, the 17 MCP tools, the CLI↔MCP surface contract (which audience owns each operation), and the environment variables. |
+| [docs/SCHEMA.md](docs/SCHEMA.md) | Every SQL table the derived index produces — name, purpose, key columns, `CREATE` site — and the rebuild/migration story. Markdown stays truth; SQLite is rebuildable. |
 
 After upgrading Thinkweave, re-run `weave hooks install` to pick up newly-added hooks (e.g. SessionStart).

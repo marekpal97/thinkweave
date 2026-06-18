@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.jpg" alt="Thinkweave logo" width="360">
+</p>
+
 # Thinkweave
 
 **A self-maintaining knowledge layer for Claude Code — it actively gathers what
@@ -67,20 +71,20 @@ for reward modeling. It's memory with a feedback loop, not a write-only log.
 
 - **Internal + external, one ontology you control.** Sessions and decisions (what
   you do) and sources and concepts (what you read) are the *same primitives* under
-  one shared vocabulary — so a finding from a paper can surface against an
-  unrelated project because they cite the same concept. Retrieval is three ways
-  (keyword FTS5, embedding similarity, typed graph walk) plus budgeted
-  compositions, but it's the *access mechanism* here, not the headline.
+  one shared vocabulary — so a finding from a paper surfaces against an unrelated
+  project when they cite the same concept. Retrieval (FTS5, embedding similarity,
+  typed graph walk, plus budgeted compositions) is the *access mechanism* here, not
+  the headline.
 - **Yours, in the open.** Human-readable markdown in an Obsidian-native vault —
-  git-friendly, browsable, hand-editable. The SQLite index is throwaway; delete it
-  and `weave index --full` rebuilds it from the markdown. Nothing locked away.
-- **Steerable, not opinionated.** Ontology, themes, source types, priorities are
-  all data-shaped extension surfaces (YAML registries, markdown frontmatter) — no
-  plugin classes to subclass, no baked-in schema. The shipped ontology is a
-  minimal seed that populates as your vault grows.
-- **Lightweight and local.** No always-on server eating RAM on your agent. The
-  index is SQLite; embeddings are optional (retrieval degrades gracefully to
-  keyword search without an API key); the MCP server launches on demand.
+  git-friendly, browsable, hand-editable. The SQLite index is throwaway: delete it
+  and `weave index --full` rebuilds it from the markdown.
+- **Steerable, not opinionated.** Ontology, themes, source types, and priorities
+  are data-shaped extension surfaces (YAML registries, markdown frontmatter) — no
+  plugin classes to subclass, no baked-in schema; the shipped ontology is a minimal
+  seed that grows with your vault.
+- **Lightweight and local.** No always-on server eating RAM. SQLite index, optional
+  embeddings (retrieval degrades gracefully to keyword search without an API key),
+  MCP server launches on demand.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the pieces fit, and
 [`CLAUDE.md`](CLAUDE.md) for the in-session agent contract.
@@ -91,7 +95,7 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the pieces fit, and
 
 **acquire + capture → synthesize → maintain → serve.** `/discover` and `/drain`
 pull external sources in along the rails you configured; hooks log every session
-event as you work. `/weave-wrap` distills sessions into notes + decisions, and the
+event as you work. `/wrap` distills sessions into notes + decisions, and the
 nightly `/dream` mints concept hubs and theme arcs, dedups the ontology, judges
 predictions, and writes a digest + maintenance report. You then retrieve through
 FTS, semantic similarity, or a typed graph walk — and every retrieval feeds back
@@ -102,12 +106,12 @@ into what the vault learns is worth keeping.
   truth.
 - **The index** — `<vault>/.weave/index.db` + `embeddings.db`, rebuilt from
   markdown by `weave index`. Powers retrieval; never authoritative.
-- **MCP tools** — 18 `weave_*` tools are the agent's operation surface
+- **MCP tools** — 17 `weave_*` tools are the agent's operation surface
   (search, create, read, extract, graph walk, …).
 - **Hooks** — four Claude Code hooks (SessionStart / UserPromptSubmit /
   PostToolUse / Stop) auto-capture events into a session note; nothing is
   manual.
-- **Skills** — slash-commands (`/onboard`, `/research`, `/drain`, `/weave-wrap`,
+- **Skills** — slash-commands (`/onboard`, `/research`, `/drain`, `/wrap`,
   `/dream`, …) drive the knowledge layer; the heavy nightly work fans out to
   subagent workers.
 
@@ -178,13 +182,12 @@ weave dev-link             # symlink into ~/.claude/skills/ (flagless auto-load)
 # → restart Claude Code; commands are now /thinkweave:onboard, :tighten, …
 ```
 
-Because it loads the same plugin manifest as the marketplace route, you get the
-MCP server, hooks, and subagent workers with no separate `weave install` step —
-the same namespaced surface end users see. Live-edit reload: `commands/*.md` and
-vault config are picked up immediately; changes to `hooks/`, `agents/`, or the
-manifest's `mcpServers` need `/reload-plugins`. `weave dev-link` is idempotent,
-refuses to shadow a marketplace install, warns if a leftover `weave install`
-entry would double-register the server, and is reversed by `weave dev-unlink`.
+Same plugin manifest as the marketplace route — MCP server, hooks, and subagent
+workers, no separate `weave install`. Live-edit reload: `commands/*.md` and vault
+config are picked up immediately; `hooks/`, `agents/`, or `mcpServers` changes need
+`/reload-plugins`. `weave dev-link` is idempotent, refuses to shadow a marketplace
+install, warns if a leftover `weave install` entry would double-register the server,
+and is reversed by `weave dev-unlink`.
 
 <details><summary>Alternative: <code>weave install</code> (MCP-only, machine-scope)</summary>
 
@@ -197,15 +200,26 @@ user|project` separately if you need the lifecycle hooks.
 
 </details>
 
+### Recommended companion plugin — Explanatory output style
+
+Thinkweave pairs well with the **Explanatory** output style, which adds short
+`★ Insight` notes about *why* the agent made a choice — onboarding and `/dream`
+narration read best with it on. Once a built-in, it's now Anthropic's official
+plugin from the `claude-plugins-official` marketplace (no `marketplace add` needed):
+
+```text
+/plugin install explanatory-output-style@claude-plugins-official
+```
+
+It's a SessionStart hook that conflicts with nothing here. Optional and a matter of
+taste — we recommend rather than bundle it; skip it if you prefer a terser agent.
+
 ### Other agents (experimental)
 
 Thinkweave's MCP server (`weave-mcp`) is a standard MCP stdio server, so any
 MCP-capable host *can* connect — but **only Claude Code is proven and supported
-today.** Codex, Cursor, Zed, Claude Desktop, etc. are untested; treat them as
-experimental.
-
-The launch command is the one Claude Code uses; the repo-root `.mcp.json` is the
-canonical reference to copy into another agent's MCP config:
+today** (Codex, Cursor, Zed, Claude Desktop, etc. are untested). The repo-root
+`.mcp.json` is the canonical launch reference to copy into another agent's config:
 
 ```jsonc
 //   command: uv
@@ -235,12 +249,10 @@ Optional environment:
 - `OPENAI_API_KEY` — embeddings (`weave index --embed`) and concept-hub bulk
   backfill. Without it, retrieval still works (FTS-only); similarity degrades
   gracefully.
-- A provider key for the `--via batch` backfill route (historical-import seed,
-  enrichment, hub linkage). The async fan-out goes through one unified wrapper
-  against whichever provider `vault/config/api.yaml` selects (`openai` /
-  `anthropic` / `gemini`) — set that provider's key (e.g. `OPENAI_API_KEY` or
-  `ANTHROPIC_API_KEY`). The `inline` route needs no key (it uses the running
-  model).
+- A provider key for the `--via batch` backfill routes (session-synthesis seed,
+  ChatGPT import, hub linkage). The async fan-out runs against whichever provider
+  `vault/config/api.yaml` selects (`openai` / `anthropic` / `gemini`) — set that
+  key. The `inline` route needs none (it uses the running model).
 
 ---
 
@@ -278,7 +290,7 @@ Day to day you touch only a handful of things:
 - **Session context auto-loads.** The SessionStart hook injects recent sessions,
   decisions, and project state into your context — read it first, no command
   needed.
-- **`/weave-wrap` before `/clear`.** There's no clear hook; this is how you
+- **`/wrap` before `/clear`.** There's no clear hook; this is how you
   preserve mid-session knowledge. It composes insights + decisions inline, calls
   `weave_extract` once, then runs a deterministic tail (prune → index → judge →
   landing → drift). Zero API cost beyond the composition itself.

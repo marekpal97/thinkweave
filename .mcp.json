@@ -2,7 +2,7 @@
   "mcpServers": {
     "thinkweave": {
       "type": "stdio",
-      "command": "/home/marekpal97/.local/bin/uv",
+      "command": "uv",
       "args": ["run", "--project", ".", "--extra", "mcp", "weave-mcp"],
       "env": {}
     }
