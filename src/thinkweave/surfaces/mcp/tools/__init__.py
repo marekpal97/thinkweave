@@ -60,11 +60,10 @@ DISPATCH: dict[str, Callable[[Config, dict], list]] = {
     "weave_graph": graph.handle_dispatch,
     # concepts (action-dispatched)
     "weave_concepts": concepts.handle_dispatch,
-    # extract / judge / landing / enrich
+    # extract / judge / landing
     "weave_extract": extract.handle_extract,
     "weave_judge": extract.handle_judge,
     "weave_landing": extract.handle_landing,
-    "weave_enrich": extract.handle_enrich,
     # queue / config / prompts
     "weave_queue": queue.handle,
     "weave_sources_config": config.handle,

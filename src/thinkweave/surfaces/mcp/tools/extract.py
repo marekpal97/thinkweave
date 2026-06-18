@@ -1,4 +1,4 @@
-"""``weave_extract`` / ``weave_judge`` / ``weave_landing`` / ``weave_enrich``.
+"""``weave_extract`` / ``weave_judge`` / ``weave_landing``.
 
 Thin MCP wrappers — each handler unpacks JSON args, calls into
 ``operations/``, and formats a ``TextContent`` payload. All business logic
@@ -137,34 +137,4 @@ def handle_landing(cfg: Config, args: dict):
     lines = [f"Generated landing documents for {scope}:"]
     for filename, path in out.written.items():
         lines.append(f"  {filename} → {path.relative_to(cfg.vault_root)}")
-    return [TextContent(type="text", text="\n".join(lines))]
-
-
-def handle_enrich(cfg: Config, args: dict):
-    from mcp.types import TextContent
-
-    from thinkweave.operations.enrich import run_enrich
-
-    out = run_enrich(
-        cfg,
-        project=args.get("project", ""),
-        note_types=args.get("note_types") or None,
-        limit=args.get("limit", 0),
-        force=args.get("force", False),
-        dry_run=args.get("dry_run", False),
-    )
-    prefix = "[dry run] " if out.dry_run else ""
-    lines = [
-        f"{prefix}Concept enrichment complete:",
-        f"  enriched: {out.stats['enriched']}",
-        f"  skipped: {out.stats['skipped']}",
-        f"  errors: {out.stats['errors']}",
-        f"  concepts assigned: {out.stats['new_concepts']}",
-    ]
-    if out.reindex_stats is not None and out.wikilink_stats is not None:
-        lines += [
-            f"\nReindexed: {out.reindex_stats['edges']} edges",
-            f"Materialized: {out.wikilink_stats['links_written']} wikilinks "
-            f"into {out.wikilink_stats['notes_updated']} notes",
-        ]
     return [TextContent(type="text", text="\n".join(lines))]

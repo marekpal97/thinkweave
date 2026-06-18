@@ -33,7 +33,7 @@ from thinkweave.surfaces.mcp.tools import all_schemas
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# The 18 MCP tools documented in CLAUDE.md §7 + ARCHITECTURE.md
+# The 17 MCP tools documented in CLAUDE.md §7 + ARCHITECTURE.md
 # ("Invocation surface"). If you add/remove a tool, update BOTH docs and
 # this pin in the same change — that's the point of the pin.
 DOCUMENTED_MCP_TOOLS = {
@@ -49,7 +49,6 @@ DOCUMENTED_MCP_TOOLS = {
     "weave_extract",
     "weave_judge",
     "weave_landing",
-    "weave_enrich",
     "weave_timeline",
     "weave_project_snapshot",
     "weave_queue",
@@ -83,7 +82,7 @@ class TestMcpSurface:
             ), f"{name} handler lives in unexpected module {handler.__module__}"
 
     def test_tool_inventory_pinned_to_docs(self):
-        # CLAUDE.md §7 says "The MCP server exposes 18 tools" and names
+        # CLAUDE.md §7 says "The MCP server exposes 17 tools" and names
         # them; ARCHITECTURE.md's "Invocation surface" table repeats the
         # list. Catch additions/removals that skip the docs.
         assert {tool.name for tool in all_schemas()} == DOCUMENTED_MCP_TOOLS
@@ -117,9 +116,12 @@ class TestCliSurface:
         # `weave dev-link` / `dev-unlink` (clone-dev flagless plugin loading
         # via a ~/.claude/skills/ symlink — the @skills-dir mechanism) added
         # 2026-06-14: 44 → 46.
+        # `weave enrich` (deferred concept-tagging backfill) removed
+        # 2026-06-16 — concepts are now proposed inline at note creation, so
+        # the standalone deferred pass is gone: 46 → 45.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
-        assert len(_DISPATCH) == 46
+        assert len(_DISPATCH) == 45
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():

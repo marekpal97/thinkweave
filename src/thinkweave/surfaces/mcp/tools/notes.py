@@ -55,8 +55,14 @@ def tool_schemas() -> list:
                 "- concepts: precise technical vocabulary for knowledge graph edges "
                 "(e.g. \"write-ahead-log\", \"sqlite-wal\", \"recursive-cte\")\n"
                 "Do not duplicate between them — a term belongs in one or the other.\n\n"
-                "Source type conventions for type=\"source\": article, paper, podcast, video, "
-                "github, book, tweet, transcript. Sources can be project-scoped or global."
+                "source_type for type=\"source\": use the acquisition source-type slug the "
+                "item was ingested as — paper, article, news, youtube-events, youtube-concepts, "
+                "podcast-events, podcast-concepts, newsletter-events, newsletter-concepts. "
+                "Pipeline writers MUST pass their input slug verbatim — do NOT collapse "
+                "youtube-concepts to \"video\" or podcast-events to \"podcast\"; the slug carries "
+                "the grain (events vs concepts) the rest of the system filters on. For "
+                "hand-authored sources with no pipeline slug, a plain content type is fine "
+                "(book, tweet, transcript, repo). Sources can be project-scoped or global."
             ),
             inputSchema={
                 "type": "object",

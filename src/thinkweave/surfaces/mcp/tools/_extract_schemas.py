@@ -223,28 +223,4 @@ def tool_schemas() -> list:
                 "required": [],
             },
         ),
-        Tool(
-            name="weave_enrich",
-            description=(
-                "LLM-assisted concept assignment for vault notes missing concepts.\n\n"
-                "Sends batches of notes to gpt-5-mini with the full ontology as context. "
-                "Writes assigned concepts to markdown frontmatter (permanent, Obsidian-visible). "
-                "After enrichment, automatically rebuilds the index and re-runs weave_connect "
-                "to materialize new edges as wikilinks.\n\n"
-                "Run this to fix sessions (0% concept coverage), decisions (60% missing), "
-                "and any imported notes (claude-mem, ChatGPT) that lack concepts.\n\n"
-                "Requires OPENAI_API_KEY in environment."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project": {"type": "string", "description": "Scope to one project. Empty = all projects."},
-                    "note_types": {"type": "array", "items": {"type": "string"}, "description": "Types to enrich. Default: [session, note, decision, source]."},
-                    "limit": {"type": "integer", "default": 0, "description": "Max notes to process. 0 = no limit."},
-                    "force": {"type": "boolean", "default": False, "description": "Re-enrich notes that already have concepts."},
-                    "dry_run": {"type": "boolean", "default": False, "description": "Show what would be done without writing."},
-                },
-                "required": [],
-            },
-        ),
     ]
