@@ -153,7 +153,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "lookback_days": 7,
             "dedup_keys": ["video_id", "url"],
             "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
-            "research_skill": "youtube",
+            "research_skill": "research-youtube",
             "post_batch_hooks": [],
             # No `triage_model` — admission is the channel allowlist.
             # /drain Path B treats every queue item as keep_unfiled.
@@ -180,7 +180,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "lookback_days": 30,
             "dedup_keys": ["video_id", "url"],
             "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
-            "research_skill": "youtube",
+            "research_skill": "research-youtube",
             "post_batch_hooks": [],
             "allowed_failure_prefixes": [
                 "transcripts_disabled",
@@ -221,7 +221,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "rss.art19.com",
                 "spreaker.com",
             ],
-            "research_skill": "podcast",
+            "research_skill": "research-podcast",
             "post_batch_hooks": [],
             # No `triage_model` — admission is the per-show subscription
             # decision (an outlet in PRIORITIES.yaml::intake.podcast_events),
@@ -261,7 +261,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "rss.art19.com",
                 "spreaker.com",
             ],
-            "research_skill": "podcast",
+            "research_skill": "research-podcast",
             "post_batch_hooks": [],
             "allowed_failure_prefixes": [
                 "audio_fetch_failed",

@@ -6,16 +6,24 @@ Mirrors the posture of ``sources/config.py:load_user_config`` — missing
 file → empty dict, malformed YAML → empty dict (errors surface through
 ``weave doctor``, not at load time).
 
+``focus.*`` is an **optional pin layer**, not the source of truth. "Active"
+projects / themes / concepts are computed *behaviourally* by default — recent
+session activity and probe pressure (the digest's "## Most actionable" block,
+``operations/dream.py``; the SessionStart active-themes section). The lists
+below are *appended as pins/boosts* on top of that automatic signal: a pinned
+entry surfaces even when currently quiet, but you never have to maintain them
+(an empty/missing ``focus`` block just yields pure behavioural salience).
+
 Schema::
 
-    focus:
-      active_projects: [thinkweave, ...]      # foreground in landing docs
-      watch_themes: [thm-aaaa1111, ...]         # surface in STATE.md + /discover bias
+    focus:                                      # optional pins — boost, don't replace,
+      active_projects: [thinkweave, ...]        #   the behavioural signal
+      watch_themes: [thm-aaaa1111, ...]         #   (recent activity + probe pressure)
+      research_concepts: [agent-harness, ...]   #   surface even when momentarily quiet
 
     intake:
       news:
         outlets: {<slug>: {name, feeds, tier, region, prefer_embedded, daily_cap}}
-        drain_window_days: 7
       podcast_events:
         outlets: {<slug>: {name, feeds, tier, language, daily_cap}}
       podcast_concepts:
@@ -83,7 +91,12 @@ def load_priorities(vault_root: Path | None) -> dict[str, Any]:
 
 
 def focus_active_projects(priorities: dict[str, Any]) -> list[str]:
-    """List of project names from ``focus.active_projects``."""
+    """Pinned project names from ``focus.active_projects``.
+
+    Optional boost layer: the digest's active-focus block ranks projects by
+    recent session activity, then appends these pins so a watched-but-quiet
+    project still surfaces. Empty list when absent → pure behavioural ranking.
+    """
     focus = priorities.get("focus") or {}
     raw = focus.get("active_projects") or []
     if not isinstance(raw, list):
@@ -92,7 +105,13 @@ def focus_active_projects(priorities: dict[str, Any]) -> list[str]:
 
 
 def focus_watch_themes(priorities: dict[str, Any]) -> list[str]:
-    """List of theme IDs from ``focus.watch_themes``."""
+    """Pinned theme IDs from ``focus.watch_themes``.
+
+    Optional boost layer: the SessionStart active-themes section orders by
+    project-stake then recency (behavioural), then floats these pins to the
+    top; ``decision_review`` likewise biases decisions implementing them.
+    Empty list when absent → pure recency.
+    """
     focus = priorities.get("focus") or {}
     raw = focus.get("watch_themes") or []
     if not isinstance(raw, list):
@@ -115,6 +134,25 @@ def focus_concepts(priorities: dict[str, Any]) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(c) for c in raw if c]
+
+
+def apply_pins(behavioral_ranked: list[str], pins: list[str]) -> list[str]:
+    """Append declared ``focus.*`` pins as a floor beneath a behavioural ranking.
+
+    The single, uniform semantic for ``focus.*`` across the codebase:
+    **behavioural activity leads; pins are a guaranteed-present floor.**
+    Returns ``behavioral_ranked`` with any pin not already present
+    appended (order-preserving, deduped) — so a pinned-but-quiet
+    project/concept still surfaces, but never above what the user is
+    actually active on. Empty ``pins`` → ``behavioral_ranked`` unchanged.
+    """
+    out = list(behavioral_ranked)
+    seen = set(out)
+    for pin in pins:
+        if pin and pin not in seen:
+            out.append(pin)
+            seen.add(pin)
+    return out
 
 
 def intake_for(priorities: dict[str, Any], source_type: str) -> dict[str, Any]:

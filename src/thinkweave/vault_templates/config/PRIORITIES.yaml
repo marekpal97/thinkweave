@@ -10,12 +10,28 @@
 # silently parses block-style `- item` lists as empty.
 
 # ──────────────────────────────────────────────────────────────────────
-# focus — discover bias + landing-doc foregrounding
+# focus — OPTIONAL pins that boost the automatic behavioural salience
 # ──────────────────────────────────────────────────────────────────────
+#
+# "Active" projects / themes / concepts are computed behaviourally by
+# default — recent session activity + probe pressure (the digest's
+# "## Most actionable" block and the SessionStart active-themes section).
+# The lists below are *optional pins*: appended on top so a watched-but-
+# currently-quiet project / theme / concept still surfaces. You never have
+# to maintain them — leave any list empty to rely purely on behaviour.
 
 focus:
-  # Projects foreground in landing docs.
+  # Pinned projects — boosted into the digest active-focus block even when
+  # they saw no recent sessions. Empty = pure recent-activity ranking.
   active_projects: []
+
+  # Concept slugs you want weave to proactively hunt sources on — your
+  # research/areas-of-interest. Read by the `focus_research` discover
+  # strategy (add it to a project's discover_strategies in sources.yaml to
+  # activate; /onboard wires both together). Ontology terms — anything not
+  # yet canonical is still honoured as a proposed concept. Empty = no
+  # interest-driven discovery, just the structural strategies.
+  research_concepts: []
 
   # Theme IDs (thm-*) surfaced in STATE.md "Active themes" and biased
   # by /discover. Empty list = no explicit pin; STATE.md still renders
@@ -30,7 +46,6 @@ intake:
 
   # News (single-grain)
   news:
-    drain_window_days: 7
     outlets: {}
     # Example outlet shape:
     # outlets:

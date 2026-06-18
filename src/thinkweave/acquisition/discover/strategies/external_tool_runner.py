@@ -6,9 +6,16 @@ modifying the framework. Configuration lives in ``sources.yaml``:
     projects:
       trade_ideas:
         external_tool_runner:
-          tools:
-            - command: ["./scripts/scrape_signals.py"]
-            - command: ["python", "-m", "tools.gh_trending"]
+          timeout: 180
+          tools: ["./scripts/scrape_signals.py --topic signals",
+                  "python -m tools.gh_trending"]
+
+NOTE: thinkweave's ``sources.yaml`` parser (``_parse_simple_yaml``)
+supports **inline lists only**, not YAML block sequences — so ``tools``
+is a list of whole-command **strings** (each shlex-split by :meth:`_cmd`),
+NOT the ``- command: [...]`` block-of-mappings form. ``_cmd`` still
+accepts a bare list or a ``{command: [...]}`` dict when a caller builds
+the config in Python, but those shapes can't be expressed in on-disk YAML.
 
 Each tool is invoked with the project name as an extra argument. Its
 stdout is read line by line — every non-empty line that parses as JSON

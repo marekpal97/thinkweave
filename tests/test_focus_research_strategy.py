@@ -234,8 +234,14 @@ class TestSourceCoverage:
 # --- probe-tied exemplars ---------------------------------------------------
 
 
-class TestProbeExemplars:
-    def test_probe_session_surfaces_tagged_notes(
+class TestNoProbeLeg:
+    """focus_research is the declared-floor rail — it carries NO probe
+    input. The probe→research path is owned by the /dream probe-distillation
+    worker; the probe-tightening leg (exemplar_probed / probe_texts) was
+    removed 2026-06-17 so the behavioural and declared rails don't
+    duplicate. Substrate exemplars + source coverage remain."""
+
+    def test_descriptor_carries_no_probe_fields(
         self, vault: VaultManager, indexer: Indexer, config: Config, vault_dir: Path
     ):
         _write_priorities(vault_dir, ["dense-retrieval"])
@@ -245,9 +251,10 @@ class TestProbeExemplars:
         )).id
 
         ts = datetime.now(timezone.utc).isoformat()
-        # Session has events.jsonl with a probe mentioning the concept,
-        # AND a retrieval_log.jsonl that served the tagged note.
-        ses_id = _seed_session_with_events(
+        # A session with a probe mentioning the concept AND a retrieval
+        # that served the tagged note — under the old leg this produced
+        # exemplar_probed + probe_texts; now it must produce neither.
+        _seed_session_with_events(
             vault,
             "test",
             events=[
@@ -262,35 +269,12 @@ class TestProbeExemplars:
         indexer.rebuild(full=True)
 
         result = focus_research.STRATEGY.run(config, "test", {})
-        assert result[0]["exemplar_probed"] == [tagged]
-        # And it shows up as a substrate exemplar too (served once).
-        assert tagged in result[0]["exemplar_served"]
-        # The probe question itself rides on the descriptor so the
-        # resolving skill can tighten its search to what was asked.
-        assert result[0]["probe_texts"] == [
-            "What is dense-retrieval and how does it differ?"
-        ]
-
-    def test_no_probe_yields_empty_probe_exemplars(
-        self, vault: VaultManager, indexer: Indexer, config: Config, vault_dir: Path
-    ):
-        _write_priorities(vault_dir, ["x"])
-        tagged = vault.read_note(vault.create_note(
-            NoteType.NOTE, "tagged", project="test",
-            extra_frontmatter={"concepts": ["x"]},
-        )).id
-        ts = datetime.now(timezone.utc).isoformat()
-        # Served but no probe — exemplar_probed should be empty.
-        _seed_session_with_log(vault, "test", [
-            {"ts": ts, "type": "retrieval", "tool": "weave_search",
-             "returned_ids": [tagged]},
-        ])
-        indexer.rebuild(full=True)
-
-        result = focus_research.STRATEGY.run(config, "test", {})
-        assert result[0]["exemplar_probed"] == []
-        assert result[0]["probe_texts"] == []
-        assert tagged in result[0]["exemplar_served"]
+        d0 = result[0]
+        # Substrate exemplar still surfaces (served once)...
+        assert tagged in d0["exemplar_served"]
+        # ...but the probe leg is gone — no probe fields on the descriptor.
+        assert "exemplar_probed" not in d0
+        assert "probe_texts" not in d0
 
 
 # --- registry wiring --------------------------------------------------------

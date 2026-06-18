@@ -17,10 +17,41 @@ from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
+from thinkweave.core.events import match_probe_concepts
 from thinkweave.operations.prompts import (
     recent_probe_details,
     recent_probe_pressure,
 )
+
+
+class TestMatchProbeConcepts:
+    """Word-boundary attribution (2026-06-17 fix). Short slugs must not
+    match inside unrelated words; multi-token slugs still match across a
+    hyphen or a space."""
+
+    def test_no_substring_collision(self):
+        vocab = {"aml", "clo", "dag", "sse", "config", "yaml"}
+        got = match_probe_concepts(
+            "expand proposal B, single yaml, consolidate config files", vocab
+        )
+        # The pre-fix substring bug fired aml⊂yaml, clo⊂consolidate, etc.
+        assert {"aml", "clo", "sse"}.isdisjoint(got)
+        # Standalone tokens still match.
+        assert "yaml" in got and "config" in got
+
+    def test_multi_token_concept_matches_across_space_or_hyphen(self):
+        vocab = {"agent-harness"}
+        assert match_probe_concepts(
+            "agent harness frameworks 2026", vocab
+        ) == {"agent-harness"}
+        assert match_probe_concepts(
+            "the agent-harness design", vocab
+        ) == {"agent-harness"}
+        # Non-contiguous tokens do NOT match.
+        assert match_probe_concepts("a harness for agents", vocab) == set()
+
+    def test_min_len_guard_filters_two_char_slugs(self):
+        assert match_probe_concepts("ml and ai are fields", {"ml", "ai"}) == set()
 
 
 def _write_events(path: Path, rows: list[dict]) -> None:

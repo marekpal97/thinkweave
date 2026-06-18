@@ -143,12 +143,15 @@ class DecisionReviewStrategy:
                     "queue": "backlog",
                 }
             )
-        # Sort key (descending): (in_watch_themes, probe_pressure). The
-        # SQL already returned rows by date ASC; sorted is stable in
-        # CPython, so equal-key entries keep date-asc ordering — staler
-        # decisions surface first within each bucket.
+        # Sort key (descending): (probe_pressure, in_watch_themes) —
+        # behavioural leads, the declared watch_theme pin is the floor /
+        # tiebreak, not a top-float (the uniform focus.* semantic; see
+        # priorities.apply_pins). The SQL already returned rows by date
+        # ASC; sorted is stable in CPython, so equal-key entries keep
+        # date-asc ordering — staler decisions surface first within each
+        # bucket.
         out.sort(
-            key=lambda d: (d["in_watch_themes"], d["probe_pressure"]),
+            key=lambda d: (d["probe_pressure"], d["in_watch_themes"]),
             reverse=True,
         )
         return out[: params["limit"]]

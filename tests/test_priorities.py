@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from thinkweave.acquisition.sources.priorities import (
+    apply_pins,
     focus_active_projects,
     focus_watch_themes,
     intake_for,
@@ -114,3 +115,13 @@ def test_intake_for_missing_returns_empty():
     assert intake_for({}, "news") == {}
     assert intake_for({"intake": {}}, "news") == {}
     assert intake_for({"intake": {"news": None}}, "news") == {}
+
+
+def test_apply_pins_appends_missing_as_floor():
+    # The uniform focus.* semantic: behavioural ranking leads; pins not
+    # already present are appended (floor), deduped, order-preserving.
+    assert apply_pins(["a", "b"], ["b", "c"]) == ["a", "b", "c"]
+    assert apply_pins([], ["x", "y"]) == ["x", "y"]
+    assert apply_pins(["a"], []) == ["a"]
+    # Falsy pins skipped; no duplicates introduced.
+    assert apply_pins(["a", "b"], ["", "a", "d"]) == ["a", "b", "d"]
