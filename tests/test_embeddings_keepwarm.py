@@ -1,4 +1,4 @@
-"""Tests for ``mem index --embed --only-new`` — the keep-warm path.
+"""Tests for ``weave index --embed --only-new`` — the keep-warm path.
 
 Covers ``EmbeddingSearch.compute_all(only_new=True)``: the cheap
 nightly refresh path that should only embed notes whose ``updated_at``
@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.embeddings import EmbeddingSearch
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.embeddings import EmbeddingSearch
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture

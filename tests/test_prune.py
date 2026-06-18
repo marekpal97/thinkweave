@@ -1,4 +1,4 @@
-"""Tests for orphan session cleanup (src/personal_mem/prune.py)."""
+"""Tests for orphan session cleanup (src/thinkweave/prune.py)."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.prune import (
+from thinkweave.core.config import Config
+from thinkweave.operations.prune import (
     EVENTS_MIN_BYTES,
     ORPHAN_MIN_AGE_SECONDS,
     PruneResult,
@@ -28,7 +28,7 @@ from personal_mem.prune import (
 @pytest.fixture
 def vault_dir(tmp_path: Path) -> Path:
     d = tmp_path / "vault"
-    (d / ".mem").mkdir(parents=True)
+    (d / ".weave").mkdir(parents=True)
     (d / "projects").mkdir()
     return d
 

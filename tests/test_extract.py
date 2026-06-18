@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from personal_mem.extract import (
+from thinkweave.core.events import (
     ExtractResult,
     Prompt,
     Todo,
@@ -261,11 +261,33 @@ class TestExtractTodos:
         assert len(todos) == 1
         assert todos[0].text.startswith("wire up the discover")
 
-    def test_we_should_pattern(self):
+    def test_soft_we_should_no_longer_matches(self):
+        # The soft "we should …" pattern was removed — it fired on rhetorical
+        # prose ("we should note that…") and was almost all noise.
         text = "We should refactor the queue module before shipping."
-        todos = extract_todos(text)
+        assert extract_todos(text) == []
+
+    def test_compound_word_does_not_fire(self):
+        # Regression: a hyphenated compound like "todo-tag" must NOT match —
+        # this was the false positive that spawned a garbage backlog item from
+        # a decision rationale ("legacy todo-tag queue → JSONL queue + /drain").
+        text = "Removed the legacy todo-tag queue in favour of JSONL queues."
+        assert extract_todos(text) == []
+
+    def test_rationale_prose_mentioning_todo_does_not_fire(self):
+        # Prose that merely discusses the word "todo" without an explicit
+        # "TODO: <action>" marker produces nothing.
+        text = (
+            "The auto-todo extractor used to mine decision rationales; "
+            "any rationale discussing todo handling produced spurious todos."
+        )
+        assert extract_todos(text) == []
+
+    def test_explicit_marker_still_fires_after_hardening(self):
+        # Positive control: a real marker with ':' + whitespace still works.
+        todos = extract_todos("TODO: wire the cron job")
         assert len(todos) == 1
-        assert "refactor the queue module" in todos[0].text
+        assert "wire the cron job" in todos[0].text
 
     def test_next_step_pattern(self):
         text = "Wrapped this up.\nNext step: add the Prompt primitive tests."
@@ -295,3 +317,162 @@ class TestExtractTodos:
     def test_returns_todo_dataclass(self):
         todos = extract_todos("TODO: a thing")
         assert isinstance(todos[0], Todo)
+
+
+class TestSupersedesStringCoercion:
+    """Regression: ``supersedes: dec-X`` as bare string must not be
+    iterated character-by-character into the rejudge queue.
+
+    The pre-fix code did ``for target_id in dec.get("supersedes", []) or []:``
+    which, when the YAML value was a bare string like ``"dec-71940"``, yielded
+    9 single-character entries (``'d','e','c','-','7','1','9','4','0'``)
+    instead of one ``"dec-71940"`` entry. The fix coerces string → list
+    before the loop.
+    """
+
+    def test_bare_string_supersedes_enqueues_one_entry(self, tmp_path: Path):
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.operations import rejudge_queue
+        from thinkweave.operations.extract import extract_session
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+
+        # Create the predecessor decision so the supersession path has a
+        # real target (otherwise the structural status-flip skips silently;
+        # the enqueue happens regardless, which is the load-bearing bit).
+        predecessor = vm.create_note(
+            NoteType.DECISION,
+            "Old decision",
+            body="## Context\n\n## Decision\n",
+            project="t",
+            extra_frontmatter={"status": "accepted"},
+        )
+        predecessor_id = vm.read_note(predecessor).id
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+
+        # The bug shape: supersedes is a bare string, not a list.
+        out = extract_session(
+            cfg,
+            session_id="ses-superstr-1",
+            project="t",
+            summary="x",
+            insights=[],
+            decisions=[{
+                "title": "New decision",
+                "rationale": "## Context\n\n## Decision\n",
+                "outcome": "committed",
+                "concepts": ["sqlite", "memory-system"],
+                "supersedes": predecessor_id,  # BARE STRING — the bug shape
+            }],
+        )
+        assert out.error == ""
+
+        queued = rejudge_queue.peek(cfg)
+        # Exactly one entry, with the full predecessor id intact — not 9
+        # garbage single-char entries (the pre-fix behavior).
+        assert len(queued) == 1, f"Expected 1 queue entry, got {len(queued)}: {queued}"
+        assert queued[0]["decision_id"] == predecessor_id
+        # Sanity: no single-character garbage decision_ids leaked through.
+        assert all(len(q["decision_id"]) > 1 for q in queued)
+
+    def test_list_supersedes_still_works(self, tmp_path: Path):
+        # Symmetry check: the list shape (the canonical form) still produces
+        # one entry per id and isn't accidentally broken by the coercion.
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.operations import rejudge_queue
+        from thinkweave.operations.extract import extract_session
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+
+        p1 = vm.read_note(vm.create_note(
+            NoteType.DECISION, "Old A",
+            body="## Context\n\n## Decision\n", project="t",
+            extra_frontmatter={"status": "accepted"},
+        )).id
+        p2 = vm.read_note(vm.create_note(
+            NoteType.DECISION, "Old B",
+            body="## Context\n\n## Decision\n", project="t",
+            extra_frontmatter={"status": "accepted"},
+        )).id
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+
+        out = extract_session(
+            cfg,
+            session_id="ses-superlist-1",
+            project="t",
+            summary="x",
+            insights=[],
+            decisions=[{
+                "title": "Multi-supersede",
+                "rationale": "## Context\n\n## Decision\n",
+                "outcome": "committed",
+                "concepts": ["sqlite", "memory-system"],
+                "supersedes": [p1, p2],
+            }],
+        )
+        assert out.error == ""
+
+        queued = rejudge_queue.peek(cfg)
+        ids = {q["decision_id"] for q in queued}
+        assert ids == {p1, p2}
+
+
+class TestInsightsCap:
+    """The per-extraction insight cap reads config ``extract.insights_cap``."""
+
+    def _extract_with_insights(self, tmp_path: Path, n: int, cap: int | None):
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.operations.extract import extract_session
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        if cap is not None:
+            cfg.extract_insights_cap = cap
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        idx.close()
+
+        insights = [
+            {
+                "title": f"Insight {i}",
+                "body": f"Body {i}",
+                "concepts": ["sqlite", "memory-system"],
+            }
+            for i in range(n)
+        ]
+        out = extract_session(
+            cfg,
+            session_id=f"ses-cap-{n}-{cap}",
+            project="t",
+            summary="x",
+            insights=insights,
+            decisions=[],
+        )
+        assert out.error == ""
+        return out
+
+    def test_default_cap_is_three(self, tmp_path: Path):
+        out = self._extract_with_insights(tmp_path, n=5, cap=None)
+        # Old literal: insights_in[:3].
+        assert len(out.created_notes) == 3
+
+    def test_config_override_reaches_extraction(self, tmp_path: Path):
+        out = self._extract_with_insights(tmp_path, n=5, cap=1)
+        assert len(out.created_notes) == 1

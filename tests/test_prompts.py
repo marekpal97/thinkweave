@@ -3,7 +3,7 @@
 Covers:
 
 - ``operations.search.query_prompts`` over project session JSONL buffers.
-- ``mem_prompts`` MCP tool wrapper.
+- ``weave_prompts`` MCP tool wrapper.
 - STATE.md "Open Probes" rendering with no probe-tagged notes (only
   classified prompts).
 """
@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.search import query_prompts
-from personal_mem.synthesis.landing import state_of_play
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations.search import query_prompts
+from thinkweave.synthesis.landing import state_of_play
 
 
 def _write_events(path: Path, rows: list[dict]) -> None:
@@ -46,8 +46,8 @@ def vault(cfg: Config) -> VaultManager:
 
 class TestQueryPrompts:
     def test_archived_session_events(self, cfg: Config, vault: VaultManager):
-        # Layout: vault/projects/proj-a/sessions/ses-1/events.jsonl
-        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        # Layout: vault/projects/proj_a/sessions/ses-1/events.jsonl
+        sess_dir = cfg.vault_root / "projects" / "proj_a" / "sessions" / "ses-1"
         _write_events(
             sess_dir / "events.jsonl",
             [
@@ -60,7 +60,7 @@ class TestQueryPrompts:
             ],
         )
 
-        rows = query_prompts(cfg, project="proj-a")
+        rows = query_prompts(cfg, project="proj_a")
         assert len(rows) == 2
         # Recency-sorted desc
         assert rows[0]["text"] == "Why does FTS skip MD?"
@@ -68,7 +68,7 @@ class TestQueryPrompts:
         assert all(r["session_id"] == "cc-1" for r in rows)
 
     def test_since_filter(self, cfg: Config, vault: VaultManager):
-        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        sess_dir = cfg.vault_root / "projects" / "proj_a" / "sessions" / "ses-1"
         _write_events(
             sess_dir / "events.jsonl",
             [
@@ -79,38 +79,38 @@ class TestQueryPrompts:
             ],
         )
 
-        rows = query_prompts(cfg, project="proj-a", since="2026-04-15")
+        rows = query_prompts(cfg, project="proj_a", since="2026-04-15")
         assert len(rows) == 1
         assert rows[0]["text"] == "new prompt"
 
     def test_limit(self, cfg: Config, vault: VaultManager):
-        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        sess_dir = cfg.vault_root / "projects" / "proj_a" / "sessions" / "ses-1"
         rows_in = [
             {"type": "prompt", "text": f"prompt {i}",
              "session_id": "cc-1", "ts": f"2026-05-0{i % 9 + 1}T15:00:00+00:00"}
             for i in range(20)
         ]
         _write_events(sess_dir / "events.jsonl", rows_in)
-        rows = query_prompts(cfg, project="proj-a", limit=5)
+        rows = query_prompts(cfg, project="proj_a", limit=5)
         assert len(rows) == 5
 
     def test_active_buffer_killed_mid_session(
         self, cfg: Config, vault: VaultManager
     ):
         """E2E from the verification gate: simulate a buffer being killed
-        mid-session (no events.jsonl archive yet) and verify mem_prompts
+        mid-session (no events.jsonl archive yet) and verify weave_prompts
         still surfaces prior prompts."""
-        # Create a session note that maps cc-uuid → proj-a so the buffer
+        # Create a session note that maps cc-uuid → proj_a so the buffer
         # gets project-scoped correctly.
         vault.create_note(
             note_type=NoteType.SESSION,
             title="Session 1",
-            project="proj-a",
+            project="proj_a",
             extra_frontmatter={"source_session": "cc-uuid-mid"},
         )
 
         # Active buffer (not yet archived)
-        buf_file = cfg.mem_dir / "buffer" / "cc-uuid-mid.jsonl"
+        buf_file = cfg.weave_dir / "buffer" / "cc-uuid-mid.jsonl"
         _write_events(
             buf_file,
             [
@@ -120,7 +120,7 @@ class TestQueryPrompts:
             ],
         )
 
-        rows = query_prompts(cfg, project="proj-a")
+        rows = query_prompts(cfg, project="proj_a")
         texts = [r["text"] for r in rows]
         assert "mid-session prompt" in texts
 
@@ -138,10 +138,10 @@ class TestQueryPrompts:
         vault.create_note(
             note_type=NoteType.SESSION,
             title="Other session",
-            project="proj-b",
+            project="proj_b",
             extra_frontmatter={"source_session": "cc-otherproj"},
         )
-        buf_file = cfg.mem_dir / "buffer" / "cc-otherproj.jsonl"
+        buf_file = cfg.weave_dir / "buffer" / "cc-otherproj.jsonl"
         _write_events(
             buf_file,
             [
@@ -150,7 +150,7 @@ class TestQueryPrompts:
                  "ts": "2026-05-02T15:00:00+00:00"},
             ],
         )
-        rows = query_prompts(cfg, project="proj-a")
+        rows = query_prompts(cfg, project="proj_a")
         assert all(r["text"] != "other project prompt" for r in rows)
 
 
@@ -159,7 +159,7 @@ class TestStateOpenProbes:
     `probe`-tagged notes exist."""
 
     def test_open_probes_from_prompts_only(self, cfg: Config, vault: VaultManager):
-        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        sess_dir = cfg.vault_root / "projects" / "proj_a" / "sessions" / "ses-1"
         sess_dir.mkdir(parents=True, exist_ok=True)
         _write_events(
             sess_dir / "events.jsonl",
@@ -177,14 +177,14 @@ class TestStateOpenProbes:
         vault.create_note(
             note_type=NoteType.SESSION,
             title="Session 1",
-            project="proj-a",
+            project="proj_a",
             extra_frontmatter={"source_session": "cc-1"},
         )
         idx = Indexer(config=cfg)
         idx.rebuild(full=True)
         idx.close()
 
-        rendered = state_of_play(cfg, "proj-a")
+        rendered = state_of_play(cfg, "proj_a")
 
         assert "Open Probes" in rendered
         assert "How does the indexer detect duplicates?" in rendered
@@ -195,7 +195,7 @@ class TestStateOpenProbes:
         idx = Indexer(config=cfg)
         idx.rebuild(full=True)
         idx.close()
-        out = state_of_play(cfg, "proj-a")
+        out = state_of_play(cfg, "proj_a")
         # Just verify we don't render an empty 'Open Probes' header.
         if "Open Probes" in out:
             # If present, it must actually contain a bullet
@@ -211,7 +211,7 @@ class TestPromptClassification:
     def test_extract_prompts_populates_classification(
         self, cfg: Config, tmp_path: Path
     ):
-        from personal_mem.extract import extract_prompts
+        from thinkweave.core.events import extract_prompts
 
         events_file = tmp_path / "events.jsonl"
         # Lookahead window is 3 events. Probe goes LAST so its lookahead
@@ -243,7 +243,7 @@ class TestPromptClassification:
     def test_query_prompts_surfaces_classification(
         self, cfg: Config, vault: VaultManager
     ):
-        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        sess_dir = cfg.vault_root / "projects" / "proj_a" / "sessions" / "ses-1"
         _write_events(
             sess_dir / "events.jsonl",
             [
@@ -254,7 +254,7 @@ class TestPromptClassification:
             ],
         )
 
-        rows = query_prompts(cfg, project="proj-a")
+        rows = query_prompts(cfg, project="proj_a")
         by_text = {r["text"]: r["classification"] for r in rows}
         assert by_text["What does dream do?"] == "probe"
         assert by_text["Refactor the indexer"] is None
@@ -262,7 +262,7 @@ class TestPromptClassification:
     def test_query_prompts_classified_as_filter(
         self, cfg: Config, vault: VaultManager
     ):
-        sess_dir = cfg.vault_root / "projects" / "proj-a" / "sessions" / "ses-1"
+        sess_dir = cfg.vault_root / "projects" / "proj_a" / "sessions" / "ses-1"
         _write_events(
             sess_dir / "events.jsonl",
             [
@@ -273,9 +273,9 @@ class TestPromptClassification:
             ],
         )
 
-        probes_only = query_prompts(cfg, project="proj-a", classified_as="probe")
+        probes_only = query_prompts(cfg, project="proj_a", classified_as="probe")
         assert len(probes_only) == 1
         assert probes_only[0]["text"] == "What is FTS5?"
 
-        none_match = query_prompts(cfg, project="proj-a", classified_as="instruction")
+        none_match = query_prompts(cfg, project="proj_a", classified_as="instruction")
         assert none_match == []

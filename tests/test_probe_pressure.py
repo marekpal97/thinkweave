@@ -1,8 +1,8 @@
 """Slice 1.2 — recent_probe_pressure helper tests.
 
 The helper turns probe-classified prompts into per-concept pressure
-that every discover strategy (concept_coverage, decision_review,
-theme_drift) reads as an additive bias.
+that gap-emitter discover strategies (decision_review, prompt_gap)
+read as an additive bias.
 """
 
 from __future__ import annotations
@@ -13,11 +13,45 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.prompts import recent_probe_pressure
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.core.events import match_probe_concepts
+from thinkweave.operations.prompts import (
+    recent_probe_details,
+    recent_probe_pressure,
+)
+
+
+class TestMatchProbeConcepts:
+    """Word-boundary attribution (2026-06-17 fix). Short slugs must not
+    match inside unrelated words; multi-token slugs still match across a
+    hyphen or a space."""
+
+    def test_no_substring_collision(self):
+        vocab = {"aml", "clo", "dag", "sse", "config", "yaml"}
+        got = match_probe_concepts(
+            "expand proposal B, single yaml, consolidate config files", vocab
+        )
+        # The pre-fix substring bug fired aml⊂yaml, clo⊂consolidate, etc.
+        assert {"aml", "clo", "sse"}.isdisjoint(got)
+        # Standalone tokens still match.
+        assert "yaml" in got and "config" in got
+
+    def test_multi_token_concept_matches_across_space_or_hyphen(self):
+        vocab = {"agent-harness"}
+        assert match_probe_concepts(
+            "agent harness frameworks 2026", vocab
+        ) == {"agent-harness"}
+        assert match_probe_concepts(
+            "the agent-harness design", vocab
+        ) == {"agent-harness"}
+        # Non-contiguous tokens do NOT match.
+        assert match_probe_concepts("a harness for agents", vocab) == set()
+
+    def test_min_len_guard_filters_two_char_slugs(self):
+        assert match_probe_concepts("ml and ai are fields", {"ml", "ai"}) == set()
 
 
 def _write_events(path: Path, rows: list[dict]) -> None:
@@ -35,7 +69,7 @@ def _seed_session(cfg: Config, vm: VaultManager, project: str, ts_iso: str) -> P
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> Config:
-    return Config(vault_root=tmp_path / "vault", default_project="proj-a")
+    return Config(vault_root=tmp_path / "vault", default_project="proj_a")
 
 
 @pytest.fixture
@@ -61,7 +95,7 @@ class TestRecentProbePressure:
         """A single probe mentioning a canonical-ontology concept
         pressures that concept by 1. Uses ``llm`` which the shipped
         ontology guarantees as a canonical leaf."""
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -70,7 +104,7 @@ class TestRecentProbePressure:
             ],
         )
 
-        pressure = recent_probe_pressure(cfg, project="proj-a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
         assert pressure.get("llm", 0) == 1
 
     def test_one_probe_pressures_multiple_matched_concepts(
@@ -78,7 +112,7 @@ class TestRecentProbePressure:
     ):
         """A probe touching two distinct concept slugs (substring match)
         contributes +1 to each — not double-counted per occurrence."""
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -87,7 +121,7 @@ class TestRecentProbePressure:
                  "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
             ],
         )
-        pressure = recent_probe_pressure(cfg, project="proj-a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
         # Both ``llm`` and ``training`` are canonical leaves in the
         # shipped ontology. Both should pressure by exactly 1 from a
         # single matching probe.
@@ -99,7 +133,7 @@ class TestRecentProbePressure:
     ):
         """Instructions (no question mark, no hint phrase) must not
         contribute pressure."""
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -107,13 +141,13 @@ class TestRecentProbePressure:
                  "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
             ],
         )
-        pressure = recent_probe_pressure(cfg, project="proj-a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
         assert "llm" not in pressure
 
     def test_window_excludes_old_probes(
         self, cfg: Config, vault: VaultManager
     ):
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -122,7 +156,7 @@ class TestRecentProbePressure:
             ],
         )
         pressure = recent_probe_pressure(
-            cfg, project="proj-a", window_days=14
+            cfg, project="proj_a", window_days=14
         )
         assert pressure == {}
 
@@ -140,14 +174,14 @@ class TestRecentProbePressure:
             note_type=NoteType.NOTE,
             title="Stub",
             body="Body",
-            project="proj-a",
+            project="proj_a",
             extra_frontmatter={"proposed_concepts": ["frobnicate-widget"]},
         )
         idx = Indexer(config=cfg)
         idx.rebuild(full=True)
         idx.close()
 
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -157,14 +191,14 @@ class TestRecentProbePressure:
             ],
         )
         pressure = recent_probe_pressure(
-            cfg, project="proj-a", window_days=14
+            cfg, project="proj_a", window_days=14
         )
         assert pressure.get("frobnicate-widget", 0) == 1
 
     def test_repeated_probes_compound_pressure(
         self, cfg: Config, vault: VaultManager
     ):
-        events_file = _seed_session(cfg, vault, "proj-a", _recent_iso())
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
         _write_events(
             events_file,
             [
@@ -177,6 +211,235 @@ class TestRecentProbePressure:
             ],
         )
         pressure = recent_probe_pressure(
-            cfg, project="proj-a", window_days=14
+            cfg, project="proj_a", window_days=14
         )
         assert pressure.get("llm", 0) == 3
+
+
+class TestRecentProbeDetails:
+    """The detail variant keeps the probe texts alongside the counts —
+    the substrate for queue_item.probes on the acquisition rail."""
+
+    def test_texts_ride_along_most_recent_first(
+        self, cfg: Config, vault: VaultManager
+    ):
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=3)},
+                {"type": "prompt", "text": "What does the llm output?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+            ],
+        )
+        details = recent_probe_details(cfg, project="proj_a", window_days=14)
+        detail = details.get("llm") or {}
+        assert detail.get("count") == 2
+        assert detail.get("probes") == [
+            "What does the llm output?",
+            "How does the llm work?",
+        ]
+
+    def test_texts_capped_count_not(
+        self, cfg: Config, vault: VaultManager
+    ):
+        """Five probes → count 5 but only ``texts_per_concept`` texts."""
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": f"How does the llm handle case {i}?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=i)}
+                for i in range(1, 6)
+            ],
+        )
+        details = recent_probe_details(
+            cfg, project="proj_a", window_days=14, texts_per_concept=3
+        )
+        detail = details.get("llm") or {}
+        assert detail.get("count") == 5
+        assert len(detail.get("probes", [])) == 3
+        # Most recent (smallest days_ago) first.
+        assert detail["probes"][0] == "How does the llm handle case 1?"
+
+    def test_duplicate_texts_collapse_but_still_count(
+        self, cfg: Config, vault: VaultManager
+    ):
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=2)},
+            ],
+        )
+        details = recent_probe_details(cfg, project="proj_a", window_days=14)
+        detail = details.get("llm") or {}
+        assert detail.get("count") == 2
+        assert detail.get("probes") == ["How does the llm work?"]
+
+    def test_pressure_is_projection_of_details(
+        self, cfg: Config, vault: VaultManager
+    ):
+        events_file = _seed_session(cfg, vault, "proj_a", _recent_iso())
+        _write_events(
+            events_file,
+            [
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+            ],
+        )
+        details = recent_probe_details(cfg, project="proj_a", window_days=14)
+        pressure = recent_probe_pressure(cfg, project="proj_a", window_days=14)
+        assert pressure == {c: d["count"] for c, d in details.items()}
+
+
+class TestRecentProbePressureVaultWide:
+    """K2 Item 4 — three-bug cascade fixes:
+
+    (A) Empty ``cfg.default_project`` no longer short-circuits to ``{}``.
+    (B) Vault-wide aggregation across every ``vault/projects/<p>/``.
+    (C) Single/2-char concept slugs no longer match (drowns the garbage
+        pool from the str-iter bug class).
+
+    These tests cover the three failures together because they masked
+    each other — fixing only (A) or (B) without (C) yields noisy
+    vault-wide pressure dominated by single-letter pseudo-concepts.
+    """
+
+    @pytest.fixture
+    def cfg_no_default(self, tmp_path: Path) -> Config:
+        """Config with ``default_project=''`` — the vault-wide call path."""
+        return Config(vault_root=tmp_path / "vault", default_project="")
+
+    @pytest.fixture
+    def vault_no_default(self, cfg_no_default: Config) -> VaultManager:
+        vm = VaultManager(config=cfg_no_default)
+        vm.ensure_dirs()
+        return vm
+
+    def test_empty_default_project_returns_vault_wide_pressure(
+        self, cfg_no_default: Config, vault_no_default: VaultManager
+    ):
+        """(A) When neither ``project`` nor ``cfg.default_project`` is
+        set, the helper must fall through to vault-wide aggregation
+        rather than early-returning ``{}``."""
+        # Seed a probe under a project; vault-wide call should still
+        # surface it.
+        sess_dir = (
+            cfg_no_default.vault_root / "projects" / "proj_x"
+            / "sessions" / "ses-1"
+        )
+        _write_events(
+            sess_dir / "events.jsonl",
+            [
+                {"type": "prompt", "text": "How does the llm work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+            ],
+        )
+
+        # No ``project`` arg, no ``cfg.default_project`` — exercises
+        # the vault-wide fallback. Pre-fix this returned ``{}``.
+        pressure = recent_probe_pressure(cfg_no_default, window_days=14)
+        assert pressure.get("llm", 0) == 1
+
+    def test_vault_wide_aggregates_across_projects(
+        self, cfg_no_default: Config, vault_no_default: VaultManager
+    ):
+        """(B) Explicit ``project=''`` must union probes from every
+        project under ``vault/projects/`` — every other dream scan
+        surface is vault-global, this should match."""
+        # Two projects, each with one llm probe → pressure should be 2.
+        for proj in ("proj_a", "proj_b"):
+            sess_dir = (
+                cfg_no_default.vault_root / "projects" / proj
+                / "sessions" / "ses-1"
+            )
+            _write_events(
+                sess_dir / "events.jsonl",
+                [
+                    {"type": "prompt", "text": "How does the llm work?",
+                     "session_id": f"cc-{proj}",
+                     "ts": _recent_iso(days_ago=1)},
+                ],
+            )
+
+        pressure = recent_probe_pressure(
+            cfg_no_default, project="", window_days=14
+        )
+        assert pressure.get("llm", 0) == 2
+
+    def test_short_concept_slug_does_not_match(
+        self, cfg_no_default: Config, vault_no_default: VaultManager
+    ):
+        """(C) A 1- or 2-char ``proposed_concepts`` entry (the
+        single-letter garbage left by the 2026-06-07 str-iter bug)
+        must not pressure every probe that happens to contain that
+        letter. Without the len-guard, a stray ``-`` or single ``a``
+        would match nearly every English probe."""
+        # Seed a note carrying a single-char proposed concept — exactly
+        # the shape ``_coerce_list_field`` was added to prevent at write
+        # time, but we still defend at read time for historical pollution.
+        vault_no_default.create_note(
+            note_type=NoteType.NOTE,
+            title="Polluted",
+            body="Body",
+            project="proj_a",
+            extra_frontmatter={
+                "proposed_concepts": ["a", "z", "-"],
+            },
+        )
+        idx = Indexer(config=cfg_no_default)
+        idx.rebuild(full=True)
+        idx.close()
+
+        sess_dir = (
+            cfg_no_default.vault_root / "projects" / "proj_a"
+            / "sessions" / "ses-1"
+        )
+        _write_events(
+            sess_dir / "events.jsonl",
+            [
+                # English probe — contains ``a``, ``z`` (in "tokenize"),
+                # ``-`` (in "well-known"), and is a probe (ends ``?``,
+                # no follow-up edit).
+                {"type": "prompt",
+                 "text": "How does the well-known tokenizer work?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+            ],
+        )
+
+        pressure = recent_probe_pressure(
+            cfg_no_default, project="proj_a", window_days=14
+        )
+        # None of the 1-char pseudo-concepts should appear, even though
+        # the letters are present in the probe text.
+        for short in ("a", "z", "-"):
+            assert short not in pressure, (
+                f"short concept {short!r} matched but should be filtered"
+            )
+
+    def test_three_char_concept_still_matches(
+        self, cfg_no_default: Config, vault_no_default: VaultManager
+    ):
+        """(C cont.) The len-guard is ``>= 3`` so real 3-char concepts
+        (``llm``, ``mcp``, ``fts``) keep matching. ``llm`` is canonical
+        in the shipped ontology — guard rails on the boundary."""
+        sess_dir = (
+            cfg_no_default.vault_root / "projects" / "proj_a"
+            / "sessions" / "ses-1"
+        )
+        _write_events(
+            sess_dir / "events.jsonl",
+            [
+                {"type": "prompt", "text": "How does the llm reason?",
+                 "session_id": "cc-1", "ts": _recent_iso(days_ago=1)},
+            ],
+        )
+        pressure = recent_probe_pressure(
+            cfg_no_default, project="proj_a", window_days=14
+        )
+        assert pressure.get("llm", 0) == 1

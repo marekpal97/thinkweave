@@ -1,4 +1,4 @@
-# Example flows.yaml — copy to vault/.mem/flows.yaml to enable.
+# Example flows.yaml — copy to vault/.weave/flows.yaml to enable.
 #
 # Each flow is a sequence of `claude -p` invocations. Skills are the
 # unit of composition; flows just sequence them so cron entries don't
@@ -18,7 +18,7 @@
 flows:
   daily-research:
     description: "Discover gaps, drain queue, refresh hubs."
-    log: ~/.cache/personal_mem/flow_daily-research.log
+    log: ~/.cache/thinkweave/flow_daily-research.log
     on_error: continue
     stages:
       - run: "/discover (use a gap cap of 10 this run)"
@@ -29,16 +29,16 @@ flows:
 
   weekly-hygiene:
     description: "Concept + theme dedup + hub coherence."
-    log: ~/.cache/personal_mem/flow_weekly-hygiene.log
+    log: ~/.cache/thinkweave/flow_weekly-hygiene.log
     on_error: abort
     stages:
-      - run: "/mem-resolve-concepts"
+      - run: "/weave-resolve-concepts"
       - run: "/themes-resolve"
       - run: "/update-hubs"
 
   news-cycle:
     description: "Drain the news acquisition queue (triage + write briefs)."
-    log: ~/.cache/personal_mem/flow_news-cycle.log
+    log: ~/.cache/thinkweave/flow_news-cycle.log
     on_error: continue
     stages:
       # The pull-feeds step lives in cron, not here — it has no LLM cost
@@ -49,4 +49,4 @@ flows:
       # Optional: refresh STATE/THEMES.md so the next session sees the
       # candidate count delta. Cheap; runs deterministic landing-doc
       # generators only.
-      - run: "uv run mem landing --doc themes"
+      - run: "uv run weave landing --doc themes"

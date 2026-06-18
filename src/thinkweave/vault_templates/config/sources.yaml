@@ -1,0 +1,197 @@
+# thinkweave source-config overrides
+#
+# All keys are optional — anything you omit falls back to the in-code
+# defaults from src/thinkweave/acquisition/sources/config.py:DEFAULT_CONFIG. Edit
+# this file to retarget queues, swap importers, change drain strategies,
+# or add new source-type entries without forking thinkweave.
+#
+# Adding a new source type: run `/source-scaffold <slug>` (or `weave sources
+# scaffold <slug> --bucket … --layout …`). It writes three upgrade-safe
+# artifacts — none inside the installed package:
+#   1. identity   → vault/config/source_types.yaml  (bucket, layout, aliases)
+#   2. behaviour  → this file (vault/config/sources.yaml), a block like below
+#   3. writer     → ~/.claude/commands/<slug>.md      (machine-global skill)
+# Then fill in the FETCH STRATEGY section of the generated skill. No edits to
+# registry.py, vault.py, queue.py, or the CLI are required.
+# (Editing registry.py + repo commands/ is the contributor path, not the user one.)
+
+sources:
+  paper:
+    queue: vault/.weave/queues/papers.jsonl
+    research_skill: research-paper
+    drain_strategy: anthropic_batch
+    intake_folder: ~/papers_inbox
+    dedup_keys: [arxiv_id, doi, url, title]
+    url_patterns: [arxiv.org, openreview.net]
+  repo:
+    queue: vault/.weave/queues/repos.jsonl
+    research_skill: research-repo
+    drain_strategy: inline
+    dedup_keys: [github_url, repo_url, slug, url]
+    url_patterns: [github.com, gitlab.com]
+  article:
+    queue: vault/.weave/queues/articles.jsonl
+    research_skill: research-article
+    drain_strategy: inline
+    dedup_keys: [url, title]
+  substack:
+    drain_strategy: inline
+    intake_folder: ~/substack_inbox
+    dedup_keys: [url, slug]
+  news:
+    queue: vault/.weave/queues/news.jsonl
+    # Outlets list → vault/config/PRIORITIES.yaml::intake.news.outlets
+    # rss_poll clips entries published more than this many days ago, so
+    # stale headlines never enter the queue. Drain workers honour the same
+    # window — anything older than 7 days is too cold to be worth a writer
+    # call.
+    lookback_days: 7
+    # v2 admission: Haiku title-triage against the active-themes catalog
+    # rendered in vault/THEMES.md (## Catalog (active) section). The
+    # legacy focus_manifest path / FOCUS.md gate was removed 2026-06-13 —
+    # broaden or narrow admission by editing theme essences, not a file.
+    triage_model: claude-haiku-4-5
+    themes_catalog: vault/THEMES.md
+    dedup_keys: [url, entry_id]
+    drain_strategy: subagent
+    drain_parallelism: 4
+    drain_batch_max: 20
+    subagent_type: research-news-worker
+    subagent_model: sonnet
+    # post_batch_hooks left empty — theme_scan now auto-fires from
+    # VaultManager.create_note for every event-grain source on create.
+    post_batch_hooks: []
+    # /research router dispatches news URLs to the one-off /news skill;
+    # cron drain takes the subagent path above. No `research-news`
+    # standalone skill exists by design.
+    research_skill: news
+    url_patterns: [reuters.com, ft.com, bloomberg.com, wsj.com, bankier.pl]
+    allowed_failure_prefixes: ["HTTP ", paywall, Cloudflare, "empty body", timeout, "weave_create:"]
+  newsletter-events:
+    # Event-grain email newsletters (markets / macro / dealflow). Theme
+    # candidate floater fires automatically on create. `processed_label`
+    # is applied at the end of /newsletter so the next run skips it.
+    # `lookback_days` bounds both backfill and ongoing drains.
+    queue: vault/.weave/queues/newsletter-events.jsonl
+    drain_strategy: subagent
+    subagent_type: research-newsletter-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    mail_provider: gmail               # v1: gmail-only (outlook/imap deferred). Old `mail_connector:` still accepted.
+    # Sender allowlist + extra mail_query → vault/config/PRIORITIES.yaml::intake.newsletter_events
+    processed_label: weave-processed
+    lookback_days: 30
+    dedup_keys: [message_id, url]
+    # post_batch_hooks left empty — /newsletter applies processed_label
+    # itself after /drain returns; no need to extend the drain hook table.
+  newsletter-concepts:
+    # Concept-grain sibling — technical / methodology / philosophy
+    # subscriptions. No theme floating; concepts flow to hubs via
+    # `concepts:` frontmatter just like papers/articles.
+    queue: vault/.weave/queues/newsletter-concepts.jsonl
+    drain_strategy: subagent
+    subagent_type: research-newsletter-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    mail_provider: gmail
+    # Sender allowlist → vault/config/PRIORITIES.yaml::intake.newsletter_concepts.senders
+    processed_label: weave-processed
+    lookback_days: 90
+    dedup_keys: [message_id, url]
+  youtube-events:
+    # Event-grain YouTube channels (tech-news, market recaps). Theme
+    # candidate floater fires on create. The skill polls each channel's
+    # RSS feed at https://www.youtube.com/feeds/videos.xml?channel_id=<id>
+    # and Gemini Flash handles transcript + summary natively from the
+    # video URL — no audio download, no separate transcription step.
+    # Requires GOOGLE_API_KEY and the [gemini] optional dep group.
+    queue: vault/.weave/queues/youtube-events.jsonl
+    drain_strategy: subagent
+    subagent_type: research-youtube-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    # Channel allowlist → vault/config/PRIORITIES.yaml::intake.youtube_events.channels
+    lookback_days: 7
+    dedup_keys: [video_id, url]
+    url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
+    research_skill: research-youtube
+    # No `triage_model` set — admission is the channel allowlist, not
+    # per-video triage. /drain Path B fans out workers directly.
+    allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "weave_create:"]
+  youtube-concepts:
+    # Concept-grain sibling — tutorials, lectures, explainers. Longer
+    # lookback than events because durable content is worth backfilling.
+    queue: vault/.weave/queues/youtube-concepts.jsonl
+    drain_strategy: subagent
+    subagent_type: research-youtube-worker
+    subagent_model: sonnet
+    drain_parallelism: 4
+    drain_batch_max: 20
+    # Channel allowlist → vault/config/PRIORITIES.yaml::intake.youtube_concepts.channels
+    lookback_days: 30
+    dedup_keys: [video_id, url]
+    url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
+    research_skill: research-youtube
+    allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "weave_create:"]
+  podcast-events:
+    # Event-grain podcasts (markets / macro / interview shows). Each show
+    # is one outlet in PRIORITIES.yaml::intake.podcast_events.outlets; the
+    # rss_poll strategy pulls the <enclosure> audio URL per episode, and
+    # the worker hands it to Gemini Flash via the Files API. Theme
+    # candidate floater fires on create. Show name drives the
+    # author_folder layout.
+    queue: vault/.weave/queues/podcast-events.jsonl
+    # Outlets list → vault/config/PRIORITIES.yaml::intake.podcast_events.outlets
+    drain_strategy: subagent
+    subagent_type: research-podcast-worker
+    subagent_model: sonnet
+    drain_parallelism: 2
+    drain_batch_max: 10
+    lookback_days: 7
+    dedup_keys: [entry_id, audio_url, url]
+    url_patterns: [feeds.megaphone.fm, feeds.libsyn.com, feeds.transistor.fm, feeds.simplecast.com, anchor.fm, omny.fm, rss.art19.com, spreaker.com]
+    research_skill: research-podcast
+    # No `triage_model` set — admission is the per-show subscription
+    # decision (an outlet entry in PRIORITIES.yaml::intake.podcast_events),
+    # not per-episode triage. /drain Path B fans out workers directly.
+    allowed_failure_prefixes: [audio_fetch_failed, audio_too_large, audio_upload_failed, audio_processing_failed, gemini_refused, api_error, invalid_response, "weave_create:"]
+  podcast-concepts:
+    # Concept-grain sibling — deep-dives, lecture-style shows, technical
+    # explainer pods. Same Gemini audio extraction; no theme floating.
+    # Longer lookback (durable content is worth backfilling).
+    queue: vault/.weave/queues/podcast-concepts.jsonl
+    # Outlets list → vault/config/PRIORITIES.yaml::intake.podcast_concepts.outlets
+    drain_strategy: subagent
+    subagent_type: research-podcast-worker
+    subagent_model: sonnet
+    drain_parallelism: 2
+    drain_batch_max: 10
+    lookback_days: 30
+    dedup_keys: [entry_id, audio_url, url]
+    url_patterns: [feeds.megaphone.fm, feeds.libsyn.com, feeds.transistor.fm, feeds.simplecast.com, anchor.fm, omny.fm, rss.art19.com, spreaker.com]
+    research_skill: research-podcast
+    allowed_failure_prefixes: [audio_fetch_failed, audio_too_large, audio_upload_failed, audio_processing_failed, gemini_refused, api_error, invalid_response, "weave_create:"]
+  conversation:
+    drain_strategy: inline
+    importer: chatgpt
+    dedup_keys: [conversation_id, title]
+  claude-history:
+    drain_strategy: inline
+    importer: claude_history
+    dedup_keys: [session_uuid]
+
+projects:
+  default:
+    discover_strategies: []
+
+landing_files:
+  state: STATE.md
+  backlog: BACKLOG.md
+  decisions: DECISIONS.md
+  themes: THEMES.md
+  research_focus: RESEARCH_FOCUS.md
+
+auto_todo_extraction: true

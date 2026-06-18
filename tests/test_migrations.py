@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from personal_mem.operations.migrations import migrate_todo_research_to_queue
-from personal_mem.sources.queue import Queue
+from thinkweave.operations.migrations import migrate_todo_research_to_queue
+from thinkweave.acquisition.sources.queue import Queue
 
 
 def _write_note(

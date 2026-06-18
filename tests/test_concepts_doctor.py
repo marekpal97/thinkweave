@@ -1,4 +1,4 @@
-"""Tests for `mem doctor` — the vault coherence linter."""
+"""Tests for `weave doctor` — the vault coherence linter."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.synthesis.concepts import (
+from thinkweave.synthesis.concepts import (
     DEAD_VOCAB_THRESHOLD,
     DOMAIN_MARKERS,
     _RESERVED_ONTOLOGY_KEYS,
@@ -29,11 +29,11 @@ from personal_mem.synthesis.concepts import (
     prune_noisy_singletons,
     split_concepts_by_ontology,
 )
-from personal_mem.synthesis.concept_hub import ConceptHub, write_concept_hub
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.synthesis.concept_hub import ConceptHub, write_concept_hub
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -68,9 +68,9 @@ def _write_ontology(monkeypatch, content: str) -> Path:
     """
     path = Path(tempfile.mkdtemp()) / "ontology.yaml"
     path.write_text(content, encoding="utf-8")
-    monkeypatch.setattr("personal_mem.synthesis.concepts._seed_ontology_path", lambda: path)
-    monkeypatch.setattr("personal_mem.synthesis.concepts._vault_ontology_path", lambda: path)
-    monkeypatch.setattr("personal_mem.synthesis.concepts._ontology_path", lambda: path)
+    monkeypatch.setattr("thinkweave.synthesis.concepts._seed_ontology_path", lambda: path)
+    monkeypatch.setattr("thinkweave.synthesis.concepts._vault_ontology_path", lambda: path)
+    monkeypatch.setattr("thinkweave.synthesis.concepts._ontology_path", lambda: path)
     return path
 
 
@@ -153,10 +153,10 @@ class TestOntologyLayering:
             encoding="utf-8",
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
+            "thinkweave.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._vault_ontology_path", lambda: vault_path
+            "thinkweave.synthesis.concepts._vault_ontology_path", lambda: vault_path
         )
 
         # tag_vocabulary only in seed → falls through unchanged.
@@ -183,10 +183,10 @@ class TestOntologyLayering:
             encoding="utf-8",
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
+            "thinkweave.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._vault_ontology_path", lambda: vault_path
+            "thinkweave.synthesis.concepts._vault_ontology_path", lambda: vault_path
         )
 
         ontology = load_ontology()
@@ -203,10 +203,10 @@ class TestOntologyLayering:
             "swe-python:\n  - python\n  - asyncio\n", encoding="utf-8"
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
+            "thinkweave.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._vault_ontology_path", lambda: vault_path
+            "thinkweave.synthesis.concepts._vault_ontology_path", lambda: vault_path
         )
 
         ontology = load_ontology()
@@ -223,7 +223,7 @@ class TestOntologyLayering:
             "tag_vocabulary:\n  - todo\n", encoding="utf-8"
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
+            "thinkweave.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
 
         explicit_path = Path(tempfile.mkdtemp()) / "ontology.yaml"
@@ -414,7 +414,7 @@ class TestStaleHubPruning:
     def test_delete_concept_hub_removes_existing_file(
         self, vault: VaultManager, config: Config
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concept_hub import concept_hub_path
 
         hub = ConceptHub(
             concept="oldname",
@@ -437,7 +437,7 @@ class TestStaleHubPruning:
     def test_find_orphan_hubs_identifies_unused_hubs(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concept_hub import concept_hub_path
 
         # Ontology says python is canonical.
         _write_ontology(monkeypatch, "swe-python:\n  - python\n")
@@ -467,8 +467,8 @@ class TestStaleHubPruning:
     def test_archive_orphan_hubs_moves_files_into_archive_subdir(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path, topics_dir
-        from personal_mem.synthesis.concepts import (
+        from thinkweave.synthesis.concept_hub import concept_hub_path, topics_dir
+        from thinkweave.synthesis.concepts import (
             archive_orphan_hubs,
             hub_archive_dir,
         )
@@ -515,8 +515,8 @@ class TestStaleHubPruning:
     def test_archive_orphan_hubs_dry_run_is_readonly(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path
-        from personal_mem.synthesis.concepts import archive_orphan_hubs
+        from thinkweave.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concepts import archive_orphan_hubs
 
         _write_ontology(monkeypatch, "swe-python:\n  - python\n")
         hub = ConceptHub(
@@ -535,8 +535,8 @@ class TestStaleHubPruning:
     def test_archive_concept_hub_collision_preserves_prior_copy(
         self, vault: VaultManager, config: Config
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path
-        from personal_mem.synthesis.concepts import (
+        from thinkweave.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concepts import (
             archive_concept_hub,
             hub_archive_dir,
         )
@@ -567,7 +567,7 @@ class TestStaleHubPruning:
     def test_consolidate_parents_drops_domain_when_leaf_present(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        from personal_mem.synthesis.concepts import consolidate_parent_leaf_concepts
+        from thinkweave.synthesis.concepts import consolidate_parent_leaf_concepts
 
         # 2-tier ontology: swe-python is parent, pytest is its child.
         # ml-deep-learning is a separate domain — should NOT trigger drop
@@ -605,7 +605,7 @@ class TestStaleHubPruning:
         assert stats["occurrences_dropped"] == 1
         assert stats["domains_touched"] == ["swe-python"]
 
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
 
         fm1, _ = parse_frontmatter(n1.read_text())
         assert fm1["concepts"] == ["pytest"]
@@ -619,7 +619,7 @@ class TestStaleHubPruning:
     def test_consolidate_parents_dry_run_is_readonly(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        from personal_mem.synthesis.concepts import consolidate_parent_leaf_concepts
+        from thinkweave.synthesis.concepts import consolidate_parent_leaf_concepts
 
         _write_ontology(monkeypatch, "swe-python:\n  - pytest\n")
         n = vault.create_note(
@@ -632,7 +632,7 @@ class TestStaleHubPruning:
         stats = consolidate_parent_leaf_concepts(config, dry_run=True)
         assert stats["files_modified"] == 1
 
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
 
         fm, _ = parse_frontmatter(n.read_text())
         assert sorted(fm["concepts"]) == ["pytest", "swe-python"]
@@ -640,8 +640,8 @@ class TestStaleHubPruning:
     def test_demote_non_ontology_archives_orphan_hubs(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path
-        from personal_mem.synthesis.concepts import (
+        from thinkweave.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concepts import (
             demote_non_ontology_concepts,
             hub_archive_dir,
         )
@@ -677,7 +677,7 @@ class TestRedundantHubCandidates:
     def test_finds_overlapping_essences(
         self, vault: VaultManager, config: Config
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concept_hub import concept_hub_path
 
         # Two hubs with substantially overlapping word sets.
         a = ConceptHub(
@@ -718,7 +718,7 @@ class TestRedundantHubCandidates:
     def test_returns_empty_when_essences_too_short(
         self, vault: VaultManager, config: Config
     ):
-        from personal_mem.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concept_hub import concept_hub_path
 
         hub = ConceptHub(
             concept="tiny",
@@ -879,7 +879,7 @@ class TestDoctorReportIsolation:
 
 
 # ---------------------------------------------------------------------------
-# prune_noisy_singletons — default step in /mem-resolve-concepts
+# prune_noisy_singletons — default step in /weave-resolve-concepts
 # ---------------------------------------------------------------------------
 
 
@@ -909,7 +909,7 @@ class TestPruneNoisySingletons:
         assert stats["instances_removed"] >= 1
         assert stats["files_modified"] >= 1
 
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
 
         fm, _ = parse_frontmatter(note.read_text(encoding="utf-8"))
         assert fm["concepts"] == ["python"]
@@ -1003,7 +1003,7 @@ class TestPruneNoisySingletons:
         # Proposed is the holding pen for emergent vocabulary. A term
         # living only in proposed_concepts: must NOT be touched by the
         # singleton sweep, even at count=1. Cleaning the proposed pool
-        # happens via promotion or explicit /mem-resolve-concepts review,
+        # happens via promotion or explicit /weave-resolve-concepts review,
         # never automated count pruning — otherwise the demotion sweep's
         # work would be undone immediately.
         _write_ontology(monkeypatch, "swe-python:\n  - python\n")
@@ -1112,7 +1112,7 @@ class TestDemoteNonOntologyConcepts:
         assert stats["files_modified"] >= 1
         assert "made-up-thing" in stats["terms_demoted"]
 
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
 
         fm, _ = parse_frontmatter(note.read_text(encoding="utf-8"))
         assert fm["concepts"] == ["python"]
@@ -1151,7 +1151,7 @@ class TestDemoteNonOntologyConcepts:
 
         demote_non_ontology_concepts(config, dry_run=False)
 
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
 
         fm, _ = parse_frontmatter(note.read_text(encoding="utf-8"))
         # New demotion appends to existing proposed list.
@@ -1231,17 +1231,17 @@ class TestPromoteProposedConcept:
         if vault_yaml:
             vault_path.write_text(vault_yaml, encoding="utf-8")
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._seed_ontology_path", lambda: seed_path
+            "thinkweave.synthesis.concepts._seed_ontology_path", lambda: seed_path
         )
         monkeypatch.setattr(
-            "personal_mem.synthesis.concepts._vault_ontology_path", lambda: vault_path
+            "thinkweave.synthesis.concepts._vault_ontology_path", lambda: vault_path
         )
         return vault_path
 
     def test_shifts_proposed_to_canonical_and_creates_hub(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch
     ):
-        vault_yaml_path = self._seed_separate_paths(
+        self._seed_separate_paths(
             monkeypatch, "swe-python:\n  - python\n"
         )
         note = vault.create_note(
@@ -1259,19 +1259,22 @@ class TestPromoteProposedConcept:
         assert stats["ontology_updated"] is True
         assert stats["hub_created"] is True
 
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
 
         fm, _ = parse_frontmatter(note.read_text(encoding="utf-8"))
         assert "emerging-term" in fm["concepts"]
         assert "proposed_concepts" not in fm
 
-        # Vault ontology override now contains the term under the domain.
-        body = vault_yaml_path.read_text(encoding="utf-8")
+        # Phase 3.1: promote writes the ontology override to the canonical
+        # vault/config/ontology.yaml, regardless of where it was read from.
+        canonical_path = config.config_dir / "ontology.yaml"
+        assert canonical_path.exists()
+        body = canonical_path.read_text(encoding="utf-8")
         assert "ml-training" in body
         assert "emerging-term" in body
 
         # Hub skeleton landed.
-        from personal_mem.synthesis.concept_hub import concept_hub_path
+        from thinkweave.synthesis.concept_hub import concept_hub_path
 
         assert concept_hub_path(config, "emerging-term").exists()
 
@@ -1291,7 +1294,7 @@ class TestPromoteProposedConcept:
 
         promote_proposed_concept(config, "new-term", domain="swe-python")
 
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
 
         fm, _ = parse_frontmatter(note.read_text(encoding="utf-8"))
         assert "python" in fm["concepts"]

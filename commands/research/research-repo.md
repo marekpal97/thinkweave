@@ -7,13 +7,12 @@ tools:
   - Write
   - WebFetch
   - Bash
-  - mem_search
-  - mem_concepts
-  - mem_concept_search
-  - mem_create
-  - mem_update
-  - mem_link
-  - mem_queue
+  - weave_search
+  - weave_concepts
+  - weave_create
+  - weave_update
+  - weave_link
+  - weave_queue
 description: Fetch a GitHub / GitLab repo, extract architectural summary + key files, write it as a `source_type: repo` note. Called from `/research` (router) or `/drain --source-type repo`.
 ---
 
@@ -59,18 +58,23 @@ Bash("rm -rf /tmp/research_clone_<slug>")
 ### 4. Load ontology + check vault
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
-mem_search(query="<repo description>", mode="hybrid", limit=5)
+weave_concepts(action="list")
+weave_search(query="<repo description>", mode="hybrid", limit=5)
 ```
+
+`weave_concepts(action="list")` loads the vault's **merged** ontology
+(canonical + proposed) — the gate vocabulary for the concepts you assign.
+Do **not** read `src/thinkweave/ontology.yaml` from the source tree: under a
+plugin install that path doesn't exist at your CWD, and it misses the vault's
+proposed terms.
 
 ### 5. Write the source note
 
 ```
-mem_create(
+weave_create(
   type="source",
   title="<repo name — short tagline>",
-  body="<architectural brief — see template below>",
+  body="<architectural brief — structured per vault/config/note_formats/repo.md>",
   tags=["repo"],
   concepts=["<≥3 ontology concepts>"],
   frontmatter={
@@ -88,7 +92,7 @@ mem_create(
 Save `snapshot.md` to the source directory:
 ```
 Write <source_dir>/snapshot.md
-mem_update(note_id="<src-id>", frontmatter_updates={"raw_path": "snapshot.md"})
+weave_update(note_id="<src-id>", frontmatter_updates={"raw_path": "snapshot.md"})
 ```
 
 ### 6. Link + archive queue
@@ -104,31 +108,13 @@ archive the queue item with status `done`.
 
 ## Body template (repo)
 
-```markdown
-## What It Does
-[one paragraph elevator pitch — problem solved, target user]
-
-## Architecture & Approach
-[key modules, data flow, entry points]
-[implementation choices that are technically interesting]
-[dependencies and design constraints]
-
-## Notable Patterns & Techniques
-- [specific algorithms / data structures / patterns worth remembering]
-- [design decisions that are instructive — why X over Y]
-- [performance characteristics if documented]
-
-## Limitations & Trade-offs
-- [what it doesn't handle]
-- [scalability constraints]
-- [known issues from README/issues]
-
-## Vault Connections
-- Relates to [[existing-note-title]] — [why]
-
-## Raw Content
-[[<slug>/snapshot.md]]
-```
+`Read` `<vault_root>/config/note_formats/repo.md` and compose the body to
+the sections it lists. That file is seeded at init and **user-editable** —
+the user reshapes every repo brief by editing it directly, no skill change.
+Keep `## Vault Connections` and `## Raw Content` so graph links and the
+snapshot pointer land. If the file is missing, fall back to a clear,
+well-structured architectural brief ending with `## Vault Connections` and
+`## Raw Content`.
 
 ## Concept rules
 

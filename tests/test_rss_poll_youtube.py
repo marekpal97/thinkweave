@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from personal_mem.discover.strategies.rss_poll import (
+from thinkweave.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_youtube_item,
 )
@@ -142,7 +142,7 @@ def test_strategy_polls_channels_and_enqueues(tmp_path, fake_feedparser, monkeyp
     assert summaries[0]["stats"]["enqueued"] == 2
     assert all(d["source_type"] == "youtube-events" for d in enqueued)
 
-    queue_path = tmp_path / ".mem" / "queues" / "youtube-events.jsonl"
+    queue_path = tmp_path / ".weave" / "queues" / "youtube-events.jsonl"
     assert queue_path.exists()
 
 
@@ -184,3 +184,107 @@ def test_strategy_empty_channels_skips_source(tmp_path, fake_feedparser) -> None
     }
     descriptors = RssPollStrategy().run(_fake_vault(tmp_path), None, config)
     assert descriptors == []
+
+
+def test_strategy_dedups_against_indexer_by_video_id(
+    tmp_path, fake_feedparser, monkeypatch
+) -> None:
+    """A video already on file as a source note dedups by video_id even
+    when its note URL differs from the feed URL (e.g. youtu.be short form)."""
+    import json as _json
+    import sqlite3 as _sqlite3
+
+    db_path = tmp_path / ".weave" / "index.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE notes (id TEXT, type TEXT, frontmatter TEXT)")
+    conn.execute(
+        "INSERT INTO notes VALUES (?, ?, ?)",
+        (
+            "src-old",
+            "source",
+            _json.dumps(
+                {"url": "https://youtu.be/aaa111BBB22", "video_id": "aaa111BBB22"}
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    fresh = (datetime.now(timezone.utc) - timedelta(hours=2)).timetuple()
+    entries = [
+        _yt_entry(video_id="aaa111BBB22", title="Already filed", published_parsed=fresh),
+        _yt_entry(video_id="ccc333DDD44", title="New", published_parsed=fresh),
+    ]
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(entries))
+
+    cfg = types.SimpleNamespace(vault_root=tmp_path, index_db=db_path)
+    vault = types.SimpleNamespace(config=cfg)
+    config = {
+        "sources": {
+            "youtube-events": {
+                "channels": ["UCBJycsmduvYEL83R_U4JriQ"],
+                "lookback_days": 7,
+                "dedup_keys": ["video_id", "url"],
+            }
+        }
+    }
+    descriptors = RssPollStrategy().run(vault, None, config)
+    summary = next(d for d in descriptors if d.get("kind") == "summary")
+    assert summary["stats"]["enqueued"] == 1
+    assert summary["stats"]["dup_indexer"] == 1
+
+
+def test_indexer_dedup_honours_per_type_keys_only(
+    tmp_path, fake_feedparser, monkeypatch
+) -> None:
+    """The indexer guard matches only the source type's own ``dedup_keys``
+    (f3ef59f) — ``url`` is not a forced universal backstop. A type keyed on
+    ``video_id`` alone must not drop a new video whose feed URL happens to
+    collide with an already-filed note's url."""
+    import json as _json
+    import sqlite3 as _sqlite3
+
+    db_path = tmp_path / ".weave" / "index.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE notes (id TEXT, type TEXT, frontmatter TEXT)")
+    conn.execute(
+        "INSERT INTO notes VALUES (?, ?, ?)",
+        (
+            "src-old",
+            "source",
+            _json.dumps(
+                {"url": "https://example.com/shared", "video_id": "oldVID11111"}
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    fresh = (datetime.now(timezone.utc) - timedelta(hours=2)).timetuple()
+    entries = [
+        _yt_entry(
+            video_id="newVID22222",
+            title="New video, colliding url",
+            link="https://example.com/shared",
+            published_parsed=fresh,
+        ),
+    ]
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(entries))
+
+    cfg = types.SimpleNamespace(vault_root=tmp_path, index_db=db_path)
+    vault = types.SimpleNamespace(config=cfg)
+    config = {
+        "sources": {
+            "youtube-events": {
+                "channels": ["UCxxx"],
+                "lookback_days": 7,
+                "dedup_keys": ["video_id"],
+            }
+        }
+    }
+    descriptors = RssPollStrategy().run(vault, None, config)
+    summary = next(d for d in descriptors if d.get("kind") == "summary")
+    assert summary["stats"]["dup_indexer"] == 0
+    assert summary["stats"]["enqueued"] == 1

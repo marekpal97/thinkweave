@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.synthesis.theme_registry import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.synthesis.theme_registry import (
     is_canonical,
     load,
     rebuild,
@@ -154,7 +154,7 @@ class TestRebuild:
         n = rebuild(config)
 
         assert n == 2
-        reg_path = config.vault_root / ".mem" / "themes.yaml"
+        reg_path = config.vault_root / "config" / "themes.yaml"
         assert reg_path.exists()
         data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
         ids = {e["id"] for e in data["themes"]}
@@ -168,7 +168,7 @@ class TestRebuild:
 
         assert n == 1
         data = yaml.safe_load(
-            (config.vault_root / ".mem" / "themes.yaml").read_text(encoding="utf-8")
+            (config.vault_root / "config" / "themes.yaml").read_text(encoding="utf-8")
         )
         ids = [e["id"] for e in data["themes"]]
         assert "cand-deadbeef" not in ids
@@ -185,7 +185,7 @@ class TestRebuild:
         n = rebuild(config)
         assert n == 0
         data = yaml.safe_load(
-            (config.vault_root / ".mem" / "themes.yaml").read_text(encoding="utf-8")
+            (config.vault_root / "config" / "themes.yaml").read_text(encoding="utf-8")
         )
         assert data["themes"] == []
 
@@ -244,7 +244,7 @@ class TestLoad:
     def test_returns_empty_dict_on_empty_file(
         self, config: Config, vault: VaultManager
     ):
-        reg_path = config.vault_root / ".mem" / "themes.yaml"
+        reg_path = config.vault_root / "config" / "themes.yaml"
         reg_path.parent.mkdir(parents=True, exist_ok=True)
         reg_path.write_text("", encoding="utf-8")
         assert load(config) == {}
@@ -266,12 +266,12 @@ class TestUpsert:
         }
         upsert(config, "thm-aaaa1111", fields)
         yaml_text_first = (
-            config.vault_root / ".mem" / "themes.yaml"
+            config.vault_root / "config" / "themes.yaml"
         ).read_text(encoding="utf-8")
 
         upsert(config, "thm-aaaa1111", fields)
         yaml_text_second = (
-            config.vault_root / ".mem" / "themes.yaml"
+            config.vault_root / "config" / "themes.yaml"
         ).read_text(encoding="utf-8")
 
         assert yaml_text_first == yaml_text_second
@@ -386,7 +386,7 @@ class TestRemove:
         remove(config, "thm-aaaa1111")
 
         data = yaml.safe_load(
-            (config.vault_root / ".mem" / "themes.yaml").read_text(encoding="utf-8")
+            (config.vault_root / "config" / "themes.yaml").read_text(encoding="utf-8")
         )
         assert all(e["id"] != "thm-aaaa1111" for e in data["themes"])
 
@@ -398,7 +398,7 @@ class TestRemove:
 
 class TestMintRegistryIntegration:
     def _cluster_ids(self, config, vault):
-        from personal_mem.synthesis.theme_candidates import detect_signals
+        from thinkweave.synthesis.theme_candidates import detect_signals
 
         for i in range(3):
             _make_substack_source(vault, f"S{i}")
@@ -406,8 +406,8 @@ class TestMintRegistryIntegration:
         return list(detect_signals(config)[0].cluster_source_ids)
 
     def test_mint_creates_registry_entry(self, config: Config, vault: VaultManager):
-        from personal_mem.core.vault import parse_frontmatter
-        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
+        from thinkweave.core.vault import parse_frontmatter
+        from thinkweave.synthesis.theme_candidates import mint_theme_from_signal
 
         ids = self._cluster_ids(config, vault)
         path = mint_theme_from_signal(
@@ -423,8 +423,8 @@ class TestMintRegistryIntegration:
     def test_mint_registry_failure_does_not_raise(
         self, config: Config, vault: VaultManager, monkeypatch
     ):
-        import personal_mem.synthesis.theme_registry as tr
-        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
+        import thinkweave.synthesis.theme_registry as tr
+        from thinkweave.synthesis.theme_candidates import mint_theme_from_signal
 
         def _bad_upsert(*a, **kw):
             raise RuntimeError("simulated registry failure")
@@ -447,8 +447,8 @@ class TestDreamApplyMintRegistry:
     def test_theme_mint_via_apply_registers(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.operations.dream import apply
-        from personal_mem.synthesis.theme_candidates import detect_signals
+        from thinkweave.operations.dream import apply
+        from thinkweave.synthesis.theme_candidates import detect_signals
 
         for i in range(3):
             _make_substack_source(vault, f"S{i}")
@@ -456,7 +456,8 @@ class TestDreamApplyMintRegistry:
         ids = list(detect_signals(config)[0].cluster_source_ids)
         plan = {
             "theme_mints": [
-                {"slug": "ai-capex-unwind", "essence": "x",
+                {"slug": "ai-capex-unwind",
+                 "essence": "Hyperscaler capex pulls back through 2026.",
                  "source_ids": ids, "concepts": ["ai-capex", "hyperscaler"]}
             ]
         }
@@ -470,10 +471,10 @@ class TestCreateNoteThemeRefGate:
     def test_unknown_thm_ref_dropped_and_warns(
         self, config: Config, vault: VaultManager, caplog
     ):
-        from personal_mem.operations.notes import create_note
+        from thinkweave.operations.notes import create_note
 
         # Registry is empty — any thm- ref is unknown.
-        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+        with caplog.at_level(logging.WARNING, logger="thinkweave.operations.notes"):
             note = create_note(
                 config,
                 note_type=NoteType.NOTE,
@@ -498,7 +499,7 @@ class TestCreateNoteThemeRefGate:
     def test_known_thm_ref_preserved(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.operations.notes import create_note
+        from thinkweave.operations.notes import create_note
 
         # Register a theme first.
         upsert(config, "thm-real1234", {"slug": "real-theme", "status": "active"})
@@ -522,9 +523,9 @@ class TestCreateNoteThemeRefGate:
     def test_empty_relates_to_no_warning(
         self, config: Config, vault: VaultManager, caplog
     ):
-        from personal_mem.operations.notes import create_note
+        from thinkweave.operations.notes import create_note
 
-        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+        with caplog.at_level(logging.WARNING, logger="thinkweave.operations.notes"):
             create_note(
                 config,
                 note_type=NoteType.NOTE,
@@ -541,7 +542,7 @@ class TestCreateNoteThemeRefGate:
     def test_missing_relates_to_no_crash(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.operations.notes import create_note
+        from thinkweave.operations.notes import create_note
 
         # Should not crash — no relates_to key at all.
         note = create_note(
@@ -556,9 +557,9 @@ class TestCreateNoteThemeRefGate:
         self, config: Config, vault: VaultManager, caplog
     ):
         """Non-thm- refs (e.g. plain note IDs) pass through unfiltered."""
-        from personal_mem.operations.notes import create_note
+        from thinkweave.operations.notes import create_note
 
-        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+        with caplog.at_level(logging.WARNING, logger="thinkweave.operations.notes"):
             note = create_note(
                 config,
                 note_type=NoteType.NOTE,
@@ -574,11 +575,11 @@ class TestCreateNoteThemeRefGate:
         self, config: Config, vault: VaultManager, caplog
     ):
         """Known thm- survives; unknown thm- is dropped; non-thm- passes through."""
-        from personal_mem.operations.notes import create_note
+        from thinkweave.operations.notes import create_note
 
         upsert(config, "thm-known0001", {"slug": "known", "status": "active"})
 
-        with caplog.at_level(logging.WARNING, logger="personal_mem.operations.notes"):
+        with caplog.at_level(logging.WARNING, logger="thinkweave.operations.notes"):
             note = create_note(
                 config,
                 note_type=NoteType.NOTE,
@@ -607,9 +608,9 @@ class TestIntegrationFreshVault:
         """End-to-end: mint a theme via mint_theme_from_signal, confirm it
         enters the registry, then create a note that relates_to it and
         verify the ref survives the create_note gate."""
-        from personal_mem.core.vault import parse_frontmatter
-        from personal_mem.operations.notes import create_note
-        from personal_mem.synthesis.theme_candidates import (
+        from thinkweave.core.vault import parse_frontmatter
+        from thinkweave.operations.notes import create_note
+        from thinkweave.synthesis.theme_candidates import (
             detect_signals,
             mint_theme_from_signal,
         )

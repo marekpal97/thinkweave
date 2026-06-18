@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.sources.queue import Queue
+from thinkweave.acquisition.sources.queue import Queue
 
 
 def _make_queue(tmp_path: Path, source_type: str = "paper") -> Queue:
@@ -201,17 +201,17 @@ def test_dedup_check_excludes_self(tmp_path: Path) -> None:
 
 
 def test_mcp_archive_action_moves_item_to_dated_folder(tmp_path: Path) -> None:
-    """End-to-end: enqueue via Queue, archive via the mem_queue MCP handler."""
+    """End-to-end: enqueue via Queue, archive via the weave_queue MCP handler."""
     from datetime import datetime, timezone
 
-    from personal_mem.core.config import Config
-    from personal_mem.surfaces.mcp.tools.queue import handle as mem_queue_handle
+    from thinkweave.core.config import Config
+    from thinkweave.surfaces.mcp.tools.queue import handle as weave_queue_handle
 
     cfg = Config(vault_root=tmp_path)
     q = Queue.for_source_type("paper", tmp_path)
     item_id = q.enqueue({"url": "https://arxiv.org/abs/2401.00001"})
 
-    result = mem_queue_handle(
+    result = weave_queue_handle(
         cfg,
         {
             "action": "archive",
@@ -229,9 +229,9 @@ def test_mcp_archive_action_moves_item_to_dated_folder(tmp_path: Path) -> None:
     # Active queue is empty.
     assert q.peek(10) == []
 
-    # Archive file exists at .mem/queues/_processed/<today>/paper.jsonl.
+    # Archive file exists at .weave/queues/_processed/<today>/paper.jsonl.
     today = datetime.now(timezone.utc).date().isoformat()
-    archive_file = tmp_path / ".mem" / "queues" / "_processed" / today / "paper.jsonl"
+    archive_file = tmp_path / ".weave" / "queues" / "_processed" / today / "paper.jsonl"
     assert archive_file.exists()
 
     rows = [
@@ -246,11 +246,11 @@ def test_mcp_archive_action_moves_item_to_dated_folder(tmp_path: Path) -> None:
 
 
 def test_mcp_archive_action_requires_source_type(tmp_path: Path) -> None:
-    from personal_mem.core.config import Config
-    from personal_mem.surfaces.mcp.tools.queue import handle as mem_queue_handle
+    from thinkweave.core.config import Config
+    from thinkweave.surfaces.mcp.tools.queue import handle as weave_queue_handle
 
     cfg = Config(vault_root=tmp_path)
-    result = mem_queue_handle(
+    result = weave_queue_handle(
         cfg, {"action": "archive", "item_id": "q-abc", "status": "done"}
     )
     assert len(result) == 1
@@ -258,11 +258,11 @@ def test_mcp_archive_action_requires_source_type(tmp_path: Path) -> None:
 
 
 def test_mcp_archive_action_requires_item_id(tmp_path: Path) -> None:
-    from personal_mem.core.config import Config
-    from personal_mem.surfaces.mcp.tools.queue import handle as mem_queue_handle
+    from thinkweave.core.config import Config
+    from thinkweave.surfaces.mcp.tools.queue import handle as weave_queue_handle
 
     cfg = Config(vault_root=tmp_path)
-    result = mem_queue_handle(
+    result = weave_queue_handle(
         cfg, {"action": "archive", "source_type": "paper", "status": "done"}
     )
     assert len(result) == 1

@@ -15,21 +15,21 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.synthesis.landing import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.synthesis.landing import (
     LANDING_FILENAMES,
     themes_ledger,
     write_landing_docs,
 )
-from personal_mem.core.schemas import NOTE_ID_PREFIXES, NoteType
-from personal_mem.synthesis.theme_hub import (
+from thinkweave.core.schemas import NOTE_ID_PREFIXES, NoteType
+from thinkweave.synthesis.theme_hub import (
     THEME_STATUSES,
     THEME_STATUS_ACTIVE,
     build_theme_frontmatter,
     render_theme_body_skeleton,
 )
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -71,8 +71,9 @@ class TestThemeSchema:
     def test_status_constants(self):
         assert THEME_STATUS_ACTIVE == "active"
         assert "active" in THEME_STATUSES
-        assert "dormant" in THEME_STATUSES
         assert "resolved" in THEME_STATUSES
+        # dormant was collapsed into resolved 2026-06-13 (display-only).
+        assert "dormant" not in THEME_STATUSES
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +213,11 @@ class TestThemesLanding:
         assert "trade_ideas" in content
         assert "Last catalyst" in content
 
-    def test_dormant_themes_in_collapsed_section(
+    def test_legacy_dormant_themes_fold_into_resolved(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
+        # dormant collapsed into resolved 2026-06-13 — a straggler dormant
+        # file renders under the single Resolved group, not its own.
         vault.create_note(
             note_type=NoteType.THEME,
             title="Dormant theme",
@@ -224,7 +227,8 @@ class TestThemesLanding:
         )
         indexer.rebuild()
         content = themes_ledger(config)
-        assert "<details><summary>Dormant (1)</summary>" in content
+        assert "<details><summary>Resolved (1)</summary>" in content
+        assert "Dormant (" not in content
 
     def test_write_landing_docs_themes(
         self, vault: VaultManager, indexer: Indexer, config: Config, vault_dir: Path
@@ -262,7 +266,7 @@ class TestCatalogSection:
     def test_catalog_renders_per_active_theme(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.synthesis.theme_hub import (
+        from thinkweave.synthesis.theme_hub import (
             render_theme_body_skeleton,
         )
 
@@ -309,7 +313,7 @@ class TestCatalogSection:
         """A theme with the unedited skeleton essence (italic placeholder
         text) gets card structure but no blockquote — we don't pollute
         the catalog with prompt instructions."""
-        from personal_mem.synthesis.theme_hub import (
+        from thinkweave.synthesis.theme_hub import (
             render_theme_body_skeleton,
         )
 
@@ -357,9 +361,10 @@ class TestCatalogSection:
         assert child_marker in content
         idx = content.index(child_marker)
         # Within the next ~400 chars (card body), parent line must
-        # reference the parent's id, not "(top-level)".
+        # reference the parent, not "(top-level)". Links are path-based
+        # (resolve by file location) with the parent id as display text.
         card_body = content[idx : idx + 400]
-        assert f"[[{parent_id}]]" in card_body
+        assert f"|{parent_id}]]" in card_body
         assert "(Parent theme)" in card_body
 
 
@@ -437,8 +442,8 @@ class TestThemeMintParent:
     theme's frontmatter; omitting it leaves the field absent."""
 
     def _cluster_ids(self, config, vault):
-        from personal_mem.core.indexer import Indexer
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.vault import parse_frontmatter
 
         paths = []
         for n in range(3):
@@ -462,8 +467,8 @@ class TestThemeMintParent:
         return ids
 
     def test_parent_written(self, config, vault):
-        from personal_mem.core.vault import parse_frontmatter
-        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
+        from thinkweave.core.vault import parse_frontmatter
+        from thinkweave.synthesis.theme_candidates import mint_theme_from_signal
 
         ids = self._cluster_ids(config, vault)
         path = mint_theme_from_signal(
@@ -475,8 +480,8 @@ class TestThemeMintParent:
         assert fm["parent"] == "thm-aaaa1111"
 
     def test_parent_omitted(self, config, vault):
-        from personal_mem.core.vault import parse_frontmatter
-        from personal_mem.synthesis.theme_candidates import mint_theme_from_signal
+        from thinkweave.core.vault import parse_frontmatter
+        from thinkweave.synthesis.theme_candidates import mint_theme_from_signal
 
         ids = self._cluster_ids(config, vault)
         path = mint_theme_from_signal(
@@ -489,12 +494,12 @@ class TestThemeMintParent:
 
 class TestCatalystLogParsing:
     def test_parse_empty_body(self):
-        from personal_mem.synthesis.theme_hub import parse_theme_catalyst_log
+        from thinkweave.synthesis.theme_hub import parse_theme_catalyst_log
 
         assert parse_theme_catalyst_log("# Title\n\n## Catalyst log\n\n") == []
 
     def test_parse_entries_with_linkage(self):
-        from personal_mem.synthesis.theme_hub import parse_theme_catalyst_log
+        from thinkweave.synthesis.theme_hub import parse_theme_catalyst_log
 
         body = (
             "# Theme\n\n"
@@ -513,7 +518,7 @@ class TestThemeTemporalDAGInLanding:
     def test_themes_md_includes_per_theme_dag(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.synthesis.theme_hub import render_theme_body_skeleton
+        from thinkweave.synthesis.theme_hub import render_theme_body_skeleton
 
         # Build a theme body with a populated catalyst log + linkage.
         body = (
@@ -555,7 +560,7 @@ class TestThemeTemporalDAGInLanding:
     def test_themes_md_omits_dag_when_no_links(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        from personal_mem.synthesis.theme_hub import render_theme_body_skeleton
+        from thinkweave.synthesis.theme_hub import render_theme_body_skeleton
 
         # A theme with one catalyst, no refs, no decisions → no DAG.
         skeleton = render_theme_body_skeleton("Lonely theme")
@@ -594,7 +599,7 @@ class TestConceptHubThreadedRendering:
     def test_extends_entry_renders_indented_under_anchor(
         self, vault: VaultManager, config: Config, tmp_path
     ):
-        from personal_mem.synthesis.concept_hub import (
+        from thinkweave.synthesis.concept_hub import (
             ConceptHub,
             LogEntry,
             render_concept_hub,
@@ -640,7 +645,7 @@ class TestConceptHubThreadedRendering:
     def test_flat_log_when_no_links(
         self, vault: VaultManager, config: Config, tmp_path
     ):
-        from personal_mem.synthesis.concept_hub import (
+        from thinkweave.synthesis.concept_hub import (
             ConceptHub,
             LogEntry,
             render_concept_hub,

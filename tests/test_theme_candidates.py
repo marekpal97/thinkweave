@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
-from personal_mem.synthesis.theme_candidates import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
+from thinkweave.synthesis.theme_candidates import (
     ThemeClusterSignal,
     detect_signals,
     extend_theme_with_sources,
@@ -237,6 +237,43 @@ class TestMintThemeFromSignal:
             sfm, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
             assert thm_id in (sfm.get("relates_to") or [])
 
+    def test_quote_bearing_title_roundtrips(self, vault, indexer, config):
+        # Defect 4 regression: the mint emitter used to build frontmatter
+        # via f-strings (`title: "{display_title}"` unescaped), so a
+        # news-derived title containing double quotes broke the minted
+        # file's YAML. Mint with such a title, then load the file back
+        # through the vault reader and assert nothing was mangled.
+        paths = [
+            _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
+            for i in range(3)
+        ]
+        indexer.rebuild()
+        ids = _src_ids(paths)
+        title = 'He said "no" — Q1 "pivot"'
+
+        theme_path = mint_theme_from_signal(
+            config,
+            slug="q1-pivot",
+            essence="Quote-bearing title regression.",
+            cluster_source_ids=ids,
+            cluster_concepts=["ai-capex", "hyperscaler"],
+            project="alpha",
+            parent="thm-aaaa1111",
+            title=title,
+        )
+        fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert fm["title"] == title
+        # the rest of the frontmatter survives the quoted title intact
+        assert fm["type"] == "theme"
+        assert fm["status"] == "active"
+        assert fm["id"].startswith("thm-")
+        assert set(fm["cites"]) == set(ids)
+        assert set(fm["concepts"]) == {"ai-capex", "hyperscaler"}
+        assert fm["project"] == "alpha"
+        assert fm["parent"] == "thm-aaaa1111"
+        assert fm["aliases"] == [fm["id"]]
+        assert "## Essence" in body and "## Catalyst log" in body
+
     def test_parent_written(self, vault, indexer, config):
         paths = [
             _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
@@ -307,3 +344,224 @@ class TestExtendThemeWithSources:
             extend_theme_with_sources(
                 config, theme_id="thm-nope", source_ids=["src-x"]
             )
+
+
+class TestCatalystDistillation:
+    """S1 — worker-composed catalyst texts flow into mint/extend log lines."""
+
+    def _theme(self, vault) -> tuple[Path, str]:
+        theme_path = vault.create_note(
+            note_type=NoteType.THEME,
+            title="AI capex",
+            body="## Essence\n\nx\n\n## Catalyst log\n\n## Open questions\n",
+            extra_frontmatter={"concepts": ["ai-capex"], "status": "active"},
+        )
+        tfm, _ = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        return theme_path, tfm["id"]
+
+    def test_extend_writes_provided_text_and_flag(
+        self, vault, indexer, config
+    ):
+        theme_path, theme_id = self._theme(vault)
+        paths = [
+            _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
+            for i in range(2)
+        ]
+        indexer.rebuild()
+        ids = _src_ids(paths)
+
+        n = extend_theme_with_sources(
+            config,
+            theme_id=theme_id,
+            source_ids=ids,
+            catalysts=[
+                {"source_id": ids[0], "text": "Capex guide cut 18%", "flag": "contradicts"},
+                # ids[1] deliberately absent → falls back to generic line
+            ],
+        )
+        assert n == 2
+        _, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert "Capex guide cut 18%" in body
+        assert "*contradicts*" in body
+        assert body.count("extend —") == 1  # only the fallback source
+
+    def test_extend_invalid_flag_falls_back_to_new(
+        self, vault, indexer, config
+    ):
+        theme_path, theme_id = self._theme(vault)
+        paths = [_make_source(vault, "S0", concepts=["ai-capex", "x"])]
+        indexer.rebuild()
+        ids = _src_ids(paths)
+
+        extend_theme_with_sources(
+            config,
+            theme_id=theme_id,
+            source_ids=ids,
+            catalysts=[{"source_id": ids[0], "text": "artifact", "flag": "bogus"}],
+        )
+        _, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert "*new* — artifact" in body
+
+    def test_extend_clips_overlong_text(self, vault, indexer, config):
+        theme_path, theme_id = self._theme(vault)
+        paths = [_make_source(vault, "S0", concepts=["ai-capex", "x"])]
+        indexer.rebuild()
+        ids = _src_ids(paths)
+
+        extend_theme_with_sources(
+            config,
+            theme_id=theme_id,
+            source_ids=ids,
+            catalysts=[{"source_id": ids[0], "text": "word " * 200}],
+        )
+        _, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        line = next(ln for ln in body.splitlines() if "word" in ln)
+        assert len(line) < 420  # ~300-char clip + link/date decoration
+        assert "…" in line
+
+    def test_mint_seed_entries_use_catalysts_and_title(
+        self, vault, indexer, config
+    ):
+        paths = [
+            _make_source(vault, f"S{i}", concepts=["ai-capex", "hyperscaler"])
+            for i in range(2)
+        ]
+        indexer.rebuild()
+        ids = _src_ids(paths)
+        theme_path = mint_theme_from_signal(
+            config,
+            slug="ai-capex-unwind",
+            title="AI capex unwind",
+            essence="Hyperscaler capex pulls back through 2026.",
+            cluster_source_ids=ids,
+            cluster_concepts=["ai-capex"],
+            catalysts=[
+                {"source_id": ids[0], "text": "First guide-down of the arc", "flag": "new"},
+            ],
+        )
+        fm, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert fm["title"] == "AI capex unwind"
+        assert "# AI capex unwind" in body
+        # Real essence ⇒ essence_updated stamped at mint.
+        assert str(fm.get("essence_updated") or "")
+        assert "First guide-down of the arc" in body
+        assert body.count("cluster seed") == 1  # the un-distilled source
+        # Filename stays slug-shaped, not title-shaped.
+        assert theme_path.stem == "ai-capex-unwind"
+
+    def test_mint_placeholder_essence_not_stamped(
+        self, vault, indexer, config
+    ):
+        paths = [_make_source(vault, "S0", concepts=["ai-capex", "x"])]
+        indexer.rebuild()
+        theme_path = mint_theme_from_signal(
+            config,
+            slug="thin-arc",
+            essence="",
+            cluster_source_ids=_src_ids(paths),
+            cluster_concepts=["ai-capex"],
+        )
+        fm, _ = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        assert not fm.get("essence_updated")
+
+
+class TestThemeCatalystThreading:
+    """Item 5 — theme catalyst logs render with the same threaded temporal-DAG
+    layout (4-space indent + ``↳`` cue) as concept hubs."""
+
+    def test_refold_threads_existing_flat_log(self, vault, indexer, config):
+        from thinkweave.synthesis.theme_hub import refold_theme_catalyst_logs
+
+        src_a, src_b = (
+            _make_source(vault, "Arc begins", concepts=["ai-capex"]),
+            _make_source(vault, "Arc continues", concepts=["ai-capex"]),
+        )
+        id_a, id_b = _src_ids([src_a, src_b])
+        # A flat log: an anchor and a later entry that *extends* it. Written
+        # the old (flat, un-threaded) way a pre-fix theme would carry.
+        theme_path = vault.create_note(
+            note_type=NoteType.THEME,
+            title="AI capex unwind",
+            body=(
+                "## Essence\n\nThesis.\n\n## Catalyst log\n\n"
+                f"- 2026-01-01 · *new* — Arc begins — [[{id_a}]]\n"
+                f"- 2026-02-01 · *extends 2026-01-01* — Arc continues — [[{id_b}]]\n"
+                "\n## Open questions\n"
+            ),
+            extra_frontmatter={"concepts": ["ai-capex"], "status": "active"},
+        )
+        indexer.rebuild()
+
+        n = refold_theme_catalyst_logs(config)
+        assert n == 1
+
+        _, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        # The extends-entry now nests under its predecessor: 4-space indent + ↳.
+        child = next(ln for ln in body.splitlines() if "Arc continues" in ln)
+        assert child.startswith("    - ↳ ")
+        # The anchor stays top-level. Essence + open questions are preserved.
+        assert "## Essence" in body and "Thesis." in body
+        assert "## Open questions" in body
+
+        # Idempotent: a second pass re-renders byte-identically → no rewrite.
+        assert refold_theme_catalyst_logs(config) == 0
+
+    def test_extend_rerenders_log_threaded(self, vault, indexer, config):
+        # A theme seeded with an extends-entry whose ref matches the seed date;
+        # extending it must re-render the *whole* log threaded, not flat-append.
+        src0 = _make_source(vault, "Seed", concepts=["ai-capex"])
+        indexer.rebuild()
+        theme_path = mint_theme_from_signal(
+            config,
+            slug="ai-capex-unwind",
+            essence="x",
+            cluster_source_ids=_src_ids([src0]),
+            cluster_concepts=["ai-capex"],
+        )
+        tfm, _ = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        theme_id = tfm["id"]
+        indexer.rebuild()
+
+        new_src = _make_source(vault, "Follow-up", concepts=["ai-capex"])
+        indexer.rebuild()
+        extend_theme_with_sources(
+            config,
+            theme_id=theme_id,
+            source_ids=_src_ids([new_src]),
+            catalysts=[
+                {"source_id": _src_ids([new_src])[0], "text": "Follows on", "flag": "new"},
+            ],
+        )
+        _, body = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+        # Both the seed and the new entry are present in a single canonical
+        # ## Catalyst log section (re-rendered through the shared threaded
+        # renderer, not double-appended into a second section).
+        assert body.count("## Catalyst log") == 1
+        assert "Follows on" in body
+        assert "cluster seed" in body  # the original seed entry survived
+
+
+class TestSignalExcerpts:
+    """S1 — detect_signals sources carry body excerpts for distillation."""
+
+    def test_sources_carry_excerpt(self, vault, indexer, config):
+        for i in range(3):
+            vault.create_note(
+                note_type=NoteType.SOURCE,
+                title=f"S{i}",
+                body=f"# S{i}\n\n"
+                + f"Long analytical prose about capex {i}. " * 3,
+                extra_frontmatter={
+                    "source_type": "substack",
+                    "concepts": ["ai-capex", "hyperscaler"],
+                    "proposed_theme": "ai-capex-unwind",
+                },
+            )
+        indexer.rebuild()
+        signals = detect_signals(config)
+        assert signals
+        src = signals[0].sources[0]
+        assert "excerpt" in src
+        assert "Long analytical prose" in src["excerpt"]
+        # Headings are stripped from the excerpt.
+        assert "# S" not in src["excerpt"]

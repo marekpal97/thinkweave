@@ -1,4 +1,4 @@
-"""Tests for ``mem rlvr export`` — slice 6 of the RLVR substrate.
+"""Tests for ``weave rlvr export`` — slice 6 of the RLVR substrate.
 
 The CLI layer is thin (one ``json.dumps`` per row + stdout) — these tests
 exercise: schema parses, filters apply, stdout is pure JSONL (no decoration),
@@ -13,10 +13,10 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 def _patch_fm(decision_id: str, fm_updates: dict):
@@ -90,10 +90,10 @@ def _run_export(*, vault: Path, project: str = "",
                 until: str = "", verbose: bool = False,
                 explode_history: bool = False,
                 monkeypatch=None, capsys=None) -> tuple[str, str]:
-    """Invoke ``mem rlvr export`` and return (stdout, stderr)."""
-    from personal_mem.surfaces.cli.rlvr import cmd_rlvr
+    """Invoke ``weave rlvr export`` and return (stdout, stderr)."""
+    from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 
-    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
     args = type("Args", (), {
         "rlvr_action": "export",
         "project": project,
@@ -223,7 +223,7 @@ class TestRLVRExportCLI:
     def test_missing_action_prints_help_and_exits_2(
         self, monkeypatch, capsys
     ):
-        from personal_mem.surfaces.cli.rlvr import cmd_rlvr
+        from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 
         args = type("Args", (), {"rlvr_action": None})()
         with pytest.raises(SystemExit) as exc:
@@ -327,20 +327,9 @@ class TestDispatchTable:
     def test_rlvr_in_dispatch(self):
         # Pin the wiring: if someone removes the dispatch entry, the test
         # catches it before any user does.
-        from personal_mem.surfaces.cli import _DISPATCH
+        from thinkweave.surfaces.cli import _DISPATCH
 
         assert "rlvr" in _DISPATCH
 
-    def test_subcommand_count_bumped(self):
-        # P1-4 dropped ``mem connect`` (deprecation alias): 34 → 33.
-        # `mem dream` (vault-hygiene cycle) and `mem news-stats`
-        # (per-outlet drain stats) added later: 33 → 35.
-        # Phase-3 prediction-judge rework adds `mem judge`: 35 → 36.
-        # C24 CLI parity (Slice 4) adds unlink, timeline,
-        # project-snapshot, prompts: 36 → 40.
-        # Cost-tracking adds `mem spend` (two-layer ledger report): 40 → 41.
-        # CLAUDE.md §7 reflects the same count; if either slips, the
-        # other catches doc drift.
-        from personal_mem.surfaces.cli import _DISPATCH
-
-        assert len(_DISPATCH) == 41
+    # The subcommand-count pin moved to tests/test_surface_contract.py
+    # (pre-ship audit 4b) — it is a surface-contract concern, not RLVR.

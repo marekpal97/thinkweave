@@ -3,15 +3,15 @@ name: news
 owns_mechanic: news_url_ingest
 source_type: news
 capabilities: [import]
-consumes: [mem_concepts, mem_create, mem_link]
+consumes: [weave_concepts, weave_create, weave_link]
 produces: [vault/sources/news/**]
 tools:
   - Read
   - Bash
   - Task
-  - mem_concepts
-  - mem_create
-  - mem_link
+  - weave_concepts
+  - weave_create
+  - weave_link
 description: One-off URL ingest for news articles, mid-conversation. Dispatches a Sonnet writer directly; no triage gate (you've already decided this is worth briefing).
 ---
 
@@ -33,7 +33,7 @@ This is the same admission posture as `/research <paper-url>` / `/research <repo
 
 ### 1. Look up outlet metadata
 
-Read `vault/.mem/news_feeds.yaml` and find the outlet whose feed `url_patterns` (or `name` substring) matches the host of the input URL. From that outlet entry pull:
+Read `vault/config/PRIORITIES.yaml (intake.news.outlets)` and find the outlet whose feed `url_patterns` (or `name` substring) matches the host of the input URL. From that outlet entry pull:
 
 - `name` (display name → `outlet_name`)
 - `slug` → `outlet`
@@ -42,7 +42,7 @@ Read `vault/.mem/news_feeds.yaml` and find the outlet whose feed `url_patterns` 
 - `language`
 - `prefer_embedded` (set false here — we don't have a feed entry, the worker fetches via curl)
 
-If no outlet matches the host: build a minimal stub — `outlet_name = <hostname>`, `outlet = <hostname-slug>`, `tier = 2` (untrusted by default), `region = "global"`, `language = "en"`. Surface this fact in the report so the user can decide whether to add the outlet to `news_feeds.yaml` for future cron pickup.
+If no outlet matches the host: build a minimal stub — `outlet_name = <hostname>`, `outlet = <hostname-slug>`, `tier = 2` (untrusted by default), `region = "global"`, `language = "en"`. Surface this fact in the report so the user can decide whether to add the outlet to `PRIORITIES.yaml::intake.news.outlets` for future cron pickup.
 
 ### 2. Build a synthetic queue item
 
@@ -72,13 +72,15 @@ Task({
   subagent_type: "research-news-worker",
   model: "sonnet",
   description: "Write news brief: <hostname>",
-  prompt: "<the JSON item above>\n\ntriage_verdict: keep_unfiled\ntheme_id: null\ntriage_reason: \"one-off user ingest\"\n\nProcess this single news item end-to-end. The vault root is <PERSONAL_MEM_VAULT — pass the absolute path>. Return your standard one-line JSON outcome as the final non-empty line of your response."
+  prompt: "<the JSON item above>\n\ntriage_verdict: keep_unfiled\ntheme_id: null\ntriage_reason: \"one-off user ingest\"\n\nProcess this single news item end-to-end. The vault root is <THINKWEAVE_VAULT — pass the absolute path>. Return your standard one-line JSON outcome as the final non-empty line of your response."
 })
 ```
 
-The synthesized `triage_verdict: keep_unfiled` mirrors what the cron drain emits for items that didn't theme-match — the writer files the note with `theme_unfiled: true` so the periodic theme-review pass can pick it up. If the user wants to file the new note under an explicit theme later, that's a manual `mem_link source_id target_id --type relates_to` call after the writer returns.
+Under the plugin install the worker is registered as `thinkweave:research-news-worker` — if the bare type doesn't resolve, retry once with the prefix.
 
-The writer fetches the article, extracts ontology-gated concepts, writes the brief, and `mem_create`s the source note.
+The synthesized `triage_verdict: keep_unfiled` mirrors what the cron drain emits for items that didn't theme-match — the writer files the note with `theme_unfiled: true` so the periodic theme-review pass can pick it up. If the user wants to file the new note under an explicit theme later, that's a manual `weave_link source_id target_id --type relates_to` call after the writer returns.
+
+The writer fetches the article, extracts ontology-gated concepts, writes the brief, and `weave_create`s the source note.
 
 ### 4. Report
 
@@ -87,7 +89,7 @@ Parse the writer's JSON outcome:
 - **`accepted`** → "Created `<src-id>` from `<outlet>`. Filed as **theme-unfiled** for periodic review. Concepts: `<list>`."
 - **`fetch_failed`** → "Couldn't fetch the article — paywall, network failure, or bot wall. Source URL: `<url>`. Try saving the page text manually and using `/capture`."
 
-If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `news_feeds.yaml`. Add it if you want this source pulled by cron."*
+If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `PRIORITIES.yaml::intake.news.outlets`. Add it if you want this source pulled by cron."*
 
 ---
 
@@ -105,4 +107,4 @@ If outlet was a stub (step 1), append: *"Outlet `<host>` isn't in `news_feeds.ya
 
 - For Polish-language URLs (`bankier.pl`, etc.): the writer translates inline and stashes the original in `<source_dir>/raw.md`. The user-facing brief is in English.
 - No queue archive — the synthetic item never enters the queue.
-- The writer subagent's `mem_create` call goes through `VaultManager.create_note`, which incrementally indexes the new event-grain source so `detect_signals` sees it on the next `/dream` scan. Theme naming is `/dream`'s job: it reads the enriched cluster signal (raw `proposed_theme:` tally + overlapping active themes) and either mints a new theme (`theme_mints`) or extends an existing one (`theme_extensions`).
+- The writer subagent's `weave_create` call goes through `VaultManager.create_note`, which incrementally indexes the new event-grain source so `detect_signals` sees it on the next `/dream` scan. Theme naming is `/dream`'s job: it reads the enriched cluster signal (raw `proposed_theme:` tally + overlapping active themes) and either mints a new theme (`theme_mints`) or extends an existing one (`theme_extensions`).

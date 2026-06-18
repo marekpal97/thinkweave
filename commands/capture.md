@@ -2,13 +2,13 @@
 name: capture
 owns_mechanic: text_capture
 capabilities: [import]
-consumes: [mem_concepts, mem_create]
+consumes: [weave_concepts, weave_create]
 produces: [vault/sources/**, vault/notes/**]
 tools:
   - Read
-  - mem_concepts
-  - mem_create
-description: Inline-text ingestion (snippet, quote, brief, fragment) — classify content shape, propose source_type, create a `note` (or `source` when applicable) via `mem_create` with ontology-aligned concepts. Called from `/ingest` for the inline-text shape.
+  - weave_concepts
+  - weave_create
+description: Inline-text ingestion (snippet, quote, brief, fragment) — classify content shape, propose source_type, create a `note` (or `source` when applicable) via `weave_create` with ontology-aligned concepts. Called from `/ingest` for the inline-text shape.
 ---
 
 # /capture — Inline-Text Ingestion
@@ -58,7 +58,7 @@ heuristics here):
 | `transcript`| dialogue lines, speaker labels, timestamp markers                                             | `source` with `source_type: conversation`                           |
 
 When in doubt, default to `note`. The user can promote it later via
-`mem update` if they decide it warrants a `source`.
+`weave update` if they decide it warrants a `source`.
 
 ### 3. Derive a title
 
@@ -69,20 +69,23 @@ When in doubt, default to `note`. The user can promote it later via
 ### 4. Load ontology + concept registry
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
+weave_concepts(action="list")
 ```
+
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary. Don't read `src/thinkweave/ontology.yaml` from the source tree:
+under a plugin install that path isn't at your CWD, and it misses proposed terms.
 
 Map the captured text to existing ontology terms. Minimum 2 concepts.
 New vocabulary goes to `proposed_concepts`, never `concepts` —
-`/mem-resolve-concepts` canonicalises proposals later.
+`/tighten` canonicalises proposals later.
 
 ### 5. Create the note
 
 For the default (`note`) path:
 
 ```
-mem_create(
+weave_create(
     type="note",
     title="<derived title>",
     body="<the captured text, lightly formatted — preserve original
@@ -129,7 +132,7 @@ for the canonical fields. **Do NOT set `project`** — sources are global.
 - **No fetching.** The text is already in hand. If the user passes a URL, that's `/ingest`'s job (which dispatches to `/research`).
 - **No summarization of long bodies.** A captured paragraph is preserved verbatim — `/capture` is for content the user wants kept as-is, not for triggering a brief.
 - **No image / multimodal interpretation.** Pure text only.
-- **No automatic linking.** The note's concepts will materialise edges via the standard concept-graph machinery; `/capture` doesn't call `mem_link` itself.
+- **No automatic linking.** The note's concepts will materialise edges via the standard concept-graph machinery; `/capture` doesn't call `weave_link` itself.
 
 ---
 

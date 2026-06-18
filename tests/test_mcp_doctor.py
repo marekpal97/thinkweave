@@ -1,4 +1,4 @@
-"""Tests for ``mem doctor --mcp`` (mcp_doctor module).
+"""Tests for ``weave doctor --mcp`` (mcp_doctor module).
 
 All tests monkeypatch the ``CLAUDE_JSON`` path to a tmp file so the
 user's real ``~/.claude.json`` is never read or written.
@@ -12,7 +12,17 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.surfaces.cli import mcp_doctor as md
+from thinkweave.surfaces.cli import mcp_doctor as md
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_home_plugin_dirs(tmp_path, monkeypatch):
+    """Point the doctor's HOME-scoped plugin scan at empty dirs so it never
+    reads the developer's real ~/.claude/plugins or ~/.claude/skills. Tests
+    that want a plugin scope present re-point PLUGINS_CACHE/SKILLS_DIR
+    themselves (their setattr runs after this fixture)."""
+    monkeypatch.setattr(md, "PLUGINS_CACHE", tmp_path / "_home_plugins_cache")
+    monkeypatch.setattr(md, "SKILLS_DIR", tmp_path / "_home_skills")
 
 
 # ---------- helpers ----------
@@ -21,21 +31,21 @@ from personal_mem.surfaces.cli import mcp_doctor as md
 def _write_claude_json(path: Path, entry: dict | None) -> None:
     body: dict = {"mcpServers": {}}
     if entry is not None:
-        body["mcpServers"]["personal-mem"] = entry
+        body["mcpServers"]["thinkweave"] = entry
     path.write_text(json.dumps(body, indent=2), encoding="utf-8")
 
 
 def _write_mcp_json(cwd: Path, entry: dict | None) -> None:
     body: dict = {"mcpServers": {}}
     if entry is not None:
-        body["mcpServers"]["personal-mem"] = entry
+        body["mcpServers"]["thinkweave"] = entry
     (cwd / ".mcp.json").write_text(json.dumps(body, indent=2), encoding="utf-8")
 
 
 CANONICAL_ENTRY = {
     "type": "stdio",
     "command": "uv",
-    "args": ["run", "--project", ".", "--extra", "mcp", "mem-mcp"],
+    "args": ["run", "--project", ".", "--extra", "mcp", "weave-mcp"],
     "env": {},
 }
 
@@ -50,7 +60,7 @@ class TestRegistrationScopes:
         result = md.check_registration_scopes(tmp_path)
         assert not result.passed
         assert "not registered" in result.detail
-        assert "mem install" in result.fix
+        assert "weave install" in result.fix
 
     def test_machine_only_is_pass(self, tmp_path, monkeypatch):
         claude_json = tmp_path / "claude.json"
@@ -76,7 +86,7 @@ class TestRegistrationScopes:
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         divergent = {
             "type": "stdio",
-            "command": "mem-mcp",  # bare console-script — the legacy bug
+            "command": "weave-mcp",  # bare console-script — the legacy bug
             "args": [],
             "env": {},
         }
@@ -85,6 +95,70 @@ class TestRegistrationScopes:
         result = md.check_registration_scopes(tmp_path)
         assert not result.passed
         assert "DIFFERENT invocations" in result.detail
+
+    def test_plugin_only_install_is_pass(self, tmp_path, monkeypatch):
+        """A clean plugin-only install — manifest in the marketplace cache,
+        no machine/project entry — must PASS. This is the false-negative a
+        real plugin-route user hit: the doctor used to scan only cwd-relative
+        dirs and report 'not registered'."""
+        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        cache = tmp_path / "cache"
+        monkeypatch.setattr(md, "PLUGINS_CACHE", cache)
+        manifest_dir = (
+            cache / "thinkweave" / "thinkweave" / "0.1.0" / ".claude-plugin"
+        )
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "thinkweave",
+                    "mcpServers": {
+                        "thinkweave": {
+                            "type": "stdio",
+                            "command": "uv",
+                            "args": [
+                                "run", "--project", "${CLAUDE_PLUGIN_ROOT}",
+                                "--extra", "mcp", "weave-mcp",
+                            ],
+                            "env": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = md.check_registration_scopes(tmp_path)
+        assert result.passed, result.detail
+        assert "plugin" in result.detail
+
+    def test_dev_link_install_is_pass(self, tmp_path, monkeypatch):
+        """The dev-link (@skills-dir) equivalent: manifest under
+        ~/.claude/skills/<name>/.claude-plugin/, no machine/project entry."""
+        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        skills = tmp_path / "skills"
+        monkeypatch.setattr(md, "SKILLS_DIR", skills)
+        manifest_dir = skills / "thinkweave" / ".claude-plugin"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "thinkweave",
+                    "mcpServers": {
+                        "thinkweave": {
+                            "type": "stdio",
+                            "command": "uv",
+                            "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}",
+                                     "--extra", "mcp", "weave-mcp"],
+                            "env": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = md.check_registration_scopes(tmp_path)
+        assert result.passed, result.detail
+        assert "plugin" in result.detail
 
     def test_project_path_variants_normalise_to_same_invocation(
         self, tmp_path, monkeypatch
@@ -99,7 +173,7 @@ class TestRegistrationScopes:
             "/abs/path",
             "--extra",
             "mcp",
-            "mem-mcp",
+            "weave-mcp",
         ]
         _write_claude_json(claude_json, machine_entry)
         _write_mcp_json(tmp_path, CANONICAL_ENTRY)  # uses "."
@@ -116,7 +190,7 @@ class TestRunMcpDoctor:
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
-        monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
+        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
 
         # Replace the launcher subprocess with a stub that "times out"
@@ -145,12 +219,12 @@ class TestRunMcpDoctor:
         result = md.run_mcp_doctor(cwd=tmp_path)
         assert not result.passed
         names = [c.name for c in result.checks if not c.passed]
-        assert "PERSONAL_MEM_VAULT" in names
+        assert "THINKWEAVE_VAULT" in names
 
     def test_fails_when_no_scope_registered(self, tmp_path, monkeypatch, capsys):
         # ~/.claude.json doesn't exist, no .mcp.json, no plugins.
         monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
-        monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
+        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
         result = md.run_mcp_doctor(cwd=tmp_path)
         assert not result.passed
@@ -162,13 +236,13 @@ class TestRunMcpDoctor:
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         divergent = {
             "type": "stdio",
-            "command": "mem-mcp",
+            "command": "weave-mcp",
             "args": [],
             "env": {},
         }
         _write_mcp_json(tmp_path, divergent)
         monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
-        monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
+        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
 
         result = md.run_mcp_doctor(cwd=tmp_path)
@@ -218,7 +292,7 @@ class TestLauncherResolves:
 
 class TestVaultEnvCheck:
     def test_unset_is_pass(self, monkeypatch):
-        monkeypatch.delenv("PERSONAL_MEM_VAULT", raising=False)
+        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
         result = md.check_vault_env()
         assert result.passed

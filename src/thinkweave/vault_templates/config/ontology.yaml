@@ -1,0 +1,489 @@
+# thinkweave concept ontology
+#
+# Domain → [concepts]. Concepts are the typed-edge vocabulary that links
+# notes in the knowledge graph; any two notes sharing 2+ concepts auto-link.
+#
+# This file ships as a minimal seed. It is meant to grow as you use the
+# vault — every time you run /tighten, proposed concepts from recent notes
+# get canonicalized and (with your approval) folded in here.
+#
+# Rules of thumb:
+#   - Concepts must be kebab-case, lowercase.
+#   - A concept can appear in multiple domains (cross-listing is fine).
+#   - Domains become Obsidian hub pages via `weave concepts hubs`.
+#   - Concepts are INVARIANT — durable patterns, structures, regimes.
+#     Named events ("2024-election", "iran-war-2026") belong in theme notes,
+#     not in the ontology. They cite invariant concepts; they don't extend
+#     the ontology.
+#   - Only concepts with vault-wide count >= 5 are worth listing here;
+#     anything rarer should live as `proposed_concepts` frontmatter until it
+#     earns its place.
+
+
+# Tag vocabulary — the canonical set of tags. Tags are broad categories on
+# notes (state, source class, kind of work). Distinct from concepts, which
+# are domain-specific vocabulary forming the typed-edge graph. A term lives
+# in one or the other — never both. The linter (`weave doctor`) treats this
+# list as canonical and reports tags outside it as drift. Categories live
+# in comments alongside each entry.
+
+tag_vocabulary:
+  # Workflow / state
+  - todo                  # workflow: open work item
+  - parked                # workflow: deliberately deferred (body explains why)
+  - probe                 # workflow: user question + discovery — learning artifact
+  - theme                 # workflow: narrative aggregator (e.g. trade themes)
+  - trade                 # workflow: trading position decision
+  - til                   # workflow: today-i-learned
+  - pinned                # workflow: explicitly kept-visible
+  - autopilot             # workflow: agent-run / automated
+  - wrap              # workflow: produced by /wrap
+  - discover              # workflow: produced by /discover
+  - audit                 # workflow: audit / hygiene activity
+  - hubs                  # workflow: hub-related session
+  - concept-hygiene       # workflow: concept dedup / cleanup
+  - backlog-hygiene       # workflow: backlog grooming
+  - session-lifecycle     # workflow: session-mechanics topic
+
+  # Source class
+  - research              # source: research backlog item
+  - research-paper        # source: ingested arxiv / academic paper
+  - survey                # source: survey paper
+  - reference             # source: reference doc / spec
+  - tutorial              # source: tutorial / how-to
+  - course                # source: course material
+  - awesome-list          # source: curated-index repo
+  - substack              # source: substack newsletter
+
+  # Meta — kind of work
+  - refactor              # meta: structural code change
+  - debugging             # meta: investigation / fix
+  - performance           # meta: speed / resource concern
+  - security              # meta: security concern
+  - enhancement           # meta: extension to existing feature
+  - bug                   # meta: defect / fix
+  - design                # meta: design choice / system design
+  - paradigm              # meta: paradigmatic shift / extension
+  - anti-pattern          # meta: noted anti-pattern
+  - design-pattern        # meta: noted design pattern
+  - finding               # meta: observed result
+  - negative-result       # meta: thing that didn't work
+  - reliability           # meta: reliability / robustness concern
+  - process               # meta: process / methodology
+  - benchmark             # meta: benchmark / performance comparison
+  - methodology           # meta: methodology note
+
+  # Investment workflow
+  - investment-research   # workflow: investment research item
+  - trade-idea            # workflow: trade idea capture
+  - research-direction    # workflow: where research is heading
+
+  # Domain
+  - finance               # domain
+  - ai                    # domain
+  - ml                    # domain
+  - swe                   # domain
+  - fitness               # domain
+  - economics             # domain
+
+  # Misc / capability
+  - open-source           # property: open-source artifact
+  - planning              # workflow: planning artifact
+  - nlp                   # domain: natural language processing
+  - infrastructure        # domain: infra / platform
+
+
+# Domain-marker substrings — `prune_noisy_singletons` keeps any canonical
+# concept whose name contains one of these, even when count==1 and the
+# concept isn't in the ontology. The built-in set in `synthesis/concepts.py`
+# (math, ML, finance, fitness, physics, common tools) ships as defaults; add
+# your own domain substrings here in your *vault* override at
+# `<vault>/.weave/ontology.yaml::domain_markers` (this file is the package
+# seed — edit the vault override, not this). The vault list extends, never
+# replaces, the built-ins. Substring match, case-insensitive, lowercase
+# only.
+#
+# Example for a chemistry/music vault:
+#   domain_markers:
+#     - polymer
+#     - catalyst
+#     - chord
+#     - cadence
+domain_markers: []
+
+
+# ============================================================
+# Math
+# ============================================================
+
+math-linear-algebra:
+  - eigenvalues
+  - eigenvectors
+  - svd
+  - pca
+  - dimensionality
+  - dimensionality-reduction
+
+math-calculus:
+  - gradient
+  - derivative
+  - chain-rule
+  - taylor-series
+  - convergence
+
+math-probability:
+  - probability
+  - probability-distribution
+  - bayesian-inference
+  - expected-value
+  - variance
+  - kl-divergence
+  - entropy
+  - cross-entropy
+  - maximum-likelihood-estimation
+  - statistical-inference
+
+math-optimization:
+  - optimization
+  - convex-optimization
+  - stochastic-gradient-descent
+  - regularization
+  - hyperparameters
+
+
+# ============================================================
+# ML
+# ============================================================
+
+ml-classical:
+  - machine-learning
+  - classifier
+  - clustering
+  - regression
+  - feature-engineering
+  - feature-extraction
+  - feature-importance
+  - evaluation-metrics
+  - dimensionality-reduction
+  - xgboost
+
+ml-deep-learning:
+  - neural-networks
+  - backpropagation
+  - cnn
+  - rnn
+  - lstm
+  - gru
+  - dropout
+  - batch-normalization
+  - model-architecture
+  - activation-functions
+  - pytorch
+  - inductive-bias
+
+ml-transformers:
+  - attention
+  - self-attention
+  - multi-head-attention
+  - transformer-architecture
+  - transformers
+  - tokenization
+  - positional-encoding
+  - fine-tuning
+  - scaling-laws
+
+ml-training:
+  - training
+  - reinforcement-learning
+  - representation-learning
+  - self-supervised-learning
+  - contrastive-learning
+  - continual-learning
+  - curriculum-learning
+  - early-stopping
+  - model-evaluation
+  - interpretability
+
+ml-embeddings:
+  - embeddings
+  - embedding-space
+  - cosine-similarity
+  - vector-store
+  - chromadb
+
+ml-novelty:
+  - novelty-detection
+  - anomaly-detection
+  - novelty-scoring
+  - out-of-distribution-detection
+  - distribution-shift
+  - concept-drift
+  - density-estimation
+  - reconstruction-error
+  - parameterless-projection
+  - frequent-directions
+  - fd-sketch
+  - projection-error
+
+
+# ============================================================
+# AI / agentic / tooling
+# ============================================================
+
+ai-llms:
+  - llm
+  - openai-api
+  - prompt-engineering
+  - tool-use
+  - context-window
+  - logprobs
+  - retrieval-augmented-generation
+  - rag
+  - natural-language-processing
+
+ai-agents:
+  - agentic-ai
+  - multi-agent-systems
+  - orchestration
+  - human-in-the-loop
+  - langgraph
+  - langchain
+  - langsmith
+  - crewai
+
+ai-tools:
+  - claude-code
+  - claude-code-skills
+  - mcp
+  - mcp-server
+  - obsidian
+  - knowledge-graph
+  - hooks
+  - statusline
+  - custom-commands
+
+ai-harness:
+  - agent-harness
+  - sub-agent
+  - tool-use-loop
+  - claude-code
+  - claude-code-skills
+  - hooks
+  - custom-commands
+  - session-management
+
+ai-memory:
+  - memory-system
+  - knowledge-graph
+  - graph-memory
+  - hierarchical-memory
+  - hybrid-retrieval
+  - reciprocal-rank-fusion
+  - retrieval-augmented-generation
+  - rag
+  - vector-store
+  - semantic-search
+  - chunking
+  - ranking
+
+ai-infra:
+  - api
+  - docker
+  - fastapi
+  - observability
+  - pydantic
+  - pipeline
+  - deployment
+
+
+# ============================================================
+# Software engineering
+# ============================================================
+
+swe-python:
+  - python
+  - pandas
+  - dataframe
+  - numpy
+  - pyspark
+  - regex
+  - virtual-environment
+  - uv
+  - pytest
+  - typing
+  - pathlib
+  - pre-commit
+
+swe-data:
+  - sql
+  - sqlite
+  - fts5
+  - window-function
+  - parquet
+  - dashboard
+  - streamlit
+  - matplotlib
+  - seaborn
+  - deduplication
+
+swe-infra:
+  - git
+  - docker
+  - tmux
+  - wsl
+  - cli
+  - markdown
+  - idempotency
+  - resilience
+  - real-time-systems
+  - testing
+
+
+# ============================================================
+# Thinkmesh — cross-listed novelty research
+# ============================================================
+
+thinkmesh:
+  - autoresearch
+  - novelty-scoring
+  - parameterless-projection
+  - frequent-directions
+  - reconstruction-error
+  - fd-sketch
+  - projection-error
+
+
+# ============================================================
+# Finance
+#
+# Concepts here are INVARIANT (durable structures, regimes, strategies).
+# Named events (specific FOMC meetings, individual elections, named wars,
+# specific Fed programs like QE2/QT) belong in theme notes — they cite
+# these invariants; they don't extend them.
+# ============================================================
+
+finance-markets:
+  - market-data
+  - asset-prices
+  - correlation
+  - liquidity
+  - leverage
+  - thematic-investing
+  - equity-baskets
+  - commodities
+  - semiconductors
+  - critical-minerals
+  - market-making
+  - derivatives
+  - hedge-funds
+  - proprietary-trading
+  - alternative-data
+
+finance-options:
+  - options-strategy
+  - options-trading
+  - options-engine
+  - options
+  - implied-volatility
+  - volatility
+  - volatility-surface
+  - greeks
+  - vega
+  - theta
+  - delta
+  - gamma
+  - black-scholes
+  - iron-condor
+
+finance-quant:
+  - factor-model
+  - factor-modeling
+  - fama-french-factors
+  - portfolio-management
+  - portfolio-variance
+  - risk-management
+  - sharpe-ratio
+  - information-ratio
+  - reverse-dcf
+  - quantitative-analysis
+  - quantitative-finance
+  - asset-allocation
+  - diversification
+
+finance-research:
+  - equity-research
+  - fundamental-analysis
+  - research-agent
+  - deep-research
+  - earnings-analysis
+  - sec-filings
+  - market-research
+  - macro-research
+
+finance-macro:
+  - macro-trading
+  - inflation
+  - interest-rates
+  - yield-curve
+  - fiscal-deficit
+  - recession
+  - labor-market
+
+finance-regime:
+  - risk-on
+  - risk-off
+  - reflation
+  - stagflation
+  - disinflation
+  - goldilocks
+
+finance-policy:
+  - fomc                    # institutional invariant — kept as policy actor
+
+finance-geopolitics:
+  - geopolitics             # broad lens kept; named conflicts live in themes
+
+finance-structure:
+  - carry-trade
+  - pairs-trade
+  - vertical-spread
+  - bull-call-spread
+  - long-vol
+  - short-vol
+  - tail-hedge
+  - mean-reversion
+  - momentum
+
+
+# ============================================================
+# Fitness
+# ============================================================
+
+fitness:
+  - hypertrophy
+  - strength-training
+  - progressive-overload
+  - one-rep-max
+  - 1rm
+  - bench-press
+  - reverse-pyramid
+  - time-under-tension
+  - active-recovery
+  - heart-rate-variability
+  - protein-intake
+  - caloric-deficit
+  - sleep-hygiene
+  - high-intensity-interval-training
+  - health
+
+
+# ============================================================
+# Professional
+# ============================================================
+
+professional:
+  - professional-communication
+  - email-etiquette
+  - email-communication
+  - email
+  - networking

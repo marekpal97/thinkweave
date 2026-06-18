@@ -1,0 +1,17 @@
+{
+  "name": "thinkweave",
+  "owner": {
+    "name": "Marek Paluch"
+  },
+  "metadata": {
+    "description": "Self-hosted marketplace for the Thinkweave plugin — this repo is its own marketplace.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "thinkweave",
+      "source": "./",
+      "description": "Obsidian-native memory layer — markdown vault + SQLite index + 18 MCP tools, slash commands, subagent workers, 4 hooks. Run /thinkweave:onboard after install to seed from prior Claude Code history."
+    }
+  ]
+}

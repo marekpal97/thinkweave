@@ -3,16 +3,16 @@ name: ingest-paper-file
 owns_mechanic: paper_file_ingest
 source_type: paper
 capabilities: [import]
-consumes: [mem_sources_config, mem_concepts, mem_create]
+consumes: [weave_sources_config, weave_concepts, weave_create]
 produces: [vault/sources/papers/**]
 tools:
   - Read
   - Bash
   - Write
-  - mem_sources_config
-  - mem_concepts
-  - mem_create
-  - mem_update
+  - weave_sources_config
+  - weave_concepts
+  - weave_create
+  - weave_update
 description: Local PDF paper ingestion — extract text, derive title/authors, detect arxiv ID, write a `source_type: paper` note with the PDF and extracted text staged as companions. Called from `/ingest` for the local-PDF file shape.
 ---
 
@@ -71,18 +71,21 @@ authors, abstract):
 - **DOI** — regex for `doi:` or `https://doi.org/<id>`.
 
 If title can't be inferred, fall back to the filename (sans extension).
-If authors can't be inferred, leave the list empty — `mem doctor`
+If authors can't be inferred, leave the list empty — `weave doctor`
 flags missing authors as a hygiene issue, not a blocker.
 
 ### 4. Load ontology + check vault
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
+weave_concepts(action="list")
 ```
 
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary. Don't read `src/thinkweave/ontology.yaml` from the source tree:
+under a plugin install that path isn't at your CWD, and it misses proposed terms.
+
 ```
-mem_search(query="<title + key abstract phrases>", mode="hybrid", limit=5)
+weave_search(query="<title + key abstract phrases>", mode="hybrid", limit=5)
 ```
 
 If a hit comes back with a matching arxiv ID or near-identical title,
@@ -92,7 +95,7 @@ in the report so the user knows where it landed.
 ### 5. Write the source note
 
 ```
-mem_create(
+weave_create(
     type="source",
     title="<extracted title>",
     body="<technical brief — see template below>",
@@ -111,7 +114,7 @@ mem_create(
 )
 ```
 
-`mem_create` returns the source directory path (folder layout per the
+`weave_create` returns the source directory path (folder layout per the
 `paper` SourceTypeSpec). **Do NOT set `project`** — sources are global.
 
 ### 6. Stage the PDF + extracted text as companions
@@ -123,7 +126,7 @@ become siblings.
 ```
 Bash("cp '<original-path>' '<source_dir>/source.pdf'")
 Write('<source_dir>/raw.txt', '<full extracted text>')
-mem_update(note_id="<src-id>",
+weave_update(note_id="<src-id>",
            frontmatter_updates={"raw_path": "raw.txt",
                                 "pdf_path": "source.pdf"})
 ```

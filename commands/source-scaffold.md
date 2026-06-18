@@ -2,12 +2,12 @@
 name: source-scaffold
 owns_mechanic: source_scaffold
 capabilities: []
-consumes: [mem_sources_config]
-produces: [vault/.mem/source_types.yaml, vault/.mem/sources.yaml, ~/.claude/commands/<slug>.md]
+consumes: [weave_sources_config]
+produces: [vault/config/source_types.yaml, vault/config/sources.yaml, ~/.claude/commands/<slug>.md]
 tools:
   - Read
   - Bash
-  - mem_sources_config
+  - weave_sources_config
 description: Generative wizard — register a new source type via vault overlay + machine-global skill file. No repo edits.
 ---
 
@@ -15,11 +15,11 @@ description: Generative wizard — register a new source type via vault overlay 
 
 Vault-scope skill. Writes:
 
-- **`<vault>/.mem/source_types.yaml`** — registry overlay (one new entry)
+- **`<vault>/config/source_types.yaml`** — registry overlay (one new entry)
 - **`~/.claude/commands/<slug>.md`** — skill file (machine-global, so
   `/<slug>` works in every Claude Code session)
 
-The per-type **config block** in `<vault>/.mem/sources.yaml`
+The per-type **config block** in `<vault>/config/sources.yaml`
 (intake_folder, dedup_keys, drain_strategy, optional `url_patterns`)
 is **not** written by the CLI — you append it manually in Step 4
 because its shape depends on the capabilities you chose.
@@ -36,7 +36,7 @@ whether a new source type is even needed.
 ## Step 1 — Confirm the slug doesn't already exist
 
 ```
-mem_sources_config()
+weave_sources_config()
 ```
 
 If `<slug>` is already a key under `sources:` (either in-code default
@@ -70,7 +70,7 @@ Ask the user **once**, in order. Don't fan out.
 ## Step 3 — Run the CLI
 
 ```bash
-PERSONAL_MEM_VAULT=<vault> uv run mem sources scaffold <slug> \
+THINKWEAVE_VAULT=<vault> weave sources scaffold <slug> \
     --bucket <bucket> \
     --layout <layout> \
     --description "<one-line description>" \
@@ -99,7 +99,7 @@ sources:
 ## Step 5 — Smoke-test
 
 ```bash
-PERSONAL_MEM_VAULT=<vault> uv run mem sources show <slug>
+THINKWEAVE_VAULT=<vault> weave sources show <slug>
 ```
 
 Should print the registry entry with `origin: user`. If it does, the
@@ -116,13 +116,13 @@ Print:
 >    `commands/research.md` (URL-driven) or `commands/substack.md`
 >    (disk-inbox-driven).
 > 2. Test with one item.
-> 3. Add to `mem_sources_config().sources.<slug>.url_patterns` if you
+> 3. Add to `weave_sources_config().sources.<slug>.url_patterns` if you
 >    want `/research` to auto-classify URLs into this type.
 
 ## What this skill never does
 
-- Never edits `src/personal_mem/sources/registry.py` (that's the
+- Never edits `src/thinkweave/acquisition/sources/registry.py` (that's the
   in-code default set; user additions go to the vault overlay).
-- Never edits files in the personal_mem repo. All artifacts are
-  vault-scope (`<vault>/.mem/`) or machine-scope (`~/.claude/commands/`).
+- Never edits files in the thinkweave repo. All artifacts are
+  vault-scope (`<vault>/.weave/`) or machine-scope (`~/.claude/commands/`).
 - Never overwrites existing entries — refuses with a hint.

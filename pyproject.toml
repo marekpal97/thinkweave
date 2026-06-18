@@ -1,5 +1,5 @@
 [project]
-name = "personal-mem"
+name = "thinkweave"
 version = "0.1.0"
 description = "Obsidian-native universal memory layer for agentic systems"
 requires-python = ">=3.11"
@@ -7,33 +7,42 @@ dependencies = ["pyyaml>=6.0"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0"]
-embeddings = ["httpx"]
+# After 2026-06-06 API consolidation, openai is the single completion SDK
+# (the wrapper uses AsyncOpenAI with custom base_url for Anthropic/Gemini
+# OpenAI-compat endpoints) — moved out of the [hubs] extra into [embeddings]
+# so any opt-in extra that pulls openai also pulls httpx for embeddings.
+embeddings = ["httpx", "openai>=1.50"]
+embeddings-local = ["sentence-transformers>=2.5"]
+embeddings-litellm = ["litellm>=1.0"]
 hubs = ["openai>=1.50"]
-seed = ["anthropic>=0.40"]
+# anthropic SDK retired 2026-06-06 (B5/C2): the Anthropic Batches path was
+# the only consumer; backfills now go through the openai SDK + Anthropic's
+# OpenAI-compat endpoint via core.agent_client. The empty [seed] back-compat
+# alias was removed in the 2026-06-13 pre-ship sweep (zero references).
 news = ["feedparser>=6.0", "readability-lxml>=0.8.1", "httpx"]
 gemini = ["google-genai>=1.0"]
 youtube = [
     "youtube-transcript-api>=1.0",
 ]
-all = ["personal-mem[mcp,embeddings,hubs,seed,news,gemini,youtube]"]
+all = ["thinkweave[mcp,embeddings,hubs,news,gemini,youtube]"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
-mem = "personal_mem.surfaces.cli:main"
-mem-hook = "personal_mem.surfaces.hooks.handler:main"
-mem-mcp = "personal_mem.surfaces.mcp.server:main"
+weave = "thinkweave.surfaces.cli:main"
+weave-hook = "thinkweave.surfaces.hooks.handler:main"
+weave-mcp = "thinkweave.surfaces.mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/personal_mem"]
+packages = ["src/thinkweave"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/personal_mem/vault_templates" = "personal_mem/vault_templates"
-"src/personal_mem/ontology.yaml" = "personal_mem/ontology.yaml"
-"src/personal_mem/ontology.example.yaml" = "personal_mem/ontology.example.yaml"
+# ontology.yaml now lives under vault_templates/config/, so this single
+# directory include ships the whole config-template surface (seed + examples).
+"src/thinkweave/vault_templates" = "thinkweave/vault_templates"
 
 [tool.ruff]
 line-length = 100
@@ -44,7 +53,43 @@ markers = [
     "perf: performance regression assertion (may be skipped on slow CI hosts)",
 ]
 
+[tool.bumpversion]
+# One command bumps every version surface + commits + tags the release:
+#   uvx bump-my-version bump minor      # 0.1.0 → 0.2.0  (+ tag v0.2.0)
+# In 0.x the MINOR slot is the breaking one (SemVer community convention), so
+# stay on 0.x until the weave_* MCP + CLI surface is stable enough to promise
+# no breakage; flipping to 1.0.0 is `bump-my-version bump major`.
+# src/thinkweave/__init__.py is intentionally NOT a target: it derives the
+# version from installed package metadata, so pyproject is its single source.
+current_version = "0.1.0"
+commit = true
+tag = true
+tag_name = "v{new_version}"
+message = "chore: release v{new_version}"
+tag_message = "Release v{new_version}"
+allow_dirty = false
+
+# pyproject [project] version. Regex-anchored to the line start so it does NOT
+# also rewrite the `current_version` line above (which ends in `version = "…"`).
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = "(?m)^version = \"{current_version}\""
+replace = "version = \"{new_version}\""
+regex = true
+
+[[tool.bumpversion.files]]
+filename = ".claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+# Marketplace catalog version — kept lock-step with the plugin for simplicity.
+[[tool.bumpversion.files]]
+filename = ".claude-plugin/marketplace.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "bump-my-version>=0.28",
 ]

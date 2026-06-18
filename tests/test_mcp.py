@@ -7,17 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.surfaces.mcp.server import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.surfaces.mcp.server import (
     _build_decision_body,
     _flush_insight,
     _parse_candidate_insights,
 )
-from personal_mem.core.vault import parse_frontmatter
-from personal_mem.core.schemas import NoteType
-from personal_mem.retrieval.search import Search
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.vault import parse_frontmatter
+from thinkweave.core.schemas import NoteType
+from thinkweave.retrieval.search import Search
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -109,7 +109,7 @@ class TestParseCandidateInsights:
         assert "FTS5" in result[0]["title"]
 
 
-# --- mem_update logic tests ---
+# --- weave_update logic tests ---
 
 
 class TestUpdateLogic:
@@ -162,7 +162,7 @@ class TestUpdateLogic:
         assert stats["edges"] > 0
 
 
-# --- mem_extract logic tests ---
+# --- weave_extract logic tests ---
 
 
 class TestExtractLogic:
@@ -338,9 +338,9 @@ class TestExtractLogic:
 
 
 class TestExtractFTSWriteThrough:
-    """Regression for n-a58ea683: notes created via mem_extract's per-file
+    """Regression for n-a58ea683: notes created via weave_extract's per-file
     index_file path must be immediately findable via FTS, with no manual
-    `mem index --full` required. A follow-up incremental rebuild must also
+    `weave index --full` required. A follow-up incremental rebuild must also
     leave FTS intact (the original bug was FTS going stale after a no-op
     incremental because hashes already matched).
     """
@@ -460,3 +460,15 @@ class TestBuildDecisionBody:
         out = _build_decision_body(rationale, "My Title", "committed")
         assert out.count("## Context") + out.count("## context") == 1
         assert "lowercase header" in out
+
+
+# --------------------------------------------------------------------------- #
+# dispatch                                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_dispatch_unknown_tool_sentinel():
+    from thinkweave.surfaces.mcp.tools import dispatch
+
+    out = dispatch(None, "_nope", {})
+    assert "Unknown tool" in out[0].text

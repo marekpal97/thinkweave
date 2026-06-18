@@ -10,7 +10,7 @@ index warm; ``detect_signals`` reads from the index and surfaces raw
 clusters as JSON for /dream to name from the cluster + active themes.
 
 These tests pin both halves: (1) creates still index the source so it's
-visible to ``mem_search`` immediately, and (2) ``detect_signals``
+visible to ``weave_search`` immediately, and (2) ``detect_signals``
 surfaces the right clusters and skips the wrong ones.
 """
 
@@ -21,10 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.synthesis.theme_candidates import detect_signals
+from thinkweave.core.config import Config
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.synthesis.theme_candidates import detect_signals
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ def test_indexer_failure_does_not_block_create(
 ):
     """If the incremental indexer raises, the create itself must still
     succeed. The hook is opportunistic — write contract is sacred."""
-    from personal_mem.core import indexer as indexer_module
+    from thinkweave.core import indexer as indexer_module
 
     real_indexer = indexer_module.Indexer
 
@@ -168,3 +168,44 @@ def test_post_create_latency_is_acceptable(
         f"post-create hook took {elapsed:.3f}s — investigate before "
         "shipping."
     )
+
+
+class TestDetectionKnobsFromConfig:
+    """Bucket-3 audit: detection thresholds default from config ``themes.*``."""
+
+    def test_min_cluster_size_override_lowers_the_bar(
+        self, vault: VaultManager, config: Config
+    ):
+        """Two sources don't cluster at the default (3) but do at 2."""
+        _make_news_source(vault, "Story A", concepts=["ai-policy", "regulation"])
+        _make_news_source(vault, "Story B", concepts=["ai-policy", "regulation"])
+
+        assert detect_signals(config) == []
+
+        config.theme_min_cluster_size = 2
+        signals = detect_signals(config)
+        assert len(signals) == 1
+        assert len(signals[0].cluster_source_ids) == 2
+
+    def test_min_shared_concepts_override_raises_the_bar(
+        self, vault: VaultManager, config: Config
+    ):
+        """Three sources sharing exactly 2 concepts stop clustering at 3."""
+        for i in range(3):
+            _make_news_source(
+                vault, f"Story {i}", concepts=["ai-policy", "regulation"]
+            )
+
+        assert len(detect_signals(config)) == 1
+
+        config.theme_min_shared_concepts = 3
+        assert detect_signals(config) == []
+
+    def test_explicit_kwarg_overrides_config(
+        self, vault: VaultManager, config: Config
+    ):
+        _make_news_source(vault, "Story A", concepts=["ai-policy", "regulation"])
+        _make_news_source(vault, "Story B", concepts=["ai-policy", "regulation"])
+        config.theme_min_cluster_size = 2
+
+        assert detect_signals(config, min_cluster_size=3) == []

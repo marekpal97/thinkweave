@@ -1,7 +1,7 @@
 """Tests for the per-vault rejudge queue primitive.
 
 The queue is the spine of Phase-3 prediction-judge work — supersession
-triggers and the cron ``pending_due`` sweep both feed it; ``mem judge
+triggers and the cron ``pending_due`` sweep both feed it; ``weave judge
 --drain`` consumes it. These tests pin the dedupe semantics, the atomic
 drain, and the SQL-driven ``pending_due`` filter.
 """
@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations import rejudge_queue
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations import rejudge_queue
 
 
 @pytest.fixture
@@ -98,11 +98,41 @@ def test_drain_all_returns_items_and_truncates(cfg: Config) -> None:
     drained = rejudge_queue.drain_all(cfg)
     assert len(drained) == 2
     # File is left present but empty (truncate-to-zero, not delete).
-    queue_path = Path(cfg.vault_root) / ".mem" / "rejudge_queue.jsonl"
+    queue_path = Path(cfg.vault_root) / ".weave" / "rejudge_queue.jsonl"
     assert queue_path.exists()
     assert queue_path.read_text(encoding="utf-8") == ""
     # Second drain yields nothing.
     assert rejudge_queue.drain_all(cfg) == []
+
+
+def test_remove_consumes_only_named_ids(cfg: Config) -> None:
+    """`remove` drops the judged entries; unjudged ones survive intact."""
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-aaa111", reason="r1", source="supersession"
+    )
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-bbb222", reason="r2", source="manual"
+    )
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-ccc333", reason="r3", source="cron"
+    )
+    removed = rejudge_queue.remove(cfg, ["dec-aaa111", "dec-ccc333"])
+    assert removed == 2
+    survivors = rejudge_queue.peek(cfg)
+    assert len(survivors) == 1
+    # Survivor keeps its fields (field-preserving, unlike drain+re-enqueue).
+    assert survivors[0]["decision_id"] == "dec-bbb222"
+    assert survivors[0]["reason"] == "r2"
+    assert survivors[0]["source"] == "manual"
+
+
+def test_remove_unknown_or_empty_ids_is_noop(cfg: Config) -> None:
+    rejudge_queue.enqueue(
+        cfg, decision_id="dec-aaa111", reason="r", source="manual"
+    )
+    assert rejudge_queue.remove(cfg, []) == 0
+    assert rejudge_queue.remove(cfg, ["dec-zzz999", ""]) == 0
+    assert len(rejudge_queue.peek(cfg)) == 1
 
 
 def test_peek_does_not_clear(cfg: Config) -> None:

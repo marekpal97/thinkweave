@@ -1,0 +1,80 @@
+# vault/config/PRIORITIES.yaml
+#
+# Two-section file. Edit monthly.
+#
+#   focus  — what to surface (`/discover` bias + STATE.md emphasis)
+#   intake — what to pull in (registries the rss_poll + mail_poll
+#            strategies enqueue from)
+#
+# Inline list syntax only (`[a, b, c]`) — the thinkweave YAML reader
+# silently parses block-style `- item` lists as empty.
+
+# ──────────────────────────────────────────────────────────────────────
+# focus — OPTIONAL pins that boost the automatic behavioural salience
+# ──────────────────────────────────────────────────────────────────────
+#
+# "Active" projects / themes / concepts are computed behaviourally by
+# default — recent session activity + probe pressure (the digest's
+# "## Most actionable" block and the SessionStart active-themes section).
+# The lists below are *optional pins*: appended on top so a watched-but-
+# currently-quiet project / theme / concept still surfaces. You never have
+# to maintain them — leave any list empty to rely purely on behaviour.
+
+focus:
+  # Pinned projects — boosted into the digest active-focus block even when
+  # they saw no recent sessions. Empty = pure recent-activity ranking.
+  active_projects: []
+
+  # Concept slugs you want weave to proactively hunt sources on — your
+  # research/areas-of-interest. Read by the `focus_research` discover
+  # strategy (add it to a project's discover_strategies in sources.yaml to
+  # activate; /onboard wires both together). Ontology terms — anything not
+  # yet canonical is still honoured as a proposed concept. Empty = no
+  # interest-driven discovery, just the structural strategies.
+  research_concepts: []
+
+  # Theme IDs (thm-*) surfaced in STATE.md "Active themes" and biased
+  # by /discover. Empty list = no explicit pin; STATE.md still renders
+  # active themes by recency.
+  watch_themes: []
+
+# ──────────────────────────────────────────────────────────────────────
+# intake — what external-trigger strategies enqueue
+# ──────────────────────────────────────────────────────────────────────
+
+intake:
+
+  # News (single-grain)
+  news:
+    outlets: {}
+    # Example outlet shape:
+    # outlets:
+    #   reuters:
+    #     name: Reuters
+    #     feeds: [https://www.reuters.com/rssFeed/topNews]
+    #     tier: 1
+    #     region: global
+    #     prefer_embedded: true
+    #     daily_cap: 5
+
+  # Podcasts (event vs concept grain)
+  podcast_events:
+    outlets: {}
+  podcast_concepts:
+    outlets: {}
+
+  # YouTube (event vs concept grain) — channels by ID (UC…)
+  youtube_events:
+    channels: []
+    lookback_days: 1
+    drain_batch_max: 5
+  youtube_concepts:
+    channels: []
+    lookback_days: 1
+    drain_batch_max: 5
+
+  # Newsletters (event vs concept grain) — Gmail sender allowlists
+  newsletter_events:
+    senders: []
+  newsletter_concepts:
+    senders: []

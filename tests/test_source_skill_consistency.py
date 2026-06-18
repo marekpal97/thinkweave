@@ -5,7 +5,7 @@ file, and that every ``SourceTypeSpec.skills`` entry likewise resolves.
 Catches the historical "research-news" dangling reference where
 ``sources/config.py`` and ``sources/registry.py`` cited a skill file
 that nobody had created. Failing this test means a vault user typing
-``/research <url>`` (or watching ``mem drain`` log a per-item skill
+``/research <url>`` (or watching ``weave drain`` log a per-item skill
 name) would hit an unknown-command error.
 """
 
@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.sources import DEFAULT_CONFIG
-from personal_mem.sources.registry import all_specs
+from thinkweave.acquisition.sources import DEFAULT_CONFIG
+from thinkweave.acquisition.sources.registry import all_specs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMANDS_DIR = REPO_ROOT / "commands"
@@ -40,7 +40,7 @@ def _known_skill_names() -> set[str]:
 def test_every_research_skill_in_config_has_command_file() -> None:
     """Every ``sources.<slug>.research_skill`` must resolve to a real
     skill file under ``commands/``. Otherwise ``/research <url>`` and
-    ``mem drain --source-type <slug>`` would dispatch to nothing."""
+    ``weave drain --source-type <slug>`` would dispatch to nothing."""
     known = _known_skill_names()
     missing: list[tuple[str, str]] = []
     for slug, source_cfg in DEFAULT_CONFIG["sources"].items():
@@ -58,7 +58,7 @@ def test_every_research_skill_in_config_has_command_file() -> None:
 
 def test_every_registry_skill_has_command_file() -> None:
     """Every ``SourceTypeSpec.skills`` entry must resolve to a real
-    skill file. The registry is read by ``mem sources show`` as
+    skill file. The registry is read by ``weave sources show`` as
     cross-reference; broken entries surface as ghost links."""
     known = _known_skill_names()
     missing: list[tuple[str, str]] = []

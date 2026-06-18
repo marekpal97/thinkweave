@@ -1,4 +1,4 @@
-"""Tests for claude-mem importer — type mapping, body generation, project normalization, idempotency."""
+"""Tests for claude-history importer — type mapping, body generation, project normalization, idempotency."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.importers.claude_mem import (
+from thinkweave.core.config import Config
+from thinkweave.acquisition.importers.claude_history import (
     META_CONCEPT_TO_TAG,
     PROJECT_MAP,
     _build_session_map,
@@ -25,11 +25,11 @@ from personal_mem.importers.claude_mem import (
     build_decision_body,
     build_observation_body,
     build_session_body,
-    import_claude_mem,
+    import_claude_history,
     normalize_project,
 )
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager, parse_frontmatter
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 
 
 # ── Fixtures ──────────────────────────────────────────────────────
@@ -442,7 +442,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats = import_claude_mem(config, db_path=claude_mem_db)
+        stats = import_claude_history(config, db_path=claude_mem_db)
 
         # 4 sessions: aaa (obs+summary), bbb (obs only), ccc (obs only), ddd (summary only)
         assert stats["sessions"] == 4
@@ -460,7 +460,7 @@ class TestImportClaudeMem:
         assert (projects_dir / "code_graph" / "sessions").exists()
 
         # Check that the manifest was saved
-        manifest = _load_manifest(config.mem_dir)
+        manifest = _load_manifest(config.weave_dir)
         assert len(manifest["imported_ids"]) == 8  # 4 sessions + 4 observations
 
     def test_idempotency(self, config: Config, claude_mem_db: Path):
@@ -468,8 +468,8 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats1 = import_claude_mem(config, db_path=claude_mem_db)
-        stats2 = import_claude_mem(config, db_path=claude_mem_db)
+        stats1 = import_claude_history(config, db_path=claude_mem_db)
+        stats2 = import_claude_history(config, db_path=claude_mem_db)
 
         assert stats1["sessions"] == 4
         assert stats2["sessions"] == 0
@@ -480,7 +480,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats = import_claude_mem(
+        stats = import_claude_history(
             config, db_path=claude_mem_db, project_filter="legacy_proj"
         )
 
@@ -493,7 +493,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        stats = import_claude_mem(config, db_path=claude_mem_db, dry_run=True)
+        stats = import_claude_history(config, db_path=claude_mem_db, dry_run=True)
 
         assert stats["sessions"] == 4
         assert stats["notes"] == 3
@@ -508,7 +508,7 @@ class TestImportClaudeMem:
 
     def test_missing_db(self, config: Config, tmp_path: Path):
         """Should return error for missing database."""
-        stats = import_claude_mem(config, db_path=tmp_path / "nonexistent.db")
+        stats = import_claude_history(config, db_path=tmp_path / "nonexistent.db")
         assert "error" in stats
 
     def test_decision_frontmatter(self, config: Config, claude_mem_db: Path):
@@ -516,7 +516,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         # Find the decision note
         decision_files = list(config.vault_root.rglob("use-three-layer-architecture*.md"))
@@ -536,7 +536,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         # Find a session.md for options_engine (has observations with files)
         session_files = list(
@@ -554,7 +554,7 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         # The discovery note should be in the same folder as its session
         discovery_files = list(config.vault_root.rglob("options-engine-architecture*.md"))
@@ -571,8 +571,144 @@ class TestImportClaudeMem:
         vm = VaultManager(config=config)
         vm.ensure_dirs()
 
-        import_claude_mem(config, db_path=claude_mem_db)
+        import_claude_history(config, db_path=claude_mem_db)
 
         discovery_files = list(config.vault_root.rglob("options-engine-architecture*.md"))
         fm, _ = parse_frontmatter(discovery_files[0].read_text(encoding="utf-8"))
         assert fm["date"].startswith("2026-01-25")
+
+
+# ── CLI parser flags for `weave import claude-code` ────────────────────
+
+
+class TestImportClaudeCodeParserFlags:
+    """Lock the shorthand semantics for the import-scope flags so a
+    refactor that drops or renames them surfaces in CI.
+
+    Covers:
+      - ``--sample-only`` lands as ``sample_only=True`` on the Namespace
+      - ``--since YYYY-MM-DD`` is captured as a string (validated in the
+        importer, not the parser)
+      - explicit ``--limit`` coexists with ``--sample-only`` and wins at
+        the cmd_import translation layer
+    """
+
+    def test_sample_only_flag_parses(self):
+        from thinkweave.surfaces.cli.parser import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["import", "claude-code", "--sample-only", "--dry-run"]
+        )
+        assert args.source == "claude-code"
+        assert args.sample_only is True
+        assert args.limit == 0  # left untouched; translation happens in cmd_import
+        assert args.since == ""
+
+    def test_since_and_limit_parse_for_claude_code(self):
+        from thinkweave.surfaces.cli.parser import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "import",
+                "claude-code",
+                "--since",
+                "2025-06-01",
+                "--limit",
+                "100",
+            ]
+        )
+        assert args.since == "2025-06-01"
+        assert args.limit == 100
+        assert args.sample_only is False
+
+    def test_sample_only_default_false(self):
+        """Bare ``weave import claude-code`` leaves sample_only off."""
+        from thinkweave.surfaces.cli.parser import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["import", "claude-code"])
+        assert args.sample_only is False
+        assert args.limit == 0
+
+
+class TestImportClaudeCodeFlagWiring:
+    """End-to-end: cmd_import correctly translates parser flags into the
+    ``import_claude_code`` kwargs, including the ``--sample-only`` →
+    ``limit=50`` shorthand and the precedence rule when both flags
+    coexist."""
+
+    def _captured_kwargs(self, argv: list[str], monkeypatch) -> dict:
+        """Run cmd_import with import_claude_code stubbed; return the
+        kwargs the real function would have received."""
+        from thinkweave.surfaces.cli import index as cli_index
+        from thinkweave.surfaces.cli.parser import build_parser
+
+        captured: dict = {}
+
+        def fake_import_claude_code(*args, **kwargs):
+            captured.update(kwargs)
+            return {
+                "discovered": 0,
+                "skipped_no_content": 0,
+                "skipped_filter": 0,
+                "skipped_already_imported": 0,
+                "skipped_since": 0,
+                "materialized": 0,
+                "per_project": {},
+                "errors": [],
+            }
+
+        monkeypatch.setattr(
+            "thinkweave.onboarding.claude_code_seed.import_claude_code",
+            fake_import_claude_code,
+        )
+        # cmd_import does a `from ... import import_claude_code` inside the
+        # function body, so we need to patch the source module — done above.
+
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        cli_index.cmd_import(args)
+        return captured
+
+    def test_sample_only_translates_to_limit_50(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            ["import", "claude-code", "--sample-only", "--dry-run"],
+            monkeypatch,
+        )
+        assert kwargs["limit"] == 50
+        assert kwargs["since"] == ""
+
+    def test_explicit_limit_wins_over_sample_only(self, tmp_path, monkeypatch):
+        """When both flags are passed, --limit is the explicit user intent
+        and should override the --sample-only shorthand."""
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            [
+                "import",
+                "claude-code",
+                "--sample-only",
+                "--limit",
+                "200",
+                "--dry-run",
+            ],
+            monkeypatch,
+        )
+        assert kwargs["limit"] == 200
+
+    def test_neither_flag_leaves_limit_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            ["import", "claude-code", "--dry-run"], monkeypatch
+        )
+        assert kwargs["limit"] == 0
+
+    def test_since_passes_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
+        kwargs = self._captured_kwargs(
+            ["import", "claude-code", "--since", "2025-06-01", "--dry-run"],
+            monkeypatch,
+        )
+        assert kwargs["since"] == "2025-06-01"

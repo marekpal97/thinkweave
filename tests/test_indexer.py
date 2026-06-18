@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.retrieval.search import Search
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.retrieval.search import Search
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ class TestIndexer:
             "SQLite WAL Mode",
             body="WAL mode enables concurrent reads.",
             tags=["sqlite", "gotcha"],
-            project="test-proj",
+            project="test_proj",
         )
         stats = indexer.rebuild(full=True)
         assert stats["indexed"] == 1
@@ -133,6 +133,23 @@ class TestIndexer:
         assert db_stats["notes_session"] == 1
         assert db_stats["notes_decision"] == 1
         assert db_stats["notes_source"] == 1
+
+
+class TestRelPathNormalization:
+    def test_rel_path_normalizes_windows_separators(self, indexer: Indexer):
+        """Stored rel_path uses forward slashes regardless of OS — readers
+        match forward-slash literals (``concepts/topics/``, SQL
+        ``LIKE 'reports/%'``) against it. On Windows, ``Path.relative_to``
+        yields backslashes; simulate that with a PureWindowsPath."""
+
+        class _WindowsShapedPath:
+            def relative_to(self, root: Path) -> PureWindowsPath:
+                return PureWindowsPath("concepts/topics/foo.md")
+
+        assert (
+            indexer._rel_path(_WindowsShapedPath())
+            == "concepts/topics/foo.md"
+        )
 
 
 class TestMtimeGate:
@@ -303,14 +320,14 @@ class TestSearch:
             "Use Markdown First",
             body="Decided to use markdown as source of truth for portability.",
             tags=["architecture"],
-            project="personal-mem",
+            project="thinkweave",
         )
         vault.create_note(
             NoteType.SESSION,
             "Refactored indexer",
             body="Rewrote the FTS rebuild logic for correctness.",
             tags=["refactor"],
-            project="personal-mem",
+            project="thinkweave",
         )
         indexer.rebuild(full=True)
 
@@ -328,7 +345,7 @@ class TestSearch:
 
     def test_search_by_project(self, vault: VaultManager, indexer: Indexer, search: Search):
         self._populate_vault(vault, indexer)
-        results = search.search("", project="personal-mem")
+        results = search.search("", project="thinkweave")
         assert len(results) == 2  # decision + session
 
     def test_search_by_tags(self, vault: VaultManager, indexer: Indexer, search: Search):
@@ -339,7 +356,7 @@ class TestSearch:
 
     def test_get_context(self, vault: VaultManager, indexer: Indexer, search: Search):
         self._populate_vault(vault, indexer)
-        results = search.get_context(project="personal-mem", limit=5)
+        results = search.get_context(project="thinkweave", limit=5)
         assert len(results) >= 1
 
     def test_get_note_by_id(self, vault: VaultManager, indexer: Indexer, search: Search):
@@ -553,13 +570,13 @@ class TestFtsTokenizer:
     ):
         """Pre-A4 vaults created `notes_fts` with the default tokenizer.
         Opening such a DB through `Indexer` drops + recreates the FTS
-        table with the new tokenizer, no manual `mem index --full`
+        table with the new tokenizer, no manual `weave index --full`
         required for the tokenizer change to take effect (though a
         rebuild is still needed to repopulate the index)."""
         import sqlite3
 
         # Hand-build a DB with the OLD (pre-A4) FTS schema, no tokenize=.
-        config.mem_dir.mkdir(parents=True, exist_ok=True)
+        config.weave_dir.mkdir(parents=True, exist_ok=True)
         legacy = sqlite3.connect(str(config.index_db))
         legacy.execute(
             """CREATE TABLE notes (
@@ -689,36 +706,36 @@ class TestConceptSearch:
     ):
         vault.create_note(
             NoteType.NOTE, "ML in Proj A", body="A.",
-            project="proj-a",
+            project="proj_a",
             extra_frontmatter={"concepts": ["pytorch"]},
         )
         vault.create_note(
             NoteType.NOTE, "ML in Proj B", body="B.",
-            project="proj-b",
+            project="proj_b",
             extra_frontmatter={"concepts": ["pytorch"]},
         )
         indexer.rebuild(full=True)
 
-        results = search.search_by_concept("pytorch", project="proj-a")
+        results = search.search_by_concept("pytorch", project="proj_a")
         assert len(results) == 1
-        assert results[0].project == "proj-a"
+        assert results[0].project == "proj_a"
 
     def test_get_project_concepts(
         self, vault: VaultManager, indexer: Indexer, search: Search
     ):
         vault.create_note(
             NoteType.NOTE, "Note 1", body="1.",
-            project="ml-proj",
+            project="ml_proj",
             extra_frontmatter={"concepts": ["pytorch", "cuda"]},
         )
         vault.create_note(
             NoteType.NOTE, "Note 2", body="2.",
-            project="ml-proj",
+            project="ml_proj",
             extra_frontmatter={"concepts": ["pytorch"]},
         )
         indexer.rebuild(full=True)
 
-        concepts = search.get_project_concepts("ml-proj")
+        concepts = search.get_project_concepts("ml_proj")
         assert concepts["pytorch"] == 2
         assert concepts["cuda"] == 1
 
@@ -1191,7 +1208,7 @@ class TestIncrementalEdges:
         inc_edges_for_a = self._edges_for_sources(indexer, {a_id})
 
         # Fresh full rebuild on a sibling DB for ground truth.
-        from personal_mem.core.indexer import Indexer as IndexerCls
+        from thinkweave.core.indexer import Indexer as IndexerCls
         full_idx = IndexerCls(config=config)
         try:
             full_idx.rebuild(full=True)
@@ -1314,7 +1331,7 @@ class TestIncrementalEdges:
         ).fetchone()["n"]
         assert edge_before == 1
 
-        # Re-extract session.md (mem_extract rewrites it each wrap).
+        # Re-extract session.md (weave_extract rewrites it each wrap).
         sess_path.write_text(sess_path.read_text() + "\n\n## More\n")
         self._bump_mtime(sess_path)
         indexer.rebuild(full=False)

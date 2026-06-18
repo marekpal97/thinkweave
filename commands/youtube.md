@@ -3,13 +3,13 @@ name: youtube
 owns_mechanic: youtube_inbox
 source_type: youtube-events, youtube-concepts
 capabilities: [acquire]
-consumes: [mem_sources_config, mem_queue]
-produces: [vault/.mem/queues/youtube-events.jsonl, vault/.mem/queues/youtube-concepts.jsonl, vault/sources/youtube-events/**, vault/sources/youtube-concepts/**]
+consumes: [weave_sources_config, weave_queue]
+produces: [vault/.weave/queues/youtube-events.jsonl, vault/.weave/queues/youtube-concepts.jsonl, vault/sources/youtube-events/**, vault/sources/youtube-concepts/**]
 tools:
   - Read
   - Bash
-  - mem_queue
-  - mem_sources_config
+  - weave_queue
+  - weave_sources_config
 description: Thin orchestrator over the YouTube intake rails. Calls the `rss_poll` discover strategy to enqueue from channel RSS feeds, then `/drain --source-type youtube-*` to fan out writer subagents. Headless-safe.
 ---
 
@@ -17,7 +17,7 @@ description: Thin orchestrator over the YouTube intake rails. Calls the `rss_pol
 
 `/youtube` is a thin orchestrator that wires two existing rails:
 
-1. **Discover** — `mem discover --strategy rss_poll --source-type <slug>` polls every channel's RSS feed for each `youtube-*` source type and enqueues new videos (dedup against queue + indexer happens inside the strategy).
+1. **Discover** — `weave discover --strategy rss_poll --source-type <slug>` polls every channel's RSS feed for each `youtube-*` source type and enqueues new videos (dedup against queue + indexer happens inside the strategy).
 2. **Drain** — `/drain --source-type <slug>` peeks the queue and fans out `research-youtube-worker` Sonnet subagents.
 
 No RSS-parsing code or writer-spawn logic lives in this skill — both rails are reusable for any source family. This file just sequences them and aggregates the reports.
@@ -31,7 +31,7 @@ No RSS-parsing code or writer-spawn logic lives in this skill — both rails are
 ## Step 0 — Discover the source-type set
 
 ```
-mem_sources_config()
+weave_sources_config()
 ```
 
 Pick every key under `sources.` whose slug starts with `youtube-`. If `<source-type>` was passed, filter to just that one. If no `youtube-*` types are configured, stop with `"No youtube source types in sources.yaml — nothing to do."`.
@@ -45,14 +45,14 @@ For each type, check that `channels:` is non-empty. Types with empty channel all
 For each `youtube-*` type with a non-empty `channels:` list:
 
 ```bash
-uv run mem discover --strategy rss_poll --source-type <slug>
+weave discover --strategy rss_poll --source-type <slug>
 ```
 
 The strategy:
 - Builds `https://www.youtube.com/feeds/videos.xml?channel_id=<id>` for each channel,
 - Parses via feedparser, applies `lookback_days` cutoff,
 - Dedups against active queue + recent archive + the SQLite indexer (URLs already noted),
-- Enqueues new items into `vault/.mem/queues/<slug>.jsonl`.
+- Enqueues new items into `vault/.weave/queues/<slug>.jsonl`.
 
 Stdout is a JSON list of descriptors. Two kinds matter here:
 
@@ -74,6 +74,8 @@ For each type that got fresh items:
 ```
 Skill(skill="drain", args="--source-type <slug> [--limit N]")
 ```
+
+Under the plugin install, skills resolve namespaced — if `Skill(skill="drain")` fails with an unknown skill, retry as `thinkweave:drain`.
 
 `/drain` handles Path B (writer-only, no triage) for `youtube-*` — it peeks the queue, fans out `research-youtube-worker` subagents at `drain_parallelism`, validates allowed-failure prefixes, and archives outcomes. The orchestrator returns the drain report verbatim per type.
 
@@ -104,7 +106,7 @@ Event-grain YouTube sources are indexed at write time; clusters surface via `det
 For your own debugging — if you ever wonder why a re-run skipped or wrote something, the guards live in the two rails:
 
 1. **`rss_poll` strategy dedups against active queue + recent archive + indexer URLs.** A video whose URL is already a `type: source` note in the vault won't re-enqueue, even months later.
-2. **`research-youtube-worker` idempotent_skip.** A `mem_search(video_id)` hit short-circuits to `status="done"` no-op — covers the case where the queue was wiped but the vault note exists.
+2. **`research-youtube-worker` idempotent_skip.** A `weave_search(video_id)` hit short-circuits to `status="done"` no-op — covers the case where the queue was wiped but the vault note exists.
 
 YouTube has no equivalent to newsletter's `processed_label` (RSS feeds carry no server-side state). Guards 1 and 2 together cover everything mail's three-layer guard does.
 
@@ -112,9 +114,9 @@ YouTube has no equivalent to newsletter's `processed_label` (RSS feeds carry no 
 
 ## URL paste path
 
-The `/research` router classifies pasted URLs by `url_patterns` and dispatches the matching one-off skill. For YouTube URLs (`youtube.com/watch`, `youtu.be/`, `youtube.com/shorts`), `/research <url>` enqueues to the matching `youtube-*` queue and then immediately fans out a single worker via `/drain` — same two-rail composition as `/youtube`, just on one URL.
+The `/research` router classifies pasted URLs by `url_patterns` and dispatches the matching one-off skill. For YouTube URLs (`youtube.com/watch`, `youtu.be/`, `youtube.com/shorts`), `/research <url>` runs the [`research-youtube`](research/research-youtube.md) subskill: it parses the `video_id`, resolves title/channel via oEmbed, **picks the event-vs-concept grain from the video itself**, enqueues the resolved item, and drains one `research-youtube-worker` — the same two-rail composition as `/youtube`, on one URL.
 
-The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap intentionally; the router picks the first matching type in registry order (`youtube-events` wins by default — change the order in `vault/.mem/sources.yaml` to flip the default).
+`youtube-events` and `youtube-concepts` share url_patterns; the subskill chooses the grain by content (markets/macro recap → events; lecture/explainer → concepts, the default) rather than by registry order.
 
 ---
 
@@ -124,9 +126,10 @@ The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap inte
 |---|---|
 | `/youtube` | Discover (rss_poll) + drain all `youtube-*` queues in one shot |
 | `/youtube youtube-events` | Same, limited to one source type |
-| `mem discover --strategy rss_poll --source-type youtube-events` | Discover only (no drain) — useful in cron flows that drain separately |
+| `weave discover --strategy rss_poll --source-type youtube-events` | Discover only (no drain) — useful in cron flows that drain separately |
 | `/drain --source-type youtube-events` | Drain only (the queue was already filled) |
-| `/research <yt-url>` | One-off URL paste — enqueue + drain one video || `/source-fit` | Diagnose whether a new channel shape fits the existing two types |
+| `/research <yt-url>` | One-off URL paste — resolve + enqueue + drain one video (via `research-youtube`) |
+| `/source-fit` | Diagnose whether a new channel shape fits the existing two types |
 
 ---
 
@@ -145,7 +148,7 @@ The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap inte
 
 The transcript-extraction step (inside `research-youtube-worker`) requires:
 
-1. `pip install personal-mem[youtube]` — installs `youtube-transcript-api`. No API key, no auth.
+1. `pip install thinkweave[youtube]` — installs `youtube-transcript-api`. No API key, no auth.
 
 If the SDK is missing, drain workers return `transcript_api_failed: missing_sdk` — surface in the report and leave the queue items pending until installed.
 

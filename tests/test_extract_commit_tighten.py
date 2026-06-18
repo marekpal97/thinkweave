@@ -25,11 +25,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.extract import extract_session
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations.extract import extract_session
 
 
 @pytest.fixture
@@ -110,11 +110,11 @@ class TestCommitTighten:
         # Re-read the on-disk note — extract performs an update_note pass
         # to write commit_refs + status flip; created_decisions[0] is the
         # pre-flip snapshot.
-        from personal_mem.retrieval.search import Search
+        from thinkweave.retrieval.search import Search
         s = Search(config=config)
         row = s.get_note_by_id(dec_id)
         s.close()
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.core.vault import parse_frontmatter
         fm, _ = parse_frontmatter(
             (config.vault_root / row["path"]).read_text(encoding="utf-8")
         )
@@ -177,8 +177,8 @@ class TestCommitTighten:
             }],
         )
         # Re-read on-disk to confirm no commit_refs got written.
-        from personal_mem.retrieval.search import Search
-        from personal_mem.core.vault import parse_frontmatter
+        from thinkweave.retrieval.search import Search
+        from thinkweave.core.vault import parse_frontmatter
 
         dec_id = out.created_decisions[0].id
         s = Search(config=config)

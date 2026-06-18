@@ -6,17 +6,17 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.synthesis.judge import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.synthesis.judge import (
     _check_blame_survival,
     _check_re_edited,
     _check_tested,
     evaluate_decision,
     find_decisions,
 )
-from personal_mem.core.schemas import NoteMeta, NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.schemas import NoteMeta, NoteType
+from thinkweave.core.vault import VaultManager
 
 
 def _make_decision(
@@ -86,6 +86,33 @@ class TestCheckReEdited:
         dec2 = _make_decision("dec-2", date="2026-04-02", file_paths=["a.py"])
         assert _check_re_edited(dec1, [], [dec1, dec2]) is None
 
+    def test_same_session_siblings_not_superseded(self):
+        # Two decisions from one /wrap batch sharing a file are co-equal
+        # siblings, not a supersession — the file-overlap heuristic must not
+        # fire when source_session matches.
+        dec1 = _make_decision(
+            "dec-1", date="2026-04-01T00:00:01", file_paths=["a.py"],
+            source_session="ses-wrap1",
+        )
+        dec2 = _make_decision(
+            "dec-2", date="2026-04-01T00:00:02", file_paths=["a.py"],
+            source_session="ses-wrap1",
+        )
+        assert _check_re_edited(dec1, ["a.py"], [dec1, dec2]) is None
+
+    def test_different_session_still_supersedes(self):
+        # A later decision from a DIFFERENT session re-editing the same file
+        # is still a genuine supersession candidate.
+        dec1 = _make_decision(
+            "dec-1", date="2026-04-01", file_paths=["a.py"],
+            source_session="ses-wrap1",
+        )
+        dec2 = _make_decision(
+            "dec-2", date="2026-04-02", file_paths=["a.py"],
+            source_session="ses-wrap2",
+        )
+        assert _check_re_edited(dec1, ["a.py"], [dec1, dec2]) == "dec-2"
+
 
 class TestCheckTested:
     def test_passing_tests(self):
@@ -140,7 +167,7 @@ class TestEvaluateDecision:
         assert result["verdict"] == "superseded"
         assert result["confidence"] == 0.7
 
-    @patch("personal_mem.synthesis.judge._check_committed_via_git")
+    @patch("thinkweave.synthesis.judge._check_committed_via_git")
     def test_git_reconciliation(self, mock_git, tmp_path):
         """Decision starts as uncommitted but git shows it was committed later."""
         existing_file = tmp_path / "a.py"
@@ -187,7 +214,7 @@ class TestEvaluateDecision:
         dec_new = _make_decision("d2", date="2026-04-02", committed=True, file_paths=[fp])
         assert "commit_refs" in evaluate_decision(dec_old, [dec_old, dec_new])
 
-    @patch("personal_mem.synthesis.judge._check_committed_via_git")
+    @patch("thinkweave.synthesis.judge._check_committed_via_git")
     def test_git_reconciliation_stores_multiple_refs(self, mock_git, tmp_path):
         """Judge stores all discovered commit hashes."""
         existing = tmp_path / "a.py"
@@ -198,7 +225,7 @@ class TestEvaluateDecision:
         result = evaluate_decision(dec, [dec])
         assert result["commit_refs"] == ["aaa1111", "bbb2222"]
 
-    @patch("personal_mem.synthesis.judge._check_committed_via_git")
+    @patch("thinkweave.synthesis.judge._check_committed_via_git")
     def test_existing_commit_refs_merged(self, mock_git, tmp_path):
         """Existing commit_refs from frontmatter are merged with discovered refs."""
         existing = tmp_path / "a.py"
@@ -212,7 +239,7 @@ class TestEvaluateDecision:
         assert "old5678" in result["commit_refs"]
         assert "new1234" in result["commit_refs"]
 
-    @patch("personal_mem.synthesis.judge._check_committed_via_git")
+    @patch("thinkweave.synthesis.judge._check_committed_via_git")
     def test_commit_refs_deduped(self, mock_git, tmp_path):
         """Duplicate refs from frontmatter and git discovery are deduplicated."""
         existing = tmp_path / "a.py"
@@ -247,8 +274,39 @@ class TestEvaluateDecision:
         assert "blame_lines" in result
         assert isinstance(result["blame_lines"], int)
 
-    @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=15)
-    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
+    def test_str_shaped_file_paths_and_commit_refs(self, tmp_path):
+        """Regression: ``file_paths`` / ``commit_refs`` arriving as a YAML
+        scalar (single string instead of list) must not iterate
+        char-by-char. The 2026-06-07 ``as_list`` migration coerces scalar
+        → ``[scalar]`` at read time; pre-migration this iterated each
+        char and produced bogus single-char "file paths" / "commit
+        hashes" that downstream git checks then mangled.
+
+        K2-item-5 coverage: the str-shape input is the load-bearing
+        contract; without this guard, a decision frontmatter mis-shape
+        silently degrades to "no verdict" rather than crashing visibly.
+        """
+        existing = tmp_path / "a.py"
+        existing.write_text("pass")
+        fp = str(existing)
+        dec = _make_decision(
+            committed=True,
+            file_paths=fp,            # scalar, not list
+            commit_refs="abc1234",    # scalar, not list
+        )
+        # If as_list isn't applied, file_paths iterates as individual
+        # chars (one per character of the absolute path) and the
+        # blame/re-edit checks see garbage, but the verdict-shape
+        # contract should still hold.
+        result = evaluate_decision(dec, [dec])
+        assert "verdict" in result
+        assert "commit_refs" in result
+        # The seed scalar must be preserved (would be stripped to chars
+        # without the guard).
+        assert "abc1234" in result["commit_refs"]
+
+    @patch("thinkweave.synthesis.judge._check_blame_survival", return_value=15)
+    @patch("thinkweave.synthesis.judge._check_committed_via_git", return_value={})
     def test_superseded_with_surviving_lines_becomes_kept(self, mock_git, mock_blame, tmp_path):
         """Decision with surviving blame lines is co-contributor, not superseded."""
         existing = tmp_path / "a.py"
@@ -262,8 +320,8 @@ class TestEvaluateDecision:
         assert "15 lines survive" in result["evidence"]
         assert result["blame_lines"] == 15
 
-    @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=0)
-    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
+    @patch("thinkweave.synthesis.judge._check_blame_survival", return_value=0)
+    @patch("thinkweave.synthesis.judge._check_committed_via_git", return_value={})
     def test_superseded_with_zero_lines_stays_superseded(self, mock_git, mock_blame, tmp_path):
         """Decision with zero surviving lines is truly superseded."""
         existing = tmp_path / "a.py"
@@ -277,7 +335,7 @@ class TestEvaluateDecision:
 
 
 class TestCheckBlameSurvival:
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_counts_matching_lines(self, mock_run, tmp_path):
         existing = tmp_path / "a.py"
         existing.write_text("x = 1\ny = 2\n")
@@ -294,7 +352,7 @@ class TestCheckBlameSurvival:
         result = _check_blame_survival([str(existing)], ["abc1234"])
         assert result == 2
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_no_matching_lines(self, mock_run, tmp_path):
         existing = tmp_path / "a.py"
         existing.write_text("z = 3\n")
@@ -314,7 +372,7 @@ class TestCheckBlameSurvival:
         assert _check_blame_survival([], ["abc1234"]) == -1
         assert _check_blame_survival(["/some/file.py"], []) == -1
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_handles_subprocess_error(self, mock_run, tmp_path):
         existing = tmp_path / "a.py"
         existing.write_text("pass")
@@ -322,7 +380,7 @@ class TestCheckBlameSurvival:
         result = _check_blame_survival([str(existing)], ["abc1234"])
         assert result == -1
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_narrows_blame_to_relevant_files(self, mock_run, tmp_path):
         """With hash_to_files, blame only checks files that the commit touched."""
         a = tmp_path / "a.py"
@@ -349,7 +407,7 @@ class TestCheckBlameSurvival:
         )
         assert result == 2  # 1 line from a (abc) + 1 line from b (def)
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_narrowing_skips_unrelated_file(self, mock_run, tmp_path):
         """Commit that didn't touch a file shouldn't count blame lines in it."""
         a = tmp_path / "a.py"
@@ -382,7 +440,7 @@ class TestBatchedGitLog:
     with 5+10s timeouts).
     """
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_single_subprocess_call_for_multiple_files(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = (
@@ -393,7 +451,7 @@ class TestBatchedGitLog:
             "def5678\n"
             "src/c.py\n"
         )
-        from personal_mem.synthesis.judge import _check_committed_via_git
+        from thinkweave.synthesis.judge import _check_committed_via_git
 
         result = _check_committed_via_git(
             ["src/a.py", "src/b.py", "src/c.py"],
@@ -410,7 +468,7 @@ class TestBatchedGitLog:
         # No `--` separator with file paths appended (no per-file scoping)
         assert "--" not in args
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_parses_hash_to_files_map(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = (
@@ -421,7 +479,7 @@ class TestBatchedGitLog:
             "def5678\n"
             "src/b.py\n"
         )
-        from personal_mem.synthesis.judge import _check_committed_via_git
+        from thinkweave.synthesis.judge import _check_committed_via_git
         result = _check_committed_via_git(
             ["src/a.py", "src/b.py"], "2026-04-01",
         )
@@ -431,7 +489,7 @@ class TestBatchedGitLog:
         assert "def5678" in result
         assert result["def5678"] == ["src/b.py"]
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_filters_to_target_files(self, mock_run):
         """Commit hashes with no overlap into file_paths should be dropped."""
         mock_run.return_value.returncode = 0
@@ -442,15 +500,15 @@ class TestBatchedGitLog:
             "def5678\n"
             "unrelated/x.py\n"
         )
-        from personal_mem.synthesis.judge import _check_committed_via_git
+        from thinkweave.synthesis.judge import _check_committed_via_git
         result = _check_committed_via_git(["src/a.py"], "2026-04-01")
         assert "abc1234" in result
         # def5678 didn't touch any file in target set — excluded
         assert "def5678" not in result
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_empty_inputs_no_subprocess(self, mock_run):
-        from personal_mem.synthesis.judge import _check_committed_via_git
+        from thinkweave.synthesis.judge import _check_committed_via_git
         # No file_paths → no subprocess call needed
         assert _check_committed_via_git([], "2026-04-01") == {}
         assert mock_run.call_count == 0
@@ -458,15 +516,15 @@ class TestBatchedGitLog:
         assert _check_committed_via_git(["a.py"], "") == {}
         assert mock_run.call_count == 0
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_handles_subprocess_failure(self, mock_run):
-        from personal_mem.synthesis.judge import _check_committed_via_git
+        from thinkweave.synthesis.judge import _check_committed_via_git
         mock_run.side_effect = FileNotFoundError("git not found")
         assert _check_committed_via_git(["a.py"], "2026-04-01") == {}
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_handles_timeout(self, mock_run):
-        from personal_mem.synthesis.judge import _check_committed_via_git
+        from thinkweave.synthesis.judge import _check_committed_via_git
         import subprocess as _sp
         mock_run.side_effect = _sp.TimeoutExpired("git", 15)
         assert _check_committed_via_git(["a.py"], "2026-04-01") == {}
@@ -480,8 +538,8 @@ class TestBlameSkipWhenUncommitted:
     so we must not invoke it at all.
     """
 
-    @patch("personal_mem.synthesis.judge._check_blame_survival")
-    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
+    @patch("thinkweave.synthesis.judge._check_blame_survival")
+    @patch("thinkweave.synthesis.judge._check_committed_via_git", return_value={})
     def test_uncommitted_skips_blame(self, mock_git, mock_blame):
         """Uncommitted decision must NOT trigger _check_blame_survival."""
         dec = _make_decision(committed=False, file_paths=["a.py"])
@@ -491,8 +549,8 @@ class TestBlameSkipWhenUncommitted:
         mock_blame.assert_not_called()
         assert result["blame_lines"] == -1
 
-    @patch("personal_mem.synthesis.judge._check_blame_survival", return_value=3)
-    @patch("personal_mem.synthesis.judge._check_committed_via_git", return_value={})
+    @patch("thinkweave.synthesis.judge._check_blame_survival", return_value=3)
+    @patch("thinkweave.synthesis.judge._check_committed_via_git", return_value={})
     def test_committed_still_calls_blame(self, mock_git, mock_blame, tmp_path):
         """Committed decisions still pay the blame cost — that's the design."""
         existing = tmp_path / "a.py"
@@ -507,7 +565,7 @@ class TestJudgeSubprocessCount:
     """Regression for P0-9: 3 decisions × 3 files should issue ≤ 3 git log
     calls (one per decision), not 9 (one per file × decision)."""
 
-    @patch("personal_mem.synthesis.judge.subprocess.run")
+    @patch("thinkweave.synthesis.judge.subprocess.run")
     def test_three_decisions_three_files_each_uses_one_git_call_per_decision(
         self, mock_run, tmp_path,
     ):

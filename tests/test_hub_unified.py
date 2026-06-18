@@ -6,7 +6,7 @@ skeleton to ``synthesis/hub.py``. Deleting the spine should break tests
 on both surfaces identically — that's the integration property.
 
 Also covers the idempotent ``## Learning log`` → ``## Catalyst log``
-migration wired into ``mem index --full``.
+migration wired into ``weave index --full``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.synthesis.hub import (
+from thinkweave.synthesis.hub import (
     ALLOWED_FLAGS,
     CATALYST_LOG_HEADING,
     LEGACY_LEARNING_LOG_HEADING,
@@ -24,6 +24,8 @@ from personal_mem.synthesis.hub import (
     extract_section,
     migrate_hub_log_heading,
     parse_log_entries,
+    reflink,
+    render_catalyst_log,
 )
 
 
@@ -331,18 +333,139 @@ class TestMigrateHubLogHeading:
 class TestSpineSharedAcrossSurfaces:
     def test_concept_hub_module_re_exports_unified_types(self):
         """LogEntry on the concept-hub module is the unified ``HubLogEntry``."""
-        from personal_mem.synthesis.concept_hub import LogEntry as CHLogEntry
+        from thinkweave.synthesis.concept_hub import LogEntry as CHLogEntry
 
         assert CHLogEntry is HubLogEntry
 
     def test_theme_hub_module_re_exports_unified_types(self):
-        from personal_mem.synthesis.theme_hub import LogEntry as THLogEntry
+        from thinkweave.synthesis.theme_hub import LogEntry as THLogEntry
 
         assert THLogEntry is HubLogEntry
 
     def test_concept_hub_uses_canonical_catalyst_log_heading(self):
-        from personal_mem.synthesis import concept_hub as ch
+        from thinkweave.synthesis import concept_hub as ch
 
         # The historical alias still resolves, but it points to the
         # canonical heading from hub.py.
         assert ch.LEARNING_LOG_HEADING == CATALYST_LOG_HEADING
+
+
+# ---------------------------------------------------------------------------
+# Fold 1 — title-aliased citations
+# ---------------------------------------------------------------------------
+
+
+class TestTitleAliasedCitations:
+    """``[[path|Title]]`` rendering + lossless id recovery on re-parse."""
+
+    IDMAP = {"n-abc123": "notes/foo", "n-def456": "sources/bar/source"}
+    TITLES = {"n-abc123": "Foo Note", "n-def456": "Bar | Source [v2]"}
+
+    def _entry(self, citation="n-abc123", text="A claim"):
+        return HubLogEntry(date="2026-04-15", flag="new", text=text, citation=citation)
+
+    def test_render_uses_title_as_alias(self):
+        line = self._entry().render(idmap=self.IDMAP, title_map=self.TITLES)
+        assert line == "- 2026-04-15 · *new* — A claim — [[notes/foo|Foo Note]]"
+
+    def test_title_alias_is_sanitised(self):
+        # `|` and `[ ]` would break the wikilink — they get neutralised.
+        line = self._entry(citation="n-def456").render(
+            idmap=self.IDMAP, title_map=self.TITLES
+        )
+        assert "[[sources/bar/source|Bar / Source (v2)]]" in line
+
+    def test_falls_back_to_id_alias_without_title(self):
+        line = self._entry().render(idmap=self.IDMAP)
+        assert "[[notes/foo|n-abc123]]" in line
+
+    def test_falls_back_to_bare_without_path(self):
+        # No idmap → no durable target → bare alias-resolved link.
+        line = self._entry().render(title_map=self.TITLES)
+        assert line.endswith("[[n-abc123]]")
+
+    def test_reflink_precedence(self):
+        assert reflink("n-abc123", self.IDMAP, self.TITLES) == "[[notes/foo|Foo Note]]"
+        assert reflink("n-abc123", self.IDMAP, {}) == "[[notes/foo|n-abc123]]"
+        assert reflink("n-abc123", {}, self.TITLES) == "[[n-abc123]]"
+        assert reflink("") == ""
+
+    def test_parse_title_alias_recovers_id(self):
+        path_to_id = {p: i for i, p in self.IDMAP.items()}
+        line = "- 2026-04-15 · *new* — A claim — [[notes/foo|Foo Note]]"
+        (e,) = parse_log_entries(line, path_to_id=path_to_id)
+        assert e.citation == "n-abc123"
+        assert e.text == "A claim"
+
+    def test_parse_legacy_id_alias_needs_no_map(self):
+        line = "- 2026-04-15 · *new* — A claim — [[notes/foo|n-abc123]]"
+        (e,) = parse_log_entries(line)
+        assert e.citation == "n-abc123"
+
+    def test_parse_bare_id_needs_no_map(self):
+        line = "- 2026-04-15 · *new* — A claim — [[n-abc123]]"
+        (e,) = parse_log_entries(line)
+        assert e.citation == "n-abc123"
+
+    def test_render_parse_roundtrip(self):
+        path_to_id = {p: i for i, p in self.IDMAP.items()}
+        line = self._entry(citation="n-def456", text="claim").render(
+            idmap=self.IDMAP, title_map=self.TITLES
+        )
+        (back,) = parse_log_entries(line, path_to_id=path_to_id)
+        assert back.citation == "n-def456"
+        assert back.text == "claim"
+
+
+# ---------------------------------------------------------------------------
+# Fold 3 — visual collapse of long catalyst logs
+# ---------------------------------------------------------------------------
+
+
+class TestCatalystLogFold:
+    """Older anchors collapse into a non-destructive ``<details>`` block."""
+
+    def _entries(self, n):
+        return [
+            HubLogEntry(
+                date=f"2026-04-{i + 1:02d}",
+                flag="new",
+                text=f"e{i}",
+                citation=f"n-{i:06d}",
+            )
+            for i in range(n)
+        ]
+
+    def test_no_fold_below_threshold(self):
+        lines = render_catalyst_log(self._entries(5), fold_threshold=25)
+        assert not any("<details>" in ln for ln in lines)
+        assert len(lines) == 5
+
+    def test_fold_above_threshold(self):
+        text = "\n".join(render_catalyst_log(self._entries(40), fold_threshold=25))
+        assert "<details>" in text and "</details>" in text
+        # 40 anchors, 25 stay visible → 15 fold away.
+        assert "<summary>Earlier log (15 entries)</summary>" in text
+
+    def test_fold_is_lossless_on_reparse(self):
+        lines = render_catalyst_log(self._entries(40), fold_threshold=25)
+        parsed = parse_log_entries("\n".join(lines))
+        assert len(parsed) == 40
+        assert {e.citation for e in parsed} == {f"n-{i:06d}" for i in range(40)}
+
+    def test_fold_can_be_disabled(self):
+        lines = render_catalyst_log(self._entries(40), fold_threshold=None)
+        assert not any("<details>" in ln for ln in lines)
+
+    def test_empty_log(self):
+        assert render_catalyst_log([]) == ["*No entries yet.*"]
+
+    def test_hub_render_parse_fold_roundtrip(self, tmp_path):
+        hub = Hub(id="x", title="X", essence="E", log=self._entries(40))
+        body = hub.render()
+        assert "<details>" in body
+        p = tmp_path / "x.md"
+        p.write_text("---\ntype: concept-hub\n---\n\n" + body, encoding="utf-8")
+        parsed = Hub.parse(p, hub_id="x")
+        assert len(parsed.log) == 40
+        assert parsed.essence == "E"

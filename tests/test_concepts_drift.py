@@ -1,4 +1,4 @@
-"""Tests for the ontology drift report (src/personal_mem/concepts.py)."""
+"""Tests for the ontology drift report (src/thinkweave/concepts.py)."""
 
 from __future__ import annotations
 
@@ -8,16 +8,16 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.synthesis.concepts import (
+from thinkweave.synthesis.concepts import (
     DRIFT_COUNT_THRESHOLD,
     drift_report,
     format_drift_report,
     hubs_marker_path,
 )
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -58,13 +58,13 @@ def _stub_ontology(monkeypatch, domains: dict[str, list[str]]) -> Path:
     path.write_text("\n".join(lines), encoding="utf-8")
 
     monkeypatch.setattr(
-        "personal_mem.synthesis.concepts._seed_ontology_path", lambda: path
+        "thinkweave.synthesis.concepts._seed_ontology_path", lambda: path
     )
     monkeypatch.setattr(
-        "personal_mem.synthesis.concepts._vault_ontology_path", lambda: path
+        "thinkweave.synthesis.concepts._vault_ontology_path", lambda: path
     )
     monkeypatch.setattr(
-        "personal_mem.synthesis.concepts._ontology_path", lambda: path
+        "thinkweave.synthesis.concepts._ontology_path", lambda: path
     )
     return path
 

@@ -34,7 +34,7 @@ _PROVIDER_SWAP_XFAIL = pytest.mark.xfail(
     strict=False,
 )
 
-from personal_mem.operations.news_triage import (
+from thinkweave.operations.news_triage import (
     ALLOWED_VERDICTS,
     CATALOG_HEADING,
     DEFAULT_MODEL,
@@ -241,7 +241,7 @@ class TestCLI:
             [
                 sys.executable,
                 "-m",
-                "personal_mem.operations.news_triage",
+                "thinkweave.operations.news_triage",
                 "--themes",
                 str(themes),
                 "--dry-run",
@@ -266,7 +266,7 @@ class TestCLI:
             [
                 sys.executable,
                 "-m",
-                "personal_mem.operations.news_triage",
+                "thinkweave.operations.news_triage",
                 "--themes",
                 str(tmp_path / "does_not_exist.md"),
                 "--dry-run",

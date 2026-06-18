@@ -22,13 +22,13 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations import notes as ops
-from personal_mem.retrieval.search import Search
-from personal_mem.surfaces.mcp.tools import notes as mcp_notes
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations import notes as ops
+from thinkweave.retrieval.search import Search
+from thinkweave.surfaces.mcp.tools import notes as mcp_notes
 
 
 @pytest.fixture

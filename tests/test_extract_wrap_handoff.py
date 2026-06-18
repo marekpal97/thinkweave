@@ -1,11 +1,11 @@
-"""Tests for the mem_extract → wrap-finalize identifier handoff (issue: 2026-05-14).
+"""Tests for the weave_extract → wrap-finalize identifier handoff (issue: 2026-05-14).
 
 When a caller passes a non-``ses-XXX`` value as ``session_id`` (e.g. a Claude
-Code UUID), ``mem_extract`` auto-mints a session note whose own ``id:`` is a
+Code UUID), ``weave_extract`` auto-mints a session note whose own ``id:`` is a
 fresh ``ses-XXX`` but whose ``source_session:`` frontmatter is the input value.
 Decisions written for that session inherit ``source_session = <input>``.
 
-``mem wrap-finalize <input>`` then matches decisions correctly; passing
+``weave wrap-finalize <input>`` then matches decisions correctly; passing
 ``<minted ses-XXX>`` instead silently returns 0 (judge writeback no-ops).
 
 These tests pin:
@@ -13,7 +13,7 @@ These tests pin:
 - ``ExtractOutcome.session_note_id`` exists and carries the canonical
   ``ses-XXX`` distinct from ``session_id`` when they diverge
 - The MCP format report distinguishes them in the header
-- The format report ends with a ``▶ To finalize: mem wrap-finalize ...``
+- The format report ends with a ``▶ To finalize: weave wrap-finalize ...``
   line that uses the **input** ``session_id``, not the minted ses-id
 """
 
@@ -23,11 +23,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.extract import extract_session
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations.extract import extract_session
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def _index(config: Config) -> None:
 
 class TestSessionNoteIdSurfacing:
     def test_diverges_when_input_is_uuid(self, config: Config, vault: VaultManager):
-        # UUID-shaped input → mem_extract auto-mints a ses-XXX note.
+        # UUID-shaped input → weave_extract auto-mints a ses-XXX note.
         # session_id (input) stays the UUID; session_note_id is the minted id.
         _index(config)
         cc_uuid = "043708d8-1eb8-4aa3-a9ff-7d8bdad37951"
@@ -100,7 +100,7 @@ class TestExtractFormatReport:
     def test_header_distinguishes_diverged_ids(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.surfaces.mcp.tools.extract import _format_extract_report
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
 
         _index(config)
         out = extract_session(
@@ -120,7 +120,7 @@ class TestExtractFormatReport:
     def test_header_unchanged_when_ids_match(
         self, config: Config, vault: VaultManager
     ):
-        from personal_mem.surfaces.mcp.tools.extract import _format_extract_report
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
 
         sess_path = vault.create_note(
             NoteType.SESSION, "S", body="## Summary\n", project="t",
@@ -143,14 +143,14 @@ class TestExtractFormatReport:
     ):
         # The load-bearing assertion: the finalize hint MUST use the input
         # session_id (what decisions are stamped with), not the minted ses-id.
-        from personal_mem.surfaces.mcp.tools.extract import _format_extract_report
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
 
         _index(config)
         cc_uuid = "043708d8-1eb8-4aa3-a9ff-7d8bdad37951"
         out = extract_session(
             config,
             session_id=cc_uuid,
-            project="personal_mem",
+            project="thinkweave",
             summary="x",
             insights=[],
             decisions=[{
@@ -164,17 +164,17 @@ class TestExtractFormatReport:
         # The exact wrap-finalize hint line.
         assert "▶ To finalize:" in report
         # Critically: uses the UUID (input), not the minted ses-id.
-        assert f"mem wrap-finalize {cc_uuid}" in report
-        assert f"mem wrap-finalize {out.session_note_id}" not in report
+        assert f"weave wrap-finalize {cc_uuid}" in report
+        assert f"weave wrap-finalize {out.session_note_id}" not in report
         # And includes the project so the agent can copy-paste verbatim.
-        assert "--project personal_mem" in report
+        assert "--project thinkweave" in report
 
     def test_finalize_hint_without_project_when_unknown(
         self, config: Config, vault: VaultManager
     ):
         # Defensive: if nothing was created (rare), the hint still appears
         # but without a --project flag — caller can fill it in.
-        from personal_mem.surfaces.mcp.tools.extract import _format_extract_report
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
 
         _index(config)
         out = extract_session(
@@ -184,4 +184,4 @@ class TestExtractFormatReport:
         report = _format_extract_report(out)
         assert "▶ To finalize:" in report
         # No created notes/decisions → no project surfaced from those — fine.
-        assert "mem wrap-finalize ses-99999999" in report
+        assert "weave wrap-finalize ses-99999999" in report

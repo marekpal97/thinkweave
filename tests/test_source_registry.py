@@ -6,7 +6,7 @@ normalization, and the open-world fallback for unregistered types.
 
 from __future__ import annotations
 
-from personal_mem.sources import (
+from thinkweave.acquisition.sources import (
     REGISTRY,
     SourceTypeSpec,
     all_specs,

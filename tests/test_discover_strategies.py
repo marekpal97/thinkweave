@@ -13,13 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.discover import REGISTRY, get, names, register
-from personal_mem.discover.strategies import (
-    concept_coverage,
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.acquisition.discover import REGISTRY, get, names, register
+from thinkweave.acquisition.discover.strategies import (
     decision_review,
     external_tool_runner,
     prompt_gap,
@@ -31,13 +30,13 @@ from personal_mem.discover.strategies import (
 
 class TestRegistry:
     def test_built_ins_register_on_import(self) -> None:
-        assert "concept_coverage" in REGISTRY
         assert "decision_review" in REGISTRY
+        assert "prompt_gap" in REGISTRY
         assert "external_tool_runner" in REGISTRY
 
     def test_get_returns_strategy(self) -> None:
-        s = get("concept_coverage")
-        assert s.name == "concept_coverage"
+        s = get("decision_review")
+        assert s.name == "decision_review"
         assert hasattr(s, "run")
 
     def test_get_unknown_raises(self) -> None:
@@ -94,92 +93,6 @@ def indexer(config: Config):
 
 def _index(vault: VaultManager, indexer: Indexer) -> None:
     indexer.rebuild(full=True)
-
-
-# --- concept_coverage -------------------------------------------------------
-
-
-class TestConceptCoverage:
-    def test_returns_empty_without_index(self, config: Config) -> None:
-        result = concept_coverage.STRATEGY.run(config, None, {})
-        assert result == []
-
-    def test_finds_under_sourced_concept(
-        self, vault: VaultManager, indexer: Indexer, config: Config
-    ) -> None:
-        # 5 notes mention "graph-memory", 0 sources → it's a gap.
-        for i in range(5):
-            vault.create_note(
-                NoteType.NOTE,
-                f"Note {i}",
-                body="See [[graph-memory]].",
-                project="test",
-                extra_frontmatter={"concepts": ["graph-memory", "ai-memory"]},
-            )
-        _index(vault, indexer)
-
-        result = concept_coverage.STRATEGY.run(
-            config, "test", {"projects": {"default": {}}}
-        )
-        concepts = {item["concept"] for item in result}
-        assert "graph-memory" in concepts
-
-    def test_skips_well_sourced_concept(
-        self, vault: VaultManager, indexer: Indexer, config: Config
-    ) -> None:
-        # Concept has 3 source notes — should NOT be flagged as a gap.
-        for i in range(3):
-            vault.create_note(
-                NoteType.SOURCE,
-                f"Paper {i}",
-                body="Background on graph-memory.",
-                project="test",
-                extra_frontmatter={
-                    "source_type": "paper",
-                    "url": f"https://x/{i}",
-                    "concepts": ["graph-memory", "ai-memory"],
-                },
-            )
-        for i in range(5):
-            vault.create_note(
-                NoteType.NOTE,
-                f"Note {i}",
-                body="See it.",
-                project="test",
-                extra_frontmatter={"concepts": ["graph-memory", "ai-memory"]},
-            )
-        _index(vault, indexer)
-
-        result = concept_coverage.STRATEGY.run(
-            config, "test", {"projects": {"default": {}}}
-        )
-        for item in result:
-            assert item["concept"] != "graph-memory"
-
-    def test_respects_min_mentions(
-        self, vault: VaultManager, indexer: Indexer, config: Config
-    ) -> None:
-        # Only 1 mention of "rare-thing" → shouldn't surface even though
-        # it has 0 source coverage.
-        vault.create_note(
-            NoteType.NOTE,
-            "Lone",
-            body="See [[rare-thing]].",
-            project="test",
-            extra_frontmatter={"concepts": ["rare-thing", "ai-memory"]},
-        )
-        _index(vault, indexer)
-
-        cfg = {
-            "projects": {
-                "default": {
-                    "concept_coverage": {"min_mentions": 5},
-                }
-            }
-        }
-        result = concept_coverage.STRATEGY.run(config, "test", cfg)
-        for item in result:
-            assert item["concept"] != "rare-thing"
 
 
 # --- decision_review --------------------------------------------------------
@@ -248,6 +161,63 @@ class TestDecisionReview:
         result = decision_review.STRATEGY.run(config, "test", {})
         for item in result:
             assert "Old superseded" not in item["title"]
+
+    def test_watch_themes_bias_reorders(
+        self, vault: VaultManager, indexer: Indexer, config: Config, tmp_path: Path
+    ) -> None:
+        """Phase 3.1B: decisions whose implements: intersects
+        focus.watch_themes surface above their natural rank and carry
+        watch_themes_matched + in_watch_themes=1."""
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        (cfg_dir / "PRIORITIES.yaml").write_text(
+            "focus:\n  watch_themes: [thm-aaaa1111]\n",
+            encoding="utf-8",
+        )
+        config.vault_root = tmp_path  # rebind vault_root to tmp_path
+
+        old = (date.today() - timedelta(days=60)).isoformat()
+        older = (date.today() - timedelta(days=90)).isoformat()
+        vault.create_note(
+            NoteType.DECISION,
+            "Older unwatched",
+            project="test",
+            extra_frontmatter={
+                "status": "proposed",
+                "date": older,
+                "concepts": ["x", "y"],
+            },
+        )
+        vault.create_note(
+            NoteType.DECISION,
+            "Newer watched",
+            project="test",
+            extra_frontmatter={
+                "status": "proposed",
+                "date": old,
+                "concepts": ["x", "y"],
+                "implements": ["thm-aaaa1111"],
+            },
+        )
+        _index(vault, indexer)
+
+        result = decision_review.STRATEGY.run(config, "test", {})
+        titles = [item["title"] for item in result]
+        # Watched decision surfaces first despite being NEWER.
+        assert any("Newer watched" in t for t in titles)
+        assert any("Older unwatched" in t for t in titles)
+        assert next(i for i, t in enumerate(titles) if "Newer watched" in t) < \
+            next(i for i, t in enumerate(titles) if "Older unwatched" in t)
+        watched_item = next(
+            item for item in result if "Newer watched" in item["title"]
+        )
+        assert watched_item["in_watch_themes"] == 1
+        assert watched_item["watch_themes_matched"] == ["thm-aaaa1111"]
+        unwatched_item = next(
+            item for item in result if "Older unwatched" in item["title"]
+        )
+        assert unwatched_item["in_watch_themes"] == 0
+        assert unwatched_item["watch_themes_matched"] == []
 
 
 # --- external_tool_runner ---------------------------------------------------
@@ -366,44 +336,6 @@ class TestProbePressureBias:
     (covered by the existing tests above). With probes, the strategies
     surface the probed concept ahead of an equally-thin sibling."""
 
-    def test_concept_coverage_pressure_reorders(
-        self, vault: VaultManager, indexer: Indexer, config: Config
-    ) -> None:
-        # Two equally-thin concepts (3 mentions each, 0 sources). Probe
-        # only ``llm`` — it must surface ahead of ``training`` despite
-        # equal mention count (sort is pressure DESC then mentions DESC).
-        for i in range(3):
-            vault.create_note(
-                NoteType.NOTE,
-                f"NoteA {i}",
-                body="A",
-                project="test",
-                extra_frontmatter={"concepts": ["llm", "ai-memory"]},
-            )
-        for i in range(3):
-            vault.create_note(
-                NoteType.NOTE,
-                f"NoteB {i}",
-                body="B",
-                project="test",
-                extra_frontmatter={"concepts": ["training", "ai-memory"]},
-            )
-        _index(vault, indexer)
-        _seed_probe_events(config, "test", ["How does the llm reason?"])
-
-        result = concept_coverage.STRATEGY.run(
-            config, "test", {"projects": {"default": {}}}
-        )
-        # Both concepts surface as gaps; ``llm`` ranks first due to
-        # pressure (probe count 1 > 0 for training).
-        ordered = [item["concept"] for item in result]
-        assert "llm" in ordered and "training" in ordered
-        assert ordered.index("llm") < ordered.index("training")
-        # Probe-pressure surfaces on the descriptor for downstream
-        # consumers (the /discover skill UI shows *why* it ranked).
-        llm_item = next(c for c in result if c["concept"] == "llm")
-        assert llm_item["probe_pressure"] == 1
-
     def test_decision_review_pressure_reorders(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ) -> None:
@@ -503,7 +435,7 @@ class TestPromptGap:
         self, vault: VaultManager, indexer: Indexer, config: Config
     ) -> None:
         # ``frobnicate-widget`` is in proposed_concepts on another note —
-        # the residual strategy must defer to concept_coverage for it.
+        # the residual strategy must defer to ontology promotion for it.
         vault.create_note(
             NoteType.NOTE,
             "Stub",

@@ -1,5 +1,5 @@
-"""C24 — CLI parity for mem_unlink / mem_timeline / mem_project_snapshot
-/ mem_prompts.
+"""C24 — CLI parity for weave_unlink / weave_timeline / weave_project_snapshot
+/ weave_prompts.
 
 Each test calls the cmd_* handler directly with a fixture-vault and
 captures stdout, mirroring the pattern used by test_dream.py.
@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.surfaces.cli.parity import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.surfaces.cli.parity import (
     cmd_project_snapshot,
     cmd_prompts,
     cmd_timeline,
@@ -29,8 +29,8 @@ from personal_mem.surfaces.cli.parity import (
 @pytest.fixture
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     vault = tmp_path / "vault"
-    monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
-    monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+    monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
     return Config(vault_root=vault, default_project="t")
 
 
@@ -49,8 +49,8 @@ class TestUnlink:
     def test_unlinks_existing_edge(
         self, cfg: Config, vault: VaultManager, capsys
     ):
-        from personal_mem.core.vault import parse_frontmatter
-        from personal_mem.operations.notes import link_notes
+        from thinkweave.core.vault import parse_frontmatter
+        from thinkweave.operations.notes import link_notes
 
         a = vault.create_note(NoteType.NOTE, "A", project="t")
         b = vault.create_note(NoteType.NOTE, "B", project="t")
@@ -181,10 +181,10 @@ class TestPrompts:
     def test_missing_project_exits_one(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ):
-        # Isolated config — no PERSONAL_MEM_PROJECT env var, no
+        # Isolated config — no THINKWEAVE_PROJECT env var, no
         # default_project on disk. cmd_prompts must exit 1 cleanly.
-        monkeypatch.delenv("PERSONAL_MEM_PROJECT", raising=False)
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        monkeypatch.delenv("THINKWEAVE_PROJECT", raising=False)
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
         with pytest.raises(SystemExit) as exc:
             cmd_prompts(
                 _args(project="", since="", limit=10, classified_as="",

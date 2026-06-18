@@ -7,13 +7,13 @@ tools:
   - Write
   - WebFetch
   - WebSearch
-  - mem_search
-  - mem_concepts
-  - mem_concept_search
-  - mem_create
-  - mem_update
-  - mem_link
-  - mem_queue
+  - weave_search
+  - weave_concepts
+  - weave_graph
+  - weave_create
+  - weave_update
+  - weave_link
+  - weave_queue
 description: Fetch a web article, extract argument + claims + evidence, write it as a `source_type: article` note. Called from `/research` (router) or `/drain --source-type article`.
 ---
 
@@ -40,19 +40,24 @@ republished elsewhere). If still nothing useful, skip — log the URL.
 ### 2. Load ontology + check vault
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
-mem_search(query="<key terms>", mode="hybrid", limit=5)
-mem_concept_search(concepts=["<best-fit>"], match_mode="any", limit=5)
+weave_concepts(action="list")
+weave_search(query="<key terms>", mode="hybrid", limit=5)
+weave_graph(filter="concept_walk", concepts=["<best-fit>"], match_mode="any", limit=5)
 ```
+
+`weave_concepts(action="list")` loads the vault's **merged** ontology
+(canonical + proposed) — the gate vocabulary for the concepts you assign.
+Do **not** read `src/thinkweave/ontology.yaml` from the source tree: under a
+plugin install that path doesn't exist at your CWD, and it misses the vault's
+proposed terms.
 
 ### 3. Write the source note
 
 ```
-mem_create(
+weave_create(
   type="source",
   title="<article title>",
-  body="<argument + evidence brief — see template below>",
+  body="<argument + evidence brief — structured per vault/config/note_formats/article.md>",
   tags=["article"],
   concepts=["<≥3 ontology concepts>"],
   frontmatter={
@@ -68,7 +73,7 @@ mem_create(
 Save the fetched text to the source directory:
 ```
 Write <source_dir>/raw.md
-mem_update(note_id="<src-id>", frontmatter_updates={"raw_path": "raw.md"})
+weave_update(note_id="<src-id>", frontmatter_updates={"raw_path": "raw.md"})
 ```
 
 ### 4. Link + archive queue
@@ -84,25 +89,13 @@ archive the queue item with status `done`.
 
 ## Body template (article)
 
-```markdown
-## Core Argument
-[the thesis, not just the topic]
-
-## Key Claims & Evidence
-- [specific claim + evidence]
-- [distinguish data-backed claims from opinion / anecdote]
-- [quantitative findings or benchmarks cited]
-
-## Technical Detail
-[methods, frameworks, approaches discussed]
-[concrete examples or case studies]
-
-## Vault Connections
-- Relates to [[existing-note-title]] — [why]
-
-## Raw Content
-[[<slug>/raw.md]]
-```
+`Read` `<vault_root>/config/note_formats/article.md` and compose the body to
+the sections it lists. That file is seeded at init and **user-editable** —
+the user reshapes every article brief by editing it directly, no skill
+change. Keep `## Vault Connections` and `## Raw Content` so graph links and
+the raw pointer land. If the file is missing, fall back to a clear,
+well-structured argument brief ending with `## Vault Connections` and
+`## Raw Content`.
 
 ## Concept rules
 

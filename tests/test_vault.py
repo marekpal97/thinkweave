@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.schemas import DecisionStatus, NoteType
-from personal_mem.core.vault import (
+from thinkweave.core.config import Config
+from thinkweave.core.schemas import DecisionStatus, NoteType
+from thinkweave.core.vault import (
     VaultManager,
     content_hash,
     extract_wikilinks,
@@ -105,6 +105,42 @@ class TestRenderFrontmatter:
         assert "empty" not in rendered
         assert "none_val" not in rendered
 
+    def test_inner_double_quotes_roundtrip(self):
+        # Defect 5 regression: titles with inner double quotes used to be
+        # wrapped unescaped (or left bare and edge-stripped by the reader).
+        title = 'He said "no" — Q1 "pivot"'
+        rendered = render_frontmatter({"title": title, "type": "note"})
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["title"] == title
+        # Escaped YAML double-quote form on the wire
+        assert 'title: "He said \\"no\\" — Q1 \\"pivot\\""' in rendered
+
+    def test_quote_and_backslash_breakers_roundtrip(self):
+        for value in (
+            'mix: of "quotes" and [brackets]',
+            "trailing backslash \\",
+            '"leading quote',
+            "'single quoted'",
+            'back\\slash "mix"',
+            "C:\\already\\quoted: path",
+        ):
+            rendered = render_frontmatter({"title": value})
+            fm, _ = parse_frontmatter(rendered + "\n\nBody")
+            assert fm["title"] == value, rendered
+
+    def test_plain_scalars_unchanged(self):
+        # Escaping must not churn the output style for plain values.
+        rendered = render_frontmatter({"title": "plain title", "status": "active"})
+        assert "title: plain title" in rendered
+        assert "status: active" in rendered
+
+    def test_legacy_unescaped_quoted_backslash_still_parses(self):
+        # Files written before the writer escaped: quoted value with raw
+        # backslashes must keep parsing verbatim (no over-eager unescape).
+        text = '---\ntitle: "C:\\old\\style"\n---\n\nBody'
+        fm, _ = parse_frontmatter(text)
+        assert fm["title"] == "C:\\old\\style"
+
     def test_dict_values(self):
         data = {"context": {"prompt": "do something", "plan": "dec-123"}}
         rendered = render_frontmatter(data)
@@ -130,23 +166,125 @@ class TestRenderFrontmatter:
         rendered = render_frontmatter(data)
         assert '- {"k": "v", "n": 1}' in rendered
 
+    def test_list_field_string_literal_coerced(self):
+        """Writer-subagent regression: a JSON-shaped string passed for a
+        list-shaped field (``proposed_concepts``) must coerce to a real
+        list, not get iterated character-by-character downstream.
+        """
+        data = {"id": "src-test", "proposed_concepts": "[liqudty]"}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert isinstance(fm["proposed_concepts"], list)
+        assert fm["proposed_concepts"] == ["liqudty"]
+        # And critically, NOT char-iterated
+        assert fm["proposed_concepts"] != ["[", "l", "i", "q", "u", "d", "t", "y", "]"]
+
+    def test_list_field_quoted_json_list_coerced(self):
+        """Stringified JSON list with quoted elements parses cleanly."""
+        data = {"id": "src-test", "concepts": '["llm", "ai-governance"]'}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert isinstance(fm["concepts"], list)
+        assert fm["concepts"] == ["llm", "ai-governance"]
+
+    def test_list_field_bare_scalar_wraps(self):
+        """A bare scalar for a list field becomes a single-element list."""
+        data = {"id": "src-test", "tags": "news"}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["tags"] == ["news"]
+
+    def test_list_field_char_iterated_damage_reconstructed(self):
+        """If an upstream layer already char-iterated the value (the actual
+        damage shape found in src-682d7b64, src-8208cf66, etc.), the
+        render-time coercion stitches the chars back into a single string
+        and re-parses. The reconstruction is best-effort but always
+        produces a sane list rather than letting char damage propagate.
+        """
+        data = {
+            "id": "src-test",
+            "proposed_concepts": ["[", "l", "i", "q", "u", "d", "t", "y", "]"],
+        }
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["proposed_concepts"] == ["liqudty"]
+
+    def test_short_legit_list_not_misclassified_as_damage(self):
+        """Char-damage detection must not fire on legitimate short lists
+        even when items happen to be short — only triggers when ALL
+        items are length-1 AND total >3 elements."""
+        # Three single-char items: still legit (below threshold)
+        data = {"id": "n-test", "aliases": ["a", "b", "c"]}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["aliases"] == ["a", "b", "c"]
+
+    def test_list_field_already_a_list_passes_through(self):
+        """The normal case — a proper list of strings — is unchanged."""
+        data = {"id": "src-test", "concepts": ["llm", "ai-governance", "ai-ethics"]}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        assert fm["concepts"] == ["llm", "ai-governance", "ai-ethics"]
+
+    def test_non_list_field_string_left_alone(self):
+        """Coercion only fires for keys in ``LIST_FRONTMATTER_KEYS``.
+        Scalar fields (title, url, status) keep their string form."""
+        data = {"id": "src-test", "title": "[Some Title]", "url": "https://x.y"}
+        rendered = render_frontmatter(data)
+        fm, _ = parse_frontmatter(rendered + "\n\nBody")
+        # Title contains brackets but is NOT a list field — it must stay a string
+        assert isinstance(fm["title"], str)
+        assert fm["url"] == "https://x.y"
+
 
 # --- Wikilinks ---
 
 
 class TestWikilinks:
     def test_extract_basic(self):
-        text = "See [[legacy-proj]] and [[sqlite-wal]] for details."
+        text = "See [[legacy_proj]] and [[sqlite-wal]] for details."
         links = extract_wikilinks(text)
-        assert links == ["legacy-proj", "sqlite-wal"]
+        assert links == ["legacy_proj", "sqlite-wal"]
 
     def test_extract_with_alias(self):
-        text = "Check [[legacy-proj|Legacy Project]] docs."
+        text = "Check [[legacy_proj|Legacy Project]] docs."
         links = extract_wikilinks(text)
-        assert links == ["legacy-proj"]
+        assert links == ["legacy_proj"]
 
     def test_no_links(self):
         assert extract_wikilinks("No links here.") == []
+
+
+class TestWikilinkIds:
+    """``extract_wikilink_ids`` recovers a note id whether the link is bare
+    (``[[id]]``) or path-based (``[[path|id]]``). Load-bearing: edge inference
+    and the RLVR citation substrate route through it, so the bare→path body
+    migration must not drop edges or citations.
+    """
+
+    def test_bare_id(self):
+        from thinkweave.core.vault import extract_wikilink_ids
+
+        assert extract_wikilink_ids("see [[dec-9988aaff]]") == ["dec-9988aaff"]
+
+    def test_path_based_id_from_display(self):
+        from thinkweave.core.vault import extract_wikilink_ids
+
+        ids = extract_wikilink_ids("see [[notes/foo/bar|n-abc123ef]]")
+        assert ids == ["n-abc123ef"]
+
+    def test_title_link_returns_raw_target(self):
+        from thinkweave.core.vault import extract_wikilink_ids
+
+        # Not id-shaped on either side — caller (e.g. RLVR) filters it out.
+        assert extract_wikilink_ids("see [[Some Title]]") == ["Some Title"]
+
+    def test_mixed(self):
+        from thinkweave.core.vault import extract_wikilink_ids
+
+        body = "[[notes/x|n-aaaaaa11]] then [[dec-bbbbbb22]] and [[concepts/finance|Finance]]"
+        ids = extract_wikilink_ids(body)
+        assert ids == ["n-aaaaaa11", "dec-bbbbbb22", "concepts/finance"]
 
 
 class TestContentHash:
@@ -162,7 +300,7 @@ class TestContentHash:
 
 class TestVaultManager:
     def test_ensure_dirs(self, vault: VaultManager):
-        assert (vault.root / ".mem").is_dir()
+        assert (vault.root / ".weave").is_dir()
         assert (vault.root / "projects").is_dir()
         assert (vault.root / "daily").is_dir()
         assert (vault.root / "sources").is_dir()
@@ -188,7 +326,7 @@ class TestVaultManager:
             "SQLite WAL Gotcha",
             body="WAL mode requires exclusive lock for checkpointing.",
             tags=["gotcha", "sqlite"],
-            project="personal-mem",
+            project="thinkweave",
         )
         assert path.exists()
         assert path.suffix == ".md"
@@ -199,14 +337,25 @@ class TestVaultManager:
         assert note.title == "SQLite WAL Gotcha"
         assert "gotcha" in note.tags
         assert "sqlite" in note.tags
-        assert note.project == "personal-mem"
+        assert note.project == "thinkweave"
         assert "exclusive lock" in note.body
+
+    def test_create_note_normalizes_project(self, vault: VaultManager):
+        """A dash/case project name is canonicalized so `trade-ideas` and
+        `trade_ideas` can never become two separate project folders."""
+        path = vault.create_note(
+            NoteType.NOTE, "X", project="Trade-Ideas",
+        )
+        assert "projects/trade_ideas/" in str(path).replace("\\", "/")
+        assert "trade-ideas" not in str(path).lower()
+        note = vault.read_note(path)
+        assert note.project == "trade_ideas"
 
     def test_create_session(self, vault: VaultManager):
         path = vault.create_note(
             NoteType.SESSION,
             "DAG refactor",
-            project="legacy-proj",
+            project="legacy_proj",
             extra_frontmatter={"source_session": "abc-123"},
         )
         assert path.exists()
@@ -220,7 +369,7 @@ class TestVaultManager:
             NoteType.DECISION,
             "Use markdown-first storage",
             body="## Context\nNeed portable storage.\n\n## Decision\nMarkdown + SQLite.",
-            project="personal-mem",
+            project="thinkweave",
             tags=["architecture"],
         )
         note = vault.read_note(path)
@@ -260,6 +409,54 @@ class TestVaultManager:
         assert "Line 1." in note.body
         assert "Line 2." in note.body
 
+    def test_update_note_list_of_dicts_no_typeerror(self, vault: VaultManager):
+        """Regression: dedupe path on a list-of-dicts (e.g. prediction_history)
+        must not raise ``TypeError: unhashable type: 'dict'``.
+
+        Pre-fix, the merge branch did ``existing = set(fm[key])`` blindly,
+        which exploded when ``fm[key]`` held dicts. The fix catches the
+        TypeError and falls through to a replace-with-new-value branch.
+        """
+        path = vault.create_note(
+            NoteType.DECISION,
+            "Test Decision",
+            body="## Context\n\n## Decision\n",
+            extra_frontmatter={
+                "prediction_history": [
+                    {
+                        "match": "pending",
+                        "judged_at": "2026-05-25T16:21Z",
+                        "reason": "awaiting evidence",
+                    }
+                ]
+            },
+        )
+        # Trigger the merge branch: both old and new are lists.
+        new_history = [
+            {
+                "match": "pending",
+                "judged_at": "2026-05-25T16:21Z",
+                "reason": "awaiting evidence",
+            },
+            {
+                "match": "confirmed",
+                "judged_at": "2026-05-26T08:00Z",
+                "reason": "drain produced 3/3 accepted",
+            },
+        ]
+        # Pre-fix this raised TypeError before write; post-fix it should
+        # silently fall through to the replace branch.
+        vault.update_note(
+            path, frontmatter_updates={"prediction_history": new_history}
+        )
+        note = vault.read_note(path)
+        # Fallback path replaces with the incoming value wholesale — the
+        # merged shape is exactly ``new_history`` (2 dicts), not the old
+        # 1-dict list.
+        assert isinstance(note.frontmatter["prediction_history"], list)
+        assert len(note.frontmatter["prediction_history"]) == 2
+        assert note.frontmatter["prediction_history"] == new_history
+
     def test_list_notes(self, vault: VaultManager):
         vault.create_note(NoteType.NOTE, "Note A", project="proj1", tags=["x"])
         vault.create_note(NoteType.NOTE, "Note B", project="proj2", tags=["y"])
@@ -297,14 +494,20 @@ class TestVaultManager:
         assert path.name == "source.md"
         assert path.parent.name == "global-article"
 
-    def test_source_project_scoped(self, vault: VaultManager):
-        """Sources with project go to vault/projects/{project}/sources/{slug}/source.md."""
+    def test_source_global_despite_project(self, vault: VaultManager):
+        """Sources are global: a `project:` never routes them under projects/.
+
+        Source notes file strictly by the registry bucket under
+        vault/sources/<bucket>/, exactly like themes. The project frontmatter
+        is informational only.
+        """
         path = vault.create_note(
             NoteType.SOURCE, "ML Paper",
-            project="ml-study",
+            project="ml_study",
             extra_frontmatter={"source_type": "paper", "url": "https://arxiv.org/123"},
         )
-        assert "projects/ml-study/sources" in str(path)
+        assert "projects" not in str(path)
+        assert "sources/papers" in str(path)
         assert path.name == "source.md"
         assert path.parent.name == "ml-paper"
         assert path.exists()
@@ -317,6 +520,23 @@ class TestVaultManager:
         assert p1.exists() and p2.exists()
         assert p1.parent.name == "same-source"
         assert p2.parent.name == "same-source-1"
+
+
+class TestGetAllMdFiles:
+    def test_underscore_archive_excluded(self, vault: VaultManager):
+        """``concepts/topics/_archive/`` (merged/demoted hubs) must not be
+        swept up by the index scan — it's the underscore analog of
+        ``.archive`` (see synthesis.concepts.HUB_ARCHIVE_DIRNAME)."""
+        topics = vault.root / "concepts" / "topics"
+        (topics / "_archive").mkdir(parents=True, exist_ok=True)
+        live = topics / "live-hub.md"
+        live.write_text("---\ntype: concept-hub\n---\n", encoding="utf-8")
+        archived = topics / "_archive" / "dead-hub.md"
+        archived.write_text("---\ntype: concept-hub\n---\n", encoding="utf-8")
+
+        files = vault.get_all_md_files()
+        assert live in files
+        assert archived not in files
 
 
 class TestStripSection:
@@ -490,3 +710,23 @@ class TestDirectoryStructure:
         )
         assert p1.parent.parent == p2.parent.parent
         assert p1.parent.parent.name == "citrini"
+
+
+class TestSeedVaultTemplates:
+    """`_seed_vault_templates` must copy every shipped config template into the vault."""
+
+    def test_all_shipped_templates_seeded(self, tmp_path: Path):
+        from thinkweave.surfaces.cli.util import _seed_vault_templates
+
+        _seed_vault_templates(tmp_path)
+        config_dir = tmp_path / "config"
+        for filename in (
+            "sources.yaml",
+            "PRIORITIES.yaml",
+            "scheduling.yaml",
+        ):
+            assert (config_dir / filename).exists(), f"{filename} not seeded"
+        # Standalone feed registries were folded into PRIORITIES.yaml::intake
+        # (retired 2026-06-13) — they must no longer be seeded.
+        for gone in ("news_feeds.yaml", "podcast_events_feeds.yaml", "podcast_concepts_feeds.yaml"):
+            assert not (config_dir / gone).exists(), f"{gone} should not be seeded"

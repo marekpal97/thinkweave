@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.retrieval.search import Search
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.retrieval.search import Search
+from thinkweave.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +680,7 @@ class TestConceptSourceCounts:
 
 
 class TestCrossProjectActivity:
-    """Cross-project mem_timeline ranking mode."""
+    """Cross-project weave_timeline ranking mode."""
 
     def test_ranks_by_total_activity_desc(
         self, vault: VaultManager, indexer: Indexer, config: Config
@@ -782,4 +782,39 @@ class TestCrossProjectActivity:
         indexer.rebuild(full=True)
         s = Search(config=config)
         assert s.get_cross_project_activity(days=14) == []
+        s.close()
+
+
+class TestRrfKFromConfig:
+    """Bucket-3 audit: hybrid_search's RRF constant reads config
+    ``retrieval.rrf_k`` when no explicit ``rrf_k`` is passed."""
+
+    @staticmethod
+    def _result(nid: str) -> "SearchResult":
+        from thinkweave.retrieval.search import SearchResult
+
+        return SearchResult(
+            id=nid, type="note", title=nid, path=f"{nid}.md",
+            project="p1", date="2026-06-01", tags=[],
+        )
+
+    def test_config_rrf_k_reaches_fusion(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        indexer.rebuild(full=True)
+        s = Search(config=config)
+        # Canned retriever outputs: 'a' in both arms at rank 1.
+        s.search = lambda *a, **kw: [self._result("a"), self._result("b")]
+        s.similar = lambda *a, **kw: [self._result("a"), self._result("c")]
+
+        config.retrieval_rrf_k = 4
+        merged = s.hybrid_search("q")
+        top = merged[0]
+        assert top.id == "a"
+        # Fused score = 1/(k+1) + 1/(k+1) with the configured k=4.
+        assert top.rank == pytest.approx(2 / 5)
+
+        # Explicit kwarg still overrides config.
+        merged = s.hybrid_search("q", rrf_k=60)
+        assert merged[0].rank == pytest.approx(2 / 61)
         s.close()

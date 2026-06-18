@@ -2,12 +2,12 @@
 name: source-fit
 owns_mechanic: source_diagnosis
 capabilities: []
-consumes: [mem_sources_config]
+consumes: [weave_sources_config]
 produces: []
 tools:
   - Read
   - Bash
-  - mem_sources_config
+  - weave_sources_config
 description: Read-only diagnostic — given a free-form description of an input shape, classify it against existing source types. Returns covered / adapt / scaffold.
 ---
 
@@ -27,7 +27,7 @@ project; the result is the same.
 Single MCP call:
 
 ```
-mem_sources_config()
+weave_sources_config()
 ```
 
 This returns the merged registry + sources.yaml config. The keys you
@@ -67,7 +67,7 @@ similar shape (substack disk inbox, paper PDF inbox), return:
 
 ```
 adapt: <slug>
-how:    point intake_folder at <user-folder> in vault/.mem/sources.yaml
+how:    point intake_folder at <user-folder> in vault/config/sources.yaml
 why:    <slug> already drains a disk inbox; only the path differs
 ```
 
@@ -79,7 +79,7 @@ text-shaped. Return:
 
 ```
 adapt: <slug>
-how:    create vault/.mem/sources.yaml override for <slug> with new dedup_keys
+how:    create vault/config/sources.yaml override for <slug> with new dedup_keys
         (and possibly intake_folder); reuse the existing skill
 why:    same shape, different keys
 ```
@@ -109,6 +109,6 @@ a long Q&A.
 
 - Never write to the vault.
 - Never edit `sources.yaml` or `source_types.yaml`.
-- Never call `mem sources scaffold`. That's `/source-scaffold`'s job.
-- Never recommend forking the personal_mem repo. All adaptations live
+- Never call `weave sources scaffold`. That's `/source-scaffold`'s job.
+- Never recommend forking the thinkweave repo. All adaptations live
   in the user's vault overlay or in `~/.claude/commands/`.

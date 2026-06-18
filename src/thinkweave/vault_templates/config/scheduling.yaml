@@ -1,0 +1,92 @@
+# thinkweave scheduled-job registry — the single source of truth for
+# recurring automation, rendered onto whichever scheduler your OS provides.
+#
+#   weave schedule list                 # show jobs + the backend for this OS
+#   weave schedule install --dry-run    # preview the crontab / Task Scheduler entries
+#   weave schedule install              # install them (crontab on Linux/macOS,
+#                                     #   Windows Task Scheduler via schtasks)
+#   weave schedule install --only dream,embeddings-keepwarm
+#   weave schedule uninstall
+#
+# Each job:
+#   cadence  — cron expression (canonical cadence language). The Linux
+#              backend passes it through verbatim; the Windows backend maps
+#              the common subset (daily / every-N-hours / every-N-minutes /
+#              weekly) to Task Scheduler triggers and refuses anything else.
+#   command  — the literal command. Same string on both OSes; only the
+#              trigger differs. The binary (weave / claude) is resolved to an
+#              absolute path at install time.
+#   runner   — 'direct' for a `claude` invocation, 'uv' for a `weave`
+#              subcommand (falls back to `uv run --project <repo> weave …`
+#              when `weave` isn't a global console script).
+#   env      — env-var names the job needs in its environment. For `claude -p`
+#              jobs ANTHROPIC_API_KEY is the *claude CLI's* headless auth, not
+#              an API call by the skill — omit it if Claude Code is authed via
+#              subscription/OAuth. OPENAI_API_KEY on embeddings is a real
+#              prerequisite (it calls the embeddings provider).
+#   log      — log filename, written under the per-OS cache dir
+#              (~/.cache/thinkweave on Linux, %LOCALAPPDATA%\thinkweave
+#              on Windows).
+#   enabled  — false jobs are rendered commented-out (cron) / skipped (Windows).
+
+jobs:
+  # Embeddings keep-warm + incremental SQLite index refresh. Without it,
+  # similarity/hybrid retrieval silently degrades to FTS-only on recent
+  # content and misses Obsidian-side edits between sessions.
+  embeddings-keepwarm:
+    cadence: "15 */4 * * *"
+    command: "weave index --embed --only-new"
+    runner: uv
+    env: [OPENAI_API_KEY]
+    log: embed-warm.log
+    enabled: true
+
+  # Nightly autonomous vault hygiene + synthesis + composition. One entry
+  # replaces the former three (/dream, /wrap catch-up, /judge-prediction).
+  dream:
+    cadence: "0 3 * * *"
+    command: "claude -p /dream"
+    runner: direct
+    env: [ANTHROPIC_API_KEY]
+    log: dream.log
+    enabled: true
+
+  # Daily research cycle: discover gaps, drain queue, refresh hubs.
+  # Disabled by default — enable once you've configured source types and
+  # the `daily-research` flow (vault/config/flows.yaml).
+  daily-research:
+    cadence: "0 8 * * *"
+    command: "weave flow run daily-research"
+    runner: uv
+    env: []
+    log: cron.log
+    enabled: false
+
+  # Weekly hygiene: concept + theme dedup + hub coherence.
+  weekly-hygiene:
+    cadence: "0 4 * * 0"
+    command: "weave flow run weekly-hygiene"
+    runner: uv
+    env: []
+    log: cron.log
+    enabled: false
+
+  # News intake — poll RSS feeds into the news queue every two hours.
+  # Requires the `news` source type enabled + ANTHROPIC_API_KEY for headless.
+  news-poll:
+    cadence: "0 */2 * * *"
+    command: "claude -p /discover --strategy rss_poll --source-type news"
+    runner: direct
+    env: [ANTHROPIC_API_KEY]
+    log: news-pull.log
+    enabled: false
+
+  # News drain — triage + brief, every 6h, spaced from the polls so the
+  # queue accumulates a useful batch first.
+  news-cycle:
+    cadence: "30 */6 * * *"
+    command: "weave flow run news-cycle"
+    runner: uv
+    env: []
+    log: cron.log
+    enabled: false

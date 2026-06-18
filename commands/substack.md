@@ -3,16 +3,16 @@ name: substack
 owns_mechanic: substack_inbox
 source_type: substack
 capabilities: [acquire]
-consumes: [mem_search, mem_concepts, mem_create, mem_update, mem_link]
+consumes: [weave_search, weave_concepts, weave_create, weave_update, weave_link]
 produces: [vault/sources/substack/**]
 tools:
   - Read
   - Bash
-  - mem_search
-  - mem_concepts
-  - mem_create
-  - mem_update
-  - mem_link
+  - weave_search
+  - weave_concepts
+  - weave_create
+  - weave_update
+  - weave_link
 description: Drain the Substack disk inbox (browser-clipped posts) into the vault. Figure-aware via multimodal Read; archives processed bundles.
 ---
 
@@ -51,10 +51,10 @@ Before starting, confirm inbox path: `echo $SUBSTACK_INBOX || echo ~/substack_in
 ### 1. Enumerate the inbox
 
 ```
-Bash("uv run mem intake enumerate ~/substack_inbox/")
+Bash("weave intake enumerate ~/substack_inbox/")
 ```
 
-Uses `mem intake` so `/email` and other drop-folder importers share the same enumeration semantics (`_processed/` skipped, flat vs folder classified, `<stem>-images/`/`<stem>_assets/` companion resolved).
+Uses `weave intake` so `/email` and other drop-folder importers share the same enumeration semantics (`_processed/` skipped, flat vs folder classified, `<stem>-images/`/`<stem>_assets/` companion resolved).
 
 Output is JSON: `[{"path": "...", "kind": "flat"|"folder", "companion_dir": "..."|null}, ...]`. Already excludes `_processed/`, dotfiles, loose non-`.md` files, and folders without any markdown. If the array is empty, report "Nothing to drain." and stop.
 
@@ -91,9 +91,12 @@ If `url` can't be recovered, skip the item with an error logged — we won't ing
 ### 3. Load ontology + concept registry (once per batch)
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=1)
+weave_concepts(action="list")
 ```
+
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary. Don't read `src/thinkweave/ontology.yaml` from the source tree:
+under a plugin install that path isn't at your CWD, and it misses proposed terms.
 
 Identify which ontology branches the publication you're draining
 maps to — substack is a generic newsletter platform, so the relevant
@@ -102,22 +105,22 @@ finance-focused publication maps onto `finance/*` branches; an
 ML-focused publication onto `ml/*`; a politics newsletter onto
 whichever domain you've added for that subject.) If you spot a gap
 in the ontology, propose new concepts in `proposed_concepts` and let
-`/mem-resolve-concepts` canonicalise them later.
+`/tighten` canonicalise them later.
 
 ### 4. Search vault for connections
 
 ```
-mem_search(query="<key terms + named entities + themes from this post>", mode="hybrid", limit=5)
-mem_concept_search(concepts=["<concepts you're about to assign>"], match_mode="any", limit=5)
+weave_search(query="<key terms + named entities + themes from this post>", mode="hybrid", limit=5)
+weave_graph(filter="concept_walk", concepts=["<concepts you're about to assign>"], match_mode="any", limit=5)
 ```
 
 Note which existing sources/notes/decisions relate. These feed the **Vault Connections** section.
 
-### 5. Defer image work until after `mem_create`
+### 5. Defer image work until after `weave_create`
 
-Images need to land inside the source note's directory so `raw.md` can reference them relatively. But the source directory doesn't exist yet — `mem_create` creates it. So:
+Images need to land inside the source note's directory so `raw.md` can reference them relatively. But the source directory doesn't exist yet — `weave_create` creates it. So:
 
-1. Do steps 6–8 first (write the source note via `mem_create`, which returns the source directory path).
+1. Do steps 6–8 first (write the source note via `weave_create`, which returns the source directory path).
 2. Then handle images in step 9: create `assets/`, copy local refs from a folder bundle (if any), curl-backfill remote refs from the body, and rewrite paths.
 
 Hold the list of local image paths (from step 2's bundle discovery) and the list of remote image URLs (extracted from the body during step 6) in memory until you reach step 9.
@@ -139,13 +142,13 @@ Write the brief from the text body. Images are archived in `assets/` for later i
 
 - Map to whatever ontology branches actually fit the publication.
 - Propose new concepts aggressively — lowercase, hyphenated, specific. Examples by domain: finance → `rate-cycles`, `sector-rotation`; ML → `chain-of-thought`, `kv-cache`; policy → `industrial-policy`, `permitting-reform`. Put new proposals in `proposed_concepts`.
-- **Do NOT edit `ontology.yaml` inline** — consolidation happens via `/mem-resolve-concepts` later.
+- **Do NOT edit `ontology.yaml` inline** — consolidation happens via `/tighten` later.
 - Minimum 3 concepts per source (concepts are the primary linkage mechanism).
 
-### 8. Call `mem_create`
+### 8. Call `weave_create`
 
 ```
-mem_create(
+weave_create(
   type="source",
   title="<post title>",
   body="<structured brief from step 6>",
@@ -215,7 +218,7 @@ Write the rewritten body to `<source_dir>/raw.md` via `Write`.
 **9e. Update the source note** with `raw_path` and figure list:
 
 ```
-mem_update(
+weave_update(
   note_id="<src-id>",
   frontmatter_updates={"raw_path": "raw.md", "figures": ["assets/img-1.png", "assets/img-2.png"]}
 )
@@ -227,7 +230,7 @@ Images are archived but not interpreted — the user can `Read` them later if ne
 
 For each related note/source discovered in step 4:
 ```
-mem_link(source_id="<new-src-id>", target_id="<related-id>", edge_type="relates_to")
+weave_link(source_id="<new-src-id>", target_id="<related-id>", edge_type="relates_to")
 ```
 
 ### 11. Archive the inbox entry
@@ -235,12 +238,12 @@ mem_link(source_id="<new-src-id>", target_id="<related-id>", edge_type="relates_
 Move the source from the inbox to a dated archive folder — never delete:
 
 ```
-Bash("uv run mem intake archive '<entry-path>' --inbox ~/substack_inbox/")
+Bash("weave intake archive '<entry-path>' --inbox ~/substack_inbox/")
 ```
 
-Uses `mem intake archive` so the dated-folder + companion-dir + collision-suffix logic is shared with `/email` and other drop-folder importers (and is unit-tested), instead of being open-coded in every skill.
+Uses `weave intake archive` so the dated-folder + companion-dir + collision-suffix logic is shared with `/email` and other drop-folder importers (and is unit-tested), instead of being open-coded in every skill.
 
-`<entry-path>` is the `path` field returned by `mem intake enumerate` for this item. The command:
+`<entry-path>` is the `path` field returned by `weave intake enumerate` for this item. The command:
 - Creates `~/substack_inbox/_processed/<YYYY-MM-DD>/` on demand.
 - Moves the entry plus any companion dir (`<stem>-images/` or `<stem>_assets/`) for flat entries.
 - Appends `-1`, `-2`, … to the basename on same-day name collisions, so retries after a partial failure are safe.
@@ -270,7 +273,7 @@ Batch summary: N processed, M skipped, K errors, inbox remaining count. Suggeste
 ## Failure handling
 
 - **Parse error / missing URL** → log, skip the item (leave in inbox), continue.
-- **`mem_create` failure** → log, skip, continue. Don't move the inbox entry until you have a confirmed `src-` ID.
+- **`weave_create` failure** → log, skip, continue. Don't move the inbox entry until you have a confirmed `src-` ID.
 - **Curl image backfill failure** (timeout, 403, network error) → log the URL and image index, leave that ref remote in `raw.md`, continue with the rest of the item. The text brief is still worth keeping.
 - **No queue state to manage** — failures just mean "still in the inbox," which is the correct fallback.
 

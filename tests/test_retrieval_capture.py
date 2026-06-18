@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.operations.retrieval_log import (
+from thinkweave.operations.retrieval_log import (
     RETRIEVAL_TOOLS,
     append_event,
     build_retrieval_event,
@@ -30,7 +30,7 @@ from personal_mem.operations.retrieval_log import (
 
 
 class TestParseReturnedIds:
-    def test_paren_style_mem_search(self):
+    def test_paren_style_weave_search(self):
         text = (
             "[note] Title one (n-abc123def) [tag1, tag2]\n"
             "  snippet line\n"
@@ -80,23 +80,23 @@ class TestParseReturnedIds:
 
 
 class TestSummarizeArgs:
-    def test_mem_search_keeps_whitelist(self):
+    def test_weave_search_keeps_whitelist(self):
         args = {
             "query": "foo", "mode": "fts", "project": "p",
             "secret": "should-not-be-logged",
         }
-        out = summarize_args("mcp__personal-mem__mem_search", args)
+        out = summarize_args("mcp__thinkweave__weave_search", args)
         assert out == {"query": "foo", "mode": "fts", "project": "p"}
         assert "secret" not in out
 
     def test_drops_empty_values(self):
         args = {"query": "", "mode": "fts", "concepts": [], "project": "p"}
-        out = summarize_args("mcp__personal-mem__mem_search", args)
+        out = summarize_args("mcp__thinkweave__weave_search", args)
         assert out == {"mode": "fts", "project": "p"}
 
     def test_unknown_tool_returns_empty(self):
         # Defensive — tool not in _KEEP_ARGS yields {} not crash.
-        out = summarize_args("mcp__personal-mem__mem_unknown", {"foo": "bar"})
+        out = summarize_args("mcp__thinkweave__weave_unknown", {"foo": "bar"})
         assert out == {}
 
 
@@ -109,30 +109,30 @@ class TestBuildRetrievalEvent:
     def test_non_retrieval_tool_returns_none(self):
         assert build_retrieval_event("Bash", {"command": "ls"}, "", "ts") is None
         assert build_retrieval_event(
-            "mcp__personal-mem__mem_create",
+            "mcp__thinkweave__weave_create",
             {"title": "x"},
             "",
             "ts",
         ) is None
 
-    def test_mem_search_builds_event(self):
+    def test_weave_search_builds_event(self):
         out = build_retrieval_event(
-            "mcp__personal-mem__mem_search",
+            "mcp__thinkweave__weave_search",
             {"query": "fts5", "mode": "fts"},
             "[note] FTS5 details (n-aaaabbbb)\n[decision] Use it (dec-ccccdddd)",
             "2026-05-13T22:00:00Z",
         )
         assert out is not None
         assert out["type"] == "retrieval"
-        assert out["tool"] == "mcp__personal-mem__mem_search"
+        assert out["tool"] == "mcp__thinkweave__weave_search"
         assert out["args"] == {"query": "fts5", "mode": "fts"}
         assert out["returned_ids"] == ["n-aaaabbbb", "dec-ccccdddd"]
         assert out["ts"] == "2026-05-13T22:00:00Z"
 
-    def test_mem_read_uses_arg_id_not_body(self):
+    def test_weave_read_uses_arg_id_not_body(self):
         # The note body might or might not stamp its own id; the arg is canonical.
         out = build_retrieval_event(
-            "mcp__personal-mem__mem_read",
+            "mcp__thinkweave__weave_read",
             {"id": "n-1111aaaa"},
             "# Some title\n\nprose body, no id stamping.",
             "ts",
@@ -140,9 +140,9 @@ class TestBuildRetrievalEvent:
         assert out is not None
         assert out["returned_ids"] == ["n-1111aaaa"]
 
-    def test_mem_read_missing_id_yields_empty_list(self):
+    def test_weave_read_missing_id_yields_empty_list(self):
         out = build_retrieval_event(
-            "mcp__personal-mem__mem_read",
+            "mcp__thinkweave__weave_read",
             {},
             "Note not found.",
             "ts",
@@ -153,7 +153,7 @@ class TestBuildRetrievalEvent:
     def test_tool_output_non_string_is_handled(self):
         # If the harness ever passes a non-str (defensive), we don't crash.
         out = build_retrieval_event(
-            "mcp__personal-mem__mem_search",
+            "mcp__thinkweave__weave_search",
             {"query": "x"},
             None,  # type: ignore[arg-type]
             "ts",
@@ -168,7 +168,7 @@ class TestBuildRetrievalEvent:
         # normaliser. Defensive in-function normalisation keeps the parse
         # working regardless.
         out = build_retrieval_event(
-            "mcp__personal-mem__mem_search",
+            "mcp__thinkweave__weave_search",
             {"query": "x"},
             {
                 "stdout": "[note] Hit (n-abc123de) [tag]\n",
@@ -186,17 +186,19 @@ class TestBuildRetrievalEvent:
 
 
 class TestRetrievalToolNaming:
-    def test_dash_not_underscore_in_server_name(self):
-        # personal-mem (dash) per install.py:SERVER_NAME — this is the most
-        # error-prone detail in the whole capture path, so we pin it.
+    def test_server_name_prefix(self):
+        # The tool-name prefix must match install.py:SERVER_NAME ("thinkweave").
+        # This is the most error-prone detail in the whole capture path, so we
+        # pin it exactly. (Pre-rename, when the server was "personal-weave", this
+        # also guarded a dash-vs-underscore footgun; the single-token name
+        # "thinkweave" removes that hazard.)
         for name in RETRIEVAL_TOOLS:
-            assert name.startswith("mcp__personal-mem__")
-            assert "mcp__personal_mem__" not in name
+            assert name.startswith("mcp__thinkweave__")
 
     def test_closed_set_excludes_mutation_tools(self):
-        assert "mcp__personal-mem__mem_create" not in RETRIEVAL_TOOLS
-        assert "mcp__personal-mem__mem_link" not in RETRIEVAL_TOOLS
-        assert "mcp__personal-mem__mem_extract" not in RETRIEVAL_TOOLS
+        assert "mcp__thinkweave__weave_create" not in RETRIEVAL_TOOLS
+        assert "mcp__thinkweave__weave_link" not in RETRIEVAL_TOOLS
+        assert "mcp__thinkweave__weave_extract" not in RETRIEVAL_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -231,13 +233,13 @@ class TestHandlerIntegration:
     ):
         # Point load_config at a fresh tmp vault.
         vault = tmp_path / "vault"
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
         # Silence/short-circuit _ensure_session — it touches the indexer and
         # the vault root; for this test we only care that the buffer line gets
         # written, not that a full session note is materialised.
-        from personal_mem.surfaces.hooks import handler as h
+        from thinkweave.surfaces.hooks import handler as h
 
         monkeypatch.setattr(h, "_ensure_session", lambda *a, **kw: None)
         # And make _output a no-op so it doesn't print to stdout during pytest.
@@ -249,26 +251,26 @@ class TestHandlerIntegration:
             "tool_input": {"query": "fts5 details", "mode": "fts"},
             "tool_output": "[note] FTS5 details (n-bbbb2222) [refs]\n",
         }
-        h._handle_post("mcp__personal-mem__mem_search", hook_input)
+        h._handle_post("mcp__thinkweave__weave_search", hook_input)
 
         # The buffer file should now exist and contain one retrieval event.
-        from personal_mem.core.config import load_config
+        from thinkweave.core.config import load_config
 
         cfg = load_config()
-        buf_path = cfg.mem_dir / "buffer" / f"{session_id}.jsonl"
+        buf_path = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
         assert buf_path.exists()
         lines = buf_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
         event = json.loads(lines[0])
         assert event["type"] == "retrieval"
-        assert event["tool"] == "mcp__personal-mem__mem_search"
+        assert event["tool"] == "mcp__thinkweave__weave_search"
         assert event["returned_ids"] == ["n-bbbb2222"]
 
     def test_handle_post_ignores_non_retrieval_mcp_tools(
         self, tmp_path: Path, monkeypatch
     ):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
-        from personal_mem.surfaces.hooks import handler as h
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
+        from thinkweave.surfaces.hooks import handler as h
 
         monkeypatch.setattr(h, "_ensure_session", lambda *a, **kw: None)
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
@@ -277,7 +279,7 @@ class TestHandlerIntegration:
         monkeypatch.setattr(h, "_buffer_event", lambda *a, **kw: called.append(a))
 
         h._handle_post(
-            "mcp__personal-mem__mem_create",
+            "mcp__thinkweave__weave_create",
             {"session_id": "ses-yy", "tool_input": {"title": "x"}, "tool_output": ""},
         )
         assert called == []
@@ -289,17 +291,17 @@ class TestHandlerIntegration:
 
         Regression-pin for the 2026-05-26 finding: on a populated vault,
         ``_ensure_session`` rgloss the entire vault to find the active
-        session note. For retrieval calls (mem_search etc.) that scan
+        session note. For retrieval calls (weave_search etc.) that scan
         blew Claude Code's 5s hook timeout, the hook was cancelled, and
         the buffer write never landed — empirical symptom on disk was
         zero ``retrieval_log.jsonl`` files and zero ``onthefly`` rows in
         ``context_served``.
         """
         vault = tmp_path / "vault"
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
-        from personal_mem.surfaces.hooks import handler as h
+        from thinkweave.surfaces.hooks import handler as h
 
         ensure_calls = []
         monkeypatch.setattr(
@@ -310,7 +312,7 @@ class TestHandlerIntegration:
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
 
         h._handle_post(
-            "mcp__personal-mem__mem_search",
+            "mcp__thinkweave__weave_search",
             {
                 "session_id": "ses-aaaa1111",
                 "tool_input": {"query": "x"},
@@ -318,10 +320,10 @@ class TestHandlerIntegration:
             },
         )
         # Buffer line still landed.
-        from personal_mem.core.config import load_config
+        from thinkweave.core.config import load_config
 
         cfg = load_config()
-        buf_path = cfg.mem_dir / "buffer" / "ses-aaaa1111.jsonl"
+        buf_path = cfg.weave_dir / "buffer" / "ses-aaaa1111.jsonl"
         assert buf_path.exists()
         assert ensure_calls == []  # The hot-path skip we depend on.
 
@@ -335,10 +337,10 @@ class TestHandlerIntegration:
         the note mid-conversation.
         """
         vault = tmp_path / "vault"
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
-        from personal_mem.surfaces.hooks import handler as h
+        from thinkweave.surfaces.hooks import handler as h
 
         ensure_calls = []
         monkeypatch.setattr(
@@ -365,16 +367,16 @@ class TestHandlerIntegration:
         drop returned IDs across harness versions.
         """
         vault = tmp_path / "vault"
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(vault))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
-        from personal_mem.surfaces.hooks import handler as h
+        from thinkweave.surfaces.hooks import handler as h
 
         monkeypatch.setattr(h, "_ensure_session", lambda *a, **kw: None)
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
 
         h._handle_post(
-            "mcp__personal-mem__mem_search",
+            "mcp__thinkweave__weave_search",
             {
                 "session_id": "ses-dddd3333",
                 "tool_input": {"query": "x"},
@@ -382,10 +384,10 @@ class TestHandlerIntegration:
                 "tool_response": "[note] hit (n-eeee4444)",
             },
         )
-        from personal_mem.core.config import load_config
+        from thinkweave.core.config import load_config
 
         cfg = load_config()
-        buf_path = cfg.mem_dir / "buffer" / "ses-dddd3333.jsonl"
+        buf_path = cfg.weave_dir / "buffer" / "ses-dddd3333.jsonl"
         assert buf_path.exists()
         event = json.loads(buf_path.read_text(encoding="utf-8").splitlines()[0])
         assert event["returned_ids"] == ["n-eeee4444"]
@@ -405,10 +407,10 @@ class TestFindSessionNoteFast:
     """
 
     def _build_vault_with_session(self, tmp_path: Path, source_session: str):
-        from personal_mem.core.config import Config
-        from personal_mem.core.indexer import Indexer
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
@@ -426,7 +428,7 @@ class TestFindSessionNoteFast:
         return cfg, vm
 
     def test_indexed_session_found_via_sql(self, tmp_path: Path):
-        from personal_mem.surfaces.hooks.handler import _find_session_note
+        from thinkweave.surfaces.hooks.handler import _find_session_note
 
         cfg, vm = self._build_vault_with_session(tmp_path, "ses-cc-abc123")
         found = _find_session_note(vm, "ses-cc-abc123")
@@ -434,13 +436,13 @@ class TestFindSessionNoteFast:
         assert found.exists()
 
     def test_missing_session_returns_none(self, tmp_path: Path):
-        from personal_mem.surfaces.hooks.handler import _find_session_note
+        from thinkweave.surfaces.hooks.handler import _find_session_note
 
         cfg, vm = self._build_vault_with_session(tmp_path, "ses-cc-abc123")
         assert _find_session_note(vm, "ses-cc-nope-nope") is None
 
     def test_empty_session_id_returns_none(self, tmp_path: Path):
-        from personal_mem.surfaces.hooks.handler import _find_session_note
+        from thinkweave.surfaces.hooks.handler import _find_session_note
 
         cfg, vm = self._build_vault_with_session(tmp_path, "ses-cc-abc123")
         assert _find_session_note(vm, "") is None
@@ -453,10 +455,10 @@ class TestFindSessionNoteFast:
         First-PostToolUse-of-a-fresh-vault edge case — the note exists on
         disk but hasn't been indexed yet. The vault-scan fallback covers it.
         """
-        from personal_mem.core.config import Config
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.surfaces.hooks.handler import _find_session_note
+        from thinkweave.core.config import Config
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks.handler import _find_session_note
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
@@ -489,11 +491,11 @@ class TestRetrievalPipelineEndToEnd:
     """
 
     def test_retrieval_event_projects_onthefly_row(self, tmp_path: Path, monkeypatch):
-        from personal_mem.core.buffer import archive_buffer
-        from personal_mem.core.config import Config
-        from personal_mem.core.indexer import Indexer
-        from personal_mem.core.schemas import NoteType
-        from personal_mem.core.vault import VaultManager
+        from thinkweave.core.buffer import archive_buffer
+        from thinkweave.core.config import Config
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
@@ -508,14 +510,14 @@ class TestRetrievalPipelineEndToEnd:
 
         # Stage 1: write a retrieval event to the buffer (simulates the
         # PostToolUse hook's _buffer_event call).
-        from personal_mem.operations.retrieval_log import (
+        from thinkweave.operations.retrieval_log import (
             append_event,
             build_retrieval_event,
         )
 
-        buf_path = cfg.mem_dir / "buffer" / "ses-e2e-aaaa.jsonl"
+        buf_path = cfg.weave_dir / "buffer" / "ses-e2e-aaaa.jsonl"
         ev = build_retrieval_event(
-            "mcp__personal-mem__mem_search",
+            "mcp__thinkweave__weave_search",
             {"query": "topic"},
             "[note] topic note (n-aaaaaaaa)",
             "2026-05-26T00:00:00+00:00",
@@ -524,7 +526,7 @@ class TestRetrievalPipelineEndToEnd:
 
         # Stage 2: archive_buffer partitions retrieval events into the
         # sibling retrieval_log.jsonl.
-        archive_buffer(cfg.mem_dir, "ses-e2e-aaaa", session_path.parent)
+        archive_buffer(cfg.weave_dir, "ses-e2e-aaaa", session_path.parent)
         retrieval_log = session_path.parent / "retrieval_log.jsonl"
         assert retrieval_log.exists()
         lines = retrieval_log.read_text(encoding="utf-8").strip().splitlines()
@@ -558,28 +560,28 @@ class TestRetrievalPipelineEndToEnd:
         (deferred by the retrieval-defer fix). Stop must notice the
         buffer and create one, otherwise the retrieval log is orphaned.
         """
-        from personal_mem.core.config import Config
-        from personal_mem.operations.retrieval_log import (
+        from thinkweave.core.config import Config
+        from thinkweave.operations.retrieval_log import (
             append_event,
             build_retrieval_event,
         )
-        from personal_mem.surfaces.hooks import handler as h
+        from thinkweave.surfaces.hooks import handler as h
 
         vault = tmp_path / "vault"
         cfg = Config(vault_root=vault)
         # Drop a retrieval event into the buffer without ever creating a
-        # session note (simulates a session that only ran mem_search).
-        (cfg.mem_dir / "buffer").mkdir(parents=True, exist_ok=True)
+        # session note (simulates a session that only ran weave_search).
+        (cfg.weave_dir / "buffer").mkdir(parents=True, exist_ok=True)
         ev = build_retrieval_event(
-            "mcp__personal-mem__mem_search",
+            "mcp__thinkweave__weave_search",
             {"query": "x"},
             "(n-zzzz9999)",
             "2026-05-26T00:00:00+00:00",
         )
-        append_event(cfg.mem_dir / "buffer" / "ses-retrieval-only.jsonl", ev)
+        append_event(cfg.weave_dir / "buffer" / "ses-retrieval-only.jsonl", ev)
 
         monkeypatch.setattr(
-            "personal_mem.core.config.load_config", lambda: cfg
+            "thinkweave.core.config.load_config", lambda: cfg
         )
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
         monkeypatch.setattr(h, "_detect_project", lambda hi: "t")
@@ -587,8 +589,8 @@ class TestRetrievalPipelineEndToEnd:
         h._handle_stop({"session_id": "ses-retrieval-only", "cwd": str(vault)})
 
         # Stop created a session note + archived the retrieval log.
-        from personal_mem.core.vault import VaultManager
-        from personal_mem.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.core.schemas import NoteType
 
         vm = VaultManager(config=cfg)
         sessions = [

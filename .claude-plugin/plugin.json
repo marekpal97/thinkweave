@@ -1,18 +1,18 @@
 {
-  "name": "personal-mem",
-  "description": "Obsidian-native memory layer — markdown vault + SQLite index + 18 MCP tools, 14 slash commands, 4 hooks. Run /onboard after install to seed from prior Claude Code history.",
+  "name": "thinkweave",
+  "description": "Obsidian-native memory layer — markdown vault + SQLite index + 17 MCP tools, slash commands, subagent workers, 4 hooks. Plugin commands are namespaced: run /thinkweave:onboard after install to seed from prior Claude Code history.",
   "version": "0.1.0",
   "author": {
     "name": "Marek Paluch"
   },
-  "homepage": "https://github.com/marekpal97/personal-mem",
-  "repository": "marekpal97/personal-mem",
+  "homepage": "https://github.com/marekpal97/thinkweave",
+  "repository": "marekpal97/thinkweave",
   "license": "MIT",
   "mcpServers": {
-    "personal-mem": {
+    "thinkweave": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "--extra", "mcp", "mem-mcp"],
+      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "--extra", "mcp", "weave-mcp"],
       "env": {}
     }
   }

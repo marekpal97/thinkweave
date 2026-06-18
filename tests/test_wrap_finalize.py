@@ -1,6 +1,6 @@
 """Tests for the deterministic wrap-finalize tail (operations/wrap.py + CLI).
 
-``mem wrap-finalize`` is phase 2 of ``/mem-wrap`` — after ``mem_extract`` has
+``weave wrap-finalize`` is phase 2 of ``/wrap`` — after ``weave_extract`` has
 written a session's insights/decisions, this bundles prune → index → judge →
 landing → drift-advisory into one process. These tests build a tmp vault that
 looks like a just-extracted session and assert the chain runs cleanly.
@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.wrap import WrapFinalizeResult, finalize_wrap
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations.wrap import WrapFinalizeResult, finalize_wrap
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def _index(config: Config) -> None:
 
 
 def _seed_session_with_decision(vm: VaultManager) -> str:
-    """Create a session note + a decision derived from it (mimics mem_extract output).
+    """Create a session note + a decision derived from it (mimics weave_extract output).
 
     Returns the session note ID.
     """
@@ -89,9 +89,8 @@ class TestFinalizeWrap:
         assert any("BACKLOG" in name.upper() for name in result.landing_written)
         # P1-9 — every step contributes a timing entry (even if the step is a
         # no-op or errors out; the `finally` blocks stamp wall time regardless).
-        # Cost-tracking adds a read-only `spend` rollup step.
         assert set(result.timings) == {
-            "prune", "index", "judge", "landing", "drift", "spend",
+            "prune", "index", "judge", "landing", "drift",
         }
         assert all(v >= 0.0 for v in result.timings.values())
 
@@ -103,7 +102,7 @@ class TestFinalizeWrap:
 
         finalize_wrap(config, session_id=session_id, project="t")
 
-        from personal_mem.synthesis.judge import find_decisions
+        from thinkweave.synthesis.judge import find_decisions
 
         idx = Indexer(config=config)
         try:
@@ -180,10 +179,10 @@ class TestWrapFinalizeCLI:
         _index(config)
 
         # Point load_config at our tmp vault.
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(config.vault_root))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
-        from personal_mem.surfaces.cli.wrap import cmd_wrap_finalize
+        from thinkweave.surfaces.cli.wrap import cmd_wrap_finalize
 
         args = type(
             "Args",

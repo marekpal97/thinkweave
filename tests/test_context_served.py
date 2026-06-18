@@ -22,10 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
 
 
 @pytest.fixture
@@ -80,10 +80,10 @@ class TestRebuildProjection:
             {"ts": "2026-05-14T10:00:00Z", "type": "startup",
              "returned_ids": ["n-aaa111aa", "dec-bbb222bb"], "token_est": 5000},
             {"ts": "2026-05-14T10:05:00Z", "type": "retrieval",
-             "tool": "mcp__personal-mem__mem_search",
+             "tool": "mcp__thinkweave__weave_search",
              "returned_ids": ["n-ccc333cc"]},
             {"ts": "2026-05-14T10:06:00Z", "type": "retrieval",
-             "tool": "mcp__personal-mem__mem_read",
+             "tool": "mcp__thinkweave__weave_read",
              "returned_ids": ["dec-bbb222bb"]},  # same note, different source
         ])
 
@@ -116,7 +116,7 @@ class TestRebuildProjection:
     def test_idempotent_rerun(self, config: Config, vault: VaultManager):
         sess_id, _ = _seed_session(vault, [
             {"ts": "ts1", "type": "retrieval",
-             "tool": "mcp__personal-mem__mem_search",
+             "tool": "mcp__thinkweave__weave_search",
              "returned_ids": ["n-aaa111aa"]},
         ])
         idx = Indexer(config=config)

@@ -3,15 +3,15 @@ name: ingest
 owns_mechanic: input_routing
 source_type: [paper, repo, article, "*"]
 capabilities: [import]
-consumes: [mem_sources_config, mem_concepts, mem_create]
+consumes: [weave_sources_config, weave_concepts, weave_create]
 produces: [vault/sources/**]
 tools:
   - Read
   - Bash
   - WebFetch
-  - mem_sources_config
-  - mem_concepts
-  - mem_create
+  - weave_sources_config
+  - weave_concepts
+  - weave_create
 description: Universal input router — classifies input shape (URL / file / text / structured-id) and dispatches to the appropriate ingestion skill. The single user-facing front door for getting external content into the vault.
 ---
 
@@ -24,7 +24,7 @@ source it likely is, and dispatches to the right specialist skill. New
 users start here.
 
 This file is the **dispatch layer only**. No fetching, no
-summarization, no `mem_create` directly. All of that lives in the
+summarization, no `weave_create` directly. All of that lives in the
 dispatched subskills (see `/research`, `/research-paper`, `/capture`,
 `/ingest-paper-file`, …). Keep this file thin.
 
@@ -32,11 +32,11 @@ dispatched subskills (see `/research`, `/research-paper`, `/capture`,
 
 ## Classification table
 
-Classify on input shape first, then dispatch. First match wins.
+Classify on input shape first, then dispatch. First match wins. Under the plugin install, skills resolve namespaced — if a bare `Skill(skill="X")` dispatch fails with an unknown skill, retry as `thinkweave:X` (applies to every dispatch row below).
 
 | Input shape         | Detection                                                                                                            | Dispatch                                                                                                  |
 |---------------------|----------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| **URL**             | starts with `http://` or `https://`, or matches a `url_patterns` entry from `mem_sources_config()`                    | `Skill(skill="research", args="<url>")` (delegates source-type classification to `/research`)              |
+| **URL**             | starts with `http://` or `https://`, or matches a `url_patterns` entry from `weave_sources_config()`                    | `Skill(skill="research", args="<url>")` (delegates source-type classification to `/research`)              |
 | **Existing file**   | resolves to an actual file on disk; check via `Bash("test -f <path> && echo OK")`                                     | file-type detection (see below) → dispatch to file-shape subskill                                          |
 | **Structured ID**   | starts with a known scheme prefix: `arxiv:`, `doi:`, `gh:` / `github:`, `isbn:`, `hf:` / `huggingface:`, `pmid:`, …    | resolve to canonical URL or fetch path → fall through to the URL row                                       |
 | **Inline text**     | none of the above; user supplied raw text via `--text "..."` flag or piped on stdin                                   | `Skill(skill="capture", args="<text>")`                                                                    |
@@ -62,7 +62,7 @@ When the input resolves to a file on disk, branch on extension:
 - **`.md` / `.txt`** → plain text. `Read` the file and treat its contents as inline text → dispatch to `/capture` with the file body as the text argument.
 - **`.png` / `.jpg` / `.jpeg` / `.webp` / `.gif`** → image. For now, create a `note` source with the image copied as a companion plus a brief description (filename + Read-derived caption if you want to peek). **Flag as a follow-up** to add OCR / multimodal interpretation.
 - **`.html` / `.htm`** → treat as a saved web page; extract the visible text (basic strip), then dispatch to `/capture` with the extracted text and the original URL preserved in frontmatter if discoverable from the file.
-- **Other** → fall back to a generic file-ingest flow: create a `note` source via `mem_create` with the file copied as a raw companion and a stub one-line summary derived from the filename. Surface clearly in the report.
+- **Other** → fall back to a generic file-ingest flow: create a `note` source via `weave_create` with the file copied as a raw companion and a stub one-line summary derived from the filename. Surface clearly in the report.
 
 ---
 
@@ -113,7 +113,7 @@ being interleaved.
 
 Same rules as `/research` and `/discover`. Subskills enforce these — `/ingest` itself does not assign concepts. For reference:
 
-1. Use ontology terms only — `Read src/personal_mem/ontology.yaml` plus `mem_concepts(min_count=2)`.
+1. Use ontology terms only — load the vault's merged ontology via `weave_concepts(action="list")` (not the source-tree `ontology.yaml`).
 2. Genuinely-new terms → `proposed_concepts`, never `concepts`.
 3. Minimum 2 concepts per created source.
 
@@ -135,7 +135,7 @@ End-of-batch summary:
 - Skipped:   M  (reasons listed above)
 - Failed:    K  (reasons listed above)
 
-Next: <suggested follow-up — e.g. "Run /mem-wrap to capture session
+Next: <suggested follow-up — e.g. "Run /wrap to capture session
 context" or "Run /discover for downstream gap analysis">
 ```
 
@@ -145,7 +145,7 @@ context" or "Run /discover for downstream gap analysis">
 
 - **No fetching.** All HTTP / file reads happen in the dispatched subskill. `/ingest` never touches `WebFetch` or `Read` for content (it may use `Read` to spy at a file's first bytes for type detection, but the body content is the subskill's job).
 - **No summarization.** Subskills produce the brief.
-- **No `mem_create` directly.** Subskills own the write.
+- **No `weave_create` directly.** Subskills own the write.
 - **No source-type classification.** `/research` classifies URLs; the file-/text-shape subskills classify their own content. `/ingest` only dispatches by *shape*.
 - **No queue management.** For batch drains use `/drain --source-type <slug>`; `/ingest` is the single-input front door.
 
@@ -158,7 +158,7 @@ input-shape doors:
 
 - `/research` — URL only
 - `/substack` — disk inbox only
-- `mem import` — CLI file/dir only
+- `weave import` — CLI file/dir only
 - inline-pasted text — no front door at all
 
 A new user with a *thing* in hand has to know which command matches

@@ -1,31 +1,46 @@
-# Example crontab for personal_mem automation.
+# DEPRECATED as a hand-install target — kept as a cadence reference only.
 #
-# Replace `/home/marekpal97/python_projects/personal_mem` with your repo
-# path and `~/.cache/personal_mem/cron.log` with whatever log location
-# you prefer. Sleep between research batches now lives inside the flow
-# definition (vault/.mem/flows.yaml), not in cron-spacing.
+# The schedule now lives in ONE place: vault/config/scheduling.yaml. Install
+# it onto your OS's native scheduler with:
 #
-# Install: `crontab -e` and paste the lines below (without the leading
-# `#` from these comments).
+#   weave schedule list                 # show jobs + the backend for this OS
+#   weave schedule install --dry-run    # preview crontab / Task Scheduler entries
+#   weave schedule install              # crontab on Linux/macOS, schtasks on Windows
+#
+# `weave schedule` renders the same jobs onto crontab (Linux/macOS) or Windows
+# Task Scheduler — no more hand-pasting, and Windows works without WSL. The
+# lines below mirror the shipped scheduling.yaml cadences for reference.
+#
+# Sleep between research batches lives inside the flow definition
+# (vault/config/flows.yaml), not in cron-spacing.
+
+# PATH hardening — cron's default PATH is minimal (typically just
+# /usr/bin:/bin) and won't find `uv` or `claude` if they were installed
+# via the standard installers, which land binaries in ~/.local/bin.
+# Without this every line below silently fails with "command not found"
+# in the cron log.
+PATH=$HOME/.local/bin:$PATH
 
 # Daily research cycle: discover gaps, drain queue, refresh hubs.
-0 8 * * *  cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run daily-research >> ~/.cache/personal_mem/cron.log 2>&1
+0 8 * * *  cd /path/to/thinkweave && uv run weave flow run daily-research >> ~/.cache/thinkweave/cron.log 2>&1
 
 # Weekly hygiene: concept and theme dedup + hub coherence.
-0 4 * * 0  cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run weekly-hygiene >> ~/.cache/personal_mem/cron.log 2>&1
+0 4 * * 0  cd /path/to/thinkweave && uv run weave flow run weekly-hygiene >> ~/.cache/thinkweave/cron.log 2>&1
 
-# News intake (optional — requires `uv pip install personal-mem[news]`).
-# Pulls RSS feeds declared in vault/.mem/news_feeds.yaml into the news
-# acquisition queue every two hours. The downstream /drain step is part
-# of the news-cycle flow (see example-flows.yaml::news-cycle) so the
-# pull stage stays cheap and reliable; LLM cost happens on drain.
-0 */2 * * * cd /home/marekpal97/python_projects/personal_mem && uv run python scripts/pull_news_feeds.py >> ~/.cache/personal_mem/news-pull.log 2>&1
+# News intake (optional — requires `uv pip install thinkweave[news]`).
+# Pulls RSS feeds declared in vault/config/news_feeds.yaml into the news
+# acquisition queue every two hours via the canonical `rss_poll` discover
+# strategy. The downstream /drain step is part of the news-cycle flow
+# (see example-flows.yaml::news-cycle) so the pull stage stays cheap and
+# reliable; LLM cost happens on drain. Requires ANTHROPIC_API_KEY in the
+# cron environment because `claude -p` runs headlessly.
+0 */2 * * * cd /path/to/thinkweave && claude -p "/discover --strategy rss_poll --source-type news" >> ~/.cache/thinkweave/news-pull.log 2>&1
 
 # News drain (every 6h: triage + brief). Spaced from the pulls so the
 # queue accumulates a useful batch before Haiku triage runs.
-30 */6 * * * cd /home/marekpal97/python_projects/personal_mem && uv run mem flow run news-cycle >> ~/.cache/personal_mem/cron.log 2>&1
+30 */6 * * * cd /path/to/thinkweave && uv run weave flow run news-cycle >> ~/.cache/thinkweave/cron.log 2>&1
 
-# Embeddings keep-warm + SQLite index refresh: every 4h. `mem index`
+# Embeddings keep-warm + SQLite index refresh: every 4h. `weave index`
 # always rebuilds the SQLite index incrementally (mtime-gated, so
 # out-of-band Obsidian edits land here too), then `--embed --only-new`
 # embeds notes whose updated_at is newer than the most recent cached
@@ -35,7 +50,7 @@
 # on recent content as the vault grows, AND retrieval misses any
 # Obsidian-side edits made between Claude Code sessions. Requires
 # OPENAI_API_KEY in the cron environment.
-15 */4 * * * cd /home/marekpal97/python_projects/personal_mem && OPENAI_API_KEY="${OPENAI_API_KEY}" uv run mem index --embed --only-new >> ~/.cache/personal_mem/embed-warm.log 2>&1
+15 */4 * * * cd /path/to/thinkweave && OPENAI_API_KEY="${OPENAI_API_KEY}" uv run weave index --embed --only-new >> ~/.cache/thinkweave/embed-warm.log 2>&1
 
 # Dream cycle: nightly autonomous vault hygiene. Scans for concept
 # promotion candidates, theme lifecycle changes, drift pairs, and
@@ -43,13 +58,13 @@
 # apply phase batches every structural change with one final index
 # rebuild and one line to maintenance.jsonl. Self-deciding — never
 # prompts. Caps work per-cycle (20 candidates) so latency stays
-# bounded. Requires a Claude Code install with the personal_mem MCP
-# wired (see `mem install`); ANTHROPIC_API_KEY in the cron environment
+# bounded. Requires a Claude Code install with the thinkweave MCP
+# wired (see `weave install`); ANTHROPIC_API_KEY in the cron environment
 # for the headless `claude -p` invocation.
-0 3 * * * cd /home/marekpal97/python_projects/personal_mem && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude -p "/dream" >> ~/.cache/personal_mem/dream.log 2>&1
+0 3 * * * cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude -p "/dream" >> ~/.cache/thinkweave/dream.log 2>&1
 
 # To run a flow ad-hoc:
-#   uv run mem flow list
-#   uv run mem flow show daily-research
-#   uv run mem flow run daily-research --dry-run
-#   uv run mem flow run daily-research
+#   uv run weave flow list
+#   uv run weave flow show daily-research
+#   uv run weave flow run daily-research --dry-run
+#   uv run weave flow run daily-research

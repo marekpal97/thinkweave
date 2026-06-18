@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from personal_mem.sources import build_source_frontmatter
+from thinkweave.acquisition.sources import build_source_frontmatter
 
 
 def test_minimal_call_returns_canonical_dict():

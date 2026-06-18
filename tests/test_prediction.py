@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from personal_mem.synthesis.prediction import VERDICTS, append_verdict, read_history
+from thinkweave.synthesis.prediction import VERDICTS, append_verdict, read_history
 
 
 class TestReadHistory:

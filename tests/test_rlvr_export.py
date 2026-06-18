@@ -22,11 +22,11 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.core.vault import VaultManager
-from personal_mem.operations.rlvr_export import (
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.core.vault import VaultManager
+from thinkweave.operations.rlvr_export import (
     assemble_row,
     export_rows,
     extract_cited_ids,
@@ -74,9 +74,20 @@ class TestExtractCitedIds:
         assert extract_cited_ids(body) == ["n-aaa111aa"]
 
     def test_alias_form_is_stripped(self):
-        # [[target|display]] — extract_wikilinks already returns target only.
+        # [[target|display]] where the id is the target, display is a title.
         body = "See [[n-aaa111aa|the indexer note]] for details."
         assert extract_cited_ids(body) == ["n-aaa111aa"]
+
+    def test_path_based_citation_recovers_id_from_display(self):
+        # Path-based links ([[path|id]]) are the durable form the bare→path
+        # body migration produces. The id lives in the DISPLAY side; the
+        # citation must still be recovered so RLVR rows don't lose evidence.
+        body = "Decided X because [[sources/conv/epochs-vs-minibatches|src-7699d74e]] showed Y."
+        assert extract_cited_ids(body) == ["src-7699d74e"]
+
+    def test_mixed_bare_and_path_based(self):
+        body = "[[n-aaa111aa]] and [[notes/foo|dec-bbb222bb]] and [[Some Title]]"
+        assert extract_cited_ids(body) == ["n-aaa111aa", "dec-bbb222bb"]
 
     def test_dedup_preserves_first_order(self):
         body = "[[n-aaa111aa]] then [[dec-bbb222bb]] then [[n-aaa111aa]] again"
@@ -195,7 +206,7 @@ class TestAssembleRow:
         }
         assert set(d["context"].keys()) == {
             "n_retrievals_onthefly", "cited_onthefly_ids",
-            "cited_startup_only_ids", "startup_token_est",
+            "cited_prompttime_ids", "cited_startup_only_ids", "startup_token_est",
         }
 
     def test_cited_ids_bucketed_correctly(self, config: Config, vault: VaultManager):
@@ -248,6 +259,58 @@ class TestAssembleRow:
         _index(config)
         row = assemble_row(config, dec_id).as_dict()
         assert row["context"]["cited_onthefly_ids"] == ["n-everywhere"]
+        assert row["context"]["cited_startup_only_ids"] == []
+
+    def test_prompttime_bucketed_separately(
+        self, config: Config, vault: VaultManager
+    ):
+        # A note served only via R2 (prompt-time enrichment, a retrieval event
+        # tagged tool=prompt_time_retrieval) lands in cited_prompttime_ids —
+        # NOT onthefly (agent didn't pull it) and not startup.
+        body = "Context from [[n-pushed01]] and [[n-pulled02]]."
+        _, dec_id, _ = _seed(
+            vault,
+            dec_body=body,
+            log_lines=[
+                {"ts": "t1", "type": "retrieval",
+                 "tool": "prompt_time_retrieval",
+                 "returned_ids": ["n-pushed01"]},
+                {"ts": "t2", "type": "retrieval",
+                 "returned_ids": ["n-pulled02"]},
+            ],
+        )
+        _index(config)
+        row = assemble_row(config, dec_id).as_dict()
+        assert row["context"]["cited_prompttime_ids"] == ["n-pushed01"]
+        assert row["context"]["cited_onthefly_ids"] == ["n-pulled02"]
+        assert "n-pushed01" not in row["context"]["cited_onthefly_ids"]
+        # A prompt-time write-back is not an agent retrieval event.
+        assert row["context"]["n_retrievals_onthefly"] == 1
+
+    def test_source_precedence_onthefly_over_prompttime_over_startup(
+        self, config: Config, vault: VaultManager
+    ):
+        # Precedence: onthefly > prompttime > startup.
+        # - n-bothpull: prompttime + onthefly  → onthefly
+        # - n-pushboot: prompttime + startup   → prompttime
+        body = "From [[n-bothpull]] and [[n-pushboot]]."
+        _, dec_id, _ = _seed(
+            vault,
+            dec_body=body,
+            log_lines=[
+                {"ts": "t1", "type": "startup",
+                 "returned_ids": ["n-pushboot"], "token_est": 50},
+                {"ts": "t2", "type": "retrieval",
+                 "tool": "prompt_time_retrieval",
+                 "returned_ids": ["n-bothpull", "n-pushboot"]},
+                {"ts": "t3", "type": "retrieval",
+                 "returned_ids": ["n-bothpull"]},
+            ],
+        )
+        _index(config)
+        row = assemble_row(config, dec_id).as_dict()
+        assert row["context"]["cited_onthefly_ids"] == ["n-bothpull"]
+        assert row["context"]["cited_prompttime_ids"] == ["n-pushboot"]
         assert row["context"]["cited_startup_only_ids"] == []
 
     def test_n_retrievals_counts_events_not_notes(

@@ -5,10 +5,10 @@ tools:
   - Read
   - WebFetch
   - Bash
-  - mem_search
-  - mem_create
-  - mem_concepts
-description: One sentence describing what this skill does. Appears in `mem sources list` and `mem skill list`.
+  - weave_search
+  - weave_create
+  - weave_concepts
+description: One sentence describing what this skill does. Appears in `weave sources list` and `weave skill list`.
 ---
 
 # /{SKILL_NAME} — Ingest {SOURCE_TYPE} into the Knowledge Vault
@@ -16,9 +16,9 @@ description: One sentence describing what this skill does. Appears in `mem sourc
 <!--
   UNIVERSAL SOURCE-SKILL TEMPLATE.
 
-  To add a new source type to personal_mem:
+  To add a new source type to thinkweave:
 
-    1. Add a SourceTypeSpec entry to src/personal_mem/sources/registry.py
+    1. Add a SourceTypeSpec entry to src/thinkweave/acquisition/sources/registry.py
        with your source_type slug, bucket name, and layout ("flat",
        "folder", or "author_folder").
 
@@ -28,7 +28,7 @@ description: One sentence describing what this skill does. Appears in `mem sourc
          - source_type: your registered slug (or a list of slugs if the
            skill handles multiple types, like /research does)
          - capabilities: any subset of [import, acquire, discover]
-         - tools: every tool the skill calls — used by `mem skill run` to
+         - tools: every tool the skill calls — used by `weave skill run` to
            know what tool surface to provide
          - description: one sentence
 
@@ -39,7 +39,7 @@ description: One sentence describing what this skill does. Appears in `mem sourc
     5. Write the bespoke fetch/parse/interpret logic per section. Skills
        stay procedural — there is no shared fetch framework.
 
-    6. Verify: `mem sources show {your-slug}` and `mem skill show
+    6. Verify: `weave sources show {your-slug}` and `weave skill show
        {your-skill-name}` should find your new type and skill.
 
     7. Delete this comment block before committing.
@@ -53,7 +53,7 @@ description: One sentence describing what this skill does. Appears in `mem sourc
   source types have genuinely different fetch/parse/interpret logic.
 -->
 
-You are ingesting {SOURCE_TYPE} entries into the personal_mem vault. Each ingested entry becomes a `source.md` in the layout declared by this source type's `SourceTypeSpec` in `src/personal_mem/sources/registry.py`, with any raw companion content (`raw.md`, `snapshot.md`, `assets/`) alongside.
+You are ingesting {SOURCE_TYPE} entries into the thinkweave vault. Each ingested entry becomes a `source.md` in the layout declared by this source type's `SourceTypeSpec` in `src/thinkweave/acquisition/sources/registry.py`, with any raw companion content (`raw.md`, `snapshot.md`, `assets/`) alongside.
 
 **Arguments**: {ARGUMENT_DESCRIPTION — e.g. "One or more URLs", "`--queue` to drain the research queue", "`--drain` to process the disk inbox"}
 
@@ -64,11 +64,15 @@ You are ingesting {SOURCE_TYPE} entries into the personal_mem vault. Each ingest
 Every source-ingestion skill starts here. Concept consistency is what makes the knowledge graph work — new sources must reuse existing vocabulary when possible.
 
 ```
-Read src/personal_mem/ontology.yaml
-mem_concepts(min_count=2)
+weave_concepts(action="list")
 ```
 
-Load the ontology **once at the start of the batch**, not per item. Map concepts to existing ontology terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — `/mem-resolve-concepts` will canonicalise proposals in a later pass. Minimum 2 concepts per source note.
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary for concept assignment. Always load it via `weave_concepts`, never
+by reading `src/thinkweave/ontology.yaml` from the source tree: under a plugin
+install that path isn't at the worker's CWD, and it misses proposed terms.
+
+Load the ontology **once at the start of the batch**, not per item. Map concepts to existing ontology terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — `/tighten` will canonicalise proposals in a later pass. Minimum 2 concepts per source note.
 
 ---
 
@@ -94,15 +98,15 @@ One-shot: user hands you a URL, file path, or identifier, and you produce one so
 Before creating, check whether this source is already in the vault:
 
 ```
-mem_search(query="<title or URL fragment>", type="source", limit=3)
+weave_search(query="<title or URL fragment>", type="source", limit=3)
 ```
 
-If a hit comes back, either skip (default) or update the existing entry via `mem_update` — don't create a duplicate.
+If a hit comes back, either skip (default) or update the existing entry via `weave_update` — don't create a duplicate.
 
 ### 3. Create the source note
 
 ```
-mem_create(
+weave_create(
     note_type="source",
     title="<descriptive title>",
     body="<body template — see below>",
@@ -118,7 +122,7 @@ mem_create(
 )
 ```
 
-The `source_type` field is what routes the file into its bucket under `vault/sources/`. Routing is handled automatically by `VaultManager.create_note` via the spec in `src/personal_mem/sources/registry.py`.
+The `source_type` field is what routes the file into its bucket under `vault/sources/`. Routing is handled automatically by `VaultManager.create_note` via the spec in `src/thinkweave/acquisition/sources/registry.py`.
 
 ### 4. Save raw companion content
 
@@ -141,7 +145,7 @@ Two common patterns:
 
 **Semantic queue (notes tagged `todo`+`research`)** — used by `/research --queue`:
 ```
-mem_search(query="", tags=["todo", "research"], type="note", limit=<batch>)
+weave_search(query="", tags=["todo", "research"], type="note", limit=<batch>)
 ```
 Exclude items already tagged `processing`. Process FIFO (oldest first).
 
@@ -157,11 +161,11 @@ Process each file, move to `$MY_INBOX/_processed/<date>/` on success.
 
 **Queue**: re-tag `todo` → `processing` so parallel runs don't double-process.
 ```
-mem_update(note_id="<id>", frontmatter_updates={"tags": ["processing", "research"]})
+weave_update(note_id="<id>", frontmatter_updates={"tags": ["processing", "research"]})
 ```
 If processing fails, the item stays tagged `processing` — recoverable.
 
-**Inbox**: process the file in place; move it to `_processed/` only after `mem_create` succeeds. If processing fails, the file stays in the inbox and will be picked up on the next run.
+**Inbox**: process the file in place; move it to `_processed/` only after `weave_create` succeeds. If processing fails, the file stays in the inbox and will be picked up on the next run.
 
 ### 3. Per-item processing
 
@@ -169,9 +173,9 @@ For each claimed/enumerated item, run the **Import** pipeline above (fetch → d
 
 ### 4. Finalize
 
-**Queue**: re-tag `processing` → `done` after `mem_create` returns a `src-` ID.
+**Queue**: re-tag `processing` → `done` after `weave_create` returns a `src-` ID.
 ```
-mem_update(note_id="<id>", frontmatter_updates={"tags": ["done", "research"]})
+weave_update(note_id="<id>", frontmatter_updates={"tags": ["done", "research"]})
 ```
 
 **Inbox**: `Bash("mv <file> $MY_INBOX/_processed/$(date +%Y-%m-%d)/")`
@@ -186,9 +190,9 @@ Gap identification: analyse what's already in the vault, find what's missing, cr
 
 {DESCRIBE YOUR SIGNAL SOURCES. Common ones:
   - `Read vault/sources/RESEARCH_FOCUS.md` for user-declared priorities
-  - `mem_concepts(action="source_counts", concepts=[...])` for per-concept coverage
-  - `mem_timeline(days=14)` for recent project activity
-  - `mem_search` against existing sources to avoid re-queueing duplicates}
+  - `weave_concepts(action="source_counts", concepts=[...])` for per-concept coverage
+  - `weave_timeline(days=14)` for recent project activity
+  - `weave_search` against existing sources to avoid re-queueing duplicates}
 
 ### 2. Identify gaps
 
@@ -201,7 +205,7 @@ Gap identification: analyse what's already in the vault, find what's missing, cr
 
 For each gap, create a `todo`+`research` tagged note that `/research` can later drain:
 ```
-mem_create(
+weave_create(
     note_type="note",
     title="<what to look for>",
     body="<url or search strategy>\n\n<why this matters — which concept or focus area>",
@@ -219,10 +223,10 @@ tags=["todo", "research", "needs-url"]
 
 ## Frontmatter shape (every source note your skill writes)
 
-Use the canonical helper in `src/personal_mem/sources/frontmatter.py`:
+Use the canonical helper in `src/thinkweave/acquisition/sources/frontmatter.py`:
 
 ```python
-from personal_mem.sources import build_source_frontmatter
+from thinkweave.acquisition.sources import build_source_frontmatter
 fm = build_source_frontmatter(
     source_type="{SLUG}",
     title="<title>",
@@ -232,7 +236,7 @@ fm = build_source_frontmatter(
 )
 ```
 
-Or inline in `mem_create`:
+Or inline in `weave_create`:
 
 ```
 frontmatter={
@@ -246,7 +250,7 @@ frontmatter={
 
 **Canonical fields** (present on every source note):
 - `source_type` — your registered slug
-- `title` — set via the `title=` argument of `mem_create`
+- `title` — set via the `title=` argument of `weave_create`
 - `url` — canonical URL or URI; empty string for local-only content
 - `authors` — list of strings
 - `concepts` — at least 2, mapped to ontology terms
@@ -295,7 +299,7 @@ See [[<slug>/raw.md]] (or paper.pdf / snapshot.md / whichever companion file you
 
 ### Concepts
 - Existing: <count reused from ontology>
-- Proposed: <count of new terms needing /mem-resolve-concepts review>
+- Proposed: <count of new terms needing /tighten review>
 
 ### Next
 - <suggested follow-up command — e.g. "Run `/research --queue --batch N` to continue">

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.synthesis.concepts import (
+from thinkweave.synthesis.concepts import (
     build_reverse_map,
     find_near_duplicates,
     load_aliases,
@@ -20,11 +20,11 @@ from personal_mem.synthesis.concepts import (
     save_aliases,
     suggest_similar,
 )
-from personal_mem.core.config import Config
-from personal_mem.core.indexer import EDGE_TYPE_TO_FIELD, Indexer
-from personal_mem.core.schemas import NoteType
-from personal_mem.retrieval.search import Search
-from personal_mem.core.vault import VaultManager, parse_frontmatter
+from thinkweave.core.config import Config
+from thinkweave.core.indexer import EDGE_TYPE_TO_FIELD, Indexer
+from thinkweave.core.schemas import NoteType
+from thinkweave.retrieval.search import Search
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ class TestLinkUnlinkMarkdown:
         text = path.read_text(encoding="utf-8")
         fm, body = parse_frontmatter(text)
         fm["related"] = new_targets
-        from personal_mem.core.vault import render_frontmatter
+        from thinkweave.core.vault import render_frontmatter
         path.write_text(render_frontmatter(fm) + "\n\n" + body, encoding="utf-8")
 
         updated = vault.read_note(path)
@@ -171,7 +171,7 @@ class TestLinkUnlinkMarkdown:
         text = path.read_text(encoding="utf-8")
         fm, body = parse_frontmatter(text)
         fm.pop("related", None)
-        from personal_mem.core.vault import render_frontmatter
+        from thinkweave.core.vault import render_frontmatter
         path.write_text(render_frontmatter(fm) + "\n\n" + body, encoding="utf-8")
 
         updated = vault.read_note(path)
@@ -461,8 +461,8 @@ class TestSearchEdgeCases:
 
 class TestJudgeEdgeCases:
     def test_decision_with_multiple_files(self, tmp_path: Path):
-        from personal_mem.synthesis.judge import evaluate_decision
-        from personal_mem.core.schemas import NoteMeta
+        from thinkweave.synthesis.judge import evaluate_decision
+        from thinkweave.core.schemas import NoteMeta
 
         # All files exist
         files = []
@@ -481,8 +481,8 @@ class TestJudgeEdgeCases:
 
     def test_decision_partial_file_removal(self, tmp_path: Path):
         """Some files exist, some don't — should still count as kept if majority present."""
-        from personal_mem.synthesis.judge import evaluate_decision
-        from personal_mem.core.schemas import NoteMeta
+        from thinkweave.synthesis.judge import evaluate_decision
+        from thinkweave.core.schemas import NoteMeta
 
         existing = tmp_path / "kept.py"
         existing.write_text("pass")
@@ -529,7 +529,7 @@ class TestMCPToolChainE2E:
                 "EDGE_TYPE_TO_FIELD enables markdown-first linking\n"
                 "This keeps SQLite as a derived index\n"
             ),
-            project="test-project",
+            project="test_project",
             extra_frontmatter={
                 "files_touched": ["src/server.py"],
                 "commits": [],
@@ -540,14 +540,14 @@ class TestMCPToolChainE2E:
         session = vault.read_note(session_path)
 
         assert session.type == NoteType.SESSION
-        assert session.project == "test-project"
+        assert session.project == "test_project"
 
         # ── Step 2: Agent searches to avoid duplicates ──────────────
         results = search.search("stdio_server")
         assert any(session.id in r.id for r in results)
 
         # ── Step 3: Agent extracts insights as notes ────────────────
-        from personal_mem.surfaces.mcp.server import _parse_candidate_insights
+        from thinkweave.surfaces.mcp.server import _parse_candidate_insights
         insights = _parse_candidate_insights(session.body)
         assert len(insights) == 2
 
@@ -591,7 +591,7 @@ class TestMCPToolChainE2E:
                 "## Decision\nWrite edges to markdown frontmatter.\n\n"
                 "## Consequences\nEdges survive index --full rebuild."
             ),
-            project="test-project",
+            project="test_project",
             tags=["architecture"],
             extra_frontmatter={
                 "concepts": ["markdown-first", "sqlite"],
@@ -623,7 +623,7 @@ class TestMCPToolChainE2E:
         # ── Step 7: Agent runs concept management ───────────────────
         # Add a note with a near-duplicate concept
         typo_path = vault.create_note(
-            NoteType.NOTE, "Typo concept note", body=".", project="test-project",
+            NoteType.NOTE, "Typo concept note", body=".", project="test_project",
             extra_frontmatter={"concepts": ["mark-down-first", "sqlite"]},
         )
         indexer.index_file(typo_path)
@@ -647,8 +647,8 @@ class TestMCPToolChainE2E:
         assert stats["edges"] >= 4
 
         # ── Step 8: Agent judges the decision ───────────────────────
-        from personal_mem.synthesis.judge import evaluate_decision
-        from personal_mem.core.schemas import NoteMeta
+        from thinkweave.synthesis.judge import evaluate_decision
+        from thinkweave.core.schemas import NoteMeta
 
         all_decisions = [
             vault.read_note(p) for p in vault.root.rglob("*.md")
@@ -679,7 +679,7 @@ class TestMCPToolChainE2E:
             fm["implements"] = new_impl
         else:
             fm.pop("implements", None)
-        from personal_mem.core.vault import render_frontmatter
+        from thinkweave.core.vault import render_frontmatter
         first_note_path.write_text(
             render_frontmatter(fm) + "\n\n" + body, encoding="utf-8",
         )

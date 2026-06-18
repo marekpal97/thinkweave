@@ -28,7 +28,7 @@ import pytest
 
 class TestArchiveBufferPartition:
     def test_no_retrieval_events_writes_only_events_jsonl(self, tmp_path: Path):
-        from personal_mem.core.buffer import archive_buffer
+        from thinkweave.core.buffer import archive_buffer
 
         buf_dir = tmp_path / "buffer"
         buf_dir.mkdir()
@@ -53,7 +53,7 @@ class TestArchiveBufferPartition:
         assert len(action_lines) == 2
 
     def test_mixed_buffer_partitions_correctly(self, tmp_path: Path):
-        from personal_mem.core.buffer import archive_buffer
+        from thinkweave.core.buffer import archive_buffer
 
         buf_dir = tmp_path / "buffer"
         buf_dir.mkdir()
@@ -62,7 +62,7 @@ class TestArchiveBufferPartition:
             '{"ts":"14:00","tool":"Edit","file":"a.py"}\n'
             '{"ts":"14:01","type":"prompt","text":"hi"}\n'
             '{"ts":"14:02","type":"startup","returned_ids":["n-aaa111aa"],"token_est":1234}\n'
-            '{"ts":"14:03","type":"retrieval","tool":"mcp__personal-mem__mem_search","returned_ids":["n-bbb222bb"]}\n'
+            '{"ts":"14:03","type":"retrieval","tool":"mcp__thinkweave__weave_search","returned_ids":["n-bbb222bb"]}\n'
             '{"ts":"14:04","tool":"Bash","command":"pytest"}\n',
             encoding="utf-8",
         )
@@ -90,7 +90,7 @@ class TestArchiveBufferPartition:
         assert not buf.exists()
 
     def test_malformed_line_falls_to_events(self, tmp_path: Path):
-        from personal_mem.core.buffer import archive_buffer
+        from thinkweave.core.buffer import archive_buffer
 
         buf_dir = tmp_path / "buffer"
         buf_dir.mkdir()
@@ -113,7 +113,7 @@ class TestArchiveBufferPartition:
     def test_idempotent_rerun_with_existing_archives(self, tmp_path: Path):
         # Catch-up wraps may invoke archive a second time; once the buffer
         # is gone, the call must be a graceful no-op (not crash, not duplicate).
-        from personal_mem.core.buffer import archive_buffer
+        from thinkweave.core.buffer import archive_buffer
 
         session_dir = tmp_path / "sess"
         session_dir.mkdir()
@@ -129,13 +129,13 @@ class TestArchiveBufferPartition:
         # An agent doing pure research with zero file edits should still leave
         # an events.jsonl (possibly empty) so prune.py doesn't treat the
         # session as an orphan stub on the first finalize pass.
-        from personal_mem.core.buffer import archive_buffer
+        from thinkweave.core.buffer import archive_buffer
 
         buf_dir = tmp_path / "buffer"
         buf_dir.mkdir()
         buf = buf_dir / "ses-r.jsonl"
         buf.write_text(
-            '{"type":"retrieval","tool":"mcp__personal-mem__mem_search","returned_ids":["n-aaaabbbb"]}\n',
+            '{"type":"retrieval","tool":"mcp__thinkweave__weave_search","returned_ids":["n-aaaabbbb"]}\n',
             encoding="utf-8",
         )
         session_dir = tmp_path / "sess"
@@ -158,10 +158,10 @@ class TestArchiveBufferPartition:
 
 class TestSessionStartCapture:
     def test_writes_startup_event_to_buffer(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
-        monkeypatch.setenv("PERSONAL_MEM_PROJECT", "t")
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
 
-        from personal_mem.surfaces.hooks import handler as h
+        from thinkweave.surfaces.hooks import handler as h
 
         # Stub the payload builder so the test doesn't need a real vault.
         fake_payload = (
@@ -171,7 +171,7 @@ class TestSessionStartCapture:
             "- some prose without an id\n"
         )
         monkeypatch.setattr(
-            "personal_mem.retrieval.context.build_project_context",
+            "thinkweave.retrieval.context.build_project_context",
             lambda *a, **kw: fake_payload,
         )
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
@@ -179,10 +179,10 @@ class TestSessionStartCapture:
         session_id = "ses-startup1"
         h._handle_session_start({"session_id": session_id, "cwd": str(tmp_path)})
 
-        from personal_mem.core.config import load_config
+        from thinkweave.core.config import load_config
 
         cfg = load_config()
-        buf_path = cfg.mem_dir / "buffer" / f"{session_id}.jsonl"
+        buf_path = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
         assert buf_path.exists()
         lines = buf_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
@@ -194,11 +194,11 @@ class TestSessionStartCapture:
     def test_empty_payload_still_records_zero_ids(self, tmp_path: Path, monkeypatch):
         # Cold-vault SessionStart should still leave a marker — n_retrievals_onthefly
         # and startup_token_est=0 is itself a finding the RLVR row will use.
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
-        from personal_mem.surfaces.hooks import handler as h
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
+        from thinkweave.surfaces.hooks import handler as h
 
         monkeypatch.setattr(
-            "personal_mem.retrieval.context.build_project_context",
+            "thinkweave.retrieval.context.build_project_context",
             lambda *a, **kw: "",
         )
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
@@ -206,10 +206,10 @@ class TestSessionStartCapture:
         session_id = "ses-cold"
         h._handle_session_start({"session_id": session_id, "cwd": str(tmp_path)})
 
-        from personal_mem.core.config import load_config
+        from thinkweave.core.config import load_config
 
         cfg = load_config()
-        buf_path = cfg.mem_dir / "buffer" / f"{session_id}.jsonl"
+        buf_path = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
         assert buf_path.exists()
         event = json.loads(buf_path.read_text(encoding="utf-8").splitlines()[0])
         assert event["type"] == "startup"
@@ -218,13 +218,13 @@ class TestSessionStartCapture:
 
     def test_no_session_id_skips_capture(self, tmp_path: Path, monkeypatch):
         # Defensive: hook input without a session_id can't be buffered.
-        monkeypatch.setenv("PERSONAL_MEM_VAULT", str(tmp_path / "vault"))
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
         # Clear env var so the missing session_id can't be backfilled.
         monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        from personal_mem.surfaces.hooks import handler as h
+        from thinkweave.surfaces.hooks import handler as h
 
         monkeypatch.setattr(
-            "personal_mem.retrieval.context.build_project_context",
+            "thinkweave.retrieval.context.build_project_context",
             lambda *a, **kw: "[n-aaaabbbb]",
         )
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)

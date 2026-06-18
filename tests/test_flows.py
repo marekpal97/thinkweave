@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.flows import (
+from thinkweave.core.config import Config
+from thinkweave.operations.flows import (
     FlowSpec,
     FlowStage,
+    _build_argv,
     _build_command,
     _parse_flows_yaml,
     flows_path,
@@ -86,7 +87,7 @@ class TestFlowsYamlParser:
         text = (
             "flows:\n"
             "  x:\n"
-            "    log: ~/.cache/personal_mem/flow.log\n"
+            "    log: ~/.cache/thinkweave/flow.log\n"
             "    stages:\n"
             "      - run: \"/a\"\n"
         )
@@ -118,7 +119,7 @@ class TestLoadFlows:
         assert load_flows(config) == {}
 
     def test_loads_from_disk(self, config: Config):
-        config.mem_dir.mkdir(parents=True, exist_ok=True)
+        config.config_dir.mkdir(parents=True, exist_ok=True)
         flows_path(config).write_text(
             "flows:\n"
             "  smoke:\n"
@@ -149,10 +150,52 @@ class TestBuildCommand:
         # shlex.quote wraps the whole thing in single quotes.
         assert "'/discover (gap cap of 10)'" in cmd
 
-    def test_respects_PERSONAL_MEM_CLAUDE_BIN(self, monkeypatch):
-        monkeypatch.setenv("PERSONAL_MEM_CLAUDE_BIN", "/custom/claude")
+    def test_respects_THINKWEAVE_CLAUDE_BIN(self, monkeypatch):
+        monkeypatch.setenv("THINKWEAVE_CLAUDE_BIN", "/custom/claude")
         cmd = _build_command("/x")
         assert cmd.startswith("/custom/claude ")
+
+    def test_namespaces_skill_under_plugin_route(self, monkeypatch, tmp_path):
+        # Plugin route active → stage skill tokens render namespaced
+        # (plugin commands have no bare-name aliasing).
+        import json
+
+        from thinkweave.core import plugin_route
+
+        manifest = tmp_path / "installed_plugins.json"
+        manifest.write_text(
+            json.dumps({"version": 2, "plugins": {"thinkweave@mp": []}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
+        argv = _build_argv("/discover --strategy rss_poll")
+        assert "/thinkweave:discover --strategy rss_poll" in argv
+
+
+class TestBuildArgv:
+    """The execution path is an argv list — no shell parsing, so a prompt
+    with spaces/quotes/backslashes survives intact on every OS."""
+
+    def test_argv_keeps_prompt_as_single_token(self):
+        argv = _build_argv("/discover (gap cap of 10)")
+        assert argv == [
+            "claude",
+            "--model",
+            "sonnet",
+            "-p",
+            "/discover (gap cap of 10)",
+            "--dangerously-skip-permissions",
+        ]
+
+    def test_argv_does_not_split_windows_path_in_prompt(self):
+        # The whole prompt is a single -p token; a backslash path inside it
+        # must survive intact (shlex.split would have mangled it).
+        argv = _build_argv('/x C:\\Users\\me\\f.md')
+        assert argv[4] == "/x C:\\Users\\me\\f.md"
+
+    def test_argv_respects_bin_override(self, monkeypatch):
+        monkeypatch.setenv("THINKWEAVE_CLAUDE_BIN", "/custom/claude")
+        assert _build_argv("/x")[0] == "/custom/claude"
 
 
 # ---------------------------------------------------------------------------

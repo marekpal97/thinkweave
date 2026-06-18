@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "personal-mem": {
+    "thinkweave": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--project", ".", "--extra", "mcp", "mem-mcp"],
+      "args": ["run", "--project", ".", "--extra", "mcp", "weave-mcp"],
       "env": {}
     }
   }

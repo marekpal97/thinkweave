@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from personal_mem.core.config import Config
-from personal_mem.core.schemas import NoteType
-from personal_mem.operations import notes as ops
+from thinkweave.core.config import Config
+from thinkweave.core.schemas import NoteType
+from thinkweave.operations import notes as ops
 
 
 @pytest.fixture
