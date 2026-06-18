@@ -11,7 +11,7 @@
 # YAML reader silently parses block-style `- item` lists as empty.
 
 # ──────────────────────────────────────────────────────────────────────
-# completion — what `weave enrich`, `weave hubs run`, etc. talk to
+# completion — what `weave hubs run`, `weave import`, etc. talk to
 # ──────────────────────────────────────────────────────────────────────
 
 completion:
@@ -42,9 +42,8 @@ embeddings:
 #
 #   hubs_run            — concept-hub essence synthesis (heavy)
 #   hubs_link           — concept-hub link extraction (light)
-#   enrich              — concept tagging for notes lacking concepts
 #   chatgpt_import      — ChatGPT export ingestion + summarisation
-#   claude_code_enrich  — historical Claude Code session enrichment
+#   claude_code_enrich  — historical Claude Code session synthesis
 
 overrides: {}
 

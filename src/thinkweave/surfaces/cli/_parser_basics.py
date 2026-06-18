@@ -207,47 +207,10 @@ def add_index_subparsers(sub) -> None:
         help=(
             "Append an isolation diagnostic: notes with no graph edges, "
             "broken down by type / concept-count bucket / project, plus "
-            "10 examples. Opt-in because output is verbose; useful before "
-            "running `weave enrich` to characterise what's reachable."
+            "10 examples. Opt-in because output is verbose; surfaces notes "
+            "that never picked up concepts at creation."
         ),
     )
-
-    p_enrich = sub.add_parser(
-        "enrich",
-        help="LLM-assisted concept assignment for notes missing concepts (uses gpt-5-mini)",
-    )
-    p_enrich.add_argument("--project", "-p", default="", help="Scope to one project")
-    p_enrich.add_argument(
-        "--type", "-t", dest="note_types", default="",
-        help="Comma-separated types to enrich (default: session,note,decision,source)",
-    )
-    p_enrich.add_argument("--limit", "-n", type=int, default=0, help="Max notes to process (0=all)")
-    p_enrich.add_argument(
-        "--force", action="store_true",
-        help="Re-enrich notes that already have concepts",
-    )
-    p_enrich.add_argument("--dry-run", action="store_true", help="Show what would be done")
-    p_enrich.add_argument(
-        "--via",
-        choices=["inline", "batch"],
-        default=None,
-        help=(
-            "Execution route. 'batch' = wrapper async fan-out (needs an "
-            "API key); 'inline' = /enrich-notes CC skill (uses the running "
-            "model, no provider key). Default: auto (batch when key + "
-            ">200 items, else inline)."
-        ),
-    )
-    p_enrich.add_argument(
-        "--reindex", action="store_true", default=True,
-        help="Rebuild index after enrichment (default: true)",
-    )
-    p_enrich.add_argument("--no-reindex", dest="reindex", action="store_false")
-    p_enrich.add_argument(
-        "--connect", action="store_true", default=True,
-        help="Materialize SQLite edges as wikilinks after reindex (default: true)",
-    )
-    p_enrich.add_argument("--no-connect", dest="connect", action="store_false")
 
     p_import = sub.add_parser("import", help="Import from external sources")
     p_import.add_argument(
@@ -529,7 +492,7 @@ def add_admin_subparsers(sub) -> None:
     p_wrap_finalize = sub.add_parser(
         "wrap-finalize",
         help=(
-            "Deterministic tail of /weave-wrap: prune orphans → index → judge "
+            "Deterministic tail of /wrap: prune orphans → index → judge "
             "extracted decisions → refresh DECISIONS/BACKLOG → concept-drift "
             "advisory, all in one process. Run after weave_extract has written "
             "the session's insights/decisions."

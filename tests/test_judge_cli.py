@@ -186,6 +186,20 @@ def test_rejudge_enqueues_and_invokes_subprocess(
     assert items[0]["source"] == "manual"
 
 
+def test_rejudge_argv_namespaces_on_plugin_route() -> None:
+    """The shelled `/judge-prediction` token must follow the install route:
+    bare on a project-scope clone, `thinkweave:`-prefixed on the plugin route
+    (marketplace OR dev-link) where there is no bare alias."""
+    from thinkweave.surfaces.cli.judge import _rejudge_argv
+
+    assert _rejudge_argv("dec-1", None) == [
+        "claude", "-p", "/judge-prediction --decision dec-1",
+    ]
+    assert _rejudge_argv("dec-1", "thinkweave") == [
+        "claude", "-p", "/thinkweave:judge-prediction --decision dec-1",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # --list-pending
 # ---------------------------------------------------------------------------

@@ -26,7 +26,6 @@ from thinkweave.surfaces.cli.hubs import (
 )
 from thinkweave.surfaces.cli.index import (
     cmd_doctor,
-    cmd_enrich,
     cmd_import,
     cmd_index,
     cmd_stats,
@@ -108,7 +107,6 @@ _DISPATCH = {
     # agents use the weave_create/update/link/unlink MCP tools instead).
     "index": cmd_index,
     "import": cmd_import,
-    "enrich": cmd_enrich,
     "dream": cmd_dream,
     "discover": cmd_discover,
     "drain": cmd_drain,

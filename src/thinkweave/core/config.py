@@ -141,6 +141,13 @@ class Config:
     # the knowledge-delta probe-match slice (digest worker).
     dream_probe_window_days: int = 14
 
+    # Behavioral-salience activity window (days) for the digest's
+    # "## Most actionable" active-focus block: which projects saw recent
+    # sessions and which concepts are under probe pressure. The automatic
+    # signal is the default; PRIORITIES.yaml ``focus.*`` lists are appended
+    # as optional pins (a pinned-but-quiet project/concept still surfaces).
+    salience_activity_window_days: int = 14
+
     # How many rejudge entries one cycle hands to the phase-2 judge worker.
     # Shared by the scan collector AND apply's consumption step — apply
     # removes exactly this prefix of the on-disk queue, so anything beyond
@@ -172,6 +179,17 @@ class Config:
 
     # Extraction — max insight notes one ``weave_extract`` call creates.
     extract_insights_cap: int = 3
+
+    # Inline backfill fan-out — the keyless ``weave import claude-code --enrich
+    # --via inline`` path (/seed-enrich). At/below ``fanout_threshold`` pending
+    # sessions it synthesises in-process (no spawn overhead — see the
+    # "no subagent for small wraps" finding); above it, it deterministically
+    # fans out subagents, ``batch_size`` sessions per worker, ``parallelism``
+    # workers concurrent (mirrors /drain's writer fan-out). Distinct from the
+    # API batch path's provider ``batch_concurrency`` (vault/config/api.yaml).
+    enrich_fanout_threshold: int = 12
+    enrich_batch_size: int = 6
+    enrich_parallelism: int = 3
 
     # Theme cluster detection (synthesis/theme_candidates.detect_signals).
     # ``min_cluster_size``: smallest concept cluster that surfaces a signal;
@@ -517,6 +535,22 @@ def load_config() -> Config:
         extract_cfg = data.get("extract", {})
         if "insights_cap" in extract_cfg:
             cfg.extract_insights_cap = int(extract_cfg["insights_cap"])
+
+        # Behavioral-salience window for the digest active-focus block.
+        salience_cfg = data.get("salience", {})
+        if "activity_window_days" in salience_cfg:
+            cfg.salience_activity_window_days = int(
+                salience_cfg["activity_window_days"]
+            )
+
+        # Inline backfill fan-out policy (/seed-enrich)
+        enrich_cfg = data.get("enrich", {})
+        if "fanout_threshold" in enrich_cfg:
+            cfg.enrich_fanout_threshold = int(enrich_cfg["fanout_threshold"])
+        if "batch_size" in enrich_cfg:
+            cfg.enrich_batch_size = int(enrich_cfg["batch_size"])
+        if "parallelism" in enrich_cfg:
+            cfg.enrich_parallelism = int(enrich_cfg["parallelism"])
 
         # Theme cluster detection
         themes_cfg = data.get("themes", {})

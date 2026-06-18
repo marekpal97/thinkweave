@@ -22,7 +22,20 @@ import subprocess
 import sys
 
 from thinkweave.core.config import load_config
+from thinkweave.core.plugin_route import namespace_prompt, plugin_namespace
 from thinkweave.core.vault import VaultManager, parse_frontmatter
+
+
+def _rejudge_argv(dec_id: str, ns: str | None) -> list[str]:
+    """Headless ``claude -p`` argv for a manual rejudge.
+
+    The ``/judge-prediction`` skill has no bare-name alias on the plugin route
+    (marketplace *or* ``weave dev-link``), so the token is namespaced when a
+    route is active. ``ns`` is ``plugin_namespace()`` — pass ``None`` for the
+    project-scope clone, where bare names resolve.
+    """
+    prompt = namespace_prompt(f"/judge-prediction --decision {dec_id}", ns)
+    return ["claude", "-p", prompt]
 
 
 # Pattern in queue items' ``reason`` field — populated by the supersession
@@ -92,7 +105,7 @@ def _cmd_rejudge(cfg, args: argparse.Namespace) -> None:
     # Shell to the LLM skill. ``claude -p`` is headless; inheriting the
     # parent's stdio means the verdict line streams live to the user.
     result = subprocess.run(
-        ["claude", "-p", f"/judge-prediction --decision {dec_id}"],
+        _rejudge_argv(dec_id, plugin_namespace()),
         stdin=sys.stdin,
         stdout=sys.stdout,
         stderr=sys.stderr,

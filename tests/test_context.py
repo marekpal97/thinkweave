@@ -318,7 +318,7 @@ class TestToolManifestConsolidation:
     — that's what tells the agent which surface to call.
     """
 
-    # The 18 canonical MCP tools — must all appear at least once in the
+    # The 17 canonical MCP tools — must all appear at least once in the
     # rendered SessionStart payload.
     CANONICAL_TOOLS = (
         "weave_search",
@@ -333,7 +333,6 @@ class TestToolManifestConsolidation:
         "weave_extract",
         "weave_judge",
         "weave_landing",
-        "weave_enrich",
         "weave_timeline",
         "weave_project_snapshot",
         "weave_queue",

@@ -334,28 +334,55 @@ _UNFAMILIAR_HINTS = ("look at", "look up", "what is", "what's", "explain", "wher
 _PROBE_CONCEPT_MIN_LEN = 3
 
 
+# Word-token splitter for probe→concept attribution. Matching whole
+# tokens (not raw substrings) is what stops a short slug from firing
+# inside an unrelated word.
+_WORD_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
 def match_probe_concepts(text: str, vocabulary: Iterable[str]) -> set[str]:
-    """Concept attribution for a prompt text: case-insensitive substring
-    match of concept slugs against the text.
+    """Concept attribution for a prompt text: whole-word-token match of
+    concept slugs against the text.
 
     THE shared rule between the live probe-pressure path
     (``operations.prompts.recent_probe_details``) and the SQL projection
     (``Indexer._project_session_prompts`` → ``prompt_concepts``) — keep
     both on this function so the table never disagrees with what the
-    pressure aggregate would compute. Substring (not word-split) matching
-    is deliberate: concepts like ``write-ahead-log`` contain hyphens and
-    naive whitespace tokenisation would break them apart.
+    pressure aggregate would compute.
+
+    Matching is on word-token boundaries, NOT raw substring: a slug must
+    appear either as a standalone token (single-token concepts) or as a
+    contiguous run of tokens (hyphenated multi-token concepts like
+    ``write-ahead-log`` / ``agent-harness``, matched across either a
+    hyphen or whitespace in the text). This is the 2026-06-17 fix for the
+    substring-collision class where short slugs (``aml``, ``clo``, ``dag``,
+    ``sse``) matched inside unrelated words (``yaml``, ``close``) and
+    drowned real signal. The 3-char minimum (below) still guards the
+    single/2-char garbage pool.
     """
     text_lower = (text or "").strip().lower()
     if not text_lower:
         return set()
-    return {
-        concept
-        for concept in vocabulary
-        if concept
-        and len(concept) >= _PROBE_CONCEPT_MIN_LEN
-        and concept in text_lower
-    }
+    tokens = _WORD_TOKEN_RE.findall(text_lower)
+    if not tokens:
+        return set()
+    unigrams = set(tokens)
+    # " a b c " form lets a multi-token concept phrase be found as a
+    # contiguous token run via one substring check.
+    joined = " " + " ".join(tokens) + " "
+    out: set[str] = set()
+    for concept in vocabulary:
+        if not concept or len(concept) < _PROBE_CONCEPT_MIN_LEN:
+            continue
+        c_tokens = _WORD_TOKEN_RE.findall(concept.lower())
+        if not c_tokens:
+            continue
+        if len(c_tokens) == 1:
+            if c_tokens[0] in unigrams:
+                out.add(concept)
+        elif (" " + " ".join(c_tokens) + " ") in joined:
+            out.add(concept)
+    return out
 
 
 def classify_probe(prompt: Prompt, events: list[dict]) -> bool:

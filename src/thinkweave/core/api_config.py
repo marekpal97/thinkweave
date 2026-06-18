@@ -1,7 +1,7 @@
 """LLM + embedding provider plumbing — ``vault/config/api.yaml``.
 
 The single user-facing surface for which provider+model thinkweave's
-backfill ops (`weave enrich`, `weave hubs run`, `weave import chatgpt`,
+backfill ops (`weave hubs run`, `weave import chatgpt`,
 `weave import claude-code --enrich`, `weave hubs link`) and embedding paths
 talk to. Mirrors the posture of :mod:`thinkweave.acquisition.sources.priorities`:
 missing file → built-in defaults, malformed YAML → defaults + warn,
@@ -22,7 +22,6 @@ Schema::
     overrides:
       hubs_run:        {model: gpt-5}
       hubs_link:       {}
-      enrich:          {}
       chatgpt_import:  {model: gpt-5-mini}
       claude_code_enrich: {}      # session synthesis; pin a block to override
 
@@ -36,7 +35,7 @@ pin a different provider/model for session synthesis specifically.)
 with the op's override. Override fields win; anything omitted falls
 through. Listed initial ops:
 
-    hubs_run, hubs_link, enrich, chatgpt_import, claude_code_enrich
+    hubs_run, hubs_link, chatgpt_import, claude_code_enrich
 """
 
 from __future__ import annotations

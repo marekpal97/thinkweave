@@ -198,7 +198,7 @@ def _build_tools_manifest() -> Section:
     ``weave_graph(filter=...)`` — and never advertised here.
     """
     body = (
-        "Thinkweave exposes 18 tools via MCP. Prefer them over shelling out.\n"
+        "Thinkweave exposes 17 tools via MCP. Prefer them over shelling out.\n"
         "Retrieval is three modalities — FTS, similarity, graph — plus compositions.\n"
         "\n"
         "**Search (FTS / similarity / hybrid)**\n"
@@ -235,7 +235,6 @@ def _build_tools_manifest() -> Section:
         "- `weave_extract(session_id, summary, insights, decisions, projects)` — enrich a session with insights + decisions. Auto-creates a session note for non-code conversations.\n"
         "- `weave_judge(session_id)` — read-only verdict (`kept`/`superseded`/`reverted`/`unknown`) from git + tests; never writes.\n"
         "- `weave_landing(project, doc='decisions'|'backlog'|'state'|'themes'|'all')` — regenerate landing docs.\n"
-        "- `weave_enrich(project)` — LLM concept enrichment (gpt-5-mini).\n"
         "\n"
         "**Sources, queues, prompts**\n"
         "- `weave_queue(action, source_type, …)` — list / inspect / peek per-source-type acquisition queues.\n"
@@ -299,7 +298,7 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
         return Section(
             key="sessions",
             title=_default_title("sessions"),
-            body="_(no wrapped sessions found — run `/weave-wrap` at session end)_",
+            body="_(no wrapped sessions found — run `/wrap` at session end)_",
             soft_budget_chars=200,
         )
 
@@ -698,7 +697,7 @@ def _build_footer() -> Section:
         "`weave_search` accepts `concepts=[...]` for combined text+concept queries; "
         "`weave_graph` accepts `note_type` / `project` projection.\n"
         "\n"
-        "Run `/weave-wrap` before `/clear` or `/exit` to preserve this session's insights."
+        "Run `/wrap` before `/clear` or `/exit` to preserve this session's insights."
     )
     return Section(
         key="footer",
@@ -725,16 +724,46 @@ def _build_active_themes(cfg: Config, project: str, n: int = 10) -> Section:
 
     import sqlite3
 
+    # Optional pin layer: PRIORITIES.yaml ``focus.watch_themes`` are boosted
+    # above the recency default (which is itself behavioral — newest active
+    # themes first). Empty/missing PRIORITIES → pure project-stake + recency,
+    # exactly as before.
+    #
+    # NOTE — intentional exception to the uniform focus.* "floor" semantic
+    # (priorities.apply_pins): here pins FLOAT to the top of the themes
+    # list rather than sitting as a floor beneath behavioural ranking. This
+    # is a deliberate *display* choice — SessionStart is orientation, and a
+    # user who pinned a theme wants to see it first. The acquisition/ranking
+    # sites (dream digest, decision_review) use the floor semantic; this
+    # read-only display surface does not.
+    from thinkweave.acquisition.sources.priorities import (
+        focus_watch_themes,
+        load_priorities,
+    )
+
+    watch = focus_watch_themes(load_priorities(getattr(cfg, "vault_root", None)))
+
     db = sqlite3.connect(str(cfg.index_db))
     db.row_factory = sqlite3.Row
     try:
-        # Project-stake themes first, then any other active themes.
-        rows = db.execute(
-            "SELECT id, title, project, frontmatter FROM notes "
-            "WHERE type = 'theme' "
-            "ORDER BY (project = ?) DESC, date DESC LIMIT ?",
-            (project, n),
-        ).fetchall()
+        if watch:
+            # Project-stake first, then pinned watch_themes, then recency.
+            placeholders = ",".join("?" for _ in watch)
+            rows = db.execute(
+                "SELECT id, title, project, frontmatter FROM notes "
+                "WHERE type = 'theme' "
+                f"ORDER BY (project = ?) DESC, (id IN ({placeholders})) DESC, "
+                "date DESC LIMIT ?",
+                (project, *watch, n),
+            ).fetchall()
+        else:
+            # Project-stake themes first, then any other active themes (recency).
+            rows = db.execute(
+                "SELECT id, title, project, frontmatter FROM notes "
+                "WHERE type = 'theme' "
+                "ORDER BY (project = ?) DESC, date DESC LIMIT ?",
+                (project, n),
+            ).fetchall()
     finally:
         db.close()
 

@@ -94,3 +94,39 @@ class TestPluginNamespace:
         bad = tmp_path / "installed_plugins.json"
         bad.write_text("{not json", encoding="utf-8")
         assert plugin_namespace(manifest=bad) is None
+
+
+class TestDevLinkRoute:
+    """`weave dev-link` symlinks the checkout into ~/.claude/skills/thinkweave;
+    Claude Code auto-loads it as the namespaced `thinkweave@skills-dir` plugin
+    *without* an installed_plugins.json entry, so the symlink is the only
+    signal."""
+
+    def test_symlink_is_detected_without_manifest(self, tmp_path: Path):
+        target = tmp_path / "checkout"
+        target.mkdir()
+        link = tmp_path / "thinkweave"
+        link.symlink_to(target)
+        assert (
+            plugin_namespace(manifest=tmp_path / "absent.json", dev_link=link)
+            == "thinkweave"
+        )
+
+    def test_no_symlink_no_manifest_is_bare(self, tmp_path: Path):
+        assert (
+            plugin_namespace(
+                manifest=tmp_path / "absent.json",
+                dev_link=tmp_path / "absent-link",
+            )
+            is None
+        )
+
+    def test_real_dir_is_not_a_dev_link(self, tmp_path: Path):
+        # A real (non-symlink) directory at the skills path is some other
+        # plugin's dir, not our dev-link — must not trigger namespacing.
+        real = tmp_path / "thinkweave"
+        real.mkdir()
+        assert (
+            plugin_namespace(manifest=tmp_path / "absent.json", dev_link=real)
+            is None
+        )

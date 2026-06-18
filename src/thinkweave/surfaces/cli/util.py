@@ -64,7 +64,10 @@ def _seed_vault_templates(vault_root: Path) -> None:
         nf_dst.mkdir(parents=True, exist_ok=True)
         for tpl in nf_src.glob("*.md"):
             target = nf_dst / tpl.name
-            if not target.exists():
+            # Re-seed when absent OR present-but-empty: a 0-byte template is
+            # functionally missing and silently forces the research writers into
+            # freeform composition (loses the Key Moments / grain-block skeleton).
+            if not target.exists() or target.stat().st_size == 0:
                 shutil.copyfile(tpl, target)
 
 
