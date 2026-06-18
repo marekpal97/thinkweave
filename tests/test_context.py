@@ -309,7 +309,7 @@ class TestToolManifestConsolidation:
 
     Regression for the audit finding that ``_build_tools_manifest`` and
     ``_build_footer`` were still emitting deprecated tool names. The
-    canonical surface (18 tools) is documented in CLAUDE.md §7.
+    canonical surface (17 tools) is documented in CLAUDE.md §7.
 
     The deprecation aliases (``weave_concept_search``, ``weave_source_lens``,
     ``weave_decisions_for_file``, ``weave_concepts_merge``,
