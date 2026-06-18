@@ -252,7 +252,7 @@ def extract_session(
     # `transcript.md` companion so the note body reads as the synthesis, not
     # the raw feed. Tightly gated: only fires for a not-yet-processed
     # `imported_from: claude-code` note that still carries the `## Transcript`
-    # dump, so it never touches a live `/weave-wrap` session. This is the one
+    # dump, so it never touches a live `/wrap` session. This is the one
     # place the import body-shape transform lives — keeping both backends
     # byte-for-byte identical.
     if (

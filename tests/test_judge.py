@@ -87,7 +87,7 @@ class TestCheckReEdited:
         assert _check_re_edited(dec1, [], [dec1, dec2]) is None
 
     def test_same_session_siblings_not_superseded(self):
-        # Two decisions from one /weave-wrap batch sharing a file are co-equal
+        # Two decisions from one /wrap batch sharing a file are co-equal
         # siblings, not a supersession — the file-overlap heuristic must not
         # fire when source_session matches.
         dec1 = _make_decision(

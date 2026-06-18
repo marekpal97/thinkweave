@@ -1,5 +1,5 @@
 ---
-name: weave-wrap
+name: wrap
 owns_mechanic: session_extraction
 consumes: [weave_extract, weave_concepts, weave_project_snapshot, weave_wrap_finalize]
 produces: [session.md, DECISIONS.md, BACKLOG.md]
@@ -12,7 +12,7 @@ tools:
 description: End-of-session memory extraction. Compose insights/decisions inline, call `weave_extract` once, then `weave wrap-finalize` (deterministic tail). Self-contained; never prompts the user.
 ---
 
-# /weave-wrap — Session-End Memory Extraction
+# /wrap — Session-End Memory Extraction
 
 End-of-session memory extraction for the thinkweave vault. **Self-contained and headless-safe**: never prompt the user. You decide what's worth recording (which insights, which decisions, which todos); if the user gave direction earlier in *this* session about what to capture, honor it — but do not ask.
 
@@ -20,7 +20,7 @@ End-of-session memory extraction for the thinkweave vault. **Self-contained and 
 
 Two minor variants:
 - **Live wrap** — running in-session before `/clear`. You have the conversation; that's the source.
-- **Catch-up wrap** — headless (e.g. `claude -p "/weave-wrap"`) over a session that already ended. There is no live conversation; you work from `events.jsonl` + the session note's auto-extract skeleton + `git log/diff`.
+- **Catch-up wrap** — headless (e.g. `claude -p "/wrap"`) over a session that already ended. There is no live conversation; you work from `events.jsonl` + the session note's auto-extract skeleton + `git log/diff`.
 
 The steps below cover both. Step 1 + 2 differ in source material; everything from step 3 onward is identical.
 
@@ -79,7 +79,7 @@ Does in one process, zero model turns:
 - regenerate DECISIONS.md + BACKLOG.md
 - concept-drift advisory (read-only — proposes nothing, just reports)
 
-For any decision that carried a `predicted_outcome:` this wrap, `wrap-finalize` initializes `prediction_match: pending` (the pending initializer) — it does NOT evaluate the prediction itself. The `/judge-prediction` skill is the prediction judge; it runs live the next time a successor decision supersedes this one (via `/weave-wrap`'s composer) or via the cron drain (`claude -p "/judge-prediction --drain"`). If the manifestation pointer is *immediately* checkable from this session (e.g. the prediction said "after this commit, file X has property Y" and that's verifiable right now), you MAY tail-call `/judge-prediction --decision <new-id>` after `wrap-finalize`, but you are not required to — pending is a fine default.
+For any decision that carried a `predicted_outcome:` this wrap, `wrap-finalize` initializes `prediction_match: pending` (the pending initializer) — it does NOT evaluate the prediction itself. The `/judge-prediction` skill is the prediction judge; it runs live the next time a successor decision supersedes this one (via `/wrap`'s composer) or via the cron drain (`claude -p "/judge-prediction --drain"`). If the manifestation pointer is *immediately* checkable from this session (e.g. the prediction said "after this commit, file X has property Y" and that's verifiable right now), you MAY tail-call `/judge-prediction --decision <new-id>` after `wrap-finalize`, but you are not required to — pending is a fine default.
 
 Add `--json` for headless flows. The CLI exits non-zero if any step errored.
 
@@ -110,7 +110,7 @@ The `summary=` arg lands in the session note's frontmatter and shows up in `weav
 `weave_concepts(min_count=5)` first. The lower-tail (1–4 occurrence) concepts are rarely the right pick for new notes — proposed_concepts catches anything missing automatically — and the `min_count=5` payload is roughly half the `min_count=2` payload, which compounds when wraps run many times a day. Reuse existing labels — don't invent a new concept when one fits.
 
 ### C2. Write insights — `weave_extract` `insights=[...]`
-Max 3. Quality over quantity. **Body cap: ~1000 chars per insight (≈ 6 short lines).** Over-writing is the dominant model-turn latency cost in a small wrap — a 50%-overlong composition adds 30–90s of pure output time, and that's the *visible* part of `/weave-wrap` the wrap-finalize fix can't touch. If an insight won't fit in 1K it's two insights or a session-note narrative, not one insight.
+Max 3. Quality over quantity. **Body cap: ~1000 chars per insight (≈ 6 short lines).** Over-writing is the dominant model-turn latency cost in a small wrap — a 50%-overlong composition adds 30–90s of pure output time, and that's the *visible* part of `/wrap` the wrap-finalize fix can't touch. If an insight won't fit in 1K it's two insights or a session-note narrative, not one insight.
 
 Each insight captures **personal experience**, not textbook facts:
 - what problem or surprise led to it; what was tried that didn't work, and why; the non-obvious implication or gotcha.
@@ -139,7 +139,7 @@ Per decision dict: `title`, `rationale` (the C/D/C prose), `outcome` (`committed
   - **BAD**: `"tests will pass after this fix"` — no pointer, no window, will never resolve past `unevaluable`.
   - **BAD**: `"this should improve performance"` — no measurable claim, no manifestation pointer.
 
-  Do NOT also restate the prediction in the rationale — the field IS the prediction. `wrap-finalize` will initialize new predictions to `prediction_match: pending`; the `/judge-prediction` skill takes over from there (live during a future `/weave-wrap` that supersedes the decision, or via the cron drain).
+  Do NOT also restate the prediction in the rationale — the field IS the prediction. `wrap-finalize` will initialize new predictions to `prediction_match: pending`; the `/judge-prediction` skill takes over from there (live during a future `/wrap` that supersedes the decision, or via the cron drain).
 
 ### C4. Concepts are mandatory
 Every insight and every decision: a `concepts` array, **≥2**, from the vocabulary loaded in C1. Pick concepts that connect this note to *other* notes (thematic, not descriptive). Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`). Test: "would another note about this topic share this concept?" Terms not in the ontology are accepted automatically into `proposed_concepts:` by the server — you don't pre-canonicalise.

@@ -3,7 +3,7 @@
 A Claude Code session is imported as a verbatim transcript dump
 (:func:`thinkweave.onboarding.claude_code_seed._build_session_body`). This
 module turns that transcript into the *same* artifact shape a live
-``/weave-wrap`` produces: a session summary plus derived insight and
+``/wrap`` produces: a session summary plus derived insight and
 decision notes, with concepts proposed at synthesis time.
 
 The split here is deliberate — this module owns only the **spec** (the

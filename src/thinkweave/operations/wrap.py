@@ -1,6 +1,6 @@
-"""End-of-session wrap finalization — the deterministic tail of ``/weave-wrap``.
+"""End-of-session wrap finalization — the deterministic tail of ``/wrap``.
 
-``/weave-wrap`` has two phases. The first is an LLM phase: distil a session
+``/wrap`` has two phases. The first is an LLM phase: distil a session
 digest from the conversation, then write the session's insights and decisions
 via ``weave_extract``. The second is *this* — purely deterministic plumbing:
 prune stub session folders, (re)index, judge the freshly written decisions

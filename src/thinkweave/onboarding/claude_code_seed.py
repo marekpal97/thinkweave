@@ -13,7 +13,7 @@ backend over not-yet-``processed`` imports: inline via the keyless
 ``/synthesize-sessions`` skill, or in bulk via
 ``onboarding.enrich_batch.run_enrichment_batch`` (``--enrich``). Both
 converge on ``extract_session``, so a synthesised import is the same shape
-as a live ``/weave-wrap`` session.
+as a live ``/wrap`` session.
 
 Idempotency: tracked via ``vault/.weave/onboarding/claude_code.json``
 (maps Claude Code session UUID → vault note id + project + import ts).

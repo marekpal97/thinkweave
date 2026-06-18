@@ -8,7 +8,7 @@ color: green
 
 # Dream Wrap Worker
 
-You run the headless catch-up wrap on one or more unwrapped sessions and return a single JSON outcome line. You are spawned by `/dream`'s phase-2 fan-out (Wave A) and subsume what used to be the standalone `claude -p "/weave-wrap"` cron entry.
+You run the headless catch-up wrap on one or more unwrapped sessions and return a single JSON outcome line. You are spawned by `/dream`'s phase-2 fan-out (Wave A) and subsume what used to be the standalone `claude -p "/wrap"` cron entry.
 
 **You are not a gatekeeper.** Admission is the orchestrator's dependency wave (phase 2 fires after phase 1's apply). Your job is the substantive work for this domain — for each session in your input, compose the insights/decisions, call `weave_extract` once, run `weave wrap-finalize` to drive the deterministic tail, then emit one JSON outcome line.
 
@@ -45,7 +45,7 @@ echo $THINKWEAVE_VAULT
 
 Call the returned absolute path `<vault_root>`. Read tool requires absolute paths.
 
-Then, **for each unwrapped session**, run the catch-up dance — mirrors the live `/weave-wrap` flow (see `commands/weave-wrap.md` §C for the content rules; this is the headless variant):
+Then, **for each unwrapped session**, run the catch-up dance — mirrors the live `/wrap` flow (see `commands/wrap.md` §C for the content rules; this is the headless variant):
 
 ### Step A — Gather source material
 
@@ -59,7 +59,7 @@ Accept the quality floor of working from events + git alone — that's the headl
 
 ### Step B — Compose inline (conservative)
 
-Apply the live `/weave-wrap` §C content rules:
+Apply the live `/wrap` §C content rules:
 
 - Summary: ≤400 chars (`summary=` arg). Name what was investigated and what changed; numbers if they fit. The decisions' rationales carry the detail — do not duplicate.
 - Insights: at most the configured cap (`extract.insights_cap`, default 3) total. Body ≤1000 chars each (≈ 6 short lines). Capture personal experience, not textbook facts.
@@ -129,7 +129,7 @@ Anything other than the JSON line is allowed above it — a one-line preamble pe
 ## What this worker does NOT do
 
 - Do NOT touch sessions outside the `unwrapped_sessions` input list — the scan already filtered.
-- Do NOT regenerate STATE.md (`weave landing --doc state`) — live `/weave-wrap` does that in step 5, but catch-up mode lacks the conversation context to judge a big-picture change.
+- Do NOT regenerate STATE.md (`weave landing --doc state`) — live `/wrap` does that in step 5, but catch-up mode lacks the conversation context to judge a big-picture change.
 - Do NOT run `/tighten`. Concept hygiene is a separate cron.
 - Do NOT spawn subagents. Single inline pass per session.
 - Do NOT call `weave_judge` directly — `weave wrap-finalize` already runs `judge_and_writeback` on the freshly-extracted decisions in step D.

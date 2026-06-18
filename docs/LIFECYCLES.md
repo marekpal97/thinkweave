@@ -14,7 +14,7 @@ The deep-dive reference for every first-class lifecycle in Thinkweave: session, 
 
 ## Session
 
-Hooks accumulate events + insights + commits + tests into a session note. The Stop hook auto-extracts (thin: archive events as `events.jsonl`, mark `processed: true` + `auto_extracted: true`). `/weave-wrap` runs as a single inline pass: compose insights/decisions, call `weave_extract` once, then `weave wrap-finalize` (the deterministic tail — prune → index → judge → landing → drift, zero model turns). Two minor variants — *live* (in-session, conversation is the source) and *catch-up* (headless, working off `events.jsonl` + git). The *catch-up* variant is invoked nightly by `dream-wrap-worker` (phase 2 of `/dream`) for any session that lacks `processed: true` and has a non-empty `events.jsonl` — there is no separate `/weave-wrap` catch-up cron entry. Self-decides what to record; never prompts. For non-code conversations, `weave_extract` auto-creates a session note.
+Hooks accumulate events + insights + commits + tests into a session note. The Stop hook auto-extracts (thin: archive events as `events.jsonl`, mark `processed: true` + `auto_extracted: true`). `/wrap` runs as a single inline pass: compose insights/decisions, call `weave_extract` once, then `weave wrap-finalize` (the deterministic tail — prune → index → judge → landing → drift, zero model turns). Two minor variants — *live* (in-session, conversation is the source) and *catch-up* (headless, working off `events.jsonl` + git). The *catch-up* variant is invoked nightly by `dream-wrap-worker` (phase 2 of `/dream`) for any session that lacks `processed: true` and has a non-empty `events.jsonl` — there is no separate `/wrap` catch-up cron entry. Self-decides what to record; never prompts. For non-code conversations, `weave_extract` auto-creates a session note.
 
 ## Concept
 
@@ -99,7 +99,7 @@ A `supersedes: [dec-X]` declaration is a re-judge **trigger, not proof** — non
 
 ### Decisions with `outcome: committed` but no matching commits, post-B8
 
-The user-asserted intent is preserved on `committed: true` in frontmatter, but `status` stays `proposed` until either (a) a future `/weave-wrap` catches up commits the hook missed, (b) `weave_judge_and_writeback` finds re-edit evidence and emits `kept`, or (c) the user manually accepts via `weave_update`. The 228 historical accepted-without-commit_refs decisions in the live vault are pre-B8 frozen state and are not auto-demoted.
+The user-asserted intent is preserved on `committed: true` in frontmatter, but `status` stays `proposed` until either (a) a future `/wrap` catches up commits the hook missed, (b) `weave_judge_and_writeback` finds re-edit evidence and emits `kept`, or (c) the user manually accepts via `weave_update`. The 228 historical accepted-without-commit_refs decisions in the live vault are pre-B8 frozen state and are not auto-demoted.
 
 ### Predicted-outcome (RLVR substrate)
 
@@ -109,11 +109,11 @@ Verdicts are five: `confirmed | contradicted | pending | unevaluable | stale` �
 
 The judge is the `/judge-prediction` Claude Code skill — the running session IS the judge, no API call. Three invocation paths:
 
-1. **live**, piggybacked on `/weave-wrap` when a decision supersedes — the composer writes the verdict via `weave_update` inline;
+1. **live**, piggybacked on `/wrap` when a decision supersedes — the composer writes the verdict via `weave_update` inline;
 2. **headless**, invoked nightly by `dream-judge-worker` (phase 2 of `/dream`) which drains `.mem/rejudge_queue.jsonl` + any stale `pending` verdicts found via the index (cap `dream.rejudge_cap`, default 20/run, no separate `/judge-prediction` cron entry);
 3. **manual**: `weave judge --rejudge <dec-id>`.
 
-When a new decision declares `supersedes: [dec-X]`, the **immediate** predecessor is enqueued for re-judging — no cascade up the chain (the LLM can flag deeper concerns in its `reason`, but those require manual rejudge). New predictions land as `pending` (initialized by `wrap-finalize`); the skill takes over from there. Feeds `weave rlvr export`. Composed inline by `/weave-wrap` from session conversation; never prompted for.
+When a new decision declares `supersedes: [dec-X]`, the **immediate** predecessor is enqueued for re-judging — no cascade up the chain (the LLM can flag deeper concerns in its `reason`, but those require manual rejudge). New predictions land as `pending` (initialized by `wrap-finalize`); the skill takes over from there. Feeds `weave rlvr export`. Composed inline by `/wrap` from session conversation; never prompted for.
 
 See [ARCHITECTURE.md §"Decision lifecycle"](../ARCHITECTURE.md#decision-lifecycle) for the state diagram and the `synthesis/judge.py` read-only-verdict structural view.
 

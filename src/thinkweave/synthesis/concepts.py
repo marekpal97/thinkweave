@@ -1938,7 +1938,7 @@ def merge_concept_in_notes(
 
 
 # ---------------------------------------------------------------------------
-# Drift report — advisory, read-only, weave-wrap step 7.5
+# Drift report — advisory, read-only, wrap step 7.5
 # ---------------------------------------------------------------------------
 
 # When a concept crosses this count, it's worth considering for the ontology.
@@ -1960,7 +1960,7 @@ def drift_report(
     threshold: int = DRIFT_COUNT_THRESHOLD,
     max_items: int = 5,
 ) -> dict:
-    """Read-only advisory drift report for weave-wrap.
+    """Read-only advisory drift report for wrap.
 
     Returns a dict with three keys:
 
@@ -2061,7 +2061,7 @@ def drift_report(
 
 
 def format_drift_report(report: dict) -> str:
-    """Format a drift_report() dict as human-readable text for weave-wrap output.
+    """Format a drift_report() dict as human-readable text for wrap output.
 
     Kept separate from drift_report so programmatic callers can consume
     the structured data without re-parsing strings.

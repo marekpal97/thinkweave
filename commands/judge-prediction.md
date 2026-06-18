@@ -209,7 +209,7 @@ dec-7a3f12 → confirmed: 3/3 AI Engineer youtube-events archived as accepted (0
 git log --oneline -n 3
 # 3712968 New source families: newsletter-{events,concepts} + youtube-{events,concepts}
 # 7b5a6ea News pipeline: worker-bug retry, weave news-stats, OpenAI provider swap
-# 4ce31aa /weave-wrap: tighten content rules for output-volume reduction
+# 4ce31aa /wrap: tighten content rules for output-volume reduction
 
 git log --oneline -n 3 -- src/thinkweave/synthesis/judge.py
 # (empty)
@@ -218,7 +218,7 @@ git log --oneline -n 3 -- src/thinkweave/synthesis/judge.py
 **Output**:
 
 ```
-dec-9b2e44 → contradicted: last 3 commits (3712968, 7b5a6ea, 4ce31aa) touched source families, news pipeline, and /weave-wrap content rules — none touched src/thinkweave/synthesis/judge.py
+dec-9b2e44 → contradicted: last 3 commits (3712968, 7b5a6ea, 4ce31aa) touched source families, news pipeline, and /wrap content rules — none touched src/thinkweave/synthesis/judge.py
 ```
 
 #### Example C — `stale` from a supersession

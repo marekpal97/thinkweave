@@ -71,7 +71,7 @@ def _seed_decision_with_prediction(
                 {
                     "match": "pending",
                     "judged_at": "",
-                    "reason": "initialized by /weave-wrap",
+                    "reason": "initialized by /wrap",
                 }
             ],
             "prediction_match": "pending",
@@ -133,7 +133,7 @@ class TestJudgePredictionE2E:
         dec_id = _seed_decision_with_prediction(
             vault,
             title="Use WAL mode for SQLite writers",
-            predicted_outcome="Concurrent reads no longer block. Check that wrap-finalize takes <1s after the next /weave-wrap.",
+            predicted_outcome="Concurrent reads no longer block. Check that wrap-finalize takes <1s after the next /wrap.",
         )
         Indexer(config=cfg).rebuild(full=True)
         rejudge_queue.enqueue(

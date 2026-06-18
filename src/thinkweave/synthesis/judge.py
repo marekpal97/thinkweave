@@ -119,7 +119,7 @@ def evaluate_decision(
     # P0-9 guard: skip blame entirely when the decision isn't committed.
     # An uncommitted decision has nothing to attribute blame against; the
     # per-file `git blame --porcelain` calls are the dominant judge cost
-    # in /weave-wrap. Inside _check_blame_survival the empty commit_refs
+    # in /wrap. Inside _check_blame_survival the empty commit_refs
     # branch returns -1 immediately, but reaching that branch still costs
     # the function-call dispatch + (with the new ThreadPoolExecutor) the
     # cost of forming the task list — cheap, but free is cheaper.
@@ -192,7 +192,7 @@ def _check_re_edited(
 ) -> str | None:
     """Check if any later decision modifies the same files.
 
-    **Same-session sibling guard.** Decisions extracted in one ``/weave-wrap``
+    **Same-session sibling guard.** Decisions extracted in one ``/wrap``
     batch are co-equal siblings, not supersessions — they routinely share
     ``file_paths`` (the same module touched by several facets of one feature)
     and carry near-identical timestamps. The file-overlap heuristic alone

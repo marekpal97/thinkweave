@@ -42,7 +42,7 @@ jobs:
     enabled: true
 
   # Nightly autonomous vault hygiene + synthesis + composition. One entry
-  # replaces the former three (/dream, /weave-wrap catch-up, /judge-prediction).
+  # replaces the former three (/dream, /wrap catch-up, /judge-prediction).
   dream:
     cadence: "0 3 * * *"
     command: "claude -p /dream"

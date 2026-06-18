@@ -1,12 +1,12 @@
-"""``weave wrap-finalize`` — deterministic post-extraction tail of ``/weave-wrap``.
+"""``weave wrap-finalize`` — deterministic post-extraction tail of ``/wrap``.
 
-The LLM phase of ``/weave-wrap`` (digest distillation + writing the session's
+The LLM phase of ``/wrap`` (digest distillation + writing the session's
 insights/decisions via ``weave_extract``) hands off to this. One Bash call
 replaces the ``index → judge → landing → drift → prune`` chain that used to be
 ~5 separate MCP round-trips, each a model turn.
 
 Used both interactively (the wrap skill runs it after the extraction subagent
-returns) and headless (a cron ``claude -p "/weave-wrap"`` catch-up run ends with
+returns) and headless (a cron ``claude -p "/wrap"`` catch-up run ends with
 ``weave wrap-finalize <session_id> --json``).
 """
 

@@ -1,6 +1,6 @@
 """Tests for the deterministic wrap-finalize tail (operations/wrap.py + CLI).
 
-``weave wrap-finalize`` is phase 2 of ``/weave-wrap`` — after ``weave_extract`` has
+``weave wrap-finalize`` is phase 2 of ``/wrap`` — after ``weave_extract`` has
 written a session's insights/decisions, this bundles prune → index → judge →
 landing → drift-advisory into one process. These tests build a tmp vault that
 looks like a just-extracted session and assert the chain runs cleanly.

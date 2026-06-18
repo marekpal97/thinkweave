@@ -37,7 +37,7 @@ tag_vocabulary:
   - til                   # workflow: today-i-learned
   - pinned                # workflow: explicitly kept-visible
   - autopilot             # workflow: agent-run / automated
-  - weave-wrap              # workflow: produced by /weave-wrap
+  - wrap              # workflow: produced by /wrap
   - discover              # workflow: produced by /discover
   - audit                 # workflow: audit / hygiene activity
   - hubs                  # workflow: hub-related session

@@ -40,7 +40,7 @@ CLAUDE_MD_BLOCK_END = "<!-- thinkweave:end -->"
 CLAUDE_MD_BLOCK_BODY = (
     "If `weave_*` MCP tools are available, thinkweave (Obsidian-native memory "
     "layer) is your durable memory for this session. Prefer `weave_search` / "
-    "`weave_context` / `weave_graph` over filesystem search, and run `/weave-wrap` "
+    "`weave_context` / `weave_graph` over filesystem search, and run `/wrap` "
     "before `/clear`."
 )
 
@@ -507,7 +507,7 @@ def _print_dev_link_next_steps() -> None:
     print()
     print("Restart Claude Code, then everything is namespaced under the plugin:")
     print("  /thinkweave:onboard                         # first run")
-    print("  /thinkweave:weave-wrap, :tighten, :dream …  # the rest")
+    print("  /thinkweave:wrap, :tighten, :dream …  # the rest")
     print()
     print("The MCP server + hooks load from the plugin manifest — no `weave install`")
     print("needed. After editing hooks/agents/mcpServers, run `/reload-plugins`.")
