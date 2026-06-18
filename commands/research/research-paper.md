@@ -41,9 +41,14 @@ like a book (`/book/`, Google Books, Project Gutenberg), skip — log
 ### 2. Load ontology + check vault
 
 ```
-Read src/thinkweave/ontology.yaml
-weave_concepts(min_count=2)
+weave_concepts(action="list")
 ```
+
+Loads the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary for the concepts you assign in step 4. Do **not** read
+`src/thinkweave/ontology.yaml` from the source tree: under a plugin install
+that path doesn't exist at your CWD, and it misses the vault's proposed
+terms. Then check the vault for related notes:
 
 ```
 weave_search(query="<key terms from abstract>", mode="hybrid", limit=5)

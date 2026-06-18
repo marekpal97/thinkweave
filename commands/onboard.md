@@ -603,6 +603,58 @@ AskUserQuestion({
 Hold the result in memory — don't write to `sources.yaml` yet. The
 plan-for-approval in 5d covers all the writes at once.
 
+### 5a′. Areas of interest (AskUserQuestion)
+
+**This is where the user contributes what weave should proactively hunt
+sources on** — their research interests, captured as concept slugs in
+`focus.research_concepts` (PRIORITIES.yaml). Without this step the only
+discovery is structural (gap-driven); with it, the `focus_research`
+strategy emits discovery gaps for the topics the user actually cares about.
+
+You just bootstrapped the ontology from their own history in Step 4, so
+**suggest, don't interrogate**: surface their most-active domains as
+candidates and let them pick + add their own. Load the top concepts:
+
+```
+weave_concepts(action='list', min_count=3, limit=40)   # sorted by count desc
+```
+
+Then ask (multiSelect; the options are the top concepts by usage, the
+`Other` escape captures interests not yet in their vocabulary):
+
+```
+AskUserQuestion({
+  "questions": [{
+    "question": "Which topics should weave proactively pull fresh sources on? These become your research focus — the `focus_research` discovery strategy hunts papers/repos/articles on them between sessions. Pick from your most-active domains below, or add your own via Other. (Skip if you only want gap-driven discovery for now.)",
+    "header": "Areas of interest",
+    "options": [
+      {"label": "rl/post-training", "description": "47 notes. Your most-touched domain."},
+      {"label": "retrieval/rrf", "description": "31 notes."},
+      {"label": "ontology/drift", "description": "22 notes."},
+      {"label": "agent-harness", "description": "18 notes."}
+    ],
+    "multiSelect": true
+  }]
+})
+```
+
+(Populate the options from the actual top-concept list; the four above are
+illustrative.) For any free-text `Other` answer, map it to the ontology:
+match to an existing concept if one is close, otherwise keep the user's
+specific term — the server-side gate will route non-canonical terms to
+`proposed_concepts:` and `/tighten` promotes them later, so a not-yet-canonical
+interest is still honoured, not dropped.
+
+**Empty/tiny ontology** (sparse or skipped CC history → no concepts to
+suggest): fall back to a free-form prompt — "Name a few topics you want weave
+to track (comma-separated)" — and take whatever they give as the concept list.
+
+Hold the resulting concept-slug list in memory. The 5d plan writes
+`focus.research_concepts` **and** wires the `focus_research` strategy into
+your active projects' `discover_strategies` so the interests actually drive
+acquisition (recording them without the strategy is inert). If the user picks
+nothing, write neither — no dead config.
+
 ### 5b. Source-type enable multi-select (AskUserQuestion)
 
 List registered types from `weave_sources_config()` and ask which ones to
@@ -841,7 +893,7 @@ counts, paths, and validation outcomes:
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Plan summary — about to apply the following:\n\n  Active projects:    {comma-list, e.g. project-a, thinkweave}\n  Source types:       {N enabled} ({comma-list})\n  Samples validated:  {K of N}\n  Writes to <vault>/config/sources.yaml:\n    - projects.<name> blocks ({new + updated entries})\n    - source-type blocks ({list of slugs})\n  Writes to <vault>/config/PRIORITIES.yaml:\n    - focus.active_projects: {active list}\n    - intake.news.outlets ({M outlets from samples})\n    - intake.{newsletter|youtube|podcast}_{events|concepts} ({per validated sample})\n  Landing docs:       STATE / BACKLOG / DECISIONS per active project, THEMES global\n\nConfirm?",
+    "question": "Plan summary — about to apply the following:\n\n  Active projects:    {comma-list, e.g. project-a, thinkweave}\n  Areas of interest:  {comma-list of research_concepts, or 'none'}\n  Source types:       {N enabled} ({comma-list})\n  Samples validated:  {K of N}\n  Writes to <vault>/config/sources.yaml:\n    - projects.<name> blocks ({new + updated entries})\n    - projects.<active>.discover_strategies += focus_research ({only if areas of interest chosen})\n    - source-type blocks ({list of slugs})\n  Writes to <vault>/config/PRIORITIES.yaml:\n    - focus.active_projects: {active list}\n    - focus.research_concepts: {areas-of-interest list, or omitted if none}\n    - intake.news.outlets ({M outlets from samples})\n    - intake.{newsletter|youtube|podcast}_{events|concepts} ({per validated sample})\n  Landing docs:       STATE / BACKLOG / DECISIONS per active project, THEMES global\n\nConfirm?",
     "header": "Plan for approval",
     "options": [
       {"label": "confirm", "description": "Apply the plan as shown."},
@@ -855,9 +907,13 @@ AskUserQuestion({
 
 On `confirm`: apply via Edit on `vault/config/sources.yaml` (preserve
 existing config) AND on `vault/config/PRIORITIES.yaml`
-(`focus.active_projects` + the per-type `intake.<type>` seeds from
-validated samples in 5c). Both writes target the canonical
-`vault/config/` location — never `vault/.weave/` (which raises
+(`focus.active_projects`, `focus.research_concepts` from 5a′, and the
+per-type `intake.<type>` seeds from validated samples in 5c). When 5a′
+produced any areas of interest, also add `focus_research` to each active
+project's `projects.<name>.discover_strategies` list in `sources.yaml`
+(append — don't clobber existing strategies); skip this entirely if the
+list is empty so no inert strategy is wired. Both writes target the
+canonical `vault/config/` location — never `vault/.weave/` (which raises
 `LegacyConfigLocationError` on read since Phase 3.1B).
 
 Then issue the landing docs pass:
@@ -874,7 +930,7 @@ Landing docs are derived and idempotent — the user already approved
 them as part of 5d, so no separate confirmation.
 
 On `edit`: the user describes what to change in chat. Loop back to
-the appropriate sub-step (5a / 5b / 5c) for the affected slice, then
+the appropriate sub-step (5a / 5a′ / 5b / 5c) for the affected slice, then
 re-show 5d.
 
 On `cancel`: print "Cancelled. No writes applied." and exit the skill.
@@ -1089,7 +1145,7 @@ Your config:
 
 The next time you sit down to work in this repo:
 
-  • /weave-wrap         before /clear, so the session feeds the vault
+  • /wrap         before /clear, so the session feeds the vault
   • /research <url>   to ingest a paper / repo / article
   • /ingest <thing>   for anything else (file, text, ID)
 
@@ -1105,6 +1161,11 @@ Reset / debug:
 If you hit a new input shape that the defaults don't cover:
   • /source-fit "<description>"
   • /source-scaffold <slug>      (only if /source-fit says you need to)
+
+Recommended companion (optional):
+  • /plugin install explanatory-output-style@claude-plugins-official
+    Adds the Explanatory output style — short "why" insights as the agent
+    works. Thinkweave's onboarding and /dream narration read best with it on.
 ```
 
 Print exactly that — verbatim plus per-run substitutions. The whole

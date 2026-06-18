@@ -69,9 +69,12 @@ When in doubt, default to `note`. The user can promote it later via
 ### 4. Load ontology + concept registry
 
 ```
-Read src/thinkweave/ontology.yaml
-weave_concepts(min_count=2)
+weave_concepts(action="list")
 ```
+
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary. Don't read `src/thinkweave/ontology.yaml` from the source tree:
+under a plugin install that path isn't at your CWD, and it misses proposed terms.
 
 Map the captured text to existing ontology terms. Minimum 2 concepts.
 New vocabulary goes to `proposed_concepts`, never `concepts` —

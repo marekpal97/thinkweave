@@ -122,11 +122,11 @@ Podcasts have no equivalent to newsletter's `processed_label` (RSS feeds carry n
 
 ## URL paste path
 
-The `/research` router classifies pasted URLs by `url_patterns` and dispatches the matching one-off skill. For podcast URLs (`feeds.megaphone.fm/...`, `feeds.libsyn.com/...`, etc.), `/research <url>` enqueues to the matching `podcast-*` queue and then immediately fans out a single worker via `/drain` — same two-rail composition as `/podcast`, just on one URL.
+The `/research` router classifies pasted URLs by `url_patterns` and dispatches the matching one-off skill. For podcast URLs (`feeds.megaphone.fm/...`, `feeds.libsyn.com/...`, etc.), `/research <url>` runs the [`research-podcast`](research/research-podcast.md) subskill: it resolves the feed's **latest episode** (`<enclosure>` audio + `<guid>`), picks the grain, enqueues, and drains one `research-podcast-worker` — the same two-rail composition as `/podcast`, on one URL.
 
-**One caveat:** the URL pasted into `/research` should be the RSS feed URL (the strategy needs to parse the feed to find the episode's `<enclosure>`). Pasting just a Spotify or Apple Podcasts episode URL won't work — those are player links, not RSS items. Find the show's RSS feed first.
+**One caveat:** the pasted URL must be the **RSS feed URL** — the subskill parses the feed to find the latest episode's `<enclosure>`. A Spotify or Apple Podcasts player URL won't work (those are player links, not RSS); the subskill rejects them with an iTunes-lookup hint so you can fetch the feed first. Resolving player URLs to their RSS, and ingesting a *specific older* episode, are out of v1 scope — use `/podcast` for the full feed poll.
 
-The `url_patterns` for both `podcast-events` and `podcast-concepts` overlap intentionally; the router picks the first matching type in registry order (`podcast-events` wins by default — change the order in `vault/config/sources.yaml` to flip the default).
+`podcast-events` and `podcast-concepts` share url_patterns; the subskill chooses the grain by content rather than by registry order.
 
 ---
 
@@ -138,7 +138,8 @@ The `url_patterns` for both `podcast-events` and `podcast-concepts` overlap inte
 | `/podcast podcast-events` | Same, limited to one source type |
 | `weave discover --strategy rss_poll --source-type podcast-events` | Discover only (no drain) — useful in cron flows that drain separately |
 | `/drain --source-type podcast-events` | Drain only (queue was already filled) |
-| `/research <rss-url>` | One-off URL paste — enqueue + drain one episode || `/source-fit` | Diagnose whether a new show shape fits the existing two types |
+| `/research <rss-url>` | One-off URL paste — resolve latest episode + enqueue + drain (via `research-podcast`) |
+| `/source-fit` | Diagnose whether a new show shape fits the existing two types |
 
 ---
 

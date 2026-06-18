@@ -58,10 +58,15 @@ Bash("rm -rf /tmp/research_clone_<slug>")
 ### 4. Load ontology + check vault
 
 ```
-Read src/thinkweave/ontology.yaml
-weave_concepts(min_count=2)
+weave_concepts(action="list")
 weave_search(query="<repo description>", mode="hybrid", limit=5)
 ```
+
+`weave_concepts(action="list")` loads the vault's **merged** ontology
+(canonical + proposed) — the gate vocabulary for the concepts you assign.
+Do **not** read `src/thinkweave/ontology.yaml` from the source tree: under a
+plugin install that path doesn't exist at your CWD, and it misses the vault's
+proposed terms.
 
 ### 5. Write the source note
 

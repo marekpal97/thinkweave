@@ -91,9 +91,12 @@ If `url` can't be recovered, skip the item with an error logged — we won't ing
 ### 3. Load ontology + concept registry (once per batch)
 
 ```
-Read src/thinkweave/ontology.yaml
-weave_concepts(min_count=1)
+weave_concepts(action="list")
 ```
+
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary. Don't read `src/thinkweave/ontology.yaml` from the source tree:
+under a plugin install that path isn't at your CWD, and it misses proposed terms.
 
 Identify which ontology branches the publication you're draining
 maps to — substack is a generic newsletter platform, so the relevant

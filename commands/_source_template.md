@@ -64,9 +64,13 @@ You are ingesting {SOURCE_TYPE} entries into the thinkweave vault. Each ingested
 Every source-ingestion skill starts here. Concept consistency is what makes the knowledge graph work — new sources must reuse existing vocabulary when possible.
 
 ```
-Read src/thinkweave/ontology.yaml
-weave_concepts(min_count=2)
+weave_concepts(action="list")
 ```
+
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary for concept assignment. Always load it via `weave_concepts`, never
+by reading `src/thinkweave/ontology.yaml` from the source tree: under a plugin
+install that path isn't at the worker's CWD, and it misses proposed terms.
 
 Load the ontology **once at the start of the batch**, not per item. Map concepts to existing ontology terms where they fit. When a source introduces vocabulary with no natural fit, propose it via the `proposed_concepts` frontmatter field (not `concepts`) — `/tighten` will canonicalise proposals in a later pass. Minimum 2 concepts per source note.
 

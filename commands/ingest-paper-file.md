@@ -77,9 +77,12 @@ flags missing authors as a hygiene issue, not a blocker.
 ### 4. Load ontology + check vault
 
 ```
-Read src/thinkweave/ontology.yaml
-weave_concepts(min_count=2)
+weave_concepts(action="list")
 ```
+
+This returns the vault's **merged** ontology (canonical + proposed) — the gate
+vocabulary. Don't read `src/thinkweave/ontology.yaml` from the source tree:
+under a plugin install that path isn't at your CWD, and it misses proposed terms.
 
 ```
 weave_search(query="<title + key abstract phrases>", mode="hybrid", limit=5)

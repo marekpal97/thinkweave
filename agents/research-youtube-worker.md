@@ -133,7 +133,7 @@ The transcript from step 3 is raw text — you derive each structured section by
 
 - **`## Lead`** — one sentence stating what the video argues / explains. Frame it as the angle the presenter is pushing, not "the video discusses X".
 - **`## Key Developments`** — 4-8 bullets, each `- <point> — <evidence>`. **Quote the speaker verbatim** for the evidence half (look for short, sharp lines in the transcript and keep them as-is in quotes). Capture distinct claims, not paraphrases of one claim.
-- **`## Key Moments`** — 5-10 bullets, each `` - `MM:SS` — <description> ``. Anchor each to a real segment: scan `segments` from step 3 for the moment, take its `start` value, format as `MM:SS` (or `HH:MM:SS` for videos over an hour: `start // 3600 : (start % 3600) // 60 : start % 60`). **Do not invent timestamps** — pick segments that exist in the payload.
+- **`## Key Moments`** — **REQUIRED, never omit.** This is the YouTube brief's signature section and the one a reader scrubs to. 5-10 bullets, each `` - `MM:SS` — <description> ``. You derive these yourself from the raw `segments` (there is no pre-extracted `key_moments` field on the transcript-api payload — unlike the podcast/Gemini path): scan `segments` from step 3 for each moment, take its `start` value, format as `MM:SS` (or `HH:MM:SS` for videos over an hour: `start // 3600 : (start % 3600) // 60 : start % 60`). **Do not invent timestamps** — pick segments that exist in the payload. Skipping this section because deriving it is more work than a pre-structured payload is a contract violation.
 - **`## Follow-ups`** — every URL the speaker cites verbally (the transcript may not contain hyperlinks; URLs spoken out loud or shown on slides referenced as "you can read it at example.com / ..." are what you're catching). Each becomes `- [link](url) — <context>`. Skip the section if there are none.
 - **`## Why It Matters`** (concept-grain) or **`## Market / Signal Implication`** (event-grain) — 2-4 sentences synthesising where this fits in the broader space (concept-grain) or which sectors/timeframes the signal touches (event-grain).
 
@@ -147,13 +147,14 @@ weave_create(
   tags=["youtube"],
   concepts=[<ontology-canonical>],
   frontmatter={
-    "source_type": "<source_type from input>",
+    "source_type": "<source_type from input>",  # the input slug VERBATIM: youtube-events | youtube-concepts. NEVER "video" — the create tool's generic vocabulary does not apply to pipeline sources; the grain slug is what the rest of the system filters on.
     "url": "<canonical watch URL>",
     "author": "<channel>",              # channel drives author_folder layout
     "channel": "<channel>",
     "channel_id": "<UCxxxx>",
     "published_date": "<published>",
-    "video_id": "<video_id>",           # primary idempotency key in frontmatter
+    "video_id": "<video_id>",           # MANDATORY — primary idempotency key. The step-2 re-read guard matches on THIS frontmatter field; omit it and a re-run writes a duplicate. Never drop it.
+    "temporal_grain": "<event|concept from input>",  # MANDATORY — carries the grain forward; concept-grain reaches concept hubs, event-grain floats themes.
     "duration_sec": <from transcript payload>,
     "extraction_model": "<transcript payload's model field, e.g. youtube-transcript-api>",
     "transcript_language": "<transcript payload's language field>",
@@ -171,6 +172,8 @@ weave_create(
 Do NOT set `project` — YouTube notes are global knowledge artifacts.
 
 **This call is mandatory** if steps 1–6 succeeded (vault root, transcript, concepts, brief). The orchestrator silently loses signal if you skip it. If `weave_create` itself raises, propagate the real exception text into step 9's `fetch_failed` reason (prefixed `weave_create:`).
+
+**Frontmatter completeness gate.** Before calling, confirm the dict carries `source_type` (the slug, not `video`), `video_id`, and `temporal_grain` — the three fields most often dropped. The first two are load-bearing for idempotency and grain routing; a note missing `video_id` is a duplicate waiting to happen on the next drain.
 
 ### 8. Link to theme (only if `relates_to` was set in step 7)
 

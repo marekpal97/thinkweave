@@ -3,8 +3,9 @@
   youtube-concepts). The research-youtube-worker picks the block matching its
   source_type's grain. Seeded into your vault at
   vault/config/note_formats/youtube.md on `weave init` — edit that copy directly
-  (user-owned, survives upgrades). `MM:SS` Key Moments come from the
-  transcript/Gemini key_moments.
+  (user-owned, survives upgrades). `MM:SS` Key Moments are derived by the worker
+  from the transcript segment timings (youtube-transcript-api) — there is no
+  pre-extracted key_moments field on this path.
 -->
 
 ## youtube-events (event-grain — markets, macro, tech-news recaps)
@@ -23,7 +24,7 @@
 - [Timeframe the implication operates on]
 
 ## Key Moments
-- `MM:SS` — [description from Gemini's key_moments]
+- `MM:SS` — [description — derive from the closest transcript segment's start time]
 - `MM:SS` — [...]
 
 ## Follow-ups
@@ -55,7 +56,7 @@
 - `<ontology-concept-2>` — [...]
 
 ## Key Moments
-- `MM:SS` — [description from Gemini's key_moments]
+- `MM:SS` — [description — derive from the closest transcript segment's start time]
 - `MM:SS` — [...]
 
 ## Follow-ups

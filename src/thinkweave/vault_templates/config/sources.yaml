@@ -117,7 +117,7 @@ sources:
     lookback_days: 7
     dedup_keys: [video_id, url]
     url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
-    research_skill: youtube
+    research_skill: research-youtube
     # No `triage_model` set — admission is the channel allowlist, not
     # per-video triage. /drain Path B fans out workers directly.
     allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "weave_create:"]
@@ -134,7 +134,7 @@ sources:
     lookback_days: 30
     dedup_keys: [video_id, url]
     url_patterns: [youtube.com/watch, youtu.be/, youtube.com/shorts]
-    research_skill: youtube
+    research_skill: research-youtube
     allowed_failure_prefixes: [transcripts_disabled, no_transcripts, video_unavailable, empty_transcript, transcript_api_failed, "weave_create:"]
   podcast-events:
     # Event-grain podcasts (markets / macro / interview shows). Each show
@@ -153,7 +153,7 @@ sources:
     lookback_days: 7
     dedup_keys: [entry_id, audio_url, url]
     url_patterns: [feeds.megaphone.fm, feeds.libsyn.com, feeds.transistor.fm, feeds.simplecast.com, anchor.fm, omny.fm, rss.art19.com, spreaker.com]
-    research_skill: podcast
+    research_skill: research-podcast
     # No `triage_model` set — admission is the per-show subscription
     # decision (an outlet entry in PRIORITIES.yaml::intake.podcast_events),
     # not per-episode triage. /drain Path B fans out workers directly.
@@ -172,7 +172,7 @@ sources:
     lookback_days: 30
     dedup_keys: [entry_id, audio_url, url]
     url_patterns: [feeds.megaphone.fm, feeds.libsyn.com, feeds.transistor.fm, feeds.simplecast.com, anchor.fm, omny.fm, rss.art19.com, spreaker.com]
-    research_skill: podcast
+    research_skill: research-podcast
     allowed_failure_prefixes: [audio_fetch_failed, audio_too_large, audio_upload_failed, audio_processing_failed, gemini_refused, api_error, invalid_response, "weave_create:"]
   conversation:
     drain_strategy: inline

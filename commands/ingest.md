@@ -113,7 +113,7 @@ being interleaved.
 
 Same rules as `/research` and `/discover`. Subskills enforce these — `/ingest` itself does not assign concepts. For reference:
 
-1. Use ontology terms only — `Read src/thinkweave/ontology.yaml` plus `weave_concepts(min_count=2)`.
+1. Use ontology terms only — load the vault's merged ontology via `weave_concepts(action="list")` (not the source-tree `ontology.yaml`).
 2. Genuinely-new terms → `proposed_concepts`, never `concepts`.
 3. Minimum 2 concepts per created source.
 
@@ -135,7 +135,7 @@ End-of-batch summary:
 - Skipped:   M  (reasons listed above)
 - Failed:    K  (reasons listed above)
 
-Next: <suggested follow-up — e.g. "Run /weave-wrap to capture session
+Next: <suggested follow-up — e.g. "Run /wrap to capture session
 context" or "Run /discover for downstream gap analysis">
 ```
 

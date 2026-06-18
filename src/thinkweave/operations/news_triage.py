@@ -255,9 +255,9 @@ def triage_items(
     (drop → archive rejected; keep / keep_unfiled → dispatch to writer).
 
     Reads ``OPENAI_API_KEY`` from env or the project ``.env`` via
-    ``thinkweave.synthesis.enrich.load_openai_api_key``. Uses httpx for the
+    ``thinkweave.core.api_keys.get_provider_key``. Uses httpx for the
     POST — no ``openai`` SDK import needed, matching the pattern in
-    ``enrich.py`` and ``surfaces/cli/_hubs_link.py``.
+    ``surfaces/cli/_hubs_link.py``.
     """
     if not items:
         return []
@@ -272,8 +272,8 @@ def triage_items(
     if api_key:
         key = api_key
     else:
-        from thinkweave.synthesis.enrich import load_openai_api_key
-        key = load_openai_api_key() or os.environ.get("OPENAI_API_KEY", "")
+        from thinkweave.core.api_keys import get_provider_key
+        key = get_provider_key("openai") or os.environ.get("OPENAI_API_KEY", "")
     if not key:
         raise RuntimeError(
             "OPENAI_API_KEY is not set. Export it, add it to .env, "

@@ -40,11 +40,16 @@ republished elsewhere). If still nothing useful, skip — log the URL.
 ### 2. Load ontology + check vault
 
 ```
-Read src/thinkweave/ontology.yaml
-weave_concepts(min_count=2)
+weave_concepts(action="list")
 weave_search(query="<key terms>", mode="hybrid", limit=5)
 weave_graph(filter="concept_walk", concepts=["<best-fit>"], match_mode="any", limit=5)
 ```
+
+`weave_concepts(action="list")` loads the vault's **merged** ontology
+(canonical + proposed) — the gate vocabulary for the concepts you assign.
+Do **not** read `src/thinkweave/ontology.yaml` from the source tree: under a
+plugin install that path doesn't exist at your CWD, and it misses the vault's
+proposed terms.
 
 ### 3. Write the source note
 

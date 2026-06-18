@@ -114,9 +114,9 @@ YouTube has no equivalent to newsletter's `processed_label` (RSS feeds carry no 
 
 ## URL paste path
 
-The `/research` router classifies pasted URLs by `url_patterns` and dispatches the matching one-off skill. For YouTube URLs (`youtube.com/watch`, `youtu.be/`, `youtube.com/shorts`), `/research <url>` enqueues to the matching `youtube-*` queue and then immediately fans out a single worker via `/drain` — same two-rail composition as `/youtube`, just on one URL.
+The `/research` router classifies pasted URLs by `url_patterns` and dispatches the matching one-off skill. For YouTube URLs (`youtube.com/watch`, `youtu.be/`, `youtube.com/shorts`), `/research <url>` runs the [`research-youtube`](research/research-youtube.md) subskill: it parses the `video_id`, resolves title/channel via oEmbed, **picks the event-vs-concept grain from the video itself**, enqueues the resolved item, and drains one `research-youtube-worker` — the same two-rail composition as `/youtube`, on one URL.
 
-The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap intentionally; the router picks the first matching type in registry order (`youtube-events` wins by default — change the order in `vault/config/sources.yaml` to flip the default).
+`youtube-events` and `youtube-concepts` share url_patterns; the subskill chooses the grain by content (markets/macro recap → events; lecture/explainer → concepts, the default) rather than by registry order.
 
 ---
 
@@ -128,7 +128,8 @@ The `url_patterns` for both `youtube-events` and `youtube-concepts` overlap inte
 | `/youtube youtube-events` | Same, limited to one source type |
 | `weave discover --strategy rss_poll --source-type youtube-events` | Discover only (no drain) — useful in cron flows that drain separately |
 | `/drain --source-type youtube-events` | Drain only (the queue was already filled) |
-| `/research <yt-url>` | One-off URL paste — enqueue + drain one video || `/source-fit` | Diagnose whether a new channel shape fits the existing two types |
+| `/research <yt-url>` | One-off URL paste — resolve + enqueue + drain one video (via `research-youtube`) |
+| `/source-fit` | Diagnose whether a new channel shape fits the existing two types |
 
 ---
 

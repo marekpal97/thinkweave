@@ -1,10 +1,10 @@
 ---
 name: research
 owns_mechanic: url_routing
-source_type: [paper, repo, article, news]
+source_type: [paper, repo, article, news, youtube-events, youtube-concepts, podcast-events, podcast-concepts]
 capabilities: [import, acquire]
 consumes: [weave_queue, weave_sources_config, weave_search]
-produces: [vault/sources/papers/**, vault/sources/repos/**, vault/sources/articles/**, vault/sources/news/**]
+produces: [vault/sources/papers/**, vault/sources/repos/**, vault/sources/articles/**, vault/sources/news/**, vault/sources/youtube-events/**, vault/sources/youtube-concepts/**, vault/sources/podcast-events/**, vault/sources/podcast-concepts/**]
 tools:
   - Read
   - Bash
@@ -39,12 +39,15 @@ their fetcher.
 | `paper`     | `arxiv.org`, `openreview.net`                                | `research-paper`   |
 | `repo`      | `github.com`, `gitlab.com`                                   | `research-repo`    |
 | `news`      | `reuters.com`, `ft.com`, `bloomberg.com`, `wsj.com`, `bankier.pl` | `news`         |
+| `youtube-*` | `youtube.com/watch`, `youtu.be/`, `youtube.com/shorts`       | `research-youtube` |
+| `podcast-*` | `feeds.megaphone.fm`, `feeds.libsyn.com`, `anchor.fm`, … (RSS) | `research-podcast` |
 | `article`   | (fallback for unmatched URLs)                                | `research-article` |
 
 The patterns are read from `sources.<type>.url_patterns` in
 `sources.yaml` — users override defaults per vault. New source types add
 a registry entry + a `commands/research/research-<type>.md` subskill;
-this router needs no edits.
+this router needs no edits. Match `youtube-*` / `podcast-*` **before** the
+`article` fallback (specific host patterns first, fallback last).
 
 **News is the exception.** Instead of a dedicated `research-news`
 subskill, the router dispatches to the existing `/news` skill, which
@@ -52,6 +55,15 @@ runs the same Haiku title-triage as the `/drain --source-type news`
 cron path before invoking a Sonnet writer subagent. The two-stage shape
 is news-specific (triage gate + writer fan-out), so news doesn't fit
 the per-URL Skill dispatch the other types use.
+
+**YouTube and podcast each map two grains to one family subskill.** Both
+`youtube-events` and `youtube-concepts` share url_patterns and dispatch to
+`research-youtube`; both `podcast-events` and `podcast-concepts` dispatch to
+`research-podcast`. The family subskill resolves the URL (oEmbed / RSS),
+picks the event-vs-concept grain itself, enqueues, and drains one worker —
+the one-shot analog of the `/youtube` and `/podcast` orchestrators. (Podcast
+v1 takes an **RSS feed URL** and ingests its latest episode; Spotify/Apple
+player URLs are rejected with a lookup hint.)
 
 ## Modes
 
