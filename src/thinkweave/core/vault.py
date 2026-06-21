@@ -636,7 +636,10 @@ class VaultManager:
                 if candidate and not (candidate / "session.md").exists():
                     session_subdir = candidate
             if not session_subdir:
-                session_subdir = target_dir / f"{note_id}-{today}"
+                # Date-only (today is a full isoformat timestamp; ':' is illegal
+                # in Windows path components → WinError 123). Matches the
+                # eager-creation convention in _find_session_dir.
+                session_subdir = target_dir / f"{note_id}-{today[:10]}"
             session_subdir.mkdir(parents=True, exist_ok=True)
             filepath = session_subdir / "session.md"
         elif note_type == NoteType.SOURCE:

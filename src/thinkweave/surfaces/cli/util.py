@@ -20,6 +20,39 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Vault initialized at {cfg.vault_root}")
 
 
+def cmd_config(args: argparse.Namespace) -> None:
+    """Inspect or set the user config (vault path), platform-resolved.
+
+    ``show`` (default) prints the resolved config path + vault_root + init
+    status; ``set-vault PATH`` persists vault_root. Both behave identically on a
+    repo checkout and a ``uv tool install``, so onboarding/skills shell out to
+    these rather than ``uv run python -c`` (only resolves the module from the
+    repo dir) or a hardcoded XDG path (wrong on Windows, where the config lives
+    under ``%APPDATA%``).
+    """
+    from thinkweave.core.config import (
+        is_vault_initialized,
+        user_config_path,
+        write_user_config,
+    )
+
+    action = getattr(args, "config_action", None) or "show"
+
+    if action == "set-vault":
+        vault_root = Path(args.path).expanduser()
+        write_user_config(vault_root)
+        print(f"Persisted vault_root = {vault_root}")
+        print(f"config_path: {user_config_path()}")
+        return
+
+    cfg = load_config()
+    cfg_path = user_config_path()
+    print(f"config_path: {cfg_path}")
+    print(f"config_exists: {'yes' if cfg_path.exists() else 'no'}")
+    print(f"vault_root: {cfg.vault_root}")
+    print(f"initialized: {'yes' if is_vault_initialized(cfg) else 'no'}")
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     """Run the thinkweave MCP server over stdio.
 

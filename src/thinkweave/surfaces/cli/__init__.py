@@ -64,7 +64,13 @@ from thinkweave.surfaces.cli.schedule import cmd_schedule
 from thinkweave.surfaces.cli.seam import cmd_seam
 from thinkweave.surfaces.cli.skill import cmd_skill
 from thinkweave.surfaces.cli.themes import cmd_themes
-from thinkweave.surfaces.cli.util import cmd_init, cmd_mcp, cmd_prune_orphans, cmd_sources
+from thinkweave.surfaces.cli.util import (
+    cmd_config,
+    cmd_init,
+    cmd_mcp,
+    cmd_prune_orphans,
+    cmd_sources,
+)
 from thinkweave.surfaces.cli.wrap import cmd_wrap_finalize
 
 
@@ -86,6 +92,7 @@ _DISPATCH = {
     # Interactive machine / vault administration. No MCP parity by
     # design; agents shouldn't run these (CLAUDE.md §7).
     "init": cmd_init,
+    "config": cmd_config,
     "install": cmd_install,
     "uninstall": cmd_uninstall,
     "dev-link": cmd_dev_link,
@@ -138,6 +145,16 @@ _DISPATCH = {
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Windows consoles default to the cp1252 codepage, which can't encode the
+    # →/▶/✓/· glyphs our surfaces print (landing/dream/doctor). Reconfigure both
+    # streams to UTF-8 once here so no individual command aborts with a
+    # UnicodeEncodeError after its work is already done.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):  # non-TextIO stream (pytest capture) or closed
+            pass
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
