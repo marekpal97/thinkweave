@@ -198,6 +198,13 @@ writes just the `mcpServers.thinkweave` block (idempotent, diff-on-overwrite,
 or hooks (those come from the plugin); add `weave hooks install --scope
 user|project` separately if you need the lifecycle hooks.
 
+**No clone needed for the CLI.** The package is published on PyPI, so
+`uv tool install thinkweave` (or `pipx install thinkweave`) puts the `weave`
+CLI and `weave-mcp` server on your PATH without a checkout — handy for running
+`weave install` on a host you don't develop on. Like the rest of this path it
+ships **only** the engine: no slash commands, hooks, or subagent workers, so use
+the plugin route above for the full Claude Code experience.
+
 </details>
 
 ### Recommended companion plugin — Explanatory output style
