@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Self-hosted marketplace for the Thinkweave plugin — this repo is its own marketplace.",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "plugins": [
     {

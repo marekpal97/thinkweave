@@ -1,7 +1,7 @@
 {
   "name": "thinkweave",
   "description": "Obsidian-native memory layer — markdown vault + SQLite index + 17 MCP tools, slash commands, subagent workers, 4 hooks. Plugin commands are namespaced: run /thinkweave:onboard after install to seed from prior Claude Code history.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Marek Paluch"
   },
