@@ -138,10 +138,24 @@ private forks (also flagless and namespaced, with live edits). Both are the
 - **`uv` is required.** All MCP invocations route through `uv run`; install it:
   - Unix (bash/zsh): `curl -LsSf https://astral.sh/uv/install.sh | sh`
   - Windows (PowerShell): `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
-- **Windows note.** Fully supported on native Windows. `weave schedule` picks
-  the host's native scheduler automatically — `crontab` on Linux/macOS, Windows
-  Task Scheduler (`schtasks`) on Windows — so the nightly `/dream` and
-  embeddings keep-warm jobs run on all three platforms with no WSL required.
+- **The `weave` CLI must be on your PATH.** The plugin wires the MCP server and
+  the hooks (those run via `uv run --project`), but `/thinkweave:onboard` and the
+  scheduled jobs shell out to the `weave` console script directly — so install it
+  once:
+  - `uv tool install "thinkweave[all]"` — *once published to PyPI*
+  - pre-PyPI / interim: `uv tool install "thinkweave[all] @ git+https://github.com/marekpal97/thinkweave"`
+
+  `[all]` pulls every optional feature except the heavy local-embeddings extra;
+  the default OpenAI embedding path is included. On a clone/dev checkout you can
+  run the CLI as `uv run weave …` from the repo (or `uv tool install --editable .`
+  for a fork) so `/onboard` and crons can find it.
+- **Windows note.** Fully supported on native Windows. `weave schedule`
+  auto-selects the host scheduler — `crontab` on Linux/macOS, Windows Task
+  Scheduler (`schtasks`, tasks created under `Thinkweave\*`) on Windows — so the
+  nightly `/dream` and embeddings keep-warm jobs run on all three platforms with
+  no WSL required. The scheduled `claude -p` jobs run headless on your stored
+  Claude Code login (no API key) with unattended tool-use, from the vault
+  working directory.
 
 ### Plugin install (recommended)
 
@@ -158,8 +172,9 @@ claude plugin install thinkweave@thinkweave           # registers MCP server, ho
 `thinkweave@thinkweave` is `plugin@marketplace` — this repo ships its own
 `.claude-plugin/marketplace.json`, so it *is* the marketplace (no separate
 listing to find). The plugin manifest declares the MCP server inline (no
-separate `weave install` step) and ships the subagent workers that `/dream`
-and `/drain` fan out to.
+separate `weave install` MCP-registration step — distinct from the `weave` CLI
+prerequisite above) and ships the subagent workers that `/dream` and `/drain`
+fan out to.
 
 **Namespacing.** Claude Code registers plugin commands under the plugin's
 namespace: type `/thinkweave:onboard`, not `/onboard` (tab-complete after
@@ -177,8 +192,8 @@ working tree are live:
 ```bash
 git clone https://github.com/marekpal97/thinkweave.git
 cd thinkweave
-uv sync --extra mcp        # installs weave, weave-hook, weave-mcp
-weave dev-link             # symlink into ~/.claude/skills/ (flagless auto-load)
+uv sync --extra mcp        # installs weave, weave-hook, weave-mcp into the repo venv
+uv run weave dev-link      # symlink into ~/.claude/skills/ (flagless auto-load)
 # → restart Claude Code; commands are now /thinkweave:onboard, :tighten, …
 ```
 
@@ -240,10 +255,18 @@ CLI — not the `/thinkweave:*` skills.
 
 ### Vault path
 
-On first run, `/onboard` asks for your vault path and persists it to
-`~/.config/thinkweave/config.toml` (XDG-respectful). No shell-rc edits needed —
-both the CLI and MCP server read this file. `THINKWEAVE_VAULT` still wins as an
-env override for per-shell experimentation.
+On first run, `/onboard` asks for your vault path and persists it to your
+platform config dir (`~/.config/thinkweave/config.toml` on Linux/macOS,
+`%APPDATA%\thinkweave\config.toml` on Windows). No shell-rc edits needed — both
+the CLI and MCP server read this file. Inspect or change it anytime with the
+`weave config` command:
+
+```bash
+weave config show               # resolved config path, vault_root, init status
+weave config set-vault PATH     # persist a different vault_root
+```
+
+`THINKWEAVE_VAULT` still wins as an env override for per-shell experimentation.
 
 Initialize a vault once:
 

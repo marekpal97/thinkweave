@@ -3,7 +3,7 @@ name: onboard
 owns_mechanic: project_bootstrap
 capabilities: [bootstrap]
 consumes: [weave_sources_config, weave_landing, weave_concepts]
-produces: [~/.config/thinkweave/config.toml (vault_root), vault/config/sources.yaml (projects.<name>), vault/config/PRIORITIES.yaml (focus.active_projects + intake.* seeds), vault/config/ontology.yaml, .claude/settings.json or ~/.claude/settings.json hooks, per-project landing docs, scheduled jobs via `weave schedule` (crontab on Linux/macOS or Task Scheduler on Windows, opt-in)]
+produces: [user config (vault_root) in the platform config dir, vault/config/sources.yaml (projects.<name>), vault/config/PRIORITIES.yaml (focus.active_projects + intake.* seeds), vault/config/ontology.yaml, .claude/settings.json or ~/.claude/settings.json hooks, per-project landing docs, scheduled jobs via `weave schedule` (crontab on Linux/macOS or Task Scheduler on Windows, opt-in)]
 tools:
   - Read
   - Write
@@ -44,13 +44,13 @@ exists:
 | Step | "Done" signal — skip when… |
 |---|---|
 | 0 — Pre-flight | always runs (cheap; the checks themselves are the value) |
-| 1 — Vault wiring | `is_vault_initialized(load_config())` returns True AND `~/.config/thinkweave/config.toml` exists |
+| 1 — Vault wiring | `weave config show` reports `initialized: yes` AND `config_exists: yes` |
 | 2 — Hook scope | hooks already present at the chosen scope (plugin manifest OR `~/.claude/settings.json` OR repo `.claude/settings.json`) with `thinkweave` markers |
 | 3 — CC import | `weave_search(type=['session'], limit=1)` returns ≥1 session note (vault already seeded) |
 | 4 — ontology bootstrap | `weave concepts list` has ≥10 canonical concepts AND `weave concepts proposed-counts --min-count 3` survivors list is empty |
 | 5 — focus | `focus.active_projects` already populated in `<vault>/config/PRIORITIES.yaml` for every discovered project |
 | 5 — source types | every enabled source type has its row in `sources.yaml` AND (for intake-driven types) a non-empty entry in `PRIORITIES.yaml::intake.<type>` |
-| 6 — Scheduler install | thinkweave jobs already registered (re-running `weave schedule install` replaces them; never duplicates). Linux/macOS: `# --- thinkweave cron block ---` fence in `crontab -l`. Windows: `PersonalMem\*` tasks in `schtasks /Query`. |
+| 6 — Scheduler install | thinkweave jobs already registered (re-running `weave schedule install` replaces them; never duplicates). Linux/macOS: `# --- thinkweave cron block ---` fence in `crontab -l`. Windows: `Thinkweave\*` tasks in `schtasks /Query`. |
 | 7 — Smoke test | always runs (the whole point is verification) |
 | Landing docs | `<vault>/projects/<project>/STATE.md` exists AND `mtime > 0` |
 
@@ -144,20 +144,23 @@ hooks, and CLI without any shell-rc edits.
 ### 1a. Detect current state
 
 ```bash
-uv run python -c "from thinkweave.core.config import load_config, is_vault_initialized; cfg=load_config(); print('YES' if is_vault_initialized(cfg) else 'NO', cfg.vault_root)"
+weave config show
 ```
 
-If output begins with `YES`, print *"Vault at `<path>` already
+Prints `config_path`, `vault_root`, and `initialized` for the
+platform-resolved config location (XDG on Linux/macOS, `%APPDATA%` on
+Windows) — works on any install (repo checkout or `uv tool install`). If
+it prints `initialized: yes`, print *"Vault at `<vault_root>` already
 initialized — using."* and proceed to Step 2.
 
-If `NO`, fall through to 1b.
+If `initialized: no`, fall through to 1b.
 
 ### 1b. Ask for vault path (AskUserQuestion)
 
 ```
 AskUserQuestion({
   "questions": [{
-    "question": "Where should your thinkweave vault live? This is one directory that holds every session note, decision, source brief, and concept hub across all your projects. The choice gets persisted to ~/.config/thinkweave/config.toml so the MCP server, hooks, and CLI all agree without you having to set any environment variables.",
+    "question": "Where should your thinkweave vault live? This is one directory that holds every session note, decision, source brief, and concept hub across all your projects. The choice gets persisted to your platform config dir (`~/.config/thinkweave/config.toml` on Linux/macOS, `%APPDATA%\\thinkweave\\config.toml` on Windows) so the MCP server, hooks, and CLI all agree without you having to set any environment variables.",
     "header": "Vault location",
     "options": [
       {"label": "~/vault (recommended)", "description": "Default. Lives in your home directory; survives system reinstalls if you back up $HOME."},
@@ -187,15 +190,18 @@ under `/tmp` are not allowed — they vanish on reboot."* and re-issue
 ### 1c. Persist the choice
 
 ```bash
-uv run python -c "from pathlib import Path; from thinkweave.core.config import write_user_config; write_user_config(Path('<chosen-path>'))"
+weave config set-vault "<chosen-path>"
 ```
 
-Writes `~/.config/thinkweave/config.toml` (XDG-respectful, atomic).
-Confirm the file exists:
+Writes the user config to the platform config dir (`~/.config/thinkweave/config.toml`
+on Linux/macOS, `%APPDATA%\thinkweave\config.toml` on Windows — atomic).
+Confirm it landed:
 
 ```bash
-test -f ~/.config/thinkweave/config.toml && echo "persisted" || echo "FAILED"
+weave config show
 ```
+
+Expect `config_exists: yes` and `vault_root: <chosen-path>`.
 
 ### 1d. Run `weave init`
 
@@ -213,8 +219,8 @@ standalone `*_feeds.yaml` files.)
 
 Print verbatim:
 
-> Vault at `<chosen-path>` initialized. Persisted to
-> `~/.config/thinkweave/config.toml` — this choice will survive
+> Vault at `<chosen-path>` initialized. Persisted to your platform
+> config dir (see `weave config show`) — this choice will survive
 > Claude Code restarts.
 
 ---
@@ -1003,7 +1009,7 @@ weave schedule install --only "<ONLY>"
 
 Confirm by re-running `weave schedule list` (shows the backend) and, on
 Linux/macOS, `crontab -l | grep thinkweave` for the fence; on Windows,
-`schtasks /Query /TN "PersonalMem\*"`.
+`schtasks /Query /TN "Thinkweave\*"`.
 
 ### 6e. On "no thanks"
 
@@ -1139,7 +1145,7 @@ Hooks:       installed (scope: <global|repo>)   (or "skipped per your choice")
 Landing:     STATE/BACKLOG/DECISIONS for active projects, THEMES global
 
 Your config:
-  vault_root:   <path>      (~/.config/thinkweave/config.toml)
+  vault_root:   <path>      (platform config dir; see `weave config show`)
   hook scope:   <global|repo>
   scheduler:    <installed via crontab|Task Scheduler|skipped>
 

@@ -23,9 +23,9 @@ import subprocess
 from pathlib import Path
 
 from thinkweave.core.config import Config, user_cache_dir
-from thinkweave.scheduling.registry import ScheduledJob, resolve_command
+from thinkweave.scheduling.registry import ScheduledJob, _quote, resolve_command
 
-_TASK_FOLDER = "PersonalMem"
+_TASK_FOLDER = "Thinkweave"
 
 # cron day-of-week (0/7 = Sunday) → schtasks /D token.
 _DOW = {0: "SUN", 1: "MON", 2: "TUE", 3: "WED", 4: "THU", 5: "FRI", 6: "SAT", 7: "SUN"}
@@ -134,9 +134,14 @@ class TaskSchedulerBackend:
         log_dir = user_cache_dir()
         command = resolve_command(job, repo_root=repo_root)
         redirect = f" >> {log_dir / job.log} 2>&1" if job.log else ""
-        # `cmd /c` is required so the `>>` redirect is honoured. The whole
-        # string is one /TR element; subprocess quoting carries it intact.
-        action = f"cmd /c {command}{redirect}"
+        # Task Scheduler runs tasks with cwd=%windir%\System32 (non-writable),
+        # which breaks skills that write scratch files relative to the cwd
+        # (e.g. /dream's scan/plan handoffs). cd to the vault first so those
+        # land in a writable dir. `cmd /c` is required so both the `&&` chain
+        # and the `>>` redirect are honoured; the whole string is one /TR
+        # element that subprocess quoting carries intact.
+        cd = f"cd /d {_quote(str(self.config.vault_root))} && "
+        action = f"cmd /c {cd}{command}{redirect}"
         return [
             "schtasks",
             "/Create",

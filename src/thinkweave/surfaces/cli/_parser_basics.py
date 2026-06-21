@@ -334,6 +334,20 @@ def add_admin_subparsers(sub) -> None:
             help="Comma-separated job names to act on (default: all).",
         )
 
+    p_config = sub.add_parser(
+        "config",
+        help="Inspect or set the user config (vault path) — platform-resolved "
+        "location (XDG on Linux/macOS, %APPDATA% on Windows).",
+    )
+    config_sub = p_config.add_subparsers(dest="config_action")
+    config_sub.add_parser(
+        "show", help="Print config path, vault_root, and init status."
+    )
+    p_config_set = config_sub.add_parser(
+        "set-vault", help="Persist vault_root to the user config."
+    )
+    p_config_set.add_argument("path", help="Vault directory to persist as vault_root.")
+
     p_hooks = sub.add_parser("hooks", help="Manage Claude Code hooks")
     hooks_sub = p_hooks.add_subparsers(dest="hooks_action")
     p_install = hooks_sub.add_parser("install", help="Install hooks")

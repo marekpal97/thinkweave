@@ -141,7 +141,8 @@ class TestResolveCommand:
             lambda name: "/abs/claude" if name == "claude" else None,
         )
         job = ScheduledJob("dream", "0 3 * * *", "claude -p /dream", runner="direct")
-        assert resolve_command(job) == "/abs/claude -p /dream"
+        # headless `claude -p` jobs get an unattended permission grant appended
+        assert resolve_command(job) == "/abs/claude -p /dream --dangerously-skip-permissions"
 
     def test_uv_resolves_weave(self, monkeypatch):
         monkeypatch.setattr(
@@ -246,7 +247,7 @@ class TestCrontabBackend:
         # env passthrough, per-job log, cadence preserved
         assert (
             '0 3 * * * ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" /abs/claude -p /dream '
-            ">> /cache/pm/dream.log 2>&1" in block
+            "--dangerously-skip-permissions >> /cache/pm/dream.log 2>&1" in block
         )
         assert (
             '15 */4 * * * OPENAI_API_KEY="${OPENAI_API_KEY}" /abs/weave index --embed '
@@ -378,7 +379,7 @@ class TestTaskSchedulerBackend:
         argv = TaskSchedulerBackend(config).build_create_argv(job)
         assert argv[0] == "schtasks"
         assert argv[1] == "/Create"
-        assert "/TN" in argv and "PersonalMem\\dream" in argv
+        assert "/TN" in argv and "Thinkweave\\dream" in argv
         assert "/F" in argv
         # trigger flags appended
         assert "/SC" in argv and "DAILY" in argv
@@ -388,11 +389,15 @@ class TestTaskSchedulerBackend:
         assert action.startswith("cmd /c ")
         assert "C:\\bin\\claude.exe -p /dream" in action
         assert ">>" in action and "dream.log" in action
+        # cd to the writable vault dir (Task Scheduler cwd is System32) +
+        # unattended permission grant for the headless claude -p invocation
+        assert "cd /d" in action
+        assert "--dangerously-skip-permissions" in action
 
     def test_delete_argv(self, config):
         job = ScheduledJob("dream", "0 3 * * *", "claude -p /dream", runner="direct")
         argv = TaskSchedulerBackend(config).build_delete_argv(job)
-        assert argv == ["schtasks", "/Delete", "/TN", "PersonalMem\\dream", "/F"]
+        assert argv == ["schtasks", "/Delete", "/TN", "Thinkweave\\dream", "/F"]
 
     def test_env_warning_for_unset_var(self, config, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

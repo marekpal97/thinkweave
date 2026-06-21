@@ -148,6 +148,12 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
             for i, tok in enumerate(rest[:-1]):
                 if tok == "-p":
                     rest[i + 1] = namespace_prompt(rest[i + 1], ns)
+        # Headless `claude -p` runs unattended with no TTY to approve tool use,
+        # so the skill's `weave …` Bash calls are denied under the default
+        # permission mode (the cron silently no-ops at its first tool call).
+        # Grant unattended tool use explicitly for `-p` invocations.
+        if "-p" in rest and "--dangerously-skip-permissions" not in rest:
+            rest.append("--dangerously-skip-permissions")
         resolved = shutil.which(head)
         if resolved:
             return " ".join([_quote(resolved), *rest])

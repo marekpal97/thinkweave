@@ -11,12 +11,14 @@ The full CLI subcommand reference, the MCP tool surface, the CLI↔MCP surface c
 
 ## CLI reference
 
-The CLI exposes **45 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
+The CLI exposes **46 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
 
 Consolidations to keep in mind: wikilink materialisation lives under `weave index --materialize-links` (was `weave connect`, deleted 2026-05-21); the `weave_concepts*` MCP tools are folded into `weave_concepts(action=...)`; `weave_source_lens` + `weave_decisions_for_file` are folded into `weave_graph(filter=...)`. The Phase-4-C deprecation aliases for both CLI and MCP names were removed 2026-05-21 — call the canonical names.
 
 ```
 weave init                                    # initialize vault + config/sources.yaml
+weave config {show|set-vault PATH}            # inspect/persist user config (vault path);
+                                            #   platform-resolved (XDG / %APPDATA%)
 weave add --type {note|theme|...} "Title"     # create a note
 weave index [--full] [--embed] [--only-new|--since DATE] [--materialize-links]
                                             # rebuild SQLite index (+ wikilinks).
@@ -59,7 +61,7 @@ weave install [--vault PATH] [--yes]          # register MCP server in ~/.claude
 weave mcp                                     # invoke the MCP server (used by ~/.claude.json)
 ```
 
-**Agents shouldn't run** `weave doctor`, `weave stats`, `weave flow`, `weave intake`, `weave import`, `weave prune-orphans`, `weave install`, `weave mcp`, `weave init`, `weave hooks`, `weave schedule` directly — they belong in cron flows or interactive admin. There is no MCP parity for these subcommands.
+**Agents shouldn't run** `weave doctor`, `weave stats`, `weave flow`, `weave intake`, `weave import`, `weave prune-orphans`, `weave install`, `weave mcp`, `weave init`, `weave config`, `weave hooks`, `weave schedule` directly — they belong in cron flows or interactive admin. There is no MCP parity for these subcommands.
 
 ## MCP tool surface
 
@@ -71,7 +73,7 @@ The MCP server (id `thinkweave`, so tools are addressed `mcp__thinkweave__weave_
 
 The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus exactly four narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, and `weave judge --rejudge/--drain`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-Full inventory — 45 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
+Full inventory — 46 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
 
 | Operation | CLI subcommand | MCP tool | Audience |
 |---|---|---|---|
@@ -104,6 +106,7 @@ Full inventory — 45 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Host scheduler render | `weave schedule` | — | admin-cron |
 | Hook install / status | `weave hooks` | — | admin-cron |
 | Vault init | `weave init` | — | admin-cron |
+| User config (vault path) | `weave config` | — | admin-cron |
 | MCP server registration | `weave install` / `weave uninstall` | — | admin-cron |
 | Hook pause toggle | `weave pause` / `weave resume` | — | admin-cron |
 | MCP server entry point | `weave mcp` | — | admin-cron (infrastructure) |

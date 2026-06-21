@@ -7,6 +7,7 @@ plus a chained MCP session simulating real agent usage. All in tmp vaults — no
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -59,6 +60,26 @@ def search(config: Config, indexer: Indexer) -> Search:
     s = Search(config=config)
     yield s
     s.close()
+
+
+# ── Cross-platform path safety ─────────────────────────────────────────
+
+
+def test_session_folder_name_is_date_only(vault: VaultManager):
+    """Session folders must be date-only (`ses-xxx-YYYY-MM-DD`).
+
+    Regression guard: ``create_note`` once built the reuse-path folder from a
+    full isoformat timestamp (``…T17:59:58.272357+00:00``), whose ``:`` is
+    illegal in Windows path components → ``mkdir`` raises WinError 123 and ALL
+    session writes fail. Colons are legal on Linux/macOS, so only this explicit
+    assertion catches a revert to the timestamp form on those platforms.
+    """
+    path = vault.create_note(NoteType.SESSION, "Win Session", project="t")
+    folder = path.parent.name
+    assert ":" not in folder, f"colon in session folder name breaks Windows: {folder!r}"
+    assert re.search(r"-\d{4}-\d{2}-\d{2}$", folder), (
+        f"session folder must end in a date-only stamp, got {folder!r}"
+    )
 
 
 # ── Link/Unlink Edge Cases (our fix) ───────────────────────────────────

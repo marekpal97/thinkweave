@@ -119,9 +119,12 @@ class TestCliSurface:
         # `weave enrich` (deferred concept-tagging backfill) removed
         # 2026-06-16 — concepts are now proposed inline at note creation, so
         # the standalone deferred pass is gone: 46 → 45.
+        # `weave config` (show + set-vault — a platform-resolved user-config
+        # surface so /onboard never shells `uv run python -c` or hardcodes the
+        # XDG path, which is wrong on Windows) added 2026-06-21: 45 → 46.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
-        assert len(_DISPATCH) == 45
+        assert len(_DISPATCH) == 46
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():
