@@ -2,8 +2,41 @@
 name = "thinkweave"
 version = "0.1.0"
 description = "Obsidian-native universal memory layer for agentic systems"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Marek Paluch" }]
+keywords = [
+    "obsidian",
+    "memory",
+    "knowledge-management",
+    "mcp",
+    "claude-code",
+    "rag",
+    "markdown",
+    "sqlite",
+    "agent-memory",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
 dependencies = ["pyyaml>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/marekpal97/thinkweave"
+Repository = "https://github.com/marekpal97/thinkweave"
+Issues = "https://github.com/marekpal97/thinkweave/issues"
+"Release Notes" = "https://github.com/marekpal97/thinkweave/releases"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0"]
@@ -37,12 +70,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# `packages` already ships everything under src/thinkweave — including the
+# non-.py data tree vault_templates/ (config seeds, note_formats, skill
+# templates). A force-include of vault_templates here would double-add those
+# files and break the wheel build, so it is intentionally absent.
 packages = ["src/thinkweave"]
-
-[tool.hatch.build.targets.wheel.force-include]
-# ontology.yaml now lives under vault_templates/config/, so this single
-# directory include ships the whole config-template surface (seed + examples).
-"src/thinkweave/vault_templates" = "thinkweave/vault_templates"
 
 [tool.ruff]
 line-length = 100

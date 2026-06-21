@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.jpg" alt="Thinkweave logo" width="360">
+  <img src="https://raw.githubusercontent.com/marekpal97/thinkweave/main/assets/logo.jpg" alt="Thinkweave logo" width="360">
 </p>
 
 # Thinkweave
