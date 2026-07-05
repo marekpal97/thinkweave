@@ -44,7 +44,7 @@ mcp = ["mcp>=1.0"]
 # (the wrapper uses AsyncOpenAI with custom base_url for Anthropic/Gemini
 # OpenAI-compat endpoints) — moved out of the [hubs] extra into [embeddings]
 # so any opt-in extra that pulls openai also pulls httpx for embeddings.
-embeddings = ["httpx", "openai>=1.50"]
+embeddings = ["httpx", "openai>=1.50", "numpy>=1.26"]
 embeddings-local = ["sentence-transformers>=2.5"]
 embeddings-litellm = ["litellm>=1.0"]
 hubs = ["openai>=1.50"]

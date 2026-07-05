@@ -258,18 +258,44 @@ class EmbeddingSearch:
             if not allowed:
                 return []
 
-        results: list[tuple[str, float]] = []
+        # Pull the candidate rows once — allowed/model/dim filtering is
+        # shared by both the vectorized and stdlib scoring paths below, so a
+        # mixed cache still degrades to "fewer results" either way.
+        note_ids: list[str] = []
+        blobs: list[bytes] = []
         for row in self.db.execute(
             "SELECT note_id, embedding FROM embeddings WHERE model = ?",
             (query_model,),
         ):
             if allowed is not None and row["note_id"] not in allowed:
                 continue
-            cached_emb = _unpack_embedding(row["embedding"])
-            if len(cached_emb) != query_dim:  # belt-and-suspenders vs a mislabelled row
+            if len(row["embedding"]) // 4 != query_dim:  # belt-and-suspenders vs a mislabelled row
                 continue
-            score = cosine_similarity(query_emb, cached_emb)
-            results.append((row["note_id"], score))
+            note_ids.append(row["note_id"])
+            blobs.append(row["embedding"])
+
+        # A pure-Python cosine loop over thousands of unpacked vectors is the
+        # dominant cost at vault scale (~1s CPU per query at ~7k notes), so
+        # prefer a vectorized numpy path when it's installed (the `embeddings`
+        # extra) and fall back to the stdlib loop otherwise.
+        try:
+            import numpy as np
+        except ImportError:
+            np = None  # type: ignore[assignment]
+
+        if np is not None and note_ids:
+            matrix = np.stack([np.frombuffer(b, dtype=np.float32) for b in blobs])
+            query_vec = np.asarray(query_emb, dtype=np.float32)
+            dots = matrix @ query_vec
+            denom = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query_vec)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                scores = np.where(denom == 0, 0.0, dots / denom)
+            results = list(zip(note_ids, (float(s) for s in scores)))
+        else:
+            results = [
+                (nid, cosine_similarity(query_emb, _unpack_embedding(blob)))
+                for nid, blob in zip(note_ids, blobs)
+            ]
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:limit]
