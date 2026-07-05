@@ -2730,7 +2730,7 @@ wheels = [
 
 [[package]]
 name = "thinkweave"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },
@@ -2781,6 +2781,7 @@ youtube = [
 [package.dev-dependencies]
 dev = [
     { name = "bump-my-version" },
+    { name = "mcp" },
     { name = "pytest" },
 ]
 
@@ -2807,6 +2808,7 @@ provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm"
 [package.metadata.requires-dev]
 dev = [
     { name = "bump-my-version", specifier = ">=0.28" },
+    { name = "mcp", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=9.0.2" },
 ]
 

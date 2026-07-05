@@ -336,8 +336,11 @@ def add_admin_subparsers(sub) -> None:
 
     p_config = sub.add_parser(
         "config",
+        # NB: literal ``%`` must be doubled — argparse renders help via
+        # ``help % params`` in HelpFormatter, so a lone ``%A`` (from
+        # ``%APPDATA%``) raises ValueError when print_help() runs.
         help="Inspect or set the user config (vault path) — platform-resolved "
-        "location (XDG on Linux/macOS, %APPDATA% on Windows).",
+        "location (XDG on Linux/macOS, %%APPDATA%% on Windows).",
     )
     config_sub = p_config.add_subparsers(dest="config_action")
     config_sub.add_parser(
