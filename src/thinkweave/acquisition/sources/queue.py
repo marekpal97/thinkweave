@@ -26,6 +26,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from itertools import chain
 from pathlib import Path
 from typing import Any, Iterable, TypedDict
 
@@ -284,17 +285,11 @@ class Queue:
         strings — the format :meth:`enqueue` writes — so an item stamped
         exactly at the cutoff is kept.
         """
-        out: list[QueueItem] = [
+        return [
             item
-            for item in self._read_all()
+            for item in chain(self._read_all(), self._archive_items_since(cutoff_iso))
             if (item.get("enqueued_at") or "") >= cutoff_iso
         ]
-        out.extend(
-            item
-            for item in self._archive_items_since(cutoff_iso)
-            if (item.get("enqueued_at") or "") >= cutoff_iso
-        )
-        return out
 
     # ------------------------------------------------------------------
     # dedup
@@ -389,10 +384,9 @@ class Queue:
         start_date = datetime.fromisoformat(start_iso).date()
         today = datetime.now(timezone.utc).date()
         out: list[QueueItem] = []
-        day = start_date
-        while day <= today:
+        for delta in range((today - start_date).days + 1):
+            day = start_date + timedelta(days=delta)
             archive_file = self.archive_root / day.isoformat() / f"{self.source_type}.jsonl"
-            day += timedelta(days=1)
             if not archive_file.exists():
                 continue
             for line in archive_file.read_text(encoding="utf-8").splitlines():
