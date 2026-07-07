@@ -102,7 +102,17 @@ def index_imported_notes(config: Config, paths: list[Path]) -> dict:
     Trade-off accepted: notes are not searchable mid-run. Imports are
     batch/offline CLI operations with no concurrent reader, so incremental
     mid-run searchability has no consumer — the per-file FTS-rebuild cost it
-    would buy is pure waste. Sidecar projections that only a *full* rebuild
+    would buy is pure waste.
+
+    Crash window, also accepted: if an import dies mid-run, notes already
+    written are in the vault AND marked in the manifest (which must keep
+    saving mid-run — duplicate prevention on re-run beats index freshness),
+    so a re-run skips them and they stay unindexed until the nightly
+    ``/dream`` full rebuild or a manual ``weave index --full``. That is
+    benign under the markdown-is-truth / SQLite-is-rebuildable model; do not
+    move ``manifest.save()`` after indexing to "fix" it — that would trade
+    this benign unindexed-notes window for a malign duplicate-notes-on-rerun
+    window. Sidecar projections that only a *full* rebuild
     refreshes (context_served, prompts, co_served) are irrelevant to imported
     historical content (which has no retrieval_log/events sidecars) and are
     healed at cadence by the nightly ``/dream`` full rebuild / ``weave index
