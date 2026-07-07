@@ -24,12 +24,12 @@ import pytest
 from thinkweave.core.config import Config
 from thinkweave.synthesis.concept_hub import (
     LogEntry,
-    _strip_inline_wikilinks,
     append_log_entries,
     concept_hub_path,
     ensure_concept_hub_skeleton,
     parse_concept_hub,
     parse_llm_response,
+    strip_inline_wikilinks,
     unprocessed_notes_for_concept,
 )
 from thinkweave.core.indexer import Indexer
@@ -227,47 +227,47 @@ class TestStripInlineWikilinks:
     """
 
     def test_strips_trailing_wikilink(self):
-        out = _strip_inline_wikilinks("Some fact text [[n-abc123]]")
+        out = strip_inline_wikilinks("Some fact text [[n-abc123]]")
         assert out == "Some fact text"
 
     def test_strips_mid_sentence_wikilink(self):
-        out = _strip_inline_wikilinks("Use git blame [[dec-xyz]] for attribution")
+        out = strip_inline_wikilinks("Use git blame [[dec-xyz]] for attribution")
         assert "[[" not in out
         assert "git blame" in out and "attribution" in out
 
     def test_strips_multiple_wikilinks(self):
-        out = _strip_inline_wikilinks("A [[n-1]] B [[n-2]] C")
+        out = strip_inline_wikilinks("A [[n-1]] B [[n-2]] C")
         assert "[[" not in out
         for piece in ("A", "B", "C"):
             assert piece in out
 
     def test_preserves_text_with_no_wikilinks(self):
-        assert _strip_inline_wikilinks("plain text") == "plain text"
+        assert strip_inline_wikilinks("plain text") == "plain text"
 
     def test_handles_piped_wikilink_form(self):
-        out = _strip_inline_wikilinks("Pattern [[target|display]] here")
+        out = strip_inline_wikilinks("Pattern [[target|display]] here")
         assert "[[" not in out
         assert "Pattern" in out and "here" in out
 
     def test_strips_parenthesized_wikilink(self):
-        out = _strip_inline_wikilinks("technique A ([[n-1]]) applied at scale")
+        out = strip_inline_wikilinks("technique A ([[n-1]]) applied at scale")
         assert "(" not in out and ")" not in out
         assert "technique A" in out and "applied at scale" in out
 
     def test_strips_parenthesized_wikilink_before_period(self):
-        out = _strip_inline_wikilinks("favoring protection over bundling ([[dec-e57b9776]]).")
+        out = strip_inline_wikilinks("favoring protection over bundling ([[dec-e57b9776]]).")
         assert "(" not in out and ")" not in out
         # Final period survives.
         assert out.endswith(".")
 
     def test_strips_empty_parens_leftover(self):
         # Simulates what the old regex would leave behind.
-        out = _strip_inline_wikilinks("Use worktrees ( ).")
+        out = strip_inline_wikilinks("Use worktrees ( ).")
         assert "(" not in out and ")" not in out
         assert out.endswith(".")
 
     def test_removes_trailing_dangling_in_fragment(self):
-        out = _strip_inline_wikilinks("Blocks direct pushes to protected branches; implemented in [[n-0389b20b]].")
+        out = strip_inline_wikilinks("Blocks direct pushes to protected branches; implemented in [[n-0389b20b]].")
         # "implemented in ." should not survive — the trailing preposition
         # gets dropped, leaving "implemented." which is grammatical.
         assert "in ." not in out

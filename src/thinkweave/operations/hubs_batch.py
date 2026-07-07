@@ -99,8 +99,8 @@ def repair_hubs(
 
     from thinkweave.core.indexer import Indexer
     from thinkweave.synthesis.concept_hub import (
-        _strip_inline_wikilinks,
         parse_concept_hub,
+        strip_inline_wikilinks,
         topics_dir,
         write_concept_hub,
     )
@@ -141,7 +141,7 @@ def repair_hubs(
         for entry in hub.log_entries:
             new_date = id_to_date.get(entry.citation, entry.date)
             new_text = (
-                _strip_inline_wikilinks(entry.text) if entry.text else entry.text
+                strip_inline_wikilinks(entry.text) if entry.text else entry.text
             )
             if new_date != entry.date:
                 entry.date = new_date
