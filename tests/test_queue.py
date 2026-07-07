@@ -7,6 +7,7 @@ archive lifecycle (move + day-bucket layout), and claim semantics.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,10 @@ from thinkweave.acquisition.sources.queue import Queue
 
 def _make_queue(tmp_path: Path, source_type: str = "paper") -> Queue:
     return Queue.for_source_type(source_type, tmp_path)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +198,81 @@ def test_dedup_check_excludes_self(tmp_path: Path) -> None:
     items = q.peek(10)
     # Re-checking the item that's already in the queue should return None.
     assert q.dedup_check({"id": a, "url": "https://x.test/a"}, keys=["url"]) is None
+
+
+# ---------------------------------------------------------------------------
+# items_since (recent across active + archive)
+# ---------------------------------------------------------------------------
+
+
+def test_items_since_active_only(tmp_path: Path) -> None:
+    q = _make_queue(tmp_path)
+    now = datetime.now(timezone.utc)
+    q.enqueue({"url": "https://x.test/old", "enqueued_at": _iso(now - timedelta(days=3))})
+    new = q.enqueue(
+        {"url": "https://x.test/new", "enqueued_at": _iso(now - timedelta(hours=1))}
+    )
+    cutoff = _iso(now - timedelta(days=1))
+    ids = {it["id"] for it in q.items_since(cutoff)}
+    assert ids == {new}
+
+
+def test_items_since_archive_only(tmp_path: Path) -> None:
+    q = _make_queue(tmp_path)
+    now = datetime.now(timezone.utc)
+    a = q.enqueue(
+        {"url": "https://x.test/a", "enqueued_at": _iso(now - timedelta(hours=2))}
+    )
+    q.archive(a, status="done")
+    assert q.peek(10) == []  # active queue drained into archive
+
+    items = q.items_since(_iso(now - timedelta(days=1)))
+    assert [it["id"] for it in items] == [a]
+    assert items[0]["status"] == "done"
+
+
+def test_items_since_mixed_active_and_archive(tmp_path: Path) -> None:
+    q = _make_queue(tmp_path)
+    now = datetime.now(timezone.utc)
+    arch = q.enqueue(
+        {"url": "https://x.test/arch", "enqueued_at": _iso(now - timedelta(hours=5))}
+    )
+    q.archive(arch, status="done")
+    active = q.enqueue(
+        {"url": "https://x.test/active", "enqueued_at": _iso(now - timedelta(hours=1))}
+    )
+    ids = {it["id"] for it in q.items_since(_iso(now - timedelta(days=1)))}
+    assert ids == {arch, active}
+
+
+def test_items_since_cutoff_boundary_inclusive(tmp_path: Path) -> None:
+    q = _make_queue(tmp_path)
+    now = datetime.now(timezone.utc)
+    ts = _iso(now - timedelta(hours=2))
+    at_cutoff = q.enqueue({"url": "https://x.test/at", "enqueued_at": ts})
+    q.enqueue(
+        {"url": "https://x.test/before", "enqueued_at": _iso(now - timedelta(hours=3))}
+    )
+    ids = {it["id"] for it in q.items_since(ts)}
+    # Item exactly at the cutoff is kept; the earlier one is excluded.
+    assert ids == {at_cutoff}
+
+
+def test_items_since_excludes_archived_before_cutoff(tmp_path: Path) -> None:
+    """An item archived today but enqueued before the cutoff is filtered out."""
+    q = _make_queue(tmp_path)
+    now = datetime.now(timezone.utc)
+    old = q.enqueue(
+        {"url": "https://x.test/old", "enqueued_at": _iso(now - timedelta(days=3))}
+    )
+    q.archive(old, status="done")  # lands in today's day-bucket
+    assert q.items_since(_iso(now - timedelta(days=1))) == []
+
+
+def test_items_since_empty_queue(tmp_path: Path) -> None:
+    q = _make_queue(tmp_path)
+    cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=1))
+    assert q.items_since(cutoff) == []
 
 
 # ---------------------------------------------------------------------------

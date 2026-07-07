@@ -21,6 +21,7 @@ from thinkweave.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_youtube_item,
 )
+from thinkweave.acquisition.sources.queue import Queue
 
 
 class FakeParsed:
@@ -142,8 +143,8 @@ def test_strategy_polls_channels_and_enqueues(tmp_path, fake_feedparser, monkeyp
     assert summaries[0]["stats"]["enqueued"] == 2
     assert all(d["source_type"] == "youtube-events" for d in enqueued)
 
-    queue_path = tmp_path / ".weave" / "queues" / "youtube-events.jsonl"
-    assert queue_path.exists()
+    items = Queue.for_source_type("youtube-events", tmp_path).peek(10)
+    assert {it.get("video_id") for it in items} == {"aaa111BBB22", "ccc333DDD44"}
 
 
 def test_strategy_youtube_lookback_filters_stale(tmp_path, fake_feedparser, monkeypatch) -> None:
