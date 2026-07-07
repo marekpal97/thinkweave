@@ -38,17 +38,19 @@ def test_run_hubs_batch_empty_plan_short_circuits(tmp_path: Path, monkeypatch):
 
     cfg = Config(vault_root=tmp_path)
     stats = run_hubs_batch(cfg, plan_path=plan_path)
-    assert stats == {"applied": 0, "concepts": 0}
+    assert stats.concepts == 0
+    assert stats.applied == 0
 
 
-def test_run_hubs_batch_missing_plan_exits(tmp_path: Path, monkeypatch):
+def test_run_hubs_batch_missing_plan_raises(tmp_path: Path, monkeypatch):
     from thinkweave.core.config import Config
-    from thinkweave.operations.hubs_batch import run_hubs_batch
+    from thinkweave.operations.hubs_batch import PlanNotFoundError, run_hubs_batch
 
     cfg = Config(vault_root=tmp_path)
-    with pytest.raises(SystemExit) as excinfo:
+    # Operation stays pure: it raises rather than printing + sys.exit. The
+    # CLI surface catches this and chooses the exit code.
+    with pytest.raises(PlanNotFoundError):
         run_hubs_batch(cfg, plan_path=tmp_path / "no-such-plan.json")
-    assert excinfo.value.code == 1
 
 
 def test_run_hubs_batch_passes_resolved_provider_to_wrapper(
@@ -116,7 +118,7 @@ def test_run_hubs_batch_passes_resolved_provider_to_wrapper(
     assert captured["provider"] == "gemini"
     assert captured["model"] == "gemini-2.5-flash"
     assert captured["n_prompts"] == 1
-    assert stats["concepts"] == 1
+    assert stats.concepts == 1
 
 
 def test_run_hubs_batch_dry_run_does_not_call_wrapper(
@@ -158,8 +160,98 @@ def test_run_hubs_batch_dry_run_does_not_call_wrapper(
 
     cfg = Config(vault_root=tmp_path)
     stats = run_hubs_batch(cfg, plan_path=plan_path, dry_run=True)
-    assert stats["dry_run"] is True
+    assert stats.dry_run is True
     assert called["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Hubs CLI surface — the surface owns all stdout + exit codes (C2 purity).
+# ---------------------------------------------------------------------------
+
+
+def _hubs_batch_args(tmp_path: Path, dry_run: bool = False):
+    import argparse
+
+    return argparse.Namespace(
+        target="hubs",
+        via="batch",
+        plan=str(tmp_path / "no-such-plan.json"),
+        model=None,
+        max_tokens=1024,
+        poll_interval=30,
+        max_input_tokens=4_500_000,
+        dry_run=dry_run,
+    )
+
+
+def test_cli_missing_plan_prints_hint_and_exits(tmp_path: Path, monkeypatch):
+    import pytest as _pytest
+
+    from thinkweave.core.config import Config
+    from thinkweave.surfaces.cli.drain import cmd_drain
+
+    monkeypatch.setattr(
+        "thinkweave.surfaces.cli.drain.load_config",
+        lambda: Config(vault_root=tmp_path),
+    )
+    with _pytest.raises(SystemExit) as excinfo:
+        cmd_drain(_hubs_batch_args(tmp_path))
+    assert excinfo.value.code == 1
+
+
+def test_cli_renders_empty_plan(capsys):
+    from thinkweave.operations.hubs_batch import HubsBatchResult
+    from thinkweave.surfaces.cli.drain import _print_hubs_batch
+
+    _print_hubs_batch(HubsBatchResult(concepts=0))
+    assert "Plan is empty." in capsys.readouterr().out
+
+
+def test_cli_renders_dry_run_preview(capsys):
+    from thinkweave.operations.hubs_batch import HubsBatchResult
+    from thinkweave.surfaces.cli.drain import _print_hubs_batch
+
+    result = HubsBatchResult(
+        concepts=2,
+        requests_built=3,
+        dry_run=True,
+        preview={
+            "concept": "ml/rl",
+            "note_id": "n-1",
+            "system_chars": 100,
+            "user_chars": 200,
+            "user_head": "hello prompt",
+        },
+    )
+    _print_hubs_batch(result)
+    out = capsys.readouterr().out
+    assert "Built 3 request(s) across 2 concept(s)." in out
+    assert "DRY RUN: first request preview" in out
+    assert "concept: ml/rl" in out
+    assert "hello prompt" in out
+
+
+def test_cli_renders_applied_and_reindex(capsys):
+    from thinkweave.operations.hubs_batch import HubsBatchResult
+    from thinkweave.surfaces.cli.drain import _print_hubs_batch
+
+    result = HubsBatchResult(
+        concepts=1,
+        requests_built=1,
+        issued=1,
+        provider="gemini",
+        model="gemini-2.5-flash",
+        concurrency=20,
+        applied=4,
+        essence_flagged=["ml/rl"],
+        touched=1,
+    )
+    _print_hubs_batch(result)
+    out = capsys.readouterr().out
+    assert "Issuing 1 request(s) to gemini/gemini-2.5-flash (concurrency=20)..." in out
+    assert "Applied 4 new log entries." in out
+    assert "Essence revision flagged for 1 concept(s):" in out
+    assert "Reindexed 1 of 1 hub page(s)." in out
 
 
 # ---------------------------------------------------------------------------

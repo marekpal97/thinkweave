@@ -204,14 +204,31 @@ class TestBuildArgv:
 
 
 class TestRunFlowDryRun:
-    def test_dry_run_prints_invocations_no_subprocess(self, capsys):
+    def test_dry_run_records_invocations_no_subprocess(self):
         spec = FlowSpec(
             name="t",
             description="",
             stages=(FlowStage(run="/a"), FlowStage(run="/b", sleep=10)),
         )
-        code = run_flow(spec, dry_run=True)
-        assert code == 0
+        result = run_flow(spec, dry_run=True)
+        # Operation returns data — no stdout, no subprocess.
+        assert result.dry_run is True
+        assert result.last_code == 0
+        cmds = [s.cmd for s in result.stages]
+        assert any("/a" in c for c in cmds)
+        assert any("/b" in c for c in cmds)
+        assert result.stages[1].sleep == 10
+        assert all(not s.ran for s in result.stages)
+
+    def test_surface_prints_dry_run_plan(self, capsys):
+        from thinkweave.surfaces.cli.flows import _print_flow_result
+
+        spec = FlowSpec(
+            name="t",
+            description="",
+            stages=(FlowStage(run="/a"), FlowStage(run="/b", sleep=10)),
+        )
+        _print_flow_result(run_flow(spec, dry_run=True))
         out = capsys.readouterr().out
         assert "/a" in out
         assert "/b" in out

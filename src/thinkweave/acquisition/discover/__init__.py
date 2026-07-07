@@ -24,33 +24,9 @@ module-level ``STRATEGY`` instance and add one ``register()`` line in
 
 from __future__ import annotations
 
-from typing import Any, Protocol
-
 from thinkweave.acquisition.discover.strategies import REGISTRY, get, names, register
 
-
-class DiscoveryStrategy(Protocol):
-    """Protocol every strategy implements.
-
-    ``name`` is the lookup key used in ``sources.yaml`` and on the CLI
-    ``--strategy`` flag. ``run`` returns a list of queue-item dicts —
-    the caller (``weave discover``) is responsible for actually enqueuing
-    them. Strategies don't write to the vault directly.
-    """
-
-    name: str
-
-    def run(
-        self,
-        vault: Any,
-        project: str | None,
-        config: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        ...
-
-
 __all__ = [
-    "DiscoveryStrategy",
     "REGISTRY",
     "get",
     "names",

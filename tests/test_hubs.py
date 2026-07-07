@@ -307,12 +307,12 @@ class TestLinkageHelpers:
     """
 
     def _build_prompt(self, concept, essence, entries):
-        from thinkweave.surfaces.cli import _build_linkage_user_prompt
-        return _build_linkage_user_prompt(concept, essence, entries)
+        from thinkweave.operations.hubs_batch import build_linkage_user_prompt
+        return build_linkage_user_prompt(concept, essence, entries)
 
     def _parse(self, raw):
-        from thinkweave.surfaces.cli import _parse_linkage_response
-        return _parse_linkage_response(raw)
+        from thinkweave.operations.hubs_batch import parse_linkage_response
+        return parse_linkage_response(raw)
 
     def test_prompt_preserves_chronological_order(self):
         entries = [
@@ -364,6 +364,73 @@ class TestLinkageHelpers:
         assert out[1]["flag"] == "extends"
 
 
+class TestRepairHubs:
+    """``operations.hubs_batch.repair_hubs`` — the pure operation lifted out
+    of ``cli/hubs.py::_hubs_repair`` (C2). Swaps backfill dates for the cited
+    note's real date and returns a RepairResult; no stdout, no sys.exit.
+    """
+
+    def test_missing_topics_dir_flags_result(self, tmp_path: Path):
+        from thinkweave.operations.hubs_batch import repair_hubs
+
+        cfg = Config(vault_root=tmp_path / "empty-vault")
+        result = repair_hubs(cfg)
+        assert result.topics_missing is True
+        assert result.changed_hubs == 0
+
+    def test_swaps_backfill_date_to_note_date(self, vault_setup):
+        from thinkweave.operations.hubs_batch import repair_hubs
+
+        cfg, vm, idx = vault_setup
+        note_id = _make_note_with_concept(vm, idx, "repair-note", "repair-concept")
+        note_date = idx.db.execute(
+            "SELECT date FROM notes WHERE id = ?", (note_id,)
+        ).fetchone()["date"][:10]
+
+        ensure_concept_hub_skeleton(cfg, "repair-concept")
+        append_log_entries(
+            cfg,
+            "repair-concept",
+            [LogEntry(date="2020-01-01", flag="new", text="stale-dated", citation=note_id)],
+        )
+        # Precondition: the on-disk entry carries the wrong (backfill) date.
+        assert parse_concept_hub(
+            concept_hub_path(cfg, "repair-concept"), concept="repair-concept"
+        ).log_entries[0].date == "2020-01-01"
+
+        result = repair_hubs(cfg, concept="repair-concept")
+        assert result.changed_hubs == 1
+        assert result.date_updates == 1
+        assert result.dry_run is False
+
+        entry = parse_concept_hub(
+            concept_hub_path(cfg, "repair-concept"), concept="repair-concept"
+        ).log_entries[0]
+        assert entry.date == note_date
+
+    def test_dry_run_does_not_write(self, vault_setup):
+        from thinkweave.operations.hubs_batch import repair_hubs
+
+        cfg, vm, idx = vault_setup
+        note_id = _make_note_with_concept(vm, idx, "dry-note", "dry-concept")
+        ensure_concept_hub_skeleton(cfg, "dry-concept")
+        append_log_entries(
+            cfg,
+            "dry-concept",
+            [LogEntry(date="2020-01-01", flag="new", text="stale", citation=note_id)],
+        )
+
+        result = repair_hubs(cfg, concept="dry-concept", dry_run=True)
+        assert result.dry_run is True
+        assert result.changed_hubs == 1
+        assert result.would_rewrite  # names of hubs that would be rewritten
+        # File on disk is untouched in dry-run.
+        entry = parse_concept_hub(
+            concept_hub_path(cfg, "dry-concept"), concept="dry-concept"
+        ).log_entries[0]
+        assert entry.date == "2020-01-01"
+
+
 class TestValidateLinkageRevision:
     """Regression for n-c9614ce7: parser-side validation is the
     load-bearing rule that prevents subject/object inversion from the
@@ -372,8 +439,8 @@ class TestValidateLinkageRevision:
     """
 
     def _validate(self, entry_date, flag, ref):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        return _validate_linkage_revision(entry_date, flag, ref)
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        return validate_linkage_revision(entry_date, flag, ref)
 
     def test_unknown_flag_returns_none(self):
         flag, ref, quote = self._validate("2026-03-01", "weird", "")
@@ -439,8 +506,8 @@ class TestValidateLinkageRevision:
         assert ref == ""
 
     def test_quote_validation_passes_when_substring_matches(self):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        flag, ref, quote = _validate_linkage_revision(
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        flag, ref, quote = validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="pytest-bdd lets you write Gherkin scenarios",
             by_date_texts={"2026-01-15": [
@@ -452,8 +519,8 @@ class TestValidateLinkageRevision:
         assert "pytest-bdd" in quote
 
     def test_quote_validation_downgrades_when_quote_absent(self):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        flag, ref, _ = _validate_linkage_revision(
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        flag, ref, _ = validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="something the model invented out of thin air",
             by_date_texts={"2026-01-15": [
@@ -464,8 +531,8 @@ class TestValidateLinkageRevision:
         assert ref == ""
 
     def test_quote_validation_downgrades_when_quote_too_short(self):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        flag, ref, _ = _validate_linkage_revision(
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        flag, ref, _ = validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="pytest",  # < 20 chars, untrustworthy
             by_date_texts={"2026-01-15": ["pytest is fine"]},

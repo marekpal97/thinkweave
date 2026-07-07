@@ -6,8 +6,9 @@ the ``news-triage-worker`` CC Task subagent invoked from
 ``commands/drain.md``. This module survives as the **explicit-opt-out
 fallback** — when the user disables the subagent path via
 ``vault/config/api.yaml::overrides.news_triage_fallback``, the drain
-shells out to ``python -m thinkweave.operations.news_triage`` and
-this code runs against whatever provider+model the override specifies
+shells out to ``python -m thinkweave.surfaces.cli.news_triage`` (the CLI
+shell over these pure functions) and this code runs against whatever
+provider+model the override specifies
 (default still OpenAI ``gpt-5-mini``, mirroring legacy behaviour).
 
 Architecture choices worth flagging:
@@ -34,11 +35,8 @@ Architecture choices worth flagging:
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import sys
-from pathlib import Path
 from typing import Iterable
 
 CATALOG_HEADING = "## Catalog (active)"
@@ -304,78 +302,3 @@ def _render_items(items: Iterable[dict]) -> str:
         tier = item.get("tier", "?")
         lines.append(f"{n}. [outlet={outlet}, tier={tier}] {title}")
     return "\n".join(lines)
-
-
-def main() -> int:
-    """CLI: read items as JSON from stdin, print verdicts as JSON.
-
-    The drain skill invokes this as a Bash subprocess:
-
-        echo '[{"id":"q-1","title":"...","outlet":"zerohedge","tier":2}, ...]' | \\
-          uv run python -m thinkweave.operations.news_triage \\
-            --themes <vault>/THEMES.md
-    """
-    parser = argparse.ArgumentParser(
-        description=(
-            "Triage news items against the active-themes catalog. Items "
-            "from stdin (JSON list); verdicts to stdout (JSON list)."
-        )
-    )
-    parser.add_argument(
-        "--themes",
-        required=True,
-        help="Path to THEMES.md (the source of the catalog section).",
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"OpenAI model id. Default: {DEFAULT_MODEL}",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help=(
-            "Build the request and print the prompt + items to stderr "
-            "without calling the LLM. Verdicts on stdout default to "
-            "drop. Useful for inspecting the prompt."
-        ),
-    )
-    args = parser.parse_args()
-
-    themes_path = Path(args.themes)
-    if not themes_path.exists():
-        print(f"THEMES.md not found at {themes_path}", file=sys.stderr)
-        return 1
-    themes_md = themes_path.read_text(encoding="utf-8")
-    catalog = extract_catalog_section(themes_md)
-
-    try:
-        items = json.loads(sys.stdin.read())
-    except json.JSONDecodeError as e:
-        print(f"Bad JSON on stdin: {e}", file=sys.stderr)
-        return 2
-    if not isinstance(items, list):
-        print("Expected a JSON list of items.", file=sys.stderr)
-        return 2
-
-    if args.dry_run:
-        request = build_triage_messages(catalog, items, model=args.model)
-        print(json.dumps(request, indent=2), file=sys.stderr)
-        verdicts = [
-            {
-                "id": item["id"],
-                "verdict": VERDICT_DROP,
-                "theme_id": None,
-                "reason": "dry-run",
-            }
-            for item in items
-        ]
-    else:
-        verdicts = triage_items(catalog, items, model=args.model)
-
-    print(json.dumps(verdicts, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
