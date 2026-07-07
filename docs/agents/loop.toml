@@ -1,0 +1,56 @@
+# Issue-to-PR loop configuration.
+# Read by scripts/issue_loop.py (deterministic rail) and the /issue-loop
+# command (orchestration). Semantics: docs/agents/issue-loop.md.
+
+[loop]
+max_issues_per_run = 3   # token guardrail: issues processed per invocation
+max_parallel = 1         # frontier width dispatched concurrently (>1 = worktrees)
+max_fix_rounds = 2       # implement→gates→fix iterations before routing to human
+training_mode = true     # pause for human approval before push/PR; flip when trusted
+draft_pr = true
+branch_prefix = "loop/issue-"
+require_green_baseline = true   # red suite on main → refuse to implement (fix the baseline issue first)
+
+[tdd]
+# auto: red-green-refactor is ENFORCED in implementer standing orders iff the
+#       per-run baseline probe (tests gate on the pristine worktree) is green.
+# always / never: override the probe.
+mode = "auto"
+
+[labels]
+runnable = "ready-for-agent"
+claimed = "agent-claimed"
+on_gate_failure = "ready-for-human"
+
+# ── Gate pipeline ─────────────────────────────────────────────────────────
+# Ordered. kinds: command | diff (deterministic, run by the script)
+#                 acceptance | review (LLM-judged, run by the command in
+#                 fresh subagent contexts). Adding another command/diff gate
+# is config-only; a new *kind* needs a dispatch branch in issue_loop.py or
+# a section in the /issue-loop command.
+
+[[gates]]
+id = "diff-guard"
+kind = "diff"
+required = true
+forbidden_paths = [".github/workflows/", "dist/", "_old/"]
+max_changed_lines = 2000
+
+[[gates]]
+id = "tests"
+kind = "command"
+required = true
+cmd = "uv run --extra mcp pytest -x -q"
+timeout_sec = 1200
+
+[[gates]]
+id = "acceptance"
+kind = "acceptance"
+required = true
+threshold = "all"        # all | majority — of the issue's acceptance criteria
+
+[[gates]]
+id = "review"
+kind = "review"
+required = true
+block_on = ["critical", "major"]   # finding severities that fail the gate
