@@ -35,6 +35,7 @@ Lifted verbatim from `commands/dream.md` §2 (the promotions surface). For each 
 
 - **Skip** if generic (`refactoring`, `monitoring`, `validation` — broad process terms even after filter).
 - **Skip** if project-name leakage (e.g. `personal-finance-assistant`, `imported-session` — vault structure, not vocabulary).
+- **Skip** if theme-shaped: a sector/story-arc term (e.g. `luxury-turnaround`, `optical-networking`, `semiconductor-capex`, `ev-adoption`) names an evolving investment narrative, not a reusable cross-project vocabulary tag. Concepts are flat and reusable; themes are narrative-arc entities with an Essence + append-only Catalyst log. If a term reads like something `/dream`'s theme-mint worker should judge as a theme candidate instead, skip it here rather than force-fitting a domain — leave it in `proposed_concepts` for theme-mint to pick up.
 - **Promote** otherwise: pick the **best ontology domain** from `ontology.yaml` (typically `swe-{tools,data,arch}`, `ml-{training,deep-learning}`, `finance-{markets,macro}`, ...). When in doubt, pick the narrowest domain that still makes sense.
 
 For each promotion, emit `{concept, domain, reason}` where `reason` is a one-line rationale (the user reads these in the dream report).
