@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from thinkweave.acquisition.importers.common import index_imported_notes
+from thinkweave.acquisition.sources import build_source_frontmatter
 from thinkweave.core.config import Config, load_config
-from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 
@@ -40,13 +41,12 @@ def import_transcript(
             if len(first_line) > 60:
                 title += "..."
 
-    extra_fm: dict = {
-        "source_type": source_type,
-        "title": title,
-        "url": url,
-    }
-    if authors:
-        extra_fm["authors"] = authors
+    extra_fm = build_source_frontmatter(
+        source_type=source_type,
+        title=title,
+        url=url,
+        authors=authors,
+    )
 
     note_tags = tags or [source_type]
 
@@ -59,9 +59,7 @@ def import_transcript(
         extra_frontmatter=extra_fm,
     )
 
-    # Index it
-    idx = Indexer(config=config)
-    idx.index_file(path)
-    idx.close()
+    # Index it (shared end-of-run bulk policy; see common.index_imported_notes).
+    index_imported_notes(config, [path])
 
     return path

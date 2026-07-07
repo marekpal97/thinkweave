@@ -10,18 +10,18 @@ from pathlib import Path
 import pytest
 
 from thinkweave.core.config import Config
+from thinkweave.acquisition.importers.common import ImportManifest
 from thinkweave.acquisition.importers.claude_history import (
     META_CONCEPT_TO_TAG,
     PROJECT_MAP,
+    _MANIFEST_NAME,
     _build_session_map,
     _content_hash,
     _deduplicate_observations,
-    _load_manifest,
     _load_observations,
     _load_session_summaries,
     _observation_tags,
     _parse_json_list,
-    _save_manifest,
     build_decision_body,
     build_observation_body,
     build_session_body,
@@ -421,16 +421,20 @@ class TestDataLoading:
 
 
 class TestManifest:
+    """The claude_history manifest now rides the shared ImportManifest helper
+    (filename ``claude_mem_migration.json``, id_field ``imported_ids``)."""
+
     def test_round_trip(self, tmp_path: Path):
-        manifest = {"version": 1, "imported_ids": {"obs-1": "n-abc123"}}
-        _save_manifest(tmp_path, manifest)
-        loaded = _load_manifest(tmp_path)
-        assert loaded["imported_ids"]["obs-1"] == "n-abc123"
+        manifest = ImportManifest.load(tmp_path, _MANIFEST_NAME)
+        manifest.mark("obs-1", "n-abc123")
+        manifest.save()
+        loaded = ImportManifest.load(tmp_path, _MANIFEST_NAME)
+        assert loaded.ids["obs-1"] == "n-abc123"
 
     def test_missing_manifest(self, tmp_path: Path):
-        loaded = _load_manifest(tmp_path)
-        assert loaded["version"] == 1
-        assert loaded["imported_ids"] == {}
+        loaded = ImportManifest.load(tmp_path, _MANIFEST_NAME)
+        assert loaded.data["version"] == 1
+        assert loaded.ids == {}
 
 
 # ── Integration test ──────────────────────────────────────────────
@@ -460,8 +464,8 @@ class TestImportClaudeMem:
         assert (projects_dir / "code_graph" / "sessions").exists()
 
         # Check that the manifest was saved
-        manifest = _load_manifest(config.weave_dir)
-        assert len(manifest["imported_ids"]) == 8  # 4 sessions + 4 observations
+        manifest = ImportManifest.load(config.weave_dir, _MANIFEST_NAME)
+        assert len(manifest.ids) == 8  # 4 sessions + 4 observations
 
     def test_idempotency(self, config: Config, claude_mem_db: Path):
         """Running import twice should not create duplicates."""

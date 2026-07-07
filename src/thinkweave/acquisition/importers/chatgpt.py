@@ -17,8 +17,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from thinkweave.acquisition.importers.common import ImportManifest, index_imported_notes
+from thinkweave.acquisition.sources import build_source_frontmatter
 from thinkweave.core.config import Config, load_config
-from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 
@@ -278,22 +279,6 @@ def _build_body(thread: Thread, summary: dict) -> str:
     return "\n".join(parts).rstrip()
 
 
-# ── Manifest I/O ───────────────────────────────────────────────────
-
-
-def _load_manifest(weave_dir: Path) -> dict:
-    path = weave_dir / _MANIFEST_NAME
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {"version": 1, "imported_ids": {}}
-
-
-def _save_manifest(weave_dir: Path, manifest: dict) -> None:
-    path = weave_dir / _MANIFEST_NAME
-    weave_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
-
 # ── Main import ────────────────────────────────────────────────────
 
 
@@ -357,14 +342,14 @@ def import_chatgpt(
     vm = VaultManager(config=config)
     vm.ensure_dirs()
 
-    manifest = _load_manifest(config.weave_dir)
-    imported_ids = manifest.get("imported_ids", {})
+    manifest = ImportManifest.load(config.weave_dir, _MANIFEST_NAME)
 
     stats = {"total": len(threads), "imported": 0, "skipped": 0, "errors": 0}
+    written_paths: list[Path] = []
 
     for i, thread in enumerate(threads, 1):
         # Idempotency check
-        if thread.id in imported_ids:
+        if manifest.is_imported(thread.id):
             stats["skipped"] += 1
             continue
 
@@ -374,14 +359,18 @@ def import_chatgpt(
             # Summarize via LLM
             summary = summarize_thread(thread, api_key)
 
-            # Create source note
+            # Create source note. build_source_frontmatter stamps the canonical
+            # source_type/title/url/authors keys; the chatgpt-specific fields
+            # ride along as extras.
             body = _build_body(thread, summary)
-            extra_fm = {
-                "source_type": "conversation",
-                "imported_from": "chatgpt",
-                "source_id": thread.id,
-                "date": thread.created.isoformat(),
-            }
+            extra_fm = build_source_frontmatter(
+                source_type="conversation",
+                title=thread.title,
+                url="",
+                imported_from="chatgpt",
+                source_id=thread.id,
+                date=thread.created.isoformat(),
+            )
             # The summarize prompt asks the LLM to list concepts without
             # showing it the ontology, so everything it returns is unvetted.
             # Route to proposed_concepts: so /weave-resolve-concepts can review
@@ -396,13 +385,9 @@ def import_chatgpt(
                 body=body,
                 extra_frontmatter=extra_fm,
             )
+            written_paths.append(path)
 
-            # Index immediately
-            idx = Indexer(config=config)
-            idx.index_file(path)
-            idx.close()
-
-            imported_ids[thread.id] = vm.read_note(path).id
+            manifest.mark(thread.id, vm.read_note(path).id)
             stats["imported"] += 1
             print("OK")
 
@@ -412,14 +397,18 @@ def import_chatgpt(
 
         # Save manifest periodically (every 10 conversations)
         if i % 10 == 0:
-            manifest["imported_ids"] = imported_ids
-            _save_manifest(config.weave_dir, manifest)
+            manifest.save()
 
     # Final manifest save
-    manifest["imported_ids"] = imported_ids
-    manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["source_file"] = str(conversations_path)
-    _save_manifest(config.weave_dir, manifest)
+    manifest.set_meta(
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        source_file=str(conversations_path),
+    )
+    manifest.save()
+
+    # Index everything written this run in one pass (shared policy).
+    idx_stats = index_imported_notes(config, written_paths)
+    stats["indexed"] = idx_stats.get("indexed", 0)
 
     return stats
 

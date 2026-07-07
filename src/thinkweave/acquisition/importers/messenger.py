@@ -21,8 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
+from thinkweave.acquisition.importers.common import ImportManifest, index_imported_notes
 from thinkweave.core.config import Config, load_config
-from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 
@@ -349,22 +349,6 @@ def resolve_facebook_url(url: str, timeout: float = 15) -> ResolvedURL:
     )
 
 
-# ── Manifest I/O ──────────────────────────────────────────────────
-
-
-def _load_manifest(weave_dir: Path) -> dict:
-    path = weave_dir / _MANIFEST_NAME
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {"version": 1, "imported_urls": {}}
-
-
-def _save_manifest(weave_dir: Path, manifest: dict) -> None:
-    path = weave_dir / _MANIFEST_NAME
-    weave_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
-
 # ── Queue item creation ───────────────────────────────────────────
 
 
@@ -548,8 +532,9 @@ def import_messenger(
     vm = VaultManager(config=config)
     vm.ensure_dirs()
 
-    manifest = _load_manifest(config.weave_dir)
-    imported_urls = manifest.get("imported_urls", {})
+    manifest = ImportManifest.load(
+        config.weave_dir, _MANIFEST_NAME, id_field="imported_urls"
+    )
 
     stats = {
         "total": len(messages),
@@ -560,11 +545,12 @@ def import_messenger(
         "noise": noise_count,
         "errors": 0,
     }
+    written_paths: list[Path] = []
 
     for msg, resolved in resolved_items:
         # Dedup key: resolved URL for direct/resolved, original FB URL for description_only
         dedup_key = resolved.url if resolved.category in ("direct", "resolved") else resolved.original_url
-        if dedup_key in imported_urls:
+        if manifest.is_imported(dedup_key):
             stats["skipped"] += 1
             continue
 
@@ -583,13 +569,9 @@ def import_messenger(
                 body=body,
                 tags=tags,
             )
+            written_paths.append(path)
 
-            # Index immediately
-            idx = Indexer(config=config)
-            idx.index_file(path)
-            idx.close()
-
-            imported_urls[dedup_key] = str(path.name)
+            manifest.mark(dedup_key, str(path.name))
             stats["queued"] += 1
             if resolved.category == "description_only":
                 stats["queued_needs_url"] += 1
@@ -602,14 +584,17 @@ def import_messenger(
 
         # Save manifest periodically
         if stats["queued"] % 50 == 0 and stats["queued"] > 0:
-            manifest["imported_urls"] = imported_urls
-            _save_manifest(config.weave_dir, manifest)
+            manifest.save()
 
     # Final manifest save
-    manifest["imported_urls"] = imported_urls
-    manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["source_file"] = str(json_path)
-    _save_manifest(config.weave_dir, manifest)
+    manifest.set_meta(
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        source_file=str(json_path),
+    )
+    manifest.save()
+
+    # Index everything written this run in one pass (shared policy).
+    index_imported_notes(config, written_paths)
 
     print(f"\n── Done ────────────────────────────────────────────")
     print(f"  Queued (with URL):    {stats['queued_resolved']}")
