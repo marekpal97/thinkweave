@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
@@ -626,15 +627,25 @@ def load_config() -> Config:
     return cfg
 
 
-def normalize_project_name(name: str) -> str:
-    """Canonicalize a project name: lowercase, dashes/spaces -> underscores.
+_PROJECT_WORKTREE_PREFIX_RE = re.compile(r"^(mp|qdi)_")
 
-    Prevents duplicate projects that differ only by separator or case
-    (``trade-ideas`` vs ``trade_ideas``). Empty / None pass through as "".
-    Applied at every boundary where a project name enters the system —
-    config load and ``VaultManager.create_note`` — so a stray dash can
-    never mint a second project folder.
+
+def normalize_project_name(name: str) -> str:
+    """Canonicalize a project name: lowercase, dashes/spaces -> underscores,
+    strip a leading personal-worktree prefix (``mp-``/``mp_``/``qdi-``/``qdi_``).
+
+    Prevents duplicate projects that differ only by separator, case, or
+    worktree-naming convention (``trade-ideas`` vs ``trade_ideas`` vs
+    ``mp-trade_ideas``, all personal clones of the same shared checkout).
+    Empty / None pass through as "". Applied at every boundary where a
+    project name enters the system — config load and
+    ``VaultManager.create_note`` — so a stray dash or ``mp-`` worktree
+    prefix can never mint a second project folder. Mirrors the prefix-strip
+    that ``personal_mem``'s importer/hook already did before the rename;
+    this is the port's missing half.
     """
     if not name:
         return ""
-    return name.strip().lower().replace("-", "_").replace(" ", "_")
+    normalized = name.strip().lower().replace("-", "_").replace(" ", "_")
+    stripped = _PROJECT_WORKTREE_PREFIX_RE.sub("", normalized)
+    return stripped or normalized

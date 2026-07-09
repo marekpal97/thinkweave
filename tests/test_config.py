@@ -26,6 +26,7 @@ from thinkweave.core.config import (
     Config,
     is_vault_initialized,
     load_config,
+    normalize_project_name,
     user_config_path,
     write_user_config,
 )
@@ -474,3 +475,28 @@ def test_coarsen_knob_defaults():
     assert cfg.dream_coarsen_max_size == 6
     assert cfg.dream_coarsen_apply is True
     assert cfg.theme_resolve_after_days == 60
+
+
+# ---------------------------------------------------------------------------
+# normalize_project_name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("trade-ideas", "trade_ideas"),
+        ("Trade Ideas", "trade_ideas"),
+        ("mp-unit2_optimizer", "unit2_optimizer"),
+        ("mp_unit2_optimizer", "unit2_optimizer"),
+        ("qdi-unit1_optimizer", "unit1_optimizer"),
+        ("qdi_unit1_optimizer", "unit1_optimizer"),
+        ("unit1_optimizer", "unit1_optimizer"),
+        ("", ""),
+        ("mp", "mp"),
+        ("mp-", "mp_"),
+    ],
+)
+def test_normalize_project_name(raw: str, expected: str):
+    """mp-/mp_/qdi-/qdi_ worktree prefixes collapse onto the bare shared name."""
+    assert normalize_project_name(raw) == expected
