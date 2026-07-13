@@ -124,6 +124,7 @@ Full inventory — 46 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 
 - `THINKWEAVE_VAULT` — vault root (default `~/vault`). The legacy `PERSONAL_MEM_VAULT` is honored as a migration fallback.
 - `THINKWEAVE_PROJECT` — default project name. The legacy `PERSONAL_MEM_PROJECT` is honored as a migration fallback.
+- `THINKWEAVE_WEAVE_DIR` — relocate the derived-state directory (`index.db`, `embeddings.db`, `buffer/`, logs — everything normally under `vault_root/.weave`) to a different path, independent of `vault_root`. The vault markdown must stay wherever Obsidian points at it, but this directory is derived/rebuildable, so pointing it at fast local disk helps when the vault lives on slow, remote, or virtualized storage (a Windows drive crossed from WSL2, a NAS, a Dropbox mount). `~` is expanded; a relative path resolves against `vault_root`. Same knob is settable as a top-level `weave_dir` key in `vault/config/config.toml` (see the "User configuration layout" section of [ARCHITECTURE.md](../ARCHITECTURE.md)); this env var wins when both are set.
 - `OPENAI_API_KEY` — required by embeddings (`weave index --embed`), the ChatGPT importer, and the hub batch backfill (`weave hubs link --via batch`).
 
 After upgrading Thinkweave, re-run `weave hooks install` to pick up newly-added hooks (e.g. SessionStart).
