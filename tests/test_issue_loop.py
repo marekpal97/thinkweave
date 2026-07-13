@@ -70,13 +70,14 @@ CFG = {
 }
 
 
-def _issue(number, state="OPEN", labels=("ready-for-agent",), body=""):
+def _issue(number, state="OPEN", labels=("ready-for-agent",), body="", **extra):
     return {
         "number": number,
         "title": f"Issue {number}",
         "state": state,
         "labels": [{"name": l} for l in labels],
         "body": body,
+        **extra,
     }
 
 
@@ -101,6 +102,75 @@ def test_frontier_excludes_unlabeled_and_claimed():
     result = issue_loop.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [3]
     assert [e["number"] for e in result["claimed"]] == [2]
+
+
+def test_assignee_is_a_claim():
+    issues = [
+        _issue(1, assignees=[{"login": "marekpal97"}]),
+        _issue(2),
+    ]
+    result = issue_loop.compute_frontier(issues, CFG)
+    assert [e["number"] for e in result["frontier"]] == [2]
+    assert result["claimed"][0]["assignees"] == ["marekpal97"]
+
+
+def test_native_dependencies_gate_frontier():
+    # native count gates even without the edge list
+    issues = [_issue(2, native_blocked_count=1)]
+    result = issue_loop.compute_frontier(issues, CFG)
+    assert result["frontier"] == []
+    assert "native" in result["blocked"][0]["open_blockers_note"]
+    # with the edge list, blockers are named and closure unblocks
+    issues = [
+        _issue(1, state="CLOSED"),
+        _issue(2, native_blocked_count=0, native_blockers=[1]),
+        _issue(3, native_blocked_count=1, native_blockers=[4]),
+        _issue(4),
+    ]
+    result = issue_loop.compute_frontier(issues, CFG)
+    assert [e["number"] for e in result["frontier"]] == [2, 4]
+    assert result["blocked"][0]["open_blockers"] == [4]
+
+
+def test_union_of_native_and_body_edges():
+    issues = [
+        _issue(2, body="Blocked-by: #5", native_blockers=[6], native_blocked_count=1),
+        _issue(5),
+        _issue(6),
+    ]
+    result = issue_loop.compute_frontier(issues, CFG)
+    blocked = result["blocked"][0]
+    assert blocked["blockers"] == [5, 6]
+    assert blocked["open_blockers"] == [5, 6]
+
+
+def test_components_split_unrelated_dags():
+    issues = [
+        _issue(1),
+        _issue(2, body="Blocked-by: #1"),
+        _issue(10),
+        _issue(11, native_blockers=[10], native_blocked_count=1),
+        _issue(20),  # isolated
+    ]
+    comp = issue_loop.compute_components(issues)
+    assert comp[1] == comp[2] == 1
+    assert comp[10] == comp[11] == 10
+    assert comp[20] == 20
+    result = issue_loop.compute_frontier(issues, CFG)
+    by_num = {e["number"]: e for e in result["frontier"]}
+    assert by_num[1]["component"] == 1 and by_num[10]["component"] == 10
+    assert by_num[20]["component"] == 20
+
+
+def test_components_ignore_closed_issues():
+    issues = [
+        _issue(1, state="CLOSED"),
+        _issue(2, body="Blocked-by: #1"),
+        _issue(3, body="Blocked-by: #1"),
+    ]
+    comp = issue_loop.compute_components(issues)
+    # 2 and 3 only share a CLOSED blocker — no open edge between them
+    assert comp[2] != comp[3]
 
 
 def test_frontier_wave_ordering_and_limit():
@@ -163,6 +233,8 @@ def test_load_config_defaults_when_missing(tmp_path):
     cfg = issue_loop.load_config(tmp_path / "nope.toml")
     assert cfg["loop"]["max_issues_per_run"] == 3
     assert cfg["loop"]["require_green_baseline"] is True
+    assert cfg["loop"]["claim_mode"] == "assign"
+    assert cfg["loop"]["run_mode"] == "pass"
     assert cfg["labels"]["runnable"] == "ready-for-agent"
     assert cfg["tdd"]["mode"] == "auto"
     assert cfg["gates"] == []

@@ -7,10 +7,22 @@ disable-model-invocation: true
 
 # Issue Loop — issue → gates → PR
 
-Drain the runnable frontier of the issue DAG. Each run processes up to
-`max_issues_per_run` unblocked issues; merged PRs close their issues
-(`Closes #N`), which unblocks dependents for the *next* run. You never walk
-the whole DAG — the tracker is the state machine.
+Drain the runnable frontier of the issue DAG. Merged PRs close their issues
+(`Closes #N`), which unblocks dependents; the tracker is the state machine.
+
+`run_mode` picks between the two ways to run (see `loop.toml`):
+
+- **pass** — one pass over the current frontier, up to `max_issues_per_run`.
+  This is the *unrelated-work* mode: issues from **distinct DAG components**
+  (see `component` in `plan` output) are independent by construction and may
+  run in parallel. Stop when the pass is done.
+- **exhaust** — *whole-DAG chasing*: after each shipped issue, re-run `plan`
+  and keep going while the frontier is non-empty (still capped by
+  `max_issues_per_run`). The frontier only widens as blockers close — i.e.
+  as PRs get merged — so this mode is for working alongside a human who
+  merges as you ship ("day shift merges, night shift chases"). When the
+  frontier goes dry with blocked issues remaining, report what's awaiting
+  merge and stop; never busy-wait.
 
 Config: `docs/agents/loop.toml` (knobs + gate pipeline). Rail:
 `scripts/issue_loop.py`. Semantics: `docs/agents/issue-loop.md`.
@@ -58,7 +70,10 @@ python scripts/issue_loop.py check --gate tests --cwd <worktree>
 Process frontier issues **sequentially** by default. If `max_parallel > 1`
 AND every picked issue has `parallel_safe: true`, you may dispatch
 implementer subagents concurrently — each in its own worktree — but run at
-most `max_parallel` at once and never two issues that share a `track:` label.
+most `max_parallel` at once and **never two issues from the same DAG
+`component`** (plan output computes components deterministically; two open
+issues sharing a component are one DAG and must be chased sequentially,
+whatever their labels say).
 
 For each issue:
 
@@ -81,10 +96,18 @@ standing orders:
   fall back to `weave decisions-for-file` CLI if MCP is absent). Do not
   re-litigate a settled decision — surface conflicts instead.
 - TDD per the probe (§0.5): when enforced, for each acceptance criterion
-  write the failing test FIRST, watch it fail, then implement to green
-  (red-green-refactor; the issue's "Slices" checklist is your plan). When
-  degraded, still add tests for your own slice, but the whole-suite
-  guarantee is off.
+  write the failing test FIRST, watch it fail, then implement to green.
+  The cycle is **red → green only** — refactoring belongs to the review
+  stage's fix rounds, not the TDD cycle. The issue's "Slices" checklist is
+  your plan. When degraded, still add tests for your own slice, but the
+  whole-suite guarantee is off.
+- **Test at seams.** Test only at the seams the issue names (its acceptance
+  criteria / named interfaces). If the issue names none, choose the seams
+  yourself and declare the choice in your return payload so it lands in the
+  PR body — never scatter tests across internals.
+- **No tautological tests.** Expected values must come from an independent
+  source of truth (the issue's criteria, a hand-computed value, a fixture) —
+  never recomputed the same way the code under test computes them.
 - Commit in slice-sized increments on branch `<branch_prefix><N>`.
 - Do NOT push, do NOT open a PR, do NOT close or label anything — the
   orchestrator owns the control plane.
@@ -107,7 +130,13 @@ Run the configured gates **in order**, inside the implementer's worktree.
 - `kind: review` — dispatch a **fresh reviewer subagent** (code-reviewer
   type) on the diff. It returns findings with severities
   (critical/major/minor/nit). The gate fails if any finding's severity is in
-  `block_on`.
+  `block_on`. With `smells_baseline = true`, the reviewer also checks the
+  Fowler smell baseline (mysterious name, duplicated code, feature envy,
+  data clumps, primitive obsession, repeated switches, shotgun surgery,
+  divergent change, speculative generality, message chains, middle man,
+  refused bequest) — smells are **judgement calls reported in the PR body,
+  never gate-failing**, and a documented repo standard overrides the
+  baseline.
 
 **On a required-gate failure:** feed the evidence (gate id, summary, detail,
 per-criterion verdicts, review findings) back to the implementer subagent
@@ -141,9 +170,14 @@ gh issue comment <N> --body "🤖 issue-loop run <run-id>: PR <url> opened. <gat
 PR body must contain: `Closes #<N>`, a summary of the change, the gate
 evidence table (gate | verdict | summary), and end with the standard
 Claude Code attribution line. Do not remove the `ready-for-agent` label —
-the issue closes on merge. Release is implicit: the claim label stays until
-merge closes the issue (a claimed+closed issue is inert; if the PR is
-rejected, a human removes the label to re-queue).
+the issue closes on merge. Release is implicit: the claim (the assignee in
+`claim_mode = assign`, the label otherwise) stays until merge closes the
+issue — a claimed+closed issue is inert; if the PR is rejected, a human
+unassigns / unlabels to re-queue.
+
+In `run_mode = exhaust`: after shipping, re-run `plan`. If new frontier
+issues appeared (a blocker got merged meanwhile), continue with them until
+the per-run cap; otherwise report and stop.
 
 ## 2. Report
 

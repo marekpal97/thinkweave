@@ -10,10 +10,21 @@ training_mode = true     # pause for human approval before push/PR; flip when tr
 draft_pr = true
 branch_prefix = "loop/issue-"
 require_green_baseline = true   # red suite on main → refuse to implement (fix the baseline issue first)
+claim_mode = "assign"    # assign: the assignee IS the claim (wayfinder convention) | label
+# run_mode distinguishes the two ways to run the loop:
+#   pass    — one pass over the current frontier. Unrelated issues (distinct
+#             DAG components) may run in parallel; stop when the pass ends.
+#   exhaust — whole-DAG chasing: after each shipped issue, re-plan and keep
+#             going while the frontier is non-empty. Advances only as fast
+#             as blockers close (= PRs merge), so it pairs with a human
+#             merging concurrently; max_issues_per_run still caps the run.
+run_mode = "pass"
 
 [tdd]
-# auto: red-green-refactor is ENFORCED in implementer standing orders iff the
-#       per-run baseline probe (tests gate on the pristine worktree) is green.
+# auto: red→green TDD is ENFORCED in implementer standing orders iff the
+#       per-run baseline probe (tests gate on the pristine worktree) is
+#       green. Refactoring is NOT part of the TDD cycle — it belongs to the
+#       review stage (Pocock skills v1.1.0).
 # always / never: override the probe.
 mode = "auto"
 
@@ -54,3 +65,4 @@ id = "review"
 kind = "review"
 required = true
 block_on = ["critical", "major"]   # finding severities that fail the gate
+smells_baseline = true   # report Fowler code smells as judgement calls — never gate-failing

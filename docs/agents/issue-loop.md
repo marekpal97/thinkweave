@@ -2,8 +2,9 @@
 
 The first fully engineered loop in this repo: issues labeled
 `ready-for-agent` flow through implement → gates → draft PR without
-hand-prompting. Day shift plans the backlog (`/grill-with-docs` → `/to-prd` →
-`/to-issues`); this loop is the night shift.
+hand-prompting. Day shift plans the backlog (`/grill-with-docs` → `/to-spec`
+→ `/to-tickets`, or `/wayfinder` for foggy multi-session efforts); this loop
+is the night shift.
 
 Surfaces:
 
@@ -23,19 +24,24 @@ Surfaces:
 
 ## How the issue DAG becomes a script
 
-**The tracker is the DAG.** `/to-issues` serializes blocking edges into
-issue bodies — either the pipe-header form (`Track: … | Wave: 2 |
-Blocked-by: #16 | Parallel-safe: yes | Epic: #11`) or the template's
-`## Blocked by` section. Nothing else stores the graph; there is no plan
-file to rot.
+**The tracker is the DAG.** Since Pocock skills v1.1.0, `/to-tickets` and
+`/wayfinder` publish blocking as **GitHub-native issue dependencies** — the
+canonical, UI-visible representation — with body text as fallback: the
+pipe-header form (`Track: … | Wave: 2 | Blocked-by: #16 | Parallel-safe:
+yes | Epic: #11`) or the template's `## Blocked by` section. The rail gates
+on the **union** of native and body edges, so old and new corpora both work.
+Nothing else stores the graph; there is no plan file to rot. GitHub even
+maintains the live gate for us: `issue_dependencies_summary.blocked_by`
+counts open blockers natively.
 
 **The script computes only the frontier.** `issue_loop.py plan` re-reads all
 issues each run and partitions the `ready-for-agent` set into:
 
 - **frontier** — open, unclaimed, every blocker CLOSED → runnable now;
 - **blocked** — some blocker still open (listed);
-- **claimed** — carries the claim label (another run, or a stale crash —
-  visible, so trivially auditable).
+- **claimed** — has an assignee (`claim_mode = assign`, the wayfinder
+  convention: the assignee IS the claim) or the legacy claim label. Either
+  way visible in the tracker UI, so trivially auditable.
 
 No full topological sort is ever needed. Each PR body says `Closes #N`, so a
 human merging a PR closes its issue, which moves the next rank of the DAG
@@ -43,13 +49,31 @@ into the frontier for the next run. GitHub's own issue state machine *is*
 the DAG executor; the loop is stateless between runs (the Ralph principle:
 static prompt, evolving environment — here the environment is the tracker).
 
-**Parallelism = frontier width.** `Wave:` orders the frontier;
-`Parallel-safe:` and disjoint `track:` labels gate concurrent dispatch
-(each implementer gets its own git worktree). This is Pocock's Sandcastle
-planner made deterministic: he uses an LLM to pick parallelizable issues,
-but since `/to-issues` already encodes the edges, scheduling is plain graph
-math in Python — LLM judgment is reserved for implementation and evaluation,
-never for scheduling.
+**Two loops, one distinction: unrelated work vs one DAG.** `plan` computes
+the **weakly-connected components** of the open-issue graph (component id =
+smallest issue number in it). Two open issues in the same component belong
+to one DAG — order matters, so they are chased *sequentially*; issues in
+distinct components are unrelated by construction and safe to run in
+*parallel* (each implementer in its own worktree, `Parallel-safe:` hint
+still respected). `run_mode` names the two postures:
+
+- **`pass`** — one pass over the frontier, breadth across components. The
+  "tackle unrelated issues in parallel" loop.
+- **`exhaust`** — re-plan after every shipped issue and keep chasing while
+  the frontier is non-empty. The "keep working a whole DAG" loop. Honest
+  physics: blockers close on *merge*, so depth advances only as fast as a
+  human merges — exhaust mode cooperates with concurrent merging rather
+  than pretending the DAG can be finished unattended. (Stacked PRs —
+  branching a dependent off its blocker's unmerged branch — would remove
+  that wait at the cost of rework cascades; deliberately not built until
+  the wait is actually felt.)
+
+This is Pocock's Sandcastle planner made deterministic: he uses an LLM to
+pick parallelizable issues, but since `/to-tickets` already encodes the
+edges, scheduling is plain graph math in Python — LLM judgment is reserved
+for implementation and evaluation, never for scheduling. A wide refactor
+ticketed as expand–contract arrives here as an ordinary linear blocked
+chain and needs nothing special from the loop.
 
 ## How success is defined: the gate pipeline
 
@@ -89,7 +113,7 @@ TDD in the loop is **contingent on the baseline, not assumed**. Once per
 run, before any edits, the orchestrator runs the tests gate in the pristine
 implementer worktree — a deterministic baseline probe of origin/main.
 
-- **Green baseline + `tdd.mode = auto`** → red-green-refactor is *enforced*
+- **Green baseline + `tdd.mode = auto`** → red→green TDD is *enforced*
   in the implementer's standing orders: each acceptance criterion gets its
   failing test before its implementation. TDD only disciplines an agent when
   a green suite makes "new red" attributable to the new work.
@@ -114,6 +138,17 @@ implementer worktree — a deterministic baseline probe of origin/main.
 - **Scheduling** — the command is headless-safe; wire it to `/loop`, a cron,
   or a Routine once training mode has been retired. Per-run caps
   (`max_issues_per_run`) bound token burn regardless of trigger.
+
+## v1.1.0 alignment
+
+Updated for Pocock skills v1.1.0 (2026-07-08): native blocking edges +
+sub-issues read unioned with body text; claim by assignment; TDD narrowed to
+red→green with refactoring owned by the review stage; seam-scoped tests and
+the tautological-test anti-pattern in implementer standing orders; the
+code-review Fowler smell baseline as a judgement-only reviewer axis.
+Wayfinder needs no integration: its implementation tickets speak the same
+wire protocol (native edges, assignee claims), so they land on the same
+frontier unaided.
 
 ## Origin
 
