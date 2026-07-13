@@ -38,21 +38,8 @@ from thinkweave.operations.dream import (
 )
 
 
-@pytest.fixture
-def vault_dir(tmp_path: Path) -> Path:
-    return tmp_path / "vault"
-
-
-@pytest.fixture
-def config(vault_dir: Path) -> Config:
-    return Config(vault_root=vault_dir)
-
-
-@pytest.fixture
-def vault(config: Config) -> VaultManager:
-    vm = VaultManager(config=config)
-    vm.ensure_dirs()
-    return vm
+# vault / config fixtures come from tests/conftest.py (vault_factory), migrated
+# per the opportunistic-migration rule.
 
 
 def _index(config: Config) -> None:

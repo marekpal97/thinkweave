@@ -4,25 +4,44 @@ The ``UserPromptSubmit`` hook calls :func:`build_enrichment` on each user
 prompt. It surfaces a small, deduped, hard-capped block of vault notes relevant
 to the prompt — *delta over startup* — to prepend to what the model sees.
 
-Design (settled by live measurement, 2026-06-07):
+Design (rewritten 2026-07-05 — the FTS arm never fired in production; see
+below):
 
 - **Relevance is the gate, and it's the embedding cosine — no wordlists.** A
-  prompt's hybrid hits are admitted only above a cosine floor. Domain prompts
-  score ~0.40+; generic/meta prompts ("can we verify this works?", "what do you
+  prompt's hits are admitted only above a cosine floor. Domain prompts score
+  ~0.40+; generic/meta prompts ("can we verify this works?", "what do you
   think?") score ~0.22–0.36 and fall below the floor → no injection. The
   semantic signal discriminates cleanly on its own; there is deliberately no
   stopword/keyword heuristic layer (it was tried and removed — brittle, and the
   floor already does the job).
 
-- **Hybrid = FTS + similarity, RRF-fused.** FTS (phrase) is synchronous and
-  near-free; it contributes on exact-keyword prompts. The similarity arm carries
-  natural prose. The cosine floor applies to the similarity arm.
+- **Similarity-only — the FTS arm was removed.** This hook used to also run a
+  synchronous FTS5 query, RRF-fused with the similarity arm. FTS5 AND-matches
+  every token in the query by default, and a natural-language prompt is a
+  dozen-plus tokens of prose, not a keyword phrase — so the FTS arm was a
+  structural no-op against real prompts (measured: zero ``source='prompttime'``
+  rows in ``context_served`` since R2 shipped 2026-06-13, across every session
+  since). Rather than carry dead machinery, the FTS arm and its RRF fusion are
+  gone; only the deadlined similarity search remains, cosine-floored as before.
 
 - **Latency is bounded, not eliminated.** The embedding call is the cost (a few
   hundred ms typically; slower on some networks). It runs in a daemon thread
-  with a wall-clock deadline; on overrun the arm is abandoned and we fall back
-  to FTS (→ usually a silent no-op for prose). The hook timeout is set above the
-  deadline in install.py.
+  with a wall-clock deadline; on overrun the arm is abandoned and the hook
+  returns no injection for that turn — a graceful no-op, never a raise. The
+  hook's own timeout (configured in ``hooks/hooks.json`` for the plugin route,
+  or per-phase by ``weave hooks install`` for the CLI route) is set generously
+  above this deadline.
+
+- **Deadline misses are tracked, and adaptive-skip kicks in.** A deadline miss
+  means the embedding call is still running when the hook must return —
+  the thread is abandoned (Python has no clean thread-kill), so the ~4s cost
+  is sunk without a payoff. The handler records each miss as a distinct
+  ``prompt_time_miss`` buffer event (never tagged as a firing, never typed
+  ``retrieval`` — see the RLVR meshing note below). Once
+  ``deadline_miss_limit`` consecutive misses accumulate for a session (a slow
+  or unreachable embedding endpoint), :func:`build_enrichment` skips the
+  similarity arm for the rest of that session rather than re-paying a doomed
+  ~4s tax on every remaining turn.
 
 - **Dedup is buffer-based.** The live ``buffer/<session_id>.jsonl`` carries the
   ``startup`` event's ids, every ``retrieval`` event's, and our own prior
@@ -33,11 +52,17 @@ Design (settled by live measurement, 2026-06-07):
   tagged ``tool == PROMPT_TIME_TOOL``; the indexer projects those to
   ``context_served`` with ``source='prompttime'`` (distinct from agent-pulled
   ``onthefly``), keeping the agent-judgment signal clean and making push
-  efficacy measurable.
+  efficacy measurable. The ``prompt_time_miss`` telemetry event is a different
+  ``type`` entirely and carries no ``tool`` field, so it is invisible to both
+  the firings ledger (:func:`_served_ids_and_stats`, keyed on
+  ``tool == PROMPT_TIME_TOOL``) and the indexer's ``context_served``
+  projection (keyed on ``type in ("startup", "retrieval")``) — it is pure
+  telemetry, never mistaken for a served note or a firing.
 
 This module never writes — :func:`build_enrichment` is pure orchestration over
 read-only helpers, unit-testable without a live hook. The hook handler owns the
-buffer write-back and the stdout emit.
+buffer write-back (both the served-ids write-back and the miss telemetry) and
+the stdout emit.
 """
 
 from __future__ import annotations
@@ -52,6 +77,11 @@ from thinkweave.core.config import Config
 # context_served projection keys off this to assign source='prompttime'.
 PROMPT_TIME_TOOL = "prompt_time_retrieval"
 
+# Buffer event type for a deadline miss — distinct from both "retrieval"
+# (which the indexer projects to context_served) and a PROMPT_TIME_TOOL-tagged
+# event (which _served_ids_and_stats counts as a firing). Pure telemetry.
+PROMPT_TIME_MISS = "prompt_time_miss"
+
 # Render header for the injected block.
 _HEADER = "📎 Possibly relevant from your vault (optional — weave_read to expand):"
 # Never emit if the remaining char budget can't fit a single useful line.
@@ -60,33 +90,50 @@ _MIN_PIECE_CHARS = 80
 
 def build_enrichment(
     cfg: Config, session_id: str, prompt_text: str
-) -> tuple[str | None, list[str]]:
+) -> tuple[str | None, list[str], bool]:
     """Build the prompt-time enrichment block for one prompt.
 
-    Returns ``(block, served_ids)`` — ``block`` is the text to inject (or
-    ``None`` to no-op), ``served_ids`` the note ids it surfaced (for the hook's
-    buffer write-back). Pure: reads the live buffer + index, writes nothing.
+    Returns ``(block, served_ids, missed)``:
+
+    - ``block`` — the text to inject, or ``None`` to no-op.
+    - ``served_ids`` — the note ids the block surfaced (for the hook's
+      served-ids buffer write-back).
+    - ``missed`` — ``True`` iff the similarity arm blew its wall-clock
+      deadline this turn (the hook should record a ``prompt_time_miss``
+      telemetry event). ``False`` for every other outcome, including a
+      clean empty result, an early gate, or the adaptive skip itself (the
+      skip prevents a *new* attempt — it isn't itself a miss).
+
+    Pure: reads the live buffer + index, writes nothing. The hook handler
+    owns every buffer write-back (both served ids and miss telemetry).
     """
     rpt = cfg.retrieval_prompt_time
     if not rpt.enabled:
-        return None, []
+        return None, [], False
 
     # Triviality gate only — skip trivially short inputs and slash-commands so
     # we don't pay an embedding on "ok"/"yes"/"/clear". This is NOT a semantic
     # filter; relevance is decided by the cosine floor below.
     t = (prompt_text or "").strip()
     if len(t) < rpt.min_prompt_chars or t.startswith("/"):
-        return None, []
+        return None, [], False
 
     served, firings, injected_chars = _served_ids_and_stats(cfg, session_id)
     if firings >= rpt.max_firings_per_session:
-        return None, []
+        return None, [], False
     remaining_session = rpt.max_injected_chars_per_session - injected_chars
     if remaining_session < _MIN_PIECE_CHARS:
-        return None, []
+        return None, [], False
+
+    # Adaptive skip — a run of consecutive deadline misses (e.g. an
+    # unreachable or saturated embedding endpoint) means the similarity arm
+    # is currently a sunk ~deadline-seconds cost with no payoff. Stop paying
+    # it for the rest of this session rather than re-trying every turn.
+    if _consecutive_trailing_misses(cfg, session_id) >= rpt.deadline_miss_limit:
+        return None, [], False
 
     limit = max(rpt.max_pieces_per_turn * 3, 10)
-    results = _retrieve(
+    results, missed = _retrieve(
         cfg,
         prompt_text,
         list(rpt.bias_types),
@@ -94,12 +141,16 @@ def build_enrichment(
         deadline=rpt.embed_deadline_seconds,
         min_similarity=rpt.min_similarity,
     )
+    if missed:
+        return None, [], True
+
     fresh = [r for r in results if r.id not in served]
     if not fresh:
-        return None, []
+        return None, [], False
 
     char_cap = min(rpt.max_injected_chars_per_turn, remaining_session)
-    return _render(fresh[: rpt.max_pieces_per_turn], char_cap)
+    block, ids = _render(fresh[: rpt.max_pieces_per_turn], char_cap)
+    return block, ids, False
 
 
 def _read_buffer_events(cfg: Config, session_id: str) -> list[dict]:
@@ -144,6 +195,27 @@ def _served_ids_and_stats(
     return served, firings, injected_chars
 
 
+def _consecutive_trailing_misses(cfg: Config, session_id: str) -> int:
+    """Count trailing consecutive R2 deadline misses in the live buffer.
+
+    Walks R2's own outcome events — ``prompt_time_miss`` telemetry and
+    successful firings (``tool == PROMPT_TIME_TOOL``) — from the end of the
+    buffer, backwards. Every plain ``prompt`` event (written once per user
+    turn, miss or not) is not part of this ledger and doesn't interrupt the
+    streak; only a successful firing resets it to zero. This makes the count
+    "misses since the last successful injection (or since session start)",
+    which is what the adaptive-skip gate wants: a slow/unreachable embedding
+    endpoint keeps missing turn after turn with ordinary prompts interleaved.
+    """
+    n = 0
+    for ev in reversed(_read_buffer_events(cfg, session_id)):
+        if ev.get("type") == PROMPT_TIME_MISS:
+            n += 1
+        elif ev.get("tool") == PROMPT_TIME_TOOL:
+            break
+    return n
+
+
 def _retrieve(
     cfg: Config,
     query: str,
@@ -152,32 +224,34 @@ def _retrieve(
     limit: int,
     deadline: float,
     min_similarity: float,
-):
-    """FTS (sync) + similarity (deadlined daemon thread), RRF-fused.
+) -> tuple[list, bool]:
+    """Similarity-only retrieval, deadlined in a daemon thread.
 
-    Mirrors ``Search.hybrid_search`` but (1) bounds the embedding arm to a
-    wall-clock deadline so the hook never blocks past its budget and (2) applies
-    a cosine floor to the similarity arm — the floor is what keeps generic/meta
-    prompts from injecting low-relevance nearest-neighbours. FTS hits (concrete
-    keyword matches) are admitted regardless of the floor.
+    FTS is not attempted here — see the module docstring: FTS5 AND-matches
+    every token, so a full natural-language prompt almost never matches it.
+    The cosine floor on the similarity arm is what keeps generic/meta prompts
+    from injecting low-relevance nearest-neighbours.
 
     SQLite connections are thread-affine, so the similarity arm gets its OWN
     ``Search`` inside the daemon thread — sharing the main-thread connection
-    raises a ProgrammingError mid-query. Any failure degrades to FTS-only/empty.
+    raises a ProgrammingError mid-query.
+
+    Returns ``(results, missed)``. ``missed`` is ``True`` only when the
+    daemon thread is still alive after ``deadline`` seconds — the thread is
+    abandoned (not killed; Python has no clean thread-kill) and the caller
+    should record this as a deadline miss. Any other failure (``Search()``
+    construction, the query itself raising) returns fast and is reported as
+    an ordinary empty result — ``missed=False`` — since there's no wasted
+    wall-clock budget to track in that case.
     """
     from thinkweave.retrieval.search import Search
 
     try:
         s = Search(config=cfg)
     except Exception:
-        return []
+        return [], False
     try:
         wide = max(limit * 2, 20)
-        try:
-            fts = s.search(query, note_type=note_type, limit=wide) or []
-        except Exception:
-            fts = []
-
         holder: dict = {}
 
         def _run() -> None:
@@ -193,42 +267,20 @@ def _retrieve(
         th = threading.Thread(target=_run, daemon=True)
         th.start()
         th.join(timeout=max(0.0, deadline))
-        sem = holder.get("r", []) if not th.is_alive() else []
+        if th.is_alive():
+            return [], True
 
-        # Cosine floor on the similarity arm. ``.rank`` carries the cosine score
-        # on results from .similar(); FTS hits keep their place regardless.
+        sem = holder.get("r", []) or []
+        # Cosine floor. ``.rank`` carries the cosine score on results from
+        # .similar() — this is THE relevance gate for this hook.
         if min_similarity > 0.0:
             sem = [r for r in sem if getattr(r, "rank", 0.0) >= min_similarity]
-
-        return _rrf_fuse(fts, sem, limit)
+        return sem[:limit], False
     finally:
         try:
             s.close()
         except Exception:
             pass
-
-
-def _rrf_fuse(fts: list, sem: list, limit: int, rrf_k: int = 60) -> list:
-    """Reciprocal-rank fusion of two ranked lists (k=60), per Search.hybrid_search."""
-    if not sem:
-        return fts[:limit]
-    if not fts:
-        return sem[:limit]
-    scores: dict[str, float] = {}
-    rows: dict = {}
-    for rank, r in enumerate(fts, start=1):
-        scores[r.id] = scores.get(r.id, 0.0) + 1.0 / (rrf_k + rank)
-        rows[r.id] = r
-    for rank, r in enumerate(sem, start=1):
-        scores[r.id] = scores.get(r.id, 0.0) + 1.0 / (rrf_k + rank)
-        rows.setdefault(r.id, r)
-    ranked = sorted(scores, key=lambda i: scores[i], reverse=True)
-    out = []
-    for nid in ranked[:limit]:
-        r = rows[nid]
-        r.rank = scores[nid]
-        out.append(r)
-    return out
 
 
 def _render(results: list, char_cap: int) -> tuple[str | None, list[str]]:

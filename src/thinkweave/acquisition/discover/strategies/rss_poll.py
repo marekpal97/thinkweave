@@ -39,7 +39,6 @@ recognised feed configuration is polled.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -241,7 +240,7 @@ class RssPollStrategy:
             flavor = "news"
         # Both news and podcasts honour per-outlet daily caps.
         enqueue_counts_today: dict[str, int] = (
-            _count_today_per_outlet(queue, slug) if flavor in ("news", "podcast") else {}
+            _count_today_per_outlet(queue) if flavor in ("news", "podcast") else {}
         )
         lookback_days = int(spec.get("lookback_days") or 0)
         cutoff_dt: datetime | None = None
@@ -584,32 +583,17 @@ def _load_indexer_keys(
     return seen
 
 
-def _count_today_per_outlet(queue: Queue, source_type: str) -> dict[str, int]:
+def _count_today_per_outlet(queue: Queue) -> dict[str, int]:
     """Per-outlet count of items seen today (active queue + today's archive)."""
     today = datetime.now(timezone.utc).date()
     today_start = datetime(
         today.year, today.month, today.day, tzinfo=timezone.utc
     ).isoformat(timespec="seconds")
-
     out: dict[str, int] = {}
-    for item in queue.peek(10_000):
-        if (item.get("enqueued_at") or "") >= today_start:
-            slug = item.get("outlet", "")
-            if slug:
-                out[slug] = out.get(slug, 0) + 1
-
-    archive_file = queue.archive_root / today.isoformat() / f"{source_type}.jsonl"
-    if archive_file.exists():
-        for line in archive_file.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            slug = row.get("outlet", "")
-            if slug:
-                out[slug] = out.get(slug, 0) + 1
+    for item in queue.items_since(today_start):
+        slug = item.get("outlet", "")
+        if slug:
+            out[slug] = out.get(slug, 0) + 1
     return out
 
 

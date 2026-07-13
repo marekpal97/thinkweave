@@ -35,6 +35,27 @@ from thinkweave.surfaces.hooks.handler import (
 from thinkweave.surfaces.hooks.install import install_hooks, uninstall_hooks
 
 
+@pytest.fixture(autouse=True)
+def _isolated_vault(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every ``load_config()`` call in this module resolves under ``tmp_path``.
+
+    Without this, a test that only stubs a downstream function (e.g. patching
+    ``build_project_context`` to raise) and lets the exception propagate to
+    ``_log_error`` falls through to the REAL ``load_config()`` — which
+    resolves the user's actual vault — and writes a synthetic-failure
+    traceback into their real ``hooks.log``. That happened here: production
+    ``.weave/hooks.log`` accumulated "synthetic failure" tracebacks from this
+    file's ``test_failure_in_payload_does_not_block``. Tests that explicitly
+    stub ``load_config`` with their own tmp-path ``Config`` (the majority,
+    via ``monkeypatch.setattr`` or ``unittest.mock.patch``) simply override
+    this default afterward — no behavior change for them.
+    """
+    default_cfg = Config(vault_root=tmp_path / "isolated-vault")
+    monkeypatch.setattr(
+        "thinkweave.core.config.load_config", lambda: default_cfg
+    )
+
+
 class TestHookHelpers:
     def test_is_internal(self):
         assert _is_internal("/home/user/.claude/settings.json")
@@ -1423,7 +1444,7 @@ class TestPromptTimeEnrichment:
         block = "📎 Possibly relevant from your vault (optional):\n- [[n-aaaaaa01]] (note) — X"
         monkeypatch.setattr(
             "thinkweave.operations.prompt_time_retrieval.build_enrichment",
-            lambda *a, **k: (block, ["n-aaaaaa01"]),
+            lambda *a, **k: (block, ["n-aaaaaa01"], False),
         )
 
         handler_mod._handle_user_prompt_submit(
@@ -1447,6 +1468,44 @@ class TestPromptTimeEnrichment:
         assert wb["tool"] == "prompt_time_retrieval"
         assert wb["returned_ids"] == ["n-aaaaaa01"]
         assert wb["chars"] == len(block)
+
+    def test_deadline_miss_writes_distinct_telemetry_event(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """A deadline miss must land as its own event — not a firing, not a
+        ``retrieval`` event — so it's invisible to both the firings ledger
+        and the indexer's context_served projection (see the module
+        docstring in operations/prompt_time_retrieval.py)."""
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "thinkweave.operations.prompt_time_retrieval.build_enrichment",
+            lambda *a, **k: (None, [], True),
+        )
+
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-r2miss", "prompt": "a real substantive question here"}
+        )
+
+        # No injection this turn — plain response.
+        assert json.loads(capsys.readouterr().out) == {}
+
+        lines = [
+            json.loads(x)
+            for x in (cfg.weave_dir / "buffer" / "ses-r2miss.jsonl")
+            .read_text().splitlines()
+            if x.strip()
+        ]
+        assert lines[0]["type"] == "prompt"
+        miss = lines[-1]
+        assert miss["type"] == "prompt_time_miss"
+        assert miss["session_id"] == "ses-r2miss"
+        # Must never carry the firing tag or the "retrieval" type — those
+        # are what the firings ledger and the context_served projection key
+        # off of, respectively.
+        assert miss.get("tool") != "prompt_time_retrieval"
+        assert miss["type"] != "retrieval"
 
     def test_noop_emits_plain_and_no_writeback(
         self, tmp_path: Path, monkeypatch, capsys
