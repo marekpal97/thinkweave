@@ -337,7 +337,7 @@ def add_admin_subparsers(sub) -> None:
     p_config = sub.add_parser(
         "config",
         help="Inspect or set the user config (vault path) — platform-resolved "
-        "location (XDG on Linux/macOS, %APPDATA% on Windows).",
+        "location (XDG on Linux/macOS, %%APPDATA%% on Windows).",
     )
     config_sub = p_config.add_subparsers(dest="config_action")
     config_sub.add_parser(

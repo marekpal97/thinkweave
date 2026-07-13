@@ -61,7 +61,13 @@ PATH=$HOME/.local/bin:$PATH
 # bounded. Requires a Claude Code install with the thinkweave MCP
 # wired (see `weave install`); ANTHROPIC_API_KEY in the cron environment
 # for the headless `claude -p` invocation.
-0 3 * * * cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude -p "/dream" >> ~/.cache/thinkweave/dream.log 2>&1
+#
+# `/dream` has no internal lock, and a large batch can push a cycle well
+# past a typical cron interval — an overrunning cycle plus the next
+# firing would race on the same SQLite index + maintenance.jsonl. Wrap
+# with `flock -n` so a still-running cycle simply skips the next firing
+# instead of racing it.
+0 3 * * * flock -n /tmp/thinkweave-dream.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude -p "/dream"' >> ~/.cache/thinkweave/dream.log 2>&1
 
 # To run a flow ad-hoc:
 #   uv run weave flow list
