@@ -185,3 +185,23 @@ Per issue: number, outcome (PR opened / awaiting approval / routed-to-human),
 gate results, fix rounds used. Plus: frontier remaining, issues newly
 blocked-on-human. If nothing was shippable, say what the human must do to
 unblock the DAG (usually: merge open loop PRs).
+
+## 3. Feed the vault — PROPOSAL, do not execute until accepted
+
+Design: `docs/agents/issue-loop-memory.md`. Once accepted: for each
+processed issue, assemble the deterministic half —
+
+```bash
+python scripts/issue_loop.py trajectory <N> --cwd <worktree> \
+  --gates-json <results-file> --fix-rounds <R> --outcome <o> \
+  --pr-url <url> --run-id <run-id>
+```
+
+— then fill the judgment half and write ONE note: body ≤1K chars
+(What / How it went / Lessons; omit Lessons when there are none), concepts
+chosen from the ontology (`weave_concepts` first; the payload's
+`concept_hints` are raw material, not concepts), and
+`weave_create(type=note, tags=[loop-run], session_id=<this session>,
+frontmatter=<payload frontmatter>)`. If MCP is down, fall back to
+`weave add -f …`. Do not duplicate gate evidence or run history — the
+tracker and PR own those.

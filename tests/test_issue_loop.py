@@ -263,3 +263,35 @@ def test_repo_loop_toml_parses_and_gate_ids_unique():
     ids = [g["id"] for g in cfg["gates"]]
     assert len(ids) == len(set(ids)) and len(ids) >= 4
     assert all(g["kind"] in {"command", "diff", "acceptance", "review"} for g in cfg["gates"])
+
+
+# ---------------------------------------------------------------------------
+# trajectory payload (memory-feed proposal) — pure assembly
+
+
+def test_build_trajectory_payload():
+    issue = {
+        "number": 26,
+        "title": "D1: Queue.items_since() — close the archive leak",
+        "html_url": "https://github.com/x/y/issues/26",
+        "labels": [{"name": "ready-for-agent"}, {"name": "track:D-acquisition"}],
+    }
+    payload = issue_loop.build_trajectory(
+        issue,
+        branch="loop/issue-26",
+        commits=["abc fix", "def test"],
+        numstat="10\t2\tsrc/thinkweave/acquisition/queue.py\n5\t0\ttests/test_queue.py\n",
+        gates=[{"id": "tests", "kind": "command", "passed": True, "summary": "exit 0"}],
+        fix_rounds=1,
+        outcome="shipped",
+        pr_url="https://github.com/x/y/pull/99",
+        run_id="loop-20260713-abcd",
+    )
+    fm = payload["frontmatter"]
+    assert payload["type"] == "note" and payload["tags"] == ["loop-run"]
+    assert fm["issue"] == 26 and fm["outcome"] == "shipped" and fm["fix_rounds"] == 1
+    assert fm["commits"] == 2
+    assert fm["files_touched"] == ["src/thinkweave/acquisition/queue.py", "tests/test_queue.py"]
+    assert fm["gates"] == [{"id": "tests", "passed": True, "summary": "exit 0"}]
+    assert "track:D-acquisition" in payload["concept_hints"]
+    assert "Lessons" in payload["body_skeleton"]

@@ -18,8 +18,10 @@ Subcommands:
   plan     — snapshot issues via `gh`, compute frontier + components (JSON)
   claim    — claim an issue for a run (assignee by default, label mode kept)
   release  — drop the claim
-  config   — print resolved loop config (defaults merged with loop.toml)
-  check    — run one deterministic gate (kind: command | diff) and emit JSON
+  config     — print resolved loop config (defaults merged with loop.toml)
+  check      — run one deterministic gate (kind: command | diff) and emit JSON
+  trajectory — assemble a per-issue trajectory payload for the memory feed
+               (see docs/agents/issue-loop-memory.md — proposal)
 
 Stdlib only. Config: docs/agents/loop.toml.
 """
@@ -286,6 +288,50 @@ def run_diff_gate(gate: dict, cwd: Path, base_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Trajectory assembly (memory-feed proposal) — pure function + subcommand
+
+
+def build_trajectory(issue: dict, *, branch: str, commits: list[str],
+                     numstat: str, gates: list[dict], fix_rounds: int,
+                     outcome: str, pr_url: str = "", run_id: str = "") -> dict:
+    """Assemble the deterministic half of a per-issue trajectory note.
+
+    Emits a weave_create-shaped payload: everything mechanical (files, gate
+    verdicts, rounds, refs) goes in frontmatter; the body is left as a
+    skeleton for the orchestrator to fill with judgment (what was learned,
+    why fix rounds happened) — concepts are chosen at creation time by the
+    LLM in the loop, never backfilled.
+    """
+    files = [line.split("\t")[2] for line in numstat.strip().splitlines()
+             if len(line.split("\t")) == 3]
+    return {
+        "type": "note",
+        "title": f"loop trajectory #{issue['number']}: {issue.get('title', '')[:80]}",
+        "tags": ["loop-run"],
+        "frontmatter": {
+            "issue": issue["number"],
+            "issue_url": issue.get("html_url", ""),
+            "pr_url": pr_url,
+            "run_id": run_id,
+            "branch": branch,
+            "outcome": outcome,  # shipped | routed-to-human | awaiting-approval
+            "fix_rounds": fix_rounds,
+            "commits": len(commits),
+            "files_touched": sorted(set(files)),
+            "gates": [{"id": g["id"], "passed": g["passed"], "summary": g.get("summary", "")}
+                      for g in gates],
+        },
+        "body_skeleton": (
+            "## What\n<1-2 sentences: the slice delivered>\n\n"
+            "## How it went\n<fix rounds and why; seams chosen; surprises>\n\n"
+            "## Lessons\n<only what a future run would reuse — omit section if none>"
+        ),
+        "concept_hints": [l["name"] if isinstance(l, dict) else l
+                          for l in issue.get("labels", [])],
+    }
+
+
+# ---------------------------------------------------------------------------
 # gh plumbing
 
 
@@ -359,6 +405,17 @@ def main(argv: list[str] | None = None) -> int:
     p_check.add_argument("--cwd", default=".")
     p_check.add_argument("--base-ref", default="origin/main")
 
+    p_traj = sub.add_parser("trajectory", help="assemble a per-issue trajectory payload (memory feed)")
+    p_traj.add_argument("number", type=int)
+    p_traj.add_argument("--cwd", default=".", help="the issue's implementer worktree")
+    p_traj.add_argument("--base-ref", default="origin/main")
+    p_traj.add_argument("--gates-json", required=True, help="file with the gate results list")
+    p_traj.add_argument("--fix-rounds", type=int, default=0)
+    p_traj.add_argument("--outcome", required=True,
+                        choices=["shipped", "routed-to-human", "awaiting-approval"])
+    p_traj.add_argument("--pr-url", default="")
+    p_traj.add_argument("--run-id", default="")
+
     args = parser.parse_args(argv)
     cfg = load_config()
 
@@ -405,6 +462,26 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, indent=2))
         return 0 if result["passed"] else 1
+    elif args.cmd == "trajectory":
+        cwd = Path(args.cwd).resolve()
+        issue = json.loads(_gh(["api", f"repos/{{owner}}/{{repo}}/issues/{args.number}"]))
+        branch = subprocess.run(["git", "branch", "--show-current"], cwd=cwd,
+                                capture_output=True, text=True, check=True).stdout.strip()
+        commits = subprocess.run(
+            ["git", "log", "--oneline", f"{args.base_ref}..HEAD"],
+            cwd=cwd, capture_output=True, text=True, check=True,
+        ).stdout.strip().splitlines()
+        numstat = subprocess.run(
+            ["git", "diff", "--numstat", f"{args.base_ref}...HEAD"],
+            cwd=cwd, capture_output=True, text=True, check=True,
+        ).stdout
+        gates = json.loads(Path(args.gates_json).read_text(encoding="utf-8"))
+        payload = build_trajectory(
+            issue, branch=branch, commits=commits, numstat=numstat, gates=gates,
+            fix_rounds=args.fix_rounds, outcome=args.outcome,
+            pr_url=args.pr_url, run_id=args.run_id,
+        )
+        print(json.dumps(payload, indent=2))
     return 0
 
 
