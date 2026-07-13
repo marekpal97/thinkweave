@@ -35,29 +35,8 @@ from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 
-
-@pytest.fixture
-def vault_dir(tmp_path: Path) -> Path:
-    return tmp_path / "vault"
-
-
-@pytest.fixture
-def config(vault_dir: Path) -> Config:
-    return Config(vault_root=vault_dir)
-
-
-@pytest.fixture
-def vault(config: Config) -> VaultManager:
-    vm = VaultManager(config=config)
-    vm.ensure_dirs()
-    return vm
-
-
-@pytest.fixture
-def indexer(config: Config):
-    idx = Indexer(config=config)
-    yield idx
-    idx.close()
+# vault / config / indexer fixtures come from tests/conftest.py (vault_factory),
+# migrated per the opportunistic-migration rule.
 
 
 def _write_ontology(monkeypatch, content: str) -> Path:

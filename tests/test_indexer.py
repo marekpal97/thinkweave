@@ -4,44 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path, PureWindowsPath
 
-import pytest
-
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.retrieval.search import Search
 from thinkweave.core.vault import VaultManager
 
-
-@pytest.fixture
-def vault_dir(tmp_path: Path) -> Path:
-    return tmp_path / "vault"
-
-
-@pytest.fixture
-def config(vault_dir: Path) -> Config:
-    return Config(vault_root=vault_dir)
-
-
-@pytest.fixture
-def vault(config: Config) -> VaultManager:
-    vm = VaultManager(config=config)
-    vm.ensure_dirs()
-    return vm
-
-
-@pytest.fixture
-def indexer(config: Config) -> Indexer:
-    idx = Indexer(config=config)
-    yield idx
-    idx.close()
-
-
-@pytest.fixture
-def search(config: Config, indexer: Indexer) -> Search:
-    s = Search(config=config)
-    yield s
-    s.close()
+# vault / config / indexer / search fixtures come from tests/conftest.py
+# (vault_factory). This suite is migrated per the opportunistic-migration rule.
 
 
 class TestIndexer:

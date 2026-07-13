@@ -3,7 +3,6 @@ decision_files, hybrid search, empty-query listing."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -16,40 +15,9 @@ from thinkweave.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures — vault / config / indexer / search come from tests/conftest.py
+# (vault_factory), migrated per the opportunistic-migration rule.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def vault_dir(tmp_path: Path) -> Path:
-    return tmp_path / "vault"
-
-
-@pytest.fixture
-def config(vault_dir: Path) -> Config:
-    return Config(vault_root=vault_dir)
-
-
-@pytest.fixture
-def vault(config: Config) -> VaultManager:
-    vm = VaultManager(config=config)
-    vm.ensure_dirs()
-    return vm
-
-
-@pytest.fixture
-def indexer(config: Config):
-    idx = Indexer(config=config)
-    yield idx
-    idx.close()
-
-
-@pytest.fixture
-def search(config: Config):
-    # Instantiate after the indexer populates the db
-    s = Search(config=config)
-    yield s
-    s.close()
 
 
 # ---------------------------------------------------------------------------
