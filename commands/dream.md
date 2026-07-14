@@ -131,11 +131,24 @@ echo "<merged-plan-json>" > "$CYCLE_TMP/plan.json"
 
 ### Step 1.5 — Apply
 
+This step runs merges, promotions, theme mint/extend/merge, essence rewrites,
+priority signals, **and** one full index rebuild synchronously in a single
+process, with the `maintenance.jsonl` line written last. On a large batch
+(double-digit essence rewrites + theme extensions is routine after an
+essence-cap backfill or a busy day) this routinely exceeds your Bash tool's
+default ~2-minute timeout — a timeout here kills the process *before* the
+maintenance.jsonl append, so the cycle silently vanishes with zero trace
+even though earlier structural writes already landed. Issue this Bash call
+with an explicit timeout of at least 300000 (5 min); prefer 600000 (10 min,
+the tool's max) if `apply-result.json`'s errors have shown timeouts before:
+
 ```bash
 weave dream apply --plan "$CYCLE_TMP/plan.json" --json > "$CYCLE_TMP/apply-result.json"
 ```
 
 The apply phase batches every structural change (merges → promotions → theme mints → theme extensions → theme merges → distinct-pair recording → essence rewrites → priority signals → one index rebuild → one maintenance.jsonl line). Concept merges FOLD the losing hub into the winner (log preserved, archived with a `merged-into:` stamp) and theme merges run `merge_theme_into` (fold + relates_to repoint + tombstone + registry); both enqueue the survivor on the seam-link queue for phase 2. The essence-rewrite plan key with `new_essence` actually mutates each hub's `## Essence` section (themes by `theme_id`; concept hubs by `hub_kind: "concept"` + `concept`) and stamps `essence_updated`. Theme mints/extensions write the worker's distilled `catalysts` as the log lines; mints without a composed essence are rejected. Returns a `DreamCycleResult` JSON.
+
+**Concurrency note:** this skill has no internal lock — two overlapping `/dream` invocations (e.g. a slow cron run plus a manual one) can race on the same `vault/.weave/index.db` and `maintenance.jsonl`. The cron entry is expected to serialize via an external `flock` (see `scripts/example-crontab` / `vault/config/scheduling.yaml`); if you're running this interactively while a cron cycle might be in flight, check for a live `claude -p "/dream"` process before this step and wait rather than racing the apply.
 
 If `apply-result.json` has non-empty `errors`, surface them in the wrap-up — the errors-don't-cascade contract guarantees the other steps still ran, so the cycle is partially successful, not failed.
 
