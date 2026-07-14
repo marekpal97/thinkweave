@@ -61,12 +61,27 @@ still respected). `run_mode` names the two postures:
   "tackle unrelated issues in parallel" loop.
 - **`exhaust`** — re-plan after every shipped issue and keep chasing while
   the frontier is non-empty. The "keep working a whole DAG" loop. Honest
-  physics: blockers close on *merge*, so depth advances only as fast as a
-  human merges — exhaust mode cooperates with concurrent merging rather
-  than pretending the DAG can be finished unattended. (Stacked PRs —
-  branching a dependent off its blocker's unmerged branch — would remove
-  that wait at the cost of rework cascades; deliberately not built until
-  the wait is actually felt.)
+  physics under `pr-per-issue` delivery: blockers close on *merge*, so
+  depth advances only as fast as a human merges — exhaust mode cooperates
+  with concurrent merging rather than pretending the DAG can be finished
+  unattended.
+
+Scoping: `plan --dag <N>` (surfaced as `/issue-loop --dag N`) restricts a
+run to the DAG component containing issue N — "work this epic, ignore the
+rest of the backlog."
+
+**Delivery is orthogonal to run_mode.** `delivery = pr-per-issue` (default)
+ships every issue as its own branch + draft PR — small-PR review discipline,
+merge-gated DAG advancement. `delivery = stacked` removes the mid-DAG
+merge-waits for a `--dag`-scoped run: all slices land as stacked commits on
+one branch, dependents unblock via `plan --assume-done <completed>` instead
+of waiting for merges, and a single draft PR closes the whole set at the
+end. The trade is explicit: one review of a bigger diff instead of many
+small ones, and a review change to an early slice means reworking the stack
+above it — pick it when the DAG is coherent enough that you'd review it as
+one unit anyway. In-branch "done" is provisional (`assume-done`), never
+written to the tracker; the tracker's truth still changes only when the PR
+merges and closes the issues.
 
 This is Pocock's Sandcastle planner made deterministic: he uses an LLM to
 pick parallelizable issues, but since `/to-tickets` already encodes the

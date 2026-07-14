@@ -295,3 +295,45 @@ def test_build_trajectory_payload():
     assert fm["gates"] == [{"id": "tests", "passed": True, "summary": "exit 0"}]
     assert "track:D-acquisition" in payload["concept_hints"]
     assert "Lessons" in payload["body_skeleton"]
+
+
+# ---------------------------------------------------------------------------
+# --dag scoping and --assume-done (stacked delivery)
+
+
+def test_scope_to_dag_keeps_component_and_closed_issues():
+    issues = [
+        _issue(1, state="CLOSED"),
+        _issue(2, body="Blocked-by: #1"),   # component 2 (edge to 1 is closed)
+        _issue(3, body="Blocked-by: #2"),   # component 2
+        _issue(10),                          # unrelated component
+    ]
+    scoped = issue_loop.scope_to_dag(issues, 3)
+    nums = sorted(i["number"] for i in scoped)
+    assert nums == [1, 2, 3]  # closed #1 kept for blocker checks, #10 dropped
+
+
+def test_scope_to_dag_rejects_closed_or_missing_root():
+    with pytest.raises(ValueError):
+        issue_loop.scope_to_dag([_issue(1, state="CLOSED")], 1)
+    with pytest.raises(ValueError):
+        issue_loop.scope_to_dag([_issue(1)], 99)
+
+
+def test_assume_done_unblocks_dependents():
+    issues = [
+        _issue(16),
+        _issue(21, body="Blocked-by: #16"),
+        _issue(22, native_blockers=[16], native_blocked_count=1),
+    ]
+    before = issue_loop.compute_frontier(issues, CFG)
+    assert [e["number"] for e in before["frontier"]] == [16]
+    after = issue_loop.compute_frontier(
+        issue_loop.apply_assume_done(issues, {16}), CFG)
+    assert [e["number"] for e in after["frontier"]] == [21, 22]
+
+
+def test_assume_done_does_not_mutate_input():
+    issues = [_issue(16)]
+    issue_loop.apply_assume_done(issues, {16})
+    assert issues[0]["state"] == "OPEN"

@@ -1,7 +1,7 @@
 ---
 name: issue-loop
 description: "Drain the ready-for-agent frontier of the GitHub issue DAG: implement each unblocked issue in an isolated worktree, run the configured gate pipeline (tests/diff/acceptance/review), and open a draft PR per issue. Headless-safe."
-argument-hint: "[issue-number] | nothing to drain the frontier"
+argument-hint: "[issue-number] | --dag <issue> to work one DAG | nothing to drain the frontier"
 disable-model-invocation: true
 ---
 
@@ -38,8 +38,10 @@ python scripts/issue_loop.py plan            # frontier / blocked / claimed
 
 If the user passed an issue number as argument, the frontier is just that
 issue (still verify via `plan` output that it is unblocked and unclaimed —
-if not, say so and stop). If the frontier is empty, report why (all blocked?
-all claimed? PRs awaiting human merge?) and stop.
+if not, say so and stop). If the user passed `--dag <N>`, scope every `plan`
+call in this run with `--dag N` — the run works only that DAG component and
+`run_mode` defaults to `exhaust` for it. If the frontier is empty, report
+why (all blocked? all claimed? PRs awaiting human merge?) and stop.
 
 Generate a run id: `loop-<YYYYMMDD>-<4 random hex>`.
 
@@ -178,6 +180,42 @@ unassigns / unlabels to re-queue.
 In `run_mode = exhaust`: after shipping, re-run `plan`. If new frontier
 issues appeared (a blocker got merged meanwhile), continue with them until
 the per-run cap; otherwise report and stop.
+
+### 1e. Stacked delivery (`delivery = stacked`)
+
+One larger piece of work, no intermittent PRs. Requires a `--dag <N>` scope
+and is sequential by definition (`max_parallel` is ignored). Differences
+from the flow above — everything else (claim, implementer standing orders,
+gate pipeline, fix rounds, failure routing) is identical:
+
+- **One branch, one worktree.** `loop/dag-<N>`, created once from
+  origin/main. Each issue's implementer subagent is FRESH (new context per
+  issue) but works in this same worktree, stacking commits on the previous
+  slices. Record the branch tip sha before each issue starts.
+- **Blockers advance in-branch, not by merge.** After an issue's slices
+  pass all gates, add it to the done-list and re-plan with
+  `plan --dag <N> --assume-done <done-list>` — its dependents become
+  workable immediately. No merge-waits mid-DAG.
+- **Per-issue gates, scoped diffs.** Run `check --gate diff-guard
+  --base-ref <tip-before-this-issue>` so diff limits apply per slice, not
+  cumulatively; the tests gate always runs on the whole branch (earlier
+  slices must stay green — that IS the stacking guarantee). The acceptance
+  judge sees the per-issue diff (`git diff <tip-before>...HEAD`).
+- **Tracker visibility without PRs.** After each issue passes:
+  `gh issue comment <N> --body "🤖 issue-loop run <id>: slice landed on
+  loop/dag-<root> at <sha> — PR at end of run. <gate table>"`. Do NOT
+  close the issue; do NOT open a PR yet.
+- **One PR at the end** (DAG exhausted, cap hit, or an issue routed to
+  human): push the branch and open a single draft PR whose body carries
+  `Closes #A` lines for every completed issue, the per-issue gate tables,
+  and — if some of the DAG remains — which issues are NOT included and
+  why. `training_mode` pauses once, here, instead of per issue.
+- **A failed issue doesn't poison the stack.** If an issue exhausts its fix
+  rounds, reset the branch to the last good tip (`git reset --hard
+  <tip-before-this-issue>`), route the issue to human as usual, and stop
+  extending this DAG (dependents of the failed issue are blocked anyway;
+  independent siblings within the DAG may continue). Ship the PR with what
+  completed.
 
 ## 2. Report
 

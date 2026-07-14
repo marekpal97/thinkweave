@@ -19,6 +19,15 @@ claim_mode = "assign"    # assign: the assignee IS the claim (wayfinder conventi
 #             as blockers close (= PRs merge), so it pairs with a human
 #             merging concurrently; max_issues_per_run still caps the run.
 run_mode = "pass"
+# delivery decides what a shipped issue looks like:
+#   pr-per-issue — every issue gets its own branch and draft PR; blockers
+#                  close on merge (small-PR discipline, review per slice).
+#   stacked      — for one scoped DAG (/issue-loop --dag N): all slices land
+#                  as stacked commits on ONE branch, no intermittent PRs;
+#                  dependents proceed via plan --assume-done; a single draft
+#                  PR closes the whole set at the end. One review, no
+#                  merge-waits mid-DAG — the trade is a bigger diff to review.
+delivery = "pr-per-issue"
 
 [tdd]
 # auto: red→green TDD is ENFORCED in implementer standing orders iff the

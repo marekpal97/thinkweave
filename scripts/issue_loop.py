@@ -50,6 +50,7 @@ DEFAULT_CONFIG: dict = {
         "require_green_baseline": True,
         "claim_mode": "assign",  # assign: assignee IS the claim (wayfinder) | label
         "run_mode": "pass",      # pass: one frontier pass | exhaust: re-plan until dry
+        "delivery": "pr-per-issue",  # pr-per-issue | stacked (one branch, one final PR)
     },
     "tdd": {
         "mode": "auto",  # auto: enforced iff the baseline probe is green
@@ -163,6 +164,25 @@ def compute_components(issues: list[dict]) -> dict[int, int]:
                 if ra != rb:
                     parent[max(ra, rb)] = min(ra, rb)
     return {n: find(n) for n in open_numbers}
+
+
+def scope_to_dag(issues: list[dict], root: int) -> list[dict]:
+    """Keep only the DAG component containing `root` (plus all closed issues,
+    which blocker-satisfaction checks still need). Raises if `root` is not an
+    open issue — a closed root means that DAG has no open work to scope to."""
+    comp = compute_components(issues)
+    if root not in comp:
+        raise ValueError(f"#{root} is not an open issue — cannot scope to its DAG")
+    target = comp[root]
+    return [i for i in issues
+            if i["state"].upper() != "OPEN" or comp[i["number"]] == target]
+
+
+def apply_assume_done(issues: list[dict], done: set[int]) -> list[dict]:
+    """Treat the listed issues as CLOSED (stacked delivery: their slices are
+    already commits on the run's branch, so dependents may proceed even
+    though the tracker still shows them open until the final PR merges)."""
+    return [{**i, "state": "CLOSED"} if i["number"] in done else i for i in issues]
 
 
 def compute_frontier(issues: list[dict], cfg: dict, limit: int | None = None) -> dict:
@@ -390,6 +410,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_plan = sub.add_parser("plan", help="compute the runnable frontier")
     p_plan.add_argument("--limit", type=int, default=None)
+    p_plan.add_argument("--dag", type=int, default=None, metavar="N",
+                        help="scope to the DAG component containing issue N")
+    p_plan.add_argument("--assume-done", default="", metavar="N,N",
+                        help="treat these issues as closed (stacked delivery: slices already on the branch)")
 
     p_claim = sub.add_parser("claim", help="claim an issue for a run")
     p_claim.add_argument("number", type=int)
@@ -423,7 +447,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(cfg, indent=2))
     elif args.cmd == "plan":
         limit = args.limit if args.limit is not None else cfg["loop"]["max_issues_per_run"]
-        result = compute_frontier(fetch_issues(), cfg, limit=limit)
+        issues = fetch_issues()
+        if args.dag is not None:
+            try:
+                issues = scope_to_dag(issues, args.dag)
+            except ValueError as e:
+                print(json.dumps({"error": str(e)}))
+                return 2
+        if args.assume_done:
+            done = {int(n) for n in args.assume_done.split(",") if n.strip()}
+            issues = apply_assume_done(issues, done)
+        result = compute_frontier(issues, cfg, limit=limit)
         print(json.dumps(result, indent=2))
     elif args.cmd == "claim":
         if cfg["loop"]["claim_mode"] == "assign":
