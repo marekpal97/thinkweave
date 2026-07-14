@@ -145,9 +145,7 @@ def tool_schemas() -> list:
 def handle_search(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from thinkweave.retrieval.search import Search
-
-    s = Search(config=cfg)
+    from thinkweave.operations import search as ops_search
 
     mode = args.get("mode", "fts")
     type_arg = args.get("type") or ""
@@ -156,9 +154,10 @@ def handle_search(cfg: Config, args: dict):
     limit = args.get("limit", 10)
 
     if mode == "similar":
-        results = s.similar(query, project=project, note_type=type_arg, limit=limit)
+        results = ops_search.query_similar(
+            cfg, query, note_type=type_arg, project=project, limit=limit
+        )
         if not results:
-            s.close()
             msg = (
                 "No semantic results — either the embeddings DB is missing "
                 "(run `weave index --embed` with OPENAI_API_KEY set) or no "
@@ -166,10 +165,13 @@ def handle_search(cfg: Config, args: dict):
             )
             return [TextContent(type="text", text=msg)]
     elif mode == "hybrid":
-        results = s.hybrid_search(query, project=project, note_type=type_arg, limit=limit)
+        results = ops_search.query_hybrid(
+            cfg, query, note_type=type_arg, project=project, limit=limit
+        )
     else:
-        results = s.search(
-            query=query,
+        results = ops_search.query_fts(
+            cfg,
+            query,
             note_type=type_arg,
             project=project,
             tags=args.get("tags"),
@@ -178,7 +180,6 @@ def handle_search(cfg: Config, args: dict):
             until=args.get("until", ""),
             limit=limit,
         )
-    s.close()
 
     if not results:
         return [TextContent(type="text", text="No results found.")]
@@ -195,10 +196,10 @@ def handle_search(cfg: Config, args: dict):
 def handle_context(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from thinkweave.retrieval.search import Search
+    from thinkweave.operations.search import query_context
 
-    s = Search(config=cfg)
-    results = s.get_context(
+    results = query_context(
+        cfg,
         project=args.get("project", ""),
         tags=args.get("tags"),
         query=args.get("query", ""),
@@ -208,7 +209,6 @@ def handle_context(cfg: Config, args: dict):
         since=args.get("since", ""),
         until=args.get("until", ""),
     )
-    s.close()
 
     if not results:
         return [TextContent(type="text", text="No context available.")]

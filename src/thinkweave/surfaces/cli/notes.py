@@ -28,7 +28,7 @@ def cmd_add(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    from thinkweave.retrieval.search import Search
+    from thinkweave.operations import search as ops_search
 
     cfg = load_config()
 
@@ -36,14 +36,18 @@ def cmd_search(args: argparse.Namespace) -> None:
     if args.semantic and mode == "fts":
         mode = "similar"
 
-    s = Search(config=cfg)
-
     type_arg: str | list[str] = args.type
     if args.type and "," in args.type:
         type_arg = [t.strip() for t in args.type.split(",") if t.strip()]
 
+    # Concept lookup is a distinct retrieval operation (search_by_concept),
+    # not part of the fts/similar/hybrid seam wired through operations.search,
+    # so it keeps its own Search instance until an ops wrapper exists.
     if args.concept:
+        from thinkweave.retrieval.search import Search
+
         concept_list = [c.strip() for c in args.concept.split(",") if c.strip()]
+        s = Search(config=cfg)
         results = s.search_by_concept(
             concept=concept_list if len(concept_list) > 1 else concept_list[0],
             project=args.project,
@@ -74,29 +78,28 @@ def cmd_search(args: argparse.Namespace) -> None:
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
 
     if mode == "similar":
-        results = s.similar(
-            args.query, project=args.project, note_type=type_arg, limit=args.limit
+        results = ops_search.query_similar(
+            cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
         )
         if not results:
-            s.close()
             print(
                 "No semantic results. If embeddings aren't set up yet, run "
                 "`weave index --embed` with OPENAI_API_KEY set."
             )
             return
     elif mode == "hybrid":
-        results = s.hybrid_search(
-            args.query, project=args.project, note_type=type_arg, limit=args.limit
+        results = ops_search.query_hybrid(
+            cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
         )
     else:
-        results = s.search(
-            query=args.query,
+        results = ops_search.query_fts(
+            cfg,
+            args.query,
             note_type=type_arg,
             project=args.project,
             tags=tags,
             limit=args.limit,
         )
-    s.close()
 
     if not results:
         print("No results found.")
@@ -170,21 +173,20 @@ def cmd_link(args: argparse.Namespace) -> None:
 
 
 def cmd_context(args: argparse.Namespace) -> None:
-    from thinkweave.retrieval.search import Search
+    from thinkweave.operations.search import query_context
 
     cfg = load_config()
-    s = Search(config=cfg)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     concepts = [c.strip() for c in args.concepts.split(",") if c.strip()] if args.concepts else None
 
-    results = s.get_context(
+    results = query_context(
+        cfg,
         project=args.project,
         tags=tags,
         query=args.query,
         concepts=concepts,
         limit=args.limit,
     )
-    s.close()
 
     if not results:
         print("No context available.")
