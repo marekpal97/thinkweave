@@ -1,6 +1,11 @@
-# Issue-to-PR loop configuration.
+# Issue-to-PR loop configuration — the DEFAULTS.
 # Read by scripts/issue_loop.py (deterministic rail) and the /issue-loop
 # command (orchestration). Semantics: docs/agents/issue-loop.md.
+#
+# Per-run posture belongs on the command line, not in edits to this file:
+# every knob in [loop]/[labels]/[tdd] can be overridden for one run via
+# `--set [section.]key=value` (section defaults to loop), with /issue-loop
+# sugar `--stacked` and `--max-issues <n>`. Gates are file-only by design.
 
 [loop]
 max_issues_per_run = 3   # token guardrail: issues processed per invocation

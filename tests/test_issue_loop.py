@@ -337,3 +337,47 @@ def test_assume_done_does_not_mutate_input():
     issues = [_issue(16)]
     issue_loop.apply_assume_done(issues, {16})
     assert issues[0]["state"] == "OPEN"
+
+
+# ---------------------------------------------------------------------------
+# --set overrides — per-run posture on top of loop.toml defaults
+
+
+def test_parse_override_section_defaults_to_loop():
+    assert issue_loop.parse_override("delivery=stacked") == ("loop", "delivery", "stacked")
+
+
+def test_parse_override_toml_scalars():
+    assert issue_loop.parse_override("max_issues_per_run=6") == ("loop", "max_issues_per_run", 6)
+    assert issue_loop.parse_override("training_mode=false") == ("loop", "training_mode", False)
+    assert issue_loop.parse_override('tdd.mode="never"') == ("tdd", "mode", "never")
+    assert issue_loop.parse_override("labels.runnable=agent-go") == ("labels", "runnable", "agent-go")
+
+
+def test_parse_override_malformed():
+    for bad in ("delivery", "=stacked", "delivery=", ""):
+        with pytest.raises(ValueError):
+            issue_loop.parse_override(bad)
+
+
+def test_apply_overrides_wins_over_file(tmp_path):
+    p = tmp_path / "loop.toml"
+    p.write_text('[loop]\ndelivery = "pr-per-issue"\nmax_issues_per_run = 3\n', encoding="utf-8")
+    cfg = issue_loop.apply_overrides(
+        issue_loop.load_config(p), ["delivery=stacked", "max_issues_per_run=6"]
+    )
+    assert cfg["loop"]["delivery"] == "stacked"
+    assert cfg["loop"]["max_issues_per_run"] == 6
+
+
+def test_apply_overrides_rejects_unknown_key_and_section(tmp_path):
+    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    with pytest.raises(ValueError, match="unknown key"):
+        issue_loop.apply_overrides(cfg, ["deliverey=stacked"])  # typo protection
+    with pytest.raises(ValueError, match="not overridable"):
+        issue_loop.apply_overrides(cfg, ["gates.tests=off"])  # gates are file-only
+
+
+def test_apply_overrides_noop_without_specs(tmp_path):
+    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    assert issue_loop.apply_overrides(cfg, []) is cfg

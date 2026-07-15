@@ -1,7 +1,7 @@
 ---
 name: issue-loop
 description: "Drain the ready-for-agent frontier of the GitHub issue DAG: implement each unblocked issue in an isolated worktree, run the configured gate pipeline (tests/diff/acceptance/review), and open a draft PR per issue. Headless-safe."
-argument-hint: "[issue-number] | --dag <issue> to work one DAG | nothing to drain the frontier"
+argument-hint: "[issue-number] | --dag <issue> to work one DAG | --stacked | --max-issues <n> | --set key=value | nothing to drain the frontier"
 disable-model-invocation: true
 ---
 
@@ -31,9 +31,22 @@ Issue-tracker conventions: `docs/agents/issue-tracker.md`; label vocabulary:
 
 ## 0. Resolve config and plan
 
+**Per-run overrides.** `loop.toml` holds the *defaults*; the arguments set
+this run's *posture*. Translate sugar flags to rail overrides — `--stacked`
+→ `--set delivery=stacked`, `--max-issues <n>` → `--set
+max_issues_per_run=<n>` — and pass any explicit `--set [section.]key=value`
+through verbatim. Collect the resulting `--set` flags once and append them
+to **every** `issue_loop.py` invocation in this run (`config`, `plan`,
+`claim`, `release`, `check`, `trajectory`), so the deterministic rail and
+this orchestrator always see the same effective config. Never edit
+`loop.toml` on the user's behalf to change one run. Gates are file-only by
+design (the gate pipeline is a trust boundary, not a run-time posture) —
+the rail rejects `--set` on unknown keys or gate config, and a nonsensical
+combination (e.g. `--stacked` without `--dag`) is still an error per §1e.
+
 ```bash
-python scripts/issue_loop.py config          # resolved knobs + gates
-python scripts/issue_loop.py plan            # frontier / blocked / claimed
+python scripts/issue_loop.py config <set-flags>   # resolved knobs + gates
+python scripts/issue_loop.py plan <set-flags>     # frontier / blocked / claimed
 ```
 
 If the user passed an issue number as argument, the frontier is just that

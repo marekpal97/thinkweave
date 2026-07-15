@@ -85,6 +85,45 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     return cfg
 
 
+def parse_override(spec: str) -> tuple[str, str, object]:
+    """Parse one ``--set [section.]key=value`` spec.
+
+    The section defaults to ``loop`` (the common case: ``--set
+    delivery=stacked``). The value is parsed as a TOML scalar so the
+    override language is exactly loop.toml's (``6`` → int, ``true`` → bool,
+    quoted or bare words → str).
+    """
+    head, sep, raw = spec.partition("=")
+    if not sep or not head.strip() or not raw.strip():
+        raise ValueError(f"malformed --set '{spec}' (expected [section.]key=value)")
+    section, dot, key = head.strip().partition(".")
+    if not dot:
+        section, key = "loop", section
+    try:
+        value = tomllib.loads(f"v = {raw.strip()}")["v"]
+    except tomllib.TOMLDecodeError:
+        value = raw.strip()  # bare word: a plain string, e.g. delivery=stacked
+    return section, key, value
+
+
+def apply_overrides(cfg: dict, specs: list[str]) -> dict:
+    """Per-run config overrides, applied after loop.toml.
+
+    Only existing scalar knobs may be overridden — an unknown section or key
+    is a hard error (typo protection), and gates are file-only by design
+    (the gate pipeline is a trust boundary, not a run-time posture).
+    """
+    for spec in specs:
+        section, key, value = parse_override(spec)
+        if section not in ("loop", "labels", "tdd"):
+            raise ValueError(f"--set section '{section}' not overridable (loop | labels | tdd)")
+        if key not in DEFAULT_CONFIG[section]:
+            known = ", ".join(sorted(DEFAULT_CONFIG[section]))
+            raise ValueError(f"--set unknown key '{section}.{key}' (known: {known})")
+        cfg[section][key] = value
+    return cfg
+
+
 # ---------------------------------------------------------------------------
 # DAG parsing — pure functions over issue bodies
 
@@ -406,30 +445,38 @@ def fetch_issues() -> list[dict]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--set", action="append", dest="overrides", default=[],
+        metavar="[SECTION.]KEY=VALUE",
+        help="per-run config override, e.g. --set delivery=stacked "
+             "--set max_issues_per_run=6 (section defaults to 'loop'; "
+             "repeatable; applied after loop.toml; gates are file-only)",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_plan = sub.add_parser("plan", help="compute the runnable frontier")
+    p_plan = sub.add_parser("plan", help="compute the runnable frontier", parents=[common])
     p_plan.add_argument("--limit", type=int, default=None)
     p_plan.add_argument("--dag", type=int, default=None, metavar="N",
                         help="scope to the DAG component containing issue N")
     p_plan.add_argument("--assume-done", default="", metavar="N,N",
                         help="treat these issues as closed (stacked delivery: slices already on the branch)")
 
-    p_claim = sub.add_parser("claim", help="claim an issue for a run")
+    p_claim = sub.add_parser("claim", help="claim an issue for a run", parents=[common])
     p_claim.add_argument("number", type=int)
     p_claim.add_argument("--run-id", required=True)
 
-    p_release = sub.add_parser("release", help="release a claimed issue")
+    p_release = sub.add_parser("release", help="release a claimed issue", parents=[common])
     p_release.add_argument("number", type=int)
 
-    sub.add_parser("config", help="print resolved config as JSON")
+    sub.add_parser("config", help="print resolved config as JSON", parents=[common])
 
-    p_check = sub.add_parser("check", help="run one deterministic gate")
+    p_check = sub.add_parser("check", help="run one deterministic gate", parents=[common])
     p_check.add_argument("--gate", required=True)
     p_check.add_argument("--cwd", default=".")
     p_check.add_argument("--base-ref", default="origin/main")
 
-    p_traj = sub.add_parser("trajectory", help="assemble a per-issue trajectory payload (memory feed)")
+    p_traj = sub.add_parser("trajectory", help="assemble a per-issue trajectory payload (memory feed)", parents=[common])
     p_traj.add_argument("number", type=int)
     p_traj.add_argument("--cwd", default=".", help="the issue's implementer worktree")
     p_traj.add_argument("--base-ref", default="origin/main")
@@ -441,7 +488,11 @@ def main(argv: list[str] | None = None) -> int:
     p_traj.add_argument("--run-id", default="")
 
     args = parser.parse_args(argv)
-    cfg = load_config()
+    try:
+        cfg = apply_overrides(load_config(), args.overrides)
+    except ValueError as e:
+        print(json.dumps({"error": str(e)}))
+        return 2
 
     if args.cmd == "config":
         print(json.dumps(cfg, indent=2))
