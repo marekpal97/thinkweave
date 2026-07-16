@@ -34,6 +34,16 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "mcp__thinkweave__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp weave-hook post_tool_use",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "Stop": [

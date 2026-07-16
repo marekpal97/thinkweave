@@ -648,6 +648,31 @@ class TestPluginManifestContract:
                 "bare `weave-hook` is not on PATH for plugin-route users"
             )
 
+    def test_hooks_json_covers_mcp_post_tool_use_matcher(self):
+        """The RLVR context-served substrate needs PostToolUse to fire on
+        ``mcp__thinkweave__*`` tool calls (see
+        operations/retrieval_log.RETRIEVAL_TOOLS). The matcher existed only
+        in the ``weave hooks install`` machine route (#50) — plugin-route
+        users never logged a single MCP retrieval. hooks/hooks.json is the
+        single authoring place for hook shapes, so the matcher must live
+        here; the installer derives from this file."""
+        hooks = json.loads(
+            (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        matchers = {e["matcher"] for e in hooks["hooks"]["PostToolUse"]}
+        assert "mcp__thinkweave__.*" in matchers, (
+            "hooks.json PostToolUse lacks the MCP-tool matcher — the plugin "
+            "route never feeds retrieval_log/context_served without it"
+        )
+        mcp_entry = next(
+            e for e in hooks["hooks"]["PostToolUse"]
+            if e["matcher"] == "mcp__thinkweave__.*"
+        )
+        hook = mcp_entry["hooks"][0]
+        # Same handler entry point + timeout as the action-tool gate.
+        assert hook["command"].endswith(" post_tool_use")
+        assert hook["timeout"] == 30
+
     def test_agents_shipped_at_plugin_root(self):
         """Every worker the dream registry fans out to (plus the drain
         Path B writers) must exist under the auto-discovered `agents/`
