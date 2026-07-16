@@ -28,7 +28,7 @@ def cmd_config(args: argparse.Namespace) -> None:
     repo checkout and a ``uv tool install``, so onboarding/skills shell out to
     these rather than ``uv run python -c`` (only resolves the module from the
     repo dir) or a hardcoded XDG path (wrong on Windows, where the config lives
-    under ``%APPDATA%``).
+    under ``%%APPDATA%%``).
     """
     from thinkweave.core.config import (
         is_vault_initialized,
