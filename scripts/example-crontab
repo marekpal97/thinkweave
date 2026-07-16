@@ -19,7 +19,13 @@
 # via the standard installers, which land binaries in ~/.local/bin.
 # Without this every line below silently fails with "command not found"
 # in the cron log.
-PATH=$HOME/.local/bin:$PATH
+#
+# WARNING: cron performs NO variable expansion in environment lines —
+# `PATH=$HOME/.local/bin:$PATH` would set PATH to that *literal string*,
+# resolving nothing (not even /usr/bin, so `flock` below dies with
+# "command not found" discarded to a nonexistent MTA). Spell the whole
+# thing out; replace /home/you with your real home directory.
+PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Daily research cycle: discover gaps, drain queue, refresh hubs.
 0 8 * * *  cd /path/to/thinkweave && uv run weave flow run daily-research >> ~/.cache/thinkweave/cron.log 2>&1

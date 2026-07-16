@@ -110,6 +110,22 @@ class TestRegistry:
         )
         assert jobs["x"].enabled is False
 
+    def test_serialize_parsed_and_defaults_false(self):
+        jobs = _parse(
+            {
+                "jobs": {
+                    "locked": {
+                        "cadence": "0 3 * * *",
+                        "command": "claude -p /dream",
+                        "serialize": True,
+                    },
+                    "plain": {"cadence": "0 4 * * *", "command": "weave foo"},
+                }
+            }
+        )
+        assert jobs["locked"].serialize is True
+        assert jobs["plain"].serialize is False
+
     def test_entry_missing_command_skipped(self):
         jobs = _parse({"jobs": {"x": {"cadence": "0 3 * * *"}}})
         assert "x" not in jobs
@@ -127,6 +143,10 @@ class TestRegistry:
         assert "embeddings-keepwarm" in jobs and jobs["embeddings-keepwarm"].enabled
         assert jobs["dream"].env == ("ANTHROPIC_API_KEY",)
         assert jobs["embeddings-keepwarm"].env == ("OPENAI_API_KEY",)
+        # /dream must never overlap itself (SQLite index race) — the template
+        # ships it serialized; nothing else needs the lock.
+        assert jobs["dream"].serialize is True
+        assert jobs["embeddings-keepwarm"].serialize is False
 
 
 # --------------------------------------------------------------------------- #
@@ -243,7 +263,10 @@ class TestCrontabBackend:
         block = CrontabBackend(config).render(self._jobs())
         assert block.startswith(FENCE_START)
         assert block.rstrip().endswith(FENCE_END)
-        assert "PATH=$HOME/.local/bin:$PATH" in block
+        # Fully expanded — cron does no variable expansion in env lines, so
+        # a $HOME/$PATH reference would be a literal (and broken) PATH.
+        assert f"PATH={Path.home()}/.local/bin:/usr/local/sbin" in block
+        assert "$PATH" not in block and "$HOME" not in block
         # env passthrough, per-job log, cadence preserved
         assert (
             '0 3 * * * ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" /abs/claude -p /dream '
@@ -255,6 +278,44 @@ class TestCrontabBackend:
         )
         # disabled job rendered commented
         assert "# (disabled) 0 */2 * * *" in block
+
+    def test_serialize_wraps_in_flock(self, config, monkeypatch):
+        # registry and cron share the global shutil module — one patch
+        # serves both call sites (two setattrs would clobber each other).
+        monkeypatch.setattr(
+            "thinkweave.scheduling.registry.shutil.which",
+            lambda name: "/usr/bin/flock" if name == "flock" else f"/abs/{name}",
+        )
+        monkeypatch.setattr(
+            "thinkweave.scheduling.cron.user_cache_dir", lambda: Path("/cache/pm")
+        )
+        job = ScheduledJob(
+            "dream", "0 3 * * *", "claude -p /dream", runner="direct",
+            env=("ANTHROPIC_API_KEY",), log="dream.log", serialize=True,
+        )
+        block = CrontabBackend(config).render([job])
+        assert (
+            '0 3 * * * ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" '
+            "/usr/bin/flock -n /tmp/thinkweave-dream.lock /abs/claude -p /dream "
+            "--dangerously-skip-permissions >> /cache/pm/dream.log 2>&1" in block
+        )
+
+    def test_serialize_degrades_without_flock(self, config, monkeypatch):
+        """Stock macOS has no flock: render the line unguarded, not broken."""
+        monkeypatch.setattr(
+            "thinkweave.scheduling.registry.shutil.which",
+            lambda name: None if name == "flock" else f"/abs/{name}",
+        )
+        monkeypatch.setattr(
+            "thinkweave.scheduling.cron.user_cache_dir", lambda: Path("/cache/pm")
+        )
+        job = ScheduledJob(
+            "dream", "0 3 * * *", "claude -p /dream", runner="direct",
+            serialize=True,
+        )
+        block = CrontabBackend(config).render([job])
+        assert "flock" not in block
+        assert "/abs/claude -p /dream" in block
 
     def test_install_splices_and_preserves_foreign(self, config, monkeypatch):
         captured = {}

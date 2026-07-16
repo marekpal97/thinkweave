@@ -10,6 +10,7 @@ point of the per-OS backend split (see ``scheduling/__init__.py``).
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,9 +20,22 @@ from thinkweave.scheduling.registry import ScheduledJob, resolve_command
 FENCE_START = "# --- thinkweave cron block ---"
 FENCE_END = "# --- end thinkweave ---"
 
-# PATH hardening — cron's default PATH is minimal and won't find `uv` or
-# `claude` after a standard installer drop into ~/.local/bin.
-_PATH_LINE = "PATH=$HOME/.local/bin:$PATH"
+# Baseline system dirs appended after ~/.local/bin in the rendered PATH line.
+_SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def _path_line() -> str:
+    """The PATH env line for the fenced block, fully spelled out.
+
+    cron performs NO variable expansion in ``KEY=value`` environment lines —
+    ``PATH=$HOME/.local/bin:$PATH`` sets PATH to the *literal* string
+    ``$HOME/.local/bin:$PATH``, which resolves nothing: not the user's
+    installer drops in ~/.local/bin, and (because the literal ``$PATH``
+    replaced it) not even /usr/bin. That exact line shipped here until
+    2026-07 and made ``flock``/``uv``/``weave`` unresolvable inside every
+    fired job. Expand at render time instead.
+    """
+    return f"PATH={Path.home()}/.local/bin:{_SYSTEM_PATH}"
 
 
 class CrontabBackend:
@@ -41,7 +55,7 @@ class CrontabBackend:
         repo_root = Path.cwd()
         log_dir = user_cache_dir()
 
-        lines = [FENCE_START, _PATH_LINE]
+        lines = [FENCE_START, _path_line()]
         for job in jobs:
             line = self._render_job(job, repo_root=repo_root, log_dir=log_dir)
             lines.append(line if job.enabled else f"# (disabled) {line}")
@@ -52,6 +66,18 @@ class CrontabBackend:
         self, job: ScheduledJob, *, repo_root: Path, log_dir: Path
     ) -> str:
         command = resolve_command(job, repo_root=repo_root)
+        # serialize: wrap in `flock -n` so a firing that overlaps a
+        # still-running previous cycle skips instead of racing it (the
+        # /dream SQLite-index race). Exec form — no `-c`, so the command
+        # needs no re-quoting and the trailing redirect still applies to
+        # the whole line. /tmp is deliberate: locks must not survive a
+        # reboot. Absolute binary because a user crontab may carry its own
+        # (broken) PATH line above ours. Stock macOS has no flock — render
+        # unguarded there rather than emit a line that dies at fire time.
+        if job.serialize:
+            flock = shutil.which("flock")
+            if flock:
+                command = f"{flock} -n /tmp/thinkweave-{job.name}.lock {command}"
         # Env passthrough, reproducing the example-crontab `KEY="${KEY}"`
         # form so cron's shell expands the value from its own environment.
         env_prefix = "".join(f'{name}="${{{name}}}" ' for name in job.env)

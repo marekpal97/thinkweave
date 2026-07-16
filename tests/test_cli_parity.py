@@ -191,3 +191,86 @@ class TestPrompts:
                       json=False)
             )
         assert exc.value.code == 1
+
+
+class TestUpdateStructuredValues:
+    """`weave update` must round-trip the structured frontmatter the
+    dream-judge-worker writes via its MCP-fallback rail: prediction_history
+    is a list of dicts, which key=value tokens historically mangled
+    (comma-split into strings)."""
+
+    HISTORY = [
+        {"match": "pending", "judged_at": "2026-07-01T00:00:00+00:00", "reason": "seeded"},
+        {"match": "confirmed", "judged_at": "2026-07-17T00:00:00+00:00", "reason": "successor dec-b declared supersedes"},
+    ]
+
+    def _seed(self, vault: VaultManager) -> str:
+        path = vault.create_note(
+            NoteType.DECISION, "Test decision", body="Body.", project="t",
+            extra_frontmatter={"predicted_outcome": "check X", "prediction_history": []},
+        )
+        from thinkweave.core.vault import parse_frontmatter
+        return parse_frontmatter(path.read_text(encoding="utf-8"))[0]["id"]
+
+    def _read_fm(self, cfg: Config, note_id: str) -> dict:
+        from thinkweave.core.vault import parse_frontmatter
+        idx = Indexer(config=cfg)
+        row = idx.db.execute(
+            "SELECT path FROM notes WHERE id = ?", (note_id,)
+        ).fetchone()
+        idx.close()
+        path = cfg.vault_root / row["path"]
+        return parse_frontmatter(path.read_text(encoding="utf-8"))[0]
+
+    def test_fm_token_json_value(self, cfg, vault):
+        from thinkweave.surfaces.cli.notes import cmd_update
+        note_id = self._seed(vault)
+        Indexer(config=cfg).rebuild(full=True)
+        cmd_update(_args(
+            note_id=note_id,
+            frontmatter=[f"prediction_history={json.dumps(self.HISTORY)}"],
+            body_append="", frontmatter_json="",
+        ))
+        fm = self._read_fm(cfg, note_id)
+        assert fm["prediction_history"] == self.HISTORY
+
+    def test_frontmatter_json_file(self, cfg, vault, tmp_path):
+        from thinkweave.surfaces.cli.notes import cmd_update
+        note_id = self._seed(vault)
+        Indexer(config=cfg).rebuild(full=True)
+        payload = tmp_path / "updates.json"
+        payload.write_text(json.dumps({
+            "prediction_history": self.HISTORY,
+            "prediction_match": "confirmed",
+            "judged_at": "2026-07-17T00:00:00+00:00",
+        }), encoding="utf-8")
+        cmd_update(_args(
+            note_id=note_id, frontmatter=[],
+            body_append="", frontmatter_json=str(payload),
+        ))
+        fm = self._read_fm(cfg, note_id)
+        assert fm["prediction_history"] == self.HISTORY
+        assert fm["prediction_match"] == "confirmed"
+
+    def test_explicit_token_wins_over_json_file(self, cfg, vault, tmp_path):
+        from thinkweave.surfaces.cli.notes import cmd_update
+        note_id = self._seed(vault)
+        Indexer(config=cfg).rebuild(full=True)
+        payload = tmp_path / "updates.json"
+        payload.write_text(json.dumps({"prediction_match": "contradicted"}), encoding="utf-8")
+        cmd_update(_args(
+            note_id=note_id, frontmatter=["prediction_match=confirmed"],
+            body_append="", frontmatter_json=str(payload),
+        ))
+        assert self._read_fm(cfg, note_id)["prediction_match"] == "confirmed"
+
+    def test_legacy_comma_list_unchanged(self, cfg, vault):
+        from thinkweave.surfaces.cli.notes import _parse_fm_token
+        assert _parse_fm_token("tags=a,b,c") == ("tags", ["a", "b", "c"])
+        assert _parse_fm_token("flag=true") == ("flag", True)
+        assert _parse_fm_token("plain=hello") == ("plain", "hello")
+
+    def test_malformed_json_falls_back_to_string(self):
+        from thinkweave.surfaces.cli.notes import _parse_fm_token
+        key, val = _parse_fm_token("x=[not json")
+        assert key == "x" and val == "[not json"
