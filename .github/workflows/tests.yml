@@ -1,0 +1,55 @@
+name: tests
+
+# The suite is hermetic (no network, no API keys — external calls are mocked or
+# importorskip'd) and runs in ~75s for ~1900 tests, so it fits CI cleanly.
+# `--all-extras` installs the optional surfaces (mcp / embeddings / news /
+# gemini / youtube) the suite exercises; the `mcp` extra in particular is
+# required or ~18 MCP-surface tests fail with ModuleNotFoundError.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies (all optional surfaces + dev group)
+        run: uv sync --all-extras
+
+      - name: Run test suite
+        # Perf assertions can be flaky on shared CI runners; keep them in the
+        # run but tolerate host jitter by deselecting on the slowest matrix leg
+        # if it ever proves noisy: `-m "not perf"`.
+        run: uv run pytest -q -p no:cacheprovider
+
+  lint:
+    runs-on: ubuntu-latest
+    # Informational for now: the tree has ~149 pre-existing ruff findings
+    # (mostly F401 unused imports in tests). Flip `continue-on-error` off once a
+    # dedicated cleanup pass lands, so lint becomes a required check.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Ruff
+        run: uvx ruff check src tests

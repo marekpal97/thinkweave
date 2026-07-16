@@ -121,7 +121,16 @@ search = "\"version\": \"{current_version}\""
 replace = "\"version\": \"{new_version}\""
 
 [dependency-groups]
+# `uv sync` installs this group by default. The test suite exercises the MCP
+# surface (surfaces/mcp/tools), which imports the optional `mcp` extra — so
+# `mcp` belongs here even though it stays an OPTIONAL runtime extra for the
+# shipped package (dependency-groups are dev-only and never published). Without
+# it a fresh `uv sync` + `pytest` hard-fails ~18 MCP tests with
+# ModuleNotFoundError instead of exercising the product's core surface.
+# CI installs the full surface with `uv sync --all-extras` (see the CI note in
+# the PR / docs) so embeddings/news/gemini/youtube paths are covered too.
 dev = [
     "pytest>=9.0.2",
     "bump-my-version>=0.28",
+    "mcp>=1.0",
 ]
