@@ -28,6 +28,10 @@
 #              (~/.cache/thinkweave on Linux, %LOCALAPPDATA%\thinkweave
 #              on Windows).
 #   enabled  — false jobs are rendered commented-out (cron) / skipped (Windows).
+#   serialize — the job must never overlap itself. The crontab backend wraps
+#              the line in `flock -n` (where flock exists; stock macOS lacks
+#              it); Windows Task Scheduler already refuses to start a new
+#              instance while the previous one runs, so no wrapper is needed.
 
 jobs:
   # Embeddings keep-warm + incremental SQLite index refresh. Without it,
@@ -43,6 +47,9 @@ jobs:
 
   # Nightly autonomous vault hygiene + synthesis + composition. One entry
   # replaces the former three (/dream, /wrap catch-up, /judge-prediction).
+  # serialize: a big cycle (essence backfill, busy day) can overrun the
+  # cadence, and /dream has no internal lock — an overlapping firing would
+  # race the same SQLite index + maintenance.jsonl.
   dream:
     cadence: "0 3 * * *"
     command: "claude -p /dream"
@@ -50,6 +57,7 @@ jobs:
     env: [ANTHROPIC_API_KEY]
     log: dream.log
     enabled: true
+    serialize: true
 
   # Daily research cycle: discover gaps, drain queue, refresh hubs.
   # Disabled by default — enable once you've configured source types and

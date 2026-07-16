@@ -29,6 +29,12 @@ A job carries everything needed to reproduce the historic
   nothing about whether a job is itself an API client.
 - ``log``      — log filename, relative to :func:`thinkweave.core.config
   .user_cache_dir`. Each job logs to its own file (``dream.log`` etc.).
+- ``serialize`` — the job must never overlap itself (e.g. ``/dream`` races
+  its own next firing on the SQLite index when a cycle overruns the
+  cadence). The crontab backend wraps the entry in ``flock -n`` where
+  ``flock`` exists (Linux; stock macOS lacks it). Windows Task Scheduler
+  needs nothing: tasks created via ``schtasks`` default to the
+  "Do not start a new instance" multiple-instances policy.
 """
 
 from __future__ import annotations
@@ -55,6 +61,7 @@ class ScheduledJob:
     env: tuple[str, ...] = ()
     log: str | None = None
     enabled: bool = True
+    serialize: bool = False
 
 
 def scheduling_path(config: Config) -> Path:
@@ -102,6 +109,7 @@ def _parse(raw: dict) -> dict[str, ScheduledJob]:
         log = spec.get("log")
         log = str(log).strip() if log else None
         enabled = bool(spec.get("enabled", True))
+        serialize = bool(spec.get("serialize", False))
         out[name] = ScheduledJob(
             name=name,
             cadence=cadence,
@@ -110,6 +118,7 @@ def _parse(raw: dict) -> dict[str, ScheduledJob]:
             env=env,
             log=log,
             enabled=enabled,
+            serialize=serialize,
         )
     return out
 

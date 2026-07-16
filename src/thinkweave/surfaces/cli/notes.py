@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -201,6 +202,16 @@ def _parse_fm_token(kv: str) -> tuple[str, object]:
     if "=" not in kv:
         print(f"Bad --frontmatter token (need key=value): {kv}"); sys.exit(1)
     key, val = kv.split("=", 1)
+    # Structured values: a value that looks like JSON ([...] / {...}) is
+    # parsed as JSON, so list-of-dict fields (e.g. a decision's
+    # prediction_history) survive the CLI round-trip instead of being
+    # comma-split into broken strings. Malformed JSON falls through to the
+    # legacy string handling.
+    if val[:1] in ("[", "{"):
+        try:
+            return key, json.loads(val)
+        except json.JSONDecodeError:
+            pass
     if val.lower() in ("true", "false"):
         return key, val.lower() == "true"
     if "," in val:
@@ -213,6 +224,23 @@ def cmd_update(args: argparse.Namespace) -> None:
     from thinkweave.operations.notes import update_note
     cfg = load_config()
     fm_updates = dict(_parse_fm_token(kv) for kv in args.frontmatter)
+    # --frontmatter-json: a whole updates dict from a file (or '-' = stdin).
+    # The headless-worker path — writing a temp JSON file and passing its
+    # path avoids every layer of shell quoting, which matters doubly under
+    # Windows Git Bash. Explicit -f tokens win on key collision.
+    if getattr(args, "frontmatter_json", None):
+        raw = (
+            sys.stdin.read()
+            if args.frontmatter_json == "-"
+            else Path(args.frontmatter_json).expanduser().read_text(encoding="utf-8")
+        )
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"Bad --frontmatter-json payload: {e}"); sys.exit(1)
+        if not isinstance(loaded, dict):
+            print("Bad --frontmatter-json payload: expected a JSON object"); sys.exit(1)
+        fm_updates = {**loaded, **fm_updates}
     body_append = Path(args.body_append).expanduser().read_text(encoding="utf-8") if args.body_append else ""
     try:
         note = update_note(cfg, args.note_id, frontmatter_updates=fm_updates or None, body_append=body_append)
