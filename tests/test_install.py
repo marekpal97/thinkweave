@@ -27,9 +27,12 @@ from thinkweave.surfaces.cli.install import (
     CLAUDE_MD_BLOCK_BODY,
     CLAUDE_MD_BLOCK_END,
     CLAUDE_MD_BLOCK_START,
+    REQUIRED_SCRIPTS,
     SERVER_NAME,
+    ScriptsCheck,
     _build_server_entry,
     _check_pyproject_reachable,
+    _check_scripts,
     _check_uv_available,
     _detect_project_root,
     _extract_claude_md_block,
@@ -445,7 +448,10 @@ class TestPluginRouteInstall:
     ):
         # stub the script availability check (we don't install thinkweave
         # console scripts in CI's test env via this fixture)
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "thinkweave",
             declares_thinkweave=True,
@@ -467,7 +473,10 @@ class TestPluginRouteInstall:
     def test_plugin_route_respects_no_claude_md_flag(
         self, fake_claude_home, stub_install_validators, monkeypatch
     ):
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "thinkweave",
             declares_thinkweave=True,
@@ -484,7 +493,10 @@ class TestPluginRouteInstall:
         """--vault is a no-op on plugin route because the MCP entry is
         plugin-owned. Surface that explicitly rather than silently
         ignoring."""
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "thinkweave",
             declares_thinkweave=True,
@@ -499,7 +511,10 @@ class TestPluginRouteInstall:
     ):
         """Sanity: with no plugin manifest, the existing pip-route logic
         still kicks in — `cmd_install` writes both MCP entry and CLAUDE.md."""
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
 
         cmd_install(_ns(yes=True))
 
@@ -728,3 +743,125 @@ class TestDevLink:
     def test_dev_unlink_noop_when_absent(self, dev_link_env, capsys):
         cmd_dev_unlink(_ns())
         assert "No dev-link" in capsys.readouterr().out
+
+
+def _fake_scripts_dir(tmp_path: Path, names=REQUIRED_SCRIPTS, exe: bool = False) -> Path:
+    """A controlled fake venv scripts dir containing the console scripts."""
+    d = tmp_path / "venv-scripts"
+    d.mkdir(exist_ok=True)
+    for name in names:
+        f = d / (f"{name}.exe" if exe else name)
+        f.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        f.chmod(0o755)
+    return d
+
+
+class TestCheckScriptsPathDistinction:
+    """Issue #47: `_check_scripts` must distinguish (a) console scripts
+    genuinely missing from the venv (pip-install remediation) from (b)
+    scripts present in the venv's Scripts/bin but that dir absent from
+    PATH (PATH remediation naming the exact dir). Controlled fake venv
+    layout + controlled PATH env — no internals mocked."""
+
+    def test_ok_when_scripts_resolve_on_path(self, tmp_path):
+        scripts_dir = _fake_scripts_dir(tmp_path)
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(scripts_dir))
+        assert check.state == "ok"
+        assert check.missing == []
+
+    def test_venv_off_path_when_scripts_exist_but_dir_not_on_path(self, tmp_path):
+        scripts_dir = _fake_scripts_dir(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(elsewhere))
+        assert check.state == "venv_off_path"
+        assert check.missing == list(REQUIRED_SCRIPTS)
+        assert check.scripts_dir == scripts_dir
+
+    def test_windows_exe_layout_counts_as_present_in_venv(self, tmp_path):
+        """On Windows the console scripts are weave.exe etc. — the venv-
+        presence probe must accept the .exe form."""
+        scripts_dir = _fake_scripts_dir(tmp_path, exe=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(elsewhere))
+        assert check.state == "venv_off_path"
+
+    def test_absent_when_scripts_not_in_venv_either(self, tmp_path):
+        empty_dir = tmp_path / "empty-venv-scripts"
+        empty_dir.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=empty_dir, path_env=str(elsewhere))
+        assert check.state == "absent"
+        assert check.missing == list(REQUIRED_SCRIPTS)
+
+    def test_partial_venv_is_absent_not_off_path(self, tmp_path):
+        """Only some scripts in the venv → a broken install, not a PATH
+        problem. Keep the pip remediation."""
+        scripts_dir = _fake_scripts_dir(tmp_path, names=REQUIRED_SCRIPTS[:1])
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(elsewhere))
+        assert check.state == "absent"
+
+
+class TestInstallPathRemediation:
+    """cmd_install behavior per #47: venv_off_path yields a PATH-specific,
+    actionable message (exact dir + exact shell line), gated on --yes like
+    the other install writes; scripts-absent keeps the pip advice."""
+
+    @pytest.fixture
+    def off_path_env(self, tmp_path, monkeypatch):
+        """Real off-PATH condition via env/tmp control: scripts exist in a
+        fake interpreter scripts dir; PATH points elsewhere."""
+        scripts_dir = _fake_scripts_dir(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(install_mod, "_venv_scripts_dir", lambda: scripts_dir)
+        monkeypatch.setenv("PATH", str(elsewhere))
+        return scripts_dir
+
+    def test_off_path_without_yes_exits_with_path_specific_advice(
+        self, fake_claude_home, stub_install_validators, off_path_env, capsys
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cmd_install(_ns(yes=False))
+        assert exc.value.code != 0
+        err = capsys.readouterr().err
+        # PATH-specific: names the exact dir and the exact shell line
+        assert str(off_path_env) in err
+        assert "not on PATH" in err
+        assert f'export PATH="{off_path_env}:$PATH"' in err
+        # NOT the generic pip advice — the scripts are installed fine
+        assert "pip install" not in err
+        assert "Re-run with --yes" in err
+        # nothing written before consent
+        assert not fake_claude_home["claude_json"].exists()
+
+    def test_off_path_with_yes_warns_and_continues(
+        self, fake_claude_home, stub_install_validators, off_path_env, capsys
+    ):
+        cmd_install(_ns(yes=True))
+        captured = capsys.readouterr()
+        assert str(off_path_env) in captured.err
+        assert "not on PATH" in captured.err
+        # install proceeded: MCP entry written
+        cfg = json.loads(fake_claude_home["claude_json"].read_text())
+        assert SERVER_NAME in cfg["mcpServers"]
+
+    def test_absent_scripts_keep_pip_advice(
+        self, fake_claude_home, stub_install_validators, tmp_path, monkeypatch, capsys
+    ):
+        empty_dir = tmp_path / "empty-venv-scripts"
+        empty_dir.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(install_mod, "_venv_scripts_dir", lambda: empty_dir)
+        monkeypatch.setenv("PATH", str(elsewhere))
+        with pytest.raises(SystemExit) as exc:
+            cmd_install(_ns(yes=True))
+        assert exc.value.code != 0
+        err = capsys.readouterr().err
+        assert "required console scripts missing from PATH" in err
+        assert "pip install -e .[all]" in err
