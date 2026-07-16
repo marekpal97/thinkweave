@@ -6,10 +6,13 @@ manifests under ``.claude-plugin/`` — must all produce equivalent server
 entries so that Claude Code's MCP launcher sees the same invocation
 regardless of how the user installed the package.
 
-"Equivalent" here means: same ``args`` list, same ``env`` keys, and
-command resolves to ``uv`` (the absolute path baked into
-``~/.claude.json`` and the bare ``"uv"`` used in checked-in manifests
-are both legitimate forms).
+"Equivalent" here means: every route converges on the same invocation
+``uv run --project <root> --extra mcp weave-mcp``. The checked-in
+manifests (``.mcp.json``, ``.claude-plugin/plugin.json``) reach it via
+the portable launcher ``bin/weave-mcp-launch`` — which resolves uv even
+when the harness PATH omits ``~/.local/bin`` and fails loudly otherwise
+(#52) — while ``weave install`` bakes an absolute uv path resolved at
+install time into ``~/.claude.json``.
 """
 
 from __future__ import annotations
@@ -81,15 +84,33 @@ def _entry_from_plugin_manifest(path: Path) -> dict:
 
 
 class TestMcpInvocationConsistency:
-    """All three scopes resolve to the same launcher + args shape."""
+    """Checked-in manifests launch via the portable launcher; ``weave
+    install`` (machine scope) still writes the uv-run shape with an
+    absolute uv path. The launcher's exec line carries the exact same
+    uv-run invocation, so every route converges (#52)."""
 
-    def test_mcp_json_uses_uv_run_shape(self):
+    LAUNCHER = REPO_ROOT / "bin" / "weave-mcp-launch"
+
+    def test_mcp_json_launches_via_portable_launcher(self):
         entry = _entry_from_mcp_json()
-        assert _command_basename(entry["command"]) == "uv"
-        assert entry["args"][:2] == ["run", "--project"]
-        assert "--extra" in entry["args"]
-        assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "weave-mcp"
+        assert entry["command"] == "bin/weave-mcp-launch"
+        assert entry["args"] == []
+
+    def test_mcp_json_has_no_machine_specific_paths(self):
+        """Acceptance #2 of issue #52: a fresh clone must work as-committed
+        — no user-specific absolute paths anywhere in .mcp.json."""
+        raw = PROJECT_MCP_JSON.read_text(encoding="utf-8")
+        assert "/home/" not in raw
+        assert "/Users/" not in raw
+        entry = _entry_from_mcp_json()
+        assert not Path(entry["command"]).is_absolute()
+
+    def test_plugin_manifest_root_launches_via_portable_launcher(self):
+        """Acceptance #3 of issue #52: the plugin route uses the SAME
+        resolution — the launcher, addressed via ${CLAUDE_PLUGIN_ROOT}."""
+        entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
+        assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/weave-mcp-launch"
+        assert entry["args"] == []
 
     def test_weave_install_uses_uv_run_shape(self):
         entry = _entry_from_install()
@@ -99,40 +120,30 @@ class TestMcpInvocationConsistency:
         assert "mcp" in entry["args"]
         assert entry["args"][-1] == "weave-mcp"
 
-    def test_plugin_manifest_root_uses_uv_run_shape(self):
-        entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
-        assert _command_basename(entry["command"]) == "uv"
-        assert entry["args"][:2] == ["run", "--project"]
-        assert "--extra" in entry["args"]
-        assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "weave-mcp"
-
-    def test_all_scopes_normalise_to_same_args_shape(self):
-        """Once the per-scope project path is replaced with a sentinel,
-        every config produces exactly the same args list and env keys."""
-        sentinel = "<PROJECT_PATH>"
+    def test_launcher_execs_the_same_uv_run_shape_as_weave_install(self):
+        """Cross-route equivalence: the launcher's exec line IS the uv-run
+        invocation ``weave install`` writes to ~/.claude.json."""
         install_entry = _entry_from_install()
-        mcp_entry = _entry_from_mcp_json()
-        plugin_root_entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
-
-        norm_install = _normalise_args_for_compare(install_entry["args"], sentinel)
-        norm_mcp = _normalise_args_for_compare(mcp_entry["args"], sentinel)
-        norm_root = _normalise_args_for_compare(plugin_root_entry["args"], sentinel)
-
-        assert norm_install == norm_mcp == norm_root, (
-            f"args shape diverged:\n"
-            f"  install={norm_install}\n"
-            f"  mcp.json={norm_mcp}\n"
-            f"  plugin/root={norm_root}"
+        norm = _normalise_args_for_compare(install_entry["args"], "<PROJECT_PATH>")
+        assert norm == [
+            "run", "--project", "<PROJECT_PATH>", "--extra", "mcp", "weave-mcp",
+        ]
+        launcher_text = self.LAUNCHER.read_text(encoding="utf-8")
+        assert (
+            'exec "$uv_bin" run --project "$root" --extra mcp weave-mcp "$@"'
+            in launcher_text
         )
 
-        # env keys (not values — install may inject THINKWEAVE_VAULT)
-        for entry in (mcp_entry, plugin_root_entry):
+    def test_no_route_bakes_env_vars(self):
+        for entry in (
+            _entry_from_mcp_json(),
+            _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT),
+        ):
             assert entry.get("env", {}) == {}, (
                 f"checked-in manifest must not bake env vars: {entry}"
             )
         # install with vault_root=None matches
-        assert install_entry.get("env", {}) == {}
+        assert _entry_from_install().get("env", {}) == {}
 
 
 class TestClaudeMdBlock:
