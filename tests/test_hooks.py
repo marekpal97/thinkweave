@@ -105,6 +105,138 @@ Some text after."""
         assert _extract_insight_blocks("No insights here.") == []
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CANONICAL_HOOKS = REPO_ROOT / "hooks" / "hooks.json"
+
+
+class TestInstallCanonicalAgreement:
+    """``weave hooks install`` derives from ``hooks/hooks.json`` (#50).
+
+    The installer used to carry a hand-maintained duplicate of the hook
+    definitions, which diverged from the canonical file: stale 5s/10s
+    timeouts (hooks.json says 60s/30s since PR #10), an install-time
+    absolute-path snapshot of ``weave-hook`` (repointing to whatever venv
+    was live at install time — the stale-skills-venv bug), and an event/
+    matcher set that could silently drop anything newly authored in
+    hooks.json. These tests load the canonical file INDEPENDENTLY and pin
+    the installer's public output to it.
+    """
+
+    @staticmethod
+    def _canonical() -> dict:
+        return json.loads(CANONICAL_HOOKS.read_text(encoding="utf-8"))["hooks"]
+
+    @staticmethod
+    def _install(tmp_path: Path, **kwargs) -> dict:
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(exist_ok=True)
+        install_hooks(project_dir=str(project_dir), **kwargs)
+        return json.loads(
+            (project_dir / ".claude" / "settings.local.json").read_text()
+        )
+
+    def test_output_matches_canonical_for_every_event(self, tmp_path: Path):
+        """AC3: for EVERY event in hooks.json, the installed entry agrees on
+        matcher, command (modulo the explicit ${CLAUDE_PLUGIN_ROOT} → repo
+        root transformation), and timeout. A future event added to
+        hooks.json can never be silently dropped by the installer again."""
+        canonical = self._canonical()
+        settings = self._install(tmp_path)
+
+        assert canonical, "canonical hooks.json is empty — test is vacuous"
+        for event, entries in canonical.items():
+            assert event in settings["hooks"], f"installer dropped {event}"
+            for c_entry in entries:
+                matches = [
+                    e for e in settings["hooks"][event]
+                    if e["matcher"] == c_entry["matcher"]
+                ]
+                assert len(matches) == 1, (
+                    f"{event}: expected exactly one installed entry with "
+                    f"matcher {c_entry['matcher']!r}, got {len(matches)}"
+                )
+                c_hook = c_entry["hooks"][0]
+                i_hook = matches[0]["hooks"][0]
+                expected_cmd = c_hook["command"].replace(
+                    "${CLAUDE_PLUGIN_ROOT}", str(REPO_ROOT)
+                )
+                assert i_hook["command"] == expected_cmd, (
+                    f"{event}/{c_entry['matcher']!r}: command diverges from "
+                    f"canonical\n  installed: {i_hook['command']!r}\n"
+                    f"  expected:  {expected_cmd!r}"
+                )
+                assert i_hook.get("timeout") == c_hook.get("timeout"), (
+                    f"{event}: timeout {i_hook.get('timeout')!r} diverges "
+                    f"from canonical {c_hook.get('timeout')!r}"
+                )
+
+    def test_no_stale_timeouts_or_venv_snapshot(self, tmp_path: Path):
+        """AC1 regression pin on the two symptoms #50 names: no 5s/10s
+        timeouts anywhere, and no install-time interpreter/venv path baked
+        into any command — resolution happens at fire time via
+        ``uv run --project <repo>`` (the #52/#47 launcher story)."""
+        settings = self._install(tmp_path)
+        for event, entries in settings["hooks"].items():
+            for entry in entries:
+                for hook in entry["hooks"]:
+                    if "weave-hook" not in hook["command"]:
+                        continue  # foreign hook — not ours to pin
+                    assert hook.get("timeout") not in (5, 10), (
+                        f"{event}: stale hand-maintained timeout "
+                        f"{hook.get('timeout')} survived"
+                    )
+                    assert hook["command"].startswith("uv run --project "), (
+                        f"{event}: command snapshots a script path instead "
+                        f"of fire-time resolution: {hook['command']!r}"
+                    )
+
+    def test_installer_follows_mutated_canonical(self, tmp_path: Path):
+        """AC2 contract test: the installer READS the canonical file rather
+        than carrying a duplicate. Mutate a timeout and add a brand-new
+        event in a temp copy — the installer output must follow both."""
+        mutated = json.loads(CANONICAL_HOOKS.read_text(encoding="utf-8"))
+        mutated["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] = 61
+        mutated["hooks"]["PreCompact"] = [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": (
+                            'uv run --project "${CLAUDE_PLUGIN_ROOT}" '
+                            "--extra mcp weave-hook pre_compact"
+                        ),
+                        "timeout": 42,
+                    }
+                ],
+            }
+        ]
+        alt = tmp_path / "hooks.json"
+        alt.write_text(json.dumps(mutated), encoding="utf-8")
+
+        settings = self._install(tmp_path, hooks_json=str(alt))
+
+        ss_hook = settings["hooks"]["SessionStart"][0]["hooks"][0]
+        assert ss_hook["timeout"] == 61, (
+            "mutated canonical timeout did not flow through — the installer "
+            "still carries a hand-maintained duplicate"
+        )
+        assert "PreCompact" in settings["hooks"], (
+            "event added to the canonical file was silently dropped"
+        )
+        pc_hook = settings["hooks"]["PreCompact"][0]["hooks"][0]
+        assert pc_hook["timeout"] == 42
+        assert pc_hook["command"].endswith(" pre_compact")
+        assert str(REPO_ROOT) in pc_hook["command"]
+
+        # And uninstall round-trips the novel event too.
+        uninstall_hooks(project_dir=str(tmp_path / "project"))
+        settings = json.loads(
+            (tmp_path / "project" / ".claude" / "settings.local.json").read_text()
+        )
+        assert "PreCompact" not in settings.get("hooks", {})
+
+
 class TestHookInstaller:
     def test_install_fresh(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -124,8 +256,10 @@ class TestHookInstaller:
         matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
         assert "Write|Edit|Bash" in matchers
         assert "mcp__thinkweave__.*" in matchers
+        # Timeouts come from the canonical hooks.json (30s for PostToolUse
+        # since PR #10), not the retired hand-maintained 5s default.
         for entry in settings["hooks"]["PostToolUse"]:
-            assert entry["hooks"][0]["timeout"] == 5
+            assert entry["hooks"][0]["timeout"] == 30
 
     def test_install_preserves_existing(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -169,7 +303,8 @@ class TestHookInstaller:
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
-        weave-hook) gets rewritten to the current absolute-path form for
+        weave-hook, install-time absolute-path snapshots) gets rewritten to
+        the current canonical fire-time `uv run --project` form for
         retained phases. The retired PreToolUse phase is stripped instead."""
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
@@ -228,8 +363,8 @@ class TestHookInstaller:
         # were present to retain, so the key disappears).
         assert "PreToolUse" not in settings["hooks"]
         # Retained phases rewritten in place — the legacy single-matcher
-        # PostToolUse entry stays at one and gets rewritten with the
-        # current absolute path; the second MCP-matcher entry is appended
+        # PostToolUse entry stays at one and gets rewritten to the
+        # canonical form; the second MCP-matcher entry is appended
         # on top. Stop has no slot fan-out, so it stays at exactly one.
         assert len(settings["hooks"]["PostToolUse"]) == 2
         assert len(settings["hooks"]["Stop"]) == 1
@@ -242,23 +377,20 @@ class TestHookInstaller:
         mcp_cmd = mcp_entry["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
 
-        # New form: absolute path ending in `weave-hook[.exe] <phase>`.
+        # New form: fire-time resolution via `uv run --project <abs repo>`,
+        # ending in `weave-hook <phase>` — no snapshotted script path.
         for cmd, phase in [
             (action_cmd, "post_tool_use"),
             (mcp_cmd, "post_tool_use"),
             (stop_cmd, "stop"),
         ]:
-            assert cmd.endswith(f" {phase}")
-            assert "weave-hook" in cmd
-            # Absolute path, not bare name (Unix: starts with /;
-            # Windows: drive letter like C:\). Accept either.
-            head = cmd.rsplit(" ", 1)[0]
-            assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
-                f"expected absolute path, got {head!r}"
-            )
+            assert cmd.endswith(f" weave-hook {phase}")
+            assert cmd.startswith("uv run --project ")
+            assert str(REPO_ROOT) in cmd
 
         # Legacy fragments fully replaced.
         assert "python3" not in stop_cmd
+        assert "run_hook.sh" not in json.dumps(settings)
 
     def test_install_strips_retired_pretooluse_but_keeps_foreign(self, tmp_path: Path):
         """Re-running install must remove a stale thinkweave PreToolUse
@@ -302,9 +434,12 @@ class TestHookInstaller:
         assert pre[0]["matcher"] == "Bash"
         assert "weave-hook" not in str(pre)
 
-    def test_install_writes_absolute_path(self, tmp_path: Path):
-        """Fresh install writes an absolute path so /bin/sh can exec
-        the hook without depending on PATH at hook-fire time."""
+    def test_install_writes_absolute_project_root(self, tmp_path: Path):
+        """Fresh install writes `uv run --project <absolute repo root>` so
+        the hook resolves `weave-hook` from the project venv AT FIRE TIME
+        regardless of the caller's cwd — never an install-time snapshot of
+        a script path, which repointed hooks at whatever (possibly stale)
+        venv was live when `weave hooks install` ran (#50)."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         install_hooks(project_dir=str(project_dir))
@@ -312,20 +447,21 @@ class TestHookInstaller:
         settings = json.loads(
             (project_dir / ".claude" / "settings.local.json").read_text()
         )
-        # PreToolUse retired — only the three retained phases get installed.
+        # PreToolUse retired — never installed.
         assert "PreToolUse" not in settings["hooks"]
         for hook_type in ("SessionStart", "PostToolUse", "Stop"):
             for entry in settings["hooks"][hook_type]:
                 cmd = entry["hooks"][0]["command"]
-                head = cmd.rsplit(" ", 1)[0]
-                assert "weave-hook" in head
-                assert head.startswith("/") or (len(head) > 1 and head[1] == ":"), (
-                    f"{hook_type}: expected absolute path, got {head!r}"
+                assert cmd.startswith("uv run --project "), (
+                    f"{hook_type}: expected fire-time uv resolution, "
+                    f"got {cmd!r}"
                 )
-                # The resolved path should actually exist (we just
-                # installed the package in the dev environment running
-                # these tests).
-                assert Path(head).exists(), f"{hook_type}: {head} does not exist"
+                # The embedded project root is absolute and really exists.
+                assert f'"{REPO_ROOT}"' in cmd, (
+                    f"{hook_type}: --project is not the absolute repo "
+                    f"root: {cmd!r}"
+                )
+                assert (REPO_ROOT / "pyproject.toml").exists()
 
     def test_install_idempotent(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -1409,8 +1545,10 @@ class TestUserPromptSubmitHook:
         )
 
     def test_install_user_prompt_submit_timeout_raised(self, tmp_path: Path):
-        # R2 runs in this hook; its timeout is raised above the default 5s to
-        # cover the bounded embedding deadline + render + write-back.
+        # R2 runs in this hook; its timeout is raised above the harness
+        # default to cover the bounded embedding deadline + render +
+        # write-back. The value is authored in hooks/hooks.json (30s since
+        # PR #10) — the installer derives it, never hand-maintains it.
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         install_hooks(project_dir=str(project_dir))
@@ -1418,7 +1556,7 @@ class TestUserPromptSubmitHook:
             (project_dir / ".claude" / "settings.local.json").read_text()
         )
         ups = settings["hooks"]["UserPromptSubmit"][0]
-        assert ups["hooks"][0]["timeout"] == 10
+        assert ups["hooks"][0]["timeout"] == 30
 
 
 class TestPromptTimeEnrichment:

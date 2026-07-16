@@ -2,6 +2,12 @@
 
 Merge pattern — reads existing settings, appends hooks,
 preserves permissions. Non-destructive.
+
+Hook definitions (events, matchers, commands, timeouts) are DERIVED from
+the canonical ``hooks/hooks.json`` at the repo root — the same file the
+plugin route loads. This module carries no duplicate of the definitions
+(#50); the only per-route transformation is substituting
+``${CLAUDE_PLUGIN_ROOT}`` with the absolute repo root.
 """
 
 from __future__ import annotations
@@ -9,8 +15,6 @@ from __future__ import annotations
 import copy
 import difflib
 import json
-import shutil
-import sys
 from pathlib import Path
 
 # Substrings that identify a thinkweave hook command in settings,
@@ -34,38 +38,56 @@ HOOK_MARKERS = (
 )
 
 
-def _resolve_hook_cmd() -> str:
-    """Return an absolute path to the `weave-hook` console script.
+def _canonical_hooks_path() -> Path:
+    """Locate the canonical ``hooks/hooks.json`` shipped at the repo root.
 
-    Resolution order:
-      1. `shutil.which("weave-hook")` — finds it via PATH and picks up the
-         right extension (`.exe` on Windows) automatically.
-      2. `Path(sys.executable).parent / "weave-hook"[.exe]` — pip/uv install
-         console scripts alongside the python that ran the install, so
-         the bin/Scripts directory of the current interpreter is the
-         canonical fallback when PATH is sparse.
-      3. Bare `"weave-hook"` — last-resort, relies on whatever shell
-         Claude Code spawns hooks through finding it on PATH at fire
-         time. Only reached if the entry point isn't installed anywhere
-         discoverable, which shouldn't happen if `weave hooks install`
-         itself resolved.
-
-    The stored command is an absolute path, so Claude Code's hook
-    dispatch (which goes through `/bin/sh` on Unix or `cmd.exe` on
-    Windows) never depends on the shell's PATH inheriting whatever
-    environment the install ran under.
+    Walks up from this module's file — the package is installed editable
+    into the repo venv by ``uv run --project`` on every supported route
+    (there is no PyPI wheel), so the repo layout is always present. Fails
+    loud otherwise: an installer that cannot see its source of truth must
+    not fall back to a guess.
     """
-    resolved = shutil.which("weave-hook")
-    if resolved:
-        return resolved
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "hooks" / "hooks.json"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "hooks/hooks.json not found above "
+        f"{Path(__file__).resolve()} — `weave hooks install` derives the "
+        "hook definitions from the canonical file and must run from a "
+        "thinkweave repo checkout (plugin or dev clone)."
+    )
 
-    script_dir = Path(sys.executable).parent
-    for name in ("weave-hook", "weave-hook.exe"):
-        candidate = script_dir / name
-        if candidate.exists():
-            return str(candidate)
 
-    return "weave-hook"
+def _load_canonical_hooks(hooks_json: str | Path = "") -> dict:
+    """Parse the canonical hook definitions: ``{event: [entries…]}``.
+
+    ``hooks_json`` overrides the content source (contract tests drive the
+    installer with a mutated temp copy); the default is the repo's own
+    ``hooks/hooks.json``.
+    """
+    path = Path(hooks_json) if hooks_json else _canonical_hooks_path()
+    return json.loads(path.read_text(encoding="utf-8"))["hooks"]
+
+
+def _repo_root() -> Path:
+    """The absolute repo root — what ``${CLAUDE_PLUGIN_ROOT}`` means on the
+    machine route. Always derived from the real checkout (parent of the
+    canonical ``hooks/`` dir), never from the content-source override."""
+    return _canonical_hooks_path().parent.parent
+
+
+def _localize_command(command: str, root: Path) -> str:
+    """Per-route transformation, machine route: substitute the plugin-route
+    ``${CLAUDE_PLUGIN_ROOT}`` placeholder with the absolute repo root.
+
+    This is the ONLY divergence allowed between what the plugin route loads
+    and what ``weave hooks install`` writes. The command still resolves
+    ``weave-hook`` at fire time via ``uv run --project`` (the #52/#47
+    launcher story) — no interpreter or venv path is snapshotted at install
+    time, so a moved/stale venv can no longer break installed hooks.
+    """
+    return command.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
 
 
 def _settings_path(project_dir: str = "") -> Path:
@@ -96,71 +118,51 @@ def _settings_path_for_scope(scope: str, project_dir: str = "") -> Path:
     )
 
 
-def _build_installed_settings(existing: dict) -> dict:
+def _build_installed_settings(
+    existing: dict, hooks_json: str | Path = ""
+) -> dict:
     """Return a settings dict with thinkweave hooks merged in.
 
     Pure function — operates on a deep copy of ``existing``, never mutates
-    the input. The full body of the historic merge (ensure SessionStart /
-    UserPromptSubmit / PostToolUse {action, mcp} / Stop, strip retired
-    PreToolUse) lives here so it can be exercised both for the real write
-    and for the dry-run diff with no behavioural drift between them.
+    the input. The hook definitions are DERIVED from the canonical
+    ``hooks/hooks.json`` (single authoring place for events, matchers,
+    commands, and timeouts — #50); the only transformation applied is
+    ``_localize_command``. Merge semantics:
+
+    - every canonical event/matcher entry is ensured (rewrite-in-place of
+      any historical thinkweave form via HOOK_MARKERS, else append);
+    - foreign hooks are preserved untouched;
+    - thinkweave entries under events NO LONGER in the canonical file
+      (e.g. the retired PreToolUse phase) are stripped, so reinstalling
+      converges stale settings without disturbing anything else.
     """
     settings = copy.deepcopy(existing)
     hooks = settings.setdefault("hooks", {})
-    hook_cmd = _resolve_hook_cmd()
+    canonical = _load_canonical_hooks(hooks_json)
+    root = _repo_root()
 
-    # SessionStart hook — injects project context before the first user turn
-    session_start_hooks = hooks.setdefault("SessionStart", [])
-    _ensure_hook(session_start_hooks, "", f"{hook_cmd} session_start")
+    for event, canonical_entries in canonical.items():
+        entries = hooks.setdefault(event, [])
+        # Slot disambiguation is only needed when one event owns several
+        # thinkweave entries (PostToolUse: action gate + MCP gate) — the
+        # entry's matcher is the slot key.
+        multi = len(canonical_entries) > 1
+        for c_entry in canonical_entries:
+            matcher = c_entry.get("matcher", "")
+            c_hook = c_entry["hooks"][0]
+            _ensure_hook(
+                entries,
+                matcher,
+                _localize_command(c_hook["command"], root),
+                slot=matcher if multi else None,
+                timeout=c_hook.get("timeout"),
+            )
 
-    # UserPromptSubmit hook — captures every user prompt as a JSONL event,
-    # promoting prompts into a first-class primitive (Phase 4 E), and runs R2
-    # prompt-time retrieval enrichment. Timeout raised to 10s (above the default
-    # 5s) to cover the bounded embedding deadline (~3s) + render + write-back;
-    # the handler degrades to FTS / silent no-op well inside this budget.
-    user_prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
-    _ensure_hook(
-        user_prompt_hooks, "", f"{hook_cmd} user_prompt_submit", timeout=10
-    )
-
-    # PreToolUse: previously injected "related vault notes" before each
-    # Write/Edit. Retired — redundant with SessionStart context and the
-    # filename-stem heuristic produced noisy hits. Strip any stale entry
-    # left over from earlier installs.
-    _strip_thinkweave_hooks(hooks, "PreToolUse")
-
-    # PostToolUse hook — two matchers:
-    #   1. ``Write|Edit|Bash`` — the action-tool gate that feeds the
-    #      session-event buffer (files touched, commits, test runs).
-    #   2. ``mcp__thinkweave__.*`` — every thinkweave MCP call. The
-    #      retrieval-only subset (``weave_search``, ``weave_context``,
-    #      ``weave_graph``, ``weave_read``, ``weave_timeline``,
-    #      ``weave_project_snapshot``) feeds the RLVR context-served
-    #      substrate via ``operations/retrieval_log.RETRIEVAL_TOOLS``.
-    #      The handler's in-process gate (``_handle_post``:97–100)
-    #      filters out non-retrieval MCP tools (``weave_create`` etc.) so
-    #      the regex matcher is safe and cheap — the cost of an unmatched
-    #      MCP call is one no-op hook invocation. Claude Code's matcher
-    #      string accepts regex; the dot-star form matches the
-    #      ``mcp__<server>__<tool>`` naming convention emitted by the
-    #      MCP transport.
-    post_hooks = hooks.setdefault("PostToolUse", [])
-    _ensure_hook(
-        post_hooks,
-        "Write|Edit|Bash",
-        f"{hook_cmd} post_tool_use",
-        slot="action",
-    )
-    _ensure_hook(
-        post_hooks,
-        "mcp__thinkweave__.*",
-        f"{hook_cmd} post_tool_use",
-        slot="mcp",
-    )
-
-    # Stop hook — gates session exit for knowledge extraction
-    stop_hooks = hooks.setdefault("Stop", [])
-    _ensure_hook(stop_hooks, "", f"{hook_cmd} stop")
+    # Retired phases: strip thinkweave entries from any event the
+    # canonical file no longer authors (foreign hooks stay).
+    for event in list(hooks):
+        if event not in canonical:
+            _strip_thinkweave_hooks(hooks, event)
 
     return settings
 
@@ -174,13 +176,10 @@ def _build_uninstalled_settings(existing: dict) -> dict:
     settings = copy.deepcopy(existing)
     hooks = settings.get("hooks", {})
 
-    for hook_type in (
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "Stop",
-    ):
+    # Iterate every event present in the file (not a hardcoded list) so
+    # uninstall round-trips any event the canonical hooks.json authors —
+    # including ones added after this code shipped.
+    for hook_type in list(hooks):
         entries = hooks.get(hook_type, [])
         hooks[hook_type] = [
             entry
@@ -218,6 +217,7 @@ def install_hooks(
     project_dir: str = "",
     scope: str = "project",
     dry_run: bool = False,
+    hooks_json: str = "",
 ) -> None:
     """Install thinkweave hooks into the chosen Claude Code settings file.
 
@@ -230,6 +230,9 @@ def install_hooks(
 
     ``dry_run=True`` prints the planned unified diff against the current
     settings file and returns without writing.
+
+    ``hooks_json`` overrides the canonical-definitions source (contract
+    tests only); defaults to the repo's ``hooks/hooks.json``.
     """
     settings_path = _settings_path_for_scope(scope, project_dir)
 
@@ -239,7 +242,7 @@ def install_hooks(
     if settings_path.exists():
         existing = json.loads(settings_path.read_text(encoding="utf-8"))
 
-    planned = _build_installed_settings(existing)
+    planned = _build_installed_settings(existing, hooks_json=hooks_json)
 
     if dry_run:
         print(f"Would write: {settings_path}")
@@ -324,12 +327,12 @@ def _ensure_hook(
     command: str,
     *,
     slot: str | None = None,
-    timeout: int = 5,
+    timeout: int | None = None,
 ) -> None:
     """Add a hook entry, or rewrite any existing thinkweave hook in place.
 
     Matches any form this project has ever written (see HOOK_MARKERS),
-    so reinstalling always converges to the current absolute-path form
+    so reinstalling always converges to the current canonical form
     regardless of which historical variant is stored in the file.
 
     ``slot``: when a single hook phase has more than one thinkweave
@@ -356,20 +359,17 @@ def _ensure_hook(
             if _is_thinkweave_hook(hook.get("command", "")):
                 hook["command"] = command
                 # Snap matcher + timeout to the canonical values too, in case a
-                # legacy install wrote a stale matcher or the default timeout.
-                hook["timeout"] = timeout
+                # legacy install wrote a stale matcher or timeout. A canonical
+                # entry without a timeout means "inherit the harness default" —
+                # drop any stale explicit value.
+                if timeout is None:
+                    hook.pop("timeout", None)
+                else:
+                    hook["timeout"] = timeout
                 entry["matcher"] = matcher
                 return
 
-    entries.append(
-        {
-            "matcher": matcher,
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": command,
-                    "timeout": timeout,
-                }
-            ],
-        }
-    )
+    fresh: dict = {"type": "command", "command": command}
+    if timeout is not None:
+        fresh["timeout"] = timeout
+    entries.append({"matcher": matcher, "hooks": [fresh]})
