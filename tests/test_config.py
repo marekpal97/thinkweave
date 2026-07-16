@@ -194,7 +194,7 @@ def _isolate_user_config(
     # The pre-rename PERSONAL_MEM_* names are still honoured as migration
     # fallbacks by load_config(); a developer shell that exports
     # PERSONAL_MEM_VAULT would otherwise leak into "nothing set" cases.
-    for legacy in ("PERSONAL_MEM_VAULT", "PERSONAL_MEM_PROJECT", "PERSONAL_MEM_DB"):
+    for legacy in ("PERSONAL_MEM_VAULT", "PERSONAL_MEM_PROJECT"):
         monkeypatch.delenv(legacy, raising=False)
     return xdg / "thinkweave" / "config.toml"
 
@@ -506,6 +506,29 @@ def test_weave_dir_toml_override_absolute_path(
     assert cfg.weave_dir == fast_disk
     assert cfg.index_db == fast_disk / "index.db"
     assert cfg.embeddings_db == fast_disk / "embeddings.db"
+
+
+def test_index_db_env_vars_are_inert(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """THINKWEAVE_DB / PERSONAL_MEM_DB are gone (#34) — must not touch config.
+
+    The single override story is weave_dir (config.toml / THINKWEAVE_WEAVE_DIR);
+    index_db is always weave_dir / "index.db". The removed env vars must
+    neither move index_db nor leave any override attribute behind.
+    """
+    monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+    monkeypatch.setenv("THINKWEAVE_DB", str(tmp_path / "elsewhere" / "other.db"))
+    monkeypatch.setenv(
+        "PERSONAL_MEM_DB", str(tmp_path / "elsewhere" / "legacy.db")
+    )
+
+    cfg = load_config()
+    assert cfg.index_db == vault / ".weave" / "index.db"
+    assert not hasattr(cfg, "_index_db_override")
 
 
 def test_weave_dir_toml_override_relative_path_anchors_at_vault_root(

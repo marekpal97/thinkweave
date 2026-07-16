@@ -655,10 +655,6 @@ def load_config() -> Config:
     project_env = os.environ.get("THINKWEAVE_PROJECT") or os.environ.get("PERSONAL_MEM_PROJECT")
     if project_env:
         cfg.default_project = project_env
-    db_env = os.environ.get("THINKWEAVE_DB") or os.environ.get("PERSONAL_MEM_DB")
-    if db_env:
-        # Override index db path directly
-        cfg._index_db_override = Path(db_env)
     weave_dir_env = os.environ.get("THINKWEAVE_WEAVE_DIR")
     if weave_dir_env:
         cfg.weave_dir_override = _resolve_weave_dir_value(weave_dir_env, cfg.vault_root)
