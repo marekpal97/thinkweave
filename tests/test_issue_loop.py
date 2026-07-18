@@ -1303,10 +1303,6 @@ def _arch_proposal_doc() -> str:
     )
 
 
-def test_arch_proposal_command_present():
-    assert (issue_loop.REPO_ROOT / "docs" / "agents" / "arch-proposal.command.md").exists()
-
-
 def test_arch_proposal_command_forbids_opening_prs():
     """Acceptance criterion: the slow loop PROPOSES (files issues), never opens
     PRs. The command doc must carry the explicit never-open-a-PR / never-modify
