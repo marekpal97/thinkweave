@@ -133,7 +133,7 @@ prime block (when non-empty), and these standing orders:
 
 - Read `ARCHITECTURE.md` §-relevant parts and check prior decisions for every
   file you touch (`weave_graph(file_path=…, filter='decisions_for_file')`;
-  fall back to `weave decisions-for-file` CLI if MCP is absent). Do not
+  fall back to `weave decisions --file <path>` CLI if MCP is absent). Do not
   re-litigate a settled decision — surface conflicts instead.
 - TDD per the probe (§0.5): when enforced, for each acceptance criterion
   write the failing test FIRST, watch it fail, then implement to green.

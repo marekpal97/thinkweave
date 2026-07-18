@@ -1318,7 +1318,15 @@ def test_arch_proposal_command_forbids_opening_prs():
     # The load-bearing rule, matched loosely on the two verbs it forbids.
     assert ("never open" in text or "not open" in text or "no pr" in text
             or "never opens" in text)
-    assert ("gh pr create" not in text) or ("never" in text)
+    # Real guard: the pr-creation command may appear ONLY inside a prohibition.
+    # The doc names `gh pr create` exactly to forbid it, so every occurrence is
+    # immediately preceded by "never" — the doc can never read as an instruction
+    # to open a PR (regression guard against a copy-paste that drops the negation).
+    assert "gh pr create" in text
+    start = 0
+    while (idx := text.find("gh pr create", start)) != -1:
+        assert "never" in text[max(0, idx - 30):idx], "gh pr create not in a prohibition"
+        start = idx + len("gh pr create")
 
 
 def test_arch_proposal_command_forbids_pr_opening_rule_is_explicit():

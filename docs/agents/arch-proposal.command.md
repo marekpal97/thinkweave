@@ -58,7 +58,7 @@ re-propose against settled work.
      candidate file, and `weave_search(query=<area>, type=[decision])` for the
      area's decisions. (weave_graph read-only is allowed.)
    - MCP absent (headless degrade): the CLI fallbacks —
-     `weave decisions-for-file <path>` and `weave search --type decision "<area>"`.
+     `weave decisions --file <path>` and `weave search --type decision "<area>"`.
    Vault decisions ARE code-facing ADRs (`file_path` + `predicted_outcome` +
    supersession). If a direction is already covered by a live decision, **skip
    it** and note the skip — do not re-litigate a settled decision. Only surface
@@ -75,7 +75,11 @@ don't cross-contaminate; neither may edit code.
 - **Deepening axis — `/improve-codebase-architecture`.** The installed Matt
   Pocock skill (machine-global at `~/.claude/skills/improve-codebase-architecture/`).
   It finds where modules are too shallow and proposes deeper interfaces /
-  better seams. Feed it ARCHITECTURE.md context; collect its proposals.
+  better seams. Feed it ARCHITECTURE.md context; collect its proposals. **If the
+  skill is not installed on this machine** (the directory is absent), skip the
+  deepening axis, note `deepening axis skipped: improve-codebase-architecture
+  not installed` in the run output (§6), and proceed with the simplification
+  axis alone — a missing global skill degrades the run, it never fails it.
 - **Simplification axis — vendored `ponytail-audit`.** Dispatch a fresh
   subagent with the text of the **vendored**
   `docs/agents/ponytail-audit.command.md` skill (whole-repo over-engineering
