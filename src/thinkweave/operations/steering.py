@@ -409,7 +409,10 @@ def gate_proposals(
 def _cfg_budget(cfg: Optional[Config]) -> int:
     if cfg is None:
         return DEFAULT_WEEKLY_BUDGET
-    return int(getattr(cfg, "steering_weekly_budget", DEFAULT_WEEKLY_BUDGET) or DEFAULT_WEEKLY_BUDGET)
+    # None-check, not truthiness: a configured budget of 0 ("file nothing") is a
+    # valid pause knob and must not collapse to the default.
+    raw = getattr(cfg, "steering_weekly_budget", None)
+    return DEFAULT_WEEKLY_BUDGET if raw is None else int(raw)
 
 
 def _cfg_weights(cfg: Optional[Config]) -> dict[str, float]:
@@ -436,12 +439,13 @@ def _row_get(row: Any, key: str, pos: int) -> Any:
             return None
 
 
-def _trajectory_rows(cfg: Config) -> list[dict]:
-    """``{outcome_label, fix_rounds, files_touched, gates}`` per loop-run note.
+def _note_frontmatters(cfg: Config, where_sql: str, params: tuple = ()) -> list[dict]:
+    """Frontmatter dicts for every note matching ``where_sql``.
 
-    Index-driven candidate discovery (``note_tags`` join), then a read of each
-    note's frontmatter via the vault — mirroring
+    Index-driven candidate discovery (the ``notes`` table + a caller-supplied
+    WHERE), then a read of each note's frontmatter via the vault — mirroring
     ``trajectory_outcome.scan_trajectory_outcomes``. Never a filesystem crawl.
+    The single note-reading path both the trajectory and decision scans share.
     """
     from thinkweave.core.indexer import Indexer
     from thinkweave.core.vault import VaultManager
@@ -449,13 +453,8 @@ def _trajectory_rows(cfg: Config) -> list[dict]:
     idx = Indexer(config=cfg)
     try:
         rows = idx.db.execute(
-            """
-            SELECT DISTINCT n.id AS id, n.path AS path
-              FROM notes n
-              JOIN note_tags t ON t.note_id = n.id
-             WHERE n.type = 'note' AND t.tag = 'loop-run'
-             ORDER BY n.id
-            """
+            f"SELECT DISTINCT n.id AS id, n.path AS path FROM notes n {where_sql} ORDER BY n.id",
+            params,
         ).fetchall()
     finally:
         idx.close()
@@ -470,51 +469,39 @@ def _trajectory_rows(cfg: Config) -> list[dict]:
             note = vm.read_note(vm.root / rel)
         except Exception:
             continue
-        fm = note.frontmatter
-        out.append(
-            {
-                "outcome_label": fm.get("outcome_label") or "",
-                "fix_rounds": fm.get("fix_rounds") or 0,
-                "files_touched": fm.get("files_touched") or [],
-                "gates": fm.get("gates") or [],
-            }
-        )
+        out.append(note.frontmatter)
     return out
+
+
+def _trajectory_rows(cfg: Config) -> list[dict]:
+    """``{outcome_label, fix_rounds, files_touched, gates}`` per loop-run note."""
+    fms = _note_frontmatters(
+        cfg,
+        "JOIN note_tags t ON t.note_id = n.id WHERE n.type = 'note' AND t.tag = 'loop-run'",
+    )
+    return [
+        {
+            "outcome_label": fm.get("outcome_label") or "",
+            "fix_rounds": fm.get("fix_rounds") or 0,
+            "files_touched": fm.get("files_touched") or [],
+            "gates": fm.get("gates") or [],
+        }
+        for fm in fms
+    ]
 
 
 def _decision_rows(cfg: Config) -> list[dict]:
     """``{status, supersedes, superseded_by, file_paths}`` per decision note."""
-    from thinkweave.core.indexer import Indexer
-    from thinkweave.core.vault import VaultManager
-
-    idx = Indexer(config=cfg)
-    try:
-        rows = idx.db.execute(
-            "SELECT id AS id, path AS path FROM notes WHERE type = 'decision' ORDER BY id"
-        ).fetchall()
-    finally:
-        idx.close()
-
-    vm = VaultManager(config=cfg)
-    out: list[dict] = []
-    for r in rows:
-        rel = _row_get(r, "path", 1)
-        if not rel:
-            continue
-        try:
-            note = vm.read_note(vm.root / rel)
-        except Exception:
-            continue
-        fm = note.frontmatter
-        out.append(
-            {
-                "status": fm.get("status") or "",
-                "supersedes": fm.get("supersedes") or [],
-                "superseded_by": fm.get("superseded_by") or [],
-                "file_paths": fm.get("file_paths") or [],
-            }
-        )
-    return out
+    fms = _note_frontmatters(cfg, "WHERE n.type = 'decision'")
+    return [
+        {
+            "status": fm.get("status") or "",
+            "supersedes": fm.get("supersedes") or [],
+            "superseded_by": fm.get("superseded_by") or [],
+            "file_paths": fm.get("file_paths") or [],
+        }
+        for fm in fms
+    ]
 
 
 def _rank_rows(cfg: Config) -> list[tuple[str, float]]:
@@ -543,12 +530,15 @@ def _rank_rows(cfg: Config) -> list[tuple[str, float]]:
 
 def build_evidence_index(cfg: Config) -> EvidenceIndex:
     """Assemble the :class:`EvidenceIndex` from the derived index (read-only)."""
-    rework, fix_rounds = aggregate_rework(_trajectory_rows(cfg))
+    # Read the loop-run notes once — rework and gate-failure signals both derive
+    # from them (one Indexer open + one vault read pass, not two).
+    trajectory_rows = _trajectory_rows(cfg)
+    rework, fix_rounds = aggregate_rework(trajectory_rows)
     return EvidenceIndex(
         rework=rework,
         fix_rounds=fix_rounds,
         superseded=aggregate_superseded(_decision_rows(cfg)),
-        gate_failures=aggregate_gate_failures(_trajectory_rows(cfg)),
+        gate_failures=aggregate_gate_failures(trajectory_rows),
         hub_pressure=hub_pressure_from_ranks(_rank_rows(cfg)),
     )
 

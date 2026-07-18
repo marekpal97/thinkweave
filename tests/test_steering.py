@@ -402,6 +402,36 @@ class TestConfigKnobs:
         # the gate reads the same merged view through cfg
         assert steering._cfg_budget(cfg) == 5
 
+    def test_budget_zero_is_honored_not_swallowed_to_default(self, tmp_path):
+        # A config weekly_budget = 0 means "file nothing" (a valid pause knob);
+        # it must NOT collapse to the default 3.
+        from thinkweave.core.config import load_config
+
+        vault = tmp_path / "vault"
+        (vault / "config").mkdir(parents=True)
+        (vault / "config" / "config.toml").write_text(
+            "vault_root = " + repr(str(vault)) + "\n\n[steering]\nweekly_budget = 0\n",
+            encoding="utf-8",
+        )
+        import os
+
+        old = os.environ.get("THINKWEAVE_VAULT")
+        os.environ["THINKWEAVE_VAULT"] = str(vault)
+        try:
+            cfg = load_config()
+        finally:
+            if old is not None:
+                os.environ["THINKWEAVE_VAULT"] = old
+            else:
+                os.environ.pop("THINKWEAVE_VAULT", None)
+        assert cfg.steering_weekly_budget == 0
+        assert steering._cfg_budget(cfg) == 0
+        # end-to-end: a candidate WITH real evidence still files nothing at budget 0
+        idx = _index(rework={"m.py": 3})
+        out = steering.gate_proposals([{"module": "m.py"}], idx, cfg)
+        assert out["filed"] == []
+        assert out["dropped"][0]["reason"] == "exceeded weekly budget"
+
 
 # ---------------------------------------------------------------------------
 # CLI contract — weave steering evidence / gate
