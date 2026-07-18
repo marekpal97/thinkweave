@@ -37,10 +37,10 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run test suite
-        # Perf assertions can be flaky on shared CI runners; keep them in the
-        # run but tolerate host jitter by deselecting on the slowest matrix leg
-        # if it ever proves noisy: `-m "not perf"`.
-        run: uv run pytest -q -p no:cacheprovider
+        # Perf assertions proved flaky on shared runners (timing jitter redded
+        # the 3.12 leg on the #69 run), so CI deselects them; run them locally
+        # with plain `uv run pytest`.
+        run: uv run pytest -q -p no:cacheprovider -m "not perf"
 
   lint:
     runs-on: ubuntu-latest
