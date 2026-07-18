@@ -523,8 +523,8 @@ def judge_trajectories(
     identities: tuple[str, ...] | None = None,
     window_days: int | None = None,
     rework_threshold: float | None = None,
-    pr_fetcher: Callable[[str], Optional[dict]] = fetch_pr_json,
-    signals_fetcher: Callable[..., dict] = fetch_delayed_signals,
+    pr_fetcher: Callable[[str], Optional[dict]] | None = None,
+    signals_fetcher: Callable[..., dict] | None = None,
 ) -> dict:
     """Judge every due trajectory once per phase. Idempotent; write-with-receipt.
 
@@ -537,6 +537,12 @@ def judge_trajectories(
     ``git`` functions; tests inject fixtures so no network / repo is touched.
     """
     from thinkweave.core.vault import VaultManager
+
+    # Resolve the seams at call time (not as def-time defaults) so
+    # ``monkeypatch.setattr(trajectory_outcome, "fetch_pr_json", …)`` reaches
+    # them — the standard way tests keep this off the network.
+    pr_fetcher = pr_fetcher or fetch_pr_json
+    signals_fetcher = signals_fetcher or fetch_delayed_signals
 
     now = now or datetime.now(timezone.utc)
     identities = identities or _cfg_identities(cfg)

@@ -626,6 +626,34 @@ def add_admin_subparsers(sub) -> None:
         help="Print a 'N rows emitted' summary on stderr after streaming.",
     )
 
+    p_traj = sub.add_parser(
+        "trajectory",
+        help=(
+            "Judge issue-loop trajectory notes for PR outcomes (the phase-2 "
+            "dream-outcome-worker rail). Appends prediction_history-shaped "
+            "outcome entries + an outcome_label. Logic in "
+            "operations/trajectory_outcome."
+        ),
+    )
+    traj_sub = p_traj.add_subparsers(dest="trajectory_action")
+    p_traj_judge = traj_sub.add_parser(
+        "judge",
+        help="Fetch PR state (gh) + delayed signals (git), classify, append outcome entries.",
+    )
+    p_traj_judge.add_argument(
+        "--phase", choices=["both", "1", "2"], default="both",
+        help="Which judgment phase(s) to run (default: both). 1 = at merge/close; "
+             "2 = delayed signals at +dream.trajectory_phase2_days.",
+    )
+    p_traj_judge.add_argument(
+        "--limit", type=int, default=None,
+        help="Cap trajectory notes examined this run (default: all due).",
+    )
+    p_traj_judge.add_argument(
+        "--json", action="store_true",
+        help="Emit the {judged, skipped, errors} result as one JSON line.",
+    )
+
     p_sources = sub.add_parser(
         "sources",
         help="List, inspect, and scaffold source types",

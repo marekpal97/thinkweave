@@ -184,6 +184,20 @@ class Config:
     # the cap survives for the next cycle.
     dream_rejudge_cap: int = 20
 
+    # Trajectory outcome judge (issue #60 — the phase-2 ``dream-outcome-worker``).
+    # ``phase2_days``: the closed-horizon delay before the delayed-signal
+    # (rework-blame + revert) pass runs, measured from the PR's merge date.
+    # ``rework_threshold``: the fraction of a merged diff rewritten within that
+    # window above which phase-2 rules ``reworked-post-merge`` (a categorical
+    # label — the raw blame counts are always recorded on the entry, never a
+    # composite score). ``agent_identities``: substrings that mark a PR commit
+    # as agent-produced (matched against author login/email/name, incl.
+    # co-authors) — loop commits carry the Claude co-author, so a pure-human
+    # rework commit lacking it flips merged-clean → reworked.
+    dream_trajectory_phase2_days: int = 14
+    dream_trajectory_rework_threshold: float = 0.5
+    dream_trajectory_agent_identities: tuple[str, ...] = ("claude", "noreply@anthropic.com")
+
     # Knowledge-delta window (hours) for the phase-2 digest worker.
     dream_knowledge_delta_hours: int = 24
 
@@ -541,6 +555,17 @@ def load_config() -> Config:
             cfg.dream_probe_window_days = int(dream_cfg["probe_window_days"])
         if "rejudge_cap" in dream_cfg:
             cfg.dream_rejudge_cap = int(dream_cfg["rejudge_cap"])
+        if "trajectory_phase2_days" in dream_cfg:
+            cfg.dream_trajectory_phase2_days = int(dream_cfg["trajectory_phase2_days"])
+        if "trajectory_rework_threshold" in dream_cfg:
+            cfg.dream_trajectory_rework_threshold = float(
+                dream_cfg["trajectory_rework_threshold"]
+            )
+        if "trajectory_agent_identities" in dream_cfg:
+            raw = dream_cfg["trajectory_agent_identities"]
+            if isinstance(raw, str):
+                raw = [t.strip() for t in raw.split(",") if t.strip()]
+            cfg.dream_trajectory_agent_identities = tuple(raw)
         if "knowledge_delta_hours" in dream_cfg:
             cfg.dream_knowledge_delta_hours = int(
                 dream_cfg["knowledge_delta_hours"]

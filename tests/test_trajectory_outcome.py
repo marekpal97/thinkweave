@@ -26,6 +26,7 @@ vault, no ``gh``/``git`` subprocess.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -440,3 +441,24 @@ def _use_config(cfg):
     from unittest.mock import patch
 
     return patch("thinkweave.surfaces.cli.rlvr.load_config", return_value=cfg)
+
+
+class TestTrajectoryCli:
+    def test_judge_json_output(self, vault_factory, monkeypatch, capsys):
+        import argparse
+
+        from thinkweave.operations import trajectory_outcome
+        from thinkweave.surfaces.cli.trajectory import cmd_trajectory
+
+        tv = _make_trajectory(vault_factory, issue=60, pr_url="https://github.com/o/r/pull/60")
+        # Never touch the network: stub the gh fetcher at its module home.
+        pr = _merged_pr([_agent_commit("a1")])
+        monkeypatch.setattr(trajectory_outcome, "fetch_pr_json", lambda url: pr)
+
+        args = argparse.Namespace(trajectory_action="judge", phase="1", limit=None, json=True)
+        with patch("thinkweave.surfaces.cli.trajectory.load_config", return_value=tv.config):
+            with pytest.raises(SystemExit) as exc:
+                cmd_trajectory(args)
+        assert exc.value.code == 0
+        payload = __import__("json").loads(capsys.readouterr().out.strip())
+        assert payload["judged"][0]["outcome"] == "merged-clean"
