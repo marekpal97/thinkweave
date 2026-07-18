@@ -342,6 +342,123 @@ def test_vendored_ponytail_review_skill_present_with_provenance():
 
 
 # ---------------------------------------------------------------------------
+# plan-distill (issue #72) — grill-fork → plan-time decisions doc-pinning.
+# The command is agent-facing docs; these pins assert the load-bearing rules
+# survive edits (stable tokens, not brittle prose). Mirror the ponytail pins.
+
+
+def _plan_distill_doc() -> str:
+    doc = issue_loop.REPO_ROOT / "docs" / "agents" / "plan-distill.command.md"
+    assert doc.exists(), "plan-distill.command.md must ship under docs/agents/"
+    return doc.read_text(encoding="utf-8")
+
+
+def test_plan_distill_fork_gate_requires_both_conditions():
+    """The fork-gate mints a decision only when BOTH a concrete
+    considered-and-rejected alternative AND a falsifiable predicted_outcome
+    are present — clarifying answers (fact elicitation) never qualify."""
+    text = _plan_distill_doc().lower()
+    # Both gate conditions named as jointly required.
+    assert "alternative" in text
+    assert "considered and rejected" in text
+    assert "falsifiable" in text and "predicted_outcome" in text
+    assert "both" in text  # both-required framing, not either/or
+
+
+def test_plan_distill_clarifying_questions_yield_none():
+    """Acceptance criterion 1: clarifying questions mint zero decisions."""
+    text = _plan_distill_doc().lower()
+    assert "clarifying" in text
+    # An explicit "no decision from a clarifying answer" statement.
+    assert "never mint" in text or "yield no decision" in text or "mints nothing" in text
+
+
+def test_plan_distill_no_count_cap_scales_with_contention():
+    """Acceptance criterion 2: question count does not drive decision count;
+    the fork-gate replaces any cap and scales with real contention."""
+    text = _plan_distill_doc().lower()
+    assert "no count cap" in text or "no cap" in text or "replaces any count cap" in text
+    # The scaling claim: a 40-question grill with 3 forks yields ~3 decisions.
+    assert "does not drive" in text or "question count" in text
+
+
+def test_plan_distill_body_budget_is_1k_chars():
+    """Acceptance criterion 3: bodies respect the ~1K-char wrap-body budget."""
+    text = _plan_distill_doc()
+    assert "1K" in text or "1,000" in text or "1000" in text
+
+
+def test_plan_distill_frontmatter_and_alternatives_section_required():
+    """Each minted decision carries the counterfactual as an
+    '## Alternatives considered' body section plus predicted_outcome + plan_ref
+    frontmatter (acceptance criterion 1)."""
+    text = _plan_distill_doc()
+    assert "## Alternatives considered" in text
+    assert "predicted_outcome" in text
+    assert "plan_ref" in text
+
+
+def test_plan_distill_plan_ref_placeholder_convention():
+    """plan_ref links to /to-spec → /to-tickets refs when they exist, and uses
+    a documented placeholder (updated by /to-tickets) when they don't yet."""
+    text = _plan_distill_doc()
+    assert "[pending]" in text
+    assert "/to-tickets" in text and "/to-spec" in text
+
+
+def test_plan_distill_executable_fallback_command_shape():
+    """MCP-absent fallback is an executable `weave add` decision, verified
+    against the real CLI flag shape (--type decision, -f key=value)."""
+    text = _plan_distill_doc()
+    assert "weave add" in text
+    assert "--type decision" in text
+    # Frontmatter carried via repeatable -f, matching _parser_basics.py.
+    assert "-f predicted_outcome=" in text
+    assert "-f plan_ref=" in text
+
+
+def test_plan_distill_write_surface_is_enumerated():
+    """Write-surface enumeration: the entire write surface is
+    weave_create / weave add decisions — no code edits, no gh, no PRs."""
+    text = _plan_distill_doc()
+    assert "entire write surface" in text
+    assert "weave_create" in text and "weave add" in text
+    low = text.lower()
+    assert "no pr" in low or "never" in low and "pr" in low
+
+
+def test_plan_distill_rides_installed_skill_never_edits_it():
+    """Acceptance criterion 4: the installed grilling/grill-me skill is
+    untouched; the command rides it and explicitly never edits it. (A test can't
+    see the home dir — assert the doc instructs no-touch instead.)"""
+    text = _plan_distill_doc().lower()
+    assert "grilling" in text
+    assert "installed" in text
+    assert "never edit" in text or "do not edit" in text or "not fork" in text
+
+
+def test_plan_distill_symlink_header_wiring():
+    """The machine-local symlink convention is documented in-header, mirroring
+    arch-proposal/ponytail (symlinks into .claude/commands/ are not committed)."""
+    text = _plan_distill_doc()
+    assert ".claude/commands/" in text and "ln -s" in text
+
+
+def test_plan_distill_symlink_is_not_committed():
+    """The symlink itself is machine-local — never committed."""
+    tracked = issue_loop.REPO_ROOT / ".claude" / "commands" / "plan-distill.md"
+    # If it exists on disk (dev machine wired it) it must be a symlink, and
+    # git must not track it — mirror the arch-proposal/issue-loop convention.
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "ls-files", ".claude/commands/"],
+        cwd=issue_loop.REPO_ROOT, capture_output=True, text=True,
+    ).stdout
+    assert "plan-distill" not in out
+
+
+# ---------------------------------------------------------------------------
 # trajectory payload (memory-feed proposal) — pure assembly
 
 
