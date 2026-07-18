@@ -1251,3 +1251,159 @@ def test_triage_cli_non_object_signals_clean_error(tmp_path, capsys):
     rc = issue_loop.main(["triage", "--signals-json", str(sig)])
     assert rc == 2
     assert "error" in json.loads(capsys.readouterr().out)
+
+
+# ---------------------------------------------------------------------------
+# Slow self-improvement loop (issue #61) — vendored ponytail-audit skill +
+# the arch-proposal command doc. Doc-grep contracts, mirroring the #58
+# vendoring test and the committed-hooks acceptance guard.
+
+
+def test_vendored_ponytail_audit_skill_present_with_provenance():
+    """The ponytail-audit (whole-repo) skill is vendored as dev tooling under
+    docs/agents/ with the SAME pinned-upstream provenance as the #58
+    ponytail-review vendoring (sha + source repo + MIT notice), and the
+    machine-local symlink wiring documented in-header (symlinks into
+    .claude/commands/ are not committed)."""
+    vendored = issue_loop.REPO_ROOT / "docs" / "agents" / "ponytail-audit.command.md"
+    assert vendored.exists()
+    text = vendored.read_text(encoding="utf-8")
+    # Provenance: canonical upstream repo + the pinned commit sha (same as #58).
+    assert "DietrichGebert/ponytail" in text
+    assert "16f29800fd2681bdf24f3eb4ccffe38be3baec6b" in text
+    # The upstream path is the whole-repo audit, not the diff review.
+    assert "skills/ponytail-audit/SKILL.md" in text
+    # MIT license obligation carried per the upstream LICENSE (#58 lesson:
+    # vendored deps carry license obligations even for internal tooling).
+    assert "MIT" in text
+    assert "Copyright (c) 2026 DietrichGebert" in text
+    assert "Permission is hereby granted" in text
+    # The wiring note (ln -s into .claude/commands/), since the symlink itself
+    # is machine-local and not committed.
+    assert ".claude/commands/" in text and "ln -s" in text
+    # The skill's actual delete-list vocabulary survived the vendoring.
+    for tag in ("delete:", "stdlib:", "native:", "yagni:", "shrink:"):
+        assert tag in text
+    # The whole-repo hunt list (what distinguishes audit from review) survived.
+    assert "Hunt" in text
+
+
+def test_vendored_ponytail_audit_installs_no_hooks():
+    """Acceptance guard (mirrors #58): vendoring the audit skill installs NO
+    ponytail hooks — the committed hook manifest carries no ponytail entry
+    (ponytail's plugin installer would collide with weave's own
+    UserPromptSubmit hook, which is why we vendor SKILL TEXT ONLY)."""
+    hooks = (issue_loop.REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    assert "ponytail" not in hooks.lower()
+
+
+def _arch_proposal_doc() -> str:
+    return (issue_loop.REPO_ROOT / "docs" / "agents" / "arch-proposal.command.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_arch_proposal_command_present():
+    assert (issue_loop.REPO_ROOT / "docs" / "agents" / "arch-proposal.command.md").exists()
+
+
+def test_arch_proposal_command_forbids_opening_prs():
+    """Acceptance criterion: the slow loop PROPOSES (files issues), never opens
+    PRs. The command doc must carry the explicit never-open-a-PR / never-modify
+    -code rule so the mechanism can't drift into applying changes."""
+    text = _arch_proposal_doc().lower()
+    # An explicit prohibition on opening PRs and on modifying code.
+    assert "never" in text
+    assert "pr" in text  # sanity: the doc talks about PRs
+    # The load-bearing rule, matched loosely on the two verbs it forbids.
+    assert ("never open" in text or "not open" in text or "no pr" in text
+            or "never opens" in text)
+    assert ("gh pr create" not in text) or ("never" in text)
+
+
+def test_arch_proposal_command_forbids_pr_opening_rule_is_explicit():
+    """The never-PR rule is stated as a rule, not merely implied — the doc
+    contains a sentence pairing 'PR' with a prohibition and 'issue' with the
+    output. Regression guard against the doc losing the read-only contract."""
+    text = _arch_proposal_doc()
+    lowered = text.lower()
+    # It files issues (the output) ...
+    assert "gh issue create" in lowered
+    # ... and it is labeled arch-proposal.
+    assert "arch-proposal" in lowered
+    # ... and it never opens PRs / modifies code (read-only + issue-filing).
+    assert "read-only" in lowered or "read only" in lowered
+    assert "never open" in lowered or "opens zero pr" in lowered or "zero pr" in lowered
+
+
+def test_arch_proposal_command_wires_steering_gate():
+    """The command routes candidate proposals through the #62 evidence gate and
+    files ONLY what the gate returns — the anti-invention contract. The doc must
+    invoke `weave steering gate` and reference the weekly budget cap."""
+    text = _arch_proposal_doc().lower()
+    assert "weave steering gate" in text
+    assert "--proposals-json" in text
+    assert "weekly_budget" in text or "weekly budget" in text
+    # It files the gate's evidence-carrying output, not raw suggestions.
+    assert "filed" in text
+
+
+def test_arch_proposal_command_cites_architecture_and_prior_decisions():
+    """The command reads ARCHITECTURE.md and prior decisions first so it does
+    not re-propose against already-decided work (a skip-list of decided-against
+    directions)."""
+    text = _arch_proposal_doc()
+    assert "ARCHITECTURE.md" in text
+    lowered = text.lower()
+    # Prior-decision query: the decisions_for_file graph walk or the search.
+    assert "decisions_for_file" in lowered or "weave_search" in lowered or "type=decision" in text
+    # A skip-list of already-decided-against directions.
+    assert "skip" in lowered and "decid" in lowered
+
+
+def test_arch_proposal_command_runs_both_axes():
+    """Both improvement axes are wired: the installed improve-arch skill
+    (deepening) and the vendored ponytail-audit (simplification)."""
+    text = _arch_proposal_doc()
+    assert "improve-codebase-architecture" in text or "improve-arch" in text
+    assert "ponytail-audit" in text
+
+
+def test_arch_proposal_command_creates_label_idempotently():
+    """The command creates the arch-proposal label idempotently (so a fresh
+    tracker gets it) — gh label create ... --force (or a check-then-create)."""
+    text = _arch_proposal_doc()
+    assert "gh label create arch-proposal" in text
+
+
+def test_arch_proposal_documents_routine_spec():
+    """A Routine/cron entry is specified: weekly cadence + the headless
+    invocation with the repo's established headless posture
+    (--dangerously-skip-permissions). Acceptance criterion 3: a Routine entry
+    runs headless without permission prompts."""
+    text = _arch_proposal_doc()
+    lowered = text.lower()
+    assert "routine" in lowered
+    assert "weekly" in lowered
+    assert "--dangerously-skip-permissions" in text
+    # The headless invocation names the command.
+    assert "arch-proposal" in lowered
+
+
+def test_arch_proposal_documents_headless_symlink_gotcha():
+    """The headless-skill-resolution gotcha (headless `claude -p "/skill"` only
+    resolves .claude/commands/ symlinks) must be documented, with the
+    machine-local symlink as Routine setup."""
+    text = _arch_proposal_doc()
+    assert ".claude/commands/" in text and "ln -s" in text
+
+
+def test_arch_proposal_label_documented_in_triage_labels():
+    """The arch-proposal label is documented in the tracker's label vocabulary
+    so the slow loop's output label is a known role, not an ad-hoc string."""
+    labels = (issue_loop.REPO_ROOT / "docs" / "agents" / "triage-labels.md").read_text(
+        encoding="utf-8"
+    )
+    assert "arch-proposal" in labels
+    # The human-triage transition it feeds: accept → ready-for-agent.
+    assert "ready-for-agent" in labels
