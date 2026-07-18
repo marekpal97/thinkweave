@@ -654,6 +654,41 @@ def add_admin_subparsers(sub) -> None:
         help="Emit the {judged, skipped, errors} result as one JSON line.",
     )
 
+    p_steer = sub.add_parser(
+        "steering",
+        help=(
+            "Evidence-gated steering for the slow self-improvement loop (#61). "
+            "Compute per-module evidence signals and gate candidate proposals "
+            "against them — no evidence → dropped, capped at the weekly budget. "
+            "Logic in operations/steering."
+        ),
+    )
+    steer_sub = p_steer.add_subparsers(dest="steering_action")
+    p_steer_ev = steer_sub.add_parser(
+        "evidence",
+        help="Show computed per-module evidence signals (rework, superseded, gate-failures, hub pressure).",
+    )
+    p_steer_ev.add_argument(
+        "--module", default="",
+        help="Aggregate the evidence for a single module path prefix (default: all modules with signal).",
+    )
+    p_steer_ev.add_argument(
+        "--json", action="store_true",
+        help="Emit the evidence signals as one JSON line.",
+    )
+    p_steer_gate = steer_sub.add_parser(
+        "gate",
+        help="Gate candidate proposals against the evidence substrate; print {filed, dropped}.",
+    )
+    p_steer_gate.add_argument(
+        "--proposals-json", required=True,
+        help="File with the candidate proposals: a list of {module|paths, rationale, concepts?} (or {candidates: [...]}).",
+    )
+    p_steer_gate.add_argument(
+        "--json", action="store_true",
+        help="Emit the {filed, dropped} result as one JSON line.",
+    )
+
     p_sources = sub.add_parser(
         "sources",
         help="List, inspect, and scaffold source types",

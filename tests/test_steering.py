@@ -401,3 +401,80 @@ class TestConfigKnobs:
         assert merged["superseded"] == 1.0
         # the gate reads the same merged view through cfg
         assert steering._cfg_budget(cfg) == 5
+
+
+# ---------------------------------------------------------------------------
+# CLI contract — weave steering evidence / gate
+# ---------------------------------------------------------------------------
+
+
+class TestCliContract:
+    def test_subcommand_registered_in_dispatch_and_parser(self):
+        from thinkweave.surfaces.cli import _DISPATCH, build_parser
+        import argparse as _argparse
+
+        assert "steering" in _DISPATCH
+        parser = build_parser()
+        sub = next(
+            a for a in parser._actions
+            if isinstance(a, _argparse._SubParsersAction)
+        )
+        assert "steering" in sub.choices
+
+    def test_gate_cli_over_seeded_vault_emits_filed_dropped(
+        self, vault_factory, tmp_path, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.cli.steering import cmd_steering
+
+        tv = vault_factory()
+        _loop_run(tv, issue=1, outcome_label="reworked", fix_rounds=2,
+                  files=["src/ops/dream.py"])
+        tv.indexed()
+        # The CLI loads config via load_config(); point it at this tmp vault.
+        monkeypatch.setattr(
+            "thinkweave.surfaces.cli.steering.load_config", lambda: tv.config
+        )
+
+        proposals = tmp_path / "proposals.json"
+        proposals.write_text(
+            json.dumps([
+                {"module": "src/ops/dream.py", "rationale": "reduce churn"},
+                {"module": "src/nowhere.py", "rationale": "invented"},
+            ]),
+            encoding="utf-8",
+        )
+        args = argparse_ns(steering_action="gate",
+                           proposals_json=str(proposals), json=True)
+        cmd_steering(args)
+        out = capsys.readouterr().out
+        result = json.loads(out)
+        assert [f["module"] for f in result["filed"]] == ["src/ops/dream.py"]
+        assert any(d["module"] == "src/nowhere.py"
+                   and d["reason"] == "no cited evidence"
+                   for d in result["dropped"])
+        # filed proposal carries the machine-readable evidence block in its body
+        assert "```json" in result["filed"][0]["body"]
+
+    def test_evidence_cli_json_lists_modules(
+        self, vault_factory, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.cli.steering import cmd_steering
+
+        tv = vault_factory()
+        _loop_run(tv, issue=1, outcome_label="reworked", fix_rounds=3,
+                  files=["src/a.py"])
+        tv.indexed()
+        monkeypatch.setattr(
+            "thinkweave.surfaces.cli.steering.load_config", lambda: tv.config
+        )
+        args = argparse_ns(steering_action="evidence", module="", json=True)
+        cmd_steering(args)
+        result = json.loads(capsys.readouterr().out)
+        mods = {m["module"]: m for m in result["modules"]}
+        assert mods["src/a.py"]["rework_count"] == 1
+        assert mods["src/a.py"]["fix_rounds"] == 3
+
+
+def argparse_ns(**kw):
+    import argparse
+    return argparse.Namespace(**kw)

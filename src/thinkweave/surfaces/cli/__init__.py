@@ -63,6 +63,7 @@ from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 from thinkweave.surfaces.cli.schedule import cmd_schedule
 from thinkweave.surfaces.cli.seam import cmd_seam
 from thinkweave.surfaces.cli.skill import cmd_skill
+from thinkweave.surfaces.cli.steering import cmd_steering
 from thinkweave.surfaces.cli.themes import cmd_themes
 from thinkweave.surfaces.cli.trajectory import cmd_trajectory
 from thinkweave.surfaces.cli.util import (
@@ -127,6 +128,7 @@ _DISPATCH = {
     "prune-orphans": cmd_prune_orphans,
     "rlvr": cmd_rlvr,
     "trajectory": cmd_trajectory,
+    "steering": cmd_steering,
     "add": cmd_add,
     "update": cmd_update,
     "link": cmd_link,

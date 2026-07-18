@@ -125,9 +125,12 @@ class TestCliSurface:
         # `weave trajectory` (judge — the deterministic issue-loop trajectory
         # outcome judge / phase-2 dream-outcome-worker rail, issue #60) added
         # 2026-07-18: 46 → 47.
+        # `weave steering` (evidence / gate — the evidence-gated steering + weekly
+        # budget the slow self-improvement loop #61 calls before filing proposals,
+        # issue #62) added 2026-07-18: 47 → 48.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
-        assert len(_DISPATCH) == 47
+        assert len(_DISPATCH) == 48
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():
