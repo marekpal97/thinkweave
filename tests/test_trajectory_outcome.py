@@ -370,6 +370,38 @@ def _reload_only_trajectory(tv):
 # ---------------------------------------------------------------------------
 
 
+class TestScanTrajectoryOutcomes:
+    """The dream-scan surface — which trajectories have judgment due."""
+
+    def test_phase1_due_when_no_entry(self, vault_factory):
+        tv = _make_trajectory(vault_factory, issue=60, pr_url="https://github.com/o/r/pull/60")
+        surface = to.scan_trajectory_outcomes(tv.config)
+        assert len(surface) == 1
+        assert surface[0]["due_phases"] == [1]
+
+    def test_phase2_due_after_window(self, vault_factory):
+        now = datetime(2026, 7, 20, tzinfo=timezone.utc)
+        merged_at = (now - timedelta(days=15)).isoformat()
+        p1 = {"outcome": "merged-clean", "phase": 1, "judged_at": merged_at, "reason": "r"}
+        tv = _make_trajectory(
+            vault_factory, issue=60, pr_url="https://github.com/o/r/pull/60",
+            extra={"prediction_history": [p1], "outcome_label": "merged-clean", "merged_at": merged_at},
+        )
+        surface = to.scan_trajectory_outcomes(tv.config, now=now)
+        assert surface[0]["due_phases"] == [2]
+
+    def test_nothing_due_when_fully_judged(self, vault_factory):
+        now = datetime(2026, 7, 20, tzinfo=timezone.utc)
+        merged_at = (now - timedelta(days=15)).isoformat()
+        p1 = {"outcome": "merged-clean", "phase": 1, "judged_at": merged_at, "reason": "r"}
+        p2 = {"outcome": "stable", "phase": 2, "judged_at": now.isoformat(), "reason": "r2"}
+        tv = _make_trajectory(
+            vault_factory, issue=60, pr_url="https://github.com/o/r/pull/60",
+            extra={"prediction_history": [p1, p2], "outcome_label": "stable", "merged_at": merged_at},
+        )
+        assert to.scan_trajectory_outcomes(tv.config, now=now) == []
+
+
 class TestRlvrTrajectoryExport:
     """Acceptance: `weave rlvr export` sees trajectory outcomes; phase-2 entries
     appear under `--explode-history`. Trajectory rows reuse the LOCKED decision

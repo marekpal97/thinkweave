@@ -11,7 +11,7 @@ The full CLI subcommand reference, the MCP tool surface, the CLI↔MCP surface c
 
 ## CLI reference
 
-The CLI exposes **46 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
+The CLI exposes **47 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
 
 Consolidations to keep in mind: wikilink materialisation lives under `weave index --materialize-links` (was `weave connect`, deleted 2026-05-21); the `weave_concepts*` MCP tools are folded into `weave_concepts(action=...)`; `weave_source_lens` + `weave_decisions_for_file` are folded into `weave_graph(filter=...)`. The Phase-4-C deprecation aliases for both CLI and MCP names were removed 2026-05-21 — call the canonical names.
 
@@ -50,7 +50,8 @@ weave sources {list|show <slug>}              # inspect source-type registry
 weave prune-orphans [--yes]                   # delete abandoned session folders (used by /wrap)
 weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: prune→index→judge→landing→drift (--json for headless)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
-weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (one per decision)
+weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
+weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic issue-loop trajectory outcome judge (phase-2 dream-outcome-worker rail)
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
 weave import {claude-code|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
 weave intake {enumerate|archive}              # drop-folder helpers for /substack and friends
@@ -73,7 +74,7 @@ The MCP server (id `thinkweave`, so tools are addressed `mcp__thinkweave__weave_
 
 The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus exactly four narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, and `weave judge --rejudge/--drain`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-Full inventory — 46 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
+Full inventory — 47 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
 
 | Operation | CLI subcommand | MCP tool | Audience |
 |---|---|---|---|
@@ -119,6 +120,7 @@ Full inventory — 46 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Project registry | `weave project` | — | admin-cron |
 | Orphan session pruning | `weave prune-orphans` | — | admin-cron |
 | RLVR substrate export | `weave rlvr` | — | admin-cron |
+| Loop trajectory outcome judge | `weave trajectory` | — | admin-cron (dream-outcome-worker rail) |
 
 ## Environment
 

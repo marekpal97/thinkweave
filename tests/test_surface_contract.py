@@ -122,9 +122,12 @@ class TestCliSurface:
         # `weave config` (show + set-vault — a platform-resolved user-config
         # surface so /onboard never shells `uv run python -c` or hardcodes the
         # XDG path, which is wrong on Windows) added 2026-06-21: 45 → 46.
+        # `weave trajectory` (judge — the deterministic issue-loop trajectory
+        # outcome judge / phase-2 dream-outcome-worker rail, issue #60) added
+        # 2026-07-18: 46 → 47.
         # CLAUDE.md §7 reflects the same count; if either slips, the
         # other catches doc drift.
-        assert len(_DISPATCH) == 46
+        assert len(_DISPATCH) == 47
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():

@@ -210,6 +210,19 @@ REGISTRY: tuple[DreamTaskSpec, ...] = (
         phase=2,
     ),
     DreamTaskSpec(
+        # Loop trajectory outcome judge (issue #60) — the reward signal. For
+        # loop-run trajectory notes with a recent pr_url, checks PR state via
+        # `gh` (phase 1: merged-clean / reworked / closed-unmerged /
+        # routed-to-human) and, at +dream.trajectory_phase2_days, the delayed
+        # signals (phase 2: rework-blame + revert). Appends
+        # prediction_history-shaped entries + an outcome_label. No deps —
+        # Wave A; drives its own rail via `weave trajectory judge`.
+        surface_key="trajectory_outcomes",
+        worker_name="dream-outcome-worker",
+        has_signal=lambda s: bool(getattr(s, "trajectory_outcomes", None)),
+        phase=2,
+    ),
+    DreamTaskSpec(
         surface_key="knowledge_delta",
         worker_name="dream-digest-worker",
         has_signal=_has_knowledge_delta,
