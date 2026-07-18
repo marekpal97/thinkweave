@@ -834,24 +834,24 @@ def promote_proposed_concept(
         raise ValueError("domain must be specified for promotion")
 
     domain_key = domain.lower().strip()
-    ontology = load_ontology()
+    # Guard against the *passed* config's effective ontology (shipped seed
+    # + this vault's override), never the ambient one — a bare
+    # load_ontology() resolves whatever vault the host environment points
+    # at, and a term canonical there would silently skip this vault's
+    # write. Keep-set of the seed⊕override merge == union of per-file
+    # keep-sets, so no deep-merge is needed here.
+    override_path = config.config_dir / "ontology.yaml"
+    keep = build_keep_set(load_ontology(_seed_ontology_path())) | build_keep_set(
+        load_ontology(override_path)
+    )
     ontology_updated = False
 
-    if term not in build_keep_set(ontology):
+    if term not in keep:
         # Add to vault override (the user-editable layer). Don't touch
         # the shipped seed.
-        #
-        # Read from the fallback-resolved path (which tolerates legacy
-        # vault/.weave/ontology.yaml), but write to the canonical
-        # vault/config/ontology.yaml location — that migrates the file
-        # forward on first promote.
-        read_path = _vault_ontology_path()
-        override_path = config.config_dir / "ontology.yaml"
         override_path.parent.mkdir(parents=True, exist_ok=True)
 
-        existing = (
-            _parse_yaml_file(read_path) if read_path and read_path.exists() else {}
-        )
+        existing = _parse_yaml_file(override_path)
         existing.setdefault(domain_key, [])
         if term not in [c.lower() for c in existing[domain_key]]:
             existing[domain_key] = sorted({*existing[domain_key], term})
