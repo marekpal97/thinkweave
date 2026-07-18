@@ -350,3 +350,123 @@ def export_rows(
             yield row.as_dict()
     finally:
         idx.close()
+
+
+# ---------------------------------------------------------------------------
+# Trajectory export (issue #60) — loop task-trajectories, same row schema
+# ---------------------------------------------------------------------------
+#
+# Loop trajectory notes (``type: note``, tag ``loop-run``) carry a
+# ``prediction_history`` of ``{outcome, judged_at, reason, phase, ...}`` entries
+# appended by the deterministic outcome judge (``operations/trajectory_outcome``).
+# To let ``weave rlvr export`` consume tasks and decisions IDENTICALLY (issue
+# #60's acceptance), each trajectory becomes an :class:`RLVRRow` with the same
+# locked keyset — the outcome ``label`` maps onto ``prediction.match`` so
+# ``_explode_row`` (the ``--explode-history`` path) treats it exactly like a
+# decision's verdict history. A trajectory row is recognisable by its
+# ``decision_id`` carrying a note (``n-``) prefix and an empty ``prediction.text``.
+# Delayed-signal raw counts (blame line counts) live on the phase-2 history
+# entries themselves, untouched; ``outcome.blame_lines`` denormalizes the
+# surviving-line count for the decision-parity ``blame_lines`` slot.
+
+
+def _trajectory_row(fm: dict, note_id: str) -> RLVRRow:
+    """Assemble one trajectory RLVRRow from its frontmatter. Pure over ``fm``."""
+    history = fm.get("prediction_history")
+    entries = [e for e in history if isinstance(e, dict)] if isinstance(history, list) else []
+
+    # Map the trajectory verdict key (`outcome`) onto the decision grammar's
+    # `match` so the export/explode path is verdict-agnostic.
+    mapped = [
+        {
+            "match": e.get("outcome", "") or "",
+            "judged_at": e.get("judged_at", "") or "",
+            "reason": e.get("reason", "") or "",
+        }
+        for e in entries
+    ]
+    tail = mapped[-1]["match"] if mapped else (fm.get("outcome_label", "") or "")
+
+    # blame_lines parity: the surviving-line count from the last phase-2 entry
+    # that carries it, else -1 (undetermined — same convention as decisions).
+    blame_lines = -1
+    for e in reversed(entries):
+        if "blame_surviving_lines" in e:
+            try:
+                blame_lines = int(e["blame_surviving_lines"])
+            except (TypeError, ValueError):
+                blame_lines = -1
+            break
+
+    created_at = str(fm.get("date", "")) if fm.get("date") else ""
+    judged_at = str(fm.get("outcome_judged_at", "")) if fm.get("outcome_judged_at") else ""
+    merged = (fm.get("outcome_label", "") or tail) in ("merged-clean", "reworked", "reworked-post-merge", "stable", "reverted")
+
+    return RLVRRow(
+        decision_id=note_id,
+        project=fm.get("project", "") or "",
+        session_id=fm.get("source_session", "") or "",
+        created_at=created_at,
+        prediction={"text": "", "match": tail, "history": mapped},
+        outcome={
+            "verdict": fm.get("outcome_label", "") or tail,
+            "committed": bool(merged),
+            "blame_lines": blame_lines,
+            "days_alive": _days_between(created_at, judged_at),
+        },
+        # Trajectories have no context_served join (they're not session-derived
+        # retrieval decisions); the slots stay empty for schema parity.
+        context={
+            "n_retrievals_onthefly": 0,
+            "cited_onthefly_ids": [],
+            "cited_prompttime_ids": [],
+            "cited_startup_only_ids": [],
+            "startup_token_est": 0,
+        },
+    )
+
+
+def export_trajectory_rows(
+    cfg: Config,
+    *,
+    project: str = "",
+    since: str = "",
+    until: str = "",
+) -> Iterator[dict]:
+    """Yield RLVR row dicts for loop trajectory notes carrying outcome history.
+
+    Same row schema as :func:`export_rows` (decisions). Index-driven discovery
+    (``type='note'`` ∧ tag ``loop-run`` ∧ has ``prediction_history``) — no vault
+    crawl. Ordered by ``date`` then ``id`` for reproducibility.
+    """
+    idx = Indexer(config=cfg)
+    vm = VaultManager(config=cfg)
+    try:
+        sql = (
+            "SELECT DISTINCT n.id AS id, n.path AS path FROM notes n "
+            "JOIN note_tags t ON t.note_id = n.id "
+            "WHERE n.type = 'note' AND t.tag = 'loop-run' "
+            "AND json_extract(n.frontmatter, '$.prediction_history') IS NOT NULL"
+        )
+        params: list[str] = []
+        if project:
+            sql += " AND n.project = ?"
+            params.append(project)
+        if since:
+            sql += " AND n.date >= ?"
+            params.append(since)
+        if until:
+            sql += " AND n.date <= ?"
+            params.append(until)
+        sql += " ORDER BY n.date, n.id"
+
+        for r in idx.db.execute(sql, params):
+            note_id = r["id"] if hasattr(r, "keys") else r[0]
+            rel = r["path"] if hasattr(r, "keys") else r[1]
+            try:
+                note = vm.read_note(vm.root / rel)
+            except Exception:  # noqa: BLE001
+                continue
+            yield _trajectory_row(note.frontmatter, note_id).as_dict()
+    finally:
+        idx.close()
