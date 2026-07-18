@@ -376,15 +376,21 @@ def _trajectory_row(fm: dict, note_id: str) -> RLVRRow:
     entries = [e for e in history if isinstance(e, dict)] if isinstance(history, list) else []
 
     # Map the trajectory verdict key (`outcome`) onto the decision grammar's
-    # `match` so the export/explode path is verdict-agnostic.
-    mapped = [
-        {
-            "match": e.get("outcome", "") or "",
-            "judged_at": e.get("judged_at", "") or "",
-            "reason": e.get("reason", "") or "",
-        }
-        for e in entries
-    ]
+    # `match` so the export/explode path is verdict-agnostic. Every OTHER key on
+    # the entry is preserved verbatim — this carries #60's phase raw counts
+    # (``human_commits`` / ``fix_rounds`` / ``blame_*``) and #71's human-feedback
+    # counts (``review_comments`` / ``requested_changes_rounds``) into the export
+    # row WITHOUT widening the locked top-level keyset. The row envelope
+    # (the consumer contract the lock test pins) is unchanged; only the
+    # free-shape per-entry history dict grows, exactly as decision history
+    # entries already carry arbitrary judge extras.
+    mapped = []
+    for e in entries:
+        m = dict(e)
+        m["match"] = m.pop("outcome", "") or ""
+        m.setdefault("judged_at", "")
+        m.setdefault("reason", "")
+        mapped.append(m)
     tail = mapped[-1]["match"] if mapped else (fm.get("outcome_label", "") or "")
 
     # blame_lines parity: the surviving-line count from the last phase-2 entry

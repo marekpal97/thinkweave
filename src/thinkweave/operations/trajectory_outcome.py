@@ -34,10 +34,12 @@ Design mirrors the dream-judge idiom's split (orchestrator note on #60):
 - **The worker agent** (``agents/dream-outcome-worker.md``) is a thin wrapper
   that runs ``weave trajectory judge`` and relays the JSON outcome.
 
-Raw counts, never composite scores (per #60): phase-1 records ``human_commits`` /
-``fix_rounds``; phase-2 records ``blame_total_lines`` / ``blame_surviving_lines``
-/ ``blame_fraction`` / ``reverted``. Normalization belongs to the downstream
-learner, not this judge.
+Raw counts, never composite scores (per #60): phase-1 records ``human_commits``
+/ ``fix_rounds`` and #71's human-feedback join ``review_comments`` /
+``requested_changes_rounds`` (fetched from the PR's ``reviews`` and stamped on
+the trajectory note); phase-2 records ``blame_total_lines`` /
+``blame_surviving_lines`` / ``blame_fraction`` / ``reverted``. Normalization
+belongs to the downstream learner, not this judge.
 """
 
 from __future__ import annotations
@@ -100,6 +102,48 @@ def is_agent_authored(commit: dict, identities: tuple[str, ...] = DEFAULT_AGENT_
 def count_human_commits(pr: dict, identities: tuple[str, ...] = DEFAULT_AGENT_IDENTITIES) -> int:
     """Number of PR commits with no agent author/co-author (pure-human rework)."""
     return sum(1 for c in (pr.get("commits") or []) if not is_agent_authored(c, identities))
+
+
+def count_review_feedback(pr: Optional[dict]) -> dict:
+    """Count raw human review-feedback signals from pre-fetched PR JSON (issue #71). Pure.
+
+    Over the ``reviews`` array ``gh pr view --json reviews`` emits — each
+    ``{author, authorAssociation, body, state, submittedAt}``:
+
+    - ``review_comments`` — reviews carrying a written body (a substantive
+      review comment). A bare approval (empty body) or a PR with no reviews
+      contributes nothing.
+    - ``requested_changes_rounds`` — reviews with ``state ==
+      'CHANGES_REQUESTED'`` (the owner's rework turns / review turns).
+
+    Raw counts, never a composite score (per #60): review turns confound task
+    difficulty with implementation quality; normalization is the downstream
+    learner's job. Returns zeros for a **fetched** PR with no feedback (a clean
+    merge) — the phase-1 driver only stamps this when the PR was fetched, so a
+    None pr at the call site means 'could not fetch', which stays DISTINCT from
+    'clean PR = 0' (that case leaves the fields absent).
+
+    DEFERRED (documented seam): the finer-grained inline review-*thread* comment
+    count (``gh api .../pulls/N/comments``) and a condensed digest of review
+    bodies — both need a second fetch beyond ``gh pr view --json reviews``.
+    Raw submission-level counts are the #71 acceptance criteria and the
+    right-sized surface; when a deeper count is wanted, extend this function's
+    return dict and thread it through :func:`_phase1_extra` / the phase-1 stamp
+    — this pure counter is the only place a new signal enters.
+    """
+    review_comments = 0
+    requested_changes_rounds = 0
+    for r in (pr or {}).get("reviews") or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("body") or "").strip():
+            review_comments += 1
+        if str(r.get("state") or "").upper() == "CHANGES_REQUESTED":
+            requested_changes_rounds += 1
+    return {
+        "review_comments": review_comments,
+        "requested_changes_rounds": requested_changes_rounds,
+    }
 
 
 def classify_pr_outcome(
@@ -276,8 +320,9 @@ def append_outcome(
 # ---------------------------------------------------------------------------
 
 # gh's `commits` JSON field carries co-authors under `authors`; state/mergedAt
-# drive the phase-1 verdict; mergeCommit.oid seeds phase-2 blame.
-_PR_JSON_FIELDS = "number,state,mergedAt,mergeCommit,commits"
+# drive the phase-1 verdict; mergeCommit.oid seeds phase-2 blame; `reviews`
+# carries the human-feedback join (#71 — state + body per review submission).
+_PR_JSON_FIELDS = "number,state,mergedAt,mergeCommit,commits,reviews"
 
 
 def _run(args: list[str], *, cwd: str | None = None) -> str:
@@ -521,17 +566,17 @@ def scan_trajectory_outcomes(cfg: Config, *, now: datetime | None = None, cap: i
 def _phase1_extra(fm: dict, pr: Optional[dict], identities: tuple[str, ...]) -> dict:
     """Raw phase-1 counts for the history entry (no composite scores).
 
-    ``fix_rounds`` from the trajectory; ``human_commits`` computed from the PR.
-    #71's human-feedback counts (``review_comments`` / ``requested_changes_rounds``)
-    are consumed *tolerantly* — copied through only if already present on the
-    note; this judge never fetches them.
+    ``fix_rounds`` from the trajectory; ``human_commits`` and #71's
+    human-feedback counts (``review_comments`` / ``requested_changes_rounds``)
+    computed from the fetched PR. When the PR could not be fetched (``pr is
+    None`` — e.g. a routed-to-human trajectory that opened no PR) the
+    PR-derived counts are omitted rather than zero-filled, so 'could not fetch'
+    stays distinct from 'clean PR = 0'.
     """
     extra: dict[str, Any] = {"fix_rounds": int(fm.get("fix_rounds", 0) or 0)}
     if pr is not None:
         extra["human_commits"] = count_human_commits(pr, identities)
-    for k in ("review_comments", "requested_changes_rounds"):
-        if k in fm:
-            extra[k] = fm[k]
+        extra.update(count_review_feedback(pr))
     return extra
 
 
@@ -613,6 +658,13 @@ def judge_trajectories(
                 label, reason = verdict
                 extra = _phase1_extra(fm, pr, identities)
                 delta = append_outcome(fm, outcome=label, reason=reason, phase=1, judged_at=judged_at, extra=extra)
+                # #71: stamp the human-feedback counts as TOP-LEVEL frontmatter
+                # so the trajectory note itself carries them (and rlvr export
+                # surfaces them via the history entry). Only when the PR was
+                # fetched — a None pr means 'could not fetch', which must stay
+                # DISTINCT from 'clean PR = 0' (so we leave the fields absent).
+                if pr is not None:
+                    delta.update(count_review_feedback(pr))
                 # Stamp merged_at so phase-2's window arithmetic is
                 # self-contained. Prefer the PR's own mergedAt; if a merged
                 # verdict lacks it (anomalous — GitHub normally always sets it),

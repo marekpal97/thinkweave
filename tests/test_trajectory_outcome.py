@@ -72,6 +72,25 @@ def _merged_pr(commits: list[dict], merged_at: str = "2026-07-03T10:00:00Z") -> 
     }
 
 
+def _review(state: str, body: str = "", login: str = "marekpal97") -> dict:
+    """A review submission as ``gh pr view --json reviews`` emits it."""
+    return {
+        "author": {"login": login},
+        "authorAssociation": "OWNER",
+        "body": body,
+        "state": state,
+        "submittedAt": "2026-07-02T09:00:00Z",
+    }
+
+
+def _merged_pr_with_reviews(
+    commits: list[dict], reviews: list[dict], merged_at: str = "2026-07-03T10:00:00Z"
+) -> dict:
+    pr = _merged_pr(commits, merged_at=merged_at)
+    pr["reviews"] = reviews
+    return pr
+
+
 # ---------------------------------------------------------------------------
 # classify_pr_outcome — pure phase-1 classification
 # ---------------------------------------------------------------------------
@@ -120,6 +139,72 @@ class TestClassifyPrOutcome:
         assert to.classify_pr_outcome(pr)[0] == "reworked"
         # With the identity injected, it's an agent commit → merged-clean.
         assert to.classify_pr_outcome(pr, identities=("loop-bot",))[0] == "merged-clean"
+
+
+# ---------------------------------------------------------------------------
+# count_review_feedback — pure human-feedback join (issue #71)
+# ---------------------------------------------------------------------------
+
+
+class TestCountReviewFeedback:
+    def test_no_reviews_key_is_zeros(self):
+        assert to.count_review_feedback({"number": 1}) == {
+            "review_comments": 0,
+            "requested_changes_rounds": 0,
+        }
+
+    def test_empty_reviews_is_zeros(self):
+        # A clean merge (owner clicked merge, left no review) → zeros, NOT
+        # missing — this is the criteria's "clean-merged PR yields zeros".
+        assert to.count_review_feedback({"reviews": []}) == {
+            "review_comments": 0,
+            "requested_changes_rounds": 0,
+        }
+
+    def test_none_pr_is_zeros(self):
+        # Defensive: the pure counter tolerates None (the driver never calls it
+        # with None — a None pr at the call site means 'could not fetch').
+        assert to.count_review_feedback(None) == {
+            "review_comments": 0,
+            "requested_changes_rounds": 0,
+        }
+
+    def test_counts_bodies_and_changes_requested(self):
+        reviews = [
+            _review("CHANGES_REQUESTED", "please fix the seam"),
+            _review("COMMENTED", "one more nit"),
+            _review("APPROVED", ""),  # bare approval, no body → not a comment
+        ]
+        # Two reviews carry a written body; one round requested changes.
+        assert to.count_review_feedback({"reviews": reviews}) == {
+            "review_comments": 2,
+            "requested_changes_rounds": 1,
+        }
+
+    def test_two_changes_requested_rounds(self):
+        reviews = [
+            _review("CHANGES_REQUESTED", "round 1"),
+            _review("CHANGES_REQUESTED", "round 2"),
+            _review("APPROVED", "lgtm"),
+        ]
+        # All three carry bodies; two are changes-requested rounds.
+        assert to.count_review_feedback({"reviews": reviews}) == {
+            "review_comments": 3,
+            "requested_changes_rounds": 2,
+        }
+
+    def test_ignores_non_dict_entries(self):
+        reviews = [None, "junk", _review("CHANGES_REQUESTED", "x")]
+        assert to.count_review_feedback({"reviews": reviews}) == {
+            "review_comments": 1,
+            "requested_changes_rounds": 1,
+        }
+
+    def test_whitespace_only_body_is_not_a_comment(self):
+        assert to.count_review_feedback({"reviews": [_review("COMMENTED", "   ")]}) == {
+            "review_comments": 0,
+            "requested_changes_rounds": 0,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +369,66 @@ class TestJudgeTrajectoriesPhase1:
         assert result["judged"] == []
         note = _reload_only_trajectory(tv)
         assert not note.frontmatter.get("outcome_label")
+
+
+class TestPhase1ReviewFeedbackStamp:
+    """Issue #71: phase-1 judge fetches PR review data and stamps the raw
+    human-feedback counts (``review_comments`` / ``requested_changes_rounds``)
+    on the trajectory note.
+    """
+
+    def test_merged_pr_with_feedback_stamps_counts(self, vault_factory):
+        tv = _make_trajectory(vault_factory, issue=71, pr_url="https://github.com/o/r/pull/71")
+        pr = _merged_pr_with_reviews(
+            [_agent_commit("a1")],
+            [_review("CHANGES_REQUESTED", "fix this"), _review("APPROVED", "ok now")],
+        )
+        result = to.judge_trajectories(tv.config, phase="1", pr_fetcher=lambda url: pr)
+        assert result["judged"][0]["outcome"] == "merged-clean"
+
+        note = _reload_only_trajectory(tv)
+        # Top-level frontmatter carries the counts (criteria: "on its trajectory note").
+        assert note.frontmatter.get("review_comments") == 2
+        assert note.frontmatter.get("requested_changes_rounds") == 1
+        # Recorded raw on the phase-1 history entry too (rides the export row).
+        p1 = to.phase_entry(to.read_history(note.frontmatter), 1)
+        assert p1["review_comments"] == 2
+        assert p1["requested_changes_rounds"] == 1
+
+    def test_clean_merge_stamps_zeros_not_missing(self, vault_factory):
+        tv = _make_trajectory(vault_factory, issue=72, pr_url="https://github.com/o/r/pull/72")
+        pr = _merged_pr_with_reviews([_agent_commit("a1")], [])  # merged, no reviews
+        to.judge_trajectories(tv.config, phase="1", pr_fetcher=lambda url: pr)
+        note = _reload_only_trajectory(tv)
+        # Zeros present, NOT missing — distinguishes a clean merge from a
+        # fetch failure (which leaves the fields absent, tested below).
+        assert note.frontmatter.get("review_comments") == 0
+        assert note.frontmatter.get("requested_changes_rounds") == 0
+
+    def test_fetch_failure_does_not_zero_fill(self, vault_factory):
+        # Routed-to-human: the loop opened no PR (pr_url empty, fetcher → None).
+        # A None pr means 'could not fetch' — the feedback fields must stay
+        # ABSENT so a downstream learner can tell it apart from a clean 0.
+        tv = _make_trajectory(vault_factory, issue=73, pr_url="", outcome="routed-to-human")
+        result = to.judge_trajectories(tv.config, phase="1", pr_fetcher=lambda url: None)
+        assert result["judged"][0]["outcome"] == "routed-to-human"
+        note = _reload_only_trajectory(tv)
+        assert "review_comments" not in note.frontmatter
+        assert "requested_changes_rounds" not in note.frontmatter
+
+    def test_rerun_is_idempotent(self, vault_factory):
+        tv = _make_trajectory(vault_factory, issue=74, pr_url="https://github.com/o/r/pull/74")
+        pr = _merged_pr_with_reviews(
+            [_agent_commit("a1")], [_review("CHANGES_REQUESTED", "fix")]
+        )
+        to.judge_trajectories(tv.config, phase="1", pr_fetcher=lambda url: pr)
+        tv.indexed()
+        second = to.judge_trajectories(tv.config, phase="1", pr_fetcher=lambda url: pr)
+        assert second["judged"] == []  # already judged; the join does not re-run
+        note = _reload_only_trajectory(tv)
+        assert note.frontmatter.get("review_comments") == 1
+        assert note.frontmatter.get("requested_changes_rounds") == 1
+        assert len(to.read_history(note.frontmatter)) == 1
 
 
 class TestJudgeTrajectoriesPhase2:
@@ -518,6 +663,38 @@ class TestRlvrTrajectoryExport:
         assert [r["prediction"]["entry_index"] for r in exploded] == [0, 1]
         # The phase-2 entry is present in the exploded output.
         assert exploded[1]["prediction"]["reason"].startswith("rework-blame")
+
+    def test_export_row_carries_review_feedback(self, vault_factory):
+        # Issue #71: the human-feedback counts stamped by the phase-1 judge
+        # surface in `weave rlvr export` rows — WITHOUT widening the locked
+        # top-level keyset. They ride inside the free-shape phase-1 history
+        # entry (same place #60's raw counts live), so the consumer contract
+        # for the row envelope is unchanged.
+        from thinkweave.operations.rlvr_export import export_trajectory_rows
+
+        p1 = {
+            "outcome": "merged-clean", "phase": 1,
+            "judged_at": "2026-07-03T10:00:00+00:00", "reason": "clean",
+            "human_commits": 0, "fix_rounds": 0,
+            "review_comments": 3, "requested_changes_rounds": 1,
+        }
+        tv = _make_trajectory(
+            vault_factory, issue=71, pr_url="https://github.com/o/r/pull/71", outcome="shipped",
+            extra={"prediction_history": [p1], "outcome_label": "merged-clean",
+                   "merged_at": "2026-07-03T10:00:00+00:00",
+                   "review_comments": 3, "requested_changes_rounds": 1},
+        )
+        rows = list(export_trajectory_rows(tv.config))
+        assert len(rows) == 1
+        # Envelope keyset unchanged (locked contract intact).
+        assert set(rows[0].keys()) == {
+            "decision_id", "project", "session_id", "created_at",
+            "prediction", "outcome", "context",
+        }
+        entry = rows[0]["prediction"]["history"][0]
+        assert entry["match"] == "merged-clean"  # outcome→match rename survives
+        assert entry["review_comments"] == 3
+        assert entry["requested_changes_rounds"] == 1
 
     def test_cli_export_includes_trajectories_by_default(self, vault_factory, capsys):
         import argparse
