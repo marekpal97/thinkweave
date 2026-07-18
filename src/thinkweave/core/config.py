@@ -198,6 +198,16 @@ class Config:
     dream_trajectory_rework_threshold: float = 0.5
     dream_trajectory_agent_identities: tuple[str, ...] = ("claude", "noreply@anthropic.com")
 
+    # Evidence-gated steering (issue #62 — the gate the slow self-improvement
+    # loop #61 calls before filing proposals). ``weekly_budget``: max proposals
+    # filed per run, ranked by evidence weight — the anti-invention cap.
+    # ``steering_weights``: per-signal multipliers for the evidence weight (raw
+    # counts are always preserved; the weights only rank). Empty by default so
+    # every signal weighs 1.0 (see operations/steering.DEFAULT_WEIGHTS); the
+    # ``[steering]`` TOML section fills it from ``weight_<signal>`` keys.
+    steering_weekly_budget: int = 3
+    steering_weights: dict = field(default_factory=dict)
+
     # Knowledge-delta window (hours) for the phase-2 digest worker.
     dream_knowledge_delta_hours: int = 24
 
@@ -591,6 +601,20 @@ def load_config() -> Config:
             cfg.seam_recheck_days = int(seam_cfg["recheck_days"])
         if "cap" in seam_cfg:
             cfg.seam_cap = int(seam_cfg["cap"])
+
+        # Evidence-gated steering ([steering] — issue #62)
+        steering_cfg = data.get("steering", {})
+        if "weekly_budget" in steering_cfg:
+            cfg.steering_weekly_budget = int(steering_cfg["weekly_budget"])
+        # Signal weights arrive as ``weight_<signal>`` keys (weight_rework,
+        # weight_fix_rounds, weight_superseded, weight_gate_failures,
+        # weight_hub_pressure); strip the prefix into the steering_weights map.
+        weights: dict = {}
+        for key, val in steering_cfg.items():
+            if key.startswith("weight_"):
+                weights[key[len("weight_"):]] = float(val)
+        if weights:
+            cfg.steering_weights = weights
 
         # Extraction policy
         extract_cfg = data.get("extract", {})

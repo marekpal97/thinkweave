@@ -260,3 +260,144 @@ class TestGateProposals:
         )
         assert len(out["filed"]) == 1
         assert out["filed"][0]["evidence"]["gate_failures"] == 2
+
+
+# ---------------------------------------------------------------------------
+# build_evidence_index — the index scan over a seeded tmp vault
+# ---------------------------------------------------------------------------
+
+
+def _loop_run(tv, *, issue, outcome_label="", fix_rounds=0, files=None, gates=None):
+    tv.vault.create_note(
+        note_type=NoteType.NOTE,
+        title=f"loop trajectory #{issue}",
+        tags=["loop-run"],
+        extra_frontmatter={
+            "issue": issue,
+            "outcome_label": outcome_label,
+            "fix_rounds": fix_rounds,
+            "files_touched": files or [],
+            "gates": gates or [],
+        },
+    )
+
+
+def _decision(tv, *, title, status="accepted", file_paths=None, supersedes=None):
+    fm = {"status": status, "file_paths": file_paths or []}
+    if supersedes:
+        fm["supersedes"] = supersedes
+    tv.vault.create_note(
+        note_type=NoteType.DECISION, title=title, extra_frontmatter=fm
+    )
+
+
+class TestBuildEvidenceIndex:
+    def test_scans_trajectories_and_decisions_from_the_index(self, vault_factory):
+        tv = vault_factory()
+        # Two reworked trajectories over src/ops/dream.py; one clean.
+        _loop_run(tv, issue=1, outcome_label="reworked", fix_rounds=2,
+                  files=["src/ops/dream.py", "src/ops/steering.py"])
+        _loop_run(tv, issue=2, outcome_label="reworked-post-merge", fix_rounds=1,
+                  files=["src/ops/dream.py"])
+        _loop_run(tv, issue=3, outcome_label="merged-clean", fix_rounds=0,
+                  files=["src/ops/dream.py"],
+                  gates=[{"id": "tests", "passed": False}])
+        # A contested decision touching src/ops/dream.py.
+        _decision(tv, title="D1", status="superseded",
+                  file_paths=["src/ops/dream.py"])
+        _decision(tv, title="D2", status="accepted",
+                  file_paths=["src/ops/steering.py"])  # not contested
+        tv.indexed()
+
+        idx = steering.build_evidence_index(tv.config)
+        assert idx.rework == {"src/ops/dream.py": 2, "src/ops/steering.py": 1}
+        assert idx.fix_rounds == {"src/ops/dream.py": 3, "src/ops/steering.py": 2}
+        assert idx.gate_failures == {"src/ops/dream.py": 1}
+        assert idx.superseded == {"src/ops/dream.py": 1}
+        # No dream cycle ran → no PageRank → behavioral pressure empty (optional).
+        assert idx.hub_pressure == {}
+
+    def test_hub_pressure_reads_graph_ranks_when_present(self, vault_factory):
+        tv = vault_factory()
+        _loop_run(tv, issue=1, outcome_label="reworked", files=["a.py"])
+        tv.indexed()
+        # Simulate a dreamed vault: seed graph_ranks directly (the dream apply
+        # phase's output). build_evidence_index must surface it as hub pressure.
+        from thinkweave.core.indexer import Indexer
+
+        idx_db = Indexer(config=tv.config)
+        try:
+            idx_db.db.execute(
+                "INSERT INTO graph_ranks (note_id, rank_type, score, computed_at) "
+                "VALUES (?,?,?,?)",
+                ("n-1", "pagerank:indexer", 0.42, "2026-07-18"),
+            )
+            idx_db.db.commit()
+        finally:
+            idx_db.close()
+
+        ev = steering.build_evidence_index(tv.config)
+        assert ev.hub_pressure == {"indexer": 0.42}
+
+    def test_gate_over_built_index_drops_no_evidence_candidate(self, vault_factory):
+        tv = vault_factory()
+        _loop_run(tv, issue=1, outcome_label="reworked", fix_rounds=2,
+                  files=["src/ops/dream.py"])
+        tv.indexed()
+        ev = steering.build_evidence_index(tv.config)
+        out = steering.gate_proposals(
+            [
+                {"module": "src/ops/dream.py", "rationale": "real churn"},
+                {"module": "src/untouched.py", "rationale": "invented"},
+            ],
+            ev,
+            weekly_budget=3,
+        )
+        assert [f["module"] for f in out["filed"]] == ["src/ops/dream.py"]
+        assert any(d["module"] == "src/untouched.py"
+                   and d["reason"] == "no cited evidence" for d in out["dropped"])
+
+
+# ---------------------------------------------------------------------------
+# Config plumbing — [steering] knobs
+# ---------------------------------------------------------------------------
+
+
+class TestConfigKnobs:
+    def test_defaults_when_unset(self):
+        cfg = Config()
+        assert steering._cfg_budget(cfg) == steering.DEFAULT_WEEKLY_BUDGET
+        assert steering._cfg_weights(cfg) == steering.DEFAULT_WEIGHTS
+
+    def test_toml_section_overrides_budget_and_weights(self, tmp_path):
+        from thinkweave.core.config import load_config
+
+        vault = tmp_path / "vault"
+        (vault / "config").mkdir(parents=True)
+        (vault / "config" / "config.toml").write_text(
+            "vault_root = "
+            + repr(str(vault))
+            + "\n\n[steering]\nweekly_budget = 5\n"
+            "weight_rework = 2.5\nweight_gate_failures = 0.0\n",
+            encoding="utf-8",
+        )
+        import os
+
+        old = os.environ.pop("THINKWEAVE_VAULT", None)
+        os.environ["THINKWEAVE_VAULT"] = str(vault)
+        try:
+            cfg = load_config()
+        finally:
+            if old is not None:
+                os.environ["THINKWEAVE_VAULT"] = old
+            else:
+                os.environ.pop("THINKWEAVE_VAULT", None)
+        assert cfg.steering_weekly_budget == 5
+        # cfg holds only the overrides; _cfg_weights merges over DEFAULT_WEIGHTS.
+        merged = steering._cfg_weights(cfg)
+        assert merged["rework"] == 2.5
+        assert merged["gate_failures"] == 0.0
+        # untouched weights keep their default
+        assert merged["superseded"] == 1.0
+        # the gate reads the same merged view through cfg
+        assert steering._cfg_budget(cfg) == 5
