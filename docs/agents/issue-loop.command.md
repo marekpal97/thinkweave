@@ -100,11 +100,36 @@ python scripts/issue_loop.py claim <N> --run-id <run-id>
 
 ### 1b. Implement
 
+**Prime from prior trajectories (claim-time).** Before spawning the
+implementer, fetch the reusable half of prior similar runs — this is the native
+`bd prime`: prior trajectory notes' Lessons for work whose concepts match this
+issue's labels.
+
+```bash
+python scripts/issue_loop.py prime <N> --run-id <run-id> \
+  --labels "<comma-separated issue labels>" --vault <vault-root> \
+  [--buffer <weave_dir>/buffer/<this-session-id>.jsonl] <set-flags>
+```
+
+The rail reads the derived index read-only, matches `[loop-run]` notes by the
+issue's concepts (labels), and emits JSON: `block` (markdown to splice),
+`primed`, `holdout`, `served` (the note ids surfaced). **Splice `block`
+verbatim into the implementer prompt, adjacent to the `decisions_for_file`
+standing order below** — it is the same class of context (prior decisions for
+touched files + prior lessons for similar work). When `block` is empty (a
+deliberate holdout — every `prime_holdout`th run runs unprimed for the
+served-context regression — or simply no matching trajectories), splice
+nothing and dispatch unchanged; the loop runs identically. Record `primed` and
+`served` for §3. When you pass `--buffer` (the loop session's buffer JSONL),
+the rail also logs the served ids as a `loop_prime` event that the indexer
+projects to `context_served(source='loop-prime')`, making served context
+recoverable per run from the index.
+
 Read the issue: `gh issue view <N> --comments`. Then dispatch an
 **implementer subagent** with worktree isolation (Agent tool,
 `isolation: "worktree"`). Its prompt must contain, verbatim: the issue body,
-the acceptance criteria, the branch name (`<branch_prefix><N>`), and these
-standing orders:
+the acceptance criteria, the branch name (`<branch_prefix><N>`), the spliced
+prime block (when non-empty), and these standing orders:
 
 - Read `ARCHITECTURE.md` §-relevant parts and check prior decisions for every
   file you touch (`weave_graph(file_path=…, filter='decisions_for_file')`;
@@ -246,8 +271,17 @@ assemble the deterministic half —
 ```bash
 python scripts/issue_loop.py trajectory <N> --cwd <worktree> \
   --gates-json <results-file> --skills-json <dispatch-log> [--skill-centric] \
+  [--primed | --no-primed] [--served-json <served-ids-file>] \
   --fix-rounds <R> --outcome <o> --pr-url <url> --run-id <run-id>
 ```
+
+Mirror the §1b prime verdict: pass `--primed` with `--served-json` (a JSON list
+of the `served` ids the prime emitted) when this issue's implementer received
+prime context, or `--no-primed` when it was a holdout (`primed: false`, no
+served ids). Omitting both keeps the pre-#57 shape. This frontmatter mirror is
+markdown-truth for the served-context regression — the trajectory's `outcome`
+(and #60's outcome judge) regressed against `primed`/`served` separates
+"context helped" from "easy issue".
 
 `--skills-json` points at a JSON file you write from what the loop dispatched
 for this issue: a list of `{id, role, outcome, fix_rounds_attributed}`, one

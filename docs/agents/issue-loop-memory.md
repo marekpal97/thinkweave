@@ -79,12 +79,34 @@ by `run_id`/`issue` frontmatter they are the raw material for the
 task-trajectory primitive (grouping repeated task instances across sessions)
 without committing to its schema now.
 
-**Deliberately not built** (until felt): a deterministic outcome judge
-(`did the PR merge without human rework commits?` is computable from the PR
-timeline — a natural future /dream phase-2 worker that would append
-`prediction_history`-style evidence to trajectory notes); serving trajectory
-notes back into implementer prompts (retrieval-time concern; SessionStart
-context + decisions-for-file already cover the load-bearing part).
+**Serving trajectories back into the implementer (epic #54 / #57).** Capture
+without serving is a dead end. Claim-time priming is thinkweave's native
+`bd prime`: before dispatching issue N's implementer, `issue_loop.py prime <N>
+--run-id <id> --labels …` reads the derived index read-only, matches
+`[loop-run]` trajectory notes by the issue's concepts, and emits a
+budget-capped block of their **Lessons** sections that the orchestrator splices
+into the implementer prompt, adjacent to the standing `decisions_for_file`
+context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
+
+- **Served-context logging.** The prime emits the `served` note ids (trajectory
+  Lessons + decisions_for_file, capped top-`limit` per kind). The orchestrator
+  mirrors `primed` + `served` into the trajectory note frontmatter (§3), and —
+  when passed the session buffer via `--buffer` — the rail writes a `loop_prime`
+  retrieval event that the indexer projects to
+  `context_served(source='loop-prime')` (the same sentinel-tool mechanism
+  prompt-time retrieval uses; context_served stays a pure projection of
+  `retrieval_log.jsonl`). Served ids are recoverable per run from the index by
+  both routes.
+- **Deliberate holdout.** Every `prime_holdout`th run (default 5th; `loop.toml`
+  knob, `--set`-overridable) dispatches **unprimed**, marked `primed: false`
+  with no served ids. The holdout is deterministic per run-id
+  (`sha1(run_id) mod N == 0`, not random). Loop runs are numerous, comparable,
+  and gate-scored, so regressing #60's `outcome` against `primed`/served
+  context separates "context helped" from "easy issue".
+
+**Deliberately not built** (until felt): serving is retrieval-only today —
+no learned ranking of which prior lessons help most (the holdout regression is
+the measurement substrate that would inform it later).
 
 ## Why not…
 
