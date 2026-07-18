@@ -54,6 +54,39 @@ runnable = "ready-for-agent"
 claimed = "agent-claimed"
 on_gate_failure = "ready-for-human"
 
+# ── Risk-lane triage (issue_loop.py triage) ───────────────────────────────
+# After all gates pass, the orchestrator assembles the shipped PR's signal set
+# and runs `triage --signals-json` to classify it into a lane — green
+# (auto-merge-ok), yellow (review-light), red (ready-for-human) — so a human
+# reviews only what matters. The rail only CLASSIFIES; the orchestrator applies
+# the label via gh. red reuses the on_gate_failure label `ready-for-human`
+# deliberately (same "human, please look" rung). Precedence red > yellow >
+# green; every triggered rule is reported. All thresholds are knobs here.
+[triage]
+# green (auto-merge-ok) only makes sense where GitHub branch protection +
+# required CI actually guard the merge. Ship conservative: OFF by default. A
+# would-be-green PR is labeled review-light instead until a repo graduates out
+# of training mode. Per-run: --set triage.green_enabled=true.
+green_enabled = false
+# Sensitive paths → always red, regardless of size/first-try/review. Three
+# pattern forms: dir prefix (trailing '/'), bare basename (matches at any
+# depth), glob (*/?/[ — matched against the basename). Translated to THIS
+# repo's layout: the hooks, the CLI+MCP surface (surfaces/mcp/ holds the MCP
+# tool-signature files), the ontology + sources config by basename, any schema.
+sensitive_paths = [
+    "hooks/",
+    "src/thinkweave/surfaces/",
+    "ontology.yaml",
+    "sources.yaml",
+    "*schema*",
+]
+# Watched paths → at most yellow (skim, never gate). Empty by default; add
+# dirs that warrant a human glance without being hard-sensitive.
+watched_paths = []
+green_max_diff_lines = 150     # green requires the diff below this; >= is a medium diff (yellow)
+green_requires_first_try = true  # green requires fix_rounds == 0
+red_min_diff_lines = 800       # "big diff" → red
+
 # ── Gate pipeline ─────────────────────────────────────────────────────────
 # Ordered. kinds: command | diff (deterministic, run by the script)
 #                 acceptance | review (LLM-judged, run by the command in

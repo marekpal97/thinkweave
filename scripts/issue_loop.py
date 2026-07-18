@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fnmatch
 import hashlib
 import json
 import os
@@ -67,6 +68,28 @@ DEFAULT_CONFIG: dict = {
         "claimed": "agent-claimed",
         "on_gate_failure": "ready-for-human",
     },
+    "triage": {
+        # Ship conservative: green (auto-merge-ok) is OFF until a repo has
+        # branch protection + required CI and graduates out of training mode.
+        "green_enabled": False,
+        # Sensitive paths → always red. Three pattern forms (see classify_pr):
+        # dir prefix (trailing '/'), bare basename, glob. Translated to THIS
+        # repo's layout: the SessionStart/Stop hooks, the CLI+MCP surface
+        # (surfaces/ contains the MCP tool-signature files under mcp/), the
+        # ontology + sources config by basename, and any *schema* file.
+        "sensitive_paths": [
+            "hooks/",
+            "src/thinkweave/surfaces/",
+            "ontology.yaml",
+            "sources.yaml",
+            "*schema*",
+        ],
+        # Watched paths → at most yellow (skim, don't gate). Empty by default.
+        "watched_paths": [],
+        "green_max_diff_lines": 150,   # green requires diff below this
+        "green_requires_first_try": True,  # green requires fix_rounds == 0
+        "red_min_diff_lines": 800,     # "big diff" → red
+    },
     "gates": [],
 }
 
@@ -81,6 +104,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         "loop": dict(DEFAULT_CONFIG["loop"]),
         "labels": dict(DEFAULT_CONFIG["labels"]),
         "tdd": dict(DEFAULT_CONFIG["tdd"]),
+        "triage": dict(DEFAULT_CONFIG["triage"]),
         "gates": [],
     }
     if path.exists():
@@ -88,6 +112,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         cfg["loop"].update(data.get("loop", {}))
         cfg["labels"].update(data.get("labels", {}))
         cfg["tdd"].update(data.get("tdd", {}))
+        cfg["triage"].update(data.get("triage", {}))
         cfg["gates"] = data.get("gates", [])
     return cfg
 
@@ -122,8 +147,8 @@ def apply_overrides(cfg: dict, specs: list[str]) -> dict:
     """
     for spec in specs:
         section, key, value = parse_override(spec)
-        if section not in ("loop", "labels", "tdd"):
-            raise ValueError(f"--set section '{section}' not overridable (loop | labels | tdd)")
+        if section not in ("loop", "labels", "tdd", "triage"):
+            raise ValueError(f"--set section '{section}' not overridable (loop | labels | tdd | triage)")
         if key not in DEFAULT_CONFIG[section]:
             known = ", ".join(sorted(DEFAULT_CONFIG[section]))
             raise ValueError(f"--set unknown key '{section}.{key}' (known: {known})")
@@ -351,6 +376,120 @@ def run_diff_gate(gate: dict, cwd: Path, base_ref: str) -> dict:
         check=True,
     ).stdout
     return evaluate_diff_gate(gate, numstat)
+
+
+# ---------------------------------------------------------------------------
+# Risk-lane PR triage — pure classification over a shipped PR's signal set
+#
+# The rail already computes every triage signal (gate results incl. review
+# severity, diff size, files touched, fix_rounds, degraded baseline). This
+# classifies each shipped PR into green/yellow/red so a human reviews only what
+# matters — escalation-not-gates, matching the loop's existing ready-for-human
+# rung. Labels are APPLIED by the orchestrator (via gh); the rail only decides.
+
+# Review severities that fail the human bar outright (red). "none"/"minor" stay
+# green-eligible (the issue's "review <= minor").
+_RED_REVIEW = {"major", "critical"}
+# Acceptance verdicts that are not a clean pass — uncertain OR not-met → red.
+_RED_ACCEPTANCE = {"uncertain", "not-met"}
+
+TRIAGE_LABELS = {"green": "auto-merge-ok", "yellow": "review-light", "red": "ready-for-human"}
+
+
+def _path_matches(path: str, pattern: str) -> bool:
+    """Match one repo-relative path against one sensitive/watched pattern.
+
+    Three forms, dispatched by shape (issue #59):
+      - dir prefix — trailing ``/`` (``hooks/``, ``src/thinkweave/surfaces/``):
+        the path is under that directory (``startswith``, same convention as
+        the diff-guard gate's ``forbidden_paths``).
+      - glob — contains ``*``/``?``/``[`` (``*schema*``): fnmatched against the
+        basename, or the whole path when the glob itself spans directories.
+      - bare filename — anything else (``ontology.yaml``): the path's basename
+        equals it, so the file matches at any depth (a different basename that
+        merely shares the stem as a prefix does not).
+    """
+    if pattern.endswith("/"):
+        return path.startswith(pattern)
+    if any(c in pattern for c in "*?["):
+        target = path if "/" in pattern else path.rsplit("/", 1)[-1]
+        return fnmatch.fnmatch(target, pattern)
+    return path.rsplit("/", 1)[-1] == pattern
+
+
+def _path_hits(files: list[str], patterns: list[str]) -> list[str]:
+    """``"<path> (matches <pattern>)"`` for each file that hits any pattern,
+    deduped and sorted — the human-readable reason fragments."""
+    hits = set()
+    for path in files:
+        for pat in patterns:
+            if _path_matches(path, pat):
+                hits.add(f"{path} (matches {pat})")
+    return sorted(hits)
+
+
+def classify_pr(signals: dict, cfg: dict) -> dict:
+    """Classify one shipped PR into a risk lane. Pure over (signals, cfg).
+
+    ``cfg`` is the resolved ``[triage]`` config section. Precedence is
+    red > yellow > green, and every triggered rule is listed in ``reasons``
+    (short-circuit reasons: report all of them, not just the first). Returns
+    ``{lane, label, reasons}`` where label is the tracker string the
+    orchestrator applies (``auto-merge-ok`` / ``review-light`` /
+    ``ready-for-human``).
+
+    Signals schema (all optional; the orchestrator assembles them at ship time):
+      - ``fix_rounds`` int — implement→gate→fix iterations (0 = first try)
+      - ``diff_lines`` int — total changed lines in the PR's diff
+      - ``files_touched`` list[str] — repo-relative paths the PR changed
+      - ``tests_touched`` bool — the change carries test coverage
+      - ``review_severity`` str — worst review finding: none|minor|major|critical
+      - ``baseline_green`` bool — the tests gate was green on the pristine worktree
+      - ``acceptance`` str — the acceptance judge's verdict: met|uncertain|not-met
+    """
+    fix_rounds = int(signals.get("fix_rounds", 0) or 0)
+    diff_lines = int(signals.get("diff_lines", 0) or 0)
+    files = signals.get("files_touched") or []
+    tests_touched = bool(signals.get("tests_touched", False))
+    review = str(signals.get("review_severity", "none") or "none").lower()
+    baseline_green = bool(signals.get("baseline_green", True))
+    acceptance = str(signals.get("acceptance", "met") or "met").lower()
+
+    # --- red: any hard-escalation rule. List them all. -----------------------
+    red: list[str] = []
+    sensitive = _path_hits(files, cfg.get("sensitive_paths", []))
+    if sensitive:
+        red.append("sensitive path(s): " + ", ".join(sensitive))
+    if diff_lines >= cfg["red_min_diff_lines"]:
+        red.append(f"large diff: {diff_lines} lines >= {cfg['red_min_diff_lines']}")
+    if not baseline_green:
+        red.append("degraded baseline (tests not green on the pristine worktree)")
+    if review in _RED_REVIEW:
+        red.append(f"review severity {review}")
+    if acceptance in _RED_ACCEPTANCE:
+        red.append(f"acceptance {acceptance}")
+    if red:
+        return {"lane": "red", "label": TRIAGE_LABELS["red"], "reasons": red}
+
+    # --- yellow: passed, but warrants a human skim. List them all. -----------
+    yellow: list[str] = []
+    if cfg.get("green_requires_first_try", True) and fix_rounds > 0:
+        yellow.append(f"{fix_rounds} fix round(s)")
+    if diff_lines >= cfg["green_max_diff_lines"]:
+        yellow.append(f"medium diff: {diff_lines} lines >= {cfg['green_max_diff_lines']}")
+    watched = _path_hits(files, cfg.get("watched_paths", []))
+    if watched:
+        yellow.append("watched path(s): " + ", ".join(watched))
+    if not tests_touched:
+        yellow.append("no test coverage signal (tests_touched=false)")
+    if yellow:
+        return {"lane": "yellow", "label": TRIAGE_LABELS["yellow"], "reasons": yellow}
+
+    # --- green criteria all met. Only auto-merge-ok where green is enabled. ---
+    if cfg.get("green_enabled", False):
+        return {"lane": "green", "label": TRIAGE_LABELS["green"], "reasons": []}
+    return {"lane": "yellow", "label": TRIAGE_LABELS["yellow"],
+            "reasons": ["green lane disabled (training-mode graduation pending)"]}
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +967,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_prime.add_argument("--session-id", default="",
                          help="loop session id, stamped into the served-context event")
 
+    p_triage = sub.add_parser("triage", help="classify a shipped PR into a risk lane", parents=[common])
+    p_triage.add_argument("number", type=int, nargs="?", default=None,
+                          help="issue/PR number for the output (optional; the "
+                               "signals JSON may also carry an 'issue' key)")
+    p_triage.add_argument("--signals-json", required=True,
+                          help="file with the PR's signal set: {fix_rounds, "
+                               "diff_lines, files_touched, tests_touched, "
+                               "review_severity, baseline_green, acceptance}")
+
     p_traj = sub.add_parser("trajectory", help="assemble a per-issue trajectory payload (memory feed)", parents=[common])
     p_traj.add_argument("number", type=int)
     p_traj.add_argument("--cwd", default=".", help="the issue's implementer worktree")
@@ -943,6 +1091,11 @@ def main(argv: list[str] | None = None) -> int:
             _append_served_event(args.buffer, args.run_id, args.number,
                                  payload["served"], args.session_id)
         print(json.dumps(payload, indent=2))
+    elif args.cmd == "triage":
+        signals = json.loads(Path(args.signals_json).read_text(encoding="utf-8"))
+        result = classify_pr(signals, cfg["triage"])
+        issue = args.number if args.number is not None else signals.get("issue")
+        print(json.dumps({"issue": issue, **result}, indent=2))
     elif args.cmd == "trajectory":
         cwd = Path(args.cwd).resolve()
         issue = json.loads(_gh(["api", f"repos/{{owner}}/{{repo}}/issues/{args.number}"]))

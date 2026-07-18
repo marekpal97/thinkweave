@@ -829,3 +829,253 @@ def test_prime_argparse_contract():
     ns2 = issue_loop.build_arg_parser().parse_args(["prime", "1", "--run-id", "r"])
     assert ns2.labels is None and ns2.concepts is None and ns2.db is None
     assert ns2.limit == 3 and ns2.budget_chars == 1200 and ns2.buffer is None
+
+
+# ---------------------------------------------------------------------------
+# Risk-lane PR triage — classify_pr over synthetic PR-signal sets
+#
+# Pure function: (signals, triage-cfg) -> {lane, label, reasons}. Precedence
+# red > yellow > green, every triggered rule listed (short-circuit reasons).
+
+# A green triage config (green enabled) so the green lane is reachable; the
+# repo default ships green DISABLED (see test_load_config_triage_defaults).
+TRIAGE_CFG = {
+    "green_enabled": True,
+    "sensitive_paths": [
+        "hooks/", "src/thinkweave/surfaces/", "ontology.yaml",
+        "sources.yaml", "*schema*",
+    ],
+    "watched_paths": ["docs/agents/"],
+    "green_max_diff_lines": 150,
+    "green_requires_first_try": True,
+    "red_min_diff_lines": 800,
+}
+
+
+def _signals(**kw):
+    """A first-try, small, test-covered, minor-review, green-baseline PR —
+    the green archetype. Override one field per test to trip one lane."""
+    base = {
+        "fix_rounds": 0,
+        "diff_lines": 20,
+        "files_touched": ["src/thinkweave/core/foo.py", "tests/test_foo.py"],
+        "tests_touched": True,
+        "review_severity": "minor",
+        "baseline_green": True,
+        "acceptance": "met",
+    }
+    base.update(kw)
+    return base
+
+
+# --- green lane -------------------------------------------------------------
+
+
+def test_classify_green_when_enabled():
+    r = issue_loop.classify_pr(_signals(), TRIAGE_CFG)
+    assert r["lane"] == "green"
+    assert r["label"] == "auto-merge-ok"
+    assert r["reasons"] == []
+
+
+def test_classify_green_disabled_downgrades_to_review_light():
+    # Acceptance criterion 2, second half: the same green archetype is
+    # review-light (not auto-merge-ok) when green is disabled — the repo default.
+    cfg = {**TRIAGE_CFG, "green_enabled": False}
+    r = issue_loop.classify_pr(_signals(), cfg)
+    assert r["lane"] == "yellow" and r["label"] == "review-light"
+    assert any("disabled" in x for x in r["reasons"])
+
+
+def test_minor_and_none_review_are_green_eligible():
+    assert issue_loop.classify_pr(_signals(review_severity="none"), TRIAGE_CFG)["lane"] == "green"
+    assert issue_loop.classify_pr(_signals(review_severity="minor"), TRIAGE_CFG)["lane"] == "green"
+
+
+# --- red lane ---------------------------------------------------------------
+
+
+def test_classify_hooks_path_always_red():
+    # Acceptance criterion 1: hooks/ is red regardless of size / first-try /
+    # coverage / review — the whole green archetype except the touched file.
+    r = issue_loop.classify_pr(_signals(files_touched=["hooks/hooks.json"]), TRIAGE_CFG)
+    assert r["lane"] == "red" and r["label"] == "ready-for-human"
+    assert any("hooks/hooks.json" in x for x in r["reasons"])
+
+
+def test_classify_dir_prefix_matches_mcp_surface():
+    r = issue_loop.classify_pr(
+        _signals(files_touched=["src/thinkweave/surfaces/mcp/server.py"]), TRIAGE_CFG)
+    assert r["lane"] == "red"
+
+
+def test_classify_glob_pattern_matches_schema_basename():
+    r = issue_loop.classify_pr(
+        _signals(files_touched=["src/thinkweave/core/schemas.py"]), TRIAGE_CFG)
+    assert r["lane"] == "red"
+
+
+def test_classify_bare_filename_matches_basename_only():
+    # ontology.yaml at any depth is sensitive; a file that merely shares the
+    # stem as a prefix (different basename) is not.
+    hit = issue_loop.classify_pr(
+        _signals(files_touched=["src/thinkweave/vault_templates/config/ontology.yaml"]),
+        TRIAGE_CFG)
+    assert hit["lane"] == "red"
+    miss = issue_loop.classify_pr(
+        _signals(files_touched=["src/thinkweave/core/ontology_helpers.py"]), TRIAGE_CFG)
+    assert miss["lane"] != "red"
+
+
+def test_classify_big_diff_red():
+    r = issue_loop.classify_pr(_signals(diff_lines=900), TRIAGE_CFG)
+    assert r["lane"] == "red"
+    assert any("900" in x for x in r["reasons"])
+
+
+def test_classify_degraded_baseline_red():
+    assert issue_loop.classify_pr(_signals(baseline_green=False), TRIAGE_CFG)["lane"] == "red"
+
+
+def test_classify_major_and_critical_review_red():
+    assert issue_loop.classify_pr(_signals(review_severity="major"), TRIAGE_CFG)["lane"] == "red"
+    assert issue_loop.classify_pr(_signals(review_severity="critical"), TRIAGE_CFG)["lane"] == "red"
+
+
+def test_classify_uncertain_acceptance_red():
+    assert issue_loop.classify_pr(_signals(acceptance="uncertain"), TRIAGE_CFG)["lane"] == "red"
+    assert issue_loop.classify_pr(_signals(acceptance="not-met"), TRIAGE_CFG)["lane"] == "red"
+
+
+def test_red_lists_every_triggered_rule():
+    # Short-circuit reasons: not just the first — every red rule that fired.
+    r = issue_loop.classify_pr(
+        _signals(files_touched=["hooks/x.json"], diff_lines=900,
+                 baseline_green=False, review_severity="critical"),
+        TRIAGE_CFG)
+    assert r["lane"] == "red"
+    joined = " | ".join(r["reasons"])
+    assert "hooks/x.json" in joined and "900" in joined
+    assert "baseline" in joined.lower() and "critical" in joined
+    assert len(r["reasons"]) >= 4
+
+
+# --- yellow lane ------------------------------------------------------------
+
+
+def test_classify_fix_rounds_yellow():
+    r = issue_loop.classify_pr(_signals(fix_rounds=1), TRIAGE_CFG)
+    assert r["lane"] == "yellow" and r["label"] == "review-light"
+    assert any("fix round" in x for x in r["reasons"])
+
+
+def test_classify_medium_diff_yellow():
+    # >= green_max_diff_lines (150) but < red_min_diff_lines (800).
+    r = issue_loop.classify_pr(_signals(diff_lines=300), TRIAGE_CFG)
+    assert r["lane"] == "yellow"
+    assert any("300" in x for x in r["reasons"])
+
+
+def test_classify_watched_path_yellow():
+    r = issue_loop.classify_pr(_signals(files_touched=["docs/agents/loop.toml"]), TRIAGE_CFG)
+    assert r["lane"] == "yellow"
+    assert any("watched" in x for x in r["reasons"])
+
+
+def test_classify_no_test_coverage_yellow():
+    r = issue_loop.classify_pr(_signals(tests_touched=False), TRIAGE_CFG)
+    assert r["lane"] == "yellow"
+
+
+def test_green_requires_first_try_knob_off_allows_fix_rounds():
+    cfg = {**TRIAGE_CFG, "green_requires_first_try": False}
+    assert issue_loop.classify_pr(_signals(fix_rounds=3), cfg)["lane"] == "green"
+
+
+# --- thresholds are config, not hardcoded (acceptance criterion 3) ----------
+
+
+def test_thresholds_read_from_config():
+    sig = _signals(diff_lines=200)
+    lenient = {**TRIAGE_CFG, "red_min_diff_lines": 800}
+    strict = {**TRIAGE_CFG, "red_min_diff_lines": 100}
+    assert issue_loop.classify_pr(sig, lenient)["lane"] == "yellow"
+    assert issue_loop.classify_pr(sig, strict)["lane"] == "red"
+
+
+# --- config plumbing --------------------------------------------------------
+
+
+def test_load_config_triage_defaults(tmp_path):
+    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    t = cfg["triage"]
+    assert t["green_enabled"] is False   # ship conservative
+    assert "hooks/" in t["sensitive_paths"]
+    assert "*schema*" in t["sensitive_paths"]
+    assert t["green_requires_first_try"] is True
+    assert isinstance(t["green_max_diff_lines"], int)
+    assert isinstance(t["red_min_diff_lines"], int)
+    assert t["red_min_diff_lines"] > t["green_max_diff_lines"]
+
+
+def test_repo_loop_toml_has_triage_section():
+    cfg = issue_loop.load_config()
+    assert cfg["triage"]["green_enabled"] is False
+    # sensitive-path defaults translated to THIS repo's layout.
+    sp = cfg["triage"]["sensitive_paths"]
+    assert "hooks/" in sp and "src/thinkweave/surfaces/" in sp
+
+
+def test_triage_override_via_set(tmp_path):
+    cfg = issue_loop.apply_overrides(
+        issue_loop.load_config(tmp_path / "nope.toml"),
+        ["triage.green_max_diff_lines=200", "triage.green_enabled=true"],
+    )
+    assert cfg["triage"]["green_max_diff_lines"] == 200
+    assert cfg["triage"]["green_enabled"] is True
+
+
+def test_triage_override_rejects_unknown_key(tmp_path):
+    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    with pytest.raises(ValueError, match="unknown key"):
+        issue_loop.apply_overrides(cfg, ["triage.green_max_diff=200"])
+
+
+# --- CLI contract -----------------------------------------------------------
+
+
+def test_triage_argparse_contract():
+    ns = issue_loop.build_arg_parser().parse_args(
+        ["triage", "59", "--signals-json", "s.json"])
+    assert ns.cmd == "triage" and ns.number == 59 and ns.signals_json == "s.json"
+    # The issue number is optional context (signals already carry it).
+    ns2 = issue_loop.build_arg_parser().parse_args(["triage", "--signals-json", "s.json"])
+    assert ns2.number is None
+
+
+def test_triage_cli_red_via_default_config(tmp_path, capsys):
+    sig = tmp_path / "sig.json"
+    sig.write_text(json.dumps({
+        "fix_rounds": 0, "diff_lines": 10, "files_touched": ["hooks/hooks.json"],
+        "tests_touched": True, "review_severity": "minor", "baseline_green": True,
+    }), encoding="utf-8")
+    rc = issue_loop.main(["triage", "59", "--signals-json", str(sig)])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["lane"] == "red" and out["label"] == "ready-for-human"
+    assert out["issue"] == 59
+
+
+def test_triage_cli_green_needs_enable_override(tmp_path, capsys):
+    sig = tmp_path / "sig.json"
+    sig.write_text(json.dumps({
+        "fix_rounds": 0, "diff_lines": 10,
+        "files_touched": ["src/thinkweave/core/foo.py", "tests/test_foo.py"],
+        "tests_touched": True, "review_severity": "minor", "baseline_green": True,
+    }), encoding="utf-8")
+    # Default config → green disabled → review-light.
+    issue_loop.main(["triage", "--signals-json", str(sig)])
+    assert json.loads(capsys.readouterr().out)["label"] == "review-light"
+    # Enable green for this run → auto-merge-ok.
+    issue_loop.main(["triage", "--signals-json", str(sig), "--set", "triage.green_enabled=true"])
+    assert json.loads(capsys.readouterr().out)["label"] == "auto-merge-ok"
