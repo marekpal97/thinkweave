@@ -264,7 +264,81 @@ def test_repo_loop_toml_parses_and_gate_ids_unique():
     cfg = issue_loop.load_config()
     ids = [g["id"] for g in cfg["gates"]]
     assert len(ids) == len(set(ids)) and len(ids) >= 4
-    assert all(g["kind"] in {"command", "diff", "acceptance", "review"} for g in cfg["gates"])
+    assert all(g["kind"] in {"command", "diff", "acceptance", "review", "simplify"}
+               for g in cfg["gates"])
+
+
+# ---------------------------------------------------------------------------
+# simplify gate (issue #58) — ponytail over-engineering trim, applying gate
+
+
+def test_gate_pipeline_order_is_pinned():
+    """The full pipeline order is a contract: diff-guard → tests → acceptance
+    → review → simplify. simplify runs LAST, after review, so it only ever
+    shrinks an already-verified diff."""
+    cfg = issue_loop.load_config()
+    ids = [g["id"] for g in cfg["gates"]]
+    assert ids == ["diff-guard", "tests", "acceptance", "review", "simplify"]
+
+
+def test_simplify_gate_shape():
+    """The simplify gate is a non-required LLM/orchestrator kind whose
+    'failure' mode is a revert (never a pipeline block): it re-runs the
+    verification gates on the simplified diff and, if either goes red, ships
+    the pre-simplify diff with the revert note."""
+    cfg = issue_loop.load_config()
+    gate = next(g for g in cfg["gates"] if g["id"] == "simplify")
+    assert gate["kind"] == "simplify"
+    # required=false: simplify can never fail the pipeline — its failure ships
+    # the pre-simplify diff (documented in issue-loop.command.md §1c-simplify).
+    assert gate["required"] is False
+    # It re-verifies the shrunk diff against exactly the deterministic +
+    # behavioral gates, in order.
+    assert gate["rerun"] == ["tests", "acceptance"]
+    assert "simplify-reverted" in gate["revert_note"]
+    # The delete-list comes from the vendored ponytail-review skill.
+    assert gate["skill"] == "ponytail-review"
+
+
+def test_check_rejects_simplify_as_orchestrator_kind(tmp_path, capsys):
+    """`check` only executes deterministic kinds (command/diff). An unknown /
+    LLM-judged kind like simplify must be PASSED THROUGH — surfaced with the
+    same 'run it from the command' error as acceptance/review, not rejected by
+    the loader. Regression guard: the config loader does not hard-validate
+    kinds, so a new orchestrator gate parses and surfaces without a code change
+    to the rail."""
+    rc = issue_loop.main(["check", "--gate", "simplify", "--cwd", str(tmp_path)])
+    assert rc == 2
+    err = json.loads(capsys.readouterr().out)
+    assert "LLM-judged" in err["error"]
+
+
+def test_committed_hooks_carry_no_ponytail_entries():
+    """Acceptance criterion: vendoring the skill installs NO ponytail hooks.
+    The committed hook manifest must contain no ponytail UserPromptSubmit /
+    PreToolUse entry (ponytail's plugin would collide with weave's own
+    UserPromptSubmit hook)."""
+    hooks = (issue_loop.REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    assert "ponytail" not in hooks.lower()
+
+
+def test_vendored_ponytail_review_skill_present_with_provenance():
+    """The ponytail-review skill is vendored as dev tooling under docs/agents/
+    with pinned-upstream provenance (sha + source repo) and the machine-local
+    symlink wiring documented in-header (symlinks into .claude/commands/ are
+    not committed — mirrors how issue-loop.command.md is wired)."""
+    vendored = issue_loop.REPO_ROOT / "docs" / "agents" / "ponytail-review.command.md"
+    assert vendored.exists()
+    text = vendored.read_text(encoding="utf-8")
+    # Provenance: the canonical upstream repo and the pinned commit sha.
+    assert "DietrichGebert/ponytail" in text
+    assert "16f29800fd2681bdf24f3eb4ccffe38be3baec6b" in text
+    # The wiring note (ln -s into .claude/commands/), since the symlink itself
+    # is machine-local and not committed.
+    assert ".claude/commands/" in text and "ln -s" in text
+    # The skill's actual delete-list vocabulary survived the vendoring.
+    for tag in ("delete:", "stdlib:", "yagni:", "shrink:"):
+        assert tag in text
 
 
 # ---------------------------------------------------------------------------

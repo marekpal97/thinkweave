@@ -89,10 +89,11 @@ red_min_diff_lines = 800       # "big diff" → red
 
 # ── Gate pipeline ─────────────────────────────────────────────────────────
 # Ordered. kinds: command | diff (deterministic, run by the script)
-#                 acceptance | review (LLM-judged, run by the command in
-#                 fresh subagent contexts). Adding another command/diff gate
-# is config-only; a new *kind* needs a dispatch branch in issue_loop.py or
-# a section in the /issue-loop command.
+#                 acceptance | review | simplify (LLM-judged / orchestrated,
+#                 run by the command in fresh subagent contexts). Adding
+# another command/diff gate is config-only; a new *kind* needs a dispatch
+# branch in issue_loop.py (deterministic kinds) or a section in the
+# /issue-loop command (orchestrated kinds).
 
 [[gates]]
 id = "diff-guard"
@@ -120,3 +121,21 @@ kind = "review"
 required = true
 block_on = ["critical", "major"]   # finding severities that fail the gate
 smells_baseline = true   # report Fowler code smells as judgement calls — never gate-failing
+
+# simplify runs LAST, after review, and is safe by construction: it can only
+# SHRINK an already-verified diff and must preserve verified behavior. The
+# orchestrator (issue-loop.command.md §1c-simplify) snapshots the tip, dispatches
+# a subagent with the VENDORED ponytail-review skill on the slice diff, applies
+# its delete-list as a commit, then re-runs `rerun` (the deterministic + behavioral
+# gates) on the shrunk diff. If either goes red it hard-resets to the pre-simplify
+# tip and ships the original diff with `revert_note` in the PR body — so this gate
+# NEVER fails the pipeline. That is why required=false: its "failure" mode is the
+# revert, not a block. skill names the vendored delete-list source
+# (docs/agents/ponytail-review.command.md; the host /simplify skill is the fallback).
+[[gates]]
+id = "simplify"
+kind = "simplify"
+required = false
+skill = "ponytail-review"          # vendored under docs/agents/; host /simplify is the fallback
+rerun = ["tests", "acceptance"]    # re-verify the shrunk diff against these gate ids, in order
+revert_note = "⚠ simplify-reverted"  # PR-body note when the shrunk diff is discarded

@@ -1,6 +1,6 @@
 ---
 name: issue-loop
-description: "Drain the ready-for-agent frontier of the GitHub issue DAG: implement each unblocked issue in an isolated worktree, run the configured gate pipeline (tests/diff/acceptance/review), and open a draft PR per issue. Headless-safe."
+description: "Drain the ready-for-agent frontier of the GitHub issue DAG: implement each unblocked issue in an isolated worktree, run the configured gate pipeline (diff/tests/acceptance/review/simplify), and open a draft PR per issue. Headless-safe."
 argument-hint: "[issue-number] | --dag <issue> to work one DAG | --stacked | --max-issues <n> | --set key=value | nothing to drain the frontier"
 disable-model-invocation: true
 ---
@@ -177,6 +177,37 @@ Run the configured gates **in order**, inside the implementer's worktree.
   refused bequest) — smells are **judgement calls reported in the PR body,
   never gate-failing**, and a documented repo standard overrides the
   baseline.
+- `kind: simplify` — the over-engineering trim. Runs **last, only after every
+  required gate is green**, and is safe by construction: it can only *shrink*
+  the verified diff and must preserve verified behavior. See the dedicated
+  flow below. `required = false` — it can never fail the pipeline; its
+  "failure" mode is a revert, not a block.
+
+**The simplify stage (`kind: simplify`, after review).** Once review passes:
+
+1. **Snapshot the tip.** `pre=$(git -C <worktree> rev-parse HEAD)`. In stacked
+   mode this is per-slice — the snapshot is the tip *before* this slice's
+   simplify, so a revert only unwinds the trim, never prior slices.
+2. **Get the delete-list.** Dispatch a **fresh subagent** with the text of the
+   **vendored** `docs/agents/ponytail-review.command.md` skill (host
+   `/simplify` is the fallback if unavailable) and `git diff origin/main...HEAD`
+   for the slice. It returns a delete-list (one line per cut) and a
+   `net: -<N> lines possible` tally. If it says `Lean already. Ship.`, skip the
+   rest — note "simplify: lean already" in the PR body and move on.
+3. **Apply.** Apply the delete-list as a single commit on the branch.
+4. **Re-verify.** Re-run the gates named in the gate's `rerun` key (`tests`,
+   then `acceptance`) on the shrunk diff, in order — `tests` via the rail
+   (`check --gate tests`), `acceptance` via a fresh judge subagent, same as §1c.
+5. **Keep or revert.**
+   - **Both green** → keep the shrink. Note the win in the PR body
+     (`simplify: -<N> lines, tests+acceptance green`).
+   - **Either red** → `git -C <worktree> reset --hard $pre` to discard the
+     trim and ship the **pre-simplify** diff. Add the gate's `revert_note`
+     (`⚠ simplify-reverted`) to the PR body with the failing gate named.
+
+Because a red re-verify resets to `$pre`, simplify never blocks shipping and
+never regresses behavior — worst case the shipped diff is exactly the
+post-review diff. That is the whole point of running it last and non-required.
 
 **On a required-gate failure:** feed the evidence (gate id, summary, detail,
 per-criterion verdicts, review findings) back to the implementer subagent

@@ -116,6 +116,7 @@ threshold) touches no code.
 | `command` | script (deterministic) | any shell command; pass = exit 0 |
 | `acceptance` | fresh LLM judge | the issue's own acceptance criteria, per-criterion, `threshold = all\|majority` |
 | `review` | fresh LLM reviewer | code-review findings vs `block_on` severities |
+| `simplify` | fresh subagent (vendored ponytail-review) | over-engineering trim — the one **applying** gate. Runs last; `required = false`; shrinks the verified diff, re-runs `rerun` gates, reverts to the pre-simplify tip if either goes red |
 
 Design rules baked in:
 
@@ -134,6 +135,14 @@ Design rules baked in:
 - **Training mode.** `training_mode = true` stops before push/PR and
   presents the gate table for approval. Flip it off once a few runs have
   earned trust; the guardrail gates (`diff`, caps) stay.
+- **Simplify is safe by construction.** The one *applying* gate runs last,
+  after verification, and can only shrink an already-green diff. It re-runs
+  the `rerun` gates on the trim and reverts to the pre-simplify tip if either
+  goes red — so it never blocks shipping and never regresses behavior. Its
+  delete-list comes from the **vendored** ponytail-review skill
+  (`docs/agents/ponytail-review.command.md`); ponytail's own plugin/hook
+  installer is **never** run — its `UserPromptSubmit` hook would collide with
+  weave's, so we vendor the skill text only.
 
 ## The TDD contingency
 
@@ -159,7 +168,10 @@ implementer worktree — a deterministic baseline probe of origin/main.
 - **New deterministic check** → add a `[[gates]]` entry (config-only).
 - **New gate kind** (e.g. a benchmark-vs-baseline judge, a docs-drift
   checker) → one dispatch branch in `issue_loop.py` (deterministic) or one
-  subsection in the `/issue-loop` command (LLM-judged).
+  subsection in the `/issue-loop` command (LLM-judged / orchestrated, like
+  `simplify`). The rail passes unknown kinds through — `config` surfaces
+  them and `check` reports them as command-run, so no rail change is needed
+  for an orchestrated kind.
 - **Per-track policy** (e.g. stricter review on `track:B-core`) → gates grow
   an optional `only_tracks` / `skip_tracks` filter; deliberately not built
   until a real need shows up.
