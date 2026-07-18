@@ -475,9 +475,12 @@ def classify_pr(signals: dict, cfg: dict,
     if diff_lines >= cfg["red_min_diff_lines"]:
         red.append(f"large diff: {diff_lines} lines >= {cfg['red_min_diff_lines']}")
 
-    # baseline_green — required; missing or falsy → red.
+    # baseline_green — required; missing, non-bool (a truthy "false" string must
+    # not pass), or False → red.
     if "baseline_green" not in signals:
         red.append("baseline_green signal missing (fail-closed)")
+    elif not isinstance(signals["baseline_green"], bool):
+        red.append(f"non-bool baseline_green {signals['baseline_green']!r} (fail-closed)")
     elif not signals["baseline_green"]:
         red.append("degraded baseline (tests not green on the pristine worktree)")
 

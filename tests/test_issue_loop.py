@@ -1121,6 +1121,14 @@ def test_missing_baseline_green_is_red():
     assert any("baseline_green" in x for x in r["reasons"])
 
 
+def test_non_bool_baseline_green_is_red():
+    # baseline_green: "false" (string) is truthy — it must NOT pass green.
+    # Same enum-drift class: a non-bool value fails closed to red.
+    r = issue_loop.classify_pr(_signals(baseline_green="false"), TRIAGE_CFG)
+    assert r["lane"] == "red"
+    assert any("baseline_green" in x for x in r["reasons"])
+
+
 def test_missing_acceptance_is_red():
     r = issue_loop.classify_pr(_signals_no("acceptance"), TRIAGE_CFG)
     assert r["lane"] == "red"
