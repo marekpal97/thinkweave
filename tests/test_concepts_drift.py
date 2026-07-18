@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from thinkweave.synthesis.concepts import (
-    DRIFT_COUNT_THRESHOLD,
     drift_report,
     format_drift_report,
     hubs_marker_path,
@@ -233,7 +231,7 @@ class TestOntologyStale:
         indexer: Indexer,
         monkeypatch,
     ):
-        ontology_path = _stub_ontology(monkeypatch, {"math-calc": ["x"]})
+        _stub_ontology(monkeypatch, {"math-calc": ["x"]})
         indexer.rebuild(full=True)
 
         # Touch marker AFTER the ontology to make it fresh

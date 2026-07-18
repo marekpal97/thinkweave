@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from thinkweave.core.config import Config
 from thinkweave.acquisition.importers.claude_history import (
-    META_CONCEPT_TO_TAG,
-    PROJECT_MAP,
     _build_session_map,
     _content_hash,
     _deduplicate_observations,
@@ -28,7 +24,6 @@ from thinkweave.acquisition.importers.claude_history import (
     import_claude_history,
     normalize_project,
 )
-from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager, parse_frontmatter
 
 
@@ -501,7 +496,6 @@ class TestImportClaudeMem:
 
         # No files should be created (except the vault dirs)
         projects_dir = config.vault_root / "projects"
-        project_folders = [p for p in projects_dir.iterdir() if p.is_dir()] if projects_dir.exists() else []
         # Only pre-existing dirs from ensure_dirs(), no project session folders
         session_mds = list(projects_dir.rglob("session.md"))
         assert len(session_mds) == 0

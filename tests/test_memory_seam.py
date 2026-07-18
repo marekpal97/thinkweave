@@ -10,7 +10,6 @@ are not exercised here.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

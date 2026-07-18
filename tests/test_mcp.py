@@ -11,7 +11,6 @@ from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.surfaces.mcp.server import (
     _build_decision_body,
-    _flush_insight,
     _parse_candidate_insights,
 )
 from thinkweave.core.vault import parse_frontmatter
@@ -149,7 +148,7 @@ class TestUpdateLogic:
         indexer.index_file(path_a)
         indexer.index_file(path_b)
 
-        note_b = vault.read_note(path_b)
+        vault.read_note(path_b)
         note_a = vault.read_note(path_a)
 
         vault.update_note(

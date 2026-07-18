@@ -1108,7 +1108,7 @@ def themes_ledger(config: Config) -> str:
         # markdown — `### {title}` heading + bullet block + blockquote
         # essence — so triage can locate the section by heading and pass
         # it whole.
-        lines.append(f"## Catalog (active)")
+        lines.append("## Catalog (active)")
         lines.append("")
         lines.append(
             "*Compact view of active themes — used by news triage and as "

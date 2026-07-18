@@ -380,7 +380,7 @@ def _build_queue_body(resolved: ResolvedURL, msg: Message) -> str:
         parts.append("")
 
     parts.append("## Source")
-    parts.append(f"- **From**: Messenger self-chat")
+    parts.append("- **From**: Messenger self-chat")
     parts.append(f"- **Date sent**: {msg.timestamp.strftime('%Y-%m-%d')}")
     if resolved.original_url != resolved.url:
         parts.append(f"- **Original URL**: {resolved.original_url}")
@@ -479,7 +479,7 @@ def import_messenger(
         else:
             noise_count += 1
 
-    print(f"\n── Classification ──────────────────────────────────")
+    print("\n── Classification ──────────────────────────────────")
     print(f"  Direct (non-Facebook):  {len(direct)}")
     print(f"  Facebook (need resolve): {len(facebook)}")
     print(f"  Noise (filtered out):    {noise_count}")
@@ -535,16 +535,16 @@ def import_messenger(
 
             time.sleep(1.0)  # rate limit
 
-        print(f"\n  Facebook resolution complete:")
+        print("\n  Facebook resolution complete:")
         print(f"    Resolved (has URL):     {resolved_count}")
         print(f"    Description only:       {desc_only_count}")
         print(f"    Empty (no content):     {empty_count}")
         print(f"    Errors:                 {error_count}")
     elif not resolve:
-        print(f"\n  Skipping Facebook resolution (--no-resolve)")
+        print("\n  Skipping Facebook resolution (--no-resolve)")
 
     # Phase 3: Create queue items
-    print(f"\n── Creating queue items ─────────────────────────────")
+    print("\n── Creating queue items ─────────────────────────────")
     vm = VaultManager(config=config)
     vm.ensure_dirs()
 
@@ -611,7 +611,7 @@ def import_messenger(
     manifest["source_file"] = str(json_path)
     _save_manifest(config.weave_dir, manifest)
 
-    print(f"\n── Done ────────────────────────────────────────────")
+    print("\n── Done ────────────────────────────────────────────")
     print(f"  Queued (with URL):    {stats['queued_resolved']}")
     print(f"  Queued (needs URL):   {stats['queued_needs_url']}")
     print(f"  Skipped (duplicate):  {stats['skipped']}")
@@ -629,7 +629,7 @@ def _dry_run_report(
     """Print a summary without fetching or writing."""
     total = len(direct) + len(facebook) + noise_count
 
-    print(f"\n── Dry Run Report ──────────────────────────────────\n")
+    print("\n── Dry Run Report ──────────────────────────────────\n")
     print(f"  Total messages:          {total}")
     print(f"  Direct (ready to queue): {len(direct)}")
     print(f"  Facebook (need resolve): {len(facebook)}")
@@ -645,7 +645,7 @@ def _dry_run_report(
 
     # Sample direct URLs
     if direct:
-        print(f"\n  Sample direct URLs:")
+        print("\n  Sample direct URLs:")
         for msg, url in direct[:10]:
             print(f"    {msg.timestamp.strftime('%Y-%m-%d')}  {url[:80]}")
         if len(direct) > 10:
@@ -655,7 +655,7 @@ def _dry_run_report(
     share_p = sum(1 for m in facebook if "/share/p/" in m.url)
     share = sum(1 for m in facebook if "/share/" in m.url and "/share/p/" not in m.url)
     other = len(facebook) - share_p - share
-    print(f"\n  Facebook URL types:")
+    print("\n  Facebook URL types:")
     print(f"    share/p/ (post links):   {share_p}")
     print(f"    share/ (photo/other):    {share}")
     print(f"    other (story/photo):     {other}")

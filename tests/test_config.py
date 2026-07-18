@@ -16,7 +16,6 @@ owned by the vault-internal ``config.toml``.
 
 from __future__ import annotations
 
-import os
 import tomllib
 from pathlib import Path
 

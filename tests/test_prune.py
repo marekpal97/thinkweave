@@ -11,7 +11,6 @@ import pytest
 from thinkweave.core.config import Config
 from thinkweave.operations.prune import (
     EVENTS_MIN_BYTES,
-    ORPHAN_MIN_AGE_SECONDS,
     PruneResult,
     find_orphans,
     is_orphan,

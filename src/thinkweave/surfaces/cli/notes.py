@@ -200,7 +200,8 @@ def cmd_context(args: argparse.Namespace) -> None:
 
 def _parse_fm_token(kv: str) -> tuple[str, object]:
     if "=" not in kv:
-        print(f"Bad --frontmatter token (need key=value): {kv}"); sys.exit(1)
+        print(f"Bad --frontmatter token (need key=value): {kv}")
+        sys.exit(1)
     key, val = kv.split("=", 1)
     # Structured values: a value that looks like JSON ([...] / {...}) is
     # parsed as JSON, so list-of-dict fields (e.g. a decision's
@@ -237,15 +238,18 @@ def cmd_update(args: argparse.Namespace) -> None:
         try:
             loaded = json.loads(raw)
         except json.JSONDecodeError as e:
-            print(f"Bad --frontmatter-json payload: {e}"); sys.exit(1)
+            print(f"Bad --frontmatter-json payload: {e}")
+            sys.exit(1)
         if not isinstance(loaded, dict):
-            print("Bad --frontmatter-json payload: expected a JSON object"); sys.exit(1)
+            print("Bad --frontmatter-json payload: expected a JSON object")
+            sys.exit(1)
         fm_updates = {**loaded, **fm_updates}
     body_append = Path(args.body_append).expanduser().read_text(encoding="utf-8") if args.body_append else ""
     try:
         note = update_note(cfg, args.note_id, frontmatter_updates=fm_updates or None, body_append=body_append)
     except (FileNotFoundError, ValueError) as e:
-        print(str(e)); sys.exit(1)
+        print(str(e))
+        sys.exit(1)
     print(f"Updated {args.note_id} ({(cfg.vault_root / note.path).relative_to(cfg.vault_root)})")
 
 

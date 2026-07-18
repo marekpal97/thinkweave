@@ -44,10 +44,9 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    # Informational for now: the tree has ~149 pre-existing ruff findings
-    # (mostly F401 unused imports in tests). Flip `continue-on-error` off once a
-    # dedicated cleanup pass lands, so lint becomes a required check.
-    continue-on-error: true
+    # Required check: the pre-existing findings were cleaned up (F-series
+    # fixed, E741 ignored in pyproject with rationale), so a red lint job now
+    # means a genuine regression.
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

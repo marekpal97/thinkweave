@@ -909,10 +909,10 @@ def _handle_stop(hook_input: dict) -> None:
                 files = ", ".join(sk.file_paths[:5])
                 concepts = f" [{', '.join(sk.concepts)}]" if sk.concepts else ""
                 dec_lines.append(f"- **{sk.title}** ({files}){concepts}")
-            body_parts.append(f"## Candidate Decisions\n" + "\n".join(dec_lines))
+            body_parts.append("## Candidate Decisions\n" + "\n".join(dec_lines))
         if result.failure_signals:
             fail_lines = [f"- {fs.title}" for fs in result.failure_signals]
-            body_parts.append(f"## Failure Signals\n" + "\n".join(fail_lines))
+            body_parts.append("## Failure Signals\n" + "\n".join(fail_lines))
 
         session_path.write_text(
             render_frontmatter(fm) + "\n\n"

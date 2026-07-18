@@ -123,7 +123,7 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
             f"  Run:  /hubs-link"
             + (f" --concept {args.concept}" if args.concept else "")
             + "\n  (skill walks hubs via the running model, no provider "
-            f"key required)."
+            "key required)."
         )
         return
 

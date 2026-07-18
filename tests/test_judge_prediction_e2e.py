@@ -30,7 +30,6 @@ from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager, parse_frontmatter, render_frontmatter
 from thinkweave.operations import rejudge_queue
 from thinkweave.surfaces.cli.judge import cmd_judge
-from thinkweave.surfaces.cli.notes import cmd_update
 from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 
 
