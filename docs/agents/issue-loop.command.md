@@ -237,10 +237,11 @@ gate results, fix rounds used. Plus: frontier remaining, issues newly
 blocked-on-human. If nothing was shippable, say what the human must do to
 unblock the DAG (usually: merge open loop PRs).
 
-## 3. Feed the vault — PROPOSAL, do not execute until accepted
+## 3. Feed the vault — write one trajectory note per processed issue
 
-Design: `docs/agents/issue-loop-memory.md`. Once accepted: for each
-processed issue, assemble the deterministic half —
+Owner-approved 2026-07-15 and enabled (design: `docs/agents/issue-loop-memory.md`).
+Run unattended — do not gate on user approval. For each processed issue,
+assemble the deterministic half —
 
 ```bash
 python scripts/issue_loop.py trajectory <N> --cwd <worktree> \
@@ -252,7 +253,8 @@ python scripts/issue_loop.py trajectory <N> --cwd <worktree> \
 (What / How it went / Lessons; omit Lessons when there are none), concepts
 chosen from the ontology (`weave_concepts` first; the payload's
 `concept_hints` are raw material, not concepts), and
-`weave_create(type=note, tags=[loop-run], session_id=<this session>,
+`weave_create(type=note, tags=[loop-run], session_id=<this run's session>,
 frontmatter=<payload frontmatter>)`. If MCP is down, fall back to
 `weave add -f …`. Do not duplicate gate evidence or run history — the
-tracker and PR own those.
+tracker and PR own those. Optionally print the first run's composed note as a
+sanity check; this is non-blocking.

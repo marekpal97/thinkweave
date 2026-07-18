@@ -1,8 +1,9 @@
-# Proposal: how finished issues feed thinkweave
+# How finished issues feed thinkweave
 
-Status: **proposal** — code (`issue_loop.py trajectory`, command §3) is
-committed for review but the vault-write step stays off until this doc is
-accepted.
+Status: **accepted** — owner sign-off 2026-07-15. The vault-write step
+(`issue_loop.py trajectory`, command §3) is enabled and runs unattended:
+after each processed issue the orchestrator writes one trajectory note. What
+follows documents that live behavior.
 
 ## The gap
 

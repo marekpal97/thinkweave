@@ -21,7 +21,7 @@ Subcommands:
   config     — print resolved loop config (defaults merged with loop.toml)
   check      — run one deterministic gate (kind: command | diff) and emit JSON
   trajectory — assemble a per-issue trajectory payload for the memory feed
-               (see docs/agents/issue-loop-memory.md — proposal)
+               (see docs/agents/issue-loop-memory.md)
 
 Stdlib only. Config: docs/agents/loop.toml.
 """
@@ -347,7 +347,7 @@ def run_diff_gate(gate: dict, cwd: Path, base_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Trajectory assembly (memory-feed proposal) — pure function + subcommand
+# Trajectory assembly (memory feed) — pure function + subcommand
 
 
 def build_trajectory(issue: dict, *, branch: str, commits: list[str],
