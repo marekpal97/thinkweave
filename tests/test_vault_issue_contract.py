@@ -61,6 +61,9 @@ EXPECTED_OWNERS: dict[str, set[str]] = {
 # creation) and synthesis/judge.py / lifecycle (`predicted_outcome`,
 # `prediction_history`, `supersedes`, `superseded_by`, `file_paths`). A
 # trajectory note that carried any of these would be minting a decision.
+# A denylist, not a schema import, on purpose: decision fields aren't
+# centralized (they're scattered across DecisionStatus, the RL substrate, and
+# EdgeType), so there's no single symbol to assert against.
 DECISION_FIELDS = {
     "status",
     "predicted_outcome",

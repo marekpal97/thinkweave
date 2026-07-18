@@ -25,20 +25,13 @@ No new note type, no lifecycle fields — the only status-like field
 awaiting-approval), and every ref (issue, PR) is a URL whose state GitHub
 owns.
 
-Division of labor, honoring "don't store what another surface records":
-
-| Surface | Owns |
-|---|---|
-| tracker comments | run history, claims, gate evidence |
-| PR body | diff summary, gate table, smell report |
-| **trajectory note** | how the work went + lessons — the reusable part |
-| session note (/wrap) | cross-issue synthesis, decisions, insights |
-
-This partition — including the wrap-coverage guarantee for headless runs and
-the single-owner rule for decisions — is codified and tested as the
-capture-parity contract in
-[`vault-issue-contract.md`](vault-issue-contract.md)
-(`tests/test_vault_issue_contract.py`).
+Division of labor, honoring "don't store what another surface records": four
+surfaces — tracker, PR, trajectory note, session note (`/wrap`) — each own a
+disjoint slice, and decisions are minted by the session/`/wrap` owner alone.
+The full four-owner table is the **capture-parity contract** in
+[`vault-issue-contract.md`](vault-issue-contract.md) — its single source of
+truth, codified and tested (`tests/test_vault_issue_contract.py`) with the
+wrap-coverage guarantee for headless runs. It is not duplicated here.
 
 **Mechanics.** After §2 Report, for each processed issue:
 
