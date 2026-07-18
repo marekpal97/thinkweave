@@ -425,6 +425,14 @@ def build_trajectory(issue: dict, *, branch: str, commits: list[str],
         "skills": [_normalize_skill(s) for s in (skills or [])],
     }
     if primed is not None:
+        if served is not None and (
+            not isinstance(served, list)
+            or not all(isinstance(s, str) for s in served)
+        ):
+            # A dict (e.g. the whole prime payload) or a bare string would
+            # silently corrupt the served-context regression's raw material —
+            # served must be a flat list of note-id strings.
+            raise ValueError("served must be a list of note-id strings")
         frontmatter["primed"] = primed
         frontmatter["served"] = list(served or [])
     return {
@@ -593,14 +601,27 @@ def build_prime_payload(
             f"held out (every {holdout}th run runs unprimed for the outcome regression)"
         )
         return payload
-    trajectories = query_trajectories(conn, concepts, limit) if conn is not None else []
+    # The query — not the connect — is where a foreign/corrupt file
+    # (DatabaseError) or an older index missing note_tags/note_concepts
+    # (OperationalError) raises. Guard here so a bad index degrades to unprimed
+    # rather than crashing the loop (this module's never-crash invariant).
+    index_error = False
+    trajectories: list[dict] = []
+    if conn is not None:
+        try:
+            trajectories = query_trajectories(conn, concepts, limit)
+        except sqlite3.Error:
+            index_error = True
     decisions = (decisions or [])[:limit]
     block, served = render_prime_block(trajectories, decisions, budget_chars)
     payload["block"] = block
     payload["served"] = served
     payload["primed"] = bool(served)
     if not served:
-        payload["note"] = "no matching prior trajectories"
+        payload["note"] = (
+            "index unreadable (corrupt or schema-drift) — ran unprimed"
+            if index_error else "no matching prior trajectories"
+        )
     return payload
 
 
@@ -909,13 +930,17 @@ def main(argv: list[str] | None = None) -> int:
                   if args.skills_json else [])
         served = (json.loads(Path(args.served_json).read_text(encoding="utf-8"))
                   if args.served_json else None)
-        payload = build_trajectory(
-            issue, branch=branch, commits=commits, numstat=numstat, gates=gates,
-            fix_rounds=args.fix_rounds, outcome=args.outcome,
-            pr_url=args.pr_url, run_id=args.run_id,
-            skills=skills, skill_centric=args.skill_centric,
-            primed=args.primed, served=served,
-        )
+        try:
+            payload = build_trajectory(
+                issue, branch=branch, commits=commits, numstat=numstat, gates=gates,
+                fix_rounds=args.fix_rounds, outcome=args.outcome,
+                pr_url=args.pr_url, run_id=args.run_id,
+                skills=skills, skill_centric=args.skill_centric,
+                primed=args.primed, served=served,
+            )
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}))
+            return 2
         print(json.dumps(payload, indent=2))
     return 0
 

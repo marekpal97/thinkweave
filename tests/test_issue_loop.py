@@ -694,6 +694,80 @@ def test_prime_holdout_writes_no_buffer_event(tmp_path):
     assert not buf.exists()
 
 
+def test_prime_degrades_on_corrupt_index(tmp_path, capsys):
+    """A foreign/corrupt file at the resolved --db path must NOT crash the loop
+    (sqlite3.connect is lazy — the DatabaseError surfaces on the first query,
+    past main's connect guard). Regression: rc 0 + unprimed payload."""
+    db = tmp_path / "index.db"
+    db.write_bytes(b"GIF89a this is definitely not a sqlite database\n" * 8)
+    rc = issue_loop.main([
+        "prime", "57", "--run-id", "loop-run-0",
+        "--concepts", "retrieval", "--db", str(db),
+    ])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["primed"] is False
+    assert payload["served"] == [] and payload["block"] == ""
+    assert "unread" in payload["note"].lower()
+
+
+def test_prime_degrades_on_schema_drift_index(tmp_path, capsys):
+    """A valid but older index missing the tables prime joins (note_tags /
+    note_concepts) raises OperationalError on the query — must also degrade to
+    an unprimed payload, rc 0."""
+    db = tmp_path / "index.db"
+    wconn = sqlite3.connect(str(db))
+    wconn.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT)")  # no join tables
+    wconn.commit()
+    wconn.close()
+    rc = issue_loop.main([
+        "prime", "57", "--run-id", "loop-run-0",
+        "--concepts", "retrieval", "--db", str(db),
+    ])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["primed"] is False and payload["served"] == []
+    assert "unread" in payload["note"].lower()
+
+
+def test_build_prime_payload_index_error_notes_degradation(tmp_path):
+    """At the seam: a query that raises sqlite3.Error degrades to primed:false
+    with a note distinct from the no-match note."""
+    db = tmp_path / "index.db"
+    wconn = sqlite3.connect(str(db))
+    wconn.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT)")
+    wconn.commit()
+    wconn.close()
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        payload = issue_loop.build_prime_payload(
+            57, "loop-run-0", ["retrieval"], conn=conn, holdout=5,
+        )
+    finally:
+        conn.close()
+    assert payload["primed"] is False and payload["served"] == []
+    assert "unread" in payload["note"].lower()
+
+
+def test_build_trajectory_rejects_non_list_or_non_string_served():
+    """--served-json shape guard: a dict (e.g. the whole prime payload pasted by
+    mistake) or a bare string must not silently become frontmatter — it would
+    corrupt the served-context regression's raw material."""
+    issue = {"number": 1, "title": "x", "labels": []}
+    for bad in ({"issue": 57, "served": ["n-a"]}, "n-abc", 42):
+        with pytest.raises((ValueError, TypeError)):
+            issue_loop.build_trajectory(
+                issue, branch="b", commits=[], numstat="", gates=[],
+                fix_rounds=0, outcome="shipped", primed=True, served=bad,
+            )
+    # A list with a non-string element is rejected too.
+    with pytest.raises((ValueError, TypeError)):
+        issue_loop.build_trajectory(
+            issue, branch="b", commits=[], numstat="", gates=[],
+            fix_rounds=0, outcome="shipped", primed=True, served=["n-ok", 123],
+        )
+
+
 def test_prime_argparse_contract():
     ns = issue_loop.build_arg_parser().parse_args([
         "prime", "57", "--run-id", "loop-x", "--labels", "a,b",
