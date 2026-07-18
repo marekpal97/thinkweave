@@ -424,7 +424,77 @@ def test_plan_distill_write_surface_is_enumerated():
     assert "entire write surface" in text
     assert "weave_create" in text and "weave add" in text
     low = text.lower()
-    assert "no pr" in low or "never" in low and "pr" in low
+    # No PRs, no code edits — stated plainly (each token load-bearing on its own).
+    assert "no prs" in low
+    assert "no code edits" in low
+
+
+def test_plan_distill_mcp_example_nests_fields_in_frontmatter():
+    """CRITICAL fix: the MCP weave_create schema
+    (surfaces/mcp/tools/notes.py) accepts only type/title/body/project/tags/
+    frontmatter/session_id — extra top-level kwargs are silently dropped. So
+    concepts / predicted_outcome / plan_ref MUST be nested under frontmatter=,
+    or the minted decision carries none of them (and the ontology gate, which
+    keys off fm['concepts'], never runs). Pin the dict-style (quoted-key)
+    nesting, which only appears inside a frontmatter={...} block."""
+    text = _plan_distill_doc()
+    assert "frontmatter={" in text
+    assert '"concepts":' in text
+    assert '"predicted_outcome":' in text
+    assert '"plan_ref":' in text
+    # The dropped-kwarg trap named so a future editor doesn't re-flatten it.
+    assert "silently dropped" in text or "top-level kwarg" in text
+
+
+def test_plan_distill_plan_ref_is_scalar_string_no_flow_list():
+    """MAJOR fix: plan_ref is a string (mcp/tools/_extract_schemas.py:108,
+    consumed as a string in synthesis/judge.py:138). Represent it as a scalar
+    string everywhere — `plan_ref: "[pending]"`, multi-refs as one comma-joined
+    string — never a YAML flow list. The old `[spec-4c1, #91, #92]` example was
+    literally unparseable (# starts a YAML comment); it must be gone."""
+    text = _plan_distill_doc()
+    assert '"[pending]"' in text  # quoted scalar-string form
+    assert "#91" not in text and "#92" not in text  # unparseable flow-list gone
+    low = text.lower()
+    assert "string" in low and ("comma-joined" in low or "comma joined" in low)
+
+
+def test_plan_distill_fallback_warns_comma_split():
+    """MINOR fix: `weave add -f key=value` comma-splits any comma-bearing value
+    into a list (surfaces/cli/notes.py::_parse_fm_token). A prose
+    predicted_outcome with commas would silently become a list on the CLI path,
+    so the doc must warn: comma-free phrasing on -f, or use the MCP path for
+    prose predictions."""
+    low = _plan_distill_doc().lower()
+    assert "comma-split" in low or "comma splits" in low or "splits" in low
+    assert "comma-free" in low or "comma free" in low
+
+
+def test_plan_distill_located_outside_the_loop():
+    """MINOR fix: plan-distill is human-invoked at grill/plan time — OUTSIDE the
+    issue-loop. Naming this keeps vault-issue-contract.md's 'session note is the
+    sole decision owner' readable as loop-scoped, not contradicted."""
+    low = _plan_distill_doc().lower()
+    assert "outside the loop" in low or "not the loop" in low or "outside the issue-loop" in low
+
+
+def test_plan_distill_fallback_parses_through_real_weave_argparse():
+    """Executability pin (NIT): the documented `weave add` fallback resolves
+    through the REAL weave argparse, and `plan_ref=[pending]` round-trips as the
+    scalar string '[pending]' (not a list) — _parse_fm_token JSON-probes the
+    leading '[', fails, and falls through to the string branch. Catches schema
+    drift in either the parser or the doc's flag shape."""
+    from thinkweave.surfaces.cli.parser import build_parser
+    from thinkweave.surfaces.cli.notes import _parse_fm_token
+
+    ns = build_parser().parse_args(
+        ["add", "t", "--type", "decision", "-f", "plan_ref=[pending]"]
+    )
+    assert ns.command == "add"
+    assert ns.type == "decision"
+    assert "plan_ref=[pending]" in ns.frontmatter
+    # The subtle bit the doc relies on: [pending] survives as a scalar string.
+    assert _parse_fm_token("plan_ref=[pending]") == ("plan_ref", "[pending]")
 
 
 def test_plan_distill_rides_installed_skill_never_edits_it():
