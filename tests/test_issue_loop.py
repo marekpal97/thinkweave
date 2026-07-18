@@ -5,6 +5,8 @@ and strings — no gh, no git, no network.
 """
 
 import importlib.util
+import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -442,3 +444,215 @@ def test_apply_overrides_rejects_unknown_key_and_section(tmp_path):
 def test_apply_overrides_noop_without_specs(tmp_path):
     cfg = issue_loop.load_config(tmp_path / "nope.toml")
     assert issue_loop.apply_overrides(cfg, []) is cfg
+
+
+def test_prime_holdout_is_an_overridable_loop_knob(tmp_path):
+    """prime_holdout ships as a [loop] default and is --set-overridable via the
+    existing mechanism (so `--set prime_holdout=0` disables holdout for a run)."""
+    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    assert cfg["loop"]["prime_holdout"] == 5
+    overridden = issue_loop.apply_overrides(cfg, ["prime_holdout=0"])
+    assert overridden["loop"]["prime_holdout"] == 0
+
+
+# ---------------------------------------------------------------------------
+# prime — claim-time priming from prior trajectories
+
+
+def test_is_holdout_deterministic_and_disable():
+    # Expected values independently computed from sha1(run_id) mod N:
+    #   printf 'loop-run-10' | sha1sum  → 7a31...  int mod 5 == 0  → held out
+    #   printf 'loop-run-0'  | sha1sum  → 47eb...  int mod 5 == 1  → NOT held out
+    assert issue_loop.is_holdout("loop-run-10", 5) is True
+    assert issue_loop.is_holdout("loop-run-0", 5) is False
+    # Same run-id, same verdict across calls (no PYTHONHASHSEED dependence).
+    assert issue_loop.is_holdout("loop-run-10", 5) is True
+    # holdout <= 0 disables holdout entirely.
+    assert issue_loop.is_holdout("loop-run-10", 0) is False
+    assert issue_loop.is_holdout("loop-run-10", -1) is False
+
+
+def test_extract_lessons_section_only():
+    body = (
+        "## What\nBuilt the prime rail.\n\n"
+        "## How it went\nOne fix round on the CHECK constraint.\n\n"
+        "## Lessons\nWiden the CHECK before the migration guard.\nProject from the event log.\n"
+    )
+    assert issue_loop.extract_lessons(body) == (
+        "Widen the CHECK before the migration guard.\nProject from the event log."
+    )
+    # No Lessons section (the uneventful common case) → empty string.
+    assert issue_loop.extract_lessons("## What\nx\n\n## How it went\ny\n") == ""
+    assert issue_loop.extract_lessons("") == ""
+
+
+def test_render_prime_block_splices_lessons_and_lists_served():
+    trajectories = [
+        {"id": "n-aaa111", "title": "prime rail", "issue": 57, "outcome": "shipped",
+         "lessons": "Widen the CHECK first."},
+        {"id": "n-bbb222", "title": "trajectory judge", "issue": 60, "outcome": "shipped",
+         "lessons": "Judge from the PR timeline."},
+    ]
+    block, served = issue_loop.render_prime_block(trajectories, decisions=["dec-ccc333"])
+    assert "Widen the CHECK first." in block
+    assert "Judge from the PR timeline." in block
+    assert "dec-ccc333" in block  # decisions folded in as adjacency
+    assert served == ["n-aaa111", "n-bbb222", "dec-ccc333"]
+    # Nothing to serve → clean skip.
+    assert issue_loop.render_prime_block([], decisions=[]) == ("", [])
+
+
+def test_render_prime_block_honors_char_budget():
+    trajectories = [
+        {"id": "n-1", "title": "t1", "issue": 1, "outcome": "shipped", "lessons": "L" * 400},
+        {"id": "n-2", "title": "t2", "issue": 2, "outcome": "shipped", "lessons": "M" * 400},
+        {"id": "n-3", "title": "t3", "issue": 3, "outcome": "shipped", "lessons": "N" * 400},
+    ]
+    block, served = issue_loop.render_prime_block(trajectories, budget_chars=600)
+    # First piece always lands; the budget stops further pieces before all three.
+    assert served == ["n-1"]
+    assert "n-2" not in served and "n-3" not in served
+
+
+def test_build_prime_payload_holdout_runs_unprimed():
+    payload = issue_loop.build_prime_payload(
+        57, "loop-run-10", ["self-improvement"], conn=None, holdout=5,
+    )
+    assert payload["holdout"] is True
+    assert payload["primed"] is False
+    assert payload["served"] == []
+    assert payload["block"] == ""
+    assert "held out" in payload["note"]
+
+
+def test_build_prime_payload_no_index_is_a_clean_noop():
+    # No conn (index absent) and not held out → empty, no crash, loop unchanged.
+    payload = issue_loop.build_prime_payload(
+        57, "loop-run-0", ["self-improvement"], conn=None, holdout=5,
+    )
+    assert payload["holdout"] is False
+    assert payload["primed"] is False
+    assert payload["served"] == [] and payload["block"] == ""
+
+
+def _seed_index_db(path, *, note_id, title, concepts, body, tags=("loop-run",),
+                   date="2026-07-18", frontmatter=None):
+    """Build a minimal read-side index db (notes + note_tags + note_concepts)
+    with one trajectory note — the exact tables prime's query joins."""
+    import json as _json
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE notes (id TEXT PRIMARY KEY, type TEXT, title TEXT, path TEXT,"
+        " date TEXT, frontmatter TEXT, body_text TEXT);"
+        "CREATE TABLE note_tags (note_id TEXT, tag TEXT);"
+        "CREATE TABLE note_concepts (note_id TEXT, concept TEXT);"
+    )
+    conn.execute(
+        "INSERT INTO notes (id, type, title, path, date, frontmatter, body_text)"
+        " VALUES (?, 'note', ?, ?, ?, ?, ?)",
+        (note_id, title, f"{note_id}.md", date,
+         _json.dumps(frontmatter or {"issue": 57, "outcome": "shipped"}), body),
+    )
+    for tag in tags:
+        conn.execute("INSERT INTO note_tags VALUES (?, ?)", (note_id, tag))
+    for c in concepts:
+        conn.execute("INSERT INTO note_concepts VALUES (?, ?)", (note_id, c))
+    conn.commit()
+    conn.close()
+
+
+def test_build_prime_payload_splices_matching_trajectory(tmp_path):
+    """Acceptance: an issue whose concepts match a prior trajectory gets that
+    trajectory's Lessons text in the block, and the search is issued with the
+    issue's concepts (a note tagged differently / concept-mismatched is not
+    served)."""
+    db = tmp_path / "index.db"
+    _seed_index_db(
+        db, note_id="n-prior1", title="prime rail",
+        concepts=["self-improvement", "retrieval"],
+        body="## What\nx\n\n## Lessons\nProject context_served from the event log.\n",
+    )
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        payload = issue_loop.build_prime_payload(
+            57, "loop-run-0", ["self-improvement"], conn=conn, holdout=5,
+        )
+    finally:
+        conn.close()
+    assert payload["primed"] is True
+    assert payload["served"] == ["n-prior1"]
+    assert "Project context_served from the event log." in payload["block"]
+
+
+def test_query_trajectories_filters_by_concept_and_lessons(tmp_path):
+    db = tmp_path / "index.db"
+    # Note A matches concept + has Lessons; note B matches but has NO Lessons.
+    _seed_index_db(db, note_id="n-hasl", title="A", concepts=["retrieval"],
+                   body="## What\nx\n\n## Lessons\nreuse me\n")
+    wconn = sqlite3.connect(str(db))
+    wconn.execute("INSERT INTO notes (id, type, title, path, date, frontmatter, body_text)"
+                  " VALUES ('n-nol', 'note', 'B', 'n-nol.md', '2026-07-18', '{}', '## What\nno lessons\n')")
+    wconn.execute("INSERT INTO note_tags VALUES ('n-nol', 'loop-run')")
+    wconn.execute("INSERT INTO note_concepts VALUES ('n-nol', 'retrieval')")
+    wconn.commit()
+    wconn.close()
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        # Concept miss → nothing.
+        assert issue_loop.query_trajectories(conn, ["unrelated-concept"], 3) == []
+        # Concept hit → only the note that actually carries Lessons.
+        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+    finally:
+        conn.close()
+    assert [h["id"] for h in hits] == ["n-hasl"]
+    assert hits[0]["lessons"] == "reuse me"
+
+
+def test_prime_writes_loop_prime_served_event_to_buffer(tmp_path):
+    """When --buffer is given and the run is primed, the rail appends one
+    loop_prime retrieval event (the context_served source seed) with the served
+    ids — mirroring the prompt-time serving surface."""
+    db = tmp_path / "index.db"
+    _seed_index_db(db, note_id="n-prior1", title="t", concepts=["retrieval"],
+                   body="## Lessons\nreuse\n")
+    buf = tmp_path / "buffer" / "ses-loop123.jsonl"
+    rc = issue_loop.main([
+        "prime", "57", "--run-id", "loop-run-0",
+        "--concepts", "retrieval", "--db", str(db),
+        "--buffer", str(buf), "--session-id", "ses-loop123",
+    ])
+    assert rc == 0
+    lines = [l for l in buf.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 1
+    ev = json.loads(lines[0])
+    assert ev["type"] == "retrieval" and ev["tool"] == "loop_prime"
+    assert ev["returned_ids"] == ["n-prior1"]
+    assert ev["args"]["run_id"] == "loop-run-0" and ev["args"]["issue"] == 57
+
+
+def test_prime_holdout_writes_no_buffer_event(tmp_path):
+    """A held-out run is unprimed: no served ids, no buffer event even if
+    --buffer is supplied."""
+    buf = tmp_path / "buffer" / "ses-loop123.jsonl"
+    rc = issue_loop.main([
+        "prime", "57", "--run-id", "loop-run-10",  # sha1 mod 5 == 0 → held out
+        "--concepts", "retrieval", "--buffer", str(buf),
+    ])
+    assert rc == 0
+    assert not buf.exists()
+
+
+def test_prime_argparse_contract():
+    ns = issue_loop.build_arg_parser().parse_args([
+        "prime", "57", "--run-id", "loop-x", "--labels", "a,b",
+        "--concepts", "c1,c2", "--db", "i.db", "--limit", "2",
+        "--budget-chars", "800", "--decisions", "dec-1", "--buffer", "b.jsonl",
+    ])
+    assert ns.cmd == "prime" and ns.number == 57 and ns.run_id == "loop-x"
+    assert ns.labels == "a,b" and ns.concepts == "c1,c2"
+    assert ns.limit == 2 and ns.budget_chars == 800
+    # Sensible defaults when omitted.
+    ns2 = issue_loop.build_arg_parser().parse_args(["prime", "1", "--run-id", "r"])
+    assert ns2.labels is None and ns2.concepts is None and ns2.db is None
+    assert ns2.limit == 3 and ns2.budget_chars == 1200 and ns2.buffer is None

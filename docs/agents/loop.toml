@@ -33,6 +33,13 @@ run_mode = "pass"
 #                  PR closes the whole set at the end. One review, no
 #                  merge-waits mid-DAG — the trade is a bigger diff to review.
 delivery = "pr-per-issue"
+# prime_holdout: claim-time priming (issue_loop.py prime <N>) splices prior
+# trajectories' Lessons into the implementer prompt. Every Nth run is a
+# deliberate HOLDOUT — dispatched unprimed — so #60's outcome regression can
+# separate "context helped" from "easy issue". The holdout is deterministic
+# per run-id (sha1(run_id) mod N == 0), not random. 0 disables holdout (always
+# prime). Per-run override: --set prime_holdout=0.
+prime_holdout = 5
 
 [tdd]
 # auto: red→green TDD is ENFORCED in implementer standing orders iff the

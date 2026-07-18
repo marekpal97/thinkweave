@@ -20,6 +20,8 @@ Subcommands:
   release  — drop the claim
   config     — print resolved loop config (defaults merged with loop.toml)
   check      — run one deterministic gate (kind: command | diff) and emit JSON
+  prime      — assemble prior-trajectory prime context for an issue at claim
+               time (reads the derived index read-only; holdout-aware)
   trajectory — assemble a per-issue trajectory payload for the memory feed
                (see docs/agents/issue-loop-memory.md)
 
@@ -29,8 +31,12 @@ Stdlib only. Config: docs/agents/loop.toml.
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
 import json
+import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tomllib
@@ -51,6 +57,7 @@ DEFAULT_CONFIG: dict = {
         "claim_mode": "assign",  # assign: assignee IS the claim (wayfinder) | label
         "run_mode": "pass",      # pass: one frontier pass | exhaust: re-plan until dry
         "delivery": "pr-per-issue",  # pr-per-issue | stacked (one branch, one final PR)
+        "prime_holdout": 5,      # every Nth run dispatches unprimed (0 = never hold out)
     },
     "tdd": {
         "mode": "auto",  # auto: enforced iff the baseline probe is green
@@ -423,6 +430,220 @@ def build_trajectory(issue: dict, *, branch: str, commits: list[str],
 
 
 # ---------------------------------------------------------------------------
+# Claim-time priming — serve prior trajectories' Lessons to the implementer
+#
+# The native analog of ``bd prime``: before implementing issue N, fetch the
+# reusable half of prior similar work (trajectory notes' Lessons sections) and
+# splice it into the implementer prompt. Everything here is a pure function of
+# (read-only index, issue concepts, run-id); the rail stays stdlib-only and
+# never imports thinkweave — it reads the derived SQLite index directly (the
+# `weave` CLI may be absent on PATH in some installs; a direct read-only
+# sqlite3 open is robust and needs no PATH).
+
+
+def is_holdout(run_id: str, holdout: int) -> bool:
+    """Deterministic per-run holdout: every Nth run dispatches unprimed.
+
+    Loop runs are numerous, comparable, and gate-scored (#60's ``outcome``),
+    so periodically withholding prime context lets the outcome regression
+    separate "context helped" from "easy issue". The decision is
+    ``sha1(run_id) mod N == 0`` — stable across processes (no PYTHONHASHSEED
+    dependence, unlike ``hash()``) and date/random-free, so it is
+    hand-computable and testable. ``holdout <= 0`` disables holdout entirely.
+    """
+    if holdout <= 0:
+        return False
+    digest = int(hashlib.sha1(run_id.encode("utf-8")).hexdigest(), 16)
+    return digest % holdout == 0
+
+
+_LESSONS_RE = re.compile(
+    r"^##\s+Lessons\s*$(?P<txt>.*?)(?=^##\s|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
+
+def extract_lessons(body: str) -> str:
+    """Text under a ``## Lessons`` heading (until the next ``##`` or EOF).
+
+    Returns ``''`` when there is no Lessons section — trajectory notes omit it
+    when a run taught nothing reusable, and those notes carry no prime value.
+    """
+    m = _LESSONS_RE.search(body or "")
+    return m.group("txt").strip() if m else ""
+
+
+def _open_index_ro(db_path: str) -> sqlite3.Connection:
+    """Open the derived index strictly read-only (never mutate derived state)."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def query_trajectories(
+    conn: sqlite3.Connection, concepts: list[str], limit: int, scan_cap: int = 40
+) -> list[dict]:
+    """Read-only: ``[loop-run]`` notes matching ANY concept, newest first,
+    that carry a non-empty Lessons section.
+
+    Returns ``{id, title, issue, outcome, lessons}`` dicts, at most ``limit``.
+    Empty ``concepts`` matches nothing (no concepts → no prime). The scan reads
+    up to ``scan_cap`` candidates before the Lessons filter so the cap is on
+    *useful* notes, not raw matches.
+    """
+    if not concepts:
+        return []
+    placeholders = ",".join("?" * len(concepts))
+    rows = conn.execute(
+        f"""SELECT DISTINCT n.id, n.title, n.date, n.frontmatter, n.body_text
+            FROM notes n
+            JOIN note_tags t ON t.note_id = n.id AND t.tag = 'loop-run'
+            JOIN note_concepts c ON c.note_id = n.id
+            WHERE c.concept IN ({placeholders})
+            ORDER BY n.date DESC, n.id DESC
+            LIMIT ?""",
+        [*concepts, scan_cap],
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        lessons = extract_lessons(r["body_text"] or "")
+        if not lessons:
+            continue
+        try:
+            fm = json.loads(r["frontmatter"] or "{}")
+        except json.JSONDecodeError:
+            fm = {}
+        out.append({
+            "id": r["id"],
+            "title": r["title"] or "",
+            "issue": fm.get("issue"),
+            "outcome": fm.get("outcome", ""),
+            "lessons": lessons,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def render_prime_block(
+    trajectories: list[dict], decisions: list[str] | None = None,
+    budget_chars: int = 1200,
+) -> tuple[str, list[str]]:
+    """Render the primed-context markdown + the flat served-id list.
+
+    Trajectory Lessons render first (each capped-in as a whole piece until the
+    char budget is spent — at least one always lands if any exist);
+    ``decisions`` (the decisions_for_file note ids the orchestrator already
+    resolved) are appended as an adjacency line so the served log records both
+    kinds. ``served`` carries every id actually rendered. Empty input →
+    ``('', [])`` so the caller skips cleanly.
+    """
+    decisions = decisions or []
+    if not trajectories and not decisions:
+        return "", []
+    pieces = ["## Prior trajectories — Lessons from similar prior runs\n"]
+    served: list[str] = []
+    for t in trajectories:
+        head = f"### #{t.get('issue')} — {t.get('title', '')} ({t.get('outcome', '')})".rstrip()
+        piece = f"{head}\n{t['lessons']}\n"
+        if served and sum(len(x) for x in pieces) + len(piece) > budget_chars:
+            break
+        pieces.append(piece)
+        served.append(t["id"])
+    if decisions:
+        pieces.append("Prior decisions for touched files: " + ", ".join(decisions))
+        served.extend(decisions)
+    return "\n".join(pieces).strip() + "\n", served
+
+
+def build_prime_payload(
+    issue_number: int, run_id: str, concepts: list[str], *,
+    conn: sqlite3.Connection | None = None, holdout: int = 5,
+    limit: int = 3, budget_chars: int = 1200, decisions: list[str] | None = None,
+) -> dict:
+    """Assemble the claim-time prime payload the orchestrator splices verbatim.
+
+    Output keys: ``primed`` (received prime context this run), ``holdout``
+    (deliberately withheld), ``served`` (note ids served — trajectory + decisions,
+    capped ``limit`` per kind), ``block`` (markdown to splice; ``''`` when
+    unprimed), ``note`` (why unprimed, when it is). A held-out or empty-match
+    run returns ``primed=False`` with no served ids and an empty block, so the
+    loop runs unchanged.
+    """
+    payload = {
+        "issue": issue_number, "run_id": run_id, "concepts": list(concepts),
+        "holdout": is_holdout(run_id, holdout), "primed": False,
+        "served": [], "block": "", "note": "",
+    }
+    if payload["holdout"]:
+        payload["note"] = (
+            f"held out (every {holdout}th run runs unprimed for the outcome regression)"
+        )
+        return payload
+    trajectories = query_trajectories(conn, concepts, limit) if conn is not None else []
+    decisions = (decisions or [])[:limit]
+    block, served = render_prime_block(trajectories, decisions, budget_chars)
+    payload["block"] = block
+    payload["served"] = served
+    payload["primed"] = bool(served)
+    if not served:
+        payload["note"] = "no matching prior trajectories"
+    return payload
+
+
+# Sentinel tool name stamped on the served-context buffer event. The indexer's
+# context_served projection keys off this to assign source='loop-prime' — the
+# exact mechanism prompt-time retrieval uses (its PROMPT_TIME_TOOL sentinel →
+# source='prompttime'), so context_served stays a pure projection of the
+# per-session retrieval_log.jsonl event log.
+LOOP_PRIME_TOOL = "loop_prime"
+
+
+def _append_served_event(
+    buffer_path: str, run_id: str, issue_number: int,
+    served: list[str], session_id: str = "",
+) -> None:
+    """Append one loop-prime served-context event to the session buffer JSONL.
+
+    Mirrors the prompt-time serving surface: a ``retrieval``-typed event tagged
+    with the ``loop_prime`` sentinel tool. ``archive_buffer`` folds it into the
+    session's ``retrieval_log.jsonl`` (append-only) at Stop, and the indexer
+    projects it to ``context_served(source='loop-prime')`` — recoverable per run
+    from the index, derived and rebuildable from the markdown-adjacent log.
+    """
+    event = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "type": "retrieval",
+        "tool": LOOP_PRIME_TOOL,
+        "args": {"run_id": run_id, "issue": issue_number, "session_id": session_id},
+        "returned_ids": served,
+    }
+    p = Path(buffer_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event) + "\n")
+
+
+def _split_csv(value: str | None) -> list[str]:
+    return [x.strip() for x in (value or "").split(",") if x.strip()]
+
+
+def _resolve_index_db(db: str | None, vault: str | None) -> str | None:
+    """Resolve the read-only index db path without importing thinkweave.
+
+    ``--db`` wins; else ``<vault>/.weave/index.db`` (the default derived-state
+    layout); else ``THINKWEAVE_INDEX_DB``. Returns None when nothing resolves —
+    the prime then serves an empty (unprimed) block rather than guessing a path
+    (never touch an ambient real vault).
+    """
+    if db:
+        return db
+    if vault:
+        return str(Path(vault) / ".weave" / "index.db")
+    return os.environ.get("THINKWEAVE_INDEX_DB") or None
+
+
+# ---------------------------------------------------------------------------
 # gh plumbing
 
 
@@ -471,6 +692,17 @@ def fetch_issues() -> list[dict]:
     return issues
 
 
+def _fetch_labels(number: int) -> list[str]:
+    """Issue label names via gh (network). Empty list on any failure — a prime
+    with no concepts serves an empty block, never crashes the loop."""
+    try:
+        out = _gh(["issue", "view", str(number), "--json", "labels",
+                   "--jq", "[.labels[].name]"])
+        return json.loads(out or "[]")
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return []
+
+
 # ---------------------------------------------------------------------------
 # CLI
 
@@ -509,6 +741,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--gate", required=True)
     p_check.add_argument("--cwd", default=".")
     p_check.add_argument("--base-ref", default="origin/main")
+
+    p_prime = sub.add_parser("prime", help="assemble prior-trajectory prime context for an issue", parents=[common])
+    p_prime.add_argument("number", type=int)
+    p_prime.add_argument("--run-id", required=True)
+    p_prime.add_argument("--labels", default=None,
+                         help="comma-separated issue label names; omit to fetch via gh")
+    p_prime.add_argument("--concepts", default=None,
+                         help="comma-separated match concepts; omit to derive from --labels")
+    p_prime.add_argument("--db", default=None, help="index db path (opened read-only)")
+    p_prime.add_argument("--vault", default=None,
+                         help="vault root; resolves <vault>/.weave/index.db when --db is absent")
+    p_prime.add_argument("--limit", type=int, default=3,
+                         help="max prior trajectories (and decisions) to splice — top-N per kind")
+    p_prime.add_argument("--budget-chars", type=int, default=1200,
+                         help="char budget for the spliced block")
+    p_prime.add_argument("--decisions", default=None,
+                         help="comma-separated decisions_for_file note ids to fold into served context")
+    p_prime.add_argument("--buffer", default=None,
+                         help="session buffer JSONL to append the loop_prime served-context event to")
+    p_prime.add_argument("--session-id", default="",
+                         help="loop session id, stamped into the served-context event")
 
     p_traj = sub.add_parser("trajectory", help="assemble a per-issue trajectory payload (memory feed)", parents=[common])
     p_traj.add_argument("number", type=int)
@@ -594,6 +847,30 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, indent=2))
         return 0 if result["passed"] else 1
+    elif args.cmd == "prime":
+        labels = _split_csv(args.labels) if args.labels is not None else _fetch_labels(args.number)
+        concepts = _split_csv(args.concepts) if args.concepts is not None else labels
+        holdout = cfg["loop"].get("prime_holdout", 5)
+        conn = None
+        db_path = _resolve_index_db(args.db, args.vault)
+        if db_path and Path(db_path).exists():
+            try:
+                conn = _open_index_ro(db_path)
+            except sqlite3.Error:
+                conn = None
+        try:
+            payload = build_prime_payload(
+                args.number, args.run_id, concepts, conn=conn, holdout=holdout,
+                limit=args.limit, budget_chars=args.budget_chars,
+                decisions=_split_csv(args.decisions) if args.decisions else None,
+            )
+        finally:
+            if conn is not None:
+                conn.close()
+        if args.buffer and payload["primed"] and payload["served"]:
+            _append_served_event(args.buffer, args.run_id, args.number,
+                                 payload["served"], args.session_id)
+        print(json.dumps(payload, indent=2))
     elif args.cmd == "trajectory":
         cwd = Path(args.cwd).resolve()
         issue = json.loads(_gh(["api", f"repos/{{owner}}/{{repo}}/issues/{args.number}"]))
