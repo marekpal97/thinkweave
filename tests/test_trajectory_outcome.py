@@ -462,7 +462,7 @@ class TestRlvrTrajectoryExport:
         with _use_config(tv.config):
             cmd_rlvr(args)
         out = capsys.readouterr().out.strip().splitlines()
-        parsed = [__import__("json").loads(l) for l in out if l.strip()]
+        parsed = [__import__("json").loads(line) for line in out if line.strip()]
         verdicts = [p["prediction"]["match"] for p in parsed]
         assert "merged-clean" in verdicts
         assert "reworked-post-merge" in verdicts
