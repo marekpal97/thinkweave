@@ -19,6 +19,14 @@ a post-hoc rationalization (which wrap-time decisions partly are). Decisions
 already carry `plan_ref` (`operations/extract.py:371`) — the linkage field
 exists; this command fills it.
 
+**This runs outside the loop.** `/plan-distill` is human-invoked at grill/plan
+time, not part of the `/issue-loop` fast loop. That keeps the
+`vault-issue-contract.md` ownership partition intact: the loop still mints **no**
+decisions, and `/wrap` is still the sole decision owner *within a work session*.
+Plan-distill is a distinct, deliberately-invoked front door for the plan-time
+forecast — a different surface, a different moment, not a second writer racing
+the loop for the same record.
+
 **This command rides the installed `grilling` skill; it never edits or forks
 it.** The Pocock skills v1.1.0 `grilling` skill already splits **facts** (explore
 the codebase) from **decisions** (require a human answer) and adds a confirmation
@@ -64,16 +72,26 @@ complete run, not a failure). Question count **does not drive** decision count.
 
 Load the existing concept labels first (`weave_concepts` — the strict ontology
 gate applies; unrecognised terms are auto-routed to `proposed_concepts:`), then
-mint one decision per surviving fork:
+mint one decision per surviving fork.
+
+**All three load-bearing fields go in `frontmatter=`, not as top-level kwargs.**
+The MCP `weave_create` schema (`surfaces/mcp/tools/notes.py`) accepts only
+`type` / `title` / `body` / `project` / `tags` / `frontmatter` / `session_id` —
+any other top-level kwarg is **silently dropped**. A `concepts=…` /
+`predicted_outcome=…` / `plan_ref=…` passed at the top level vanishes, and the
+decision mints with none of them (the ontology gate never runs — it keys off
+`frontmatter["concepts"]`). Nest them:
 
 ```
 weave_create(
   type="decision",
   title="<verb> <what> over <rejected alternative>",
-  concepts=[...],                       # ≥2 ontology-aligned; weave_concepts first
-  predicted_outcome="<falsifiable claim + where/when/what query verifies it>",
-  plan_ref="[pending]",                 # §3 convention
   body="<Context / Decision / Consequences + ## Alternatives considered>",
+  frontmatter={
+    "concepts": [...],                  # ≥2 ontology-aligned; weave_concepts first
+    "predicted_outcome": "<falsifiable claim + where/when/what query verifies it>",
+    "plan_ref": "[pending]",            # §3 convention — a scalar string
+  },
 )
 ```
 
@@ -103,15 +121,23 @@ reached this step.
 
 ## 3. The `plan_ref` convention
 
-`plan_ref` links the decision to the tickets the plan spawns:
+`plan_ref` is a **scalar string** — always, no exceptions. The field's contract
+is a string (`surfaces/mcp/tools/_extract_schemas.py:108`; consumed as a string
+in `synthesis/judge.py:138`), so **never write a YAML flow list** (`[a, b]`) into
+it. A flow list is both wrong-typed and, with issue refs, literally unparseable:
+a bracketed value carrying a `#`-prefixed issue number is a YAML syntax error,
+because `#` starts a comment.
 
 - **When `/to-spec` → `/to-tickets` have already run** and produced spec/ticket
-  refs, set `plan_ref` to those refs (e.g. `plan_ref: [spec-4c1, #91, #92]`).
+  refs, set `plan_ref` to a **single comma-joined string** of those refs — e.g.
+  `plan_ref: "spec-4c1, 91, 92"` (drop the `#`; the digits identify the issues).
+  One string, not a list.
 - **When they have not run yet** (distillation happens at the end of the grill,
   often before ticketing), set the documented placeholder **`plan_ref:
-  [pending]`**. The `/to-tickets` step updates `[pending]` in place once it mints
-  the tickets, closing the linkage. `[pending]` is the settled placeholder
-  convention — always this exact token, so `/to-tickets` can find and rewrite it.
+  "[pending]"`**. The `/to-tickets` step rewrites `[pending]` in place — to the
+  comma-joined ref string above — once it mints the tickets, closing the linkage.
+  `[pending]` is the settled placeholder convention: always this exact token, so
+  `/to-tickets` can find and replace it.
 
 ## 4. MCP-absent fallback (headless degrade)
 
@@ -123,7 +149,7 @@ the CLI — the flag shape is verified against `weave add`'s argparse
 weave add "<verb> <what> over <rejected alternative>" \
   --type decision \
   -f concepts=<c1>,<c2> \
-  -f predicted_outcome="<falsifiable claim + verifying query>" \
+  -f predicted_outcome="<falsifiable claim + verifying query — no commas>" \
   -f plan_ref=[pending] \
   --body "$(cat <<'EOF'
 ## Context
@@ -137,6 +163,18 @@ weave add "<verb> <what> over <rejected alternative>" \
 EOF
 )"
 ```
+
+**Comma caveat on `-f`.** `_parse_fm_token` (`surfaces/cli/notes.py`)
+**comma-splits** any `-f key=value` whose value contains a comma into a *list*.
+That is correct for `concepts=a,b` (a genuine list) but wrong for a prose
+`predicted_outcome`: a comma in the prediction would silently turn the string
+into a list. So on the CLI path, phrase `predicted_outcome` **comma-free**, or —
+better for prose predictions — use the MCP `frontmatter=` path (§2), where the
+value is a literal string. `plan_ref=[pending]` is safe on `-f`: the leading `[`
+makes `_parse_fm_token` JSON-probe it, the probe fails, and it falls through to
+the scalar-string branch — so it round-trips as the string `"[pending]"`, not a
+list. (A comma-joined multi-ref `plan_ref` would split, so set that one via the
+MCP path or let `/to-tickets` write it.)
 
 `weave add` runs the incoming `concepts=` through the same strict ontology gate
 as `weave_create`, so non-canonical terms land in `proposed_concepts:`
