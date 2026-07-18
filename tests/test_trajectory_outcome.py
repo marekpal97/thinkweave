@@ -353,6 +353,76 @@ class TestJudgeTrajectoriesPhase2:
         assert len(to.read_history(note.frontmatter)) == 2
 
 
+class TestFixRound1RoutedToHuman:
+    """Routed-to-human trajectories have no PR (pr_url empty), yet are the most
+    informative negative reward signal — they must still be scanned and judged.
+    """
+
+    def test_scan_surfaces_routed_to_human_with_empty_pr_url(self, vault_factory):
+        tv = _make_trajectory(vault_factory, issue=70, pr_url="", outcome="routed-to-human")
+        surface = to.scan_trajectory_outcomes(tv.config)
+        assert len(surface) == 1
+        assert surface[0]["due_phases"] == [1]
+
+    def test_driver_judges_routed_to_human_with_empty_pr_url(self, vault_factory):
+        tv = _make_trajectory(vault_factory, issue=70, pr_url="", outcome="routed-to-human")
+        # No PR to fetch — the fetcher returns None for the empty URL.
+        result = to.judge_trajectories(tv.config, phase="1", pr_fetcher=lambda url: None)
+        assert len(result["judged"]) == 1
+        assert result["judged"][0]["outcome"] == "routed-to-human"
+        note = _reload_only_trajectory(tv)
+        assert note.frontmatter.get("outcome_label") == "routed-to-human"
+        assert len(to.read_history(note.frontmatter)) == 1
+
+    def test_routed_to_human_is_never_phase2_due(self, vault_factory):
+        # No merge → no merged_at → intentionally never a phase-2 pass.
+        now = datetime(2026, 8, 30, tzinfo=timezone.utc)
+        p1 = {"outcome": "routed-to-human", "phase": 1, "judged_at": "2026-07-01T00:00:00+00:00", "reason": "r"}
+        tv = _make_trajectory(
+            vault_factory, issue=70, pr_url="", outcome="routed-to-human",
+            extra={"prediction_history": [p1], "outcome_label": "routed-to-human"},
+        )
+        assert to.scan_trajectory_outcomes(tv.config, now=now) == []
+        result = to.judge_trajectories(
+            tv.config, phase="2", now=now, pr_fetcher=lambda url: None,
+            signals_fetcher=lambda pr_json, **kw: {"total_lines": 1, "surviving_lines": 0, "reverted": False},
+        )
+        assert result["judged"] == []
+
+
+class TestFixRound1ErrorBuckets:
+    def test_classify_exception_records_error_not_skipped(self, vault_factory):
+        tv = _make_trajectory(vault_factory, issue=71, pr_url="https://github.com/o/r/pull/71")
+
+        def _boom(url):
+            raise RuntimeError("gh exploded")
+
+        result = to.judge_trajectories(tv.config, phase="1", pr_fetcher=_boom)
+        assert result["judged"] == []
+        # Recorded in exactly one bucket — errors, not skipped.
+        assert len(result["errors"]) == 1
+        assert "gh exploded" in result["errors"][0]["reason"]
+        assert result["skipped"] == []
+
+
+class TestFixRound1MergedWithoutMergedAt:
+    def test_merged_state_without_mergedAt_anchors_to_judged_at(self, vault_factory):
+        now = datetime(2026, 7, 20, tzinfo=timezone.utc)
+        tv = _make_trajectory(vault_factory, issue=72, pr_url="https://github.com/o/r/pull/72")
+        # Anomalous PR: state MERGED but mergedAt missing.
+        pr = {"number": 72, "state": "MERGED", "mergedAt": None,
+              "mergeCommit": {"oid": "m0"}, "commits": [_agent_commit("a1")]}
+        result = to.judge_trajectories(tv.config, phase="1", now=now, pr_fetcher=lambda url: pr)
+        assert result["judged"][0]["outcome"] == "merged-clean"
+        note = _reload_only_trajectory(tv)
+        # merged_at was anchored to the phase-1 judgment time so phase-2 is reachable.
+        anchored = note.frontmatter.get("merged_at")
+        assert anchored, "merged verdict must stamp merged_at even without PR mergedAt"
+        assert to.phase2_due(
+            anchored, now=now + timedelta(days=15), window_days=14
+        ) is True
+
+
 def _reload_only_trajectory(tv):
     """Read back the single loop-run trajectory note in the tmp vault."""
     from thinkweave.core.vault import VaultManager

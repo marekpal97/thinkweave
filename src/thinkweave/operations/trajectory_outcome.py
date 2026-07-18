@@ -322,6 +322,20 @@ def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
     - **revert detection**: a later commit whose subject references a revert of
       the merge commit / PR.
 
+    **Squash-merge assumption (load-bearing).** The surviving-line attribution
+    (a current line "survives" iff its ``git blame`` sha equals
+    ``mergeCommit.oid``) is only correct when the PR landed as a **squash
+    merge** — then the merge commit IS the single commit that authored every
+    line of the PR diff, so unrewritten lines blame back to it. The issue-loop
+    ships squash merges, so this holds here. On a **merge-commit** or
+    **rebase-merge** repo the PR's content lines are authored by the branch
+    commits, not the merge commit, so blame finds ~0 lines attributed to
+    ``mergeCommit.oid`` → ``surviving_lines ≈ 0`` → ``rework-blame ≈ 1.0``: a
+    **false POSITIVE** ("fully reworked"), NOT the harmless zeros the total-on-
+    error path returns. A merge-strategy-robust version would blame against the
+    PR's branch-tip commit (or the set of PR commit shas) instead; that is a
+    deliberate future change, gated on the loop adopting a non-squash strategy.
+
     DEFERRED (documented seam, tested-as-absent in the driver): the
     issue-reopening / follow-up-bug-citation sweep. That needs the ``gh`` issue
     timeline + a search over issues citing the PR; it is out of scope for this
@@ -427,6 +441,10 @@ def _candidate_trajectories(cfg: Config) -> list[tuple[str, str]]:
 
     idx = Indexer(config=cfg)
     try:
+        # Admit any loop-run note with a pr_url OR one the loop routed to a
+        # human (``outcome: routed-to-human``) — the latter has an empty pr_url
+        # (the loop opened no PR) but is the most informative negative reward
+        # signal, so it must still reach phase-1 judgment + RLVR export.
         rows = idx.db.execute(
             """
             SELECT DISTINCT n.id AS id, n.path AS path
@@ -434,8 +452,11 @@ def _candidate_trajectories(cfg: Config) -> list[tuple[str, str]]:
               JOIN note_tags t ON t.note_id = n.id
              WHERE n.type = 'note'
                AND t.tag = 'loop-run'
-               AND json_extract(n.frontmatter, '$.pr_url') IS NOT NULL
-               AND json_extract(n.frontmatter, '$.pr_url') != ''
+               AND (
+                     (json_extract(n.frontmatter, '$.pr_url') IS NOT NULL
+                      AND json_extract(n.frontmatter, '$.pr_url') != '')
+                  OR json_extract(n.frontmatter, '$.outcome') = 'routed-to-human'
+                   )
              ORDER BY n.id
             """
         ).fetchall()
@@ -575,22 +596,32 @@ def judge_trajectories(
 
         # --- Phase 1: at merge/close ---------------------------------------
         if do1 and not has_phase_entry(history, 1):
+            errored = False
             try:
                 pr = pr_fetcher(pr_url)
                 verdict = classify_pr_outcome(pr, trajectory_outcome=traj_outcome, identities=identities)
             except Exception as e:  # noqa: BLE001
                 errors.append({"id": note_id, "phase": 1, "reason": f"classify failed: {e}"})
-                pr, verdict = None, None
-            if verdict is None:
+                pr, verdict, errored = None, None, True
+            if errored:
+                # A classify/fetch exception is recorded under errors only —
+                # do NOT also record it as a skip (one bucket per note).
+                pass
+            elif verdict is None:
                 skipped.append({"id": note_id, "phase": 1, "reason": "not at verdict window (PR open / no PR)"})
             else:
                 label, reason = verdict
                 extra = _phase1_extra(fm, pr, identities)
                 delta = append_outcome(fm, outcome=label, reason=reason, phase=1, judged_at=judged_at, extra=extra)
-                # Stamp merged_at from the PR so phase-2's window arithmetic is
-                # self-contained (no re-fetch just to read the merge timestamp).
-                if pr and pr.get("mergedAt"):
-                    delta["merged_at"] = pr["mergedAt"]
+                # Stamp merged_at so phase-2's window arithmetic is
+                # self-contained. Prefer the PR's own mergedAt; if a merged
+                # verdict lacks it (anomalous — GitHub normally always sets it),
+                # anchor to the phase-1 judgment time so phase-2 still becomes
+                # due rather than being blocked forever. Non-merged verdicts
+                # (routed-to-human / closed-unmerged) intentionally get no
+                # merged_at — they never take a phase-2 pass.
+                if label in _MERGED_LABELS:
+                    delta["merged_at"] = (pr.get("mergedAt") if pr else "") or judged_at
                 try:
                     vm.update_note(path, frontmatter_updates=delta)
                 except Exception as e:  # noqa: BLE001
