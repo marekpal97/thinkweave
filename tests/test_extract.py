@@ -11,9 +11,11 @@ from thinkweave.core.events import (
     Prompt,
     Todo,
     assign_concepts_from_paths,
+    classify_feedback,
     classify_probe,
     extract_deterministic,
     extract_prompts,
+    feedback_events,
     extract_todos,
 )
 
@@ -250,6 +252,98 @@ class TestClassifyProbe:
         ts = datetime(2026, 5, 2, 15, 0, tzinfo=timezone.utc)
         prompt = Prompt(ts=ts, text="", session_id="s")
         assert classify_probe(prompt, []) is False
+
+
+class TestClassifyFeedback:
+    """Issue #70 — deterministic feedback register (correction/confirmation/neutral)."""
+
+    def test_leading_no_is_correction(self):
+        assert classify_feedback("no, that's wrong — use a dict instead") == "correction"
+
+    def test_thats_wrong_phrase_is_correction(self):
+        # No leading marker, but the strong phrase fires anywhere.
+        assert classify_feedback("hmm, that's wrong, revisit the parser") == "correction"
+
+    def test_actually_lead_is_correction(self):
+        assert classify_feedback("actually, let's revert that change") == "correction"
+
+    def test_dont_lead_is_correction(self):
+        assert classify_feedback("don't add the extra parameter") == "correction"
+
+    def test_stop_lead_is_correction(self):
+        assert classify_feedback("stop — that's not what I asked for") == "correction"
+
+    def test_leading_yes_is_confirmation(self):
+        assert classify_feedback("yes, exactly right") == "confirmation"
+
+    def test_perfect_lead_is_confirmation(self):
+        assert classify_feedback("perfect, keep going") == "confirmation"
+
+    def test_lgtm_is_confirmation(self):
+        assert classify_feedback("lgtm, ship it") == "confirmation"
+
+    def test_looks_good_phrase_is_confirmation(self):
+        assert classify_feedback("that looks good to me") == "confirmation"
+
+    def test_neutral_task_prompt(self):
+        assert classify_feedback(
+            "Add a feedback register to the UserPromptSubmit hook"
+        ) == "neutral"
+
+    def test_neutral_question(self):
+        assert classify_feedback("What does the indexer skip?") == "neutral"
+
+    def test_empty_is_neutral(self):
+        assert classify_feedback("") == "neutral"
+        assert classify_feedback("   ") == "neutral"
+
+    def test_word_boundary_no_false_positive(self):
+        # "yesterday"/"note"/"nothing" must not trip the yes/no leads.
+        assert classify_feedback("yesterday's run finished cleanly") == "neutral"
+        assert classify_feedback("note the failing test in module X") == "neutral"
+        assert classify_feedback("nothing changed in the output") == "neutral"
+
+    def test_correction_wins_over_confirmation(self):
+        # A prompt carrying both signals resolves to correction (stronger
+        # improvement signal). Leading "no" dominates the trailing "perfect".
+        assert classify_feedback("no, the earlier version was perfect") == "correction"
+
+
+class TestFeedbackEvents:
+    """Issue #70 — enumerate feedback events from a session's events JSONL."""
+
+    def test_returns_only_feedback_rows(self, tmp_path: Path):
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-05-02T15:00:00+00:00", "type": "prompt",
+             "text": "no, wrong", "session_id": "s"},
+            {"ts": "2026-05-02T15:00:00+00:00", "type": "feedback",
+             "register": "correction", "session_id": "s",
+             "prompt_ref": "no, wrong"},
+            {"ts": "2026-05-02T15:01:00+00:00", "tool": "Edit", "file": "x.py"},
+            {"ts": "2026-05-02T15:02:00+00:00", "type": "feedback",
+             "register": "confirmation", "session_id": "s",
+             "prompt_ref": "lgtm"},
+        ])
+        evs = feedback_events(f)
+        assert [e["register"] for e in evs] == ["correction", "confirmation"]
+        assert evs[0]["session_id"] == "s"
+        assert evs[0]["ts"] == "2026-05-02T15:00:00+00:00"
+
+    def test_missing_file_returns_empty(self, tmp_path: Path):
+        assert feedback_events(tmp_path / "missing.jsonl") == []
+
+    def test_skips_malformed_lines(self, tmp_path: Path):
+        f = tmp_path / "events.jsonl"
+        f.write_text(
+            '{"type":"feedback","register":"correction","session_id":"s"}\n'
+            "not json\n"
+            "{}\n",
+            encoding="utf-8",
+        )
+        evs = feedback_events(f)
+        assert len(evs) == 1
+        assert evs[0]["register"] == "correction"
 
 
 class TestExtractTodos:

@@ -224,6 +224,30 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         }
         _buffer_event(cfg.weave_dir, session_id, event)
 
+        # Feedback register (issue #70) — the human reward channel. Ride the
+        # same prompt-capture pass: a pure-string classify (no model call, no
+        # lookahead) that labels corrective / confirming prompts. On a
+        # non-neutral verdict we append a companion ``feedback`` event; a
+        # neutral task prompt produces none. Cost is strictly below the R2
+        # enrichment already on this path, so no latency budget is consumed.
+        # ``prompt_ref`` is an excerpt of what the prompt event already
+        # stores — timestamp adjacency is the join key for export consumers.
+        from thinkweave.core.events import classify_feedback
+
+        register = classify_feedback(prompt_text)
+        if register != "neutral":
+            _buffer_event(
+                cfg.weave_dir,
+                session_id,
+                {
+                    "ts": now,
+                    "type": "feedback",
+                    "register": register,
+                    "session_id": session_id,
+                    "prompt_ref": prompt_text[:120],
+                },
+            )
+
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to.
         _ensure_session(cfg, session_id, hook_input)

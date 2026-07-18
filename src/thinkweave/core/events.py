@@ -452,6 +452,109 @@ def classify_probe(prompt: Prompt, events: list[dict]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Feedback register (issue #70) — the human reward channel
+# ---------------------------------------------------------------------------
+#
+# A deterministic, text-only classifier that labels a user prompt as a
+# ``correction``, a ``confirmation``, or ``neutral``. This is the reward
+# signal for the self-improvement flywheel: which of our actions the user
+# pushed back on, and which they endorsed. It is deliberately a heuristic
+# with NO model call — the UserPromptSubmit hook runs it inline on every
+# prompt (see ``surfaces/hooks/handler._handle_user_prompt_submit``), so it
+# must be pure regex/string work.
+#
+# Recall is best-effort and FALSE-NEUTRAL is the safe failure mode: a missed
+# correction is lost signal (recoverable — the next turn usually re-states
+# it), whereas a false ``correction``/``confirmation`` injects noise into a
+# reward channel that downstream RLVR consumers trust. So we bias for
+# PRECISION on the two non-neutral registers and let the ambiguous middle
+# fall through to ``neutral``.
+#
+# Detection is two-tier, both anchored to avoid substring collisions:
+#   1. Leading word — the first alphabetic token (skipping leading
+#      punctuation) matched against a small lexicon. Whole-token match, so
+#      "yesterday"/"note"/"nothing" never trip the "yes"/"no" leads.
+#   2. Strong phrases — matched anywhere, but only unambiguous multi-word
+#      phrases ("that's wrong", "looks good") that don't fire inside a
+#      neutral instruction.
+# Lexicons are module-level tuples so they are documented and testable.
+
+_FEEDBACK_CORRECTION_LEADS = frozenset({
+    "no", "nope", "nah", "wrong", "incorrect", "stop", "wait",
+    "actually", "revert", "undo", "don't", "dont",
+})
+_FEEDBACK_CORRECTION_PHRASES = (
+    "that's wrong", "thats wrong", "that is wrong",
+    "that's not right", "thats not right", "that's incorrect",
+    "not what i asked", "not what i wanted", "not what i meant",
+    "don't do that", "that's not what", "you got it wrong",
+)
+_FEEDBACK_CONFIRMATION_LEADS = frozenset({
+    "yes", "yep", "yeah", "yup", "perfect", "great", "correct",
+    "exactly", "lgtm", "nice", "awesome", "ty", "thanks",
+})
+_FEEDBACK_CONFIRMATION_PHRASES = (
+    "looks good", "that's right", "thats right", "that's exactly",
+    "that's perfect", "well done", "good job", "ship it",
+    "nailed it", "keep going",
+)
+
+_FEEDBACK_LEAD_WORD_RE = re.compile(r"[^a-z]*([a-z']+)")
+
+
+def classify_feedback(text: str) -> str:
+    """Register a user prompt as ``correction`` | ``confirmation`` | ``neutral``.
+
+    Deterministic, recall-best-effort, false-neutral-safe (see the module
+    section header above). Correction takes precedence over confirmation
+    when a prompt carries both signals — the corrective push-back is the
+    stronger improvement signal.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return "neutral"
+
+    m = _FEEDBACK_LEAD_WORD_RE.match(t)
+    first = m.group(1) if m else ""
+
+    if first in _FEEDBACK_CORRECTION_LEADS or any(
+        p in t for p in _FEEDBACK_CORRECTION_PHRASES
+    ):
+        return "correction"
+    if first in _FEEDBACK_CONFIRMATION_LEADS or any(
+        p in t for p in _FEEDBACK_CONFIRMATION_PHRASES
+    ):
+        return "confirmation"
+    return "neutral"
+
+
+def feedback_events(events_jsonl: Path) -> list[dict]:
+    """Enumerate ``type == "feedback"`` events from a session's events JSONL.
+
+    The enumeration seam for wrap/export consumers of the feedback register.
+    Reads either the archived ``events.jsonl`` (post-Stop) or a live buffer
+    file — both share the append-only JSONL shape — and returns the feedback
+    event dicts (``register``, ``ts``, ``session_id``, ``prompt_ref``) in
+    file order. Skips malformed rows; returns ``[]`` when the file is absent
+    or carries no feedback rows. No attribution is resolved here: consumers
+    fuzzy-join on timestamp adjacency within the session.
+    """
+    if not events_jsonl.exists():
+        return []
+    out: list[dict] = []
+    for line in events_jsonl.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("type") == "feedback":
+            out.append(row)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Auto-todo extraction (Phase 4 E5)
 # ---------------------------------------------------------------------------
 
