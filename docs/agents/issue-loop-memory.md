@@ -107,6 +107,17 @@ context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
 no learned ranking of which prior lessons help most (the holdout regression is
 the measurement substrate that would inform it later).
 
+**Closing the loop back into *proposals* (epic #54 / #62).** The trajectory
+substrate also feeds the *slow* loop — the weekly Routine (#61, not yet built)
+that runs improve-arch / ponytail-audit and files self-improvement issues. To
+stop it inventing work, `weave steering gate` reads the same index read-only and
+computes per-module evidence — rework/churn (#60 `outcome_label` +
+`fix_rounds`), superseded-decision density, gate-failure hotspots, concept-hub
+pressure — then drops any candidate with **no cited evidence** and caps the rest
+at a weekly budget ranked by evidence weight. #61 files ONLY what the gate
+returns; each filed proposal embeds a machine-readable evidence block. See
+[steering.md](steering.md).
+
 ## Why not…
 
 - **…let /wrap do everything?** Concepts-at-creation is house doctrine —
