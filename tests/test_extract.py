@@ -15,8 +15,8 @@ from thinkweave.core.events import (
     classify_probe,
     extract_deterministic,
     extract_prompts,
-    feedback_events,
     extract_todos,
+    feedback_events,
 )
 
 
@@ -267,11 +267,64 @@ class TestClassifyFeedback:
     def test_actually_lead_is_correction(self):
         assert classify_feedback("actually, let's revert that change") == "correction"
 
-    def test_dont_lead_is_correction(self):
-        assert classify_feedback("don't add the extra parameter") == "correction"
+    def test_revert_lead_is_correction(self):
+        # Kept as a lead: in a coding-agent session a leading revert/undo is
+        # overwhelmingly corrective of prior agent work.
+        assert classify_feedback("revert the last commit") == "correction"
 
-    def test_stop_lead_is_correction(self):
-        assert classify_feedback("stop — that's not what I asked for") == "correction"
+    def test_undo_lead_is_correction(self):
+        assert classify_feedback("undo that change") == "correction"
+
+    def test_correct_imperative_is_neutral(self):
+        # "correct" dropped from confirmation leads — imperative verb, not
+        # endorsement.
+        assert classify_feedback("correct the typo in line 5") == "neutral"
+
+    def test_wait_lead_is_neutral(self):
+        # "wait" dropped from correction leads — too task-common as a lead.
+        assert classify_feedback("wait for the build then run tests") == "neutral"
+
+    def test_dont_forget_lead_is_neutral(self):
+        # "don't" dropped from correction leads.
+        assert classify_feedback("don't forget to update the changelog") == "neutral"
+
+    def test_stop_lead_is_neutral(self):
+        # "stop" dropped from correction leads.
+        assert classify_feedback("stop the server before deploying") == "neutral"
+
+    def test_no_problem_is_neutral(self):
+        # Neutral-override courtesy phrase beats the leading-"no" rule.
+        assert classify_feedback("no problem, take your time") == "neutral"
+
+    def test_no_worries_is_neutral(self):
+        assert classify_feedback("no worries, whenever you get to it") == "neutral"
+
+    def test_no_rush_is_neutral(self):
+        assert classify_feedback("no rush on this one") == "neutral"
+
+    def test_hedged_looks_good_is_neutral(self):
+        # A hedged partial-correction dressed as confirmation is the worst
+        # mislabel for the reward channel — suppress to neutral.
+        assert classify_feedback("looks good, but the naming is off") == "neutral"
+
+    def test_hedged_except_is_neutral(self):
+        assert classify_feedback("that's right except for the edge case") == "neutral"
+
+    def test_hedged_although_is_neutral(self):
+        assert classify_feedback("looks good although I'd rename it") == "neutral"
+
+    def test_hedge_before_signal_still_confirmation(self):
+        # The hedge must FOLLOW the confirming signal to suppress; a leading
+        # hedge that resolves affirmatively stays confirmation.
+        assert classify_feedback("but that looks good overall") == "confirmation"
+
+    def test_emoji_lead_is_confirmation(self):
+        # Leading non-alpha (emoji, whitespace) is skipped before the lead word.
+        assert classify_feedback("👍 yes") == "confirmation"
+
+    def test_punctuation_only_is_neutral(self):
+        assert classify_feedback("!!!") == "neutral"
+        assert classify_feedback("...") == "neutral"
 
     def test_leading_yes_is_confirmation(self):
         assert classify_feedback("yes, exactly right") == "confirmation"

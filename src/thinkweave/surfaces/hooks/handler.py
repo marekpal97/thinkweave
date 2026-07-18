@@ -224,14 +224,25 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         }
         _buffer_event(cfg.weave_dir, session_id, event)
 
-        # Feedback register (issue #70) — the human reward channel. Ride the
-        # same prompt-capture pass: a pure-string classify (no model call, no
-        # lookahead) that labels corrective / confirming prompts. On a
+        # Eagerly create the session note too, so a buffer that begins
+        # with prompts (no Edit/Bash yet) still has a note to attach to.
+        _ensure_session(cfg, session_id, hook_input)
+
+        # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
+        # live buffer, hard-capped. Any failure here must fall through to a
+        # plain (empty) response — never break the user's turn.
+        block = _prompt_time_enrichment(cfg, session_id, prompt_text, now)
+
+        # Feedback register (issue #70) — the human reward channel. Rides the
+        # same prompt-capture pass with a pure-string classify (no model call,
+        # no lookahead) that labels corrective / confirming prompts. On a
         # non-neutral verdict we append a companion ``feedback`` event; a
         # neutral task prompt produces none. Cost is strictly below the R2
-        # enrichment already on this path, so no latency budget is consumed.
-        # ``prompt_ref`` is an excerpt of what the prompt event already
-        # stores — timestamp adjacency is the join key for export consumers.
+        # enrichment above, so no latency budget is consumed. Placed after the
+        # capture + enrichment work (maximally non-intrusive) but BEFORE the
+        # emit below so the R2 early-return can't skip it. ``prompt_ref`` is an
+        # excerpt of what the prompt event already stores — timestamp adjacency
+        # is the join key for export consumers.
         from thinkweave.core.events import classify_feedback
 
         register = classify_feedback(prompt_text)
@@ -248,14 +259,6 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
                 },
             )
 
-        # Eagerly create the session note too, so a buffer that begins
-        # with prompts (no Edit/Bash yet) still has a note to attach to.
-        _ensure_session(cfg, session_id, hook_input)
-
-        # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
-        # live buffer, hard-capped. Any failure here must fall through to a
-        # plain (empty) response — never break the user's turn.
-        block = _prompt_time_enrichment(cfg, session_id, prompt_text, now)
         if block:
             _output(
                 additional_context=block,

@@ -472,16 +472,32 @@ def classify_probe(prompt: Prompt, events: list[dict]) -> bool:
 #
 # Detection is two-tier, both anchored to avoid substring collisions:
 #   1. Leading word — the first alphabetic token (skipping leading
-#      punctuation) matched against a small lexicon. Whole-token match, so
-#      "yesterday"/"note"/"nothing" never trip the "yes"/"no" leads.
+#      punctuation/emoji) matched against a small lexicon. Whole-token match,
+#      so "yesterday"/"note"/"nothing" never trip the "yes"/"no" leads.
 #   2. Strong phrases — matched anywhere, but only unambiguous multi-word
 #      phrases ("that's wrong", "looks good") that don't fire inside a
 #      neutral instruction.
 # Lexicons are module-level tuples so they are documented and testable.
+#
+# Lead-lexicon precision carve-outs (fix round 1, learned from real task
+# prompts that leaked non-neutral):
+#   - ``correct`` is NOT a confirmation lead — "correct the typo in line 5"
+#     is an imperative verb, not an endorsement.
+#   - ``wait`` / ``don't`` / ``stop`` are NOT correction leads — too common as
+#     the head of an ordinary instruction ("wait for the build then run
+#     tests", "don't forget the changelog", "stop the server before deploy").
+#   - ``revert`` / ``undo`` ARE kept as correction leads: in a coding-agent
+#     session a leading "revert"/"undo" is overwhelmingly corrective of prior
+#     agent work, which outweighs the rare neutral use.
+# Two guard sets refine the leads further:
+#   - Neutral overrides — a leading "no <softener>" ("no problem/worries/
+#     rush") is courtesy, not correction; checked before the correction rule.
+#   - Hedge suppression — a confirming signal FOLLOWED by "but/except/
+#     although" is a partial-correction wearing a confirmation mask, the worst
+#     mislabel for the reward channel; downgraded to neutral.
 
 _FEEDBACK_CORRECTION_LEADS = frozenset({
-    "no", "nope", "nah", "wrong", "incorrect", "stop", "wait",
-    "actually", "revert", "undo", "don't", "dont",
+    "no", "nope", "nah", "wrong", "incorrect", "actually", "revert", "undo",
 })
 _FEEDBACK_CORRECTION_PHRASES = (
     "that's wrong", "thats wrong", "that is wrong",
@@ -490,7 +506,7 @@ _FEEDBACK_CORRECTION_PHRASES = (
     "don't do that", "that's not what", "you got it wrong",
 )
 _FEEDBACK_CONFIRMATION_LEADS = frozenset({
-    "yes", "yep", "yeah", "yup", "perfect", "great", "correct",
+    "yes", "yep", "yeah", "yup", "perfect", "great",
     "exactly", "lgtm", "nice", "awesome", "ty", "thanks",
 })
 _FEEDBACK_CONFIRMATION_PHRASES = (
@@ -499,7 +515,14 @@ _FEEDBACK_CONFIRMATION_PHRASES = (
     "nailed it", "keep going",
 )
 
+# Leading courtesy phrases whose "no" is not a correction.
+_FEEDBACK_NEUTRAL_OVERRIDES = (
+    "no problem", "no worries", "no worry", "no rush",
+)
+
 _FEEDBACK_LEAD_WORD_RE = re.compile(r"[^a-z]*([a-z']+)")
+# Hedge words that, when they trail a confirming signal, void the confirmation.
+_FEEDBACK_HEDGE_RE = re.compile(r"\b(but|except|although)\b")
 
 
 def classify_feedback(text: str) -> str:
@@ -514,6 +537,10 @@ def classify_feedback(text: str) -> str:
     if not t:
         return "neutral"
 
+    # Neutral overrides beat the leading-"no" correction rule.
+    if any(t.startswith(p) for p in _FEEDBACK_NEUTRAL_OVERRIDES):
+        return "neutral"
+
     m = _FEEDBACK_LEAD_WORD_RE.match(t)
     first = m.group(1) if m else ""
 
@@ -521,10 +548,21 @@ def classify_feedback(text: str) -> str:
         p in t for p in _FEEDBACK_CORRECTION_PHRASES
     ):
         return "correction"
-    if first in _FEEDBACK_CONFIRMATION_LEADS or any(
-        p in t for p in _FEEDBACK_CONFIRMATION_PHRASES
-    ):
+
+    # Confirmation — but a hedge that FOLLOWS the confirming signal suppresses
+    # it (a hedged partial-correction must not be logged as endorsement).
+    conf_idx = 0 if first in _FEEDBACK_CONFIRMATION_LEADS else -1
+    if conf_idx == -1:
+        for p in _FEEDBACK_CONFIRMATION_PHRASES:
+            i = t.find(p)
+            if i != -1:
+                conf_idx = i
+                break
+    if conf_idx != -1:
+        if _FEEDBACK_HEDGE_RE.search(t, conf_idx):
+            return "neutral"
         return "confirmation"
+
     return "neutral"
 
 

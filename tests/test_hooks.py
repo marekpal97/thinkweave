@@ -1422,6 +1422,17 @@ class TestUserPromptSubmitHook:
         # The prompt event itself is still captured.
         assert [r for r in rows if r.get("type") == "prompt"]
 
+    def test_feedback_prompt_ref_capped_at_120(self, tmp_path: Path, monkeypatch):
+        from thinkweave.core.config import Config
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        long_prompt = "no, that's wrong. " + ("x" * 300)
+        rows = self._run_prompt(cfg, monkeypatch, "ses-fb-4", long_prompt)
+        fb = [r for r in rows if r.get("type") == "feedback"]
+        assert len(fb) == 1
+        assert fb[0]["register"] == "correction"
+        assert len(fb[0]["prompt_ref"]) == 120
+
     def test_install_registers_user_prompt_submit(self, tmp_path: Path):
         project_dir = tmp_path / "project"
         project_dir.mkdir()
