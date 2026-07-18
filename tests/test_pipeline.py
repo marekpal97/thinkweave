@@ -94,7 +94,7 @@ class TestLinkUnlinkMarkdown:
         p2 = vault.create_note(NoteType.NOTE, "Target", body="Target note.", project="t")
         indexer.rebuild(full=True)
 
-        note1 = vault.read_note(p1)
+        vault.read_note(p1)
         note2 = vault.read_note(p2)
 
         # Simulate what cmd_link does: write to frontmatter
@@ -128,7 +128,7 @@ class TestLinkUnlinkMarkdown:
     def test_link_idempotent(self, vault: VaultManager):
         """Linking twice should not duplicate the target in frontmatter."""
         path = vault.create_note(NoteType.NOTE, "N", body="Note.", project="t")
-        note = vault.read_note(path)
+        vault.read_note(path)
 
         vault.update_note(path, frontmatter_updates={"related": ["dec-fake1"]})
         vault.update_note(path, frontmatter_updates={"related": ["dec-fake1"]})
@@ -332,7 +332,7 @@ class TestConceptAutoLinking:
             NoteType.NOTE, "B", body=".", project="t",
             extra_frontmatter={"concepts": ["x", "unique2"]},
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
         concept_edges = indexer.db.execute(
             "SELECT * FROM edges WHERE metadata LIKE '%concept%'"
         ).fetchall()
@@ -347,7 +347,7 @@ class TestConceptAutoLinking:
                 NoteType.NOTE, name, body=".", project="t",
                 extra_frontmatter={"concepts": ["alpha", "beta"]},
             )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
         concept_edges = indexer.db.execute(
             "SELECT * FROM edges WHERE metadata IS NOT NULL"
         ).fetchall()
@@ -385,7 +385,7 @@ class TestMixedEdgeSources:
     ):
         """Frontmatter edge + wikilink to a different note = 2 edges."""
         p_session = vault.create_note(NoteType.SESSION, "Session 1", project="t")
-        p_ref = vault.create_note(NoteType.NOTE, "reference-doc", body="Reference.", project="t")
+        vault.create_note(NoteType.NOTE, "reference-doc", body="Reference.", project="t")
         session = vault.read_note(p_session)
 
         # derived_from → session (frontmatter), wikilink → reference-doc (body)

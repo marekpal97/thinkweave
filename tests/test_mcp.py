@@ -148,7 +148,7 @@ class TestUpdateLogic:
         indexer.index_file(path_a)
         indexer.index_file(path_b)
 
-        note_b = vault.read_note(path_b)
+        vault.read_note(path_b)
         note_a = vault.read_note(path_a)
 
         vault.update_note(

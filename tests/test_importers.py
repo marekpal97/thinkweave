@@ -496,7 +496,6 @@ class TestImportClaudeMem:
 
         # No files should be created (except the vault dirs)
         projects_dir = config.vault_root / "projects"
-        project_folders = [p for p in projects_dir.iterdir() if p.is_dir()] if projects_dir.exists() else []
         # Only pre-existing dirs from ensure_dirs(), no project session folders
         session_mds = list(projects_dir.rglob("session.md"))
         assert len(session_mds) == 0

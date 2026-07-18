@@ -79,6 +79,12 @@ packages = ["src/thinkweave"]
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+# E741 (ambiguous name `l`/`I`/`O`): purely stylistic; the tree uses `l` as a
+# short-lived line/loop variable in ~33 comprehensions and renaming them is
+# churn without a readability win. Revisit if a real confusion bug ever lands.
+ignore = ["E741"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

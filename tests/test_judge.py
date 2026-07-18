@@ -452,7 +452,7 @@ class TestBatchedGitLog:
         )
         from thinkweave.synthesis.judge import _check_committed_via_git
 
-        result = _check_committed_via_git(
+        _check_committed_via_git(
             ["src/a.py", "src/b.py", "src/c.py"],
             "2026-04-01",
         )

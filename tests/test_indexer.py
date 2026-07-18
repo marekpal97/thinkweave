@@ -206,9 +206,9 @@ class TestIndexPaths:
     def test_index_paths_only_processes_given_paths(
         self, vault: VaultManager, indexer: Indexer, monkeypatch,
     ):
-        a = vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
+        vault.create_note(NoteType.NOTE, "Note A", body="A", project="p")
         b = vault.create_note(NoteType.NOTE, "Note B", body="B", project="p")
-        c = vault.create_note(NoteType.NOTE, "Note C", body="C", project="p")
+        vault.create_note(NoteType.NOTE, "Note C", body="C", project="p")
         indexer.rebuild(full=True)
 
         # rglob must NOT be called when using index_paths.
@@ -380,15 +380,15 @@ class TestPathRankWalk:
         # Hub note A. Two satellites: B shares 3 concepts (weight 3),
         # C shares 1 concept (weight 1). With rank=True, B must come
         # before C.
-        a = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "A", body="x", project="p",
             extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
         )
-        b = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "B", body="y", project="p",
             extra_frontmatter={"concepts": ["alpha", "beta", "gamma"]},
         )
-        c = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "C", body="z", project="p",
             extra_frontmatter={"concepts": ["alpha", "delta"]},
         )
@@ -413,11 +413,11 @@ class TestPathRankWalk:
         self, vault: VaultManager, indexer: Indexer, search: Search
     ):
         """Default rank=False keeps path_score = 0 on every node."""
-        a = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "A", body="x", project="p",
             extra_frontmatter={"concepts": ["alpha", "beta"]},
         )
-        b = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "B", body="y", project="p",
             extra_frontmatter={"concepts": ["alpha", "beta"]},
         )
@@ -429,11 +429,11 @@ class TestPathRankWalk:
     def test_edges_carry_weight_when_walked(
         self, vault: VaultManager, indexer: Indexer, search: Search
     ):
-        a = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "A", body="x", project="p",
             extra_frontmatter={"concepts": ["alpha", "beta"]},
         )
-        b = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "B", body="y", project="p",
             extra_frontmatter={"concepts": ["alpha", "beta"]},
         )
@@ -790,7 +790,7 @@ class TestConceptEdges:
             project="test",
             extra_frontmatter={"concepts": ["python"]},
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
         row = indexer.db.execute(
             "SELECT metadata FROM edges WHERE metadata IS NOT NULL"
         ).fetchone()
@@ -818,7 +818,7 @@ class TestConceptEdges:
             project="test",
             extra_frontmatter={"concepts": ["ubiquitous"]},
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
         row = indexer.db.execute(
             "SELECT metadata FROM edges WHERE edge_type = 'relates_to' AND metadata LIKE '%concept%'"
         ).fetchone()
@@ -828,7 +828,7 @@ class TestConceptEdges:
         self, vault: VaultManager, indexer: Indexer
     ):
         vault.create_note(NoteType.NOTE, "Plain note", body="No concepts.", project="test")
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
         row = indexer.db.execute(
             "SELECT COUNT(*) as cnt FROM edges WHERE metadata IS NOT NULL"
         ).fetchone()
@@ -885,8 +885,8 @@ class TestEdgeWeights:
     def test_structural_edge_defaults_to_weight_one(
         self, vault: VaultManager, indexer: Indexer
     ):
-        a = vault.create_note(NoteType.NOTE, "A", body="x", project="test")
-        b = vault.create_note(
+        vault.create_note(NoteType.NOTE, "A", body="x", project="test")
+        vault.create_note(
             NoteType.NOTE, "B", body="y", project="test",
             extra_frontmatter={"supersedes": ["n-aaaaaaaa"]},  # bogus but indexed
         )
@@ -915,12 +915,12 @@ class TestSessionDirectoryEdges:
         session_dir = session_path.parent
 
         # Create a sibling note in the same session directory
-        insight_path = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "Insight from session", project="test",
             output_dir=session_dir,
         )
 
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         # The insight should have a derived_from edge to the session
         import json
@@ -939,7 +939,7 @@ class TestSessionDirectoryEdges:
     ):
         """A session note should not create a derived_from edge to itself."""
         vault.create_note(NoteType.SESSION, "Solo session", project="test")
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         rows = indexer.db.execute(
             "SELECT source, target FROM edges WHERE edge_type = 'derived_from'"
@@ -963,7 +963,7 @@ class TestTagEdges:
             NoteType.NOTE, "Note B", body="B.",
             project="test", tags=["debugging", "performance", "refactor"],
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         import json
         rows = indexer.db.execute(
@@ -987,7 +987,7 @@ class TestTagEdges:
             NoteType.NOTE, "Todo B", body="B.",
             project="test", tags=["todo", "probe"],
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         rows = indexer.db.execute(
             "SELECT metadata FROM edges WHERE metadata LIKE '%tag%'"
@@ -1006,7 +1006,7 @@ class TestTagEdges:
             NoteType.NOTE, "Note B", body="B.",
             project="test", tags=["architecture"],
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         rows = indexer.db.execute(
             "SELECT metadata FROM edges WHERE metadata LIKE '%tag%'"
@@ -1020,7 +1020,7 @@ class TestWikilinkTypeInference:
     def test_wikilink_to_source_creates_cites_edge(
         self, vault: VaultManager, indexer: Indexer
     ):
-        source_path = vault.create_note(
+        vault.create_note(
             NoteType.SOURCE, "research-paper",
             body="An important paper.",
             extra_frontmatter={"source_type": "article"},
@@ -1030,7 +1030,7 @@ class TestWikilinkTypeInference:
             body="Based on [[research-paper]] findings.",
             project="test",
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         rows = indexer.db.execute(
             "SELECT edge_type FROM edges WHERE edge_type = 'cites'"
@@ -1040,7 +1040,7 @@ class TestWikilinkTypeInference:
     def test_wikilink_to_session_creates_derived_from_edge(
         self, vault: VaultManager, indexer: Indexer
     ):
-        session_path = vault.create_note(
+        vault.create_note(
             NoteType.SESSION, "work-session", project="test"
         )
         vault.create_note(
@@ -1048,7 +1048,7 @@ class TestWikilinkTypeInference:
             body="Continuing from [[work-session]].",
             project="test",
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         rows = indexer.db.execute(
             "SELECT edge_type FROM edges WHERE edge_type = 'derived_from'"
@@ -1064,7 +1064,7 @@ class TestWikilinkTypeInference:
             body="Related to [[concept-a]].",
             project="test",
         )
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         rows = indexer.db.execute(
             "SELECT edge_type FROM edges"

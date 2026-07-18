@@ -1774,13 +1774,11 @@ class Indexer:
                 while len(linked) < max_links and group_keys:
                     key = group_keys[idx % len(group_keys)]
                     candidates = groups[key]
-                    found = False
                     while candidates:
                         target, etype = candidates.pop(0)
                         if target not in added:
                             linked.append((target, etype))
                             added.add(target)
-                            found = True
                             break
                     if not candidates:
                         group_keys.remove(key)

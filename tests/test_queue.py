@@ -194,7 +194,7 @@ def test_dedup_check_ignores_empty_values(tmp_path: Path) -> None:
 def test_dedup_check_excludes_self(tmp_path: Path) -> None:
     q = _make_queue(tmp_path)
     a = q.enqueue({"url": "https://x.test/a"})
-    items = q.peek(10)
+    q.peek(10)
     # Re-checking the item that's already in the queue should return None.
     assert q.dedup_check({"id": a, "url": "https://x.test/a"}, keys=["url"]) is None
 

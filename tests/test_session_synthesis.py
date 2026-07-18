@@ -130,7 +130,7 @@ def _materialize_one_session(
 
 
 def test_materialize_does_not_set_enrichment_status(config: Config, vault: VaultManager):
-    note_id = _materialize_one_session(config, vault)
+    _materialize_one_session(config, vault)
     sessions = list((config.vault_root / "projects" / "proj" / "sessions").glob("*/session.md"))
     assert len(sessions) == 1
     fm, body = parse_frontmatter(sessions[0].read_text(encoding="utf-8"))

@@ -231,7 +231,7 @@ class TestOntologyStale:
         indexer: Indexer,
         monkeypatch,
     ):
-        ontology_path = _stub_ontology(monkeypatch, {"math-calc": ["x"]})
+        _stub_ontology(monkeypatch, {"math-calc": ["x"]})
         indexer.rebuild(full=True)
 
         # Touch marker AFTER the ontology to make it fresh

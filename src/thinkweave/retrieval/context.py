@@ -349,7 +349,6 @@ def _get_derived_artifacts(
 
     import sqlite3
 
-    placeholders = ",".join("?" for _ in session_ids)
     db = sqlite3.connect(str(cfg.index_db))
     db.row_factory = sqlite3.Row
     try:
