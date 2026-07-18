@@ -515,10 +515,8 @@ def test_plan_distill_symlink_header_wiring():
 
 
 def test_plan_distill_symlink_is_not_committed():
-    """The symlink itself is machine-local — never committed."""
-    tracked = issue_loop.REPO_ROOT / ".claude" / "commands" / "plan-distill.md"
-    # If it exists on disk (dev machine wired it) it must be a symlink, and
-    # git must not track it — mirror the arch-proposal/issue-loop convention.
+    """The symlink itself is machine-local — never committed.
+    Mirror the arch-proposal/issue-loop convention: git must not track it."""
     import subprocess
 
     out = subprocess.run(
