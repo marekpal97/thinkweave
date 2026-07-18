@@ -3146,7 +3146,7 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
     lines.append("")
     lines.append(f"- **Timestamp**: {ts}")
     lines.append(f"- **Project**: {project}")
-    lines.append(f"- **Maintenance log**: `vault/.weave/maintenance.jsonl`")
+    lines.append("- **Maintenance log**: `vault/.weave/maintenance.jsonl`")
     lines.append("")
 
     # --- Summary table ---------------------------------------------------

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from thinkweave.synthesis.concepts import (
-    DRIFT_COUNT_THRESHOLD,
     drift_report,
     format_drift_report,
     hubs_marker_path,

@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from thinkweave.core.config import Config
 from thinkweave.acquisition.importers.claude_history import (
-    META_CONCEPT_TO_TAG,
-    PROJECT_MAP,
     _build_session_map,
     _content_hash,
     _deduplicate_observations,
@@ -28,7 +24,6 @@ from thinkweave.acquisition.importers.claude_history import (
     import_claude_history,
     normalize_project,
 )
-from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager, parse_frontmatter
 
 

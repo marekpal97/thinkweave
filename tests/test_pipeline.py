@@ -669,7 +669,6 @@ class TestMCPToolChainE2E:
 
         # ── Step 8: Agent judges the decision ───────────────────────
         from thinkweave.synthesis.judge import evaluate_decision
-        from thinkweave.core.schemas import NoteMeta
 
         all_decisions = [
             vault.read_note(p) for p in vault.root.rglob("*.md")

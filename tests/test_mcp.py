@@ -11,7 +11,6 @@ from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.surfaces.mcp.server import (
     _build_decision_body,
-    _flush_insight,
     _parse_candidate_insights,
 )
 from thinkweave.core.vault import parse_frontmatter

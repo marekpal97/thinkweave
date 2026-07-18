@@ -187,7 +187,7 @@ def extract_youtube(
 
     try:
         text = _call_gemini_for_youtube(key, model, url)
-    except ImportError as exc:
+    except ImportError:
         return {
             "ok": False,
             "error": ERR_MISSING_SDK,

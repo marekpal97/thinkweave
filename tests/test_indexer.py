@@ -941,7 +941,6 @@ class TestSessionDirectoryEdges:
         vault.create_note(NoteType.SESSION, "Solo session", project="test")
         stats = indexer.rebuild(full=True)
 
-        import json
         rows = indexer.db.execute(
             "SELECT source, target FROM edges WHERE edge_type = 'derived_from'"
         ).fetchall()

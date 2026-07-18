@@ -12,9 +12,6 @@ def cmd_concepts(args: argparse.Namespace) -> None:
     from thinkweave.core.indexer import Indexer
     from thinkweave.synthesis.concepts import (
         get_all_concepts,
-        load_aliases,
-        merge_concept_in_notes,
-        save_aliases,
     )
 
     cfg = load_config()

@@ -426,7 +426,7 @@ def import_chatgpt(
 
 def _dry_run_report(threads: list[Thread]) -> dict:
     """Print a summary of what would be imported."""
-    print(f"\n── Dry Run Report ──────────────────────────────────\n")
+    print("\n── Dry Run Report ──────────────────────────────────\n")
     total_messages = sum(len(t.messages) for t in threads)
     total_user = sum(len(t.user_messages) for t in threads)
     total_chars = sum(sum(len(m.text) for m in t.messages) for t in threads)
@@ -442,7 +442,7 @@ def _dry_run_report(threads: list[Thread]) -> dict:
         print(f"  Date range: {oldest.created.strftime('%Y-%m-%d')} → {newest.created.strftime('%Y-%m-%d')}")
 
     # Show sample titles
-    print(f"\n  Sample conversations:")
+    print("\n  Sample conversations:")
     for t in threads[:10]:
         msg_count = len(t.messages)
         print(f"    {t.created.strftime('%Y-%m-%d')}  ({msg_count:3d} msgs)  {t.title[:70]}")

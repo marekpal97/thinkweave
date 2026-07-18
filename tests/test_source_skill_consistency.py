@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from thinkweave.acquisition.sources import DEFAULT_CONFIG
 from thinkweave.acquisition.sources.registry import all_specs

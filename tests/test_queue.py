@@ -10,7 +10,6 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
 
 from thinkweave.acquisition.sources.queue import Queue
 

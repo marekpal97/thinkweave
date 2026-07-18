@@ -354,7 +354,7 @@ def _get_derived_artifacts(
     db.row_factory = sqlite3.Row
     try:
         rows = db.execute(
-            f"""
+            """
             SELECT id, type, title, frontmatter
             FROM notes
             WHERE type IN ('decision', 'note')
