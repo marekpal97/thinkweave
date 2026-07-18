@@ -215,6 +215,53 @@ the issue closes on merge. Release is implicit: the claim (the assignee in
 issue — a claimed+closed issue is inert; if the PR is rejected, a human
 unassigns / unlabels to re-queue.
 
+**Risk-lane triage — label what a human should look at.** Daily runs
+outpace review, so after the PR is opened, classify it so a human reviews
+only what matters. Assemble the shipped PR's signal set — you already hold
+all of it — into a JSON file and run:
+
+```bash
+python scripts/issue_loop.py triage <N> --signals-json <signals-file>
+```
+
+Signals schema (all keys optional; you compute them per shipped PR):
+
+| key               | type      | meaning                                             |
+| ----------------- | --------- | --------------------------------------------------- |
+| `fix_rounds`      | int       | implement→gate→fix iterations (0 = first try)       |
+| `diff_lines`      | int       | total changed lines (the diff-guard gate's count)   |
+| `files_touched`   | list[str] | repo-relative paths the PR changed                  |
+| `tests_touched`   | bool      | the change carries test coverage                    |
+| `review_severity` | str       | worst review finding: `none`/`minor`/`major`/`critical` |
+| `baseline_green`  | bool      | the tests gate was green on the pristine worktree   |
+| `acceptance`      | str       | acceptance verdict: `met`/`uncertain`/`not-met`     |
+
+The rail returns `{issue, lane, label, reasons}` — precedence red > yellow >
+green, `reasons` lists every triggered rule. **You** apply the label via gh
+(the rail only classifies):
+
+```bash
+gh issue edit <N> --add-label <label>   # or: gh pr edit <pr-url> --add-label
+```
+
+- **green** (`auto-merge-ok`) — first-try, small, test-covered, `<= minor`
+  review, green baseline, no sensitive path. Only emitted when
+  `triage.green_enabled = true` (ship default: **false** → a would-be-green
+  PR is labeled `review-light` instead). Green is safe ONLY where GitHub
+  branch protection + required CI actually guard the merge; enable it per the
+  training-mode graduation, not before.
+- **yellow** (`review-light`) — passed, but with fix rounds, a medium diff, a
+  watched path, or no coverage signal: a human skims the trajectory note's
+  "How it went".
+- **red** (`ready-for-human`) — sensitive path (always, regardless of size),
+  big diff, degraded baseline, `major`/`critical` review, or uncertain/not-met
+  acceptance. This reuses the `on_gate_failure` label `ready-for-human`
+  deliberately — same "human, please look" rung as a gate failure.
+
+Thresholds and the sensitive-path list are `[triage]` knobs in `loop.toml`
+(override per run with `--set triage.green_enabled=true` etc.), never
+hardcoded.
+
 In `run_mode = exhaust`: after shipping, re-run `plan`. If new frontier
 issues appeared (a blocker got merged meanwhile), continue with them until
 the per-run cap; otherwise report and stop.
