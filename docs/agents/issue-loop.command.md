@@ -224,17 +224,21 @@ all of it — into a JSON file and run:
 python scripts/issue_loop.py triage <N> --signals-json <signals-file>
 ```
 
-Signals schema (all keys optional; you compute them per shipped PR):
+Signals schema (you compute them per shipped PR). The three **safety-critical**
+keys are REQUIRED and fail closed — an absent key or an unrecognized enum value
+classifies **red** (naming the offending key/value), never green-eligible,
+because you assemble these signals and enum drift (`high` / `partial`) is
+realistic. The rest are optional and default benignly:
 
-| key               | type      | meaning                                             |
-| ----------------- | --------- | --------------------------------------------------- |
-| `fix_rounds`      | int       | implement→gate→fix iterations (0 = first try)       |
-| `diff_lines`      | int       | total changed lines (the diff-guard gate's count)   |
-| `files_touched`   | list[str] | repo-relative paths the PR changed                  |
-| `tests_touched`   | bool      | the change carries test coverage                    |
-| `review_severity` | str       | worst review finding: `none`/`minor`/`major`/`critical` |
-| `baseline_green`  | bool      | the tests gate was green on the pristine worktree   |
-| `acceptance`      | str       | acceptance verdict: `met`/`uncertain`/`not-met`     |
+| key               | type      | required | meaning                                             |
+| ----------------- | --------- | -------- | --------------------------------------------------- |
+| `review_severity` | str       | **yes**  | worst review finding: `none`/`minor`/`major`/`critical` |
+| `baseline_green`  | bool      | **yes**  | the tests gate was green on the pristine worktree   |
+| `acceptance`      | str       | **yes**  | acceptance verdict: `met`/`uncertain`/`not-met`     |
+| `fix_rounds`      | int       | no (→0)  | implement→gate→fix iterations (0 = first try)       |
+| `diff_lines`      | int       | no (→0)  | total changed lines (the diff-guard gate's count)   |
+| `files_touched`   | list[str] | no (→[]) | repo-relative paths the PR changed                  |
+| `tests_touched`   | bool      | no (→F)  | the change carries test coverage                    |
 
 The rail returns `{issue, lane, label, reasons}` — precedence red > yellow >
 green, `reasons` lists every triggered rule. **You** apply the label via gh

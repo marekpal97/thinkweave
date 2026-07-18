@@ -387,13 +387,20 @@ def run_diff_gate(gate: dict, cwd: Path, base_ref: str) -> dict:
 # matters — escalation-not-gates, matching the loop's existing ready-for-human
 # rung. Labels are APPLIED by the orchestrator (via gh); the rail only decides.
 
-# Review severities that fail the human bar outright (red). "none"/"minor" stay
-# green-eligible (the issue's "review <= minor").
+# Recognized enum values. "none"/"minor" review stay green-eligible (the
+# issue's "review <= minor"); "met" acceptance is the only clean pass. A value
+# OUTSIDE these sets is not benign — LLM-assembled signals make enum drift
+# ("high", "partial", "blocker") realistic, so an unrecognized value fails
+# closed to red rather than slipping through green-eligible.
+_VALID_REVIEW = {"none", "minor", "major", "critical"}
 _RED_REVIEW = {"major", "critical"}
-# Acceptance verdicts that are not a clean pass — uncertain OR not-met → red.
+_VALID_ACCEPTANCE = {"met", "uncertain", "not-met"}
 _RED_ACCEPTANCE = {"uncertain", "not-met"}
 
-TRIAGE_LABELS = {"green": "auto-merge-ok", "yellow": "review-light", "red": "ready-for-human"}
+# Green/yellow labels are loop-internal vocabulary. The red label is NOT here —
+# it is sourced from labels.on_gate_failure (classify_pr's red_label arg) so
+# triage-red and gate-failure share one label with no duplicate literal.
+TRIAGE_LABELS = {"green": "auto-merge-ok", "yellow": "review-light"}
 
 
 def _path_matches(path: str, pattern: str) -> bool:
@@ -403,8 +410,9 @@ def _path_matches(path: str, pattern: str) -> bool:
       - dir prefix — trailing ``/`` (``hooks/``, ``src/thinkweave/surfaces/``):
         the path is under that directory (``startswith``, same convention as
         the diff-guard gate's ``forbidden_paths``).
-      - glob — contains ``*``/``?``/``[`` (``*schema*``): fnmatched against the
-        basename, or the whole path when the glob itself spans directories.
+      - glob — contains ``*``/``?``/``[`` (``*schema*``): fnmatched
+        case-insensitively against the basename (or the whole path when the
+        glob itself spans directories), so ``docs/SCHEMA.md`` is caught too.
       - bare filename — anything else (``ontology.yaml``): the path's basename
         equals it, so the file matches at any depth (a different basename that
         merely shares the stem as a prefix does not).
@@ -413,7 +421,7 @@ def _path_matches(path: str, pattern: str) -> bool:
         return path.startswith(pattern)
     if any(c in pattern for c in "*?["):
         target = path if "/" in pattern else path.rsplit("/", 1)[-1]
-        return fnmatch.fnmatch(target, pattern)
+        return fnmatch.fnmatch(target.lower(), pattern.lower())
     return path.rsplit("/", 1)[-1] == pattern
 
 
@@ -428,32 +436,36 @@ def _path_hits(files: list[str], patterns: list[str]) -> list[str]:
     return sorted(hits)
 
 
-def classify_pr(signals: dict, cfg: dict) -> dict:
+def classify_pr(signals: dict, cfg: dict,
+                red_label: str = DEFAULT_CONFIG["labels"]["on_gate_failure"]) -> dict:
     """Classify one shipped PR into a risk lane. Pure over (signals, cfg).
 
-    ``cfg`` is the resolved ``[triage]`` config section. Precedence is
-    red > yellow > green, and every triggered rule is listed in ``reasons``
-    (short-circuit reasons: report all of them, not just the first). Returns
-    ``{lane, label, reasons}`` where label is the tracker string the
-    orchestrator applies (``auto-merge-ok`` / ``review-light`` /
-    ``ready-for-human``).
+    ``cfg`` is the resolved ``[triage]`` config section. ``red_label`` is the
+    tracker label for the red lane — sourced from ``labels.on_gate_failure`` by
+    the caller (default keeps the canonical ``ready-for-human``) so triage-red
+    and gate-failure stay one label. Precedence is red > yellow > green, and
+    every triggered rule is listed in ``reasons`` (short-circuit reasons: report
+    all of them, not just the first). Returns ``{lane, label, reasons}``.
 
-    Signals schema (all optional; the orchestrator assembles them at ship time):
-      - ``fix_rounds`` int — implement→gate→fix iterations (0 = first try)
-      - ``diff_lines`` int — total changed lines in the PR's diff
-      - ``files_touched`` list[str] — repo-relative paths the PR changed
-      - ``tests_touched`` bool — the change carries test coverage
-      - ``review_severity`` str — worst review finding: none|minor|major|critical
-      - ``baseline_green`` bool — the tests gate was green on the pristine worktree
-      - ``acceptance`` str — the acceptance judge's verdict: met|uncertain|not-met
+    **Fail-closed.** The three safety-critical signals — ``baseline_green``,
+    ``acceptance``, ``review_severity`` — are REQUIRED: an absent key or an
+    unrecognized enum value goes RED (naming the key/value), never
+    green-eligible, because LLM-assembled signals make that drift realistic.
+    The rest default benignly (absence is not a safety hole).
+
+    Signals schema:
+      - ``fix_rounds`` int — implement→gate→fix iterations (0 = first try) [opt, →0]
+      - ``diff_lines`` int — total changed lines in the PR's diff [opt, →0]
+      - ``files_touched`` list[str] — repo-relative paths changed [opt, →[]]
+      - ``tests_touched`` bool — the change carries test coverage [opt, →False]
+      - ``review_severity`` str — worst review finding: none|minor|major|critical [REQUIRED]
+      - ``baseline_green`` bool — tests gate green on the pristine worktree [REQUIRED]
+      - ``acceptance`` str — acceptance verdict: met|uncertain|not-met [REQUIRED]
     """
     fix_rounds = int(signals.get("fix_rounds", 0) or 0)
     diff_lines = int(signals.get("diff_lines", 0) or 0)
     files = signals.get("files_touched") or []
     tests_touched = bool(signals.get("tests_touched", False))
-    review = str(signals.get("review_severity", "none") or "none").lower()
-    baseline_green = bool(signals.get("baseline_green", True))
-    acceptance = str(signals.get("acceptance", "met") or "met").lower()
 
     # --- red: any hard-escalation rule. List them all. -----------------------
     red: list[str] = []
@@ -462,14 +474,35 @@ def classify_pr(signals: dict, cfg: dict) -> dict:
         red.append("sensitive path(s): " + ", ".join(sensitive))
     if diff_lines >= cfg["red_min_diff_lines"]:
         red.append(f"large diff: {diff_lines} lines >= {cfg['red_min_diff_lines']}")
-    if not baseline_green:
+
+    # baseline_green — required; missing or falsy → red.
+    if "baseline_green" not in signals:
+        red.append("baseline_green signal missing (fail-closed)")
+    elif not signals["baseline_green"]:
         red.append("degraded baseline (tests not green on the pristine worktree)")
-    if review in _RED_REVIEW:
-        red.append(f"review severity {review}")
-    if acceptance in _RED_ACCEPTANCE:
-        red.append(f"acceptance {acceptance}")
+
+    # review_severity — required; missing or off-enum → red.
+    if "review_severity" not in signals:
+        red.append("review_severity signal missing (fail-closed)")
+    else:
+        review = str(signals["review_severity"]).lower()
+        if review not in _VALID_REVIEW:
+            red.append(f"unrecognized review_severity '{signals['review_severity']}' (fail-closed)")
+        elif review in _RED_REVIEW:
+            red.append(f"review severity {review}")
+
+    # acceptance — required; missing or off-enum → red.
+    if "acceptance" not in signals:
+        red.append("acceptance signal missing (fail-closed)")
+    else:
+        acceptance = str(signals["acceptance"]).lower()
+        if acceptance not in _VALID_ACCEPTANCE:
+            red.append(f"unrecognized acceptance '{signals['acceptance']}' (fail-closed)")
+        elif acceptance in _RED_ACCEPTANCE:
+            red.append(f"acceptance {acceptance}")
+
     if red:
-        return {"lane": "red", "label": TRIAGE_LABELS["red"], "reasons": red}
+        return {"lane": "red", "label": red_label, "reasons": red}
 
     # --- yellow: passed, but warrants a human skim. List them all. -----------
     yellow: list[str] = []
@@ -1093,7 +1126,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2))
     elif args.cmd == "triage":
         signals = json.loads(Path(args.signals_json).read_text(encoding="utf-8"))
-        result = classify_pr(signals, cfg["triage"])
+        if not isinstance(signals, dict):
+            print(json.dumps({"error": "signals-json must be a JSON object"}))
+            return 2
+        result = classify_pr(signals, cfg["triage"],
+                             red_label=cfg["labels"]["on_gate_failure"])
         issue = args.number if args.number is not None else signals.get("issue")
         print(json.dumps({"issue": issue, **result}, indent=2))
     elif args.cmd == "trajectory":

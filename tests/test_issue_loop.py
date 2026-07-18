@@ -1072,6 +1072,7 @@ def test_triage_cli_green_needs_enable_override(tmp_path, capsys):
         "fix_rounds": 0, "diff_lines": 10,
         "files_touched": ["src/thinkweave/core/foo.py", "tests/test_foo.py"],
         "tests_touched": True, "review_severity": "minor", "baseline_green": True,
+        "acceptance": "met",
     }), encoding="utf-8")
     # Default config → green disabled → review-light.
     issue_loop.main(["triage", "--signals-json", str(sig)])
@@ -1079,3 +1080,92 @@ def test_triage_cli_green_needs_enable_override(tmp_path, capsys):
     # Enable green for this run → auto-merge-ok.
     issue_loop.main(["triage", "--signals-json", str(sig), "--set", "triage.green_enabled=true"])
     assert json.loads(capsys.readouterr().out)["label"] == "auto-merge-ok"
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed: LLM-assembled signals make enum drift / missing keys realistic.
+# Unrecognized enum values and absent safety-critical signals must never
+# classify green-eligible — they go RED, naming the offending value/key.
+
+
+def _signals_no(*drop, **kw):
+    """The green archetype with the named safety keys REMOVED (fail-closed
+    coverage) plus any overrides."""
+    s = _signals(**kw)
+    for k in drop:
+        s.pop(k, None)
+    return s
+
+
+def test_unrecognized_review_severity_is_red():
+    r = issue_loop.classify_pr(_signals(review_severity="high"), TRIAGE_CFG)
+    assert r["lane"] == "red"
+    assert any("high" in x for x in r["reasons"])
+
+
+def test_unrecognized_acceptance_is_red():
+    r = issue_loop.classify_pr(_signals(acceptance="partial"), TRIAGE_CFG)
+    assert r["lane"] == "red"
+    assert any("partial" in x for x in r["reasons"])
+
+
+def test_missing_review_severity_is_red():
+    r = issue_loop.classify_pr(_signals_no("review_severity"), TRIAGE_CFG)
+    assert r["lane"] == "red"
+    assert any("review_severity" in x for x in r["reasons"])
+
+
+def test_missing_baseline_green_is_red():
+    r = issue_loop.classify_pr(_signals_no("baseline_green"), TRIAGE_CFG)
+    assert r["lane"] == "red"
+    assert any("baseline_green" in x for x in r["reasons"])
+
+
+def test_missing_acceptance_is_red():
+    r = issue_loop.classify_pr(_signals_no("acceptance"), TRIAGE_CFG)
+    assert r["lane"] == "red"
+    assert any("acceptance" in x for x in r["reasons"])
+
+
+def test_empty_signals_is_red_on_all_three_safety_keys():
+    r = issue_loop.classify_pr({}, TRIAGE_CFG)
+    assert r["lane"] == "red"
+    joined = " | ".join(r["reasons"])
+    assert "baseline_green" in joined and "acceptance" in joined and "review_severity" in joined
+
+
+def test_benign_absence_does_not_trip_red():
+    # diff_lines / fix_rounds / files_touched absent is NOT a safety hole:
+    # with the three safety keys present and clean, the PR is still green.
+    sig = {"tests_touched": True, "review_severity": "minor",
+           "baseline_green": True, "acceptance": "met"}
+    r = issue_loop.classify_pr(sig, TRIAGE_CFG)
+    assert r["lane"] == "green"
+
+
+def test_red_label_sourced_from_on_gate_failure(tmp_path, capsys):
+    # classify_pr's red label is overridable (default 'ready-for-human'); the
+    # CLI feeds it from labels.on_gate_failure so remapping that label moves the
+    # triage-red label with it — no duplicate source of truth.
+    assert issue_loop.classify_pr(
+        _signals(baseline_green=False), TRIAGE_CFG,
+        red_label="needs-a-human")["label"] == "needs-a-human"
+    sig = tmp_path / "sig.json"
+    sig.write_text(json.dumps(_signals(files_touched=["hooks/x.json"])), encoding="utf-8")
+    issue_loop.main(["triage", "--signals-json", str(sig),
+                     "--set", "labels.on_gate_failure=escalate-me"])
+    assert json.loads(capsys.readouterr().out)["label"] == "escalate-me"
+
+
+def test_schema_glob_is_case_insensitive():
+    # docs/SCHEMA.md (uppercase) must be caught by the *schema* pattern.
+    r = issue_loop.classify_pr(_signals(files_touched=["docs/SCHEMA.md"]), TRIAGE_CFG)
+    assert r["lane"] == "red"
+
+
+def test_triage_cli_non_object_signals_clean_error(tmp_path, capsys):
+    sig = tmp_path / "sig.json"
+    sig.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    rc = issue_loop.main(["triage", "--signals-json", str(sig)])
+    assert rc == 2
+    assert "error" in json.loads(capsys.readouterr().out)
