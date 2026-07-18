@@ -34,6 +34,12 @@ Division of labor, honoring "don't store what another surface records":
 | **trajectory note** | how the work went + lessons — the reusable part |
 | session note (/wrap) | cross-issue synthesis, decisions, insights |
 
+This partition — including the wrap-coverage guarantee for headless runs and
+the single-owner rule for decisions — is codified and tested as the
+capture-parity contract in
+[`vault-issue-contract.md`](vault-issue-contract.md)
+(`tests/test_vault_issue_contract.py`).
+
 **Mechanics.** After §2 Report, for each processed issue:
 
 1. `issue_loop.py trajectory <N> --cwd <worktree> --gates-json <file>

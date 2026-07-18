@@ -306,3 +306,18 @@ frontmatter=<payload frontmatter>)` — the payload's `tags` already carry
 fall back to `weave add -f …`. Do not duplicate gate evidence or run history — the
 tracker and PR own those. Optionally print the first run's composed note as a
 sanity check; this is non-blocking.
+
+## 4. Wrap coverage — do NOT run `/wrap` here
+
+Headless loop runs are wrap-covered without an explicit run-end `/wrap`. The
+`SessionStart` hook mints this run's session note (with a `source_session` UUID,
+no `processed` flag); the nightly `/dream` phase-2 `dream-wrap-worker` catch-up
+picks it up (`type: session`, not processed, recent, non-empty `events.jsonl`)
+and synthesises + `weave wrap-finalize`s it. The deterministic per-issue content
+is already in the §3 trajectory notes, so nothing is lost by wrap time.
+
+Do not run `/wrap` or `weave wrap-finalize` from the loop: session synthesis and
+**decision promotion** belong to the session-note owner, and letting the loop
+mint decisions would break the single-owner rule. See
+[`vault-issue-contract.md`](vault-issue-contract.md) for the full division of
+labor and its contract test.
