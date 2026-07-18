@@ -360,6 +360,57 @@ def test_trajectory_argparse_contract():
     assert ns2.skill_centric is False
 
 
+def test_build_trajectory_mirrors_primed_and_served():
+    """The frontmatter mirrors the prime verdict: primed:true + the served ids
+    when the run was primed; primed:false + empty served when held out."""
+    issue = {"number": 57, "title": "prime the implementer", "labels": []}
+    primed = issue_loop.build_trajectory(
+        issue, branch="loop/dag-54", commits=["a"], numstat="1\t0\tx.py\n",
+        gates=[], fix_rounds=0, outcome="shipped",
+        primed=True, served=["n-prior1", "dec-abc222"],
+    )
+    assert primed["frontmatter"]["primed"] is True
+    assert primed["frontmatter"]["served"] == ["n-prior1", "dec-abc222"]
+
+    held = issue_loop.build_trajectory(
+        issue, branch="b", commits=[], numstat="", gates=[],
+        fix_rounds=0, outcome="shipped", primed=False,
+    )
+    assert held["frontmatter"]["primed"] is False
+    assert held["frontmatter"]["served"] == []
+
+
+def test_build_trajectory_omits_prime_keys_when_unknown():
+    """Backward compat: callers that pass no prime data (primed=None) get a
+    note with no primed/served keys — the pre-#57 shape is unchanged."""
+    payload = issue_loop.build_trajectory(
+        {"number": 1, "title": "x", "labels": []},
+        branch="b", commits=[], numstat="", gates=[],
+        fix_rounds=0, outcome="shipped",
+    )
+    assert "primed" not in payload["frontmatter"]
+    assert "served" not in payload["frontmatter"]
+
+
+def test_trajectory_prime_argparse_contract():
+    """--primed/--no-primed (default None) + --served-json (default None) let
+    the orchestrator mirror the prime verdict into the trajectory note."""
+    ns = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "57", "--gates-json", "g.json", "--outcome", "shipped",
+        "--primed", "--served-json", "served.json",
+    ])
+    assert ns.primed is True and ns.served_json == "served.json"
+    ns_held = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "57", "--gates-json", "g.json", "--outcome", "routed-to-human",
+        "--no-primed",
+    ])
+    assert ns_held.primed is False
+    ns_default = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "57", "--gates-json", "g.json", "--outcome", "shipped",
+    ])
+    assert ns_default.primed is None and ns_default.served_json is None
+
+
 # ---------------------------------------------------------------------------
 # --dag scoping and --assume-done (stacked delivery)
 

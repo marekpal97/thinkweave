@@ -381,7 +381,9 @@ def build_trajectory(issue: dict, *, branch: str, commits: list[str],
                      numstat: str, gates: list[dict], fix_rounds: int,
                      outcome: str, pr_url: str = "", run_id: str = "",
                      skills: list[dict] | None = None,
-                     skill_centric: bool = False) -> dict:
+                     skill_centric: bool = False,
+                     primed: bool | None = None,
+                     served: list[str] | None = None) -> dict:
     """Assemble the deterministic half of a per-issue trajectory note.
 
     Emits a weave_create-shaped payload: everything mechanical (files, gate
@@ -397,28 +399,39 @@ def build_trajectory(issue: dict, *, branch: str, commits: list[str],
     ``skill_centric`` when the record is primarily about a skill invocation
     (SkillOpt raw material) — it adds the ``skill-invocation`` tag alongside
     the always-present ``loop-run``.
+
+    ``primed``/``served`` mirror the claim-time prime verdict (``prime <N>``):
+    ``primed=True`` with the served note ids when the run received prior-
+    trajectory context, ``primed=False`` with an empty list when it was a
+    deliberate holdout. Together with #60's ``outcome`` this frontmatter is the
+    served-context regression's raw material. ``primed=None`` (the default —
+    pre-#57 callers) omits both keys, leaving the note shape unchanged.
     """
     files = [line.split("\t")[2] for line in numstat.strip().splitlines()
              if len(line.split("\t")) == 3]
     tags = ["loop-run"] + (["skill-invocation"] if skill_centric else [])
+    frontmatter = {
+        "issue": issue["number"],
+        "issue_url": issue.get("html_url", ""),
+        "pr_url": pr_url,
+        "run_id": run_id,
+        "branch": branch,
+        "outcome": outcome,  # shipped | routed-to-human | awaiting-approval
+        "fix_rounds": fix_rounds,
+        "commits": len(commits),
+        "files_touched": sorted(set(files)),
+        "gates": [{"id": g["id"], "passed": g["passed"], "summary": g.get("summary", "")}
+                  for g in gates],
+        "skills": [_normalize_skill(s) for s in (skills or [])],
+    }
+    if primed is not None:
+        frontmatter["primed"] = primed
+        frontmatter["served"] = list(served or [])
     return {
         "type": "note",
         "title": f"loop trajectory #{issue['number']}: {issue.get('title', '')[:80]}",
         "tags": tags,
-        "frontmatter": {
-            "issue": issue["number"],
-            "issue_url": issue.get("html_url", ""),
-            "pr_url": pr_url,
-            "run_id": run_id,
-            "branch": branch,
-            "outcome": outcome,  # shipped | routed-to-human | awaiting-approval
-            "fix_rounds": fix_rounds,
-            "commits": len(commits),
-            "files_touched": sorted(set(files)),
-            "gates": [{"id": g["id"], "passed": g["passed"], "summary": g.get("summary", "")}
-                      for g in gates],
-            "skills": [_normalize_skill(s) for s in (skills or [])],
-        },
+        "frontmatter": frontmatter,
         "body_skeleton": (
             "## What\n<1-2 sentences: the slice delivered>\n\n"
             "## How it went\n<fix rounds and why; seams chosen; surprises>\n\n"
@@ -776,6 +789,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_traj.add_argument("--skill-centric", action="store_true",
                         help="mark this record skill-centric (adds the "
                              "skill-invocation tag alongside loop-run)")
+    p_traj.add_argument("--primed", action=argparse.BooleanOptionalAction, default=None,
+                        help="mirror the claim-time prime verdict: --primed (received "
+                             "prior-trajectory context) / --no-primed (deliberate holdout). "
+                             "Omit to leave both prime keys out (pre-#57 shape).")
+    p_traj.add_argument("--served-json", default=None,
+                        help="file with the served note ids (prime output's `served`) to "
+                             "mirror into the trajectory note frontmatter")
     p_traj.add_argument("--fix-rounds", type=int, default=0)
     p_traj.add_argument("--outcome", required=True,
                         choices=["shipped", "routed-to-human", "awaiting-approval"])
@@ -887,11 +907,14 @@ def main(argv: list[str] | None = None) -> int:
         gates = json.loads(Path(args.gates_json).read_text(encoding="utf-8"))
         skills = (json.loads(Path(args.skills_json).read_text(encoding="utf-8"))
                   if args.skills_json else [])
+        served = (json.loads(Path(args.served_json).read_text(encoding="utf-8"))
+                  if args.served_json else None)
         payload = build_trajectory(
             issue, branch=branch, commits=commits, numstat=numstat, gates=gates,
             fix_rounds=args.fix_rounds, outcome=args.outcome,
             pr_url=args.pr_url, run_id=args.run_id,
             skills=skills, skill_centric=args.skill_centric,
+            primed=args.primed, served=served,
         )
         print(json.dumps(payload, indent=2))
     return 0
