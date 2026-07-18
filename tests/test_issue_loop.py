@@ -297,6 +297,67 @@ def test_build_trajectory_payload():
     assert "Lessons" in payload["body_skeleton"]
 
 
+def test_build_trajectory_defaults_to_empty_skills():
+    """Existing callers pass no skills data (backward compat): frontmatter
+    carries an empty skills[] and the record stays a plain [loop-run] note —
+    no [skill-invocation] tag."""
+    payload = issue_loop.build_trajectory(
+        {"number": 1, "title": "x", "labels": []},
+        branch="b", commits=[], numstat="", gates=[],
+        fix_rounds=0, outcome="shipped",
+    )
+    assert payload["frontmatter"]["skills"] == []
+    assert payload["tags"] == ["loop-run"]
+
+
+def test_build_trajectory_skills_shape():
+    """skills[] normalizes each dispatched stage into {id, role, outcome,
+    fix_rounds_attributed}, preserving dispatch order, dropping extra keys,
+    and defaulting a missing attribution count to 0. The skill-centric flag
+    adds the [skill-invocation] tag. Expected values are hand-written from
+    the issue's frontmatter schema, not recomputed by the code under test."""
+    issue = {"number": 56, "title": "Generalize the trajectory note", "labels": []}
+    skills_log = [
+        {"id": "implementer", "role": "implementer", "outcome": "shipped",
+         "fix_rounds_attributed": 0, "worktree": "/tmp/wt"},  # extra key dropped
+        {"id": "acceptance-judge", "role": "acceptance", "outcome": "not-met",
+         "fix_rounds_attributed": 2},
+        {"id": "code-reviewer", "role": "reviewer", "outcome": "passed"},  # no count → 0
+    ]
+    payload = issue_loop.build_trajectory(
+        issue, branch="loop/dag-54", commits=["a"], numstat="1\t0\tx.py\n",
+        gates=[{"id": "acceptance", "kind": "acceptance", "passed": True, "summary": ""}],
+        fix_rounds=2, outcome="shipped", skills=skills_log, skill_centric=True,
+    )
+    assert payload["frontmatter"]["skills"] == [
+        {"id": "implementer", "role": "implementer", "outcome": "shipped",
+         "fix_rounds_attributed": 0},
+        {"id": "acceptance-judge", "role": "acceptance", "outcome": "not-met",
+         "fix_rounds_attributed": 2},
+        {"id": "code-reviewer", "role": "reviewer", "outcome": "passed",
+         "fix_rounds_attributed": 0},
+    ]
+    assert payload["tags"] == ["loop-run", "skill-invocation"]
+
+
+def test_trajectory_argparse_contract():
+    """The trajectory subcommand exposes --skills-json (optional, default
+    None) and --skill-centric (store_true, default False), so the
+    orchestrator can pass its dispatch log and mark skill-centric records."""
+    ns = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "56", "--gates-json", "g.json",
+        "--skills-json", "s.json", "--skill-centric",
+        "--outcome", "shipped",
+    ])
+    assert ns.skills_json == "s.json"
+    assert ns.skill_centric is True
+    ns2 = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "56", "--gates-json", "g.json", "--outcome", "shipped",
+    ])
+    assert ns2.skills_json is None
+    assert ns2.skill_centric is False
+
+
 # ---------------------------------------------------------------------------
 # --dag scoping and --assume-done (stacked delivery)
 

@@ -350,23 +350,54 @@ def run_diff_gate(gate: dict, cwd: Path, base_ref: str) -> dict:
 # Trajectory assembly (memory feed) — pure function + subcommand
 
 
+def _normalize_skill(entry: dict) -> dict:
+    """Project one dispatch record down to the invocation-trajectory shape.
+
+    A stage skill is effectively a gate/subagent the loop already dispatches
+    (implementer, acceptance judge, reviewer, and future ponytail/tdd), so we
+    keep only the four fields that make the invocation first-class:
+    ``id`` (which skill), ``role`` (its stage role), ``outcome`` (how the
+    invocation resolved), and ``fix_rounds_attributed`` (how many fix rounds
+    this skill/gate caused — the explicit attribution). Extra keys the
+    orchestrator carries for its own bookkeeping are dropped; a missing
+    attribution count defaults to 0.
+    """
+    return {
+        "id": entry.get("id", ""),
+        "role": entry.get("role", ""),
+        "outcome": entry.get("outcome", ""),
+        "fix_rounds_attributed": int(entry.get("fix_rounds_attributed", 0) or 0),
+    }
+
+
 def build_trajectory(issue: dict, *, branch: str, commits: list[str],
                      numstat: str, gates: list[dict], fix_rounds: int,
-                     outcome: str, pr_url: str = "", run_id: str = "") -> dict:
+                     outcome: str, pr_url: str = "", run_id: str = "",
+                     skills: list[dict] | None = None,
+                     skill_centric: bool = False) -> dict:
     """Assemble the deterministic half of a per-issue trajectory note.
 
     Emits a weave_create-shaped payload: everything mechanical (files, gate
-    verdicts, rounds, refs) goes in frontmatter; the body is left as a
-    skeleton for the orchestrator to fill with judgment (what was learned,
-    why fix rounds happened) — concepts are chosen at creation time by the
-    LLM in the loop, never backfilled.
+    verdicts, rounds, refs, skill invocations) goes in frontmatter; the body
+    is left as a skeleton for the orchestrator to fill with judgment (what
+    was learned, why fix rounds happened) — concepts are chosen at creation
+    time by the LLM in the loop, never backfilled.
+
+    ``skills`` is the loop's stage-dispatch log — each dispatched stage skill
+    (implementer / acceptance judge / reviewer / ponytail / tdd) as
+    ``{id, role, outcome, fix_rounds_attributed}``. Existing callers pass
+    nothing and get an empty ``skills: []`` (backward compatible). Set
+    ``skill_centric`` when the record is primarily about a skill invocation
+    (SkillOpt raw material) — it adds the ``skill-invocation`` tag alongside
+    the always-present ``loop-run``.
     """
     files = [line.split("\t")[2] for line in numstat.strip().splitlines()
              if len(line.split("\t")) == 3]
+    tags = ["loop-run"] + (["skill-invocation"] if skill_centric else [])
     return {
         "type": "note",
         "title": f"loop trajectory #{issue['number']}: {issue.get('title', '')[:80]}",
-        "tags": ["loop-run"],
+        "tags": tags,
         "frontmatter": {
             "issue": issue["number"],
             "issue_url": issue.get("html_url", ""),
@@ -379,6 +410,7 @@ def build_trajectory(issue: dict, *, branch: str, commits: list[str],
             "files_touched": sorted(set(files)),
             "gates": [{"id": g["id"], "passed": g["passed"], "summary": g.get("summary", "")}
                       for g in gates],
+            "skills": [_normalize_skill(s) for s in (skills or [])],
         },
         "body_skeleton": (
             "## What\n<1-2 sentences: the slice delivered>\n\n"
@@ -443,7 +475,9 @@ def fetch_issues() -> list[dict]:
 # CLI
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Construct the CLI parser (factory so the argparse contract is testable
+    without going through main → gh → git)."""
     parser = argparse.ArgumentParser(description=__doc__)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -481,12 +515,25 @@ def main(argv: list[str] | None = None) -> int:
     p_traj.add_argument("--cwd", default=".", help="the issue's implementer worktree")
     p_traj.add_argument("--base-ref", default="origin/main")
     p_traj.add_argument("--gates-json", required=True, help="file with the gate results list")
+    p_traj.add_argument("--skills-json", default=None,
+                        help="file with the stage-dispatch log: a list of "
+                             "{id, role, outcome, fix_rounds_attributed} — the "
+                             "skills the loop dispatched (implementer, acceptance "
+                             "judge, reviewer, ...). Omit for an empty skills[].")
+    p_traj.add_argument("--skill-centric", action="store_true",
+                        help="mark this record skill-centric (adds the "
+                             "skill-invocation tag alongside loop-run)")
     p_traj.add_argument("--fix-rounds", type=int, default=0)
     p_traj.add_argument("--outcome", required=True,
                         choices=["shipped", "routed-to-human", "awaiting-approval"])
     p_traj.add_argument("--pr-url", default="")
     p_traj.add_argument("--run-id", default="")
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
         cfg = apply_overrides(load_config(), args.overrides)
@@ -561,10 +608,13 @@ def main(argv: list[str] | None = None) -> int:
             cwd=cwd, capture_output=True, text=True, check=True,
         ).stdout
         gates = json.loads(Path(args.gates_json).read_text(encoding="utf-8"))
+        skills = (json.loads(Path(args.skills_json).read_text(encoding="utf-8"))
+                  if args.skills_json else [])
         payload = build_trajectory(
             issue, branch=branch, commits=commits, numstat=numstat, gates=gates,
             fix_rounds=args.fix_rounds, outcome=args.outcome,
             pr_url=args.pr_url, run_id=args.run_id,
+            skills=skills, skill_centric=args.skill_centric,
         )
         print(json.dumps(payload, indent=2))
     return 0

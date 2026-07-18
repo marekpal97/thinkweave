@@ -245,16 +245,30 @@ assemble the deterministic half —
 
 ```bash
 python scripts/issue_loop.py trajectory <N> --cwd <worktree> \
-  --gates-json <results-file> --fix-rounds <R> --outcome <o> \
-  --pr-url <url> --run-id <run-id>
+  --gates-json <results-file> --skills-json <dispatch-log> [--skill-centric] \
+  --fix-rounds <R> --outcome <o> --pr-url <url> --run-id <run-id>
 ```
+
+`--skills-json` points at a JSON file you write from what the loop dispatched
+for this issue: a list of `{id, role, outcome, fix_rounds_attributed}`, one
+per stage skill you ran — the implementer subagent, the acceptance judge
+(`kind: acceptance` gate), the reviewer (`kind: review` gate), and any future
+stage (ponytail, tdd). `role` is the stage role, `outcome` is how that
+invocation resolved (e.g. `shipped` / `met` / `not-met` / `passed`), and
+`fix_rounds_attributed` is how many fix rounds that gate/skill caused (attribute
+each round in §1c to the gate that triggered it; the total is `--fix-rounds`).
+Omit `--skills-json` and the payload carries `skills: []`. Add `--skill-centric`
+when the record is primarily about a skill invocation (SkillOpt raw material) —
+it adds the `skill-invocation` tag so `weave_search(tags=[skill-invocation])`
+returns skill-attributed records.
 
 — then fill the judgment half and write ONE note: body ≤1K chars
 (What / How it went / Lessons; omit Lessons when there are none), concepts
 chosen from the ontology (`weave_concepts` first; the payload's
 `concept_hints` are raw material, not concepts), and
-`weave_create(type=note, tags=[loop-run], session_id=<this run's session>,
-frontmatter=<payload frontmatter>)`. If MCP is down, fall back to
-`weave add -f …`. Do not duplicate gate evidence or run history — the
+`weave_create(type=note, tags=<payload tags>, session_id=<this run's session>,
+frontmatter=<payload frontmatter>)` — the payload's `tags` already carry
+`loop-run` (plus `skill-invocation` when `--skill-centric`). If MCP is down,
+fall back to `weave add -f …`. Do not duplicate gate evidence or run history — the
 tracker and PR own those. Optionally print the first run's composed note as a
 sanity check; this is non-blocking.

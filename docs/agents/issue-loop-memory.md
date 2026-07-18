@@ -37,9 +37,10 @@ Division of labor, honoring "don't store what another surface records":
 **Mechanics.** After §2 Report, for each processed issue:
 
 1. `issue_loop.py trajectory <N> --cwd <worktree> --gates-json <file>
-   --fix-rounds R --outcome shipped --pr-url <url> --run-id <id>` assembles
-   the deterministic half: files touched, commit count, gate verdicts,
-   refs — emitted as a `weave_create`-shaped payload.
+   [--skills-json <file>] [--skill-centric] --fix-rounds R --outcome shipped
+   --pr-url <url> --run-id <id>` assembles the deterministic half: files
+   touched, commit count, gate verdicts, skill invocations, refs — emitted
+   as a `weave_create`-shaped payload.
 2. The orchestrator fills the judgment half: a ≤1K-char body (What / How it
    went / Lessons — lessons omitted when there are none; most runs are
    uneventful and their note is 5 lines of frontmatter + 2 sentences), and
@@ -55,6 +56,21 @@ Division of labor, honoring "don't store what another surface records":
    would in a hand-driven session — the loop never auto-mints decisions
    (decision-per-PR would be noise, and concepts/judgment belong to wrap's
    LLM pass, not a template).
+
+**Invocation-trajectory extension (epic #54 / #56).** The frontmatter also
+carries `skills[]` — the loop's stage-dispatch log, one entry per dispatched
+stage skill as `{id, role, outcome, fix_rounds_attributed}`. A stage skill is
+effectively a gate/subagent the loop already dispatches (implementer,
+acceptance judge, reviewer, and future ponytail/tdd), so this is a
+frontmatter extension, not new hooks — it keeps the lightweight /
+no-pre-action-injection doctrine. `fix_rounds_attributed` makes fix-round
+attribution explicit: which gate/skill caused each round (the total stays in
+`fix_rounds`). The orchestrator passes the log via `--skills-json`; existing
+callers pass nothing and get `skills: []`. When a record is primarily about a
+skill invocation (SkillOpt raw material, #64), `--skill-centric` adds the
+`skill-invocation` tag alongside `loop-run`, so
+`weave_search(tags=[skill-invocation], concepts=[…])` returns
+skill-attributed records.
 
 **What the notes buy.** Trajectory notes carry concepts, so they flow into
 concept hubs, digests, and retrieval like any note: "what did the loop learn
