@@ -786,3 +786,42 @@ class TestRrfKFromConfig:
         merged = s.hybrid_search("q", rrf_k=60)
         assert merged[0].rank == pytest.approx(2 / 61)
         s.close()
+
+
+# ---------------------------------------------------------------------------
+# weave_timeline handler — #81 regression: recent in-window sessions must
+# survive `list_notes(limit=100)` on a vault with more than 100 sessions.
+
+
+def test_timeline_surfaces_recent_sessions_on_large_vault(
+    vault_factory,
+):
+    """#81 (criterion-1 timeline half): `handle_timeline` calls
+    `list_notes(SESSION, limit=100)`; on a vault with >100 sessions the older,
+    out-of-window ones must not crowd the recent in-window ones out of the
+    truncation window. With the sort-before-truncate fix the 100 newest are
+    kept, so every recent in-window session renders.
+    """
+    from datetime import date
+
+    from thinkweave.surfaces.mcp.tools.search import handle_timeline
+
+    handle = vault_factory()
+    vm = handle.vault
+    today = date.today().isoformat()
+
+    # 50 recent, in-window sessions (highest dates) + 80 old, out-of-window
+    # ones (>100 total) that occupy truncation slots in arbitrary rglob order.
+    recent_titles = [f"recent-{i}" for i in range(50)]
+    for title in recent_titles:
+        vm.create_note(NoteType.SESSION, title, project="p",
+                       extra_frontmatter={"date": today})
+    for i in range(80):
+        vm.create_note(NoteType.SESSION, f"old-{i}", project="p",
+                       extra_frontmatter={"date": "2025-01-01"})
+
+    out = handle_timeline(handle.config, {"project": "p", "days": 7})
+    text = "\n".join(tc.text for tc in out)
+
+    missing = [t for t in recent_titles if t not in text]
+    assert not missing, f"recent in-window sessions dropped by truncation: {missing}"

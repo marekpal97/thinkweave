@@ -474,6 +474,26 @@ class TestVaultManager:
         tagged = vault.list_notes(tags=["x"])
         assert len(tagged) == 1
 
+    def test_list_notes_returns_newest_first_and_truncates(self, vault: VaultManager):
+        """#81: ``list_notes`` must sort by date descending *before* applying
+        ``limit`` — otherwise it truncates in arbitrary rglob order and the
+        most-recent notes silently don't survive on a large vault (the empty
+        ``weave_timeline`` bug). Dates below are scrambled relative to creation
+        order so a bare rglob-order truncation cannot yield this result.
+        """
+        dates = ["2026-01-05", "2026-03-10", "2026-01-20",
+                 "2026-03-25", "2026-02-14", "2026-04-01"]
+        for i, d in enumerate(dates):
+            vault.create_note(
+                NoteType.SESSION, f"S{i}", project="p",
+                extra_frontmatter={"date": d},
+            )
+
+        got = vault.list_notes(note_type=NoteType.SESSION, limit=3)
+        # The three newest dates, newest first — expected values hand-derived
+        # from the seeded dates, not recomputed by the code under test.
+        assert [n.date for n in got] == ["2026-04-01", "2026-03-25", "2026-03-10"]
+
     def test_filename_collision(self, vault: VaultManager):
         p1 = vault.create_note(NoteType.NOTE, "Same Title", project="test")
         p2 = vault.create_note(NoteType.NOTE, "Same Title", project="test")
