@@ -768,6 +768,54 @@ def test_build_trajectory_rejects_non_list_or_non_string_served():
         )
 
 
+def test_resolve_index_db_honors_weave_dir_override(tmp_path):
+    """PR #10 deployment class: <vault>/config/config.toml sets weave_dir off
+    the vault (derived SQLite on native fs). --vault must resolve the index
+    under weave_dir, not the stale <vault>/.weave/index.db."""
+    vault = tmp_path / "vault"
+    (vault / "config").mkdir(parents=True)
+    weave = tmp_path / "native" / "weave"
+    weave.mkdir(parents=True)
+    (vault / "config" / "config.toml").write_text(
+        f'weave_dir = "{weave}"\n', encoding="utf-8")
+    assert issue_loop._resolve_index_db(None, str(vault)) == str(weave / "index.db")
+
+
+def test_resolve_index_db_relative_weave_dir_anchors_at_vault(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "config").mkdir(parents=True)
+    (vault / "config" / "config.toml").write_text(
+        'weave_dir = "derived/weave"\n', encoding="utf-8")
+    assert issue_loop._resolve_index_db(None, str(vault)) == str(
+        vault / "derived" / "weave" / "index.db")
+
+
+def test_resolve_index_db_falls_back_to_legacy_weave_layout(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    # No config.toml at all → legacy <vault>/.weave/index.db.
+    assert issue_loop._resolve_index_db(None, str(vault)) == str(
+        vault / ".weave" / "index.db")
+
+
+def test_resolve_index_db_malformed_config_falls_back(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "config").mkdir(parents=True)
+    (vault / "config" / "config.toml").write_text(
+        "this is = not valid toml = at all\n", encoding="utf-8")
+    # Malformed config must not crash — degrade to the legacy layout.
+    assert issue_loop._resolve_index_db(None, str(vault)) == str(
+        vault / ".weave" / "index.db")
+
+
+def test_resolve_index_db_explicit_db_wins_over_vault(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "config").mkdir(parents=True)
+    (vault / "config" / "config.toml").write_text(
+        f'weave_dir = "{tmp_path / "elsewhere"}"\n', encoding="utf-8")
+    assert issue_loop._resolve_index_db("/explicit/index.db", str(vault)) == "/explicit/index.db"
+
+
 def test_prime_argparse_contract():
     ns = issue_loop.build_arg_parser().parse_args([
         "prime", "57", "--run-id", "loop-x", "--labels", "a,b",

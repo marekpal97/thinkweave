@@ -662,18 +662,47 @@ def _split_csv(value: str | None) -> list[str]:
     return [x.strip() for x in (value or "").split(",") if x.strip()]
 
 
+def _read_weave_dir_override(vault_root: Path) -> Path | None:
+    """Honor a top-level ``weave_dir`` in the vault's config.toml.
+
+    PR #10 relocates derived state (index.db, embeddings.db, buffer/) off the
+    vault path — on 9P-mounted vaults the live index is ``<weave_dir>/index.db``,
+    NOT ``<vault>/.weave/index.db``. Mirror ``core.config``'s resolution: ``~``
+    expands, a relative value anchors at ``vault_root``, absolute passes
+    through. Read ``config/config.toml`` first, then the legacy
+    ``.weave/config.toml``. Malformed/unreadable config or an absent key →
+    ``None`` (fall back to the legacy layout; never crash).
+    """
+    for rel in ("config/config.toml", ".weave/config.toml"):
+        path = vault_root / rel
+        if not path.exists():
+            continue
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        value = data.get("weave_dir")
+        if isinstance(value, str) and value.strip():
+            resolved = Path(value).expanduser()
+            return resolved if resolved.is_absolute() else vault_root / resolved
+    return None
+
+
 def _resolve_index_db(db: str | None, vault: str | None) -> str | None:
     """Resolve the read-only index db path without importing thinkweave.
 
-    ``--db`` wins; else ``<vault>/.weave/index.db`` (the default derived-state
-    layout); else ``THINKWEAVE_INDEX_DB``. Returns None when nothing resolves —
-    the prime then serves an empty (unprimed) block rather than guessing a path
-    (never touch an ambient real vault).
+    ``--db`` wins; else derive from ``--vault``: ``<weave_dir>/index.db`` when
+    the vault's config.toml overrides ``weave_dir`` (PR #10), otherwise the
+    legacy ``<vault>/.weave/index.db``; else ``THINKWEAVE_INDEX_DB``. Returns
+    None when nothing resolves — the prime then serves an empty (unprimed)
+    block rather than guessing a path (never touch an ambient real vault).
     """
     if db:
         return db
     if vault:
-        return str(Path(vault) / ".weave" / "index.db")
+        vault_root = Path(vault)
+        weave_dir = _read_weave_dir_override(vault_root) or (vault_root / ".weave")
+        return str(weave_dir / "index.db")
     return os.environ.get("THINKWEAVE_INDEX_DB") or None
 
 
@@ -785,7 +814,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          help="comma-separated match concepts; omit to derive from --labels")
     p_prime.add_argument("--db", default=None, help="index db path (opened read-only)")
     p_prime.add_argument("--vault", default=None,
-                         help="vault root; resolves <vault>/.weave/index.db when --db is absent")
+                         help="vault root; resolves the index under the vault's "
+                              "weave_dir override (config.toml) when --db is absent, "
+                              "else <vault>/.weave/index.db")
     p_prime.add_argument("--limit", type=int, default=3,
                          help="max prior trajectories (and decisions) to splice — top-N per kind")
     p_prime.add_argument("--budget-chars", type=int, default=1200,
