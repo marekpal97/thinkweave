@@ -53,7 +53,11 @@ _SPEC.loader.exec_module(issue_loop)
 EXPECTED_OWNERS: dict[str, set[str]] = {
     "tracker": {"run history", "claims", "gate evidence"},
     "pr body": {"diff summary", "gate table", "smell report"},
-    "trajectory note": {"how it went", "lessons"},
+    # Lessons retired (issue #85): the run-bound trajectory owns "how it went";
+    # portable lessons move to linked insight notes (the insights lane). The
+    # semantic trace is the machine-readable half of the tracker's gate
+    # evidence — clarified in prose, NOT a second owned prose field.
+    "trajectory note": {"how it went"},
     "session note": {"cross-issue synthesis", "decisions", "insights"},
 }
 
@@ -144,11 +148,13 @@ def test_no_field_is_written_by_two_owners():
 
 def test_decisions_owned_by_session_not_trajectory():
     """A decision is never minted by both the loop and /wrap: the session/wrap
-    row owns ``decisions``; the trajectory row does not."""
+    row owns ``decisions``; the trajectory row does not. Lessons are retired
+    from the trajectory (issue #85) — it owns "how it went", not lessons."""
     owners = _parse_owner_table(CONTRACT_DOC.read_text(encoding="utf-8"))
     assert "decisions" in owners["session note"]
     assert "decisions" not in owners["trajectory note"]
-    assert "lessons" in owners["trajectory note"]
+    assert "how it went" in owners["trajectory note"]
+    assert "lessons" not in owners["trajectory note"]
 
 
 def test_contract_doc_referenced_from_memory_doc():
@@ -200,13 +206,41 @@ def test_trajectory_frontmatter_carries_no_decision_field():
     assert "status" not in fm and "outcome" in fm
 
 
-def test_trajectory_owns_how_it_went_and_lessons():
-    """The trajectory body skeleton carries How it went + Lessons (its owned
-    fields) and never a synthesis/decision heading (the session's)."""
+def test_trajectory_body_retires_lessons():
+    """Issue #85: the trajectory body skeleton is the run-causal register only —
+    What + How it went, NO Lessons section (portable lessons are minted as
+    linked insight notes at ship time) and never a synthesis/decision heading."""
     body = _sample_trajectory()["body_skeleton"]
+    assert "## What" in body
     assert "## How it went" in body
-    assert "## Lessons" in body
+    assert "## Lessons" not in body
     assert "decision" not in body.lower()
+
+
+def test_contract_carries_loop_session_scope_clause():
+    """Issue #85: the contract pins the wrap scope clause — a loop-run session
+    gets cross-issue synthesis only; per-issue content is off-limits to wrap."""
+    doc = CONTRACT_DOC.read_text(encoding="utf-8").lower()
+    assert "cross-issue synthesis only" in doc
+    assert "loop-run" in doc
+
+
+def test_contract_clarifies_trace_is_machine_readable_half():
+    """Issue #85: the contract clarifies the structured frontmatter trace is the
+    machine-readable half of the tracker's gate evidence, not a second prose
+    owner (so it does not collide with the tracker's owned 'gate evidence')."""
+    doc = CONTRACT_DOC.read_text(encoding="utf-8").lower()
+    assert "machine-readable half" in doc
+    assert "not a second prose owner" in doc
+
+
+def test_wrap_worker_carries_loop_session_scope_clause():
+    """Issue #85: the committed dream-wrap-worker agent source instructs the
+    loop-run-session narrowing — cross-issue synthesis only, no per-issue
+    re-mint (the loop already minted the per-issue trajectory + insight notes)."""
+    worker = (_REPO / "agents" / "dream-wrap-worker.md").read_text(encoding="utf-8").lower()
+    assert "loop-run" in worker
+    assert "cross-issue synthesis only" in worker
 
 
 # ---------------------------------------------------------------------------

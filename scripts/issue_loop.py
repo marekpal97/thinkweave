@@ -730,9 +730,11 @@ def build_trajectory(issue: dict, *, branch: str, commits: list[str],
         "tags": tags,
         "frontmatter": frontmatter,
         "body_skeleton": (
+            # Issue #85: the run-causal register only — What / How it went. The
+            # Lessons section is retired; portable lessons are minted as separate
+            # insight notes at ship time and linked via builds_on (see §3).
             "## What\n<1-2 sentences: the slice delivered>\n\n"
-            "## How it went\n<fix rounds and why; seams chosen; surprises>\n\n"
-            "## Lessons\n<only what a future run would reuse — omit section if none>"
+            "## How it went\n<fix rounds and why; seams chosen; surprises>"
         ),
         "concept_hints": [l["name"] if isinstance(l, dict) else l
                           for l in issue.get("labels", [])],

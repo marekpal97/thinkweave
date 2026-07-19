@@ -72,6 +72,8 @@ Apply the live `/wrap` §C content rules:
 - Do not add `predicted_outcome` unless the events / git log carry a concrete checkable pointer; boilerplate predictions stay `unevaluable` forever.
 - Conservative defaults: prefer fewer-and-real over more-and-padded.
 
+**Loop-run session scope (issue #85).** If the session note carries `loop-run` trajectory notes (an `/issue-loop` run — check for `tag: loop-run` notes filed under the session, or `run_id` frontmatter), compose **cross-issue synthesis only**. The per-issue record is already complete: each trajectory note owns how its issue went, and the run's portable lessons were minted as linked insight notes at ship time. So restrict your insights/decisions to what only a whole-run view reveals — a seam recurring *across* the run's issues, a systemic gate-failure class, a cross-cutting decision the run embodied. Do **not** re-describe or re-mint any single issue's insights; that duplicates the loop's per-issue insight notes and violates the single-owner rule in [`vault-issue-contract.md`](../docs/agents/vault-issue-contract.md). `insights=[]` is the right answer when the run held no cross-issue pattern.
+
 ### Step C — Call `weave_extract` once per session
 
 ```

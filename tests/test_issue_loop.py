@@ -555,7 +555,10 @@ def test_build_trajectory_payload():
     assert fm["files_touched"] == ["src/thinkweave/acquisition/queue.py", "tests/test_queue.py"]
     assert fm["gates"] == [{"id": "tests", "passed": True, "summary": "exit 0"}]
     assert "track:D-acquisition" in payload["concept_hints"]
-    assert "Lessons" in payload["body_skeleton"]
+    # Issue #85: the Lessons section is retired from the body skeleton — the
+    # run-causal register is What / How it went only.
+    assert "## How it went" in payload["body_skeleton"]
+    assert "## Lessons" not in payload["body_skeleton"]
 
 
 def test_build_trajectory_defaults_to_empty_skills():

@@ -15,7 +15,7 @@ of the record — **no field is written by two owners.**
 |---|---|
 | tracker comments | run history, claims, gate evidence |
 | PR body | diff summary, gate table, smell report |
-| trajectory note | how it went, lessons |
+| trajectory note | how it went |
 | session note (`/wrap`) | cross-issue synthesis, decisions, insights |
 
 - **Tracker comments** own the *run history*: which run claimed the issue,
@@ -24,13 +24,28 @@ of the record — **no field is written by two owners.**
   the code-review view of the change.
 - **Trajectory note** (`type: note`, tag `loop-run`; assembled by
   `scripts/issue_loop.py trajectory`, design in
-  [`issue-loop-memory.md`](issue-loop-memory.md)) owns **how the work went and
-  the lessons** — the reusable half, written by the orchestrator at run end
-  while the fix-round/seam detail is still in context. It is a plain `note`: its
+  [`issue-loop-memory.md`](issue-loop-memory.md)) owns **how the work went** —
+  the run-causal register, written by the orchestrator at run end while the
+  fix-round/seam detail is still in context. It is a plain `note`: its
   frontmatter carries observable facts only (`outcome`, `gates`, `files_touched`,
-  `fix_rounds`, `primed`/`served`) and **never a decision field**
-  (`status`, `predicted_outcome`, `prediction_history`, `supersedes`,
-  `superseded_by`, `file_paths`). The loop never mints a `type: decision`.
+  `fix_rounds`, `primed`/`served`, and — issue #85 — the semantic-execution
+  `trace`) and **never a decision field** (`status`, `predicted_outcome`,
+  `prediction_history`, `supersedes`, `superseded_by`, `file_paths`). The loop
+  never mints a `type: decision`. **Lessons are retired** (issue #85): the
+  trajectory body is What / How-it-went only. Portable lessons — the reusable
+  wisdom a *future* run would apply — are minted as separate **insight notes**
+  at ship time (concepts at creation) and linked from the trajectory via
+  `builds_on`; prime serves those insight bodies by following the links. The
+  register test that sorts every artifact: **run-bound semantic trace →
+  trajectory; portable lesson → insight note, linked; enumerable fact →
+  frontmatter key.**
+- **The semantic `trace` is the machine-readable half of the tracker's gate
+  evidence, not a second prose owner.** Its envelopes (`rounds[]`, `criteria[]`,
+  `simplify`, `edge_cases[]`, `tdd`) carry the gate agents' own reports condensed
+  into structured frontmatter — the same evidence the tracker comments own as
+  prose, in a form a learner can join on. It duplicates neither the tracker's
+  prose nor the trajectory body; counts (`lines_delta`, `flipped_by_round`) are
+  filter/join keys, not signal.
 - **Session note** (`/wrap`) owns **cross-issue synthesis, decisions, and
   insights**. Where an issue's resolution embodied a real architectural choice,
   `/wrap` promotes it to a `decision` exactly as in a hand-driven session —
@@ -75,6 +90,18 @@ decisions — violating the single-owner rule above. The deterministic content
 that would otherwise be lost by wrap time — how the work went, the lessons — is
 already captured in the per-issue trajectory note; the session note only adds
 the cross-issue synthesis, which wrap composes whenever it runs.
+
+**Loop-run session scope (issue #85).** A session that carries `loop-run`
+trajectories gets **cross-issue synthesis only** from wrap; per-issue content is
+off-limits. The per-issue record is already complete before wrap runs — the
+trajectory note owns how each issue went, and the portable lessons were minted
+as linked insight notes at ship time (the loop, concepts-at-creation). So the
+`dream-wrap-worker` narrows to what only a whole-run view can see: patterns
+*across* the run's issues (a recurring seam, a systemic gate-failure class, a
+cross-cutting decision) and the run's cross-issue decisions. It does **not**
+re-describe or re-mint any single issue's insights — that would duplicate the
+loop's per-issue insight notes and violate the single-owner rule. The instruction
+lives in [`agents/dream-wrap-worker.md`](../../agents/dream-wrap-worker.md).
 
 **Subagents.** Loop implementer subagents do not emit their own wrap-eligible
 sessions; their work is captured deterministically by the orchestrator's
