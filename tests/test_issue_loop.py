@@ -929,16 +929,18 @@ def test_query_trajectories_filters_by_concept_and_lessons(tmp_path):
 
 
 def _add_note(path, *, note_id, title, body, concepts=(), tags=(),
-              date="2026-07-18", frontmatter=None):
+              date="2026-07-18", frontmatter=None, note_type="note"):
     """Insert one more note (+ its tags/concepts) into an existing seeded db —
-    the tables prime's queries join. Insight notes carry no loop-run tag."""
+    the tables prime's queries join. Insight notes carry no loop-run tag.
+    ``note_type`` lets a test seed a non-note (decision/session) to prove prime
+    only serves ``type='note'`` bodies as color."""
     import json as _json
     import sqlite3 as _sqlite3
     conn = _sqlite3.connect(path)
     conn.execute(
         "INSERT INTO notes (id, type, title, path, date, frontmatter, body_text)"
-        " VALUES (?, 'note', ?, ?, ?, ?, ?)",
-        (note_id, title, f"{note_id}.md", date,
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (note_id, note_type, title, f"{note_id}.md", date,
          _json.dumps(frontmatter or {}), body),
     )
     for t in tags:
@@ -1098,6 +1100,96 @@ def test_build_prime_payload_serves_insight_bodies_end_to_end(tmp_path):
     assert payload["primed"] is True
     assert payload["served"] == ["n-ins1"]
     assert "Serve insight bodies via builds_on links." in payload["block"]
+
+
+# --- Review round 1 (issue #85) — hardening the prime v2 seams --------------
+
+
+def test_build_trajectory_trace_lines_delta_non_int_is_zero():
+    """`simplify.lines_delta` must degrade a malformed value (list/dict) to 0,
+    not escape as a TypeError — an uncaught TypeError would crash the trajectory
+    command (rc-1) instead of the clean ValueError rc-2 path. It is a count, so
+    the same coercion as every other filter/join key applies."""
+    payload = issue_loop.build_trajectory(
+        {"number": 1, "title": "x", "labels": []},
+        branch="b", commits=[], numstat="", gates=[], fix_rounds=0,
+        outcome="shipped",
+        trace={"simplify": {"outcome": "applied", "lines_delta": [3],
+                            "cuts": [], "kept": []}},
+    )
+    assert payload["frontmatter"]["trace"]["simplify"]["lines_delta"] == 0
+
+
+def test_resolve_insights_only_serves_note_type(tmp_path):
+    """builds_on could name a decision or session id; prime must NOT serve a
+    non-note body as color — only `type='note'` insight notes are served, and a
+    decision id resolves to nothing (falls back to inline Lessons upstream)."""
+    db = tmp_path / "index.db"
+    _seed_index_db(db, note_id="n-seed", title="seed", concepts=["x"],
+                   body="## Lessons\ny\n")
+    _add_note(db, note_id="dec-1", title="a decision", body="decision body",
+              note_type="decision")
+    _add_note(db, note_id="ses-1", title="a session", body="session body",
+              note_type="session")
+    _add_note(db, note_id="n-ins", title="insight", body="insight body")
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        # A decision/session id in builds_on resolves to nothing; only the note
+        # is served, preserving builds_on order.
+        assert issue_loop.resolve_insights(conn, ["dec-1", "n-ins", "ses-1"]) == [
+            {"id": "n-ins", "body": "insight body"},
+        ]
+    finally:
+        conn.close()
+
+
+def test_coerce_builds_on_forms():
+    """Regression pin for the builds_on coercion: plain ids pass through,
+    path-based wikilinks (`[[path|id]]`) strip to the trailing id, whitespace is
+    trimmed, non-string elements are dropped, and a non-list is empty."""
+    f = issue_loop._coerce_builds_on
+    assert f(["n-plain"]) == ["n-plain"]
+    assert f(["[[projects/x/note.md|n-wiki]]"]) == ["n-wiki"]
+    assert f(["  n-space  "]) == ["n-space"]
+    assert f(["n-a", 123, None, {"x": 1}, ""]) == ["n-a"]
+    assert f("n-notalist") == []
+    assert f(None) == []
+
+
+def test_query_trajectories_dangling_builds_on_falls_back_to_lessons(tmp_path):
+    """A builds_on link that resolves to nothing (missing / non-note id) must
+    fall through to the inline Lessons — the v1 fallback chain, pinned."""
+    db = tmp_path / "index.db"
+    _seed_index_db(
+        db, note_id="n-traj", title="t", concepts=["retrieval"],
+        body="## What\nx\n\n## Lessons\nfallback lesson\n",
+        frontmatter={"issue": 1, "outcome": "shipped", "builds_on": ["n-missing"]},
+    )
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+    finally:
+        conn.close()
+    assert [h["id"] for h in hits] == ["n-traj"]
+    assert hits[0]["insights"] == []
+    assert hits[0]["lessons"] == "fallback lesson"
+
+
+def test_query_trajectories_dangling_builds_on_no_lessons_filtered(tmp_path):
+    """A dangling builds_on with NO inline Lessons has no reusable color at all
+    → the trajectory is filtered out (not served), never crashes."""
+    db = tmp_path / "index.db"
+    _seed_index_db(
+        db, note_id="n-traj", title="t", concepts=["retrieval"],
+        body="## What\nx\n\n## How it went\ny\n",  # no Lessons
+        frontmatter={"issue": 1, "outcome": "shipped", "builds_on": ["n-missing"]},
+    )
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+    finally:
+        conn.close()
+    assert hits == []
 
 
 def test_prime_writes_loop_prime_served_event_to_buffer(tmp_path):

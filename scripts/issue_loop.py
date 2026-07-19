@@ -640,7 +640,10 @@ def _normalize_trace(raw: object) -> dict:
                     if isinstance(cuts, list) else [],
             "kept": [_normalize_trace_whatwhy(c) for c in kept if isinstance(c, dict)]
                     if isinstance(kept, list) else [],
-            "lines_delta": int(simplify.get("lines_delta", 0) or 0),
+            # A count like any other join key: a malformed value (list/dict)
+            # degrades to 0 via _as_int_or_none rather than escaping as a
+            # TypeError that would crash the trajectory command (rc-1).
+            "lines_delta": _as_int_or_none(simplify.get("lines_delta")) or 0,
         }
     edge_cases = raw.get("edge_cases")
     if isinstance(edge_cases, list):
@@ -687,8 +690,9 @@ def build_trajectory(issue: dict, *, branch: str, commits: list[str],
     (see :func:`_normalize_trace`). It is stored under a single ``trace``
     frontmatter key: the machine-readable half of the tracker's gate evidence,
     never a second prose owner. ``trace=None`` (the default) omits the key, so
-    a caller without a trace produces a byte-stable pre-#85 payload — and the
-    RLVR export row, which never reads ``trace``, stays locked.
+    a caller without a trace produces byte-stable pre-#85 *frontmatter* (the
+    body skeleton retires Lessons for all callers by design) — and the RLVR
+    export row, which never reads ``trace``, stays locked.
     """
     files = [line.split("\t")[2] for line in numstat.strip().splitlines()
              if len(line.split("\t")) == 3]
@@ -827,8 +831,11 @@ def resolve_insights(conn: sqlite3.Connection, ids: list[str]) -> list[dict]:
     if not ids:
         return []
     placeholders = ",".join("?" * len(ids))
+    # type='note' guard: builds_on may name a decision/session id; prime must
+    # never serve a non-note body as color — only insight notes are served.
     rows = conn.execute(
-        f"SELECT id, body_text FROM notes WHERE id IN ({placeholders})", ids
+        f"SELECT id, body_text FROM notes WHERE type = 'note' AND id IN ({placeholders})",
+        ids,
     ).fetchall()
     by_id = {r["id"]: (r["body_text"] or "").strip() for r in rows}
     return [{"id": i, "body": by_id[i]} for i in ids if by_id.get(i)]

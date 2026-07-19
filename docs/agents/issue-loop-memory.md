@@ -102,7 +102,8 @@ on keys — unknowns dropped, each item projected). Counts (`lines_delta`,
 owner** — it duplicates neither the tracker's prose nor the trajectory body. It
 is a top-level frontmatter key no existing consumer reads, so #60's outcome
 judge, `weave rlvr export` (row envelope locked), and #62's steering evidence are
-untouched; absent (`--trace-json` omitted), the pre-#85 payload is byte-stable.
+untouched; absent (`--trace-json` omitted), the pre-#85 *frontmatter* is
+byte-stable (the body skeleton retires Lessons for all callers by design).
 
 **What the notes buy.** Trajectory notes carry concepts, so they flow into
 concept hubs, digests, and retrieval like any note: "what did the loop learn
