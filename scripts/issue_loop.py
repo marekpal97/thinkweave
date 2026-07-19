@@ -790,16 +790,78 @@ def _open_index_ro(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _coerce_builds_on(raw: object) -> list[str]:
+    """Normalize a trajectory's ``builds_on`` frontmatter to a list of note ids.
+
+    Accepts the plain ``["n-xxxxxx", …]`` form weave_create writes, and tolerates
+    path-based wikilinks (``[[path|n-xxxxxx]]``) by taking the trailing id. Any
+    non-list / non-string element is dropped — a bad link never crashes prime.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        s = item.strip()
+        if s.startswith("[[") and s.endswith("]]"):
+            s = s[2:-2]
+        if "|" in s:
+            s = s.split("|")[-1]
+        s = s.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def resolve_insights(conn: sqlite3.Connection, ids: list[str]) -> list[dict]:
+    """Read-only: fetch the bodies of the insight notes a trajectory builds on.
+
+    Returns ``[{id, body}]`` in ``builds_on`` order, skipping ids that don't
+    resolve to a note or resolve to an empty body. The index already holds these
+    notes (they are ordinary notes minted at ship time); prime reads their
+    ``body_text`` via the same sqlite path it uses for trajectories.
+    """
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT id, body_text FROM notes WHERE id IN ({placeholders})", ids
+    ).fetchall()
+    by_id = {r["id"]: (r["body_text"] or "").strip() for r in rows}
+    return [{"id": i, "body": by_id[i]} for i in ids if by_id.get(i)]
+
+
+# Outcome-weighting rank for prime ordering (issue #85). merged-clean/stable
+# float to the top, reworked/closed/reverted sink; unlabeled and unknown stay
+# neutral (rank 1) so an all-unlabeled match set keeps pure recency order — the
+# byte-stable v1 behavior. Python's stable sort preserves recency within a rank.
+_OUTCOME_RANK = {
+    "merged-clean": 0, "stable": 0,
+    "reworked": 2, "reworked-post-merge": 2,
+    "closed-unmerged": 2, "reverted": 2, "routed-to-human": 2,
+}
+
+
+def _outcome_rank(label: object) -> int:
+    return _OUTCOME_RANK.get(str(label or ""), 1)
+
+
 def query_trajectories(
     conn: sqlite3.Connection, concepts: list[str], limit: int, scan_cap: int = 40
 ) -> list[dict]:
-    """Read-only: ``[loop-run]`` notes matching ANY concept, newest first,
-    that carry a non-empty Lessons section.
+    """Read-only: ``[loop-run]`` notes matching ANY concept that carry reusable
+    color — a linked insight note (v2, ``builds_on``) or an inline Lessons
+    section (v1 fallback).
 
-    Returns ``{id, title, issue, outcome, lessons}`` dicts, at most ``limit``.
-    Empty ``concepts`` matches nothing (no concepts → no prime). The scan reads
-    up to ``scan_cap`` candidates before the Lessons filter so the cap is on
-    *useful* notes, not raw matches.
+    Returns ``{id, title, issue, outcome, outcome_label, lessons, insights}``
+    dicts, at most ``limit``. ``insights`` is the resolved list of linked
+    insight-note bodies (``[{id, body}]``); a v1 note has ``insights == []`` and
+    non-empty ``lessons``. Empty ``concepts`` matches nothing. The scan reads up
+    to ``scan_cap`` candidates in recency order, keeps those with reusable color,
+    then applies the outcome-weighting sort (:data:`_OUTCOME_RANK`) — stable, so
+    recency is preserved within a rank and an all-unlabeled set is pure recency —
+    before truncating to ``limit``.
     """
     if not concepts:
         return []
@@ -816,23 +878,26 @@ def query_trajectories(
     ).fetchall()
     out: list[dict] = []
     for r in rows:
-        lessons = extract_lessons(r["body_text"] or "")
-        if not lessons:
-            continue
         try:
             fm = json.loads(r["frontmatter"] or "{}")
         except json.JSONDecodeError:
             fm = {}
+        insights = resolve_insights(conn, _coerce_builds_on(fm.get("builds_on")))
+        lessons = extract_lessons(r["body_text"] or "")
+        if not insights and not lessons:
+            # No reusable color (v2 link resolved nothing AND no inline Lessons).
+            continue
         out.append({
             "id": r["id"],
             "title": r["title"] or "",
             "issue": fm.get("issue"),
             "outcome": fm.get("outcome", ""),
+            "outcome_label": fm.get("outcome_label", ""),
             "lessons": lessons,
+            "insights": insights,
         })
-        if len(out) >= limit:
-            break
-    return out
+    out.sort(key=lambda t: _outcome_rank(t.get("outcome_label")))
+    return out[:limit]
 
 
 def render_prime_block(
@@ -841,8 +906,11 @@ def render_prime_block(
 ) -> tuple[str, list[str]]:
     """Render the primed-context markdown + the flat served-id list.
 
-    Trajectory Lessons render first (each capped-in as a whole piece until the
-    char budget is spent — at least one always lands if any exist);
+    Each trajectory renders its reusable color first (each capped-in as a whole
+    piece until the char budget is spent — at least one always lands if any
+    exist). A v2 trajectory serves the BODIES of the insight notes it builds on
+    (``served`` records the insight ids — that is what the run received); a v1
+    trajectory serves its inline Lessons (``served`` records the trajectory id).
     ``decisions`` (the decisions_for_file note ids the orchestrator already
     resolved) are appended as an adjacency line so the served log records both
     kinds. ``served`` carries every id actually rendered. Empty input →
@@ -851,15 +919,22 @@ def render_prime_block(
     decisions = decisions or []
     if not trajectories and not decisions:
         return "", []
-    pieces = ["## Prior trajectories — Lessons from similar prior runs\n"]
+    pieces = ["## Prior trajectories — reusable lessons from similar prior runs\n"]
     served: list[str] = []
     for t in trajectories:
         head = f"### #{t.get('issue')} — {t.get('title', '')} ({t.get('outcome', '')})".rstrip()
-        piece = f"{head}\n{t['lessons']}\n"
+        insights = t.get("insights") or []
+        if insights:
+            body_text = "\n".join(ins["body"] for ins in insights)
+            piece_ids = [ins["id"] for ins in insights]
+        else:
+            body_text = t.get("lessons", "")
+            piece_ids = [t["id"]]
+        piece = f"{head}\n{body_text}\n"
         if served and sum(len(x) for x in pieces) + len(piece) > budget_chars:
             break
         pieces.append(piece)
-        served.append(t["id"])
+        served.extend(piece_ids)
     if decisions:
         pieces.append("Prior decisions for touched files: " + ", ".join(decisions))
         served.extend(decisions)

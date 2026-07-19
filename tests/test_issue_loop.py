@@ -919,6 +919,184 @@ def test_query_trajectories_filters_by_concept_and_lessons(tmp_path):
     assert hits[0]["lessons"] == "reuse me"
 
 
+# ---------------------------------------------------------------------------
+# Prime v2 (issue #85) — serve insight-note bodies by following builds_on links
+# from concept-matched trajectories; fall back to inline Lessons for v1 notes;
+# prefer merged-clean-labeled trajectories over reworked when labels exist.
+
+
+def _add_note(path, *, note_id, title, body, concepts=(), tags=(),
+              date="2026-07-18", frontmatter=None):
+    """Insert one more note (+ its tags/concepts) into an existing seeded db —
+    the tables prime's queries join. Insight notes carry no loop-run tag."""
+    import json as _json
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO notes (id, type, title, path, date, frontmatter, body_text)"
+        " VALUES (?, 'note', ?, ?, ?, ?, ?)",
+        (note_id, title, f"{note_id}.md", date,
+         _json.dumps(frontmatter or {}), body),
+    )
+    for t in tags:
+        conn.execute("INSERT INTO note_tags VALUES (?, ?)", (note_id, t))
+    for c in concepts:
+        conn.execute("INSERT INTO note_concepts VALUES (?, ?)", (note_id, c))
+    conn.commit()
+    conn.close()
+
+
+def test_query_trajectories_follows_builds_on_to_insight_bodies(tmp_path):
+    """A v2 trajectory (no inline Lessons) carrying a builds_on link resolves
+    the linked insight note's BODY — the portable lesson now lives there."""
+    db = tmp_path / "index.db"
+    # Trajectory: loop-run, concept-matched, NO Lessons section, builds_on link.
+    _seed_index_db(
+        db, note_id="n-traj", title="loop trajectory #85",
+        concepts=["retrieval"],
+        body="## What\nprime v2.\n\n## How it went\none fix round.\n",
+        frontmatter={"issue": 85, "outcome": "shipped",
+                     "builds_on": ["n-ins1"]},
+    )
+    _add_note(db, note_id="n-ins1", title="portable lesson",
+              body="Follow builds_on before falling back to inline Lessons.")
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+    finally:
+        conn.close()
+    assert [h["id"] for h in hits] == ["n-traj"]
+    assert hits[0]["insights"] == [
+        {"id": "n-ins1",
+         "body": "Follow builds_on before falling back to inline Lessons."},
+    ]
+    # No inline Lessons on a v2 note.
+    assert hits[0]["lessons"] == ""
+
+
+def test_query_trajectories_v1_inline_lessons_still_served(tmp_path):
+    """Backward compat: a v1 trajectory (inline Lessons, no builds_on) is still
+    a served candidate — its insights list is empty, lessons carries the text."""
+    db = tmp_path / "index.db"
+    _seed_index_db(
+        db, note_id="n-v1", title="v1 trajectory",
+        concepts=["retrieval"],
+        body="## What\nx\n\n## Lessons\nWiden the CHECK before the migration.\n",
+        frontmatter={"issue": 60, "outcome": "shipped"},  # no builds_on
+    )
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+    finally:
+        conn.close()
+    assert [h["id"] for h in hits] == ["n-v1"]
+    assert hits[0]["insights"] == []
+    assert hits[0]["lessons"] == "Widen the CHECK before the migration."
+
+
+def test_query_trajectories_prefers_merged_clean_over_reworked(tmp_path):
+    """When labels exist, merged-clean sorts before reworked regardless of
+    recency; the sort is a deterministic stable tweak."""
+    db = tmp_path / "index.db"
+    # The reworked note is NEWER (would win on recency); merged-clean is older.
+    _seed_index_db(
+        db, note_id="n-rew", title="reworked", concepts=["retrieval"],
+        body="## What\nx\n\n## Lessons\nrework lesson\n", date="2026-07-18",
+        frontmatter={"issue": 1, "outcome": "shipped", "outcome_label": "reworked"},
+    )
+    _add_note(
+        db, note_id="n-clean", title="clean", concepts=["retrieval"],
+        tags=["loop-run"], date="2026-07-10",
+        body="## What\nx\n\n## Lessons\nclean lesson\n",
+        frontmatter={"issue": 2, "outcome": "shipped", "outcome_label": "merged-clean"},
+    )
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+    finally:
+        conn.close()
+    assert [h["id"] for h in hits] == ["n-clean", "n-rew"]
+
+
+def test_query_trajectories_unlabeled_keeps_recency(tmp_path):
+    """No outcome_label anywhere → pure recency order (byte-stable v1 behavior);
+    the weighting only fires when labels exist."""
+    db = tmp_path / "index.db"
+    _seed_index_db(
+        db, note_id="n-older", title="older", concepts=["retrieval"],
+        body="## What\nx\n\n## Lessons\nold\n", date="2026-07-10",
+        frontmatter={"issue": 1, "outcome": "shipped"},
+    )
+    _add_note(
+        db, note_id="n-newer", title="newer", concepts=["retrieval"],
+        tags=["loop-run"], date="2026-07-18",
+        body="## What\nx\n\n## Lessons\nnew\n",
+        frontmatter={"issue": 2, "outcome": "shipped"},
+    )
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+    finally:
+        conn.close()
+    assert [h["id"] for h in hits] == ["n-newer", "n-older"]
+
+
+def test_render_prime_block_serves_insight_bodies_over_lessons():
+    """render_prime_block serves the linked insight BODIES when a trajectory
+    carries them (served records the INSIGHT ids), and falls back to inline
+    Lessons (served records the TRAJECTORY id) for a v1 trajectory."""
+    trajectories = [
+        {"id": "n-traj", "title": "v2", "issue": 85, "outcome": "shipped",
+         "lessons": "", "insights": [
+             {"id": "n-ins1", "body": "Portable lesson one."},
+             {"id": "n-ins2", "body": "Portable lesson two."}]},
+        {"id": "n-v1", "title": "v1", "issue": 60, "outcome": "shipped",
+         "lessons": "Inline lesson.", "insights": []},
+    ]
+    block, served = issue_loop.render_prime_block(trajectories, decisions=[])
+    assert "Portable lesson one." in block
+    assert "Portable lesson two." in block
+    assert "Inline lesson." in block
+    # v2 serves the insight ids; v1 serves the trajectory id.
+    assert served == ["n-ins1", "n-ins2", "n-v1"]
+
+
+def test_render_prime_block_v1_dicts_without_insights_key_unchanged():
+    """Byte-stable: a pre-#85 trajectory dict with no 'insights' key renders
+    exactly as before (inline Lessons, served = trajectory id)."""
+    trajectories = [
+        {"id": "n-aaa111", "title": "prime rail", "issue": 57,
+         "outcome": "shipped", "lessons": "Widen the CHECK first."},
+    ]
+    block, served = issue_loop.render_prime_block(trajectories, decisions=[])
+    assert "Widen the CHECK first." in block
+    assert served == ["n-aaa111"]
+
+
+def test_build_prime_payload_serves_insight_bodies_end_to_end(tmp_path):
+    """Acceptance: a concept-matched trajectory with a builds_on insight serves
+    the insight body in the block and records the insight id as served."""
+    db = tmp_path / "index.db"
+    _seed_index_db(
+        db, note_id="n-traj", title="loop trajectory",
+        concepts=["self-improvement"],
+        body="## What\nx\n\n## How it went\ny\n",  # no Lessons — v2
+        frontmatter={"issue": 85, "outcome": "shipped", "builds_on": ["n-ins1"]},
+    )
+    _add_note(db, note_id="n-ins1", title="portable lesson",
+              body="Serve insight bodies via builds_on links.")
+    conn = issue_loop._open_index_ro(str(db))
+    try:
+        payload = issue_loop.build_prime_payload(
+            85, "loop-run-0", ["self-improvement"], conn=conn, holdout=5,
+        )
+    finally:
+        conn.close()
+    assert payload["primed"] is True
+    assert payload["served"] == ["n-ins1"]
+    assert "Serve insight bodies via builds_on links." in payload["block"]
+
+
 def test_prime_writes_loop_prime_served_event_to_buffer(tmp_path):
     """When --buffer is given and the run is primed, the rail appends one
     loop_prime retrieval event (the context_served source seed) with the served
