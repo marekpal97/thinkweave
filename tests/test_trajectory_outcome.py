@@ -696,6 +696,42 @@ class TestRlvrTrajectoryExport:
         assert entry["review_comments"] == 3
         assert entry["requested_changes_rounds"] == 1
 
+    def test_trace_frontmatter_never_enters_export_row(self, vault_factory):
+        """Issue #85 lock: the semantic ``trace`` frontmatter is a top-level key
+        the RLVR row assembler never reads, so it must not appear anywhere in the
+        exported row — the locked envelope (project_decision_context_rl) is
+        unchanged in both directions even when a trajectory carries a trace."""
+        import json as _json
+
+        from thinkweave.operations.rlvr_export import export_trajectory_rows
+
+        p1 = {"outcome": "merged-clean", "phase": 1,
+              "judged_at": "2026-07-03T10:00:00+00:00", "reason": "clean"}
+        tv = _make_trajectory(
+            vault_factory, issue=85, pr_url="https://github.com/o/r/pull/85",
+            outcome="shipped",
+            extra={"prediction_history": [p1], "outcome_label": "merged-clean",
+                   "merged_at": "2026-07-03T10:00:00+00:00",
+                   "trace": {"rounds": [{"gate": "review", "finding": "dup guard",
+                                         "severity": "minor",
+                                         "disposition": "accepted",
+                                         "fixed_by": "dropped the test"}],
+                             "tdd": {"red_confirmed": True}}},
+        )
+        rows = list(export_trajectory_rows(tv.config))
+        assert len(rows) == 1
+        # Locked top-level keyset — trace did not widen it.
+        assert set(rows[0].keys()) == {
+            "decision_id", "project", "session_id", "created_at",
+            "prediction", "outcome", "context",
+        }
+        # And it leaked into no nested slot either — distinctive trace tokens
+        # are absent from the serialized row.
+        dumped = _json.dumps(rows[0])
+        assert "red_confirmed" not in dumped
+        assert "disposition" not in dumped
+        assert "dup guard" not in dumped
+
     def test_cli_export_includes_trajectories_by_default(self, vault_factory, capsys):
         import argparse
 
