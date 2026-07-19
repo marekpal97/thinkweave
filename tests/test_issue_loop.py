@@ -1027,6 +1027,124 @@ def test_build_trajectory_rejects_non_list_or_non_string_served():
         )
 
 
+# ---------------------------------------------------------------------------
+# Semantic execution trace (issue #85) — the gate agents' own reports,
+# condensed by the orchestrator into structured envelopes on the trajectory
+# note frontmatter. No new model calls: build_trajectory only accepts + shapes.
+# Every expected value below is hand-written from the #85 schema, not
+# recomputed by the code under test.
+
+
+def _sample_trace() -> dict:
+    """A hand-written semantic trace with prose-valued fields, carrying one
+    extra orchestrator-bookkeeping key per level to prove projection drops it."""
+    return {
+        "rounds": [
+            {"gate": "review", "finding": "standalone existence test duplicates "
+             "the eight sibling guards", "severity": "minor",
+             "disposition": "accepted", "fixed_by": "dropped the redundant test",
+             "reviewer_note": "orchestrator bookkeeping — dropped"},
+        ],
+        "criteria": [
+            {"id": "AC1", "verdict": "met", "flipped_by_round": 1, "extra": "x"},
+            {"id": "AC2", "verdict": "met", "flipped_by_round": None},
+        ],
+        "simplify": {
+            "outcome": "applied", "lines_delta": -12,
+            "cuts": [{"what": "existence test", "why": "eight siblings already "
+                      "guard existence", "note": "dropped"}],
+            "kept": [{"what": "budget-cap test", "why": "the only novel invariant"}],
+            "bookkeeping": "dropped",
+        },
+        "edge_cases": ["empty concepts → no prime", "corrupt index → unprimed"],
+        "tdd": {"red_confirmed": True, "note": "dropped"},
+        "orchestrator_scratch": {"anything": "dropped"},  # unknown top-level key
+    }
+
+
+def test_build_trajectory_round_trips_semantic_trace():
+    """--trace-json carries the gate agents' condensed reports into
+    frontmatter['trace'] as prose-valued structured envelopes; prose survives
+    verbatim, counts stay ints, flipped_by_round is int-or-null."""
+    issue = {"number": 85, "title": "Trajectory v2", "labels": []}
+    payload = issue_loop.build_trajectory(
+        issue, branch="loop/dag-54", commits=["a"], numstat="1\t0\tx.py\n",
+        gates=[], fix_rounds=1, outcome="shipped", trace=_sample_trace(),
+    )
+    trace = payload["frontmatter"]["trace"]
+    assert trace["rounds"] == [
+        {"gate": "review",
+         "finding": "standalone existence test duplicates the eight sibling guards",
+         "severity": "minor", "disposition": "accepted",
+         "fixed_by": "dropped the redundant test"},
+    ]
+    assert trace["criteria"] == [
+        {"id": "AC1", "verdict": "met", "flipped_by_round": 1},
+        {"id": "AC2", "verdict": "met", "flipped_by_round": None},
+    ]
+    assert trace["simplify"] == {
+        "outcome": "applied", "lines_delta": -12,
+        "cuts": [{"what": "existence test",
+                  "why": "eight siblings already guard existence"}],
+        "kept": [{"what": "budget-cap test", "why": "the only novel invariant"}],
+    }
+    assert trace["edge_cases"] == ["empty concepts → no prime",
+                                   "corrupt index → unprimed"]
+    assert trace["tdd"] == {"red_confirmed": True}
+    # Unknown top-level key dropped (skills-style projection).
+    assert "orchestrator_scratch" not in trace
+
+
+def test_build_trajectory_omits_trace_when_absent():
+    """Backward compat / byte-stability: a caller that passes no trace gets a
+    payload with NO trace key — the pre-#85 frontmatter is unchanged."""
+    payload = issue_loop.build_trajectory(
+        {"number": 1, "title": "x", "labels": []},
+        branch="b", commits=[], numstat="", gates=[],
+        fix_rounds=0, outcome="shipped",
+    )
+    assert "trace" not in payload["frontmatter"]
+
+
+def test_build_trajectory_trace_only_includes_provided_top_level_keys():
+    """A partial trace (only the fields a run actually had) yields only those
+    envelopes — absent sections are omitted, not emitted empty."""
+    payload = issue_loop.build_trajectory(
+        {"number": 2, "title": "x", "labels": []},
+        branch="b", commits=[], numstat="", gates=[],
+        fix_rounds=0, outcome="shipped",
+        trace={"tdd": {"red_confirmed": False}},
+    )
+    assert payload["frontmatter"]["trace"] == {"tdd": {"red_confirmed": False}}
+
+
+def test_build_trajectory_rejects_non_dict_trace():
+    """Shape guard (mirrors the served list-guard, #57 posture): a non-dict
+    trace — a list, a bare string, a number — must not silently land in
+    frontmatter; the trace envelope is a JSON object."""
+    issue = {"number": 3, "title": "x", "labels": []}
+    for bad in ([{"gate": "review"}], "review: minor", 7):
+        with pytest.raises((ValueError, TypeError)):
+            issue_loop.build_trajectory(
+                issue, branch="b", commits=[], numstat="", gates=[],
+                fix_rounds=0, outcome="shipped", trace=bad,
+            )
+
+
+def test_trajectory_trace_argparse_contract():
+    """The trajectory subcommand exposes --trace-json (optional, default None),
+    a sibling of --skills-json / --served-json."""
+    ns = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "85", "--gates-json", "g.json",
+        "--trace-json", "trace.json", "--outcome", "shipped",
+    ])
+    assert ns.trace_json == "trace.json"
+    ns2 = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "85", "--gates-json", "g.json", "--outcome", "shipped",
+    ])
+    assert ns2.trace_json is None
+
+
 def test_resolve_index_db_honors_weave_dir_override(tmp_path):
     """PR #10 deployment class: <vault>/config/config.toml sets weave_dir off
     the vault (derived SQLite on native fs). --vault must resolve the index
