@@ -565,8 +565,6 @@ def _normalize_skill(entry: dict) -> dict:
 # its known subfields, like #56's skills projection). Only provided top-level
 # sections appear — an absent section is omitted, never emitted empty.
 
-_TRACE_SECTIONS = ("rounds", "criteria", "simplify", "edge_cases", "tdd")
-
 
 def _as_int_or_none(value: object) -> int | None:
     """Coerce a nullable count (``flipped_by_round``): an int stays an int,
