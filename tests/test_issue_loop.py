@@ -1326,6 +1326,79 @@ def test_trajectory_trace_argparse_contract():
     assert ns2.trace_json is None
 
 
+# ---------------------------------------------------------------------------
+# §3 command-doc pins (issue #85) — Lessons retired, insight-minting + builds_on
+# linking instructed with the register test stated, and doc examples executable
+# against the real schemas (the #72 trap: MCP custom fields nest under
+# frontmatter=; CLI examples parse through the real argparse).
+
+
+def _command_doc_section3() -> str:
+    doc = issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md"
+    assert doc.exists(), "issue-loop.command.md must ship under docs/agents/"
+    lines = doc.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("## 3."))
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def test_command_doc_section3_retires_lessons_body():
+    """§3 no longer instructs a Lessons body section — the body is the
+    run-causal register (What / How it went) only."""
+    sec = _command_doc_section3()
+    assert "What / How it went" in sec
+    # The old '(What / How it went / Lessons …)' compose instruction is gone.
+    assert "How it went / Lessons" not in sec
+    assert "no lessons section" in sec.lower()
+
+
+def test_command_doc_section3_instructs_insight_minting_and_builds_on():
+    """§3 instructs minting portable lessons as separate insight notes and
+    linking them from the trajectory via builds_on."""
+    low = _command_doc_section3().lower()
+    assert "insight note" in low
+    assert "builds_on" in low
+    assert "concepts at creation" in low or "concepts-at-creation" in low
+
+
+def test_command_doc_section3_states_register_test():
+    """§3 states the register test that sorts every artifact."""
+    low = _command_doc_section3().lower()
+    assert "run-bound semantic trace" in low
+    assert "portable lesson" in low
+    assert "insight note" in low
+    assert "frontmatter key" in low
+
+
+def test_command_doc_section3_trace_cli_example_is_executable():
+    """Executability pin (#72 trap): §3 documents the --trace-json flag on the
+    trajectory command, and that exact invocation shape parses through the REAL
+    argparse — not a drifted or hand-waved flag."""
+    sec = _command_doc_section3()
+    assert "--trace-json" in sec
+    ns = issue_loop.build_arg_parser().parse_args([
+        "trajectory", "85", "--cwd", "wt", "--gates-json", "g.json",
+        "--trace-json", "trace.json", "--fix-rounds", "1",
+        "--outcome", "shipped", "--pr-url", "u", "--run-id", "r",
+    ])
+    assert ns.trace_json == "trace.json" and ns.cmd == "trajectory"
+
+
+def test_command_doc_section3_weave_create_nests_concepts_and_builds_on():
+    """Executability pin (#72 trap): the MCP weave_create schema
+    (surfaces/mcp/tools/notes.py) accepts only type/title/body/project/tags/
+    frontmatter/session_id — extra top-level kwargs are silently dropped. So the
+    insight note's `concepts` and the trajectory's `builds_on` link MUST be
+    nested under frontmatter={…}. Pin the dict-style nesting."""
+    sec = _command_doc_section3()
+    assert "frontmatter={" in sec
+    assert '"concepts":' in sec
+    assert '"builds_on":' in sec
+    # The dropped-kwarg trap named so a future editor doesn't re-flatten it.
+    assert "silently dropped" in sec or "top-level kwarg" in sec
+
+
 def test_resolve_index_db_honors_weave_dir_override(tmp_path):
     """PR #10 deployment class: <vault>/config/config.toml sets weave_dir off
     the vault (derived SQLite on native fs). --vault must resolve the index

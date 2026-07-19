@@ -41,12 +41,12 @@ wrap-coverage guarantee for headless runs. It is not duplicated here.
    touched, commit count, gate verdicts, skill invocations, refs — emitted
    as a `weave_create`-shaped payload.
 2. The orchestrator fills the judgment half: a ≤1K-char body (What / How it
-   went / Lessons — lessons omitted when there are none; most runs are
-   uneventful and their note is 5 lines of frontmatter + 2 sentences), and
-   **concepts chosen at creation** from the ontology (`weave_concepts`
+   went — the run-causal register only; **Lessons are retired**, see below),
+   and **concepts chosen at creation** from the ontology (`weave_concepts`
    first; `concept_hints` in the payload carries the issue's labels). Then
    one `weave_create(type=note, tags=[loop-run], session_id=<this session>,
-   frontmatter=<payload>)`. MCP down → `weave add -f …` CLI fallback.
+   frontmatter=<payload>)`, adding a `builds_on` list (under `frontmatter=`) of
+   the ship-time insight note ids. MCP down → `weave add -f …` CLI fallback.
 3. `/wrap` (interactive) or the dream wrap-catch-up worker (headless) later
    synthesizes the *session* as usual — trajectory notes already sit in the
    session folder via `session_id`, so the wrap references them instead of
@@ -71,6 +71,39 @@ skill invocation (SkillOpt raw material, #64), `--skill-centric` adds the
 `weave_search(tags=[skill-invocation], concepts=[…])` returns
 skill-attributed records.
 
+**Semantic execution trace + Lessons retirement (issue #85).** Two register
+collisions closed at once. (1) The trajectory's `## Lessons` section duplicated
+the *insight* lane — same portable-wisdom register — so it is **retired**: the
+body is the run-causal register only (What / How it went), and portable lessons
+are minted as separate **insight notes** at ship time (concepts at creation) and
+linked from the trajectory via `builds_on`. The register test that sorts every
+artifact: **run-bound semantic trace → the trajectory's `trace`; portable lesson
+→ an insight note, linked; enumerable fact → a frontmatter key.** (2) The signal
+that *was* being discarded — the semantic execution trace the gate agents
+already compose (reviewer findings + reasoning, simplify cut/keep rationale,
+judge criterion evidence + verdict flips, TDD red-confirmation) — is now captured
+under a single `trace` frontmatter key:
+
+```
+trace:
+  rounds:     [{gate, finding, severity, disposition, fixed_by}]   # prose-valued
+  criteria:   [{id, verdict, flipped_by_round}]                    # flip = int|null
+  simplify:   {outcome, cuts:[{what,why}], kept:[{what,why}], lines_delta}
+  edge_cases: [<prose>]
+  tdd:        {red_confirmed}
+```
+
+The orchestrator condenses these envelopes **from the gate agents' own reports —
+no new model call** (`--trace-json`, §3); the rail (`_normalize_trace`) only
+accepts and shapes them (strict on type — a non-dict trace is rejected; lenient
+on keys — unknowns dropped, each item projected). Counts (`lines_delta`,
+`flipped_by_round`) are filter/join keys, not signal. The `trace` is the
+**machine-readable half of the tracker's gate evidence, not a second prose
+owner** — it duplicates neither the tracker's prose nor the trajectory body. It
+is a top-level frontmatter key no existing consumer reads, so #60's outcome
+judge, `weave rlvr export` (row envelope locked), and #62's steering evidence are
+untouched; absent (`--trace-json` omitted), the pre-#85 payload is byte-stable.
+
 **What the notes buy.** Trajectory notes carry concepts, so they flow into
 concept hubs, digests, and retrieval like any note: "what did the loop learn
 about the indexer" is `weave_search(concepts=[…], tags=[loop-run])`. Grouped
@@ -83,12 +116,24 @@ without serving is a dead end. Claim-time priming is thinkweave's native
 `bd prime`: before dispatching issue N's implementer, `issue_loop.py prime <N>
 --run-id <id> --labels …` reads the derived index read-only, matches
 `[loop-run]` trajectory notes by the issue's concepts, and emits a
-budget-capped block of their **Lessons** sections that the orchestrator splices
+budget-capped block of their **reusable color** that the orchestrator splices
 into the implementer prompt, adjacent to the standing `decisions_for_file`
 context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
 
-- **Served-context logging.** The prime emits the `served` note ids (trajectory
-  Lessons + decisions_for_file, capped top-`limit` per kind). The orchestrator
+**Prime v2 (issue #85): serve insight bodies via links, weighted by outcome.**
+For each concept-matched trajectory, prime follows its `builds_on` links to the
+linked **insight notes** and serves *their bodies* (the portable lesson's new
+home); a v1 trajectory with no links falls back to its inline `## Lessons`
+section, so the 13 pre-#85 notes still serve. When the matched set carries
+`outcome_label`s (from #60's judge), prime stably orders merged-clean/stable
+trajectories ahead of reworked/closed ones before the budget cap — a
+deterministic sort tweak, not a scoring framework; an all-unlabeled set keeps
+pure recency. Served ids are the *insight* ids for a v2 trajectory (that is what
+the run received) and the *trajectory* id for a v1 fallback.
+
+- **Served-context logging.** The prime emits the `served` note ids (insight
+  notes / trajectory Lessons + decisions_for_file, capped top-`limit` per kind).
+  The orchestrator
   mirrors `primed` + `served` into the trajectory note frontmatter (§3), and —
   when passed the session buffer via `--buffer` — the rail writes a `loop_prime`
   retrieval event that the indexer projects to

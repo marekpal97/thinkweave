@@ -354,6 +354,7 @@ assemble the deterministic half —
 python scripts/issue_loop.py trajectory <N> --cwd <worktree> \
   --gates-json <results-file> --skills-json <dispatch-log> [--skill-centric] \
   [--primed | --no-primed] [--served-json <served-ids-file>] \
+  [--trace-json <trace-file>] \
   --fix-rounds <R> --outcome <o> --pr-url <url> --run-id <run-id>
 ```
 
@@ -378,16 +379,75 @@ when the record is primarily about a skill invocation (SkillOpt raw material) �
 it adds the `skill-invocation` tag so `weave_search(tags=[skill-invocation])`
 returns skill-attributed records.
 
-— then fill the judgment half and write ONE note: body ≤1K chars
-(What / How it went / Lessons; omit Lessons when there are none), concepts
-chosen from the ontology (`weave_concepts` first; the payload's
-`concept_hints` are raw material, not concepts), and
-`weave_create(type=note, tags=<payload tags>, session_id=<this run's session>,
-frontmatter=<payload frontmatter>)` — the payload's `tags` already carry
-`loop-run` (plus `skill-invocation` when `--skill-centric`). If MCP is down,
-fall back to `weave add -f …`. Do not duplicate gate evidence or run history — the
-tracker and PR own those. Optionally print the first run's composed note as a
-sanity check; this is non-blocking.
+`--trace-json` (issue #85) points at a JSON file **you compose from the gate
+agents' own reports** — no new model call, you already have these in context:
+the reviewer's findings + reasoning, the simplify gate's cut/keep rationale (the
+over-engineering description), the acceptance judge's per-criterion evidence and
+any verdict flips, and the TDD red-confirmation. Condense them into the envelope
+
+```json
+{
+  "rounds":     [{"gate": "review", "finding": "<prose>", "severity": "minor",
+                  "disposition": "accepted", "fixed_by": "<prose>"}],
+  "criteria":   [{"id": "AC1", "verdict": "met", "flipped_by_round": 1}],
+  "simplify":   {"outcome": "applied", "lines_delta": -12,
+                 "cuts": [{"what": "<prose>", "why": "<prose>"}],
+                 "kept": [{"what": "<prose>", "why": "<prose>"}]},
+  "edge_cases": ["<prose>"],
+  "tdd":        {"red_confirmed": true}
+}
+```
+
+The rail only accepts and shapes it (unknown keys dropped; a non-dict trace is
+rejected). It lands under the single `trace` frontmatter key — the
+machine-readable half of the tracker's gate evidence, not a second prose owner.
+Counts (`lines_delta`, `flipped_by_round`) are filter/join keys, not signal.
+Omit `--trace-json` for the pre-#85 shape.
+
+**Mint portable lessons as insight notes, then link them (issue #85).** The
+trajectory body is the run-causal register only (What / How it went) — there is
+`no Lessons section`. The reusable wisdom a *future* run would apply is minted as
+one or more separate **insight notes** at ship time (concepts at creation, from
+the ontology — `weave_concepts` first), then linked from the trajectory via
+`builds_on`. The register test that sorts every artifact:
+`run-bound semantic trace` → the trajectory's `trace`; a `portable lesson` → an
+`insight note`, linked; an enumerable fact → a `frontmatter key`. Prime v2 serves
+those insight bodies by following the `builds_on` links, so a lesson written once
+is reused verbatim.
+
+Compose, per issue:
+
+1. **Insight notes** for the portable lessons (skip when the run taught nothing
+   reusable). The MCP `weave_create` schema accepts only
+   `type/title/body/project/tags/frontmatter/session_id` — extra top-level
+   kwargs are **silently dropped**, so `concepts` MUST be nested under
+   `frontmatter=`:
+
+   ```python
+   weave_create(type=note, title="<portable lesson title>",
+                body="<the reusable wisdom, prose>",
+                session_id="<this run's session>",
+                frontmatter={"concepts": ["<ontology-term>", "<ontology-term>"]})
+   ```
+
+   Capture each returned insight id.
+
+2. **The trajectory note** — body ≤1K chars (What / How it went only), then one
+   `weave_create` with the payload's frontmatter **plus** a `builds_on` list of
+   the insight ids from step 1 (again nested under `frontmatter=`, same
+   dropped-kwarg trap):
+
+   ```python
+   weave_create(type=note, tags=<payload tags>,
+                session_id="<this run's session>",
+                frontmatter={**<payload frontmatter>, "builds_on": [<insight ids>]})
+   ```
+
+   The payload's `tags` already carry `loop-run` (plus `skill-invocation` when
+   `--skill-centric`). If MCP is down, fall back to `weave add -f …`.
+
+Do not duplicate gate evidence or run history — the tracker and PR own those.
+Optionally print the first run's composed notes as a sanity check; non-blocking.
 
 ## 4. Wrap coverage — do NOT run `/wrap` here
 
