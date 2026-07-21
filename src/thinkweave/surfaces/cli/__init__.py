@@ -18,12 +18,7 @@ from thinkweave.surfaces.cli.dream import cmd_dream
 from thinkweave.surfaces.cli.flows import cmd_flow
 from thinkweave.surfaces.cli.graph import cmd_graph
 from thinkweave.surfaces.cli.hooks import cmd_hooks
-from thinkweave.surfaces.cli.hubs import (
-    _build_linkage_user_prompt,
-    _parse_linkage_response,
-    _validate_linkage_revision,
-    cmd_hubs,
-)
+from thinkweave.surfaces.cli.hubs import cmd_hubs
 from thinkweave.surfaces.cli.index import (
     cmd_doctor,
     cmd_import,
@@ -169,9 +164,4 @@ __all__ = [
     "main",
     "build_parser",
     "_DISPATCH",
-    # Back-compat re-exports — the test suite reaches for these helpers under
-    # the legacy underscore names.
-    "_build_linkage_user_prompt",
-    "_parse_linkage_response",
-    "_validate_linkage_revision",
 ]

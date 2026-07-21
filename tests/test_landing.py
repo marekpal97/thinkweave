@@ -559,3 +559,31 @@ class TestProbeCapsFromConfig:
         assert len(probes) == 3
         # Explicit limit still overrides config.
         assert len(_gather_prompt_probes(config, "test_proj", limit=1)) == 1
+
+
+class TestReflink:
+    """Contract for the landing ``_reflink`` helper. Pinned before it was
+    collapsed onto ``synthesis.hub.reflink`` (QW / issue #15) so the
+    consolidation stays behaviour-preserving on the paths landing exercises.
+    """
+
+    def _reflink(self, *args, **kwargs):
+        from thinkweave.synthesis.landing import _reflink
+
+        return _reflink(*args, **kwargs)
+
+    def test_in_map_without_display_uses_id_alias(self):
+        idmap = {"dec-1": "projects/p/decisions/dec-1"}
+        assert self._reflink(idmap, "dec-1") == "[[projects/p/decisions/dec-1|dec-1]]"
+
+    def test_in_map_with_display_uses_display_alias(self):
+        idmap = {"thm-1": "themes/thm-1-slug"}
+        assert self._reflink(idmap, "thm-1", "My Theme") == "[[themes/thm-1-slug|My Theme]]"
+
+    def test_missing_id_without_display_is_bare_link(self):
+        assert self._reflink({}, "dec-9") == "[[dec-9]]"
+
+    def test_missing_id_with_display_keeps_label(self):
+        # Dangling ref (e.g. a parent theme not yet indexed) still shows its
+        # label — landing never dropped the alias here.
+        assert self._reflink({}, "thm-9", "Parent") == "[[thm-9|Parent]]"

@@ -9,6 +9,79 @@ from pathlib import Path
 from thinkweave.core.config import load_config
 
 
+def _print_hubs_batch(result) -> None:
+    """Render a :class:`HubsBatchResult` as the legacy streamed progress report.
+
+    The operation (``operations/hubs_batch.run_hubs_batch``) returns data; this
+    surface owns all stdout so a second adapter can reuse the op silently.
+    """
+    if result.concepts == 0:
+        print("Plan is empty.")
+        return
+
+    print(
+        f"Built {result.requests_built} request(s) across "
+        f"{result.concepts} concept(s)."
+    )
+
+    if result.dry_run:
+        print("\n--- DRY RUN: first request preview ---")
+        if result.preview:
+            p = result.preview
+            print(f"concept: {p['concept']}")
+            print(f"note_id: {p['note_id']}")
+            print(f"system: {p['system_chars']} chars")
+            print(f"user: {p['user_chars']} chars")
+            print("\n--- user prompt (first 800 chars) ---")
+            print(p["user_head"])
+        return
+
+    if result.deferred:
+        print(
+            f"Capping at {result.capped} request(s) (~{result.capped_tokens:,} "
+            f"input tokens) to stay under --max-input-tokens={result.budget:,}. "
+            f"{result.deferred} request(s) deferred — rerun `weave hubs plan` + "
+            f"`weave drain --target hubs --via batch` after this batch completes."
+        )
+
+    if result.issued == 0:
+        return
+
+    print(
+        f"Issuing {result.issued} request(s) to {result.provider}/{result.model} "
+        f"(concurrency={result.concurrency})..."
+    )
+    if result.errors:
+        print(
+            f"  warning: {result.errors} request(s) failed; rerun to retry the rest"
+        )
+
+    print(f"\nApplied {result.applied} new log entries.")
+    if result.essence_flagged:
+        print(
+            f"Essence revision flagged for {len(result.essence_flagged)} concept(s):"
+        )
+        for c in result.essence_flagged:
+            print(f"  {c}")
+        print("Run /weave-resolve-concepts to review flagged essences.")
+
+    if result.reindex_contention_msg:
+        print(
+            f"  warning: reindex hit SQLite contention "
+            f"({result.reindex_contention_msg}); continuing"
+        )
+    print(
+        f"Reindexed {result.touched - result.reindex_failures} of "
+        f"{result.touched} hub page(s)."
+    )
+    if result.reindex_failures:
+        print(
+            f"  {result.reindex_failures} hub(s) couldn't be reindexed due to DB "
+            f"contention. Run `uv run weave index` once the contending process "
+            f"releases the lock."
+        )
+
+
 def cmd_drain(args: argparse.Namespace) -> None:
     """Drain queues or backfill concept hubs.
 
@@ -21,17 +94,26 @@ def cmd_drain(args: argparse.Namespace) -> None:
 
     if args.target == "hubs":
         if args.via == "batch":
-            from thinkweave.operations.hubs_batch import run_hubs_batch
-
-            run_hubs_batch(
-                cfg,
-                plan_path=Path(args.plan) if args.plan else None,
-                model=args.model,
-                max_tokens=args.max_tokens,
-                poll_interval=args.poll_interval,
-                max_input_tokens=args.max_input_tokens,
-                dry_run=args.dry_run,
+            from thinkweave.operations.hubs_batch import (
+                PlanNotFoundError,
+                run_hubs_batch,
             )
+
+            try:
+                result = run_hubs_batch(
+                    cfg,
+                    plan_path=Path(args.plan) if args.plan else None,
+                    model=args.model,
+                    max_tokens=args.max_tokens,
+                    poll_interval=args.poll_interval,
+                    max_input_tokens=args.max_input_tokens,
+                    dry_run=args.dry_run,
+                )
+            except PlanNotFoundError as e:
+                print(f"Plan file not found: {e}")
+                print("Run `weave hubs plan` first.")
+                sys.exit(1)
+            _print_hubs_batch(result)
             return
         print(
             "Inline hub drain runs as a Claude Code skill.\n"

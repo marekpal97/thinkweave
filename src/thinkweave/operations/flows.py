@@ -30,7 +30,7 @@ import os
 import shlex
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -60,6 +60,35 @@ class FlowSpec:
         return _build_command(stage.run)
 
 
+@dataclass
+class FlowStageResult:
+    """Outcome of one stage in a :func:`run_flow` pass."""
+
+    index: int          # 1-based position
+    total: int          # number of stages in the flow
+    cmd: str            # the display command (from ``_build_command``)
+    sleep: int = 0      # seconds slept after this stage (0 = none)
+    returncode: int | None = None  # None in dry-run or if never reached
+    aborted: bool = False          # this stage triggered on_error=abort
+    ran: bool = False              # the subprocess actually executed
+
+
+@dataclass
+class FlowRunResult:
+    """Structured outcome of :func:`run_flow`.
+
+    The operation returns data and does its own file logging; the CLI surface
+    formats stdout (dry-run plan or, for logless real runs, the per-stage
+    banners) and picks the exit code. Mirrors the ``wrap.py`` pattern.
+    """
+
+    name: str
+    dry_run: bool
+    last_code: int = 0
+    logged_to_file: bool = False
+    stages: list[FlowStageResult] = field(default_factory=list)
+
+
 def flows_path(config: Config) -> Path:
     """Vault-local config file. Same dir as concept_aliases.yaml etc.
 
@@ -86,43 +115,57 @@ def load_flows(config: Config, *, path: Path | None = None) -> dict[str, FlowSpe
     return _parse_flows_yaml(raw)
 
 
-def run_flow(spec: FlowSpec, *, dry_run: bool = False) -> int:
-    """Execute a flow's stages in order. Returns the exit code of the last
-    stage that ran (or 0 if all succeeded).
+def run_flow(spec: FlowSpec, *, dry_run: bool = False) -> FlowRunResult:
+    """Execute a flow's stages in order, returning a :class:`FlowRunResult`.
 
-    ``dry_run`` prints the resolved invocations without executing them.
-    Useful when wiring cron — exact same code path, no side effects.
+    Pure of stdout: when ``spec.log`` is set the per-stage banners + captured
+    subprocess output go to that log file; otherwise the surface renders the
+    banners from the result. ``dry_run`` records the resolved invocations
+    without executing them (no side effects). The CLI surface picks the exit
+    code from ``result.last_code``.
     """
+    result = FlowRunResult(
+        name=spec.name,
+        dry_run=dry_run,
+        logged_to_file=bool(spec.log and not dry_run),
+    )
+
     log_handle = None
     if spec.log and not dry_run:
         spec.log.parent.mkdir(parents=True, exist_ok=True)
         log_handle = spec.log.open("a", encoding="utf-8")
 
-    last_code = 0
     try:
         for i, stage in enumerate(spec.stages):
             cmd = _build_command(stage.run)
+            sr = FlowStageResult(
+                index=i + 1, total=len(spec.stages), cmd=cmd, sleep=stage.sleep
+            )
+            result.stages.append(sr)
             if dry_run:
-                print(f"[{spec.name}] stage {i + 1}/{len(spec.stages)}: {cmd}")
-                if stage.sleep:
-                    print(f"[{spec.name}]   sleep {stage.sleep}s")
                 continue
 
-            _log(log_handle, f"\n=== flow {spec.name} stage {i + 1}/{len(spec.stages)} ===")
-            _log(log_handle, f"$ {cmd}")
+            if log_handle:
+                _log(log_handle, f"\n=== flow {spec.name} stage {i + 1}/{len(spec.stages)} ===")
+                _log(log_handle, f"$ {cmd}")
             proc = subprocess.run(
                 _build_argv(stage.run),
                 stdout=log_handle if log_handle else None,
                 stderr=subprocess.STDOUT if log_handle else None,
             )
-            last_code = proc.returncode
-            _log(log_handle, f"=== exit {last_code} ===")
+            sr.returncode = proc.returncode
+            sr.ran = True
+            result.last_code = proc.returncode
+            if log_handle:
+                _log(log_handle, f"=== exit {proc.returncode} ===")
 
-            if last_code != 0 and spec.on_error == "abort":
-                _log(
-                    log_handle,
-                    f"[{spec.name}] aborting on stage {i + 1} (on_error=abort)",
-                )
+            if proc.returncode != 0 and spec.on_error == "abort":
+                sr.aborted = True
+                if log_handle:
+                    _log(
+                        log_handle,
+                        f"[{spec.name}] aborting on stage {i + 1} (on_error=abort)",
+                    )
                 break
 
             if stage.sleep and i < len(spec.stages) - 1:
@@ -130,7 +173,7 @@ def run_flow(spec: FlowSpec, *, dry_run: bool = False) -> int:
     finally:
         if log_handle:
             log_handle.close()
-    return last_code
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -173,11 +216,12 @@ def _build_command(run_arg: str) -> str:
 
 
 def _log(handle, text: str) -> None:
-    if handle is None:
-        print(text)
-    else:
-        handle.write(text + "\n")
-        handle.flush()
+    """Write one banner line to the flow's log file. ``run_flow`` only calls
+    this with a real handle (logless runs render banners at the surface), so
+    there's no stdout branch — keeping this module free of ``print``.
+    """
+    handle.write(text + "\n")
+    handle.flush()
 
 
 def _parse_flows_yaml(text: str) -> dict[str, FlowSpec]:
