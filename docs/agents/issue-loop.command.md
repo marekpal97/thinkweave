@@ -190,6 +190,17 @@ the issue closes on merge. Release is implicit: the claim (the assignee in
 issue — a claimed+closed issue is inert; if the PR is rejected, a human
 unassigns / unlabels to re-queue.
 
+**Teardown.** Once the PR is open the worktree has served its purpose —
+the branch lives on origin and review happens from there. From the main
+checkout: `git worktree remove <worktree>` (add `--force` when the only
+dirt is regenerated lockfiles — that's churn, not work). A lingering
+worktree pins its branch, and git then refuses every human attempt to
+check the PR out (the VS Code PR extension fails with "error switching
+to pull request"). The only flows that deliberately keep a worktree are
+the evidence paths — `training_mode` headless holds and gate-failure
+routing — and those must be listed in the run report (§2) so a human
+knows to remove them after acting on the evidence.
+
 In `run_mode = exhaust`: after shipping, re-run `plan`. If new frontier
 issues appeared (a blocker got merged meanwhile), continue with them until
 the per-run cap; otherwise report and stop.
@@ -222,7 +233,10 @@ gate pipeline, fix rounds, failure routing) is identical:
   human): push the branch and open a single draft PR whose body carries
   `Closes #A` lines for every completed issue, the per-issue gate tables,
   and — if some of the DAG remains — which issues are NOT included and
-  why. `training_mode` pauses once, here, instead of per issue.
+  why. `training_mode` pauses once, here, instead of per issue. After the
+  PR is open, remove the `loop/dag-<N>` worktree (same teardown rule as
+  §1d — the stacked worktrees were exactly the ones found pinning PR
+  branches on 2026-07-21).
 - **A failed issue doesn't poison the stack.** If an issue exhausts its fix
   rounds, reset the branch to the last good tip (`git reset --hard
   <tip-before-this-issue>`), route the issue to human as usual, and stop
@@ -234,7 +248,9 @@ gate pipeline, fix rounds, failure routing) is identical:
 
 Per issue: number, outcome (PR opened / awaiting approval / routed-to-human),
 gate results, fix rounds used. Plus: frontier remaining, issues newly
-blocked-on-human. If nothing was shippable, say what the human must do to
+blocked-on-human, and **every worktree left behind** (evidence paths only —
+path + branch + why), so a human can `git worktree remove` them after
+acting on the evidence. If nothing was shippable, say what the human must do to
 unblock the DAG (usually: merge open loop PRs).
 
 ## 3. Feed the vault — PROPOSAL, do not execute until accepted
