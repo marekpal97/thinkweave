@@ -23,8 +23,9 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 CLAUDE_JSON = Path.home() / ".claude.json"
 CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
@@ -83,9 +84,93 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     return entry
 
 
-def _check_scripts() -> list[str]:
-    """Return the list of required console scripts missing from PATH."""
-    return [s for s in REQUIRED_SCRIPTS if shutil.which(s) is None]
+class ScriptsCheck(NamedTuple):
+    """Result of the console-script reachability probe (see #47)."""
+
+    state: str
+    """``ok`` — all scripts resolve on PATH. ``venv_off_path`` — the scripts
+    exist in the running interpreter's Scripts/bin dir, but that dir is not
+    on PATH (remediation is PATH, not pip). ``absent`` — the scripts aren't
+    even in the venv (remediation is ``pip install``)."""
+
+    missing: list[str]
+    """The REQUIRED_SCRIPTS that did not resolve on PATH."""
+
+    scripts_dir: Path
+    """The venv scripts dir that was probed — named verbatim in the
+    ``venv_off_path`` remediation message."""
+
+
+def _venv_scripts_dir() -> Path:
+    """The scripts directory of the running interpreter's environment
+    (``.venv/bin`` on POSIX, ``.venv\\Scripts`` on Windows). ``weave
+    install`` itself runs from that environment, so this is where the
+    console scripts physically live when they exist at all."""
+    return Path(sysconfig.get_path("scripts"))
+
+
+def _check_scripts(
+    scripts_dir: Path | None = None, path_env: str | None = None
+) -> ScriptsCheck:
+    """Classify console-script reachability.
+
+    The historical failure mode (#47): the ``weave``/``weave-hook``/
+    ``weave-mcp`` console scripts install only into the repo venv, and
+    nothing puts that dir on PATH — so the MCP half (launched via an
+    absolute ``uv run`` command) works while every bare ``weave …`` shell
+    call fails. Distinguishing *present-but-off-PATH* from *genuinely
+    missing* lets ``cmd_install`` give a PATH-specific remediation instead
+    of useless ``pip install`` advice.
+
+    ``scripts_dir`` / ``path_env`` exist for tests (controlled fake venv
+    layout + controlled PATH); production callers pass neither.
+    """
+    if scripts_dir is None:
+        scripts_dir = _venv_scripts_dir()
+    missing = [
+        s for s in REQUIRED_SCRIPTS if shutil.which(s, path=path_env) is None
+    ]
+    if not missing:
+        return ScriptsCheck("ok", [], scripts_dir)
+    in_venv = all(
+        (scripts_dir / s).exists() or (scripts_dir / f"{s}.exe").exists()
+        for s in REQUIRED_SCRIPTS
+    )
+    return ScriptsCheck("venv_off_path" if in_venv else "absent", missing, scripts_dir)
+
+
+def _advise_scripts_path(check: ScriptsCheck, yes: bool) -> None:
+    """PATH-specific remediation for the ``venv_off_path`` state.
+
+    Same consent posture as the CLAUDE.md splice: preview the situation,
+    require ``--yes`` to proceed. Persisting PATH itself is deliberately
+    NOT attempted — shells and platforms disagree on where PATH lives
+    (profile files, the Windows registry), so we name the exact dir and
+    the exact line to add instead, and let ``--yes`` continue the install
+    (which is otherwise fully functional: the MCP entry launches via uv,
+    never via PATH)."""
+    d = check.scripts_dir
+    print(
+        f"warning: the weave console scripts ({', '.join(check.missing)}) are\n"
+        f"installed in this environment, but its scripts directory is not on PATH:\n"
+        f"  {d}\n"
+        f"The MCP server is unaffected (it launches via uv, not PATH), but bare\n"
+        f"`weave ...` calls — your shell, cron entries, /wrap's finalize step —\n"
+        f"won't resolve in a fresh shell until you add that directory to PATH:\n"
+        f'  export PATH="{d}:$PATH"      # POSIX shells; add to your profile\n'
+        f'  $env:Path = "{d};$env:Path"  # Windows PowerShell; persist via System Settings\n',
+        file=sys.stderr,
+    )
+    if not yes:
+        print(
+            "Re-run with --yes to continue the install without the PATH fix.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        "Continuing (--yes) — remember to add the directory to PATH.",
+        file=sys.stderr,
+    )
 
 
 def _check_uv_available() -> None:
@@ -371,10 +456,10 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
 
 
 def cmd_install(args: argparse.Namespace) -> None:
-    missing = _check_scripts()
-    if missing:
+    check = _check_scripts()
+    if check.state == "absent":
         print(
-            f"error: required console scripts missing from PATH: {', '.join(missing)}",
+            f"error: required console scripts missing from PATH: {', '.join(check.missing)}",
             file=sys.stderr,
         )
         print(
@@ -383,6 +468,8 @@ def cmd_install(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    if check.state == "venv_off_path":
+        _advise_scripts_path(check, yes=args.yes)
 
     _check_uv_available()
 

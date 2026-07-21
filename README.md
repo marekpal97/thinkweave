@@ -244,10 +244,16 @@ today** (Codex, Cursor, Zed, Claude Desktop, etc. are untested). The repo-root
 `.mcp.json` is the canonical launch reference to copy into another agent's config:
 
 ```jsonc
-//   command: uv
-//   args:    ["run", "--project", "<path-to-clone>", "--extra", "mcp", "weave-mcp"]
+//   command: <path-to-clone>/bin/weave-mcp-launch
+//   args:    []
 //   env:     { "THINKWEAVE_VAULT": "<your-vault>" }   // or rely on config.toml
 ```
+
+The launcher resolves `uv` (PATH, then `~/.local/bin/uv`, then
+`$UV_INSTALL_DIR/uv`) and execs `uv run --project <path-to-clone> --extra mcp
+weave-mcp`; if uv is missing it fails with a one-line error instead of
+silently not launching. Hosts that guarantee `uv` on PATH can inline that
+`uv run …` invocation directly.
 
 Slash commands, hooks, and the SessionStart context payload are Claude-Code-only.
 Other agents get the MCP tools (search / create / graph / …) and the `weave`

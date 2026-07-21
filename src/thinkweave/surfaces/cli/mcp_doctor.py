@@ -158,6 +158,19 @@ def _key(entry: dict) -> tuple:
             continue
         norm.append(raw_args[i])
         i += 1
+    if cmd == "weave-mcp-launch":
+        # The portable launcher (#52) IS the canonical uv-run invocation —
+        # it resolves uv and execs `uv run --project <root> --extra mcp
+        # weave-mcp` — so it fingerprints identically to a direct uv entry
+        # (e.g. the machine scope written by `weave install`).
+        return (
+            "uv",
+            (
+                "run", "--project", "<scope-specific>",
+                "--extra", "mcp", "weave-mcp",
+                *norm,
+            ),
+        )
     return (cmd, tuple(norm))
 
 
@@ -225,12 +238,17 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
 
     entry: dict | None
     source: str
+    plugin_root: Path | None = None
     if machine_entry is not None:
         entry, source = machine_entry, str(CLAUDE_JSON)
     elif project_entry is not None:
         entry, source = project_entry, str(project_path)
     elif plugin_entries:
-        entry, source = plugin_entries[0][1], str(plugin_entries[0][0])
+        manifest_path, entry = plugin_entries[0]
+        source = str(manifest_path)
+        # <plugin-root>/.claude-plugin/plugin.json — what Claude Code
+        # substitutes for ${CLAUDE_PLUGIN_ROOT} when launching.
+        plugin_root = manifest_path.parent.parent
     else:
         return CheckResult(
             name="launcher resolves",
@@ -239,29 +257,55 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
             fix="register thinkweave first (see scope check above)",
         )
 
-    cmd = entry.get("command", "")
+    raw_cmd = entry.get("command", "")
     args = list(entry.get("args", []))
 
-    # Expand env vars in args (notably ${CLAUDE_PLUGIN_ROOT} for plugins).
-    # For the doctor probe we don't have a real CLAUDE_PLUGIN_ROOT, so
-    # substitute the cwd — that lets us validate the *shape* of the
-    # invocation even when the plugin isn't installed.
-    env_subs = {"CLAUDE_PLUGIN_ROOT": str(cwd)}
+    # Expand env vars in the command AND args (notably ${CLAUDE_PLUGIN_ROOT}
+    # for plugins — since #52 the plugin command is
+    # `${CLAUDE_PLUGIN_ROOT}/bin/weave-mcp-launch`). For a plugin entry we
+    # substitute its own plugin root; otherwise fall back to the cwd so the
+    # invocation *shape* is still validated when the plugin isn't installed.
+    env_subs = {"CLAUDE_PLUGIN_ROOT": str(plugin_root or cwd)}
+    cmd = _expand_env(raw_cmd, env_subs)
     expanded = [
         a if not isinstance(a, str) else _expand_env(a, env_subs) for a in args
     ]
 
-    resolved = shutil.which(cmd) or cmd
-    if shutil.which(cmd) is None and not Path(cmd).is_absolute():
-        return CheckResult(
-            name="launcher resolves",
-            passed=False,
-            detail=f"command `{cmd}` (from {source}) is not on PATH",
-            fix=(
-                "install uv (curl -LsSf https://astral.sh/uv/install.sh | sh) "
-                "or re-run `weave install --yes` to pin an absolute path"
-            ),
-        )
+    if "/" in cmd or os.sep in cmd:
+        # Path-shaped command (e.g. the portable launcher). A relative path
+        # is resolved against the launching scope's root — the project dir
+        # for .mcp.json — mirroring Claude Code's spawn cwd, NOT against
+        # wherever the doctor process happens to run.
+        cmd_path = Path(cmd)
+        if not cmd_path.is_absolute():
+            cmd_path = (plugin_root or cwd) / cmd_path
+        if not (cmd_path.exists() and os.access(cmd_path, os.X_OK)):
+            return CheckResult(
+                name="launcher resolves",
+                passed=False,
+                detail=(
+                    f"command `{cmd}` (from {source}) resolves to "
+                    f"`{cmd_path}` which does not exist or is not executable"
+                ),
+                fix=(
+                    "re-run `weave install --yes` (machine scope) or "
+                    "re-clone so bin/weave-mcp-launch exists and carries "
+                    "the exec bit"
+                ),
+            )
+        resolved = str(cmd_path)
+    else:
+        resolved = shutil.which(cmd) or cmd
+        if shutil.which(cmd) is None:
+            return CheckResult(
+                name="launcher resolves",
+                passed=False,
+                detail=f"command `{cmd}` (from {source}) is not on PATH",
+                fix=(
+                    "install uv (curl -LsSf https://astral.sh/uv/install.sh | sh) "
+                    "or re-run `weave install --yes` to pin an absolute path"
+                ),
+            )
 
     try:
         proc = subprocess.run(

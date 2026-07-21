@@ -93,6 +93,8 @@ weave_extract(
 weave wrap-finalize <session_id> --project <project> --json
 ```
 
+Bare `weave` is the committed launcher `bin/weave`, on the Bash PATH via the plugin's `bin/` on the plugin route. If it does not resolve (`command -v weave` empty — dev checkout wired via `.mcp.json`, or a pip install whose venv scripts dir isn't on PATH), invoke the launcher by path instead — `<thinkweave-repo>/bin/weave wrap-finalize …`, where `<thinkweave-repo>` is the `--project` value in the registered thinkweave MCP server entry (`.mcp.json` / `~/.claude.json`). Never depend on the venv's console script being on PATH (#47).
+
 This Bash call runs the deterministic tail in one process, zero model turns: prune → index → judge → landing → drift. The `--json` flag gives a parseable result; capture `notes_created` (or count from the `weave_extract` response) for the outcome envelope. CLI exits non-zero if any step errored.
 
 **If the call returns non-zero**: record the stderr text under `errors:` in your outcome envelope for that session, then move on. Don't crash the whole worker — other sessions still deserve a wrap.

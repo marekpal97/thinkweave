@@ -126,9 +126,10 @@ def _parse(raw: dict) -> dict[str, ScheduledJob]:
 def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
     """Resolve ``job.command`` to an absolute, OS-runnable command string.
 
-    Mirrors ``surfaces/hooks/install.py:_resolve_hook_cmd`` — prefer an
-    absolute binary so the scheduler never depends on a sparse PATH at fire
-    time.
+    Prefer an absolute binary so the scheduler never depends on a sparse
+    PATH at fire time. (The hooks installer used to share this pattern;
+    since #50 it derives fire-time ``uv run --project`` commands from
+    hooks/hooks.json instead.)
 
     - ``runner='direct'`` (``claude -p …``): swap the leading ``claude``
       token for ``shutil.which('claude')`` when found.
