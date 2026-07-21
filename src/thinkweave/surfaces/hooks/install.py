@@ -83,9 +83,12 @@ def _localize_command(command: str, root: Path) -> str:
 
     This is the ONLY divergence allowed between what the plugin route loads
     and what ``weave hooks install`` writes. The command still resolves
-    ``weave-hook`` at fire time via ``uv run --project`` (the #52/#47
-    launcher story) — no interpreter or venv path is snapshotted at install
-    time, so a moved/stale venv can no longer break installed hooks.
+    ``weave-hook`` at fire time — it invokes the committed
+    ``bin/weave-hook-launch`` shim, which runs the same 3-tier uv ladder as
+    ``bin/weave-mcp-launch`` (the #47/#52 launcher story) so hooks survive
+    the stripped, non-login harness PATH. No interpreter or venv path is
+    snapshotted at install time; only the launcher's own committed path is
+    made absolute, so a moved/stale venv can no longer break installed hooks.
     """
     return command.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
 

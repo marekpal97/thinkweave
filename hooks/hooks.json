@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp weave-hook session_start",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" session_start",
             "timeout": 60
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp weave-hook user_prompt_submit",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" user_prompt_submit",
             "timeout": 30
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp weave-hook post_tool_use",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" post_tool_use",
             "timeout": 30
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp weave-hook post_tool_use",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" post_tool_use",
             "timeout": 30
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project \"${CLAUDE_PLUGIN_ROOT}\" --extra mcp weave-hook stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" stop",
             "timeout": 30
           }
         ]

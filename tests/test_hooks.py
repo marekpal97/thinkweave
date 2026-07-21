@@ -173,8 +173,10 @@ class TestInstallCanonicalAgreement:
     def test_no_stale_timeouts_or_venv_snapshot(self, tmp_path: Path):
         """AC1 regression pin on the two symptoms #50 names: no 5s/10s
         timeouts anywhere, and no install-time interpreter/venv path baked
-        into any command — resolution happens at fire time via
-        ``uv run --project <repo>`` (the #52/#47 launcher story)."""
+        into any command — resolution happens at fire time via the committed
+        ``bin/weave-hook-launch`` shim (the #47/#52 launcher story: the shim
+        runs the uv ladder, so the harness's stripped PATH can't silently
+        kill the hook)."""
         settings = self._install(tmp_path)
         for event, entries in settings["hooks"].items():
             for entry in entries:
@@ -185,9 +187,16 @@ class TestInstallCanonicalAgreement:
                         f"{event}: stale hand-maintained timeout "
                         f"{hook.get('timeout')} survived"
                     )
-                    assert hook["command"].startswith("uv run --project "), (
-                        f"{event}: command snapshots a script path instead "
-                        f"of fire-time resolution: {hook['command']!r}"
+                    # Fire-time resolution lives in the committed launcher,
+                    # not a snapshotted venv path: the command points at the
+                    # repo's bin/weave-hook-launch and nowhere else.
+                    assert "bin/weave-hook-launch" in hook["command"], (
+                        f"{event}: command does not route through the launcher "
+                        f"shim: {hook['command']!r}"
+                    )
+                    assert str(REPO_ROOT) in hook["command"], (
+                        f"{event}: launcher path is not absolute to this repo: "
+                        f"{hook['command']!r}"
                     )
 
     def test_installer_follows_mutated_canonical(self, tmp_path: Path):
@@ -203,8 +212,8 @@ class TestInstallCanonicalAgreement:
                     {
                         "type": "command",
                         "command": (
-                            'uv run --project "${CLAUDE_PLUGIN_ROOT}" '
-                            "--extra mcp weave-hook pre_compact"
+                            '"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch" '
+                            "pre_compact"
                         ),
                         "timeout": 42,
                     }
@@ -303,9 +312,10 @@ class TestHookInstaller:
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
-        weave-hook, install-time absolute-path snapshots) gets rewritten to
-        the current canonical fire-time `uv run --project` form for
-        retained phases. The retired PreToolUse phase is stripped instead."""
+        weave-hook, install-time absolute-path snapshots, the interim bare
+        `uv run --project` form) gets rewritten to the current canonical
+        `bin/weave-hook-launch` shim form for retained phases. The retired
+        PreToolUse phase is stripped instead."""
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
         claude_dir.mkdir(parents=True)
@@ -377,15 +387,15 @@ class TestHookInstaller:
         mcp_cmd = mcp_entry["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
 
-        # New form: fire-time resolution via `uv run --project <abs repo>`,
-        # ending in `weave-hook <phase>` — no snapshotted script path.
+        # New form: fire-time resolution via the committed
+        # `bin/weave-hook-launch` shim, ending in the phase arg — no
+        # snapshotted script path.
         for cmd, phase in [
             (action_cmd, "post_tool_use"),
             (mcp_cmd, "post_tool_use"),
             (stop_cmd, "stop"),
         ]:
-            assert cmd.endswith(f" weave-hook {phase}")
-            assert cmd.startswith("uv run --project ")
+            assert cmd.endswith(f"/bin/weave-hook-launch\" {phase}")
             assert str(REPO_ROOT) in cmd
 
         # Legacy fragments fully replaced.
@@ -435,11 +445,13 @@ class TestHookInstaller:
         assert "weave-hook" not in str(pre)
 
     def test_install_writes_absolute_project_root(self, tmp_path: Path):
-        """Fresh install writes `uv run --project <absolute repo root>` so
-        the hook resolves `weave-hook` from the project venv AT FIRE TIME
-        regardless of the caller's cwd — never an install-time snapshot of
-        a script path, which repointed hooks at whatever (possibly stale)
-        venv was live when `weave hooks install` ran (#50)."""
+        """Fresh install writes an absolute path to the committed
+        `bin/weave-hook-launch` shim, which resolves `weave-hook` from the
+        project venv AT FIRE TIME regardless of the caller's cwd — never an
+        install-time snapshot of a venv script path, which repointed hooks at
+        whatever (possibly stale) venv was live when `weave hooks install`
+        ran (#50). The shim itself runs the uv ladder so a stripped harness
+        PATH can't silently kill the hook (#47/#52)."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         install_hooks(project_dir=str(project_dir))
@@ -452,15 +464,14 @@ class TestHookInstaller:
         for hook_type in ("SessionStart", "PostToolUse", "Stop"):
             for entry in settings["hooks"][hook_type]:
                 cmd = entry["hooks"][0]["command"]
-                assert cmd.startswith("uv run --project "), (
-                    f"{hook_type}: expected fire-time uv resolution, "
-                    f"got {cmd!r}"
+                # The embedded launcher path is absolute to this repo and
+                # points at the committed shim (fire-time resolution lives
+                # there, not in a snapshotted venv path).
+                assert f'"{REPO_ROOT}/bin/weave-hook-launch"' in cmd, (
+                    f"{hook_type}: command does not route through the "
+                    f"absolute launcher path: {cmd!r}"
                 )
-                # The embedded project root is absolute and really exists.
-                assert f'"{REPO_ROOT}"' in cmd, (
-                    f"{hook_type}: --project is not the absolute repo "
-                    f"root: {cmd!r}"
-                )
+                assert (REPO_ROOT / "bin" / "weave-hook-launch").exists()
                 assert (REPO_ROOT / "pyproject.toml").exists()
 
     def test_install_idempotent(self, tmp_path: Path):

@@ -615,14 +615,16 @@ class TestPluginManifestContract:
     Claude Code has no `post_install` manifest hook (verified against the
     plugin docs 2026-06-12 — the key is silently ignored), so nothing on
     the plugin route may depend on one. Hooks ship via `hooks/hooks.json`
-    and agents via the auto-discovered root `agents/` dir; every launcher
-    uses the canonical `uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra
-    mcp` shape because the plugin route never puts console scripts on
-    PATH.
+    and agents via the auto-discovered root `agents/` dir; every launch
+    surface routes through a committed `${CLAUDE_PLUGIN_ROOT}/bin/…` shim
+    (weave-mcp-launch for the server, weave-hook-launch for the hooks) that
+    runs the uv-resolution ladder — because the plugin route never puts
+    console scripts on PATH and the harness fires with a stripped PATH that
+    a bare `uv` can't survive (#47/#52).
     """
 
     MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
-    HOOK_LAUNCHER = 'uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra mcp weave-hook '
+    HOOK_LAUNCHER = '"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch" '
 
     def test_no_post_install(self):
         data = json.loads(self.MANIFEST.read_text(encoding="utf-8"))
@@ -644,8 +646,9 @@ class TestPluginManifestContract:
         assert commands, "plugin ships no hook commands"
         for cmd in commands:
             assert cmd.startswith(self.HOOK_LAUNCHER), (
-                f"hook command {cmd!r} bypasses the canonical uv launcher — "
-                "bare `weave-hook` is not on PATH for plugin-route users"
+                f"hook command {cmd!r} bypasses the committed launcher shim — "
+                "a bare `uv` here dies on the harness's stripped PATH (#47/#52), "
+                "and bare `weave-hook` is not on PATH for plugin-route users"
             )
 
     def test_hooks_json_covers_mcp_post_tool_use_matcher(self):
