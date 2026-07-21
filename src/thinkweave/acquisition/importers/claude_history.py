@@ -16,8 +16,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from thinkweave.acquisition.importers.common import ImportManifest, index_imported_notes
 from thinkweave.core.config import Config, load_config
-from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import DecisionStatus, NoteType
 from thinkweave.core.vault import VaultManager
 
@@ -297,21 +297,6 @@ def _deduplicate_observations(observations: list[dict]) -> list[dict]:
     return unique
 
 
-# ── Manifest I/O ───────────────────────────────────────────────────
-
-
-def _load_manifest(weave_dir: Path) -> dict:
-    path = weave_dir / _MANIFEST_NAME
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {"version": 1, "imported_ids": {}}
-
-
-def _save_manifest(weave_dir: Path, manifest: dict) -> None:
-    path = weave_dir / _MANIFEST_NAME
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
-
 # ── Main import ─────────────────────────────────────────────────────
 
 
@@ -366,9 +351,15 @@ def import_claude_history(
     # Build session map
     session_map = _build_session_map(observations, summaries)
 
-    # Load manifest for idempotency
-    manifest = _load_manifest(config.weave_dir) if not dry_run else {"version": 1, "imported_ids": {}}
-    imported_ids = manifest.get("imported_ids", {})
+    # Load manifest for idempotency. Dry runs use a throwaway empty ledger so
+    # counts reflect a from-scratch import regardless of prior on-disk state.
+    manifest = (
+        ImportManifest(config.weave_dir / _MANIFEST_NAME)
+        if dry_run
+        else ImportManifest.load(config.weave_dir, _MANIFEST_NAME)
+    )
+    imported_ids = manifest.ids
+    written_paths: list[Path] = []
 
     # Dry-run stats accumulator
     dry_stats: dict[str, dict[str, int]] = {}  # project -> {type: count}
@@ -444,6 +435,7 @@ def import_claude_history(
                 session_note = vm.read_note(session_path)
                 session_note_id = session_note.id
                 imported_ids[session_source_key] = session_note_id
+                written_paths.append(session_path)
                 stats["sessions"] += 1
             except Exception as e:
                 print(f"  ERROR creating session {session_uuid}: {e}")
@@ -516,6 +508,7 @@ def import_claude_history(
                     session_id=session_uuid,
                 )
                 imported_ids[obs_source_key] = vm.read_note(path).id
+                written_paths.append(path)
                 if obs_type == "decision":
                     stats["decisions"] += 1
                 else:
@@ -545,16 +538,17 @@ def import_claude_history(
         return stats
 
     # Save manifest
-    manifest["imported_ids"] = imported_ids
-    manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["source_db"] = str(db_path)
-    _save_manifest(config.weave_dir, manifest)
+    manifest.set_meta(
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        source_db=str(db_path),
+    )
+    manifest.save()
 
-    # Rebuild index once at the end
-    print("  Rebuilding index...")
-    idx = Indexer(config=config)
-    idx_stats = idx.rebuild(full=True)
-    idx.close()
+    # Index everything written this run in one pass (shared policy). This can
+    # be thousands of notes; index_imported_notes touches only the written
+    # paths (O(imported), not O(vault)) — see common.index_imported_notes.
+    print("  Indexing imported notes...")
+    idx_stats = index_imported_notes(config, written_paths)
     stats["indexed"] = idx_stats.get("indexed", 0)
 
     return stats
