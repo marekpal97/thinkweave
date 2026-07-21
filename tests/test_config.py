@@ -16,7 +16,6 @@ owned by the vault-internal ``config.toml``.
 
 from __future__ import annotations
 
-import os
 import tomllib
 from pathlib import Path
 
@@ -194,7 +193,7 @@ def _isolate_user_config(
     # The pre-rename PERSONAL_MEM_* names are still honoured as migration
     # fallbacks by load_config(); a developer shell that exports
     # PERSONAL_MEM_VAULT would otherwise leak into "nothing set" cases.
-    for legacy in ("PERSONAL_MEM_VAULT", "PERSONAL_MEM_PROJECT", "PERSONAL_MEM_DB"):
+    for legacy in ("PERSONAL_MEM_VAULT", "PERSONAL_MEM_PROJECT"):
         monkeypatch.delenv(legacy, raising=False)
     return xdg / "thinkweave" / "config.toml"
 
@@ -474,3 +473,137 @@ def test_coarsen_knob_defaults():
     assert cfg.dream_coarsen_max_size == 6
     assert cfg.dream_coarsen_apply is True
     assert cfg.theme_resolve_after_days == 60
+
+
+# ---------------------------------------------------------------------------
+# weave_dir override — relocate derived state off the vault path
+# ---------------------------------------------------------------------------
+
+
+def test_weave_dir_defaults_to_vault_root_dot_weave():
+    cfg = Config(vault_root=Path("/tmp/vault"))
+    assert cfg.weave_dir == Path("/tmp/vault/.weave")
+
+
+def test_weave_dir_toml_override_absolute_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """[weave_dir] set to an absolute path relocates index/embeddings/buffer."""
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+    monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
+    user_path = _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / ".weave").mkdir(parents=True)
+    fast_disk = tmp_path / "fast-disk" / "weave-state"
+    (vault / ".weave" / "config.toml").write_text(
+        f'weave_dir = "{fast_disk}"\n', encoding="utf-8"
+    )
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+
+    cfg = load_config()
+    assert cfg.weave_dir == fast_disk
+    assert cfg.index_db == fast_disk / "index.db"
+    assert cfg.embeddings_db == fast_disk / "embeddings.db"
+
+
+def test_index_db_env_vars_are_inert(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """THINKWEAVE_DB / PERSONAL_MEM_DB are gone (#34) — must not touch config.
+
+    The single override story is weave_dir (config.toml / THINKWEAVE_WEAVE_DIR);
+    index_db is always weave_dir / "index.db". The removed env vars must
+    neither move index_db nor leave any override attribute behind.
+    """
+    monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+    monkeypatch.setenv("THINKWEAVE_DB", str(tmp_path / "elsewhere" / "other.db"))
+    monkeypatch.setenv(
+        "PERSONAL_MEM_DB", str(tmp_path / "elsewhere" / "legacy.db")
+    )
+
+    cfg = load_config()
+    assert cfg.index_db == vault / ".weave" / "index.db"
+    assert not hasattr(cfg, "_index_db_override")
+
+
+def test_weave_dir_toml_override_relative_path_anchors_at_vault_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A relative weave_dir resolves against vault_root, not the process cwd."""
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+    monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
+    user_path = _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / ".weave").mkdir(parents=True)
+    (vault / ".weave" / "config.toml").write_text(
+        'weave_dir = "../weave-state"\n', encoding="utf-8"
+    )
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+
+    cfg = load_config()
+    assert cfg.weave_dir == vault / "../weave-state"
+
+
+def test_weave_dir_toml_override_expands_user_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """``~`` expansion goes through ``Path.expanduser()`` (reads $HOME),
+    matching the repo's existing expanduser call sites (e.g.
+    ``surfaces/cli/util.py``) — not ``Path.home()``."""
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+    monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    user_path = _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / ".weave").mkdir(parents=True)
+    (vault / ".weave" / "config.toml").write_text(
+        'weave_dir = "~/weave-state"\n', encoding="utf-8"
+    )
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+
+    cfg = load_config()
+    assert cfg.weave_dir == fake_home / "weave-state"
+
+
+def test_weave_dir_env_override_wins_over_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """THINKWEAVE_WEAVE_DIR (env) beats the vault-internal config.toml key."""
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+    user_path = _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    (vault / ".weave").mkdir(parents=True)
+    (vault / ".weave" / "config.toml").write_text(
+        f'weave_dir = "{tmp_path / "toml-weave-state"}"\n', encoding="utf-8"
+    )
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    env_weave_dir = tmp_path / "env-weave-state"
+    monkeypatch.setenv("THINKWEAVE_WEAVE_DIR", str(env_weave_dir))
+
+    cfg = load_config()
+    assert cfg.weave_dir == env_weave_dir
+
+
+def test_weave_dir_env_override_without_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The env override applies even with no vault-internal config.toml at all."""
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+    user_path = _isolate_user_config(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    env_weave_dir = tmp_path / "env-weave-state"
+    monkeypatch.setenv("THINKWEAVE_WEAVE_DIR", str(env_weave_dir))
+
+    cfg = load_config()
+    assert cfg.weave_dir == env_weave_dir

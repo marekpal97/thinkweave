@@ -1,0 +1,46 @@
+#!/bin/sh
+# Portable hook launcher.
+#
+# The canonical hooks/hooks.json (loaded by the plugin route and derived,
+# with ${CLAUDE_PLUGIN_ROOT} localized, by `weave hooks install`) fires every
+# thinkweave hook through this script instead of a bare `uv` command.
+# Rationale (#47/#52): the Claude Code harness fires hooks with the same
+# stripped, non-login PATH that made the MCP server silently fail to launch —
+# so a bare `uv run … weave-hook <phase>` died invisibly, and with it the
+# SessionStart context payload, the /wrap-relevant PostToolUse logging, and
+# the RLVR context-served substrate the mcp__thinkweave__.* matcher (#50)
+# just re-enabled. This script resolves uv robustly and, when it genuinely
+# isn't installed, fails LOUDLY with an actionable one-liner.
+#
+# The hook phase (session_start, user_prompt_submit, post_tool_use, stop, …)
+# is passed through as "$@" from the hooks.json command.
+#
+# Resolution order: PATH -> ~/.local/bin/uv -> $UV_INSTALL_DIR/uv.
+#
+# Deliberately shell-builtin-only (no dirname/readlink/basename) so it runs
+# on minimal harness shells even with a stripped PATH. Kept byte-for-byte in
+# step with bin/weave-mcp-launch — one resolution story for every launch
+# surface (the point of #47/#50/#52).
+set -eu
+
+# Self-locate the project root (parent of this script's bin/), following
+# symlinks (`cd -P`) so the dev-link route resolves to the real checkout —
+# same trick as bin/weave-mcp-launch. Never relies on the caller's cwd.
+case $0 in
+    */*) script_dir=${0%/*} ;;
+    *)   script_dir=. ;;
+esac
+root=$(CDPATH='' cd -P -- "$script_dir/.." && pwd)
+
+if command -v uv >/dev/null 2>&1; then
+    uv_bin=$(command -v uv)
+elif [ -x "${HOME:-}/.local/bin/uv" ]; then
+    uv_bin="$HOME/.local/bin/uv"
+elif [ -n "${UV_INSTALL_DIR:-}" ] && [ -x "$UV_INSTALL_DIR/uv" ]; then
+    uv_bin="$UV_INSTALL_DIR/uv"
+else
+    echo 'weave-hook-launch: uv not found (checked PATH, ~/.local/bin/uv, $UV_INSTALL_DIR/uv); install uv from https://docs.astral.sh/uv/getting-started/installation/ or add it to PATH' >&2
+    exit 127
+fi
+
+exec "$uv_bin" run --project "$root" --extra mcp weave-hook "$@"

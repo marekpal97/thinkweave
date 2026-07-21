@@ -110,6 +110,14 @@ def add_note_subparsers(sub) -> None:
         "--body-append", default="",
         help="Path to a file appended to the note body",
     )
+    p_update.add_argument(
+        "--frontmatter-json", default="",
+        help=(
+            "Path to a JSON object of frontmatter updates ('-' reads stdin). "
+            "Carries structured values (lists of dicts) that key=value tokens "
+            "cannot; explicit -f tokens win on key collision."
+        ),
+    )
 
 
 def add_index_subparsers(sub) -> None:
@@ -336,8 +344,11 @@ def add_admin_subparsers(sub) -> None:
 
     p_config = sub.add_parser(
         "config",
+        # NB: literal ``%`` must be doubled — argparse renders help via
+        # ``help % params`` in HelpFormatter, so a lone ``%A`` (from
+        # ``%APPDATA%``) raises ValueError when print_help() runs.
         help="Inspect or set the user config (vault path) — platform-resolved "
-        "location (XDG on Linux/macOS, %APPDATA% on Windows).",
+        "location (XDG on Linux/macOS, %%APPDATA%% on Windows).",
     )
     config_sub = p_config.add_subparsers(dest="config_action")
     config_sub.add_parser(

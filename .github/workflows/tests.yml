@@ -1,0 +1,54 @@
+name: tests
+
+# The suite is hermetic (no network, no API keys — external calls are mocked or
+# importorskip'd) and runs in ~75s for ~1900 tests, so it fits CI cleanly.
+# `--all-extras` installs the optional surfaces (mcp / embeddings / news /
+# gemini / youtube) the suite exercises; the `mcp` extra in particular is
+# required or ~18 MCP-surface tests fail with ModuleNotFoundError.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies (all optional surfaces + dev group)
+        run: uv sync --all-extras
+
+      - name: Run test suite
+        # Perf assertions proved flaky on shared runners (timing jitter redded
+        # the 3.12 leg on the #69 run), so CI deselects them; run them locally
+        # with plain `uv run pytest`.
+        run: uv run pytest -q -p no:cacheprovider -m "not perf"
+
+  lint:
+    runs-on: ubuntu-latest
+    # Required check: the pre-existing findings were cleaned up (F-series
+    # fixed, E741 ignored in pyproject with rationale), so a red lint job now
+    # means a genuine regression.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Ruff
+        run: uvx ruff check src tests

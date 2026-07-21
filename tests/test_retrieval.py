@@ -3,53 +3,20 @@ decision_files, hybrid search, empty-query listing."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
-from thinkweave.retrieval.search import Search
+from thinkweave.retrieval.search import Search, SearchResult
 from thinkweave.core.vault import VaultManager
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures — vault / config / indexer / search come from tests/conftest.py
+# (vault_factory), migrated per the opportunistic-migration rule.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def vault_dir(tmp_path: Path) -> Path:
-    return tmp_path / "vault"
-
-
-@pytest.fixture
-def config(vault_dir: Path) -> Config:
-    return Config(vault_root=vault_dir)
-
-
-@pytest.fixture
-def vault(config: Config) -> VaultManager:
-    vm = VaultManager(config=config)
-    vm.ensure_dirs()
-    return vm
-
-
-@pytest.fixture
-def indexer(config: Config):
-    idx = Indexer(config=config)
-    yield idx
-    idx.close()
-
-
-@pytest.fixture
-def search(config: Config):
-    # Instantiate after the indexer populates the db
-    s = Search(config=config)
-    yield s
-    s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -790,9 +757,7 @@ class TestRrfKFromConfig:
     ``retrieval.rrf_k`` when no explicit ``rrf_k`` is passed."""
 
     @staticmethod
-    def _result(nid: str) -> "SearchResult":
-        from thinkweave.retrieval.search import SearchResult
-
+    def _result(nid: str) -> SearchResult:
         return SearchResult(
             id=nid, type="note", title=nid, path=f"{nid}.md",
             project="p1", date="2026-06-01", tags=[],

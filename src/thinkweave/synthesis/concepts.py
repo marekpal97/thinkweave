@@ -834,24 +834,25 @@ def promote_proposed_concept(
         raise ValueError("domain must be specified for promotion")
 
     domain_key = domain.lower().strip()
-    ontology = load_ontology()
+    # Config-scoped ontology read: seed + THIS vault's override. A bare
+    # load_ontology() (and _vault_ontology_path()) resolves the override via
+    # ambient load_config() — THINKWEAVE_VAULT / user config — not the
+    # config passed in. On a machine whose ambient vault already knows the
+    # term, promoting into a different vault (tests, multi-vault setups)
+    # silently skipped the ontology write, and the re-emit below would seed
+    # from the wrong vault's file. Same seam as the #69 test-side fix, one
+    # layer down.
+    override_path = config.config_dir / "ontology.yaml"
+    existing = _parse_yaml_file(override_path)
+    keep = build_keep_set(load_ontology(_seed_ontology_path())) | build_keep_set(
+        {k: v for k, v in existing.items() if k not in _RESERVED_ONTOLOGY_KEYS}
+    )
     ontology_updated = False
 
-    if term not in build_keep_set(ontology):
-        # Add to vault override (the user-editable layer). Don't touch
+    if term not in keep:
+        # Add to the vault override (the user-editable layer). Don't touch
         # the shipped seed.
-        #
-        # Read from the fallback-resolved path (which tolerates legacy
-        # vault/.weave/ontology.yaml), but write to the canonical
-        # vault/config/ontology.yaml location — that migrates the file
-        # forward on first promote.
-        read_path = _vault_ontology_path()
-        override_path = config.config_dir / "ontology.yaml"
         override_path.parent.mkdir(parents=True, exist_ok=True)
-
-        existing = (
-            _parse_yaml_file(read_path) if read_path and read_path.exists() else {}
-        )
         existing.setdefault(domain_key, [])
         if term not in [c.lower() for c in existing[domain_key]]:
             existing[domain_key] = sorted({*existing[domain_key], term})

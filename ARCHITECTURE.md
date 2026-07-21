@@ -267,6 +267,8 @@ Loaders use a backwards-compatible fallback (`vault/config/<filename>` → `vaul
 The vault-internal TOML (tier 3 of `core/config.py:load_config`) owns the engine-level policy values: embedding provider, edge-generation thresholds, and the behavioural knobs below. Every knob has a built-in default equal to the value the engine shipped with — an absent file or block changes nothing. This file is deliberately **not** PRIORITIES.yaml (research focus + intake registries) and not sources.yaml (per-source-type operational tuning); it is the "how the machine behaves" layer.
 
 ```toml
+weave_dir = "/fast/local/disk/weave-state"  # relocate derived state off the vault path (default: vault_root/.weave)
+
 [embeddings]      # model, api_key_env, api_url
 
 [edges]           # concept_threshold (1), concept_max_freq_pct (0.05),
@@ -328,6 +330,8 @@ rrf_k = 60                         # RRF fusion constant for hybrid search
 ```
 
 The `weave dream scan` flags (`--promotion-cap`, `--promotion-threshold`, `--essence-cap`) override their config fields per-invocation; cron (which passes no flags) is steered by the file.
+
+`weave_dir` relocates the derived-state directory (`index.db`, `embeddings.db`, `buffer/`, logs) independently of `vault_root` — a top-level key, resolved like `vault_root`/`default_project` above (absolute paths pass through, `~` expands, relative paths anchor at `vault_root`). Use it when the vault markdown lives on slow, remote, or virtualized storage — a Windows drive crossed from WSL2 via 9P (measured ~30x slower SQLite reads there), a NAS, a Dropbox mount — while keeping the markdown itself wherever Obsidian expects it: everything under `weave_dir` is derived and rebuildable via `weave index --full`, so it's safe to point at fast local disk. The `THINKWEAVE_WEAVE_DIR` env var overrides this key, same precedence as the other per-field env overrides in `load_config`.
 
 ### `PRIORITIES.yaml` — discover bias + intake registries
 

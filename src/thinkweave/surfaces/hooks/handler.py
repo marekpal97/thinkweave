@@ -57,6 +57,25 @@ def _log_error(hook_type: str, error: Exception) -> None:
         pass  # Last resort: silent failure on logging itself
 
 
+def _log_info(hook_type: str, message: str) -> None:
+    """Log non-error hook telemetry (e.g. an R2 deadline miss) to file.
+
+    Sibling to :func:`_log_error` minus the traceback — for events that are
+    expected/handled outcomes, not failures. Never blocks Claude Code.
+    """
+    try:
+        from thinkweave.core.config import load_config
+
+        cfg = load_config()
+        log_path = cfg.weave_dir / "hooks.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).isoformat()
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{now}] {hook_type}: {message}\n")
+    except Exception:
+        pass  # Last resort: silent failure on logging itself
+
+
 def main() -> None:
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
@@ -229,21 +248,43 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
 def _prompt_time_enrichment(
     cfg, session_id: str, prompt_text: str, now: str
 ) -> str | None:
-    """Build the R2 enrichment block and record its served ids to the buffer.
+    """Build the R2 enrichment block and record the outcome to the buffer.
 
     Returns the block to inject, or ``None`` to no-op. Self-contained: on any
     error it logs and returns ``None`` so the caller emits a plain response.
-    The write-back event is a ``retrieval`` event tagged with
-    ``PROMPT_TIME_TOOL`` so (1) the next turn's dedup sees these ids and (2)
-    the indexer projects them to ``context_served`` with ``source='prompttime'``.
+    ``build_enrichment`` is pure (read-only) — this function owns every
+    buffer write-back on its behalf:
+
+    - On a fresh block: a ``retrieval`` event tagged with ``PROMPT_TIME_TOOL``
+      so (1) the next turn's dedup sees these ids and (2) the indexer
+      projects them to ``context_served`` with ``source='prompttime'``.
+    - On a deadline miss: a distinct ``prompt_time_miss`` telemetry event
+      (never tagged ``PROMPT_TIME_TOOL``, never typed ``retrieval`` — see
+      ``operations/prompt_time_retrieval``'s module docstring for why that
+      distinction matters) plus an info line in the hooks log, so a run of
+      misses is visible instead of silently re-paying the embedding deadline
+      every turn.
     """
     try:
         from thinkweave.operations.prompt_time_retrieval import (
+            PROMPT_TIME_MISS,
             PROMPT_TIME_TOOL,
             build_enrichment,
         )
 
-        block, served_ids = build_enrichment(cfg, session_id, prompt_text)
+        block, served_ids, missed = build_enrichment(cfg, session_id, prompt_text)
+
+        if missed:
+            _buffer_event(
+                cfg.weave_dir,
+                session_id,
+                {"ts": now, "type": PROMPT_TIME_MISS, "session_id": session_id},
+            )
+            _log_info(
+                "prompt_time_enrichment",
+                f"deadline miss for session {session_id}",
+            )
+
         if not block:
             return None
 
@@ -273,9 +314,25 @@ def _find_session_note(vm, session_id: str) -> Path | None:
     ``"source_session": "<id>"``. O(rows-with-type-session) substring
     match, no markdown reads, no rglob.
 
-    Slow path: ``vm.list_notes`` rglob scan. Only reached if the index
-    DB is missing, locked, or stale (session note was just created and
-    hasn't been indexed yet). Cap at 20 to bound the scan.
+    Slow path: a bounded, sessions-only glob —
+    ``projects/*/sessions/*/session.md`` — never a vault-wide walk.
+    Candidates are checked newest-first with a hard cap: this path is only
+    reached when the index DB is missing, locked, or stale (session note was
+    just created and hasn't been indexed yet), and in that just-created case
+    the note we want is the most recently modified one, so the common case
+    is a single frontmatter read. Session folder names are ``<slug>-<date>``
+    (see ``VaultManager``), never derived from the Claude Code session UUID,
+    so a name match is impossible — frontmatter is the only place the id
+    lives.
+
+    Measured 16s for the previous fallback (``vm.list_notes(note_type=
+    SESSION, limit=20)``) on a ~1k-note vault over WSL2's 9P filesystem —
+    that helper's ``rglob("*.md")`` reads and parses EVERY note's
+    frontmatter across the whole vault (decisions, sources, themes, ...)
+    until it accumulates ``limit`` session matches. Scoping the glob to the
+    ``sessions/<id>/session.md`` shape skips every non-session note's
+    content entirely, bounding the scan to the sessions that actually exist
+    instead of the whole vault.
     """
     if not session_id:
         return None
@@ -304,15 +361,29 @@ def _find_session_note(vm, session_id: str) -> Path | None:
                     if abs_p.exists():
                         return abs_p
     except Exception:
-        # Fall through to vault scan on any DB issue.
+        # Fall through to the bounded glob on any DB issue.
         pass
 
-    # Slow path — vault scan. Kept as a correctness backstop.
-    from thinkweave.core.schemas import NoteType
-
-    for note in vm.list_notes(note_type=NoteType.SESSION, limit=20):
-        if note.frontmatter.get("source_session") == session_id:
-            return vm.root / note.path
+    # Slow path — sessions-only glob, no vault-wide rglob of any kind.
+    # Newest-first, capped: the stale-index window this backstop covers is
+    # "created moments ago", so the target is at (or near) the front. A miss
+    # under the cap means "not found" — creation dedupes on source_session,
+    # so the worst case is a rare duplicate session note, not data loss.
+    try:
+        candidates = sorted(
+            vm.root.glob("projects/*/sessions/*/session.md"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    for note_path in candidates[:15]:
+        try:
+            note = vm.read_note(note_path)
+            if note.frontmatter.get("source_session") == session_id:
+                return note_path
+        except Exception:
+            continue
     return None
 
 
@@ -838,10 +909,10 @@ def _handle_stop(hook_input: dict) -> None:
                 files = ", ".join(sk.file_paths[:5])
                 concepts = f" [{', '.join(sk.concepts)}]" if sk.concepts else ""
                 dec_lines.append(f"- **{sk.title}** ({files}){concepts}")
-            body_parts.append(f"## Candidate Decisions\n" + "\n".join(dec_lines))
+            body_parts.append("## Candidate Decisions\n" + "\n".join(dec_lines))
         if result.failure_signals:
             fail_lines = [f"- {fs.title}" for fs in result.failure_signals]
-            body_parts.append(f"## Failure Signals\n" + "\n".join(fail_lines))
+            body_parts.append("## Failure Signals\n" + "\n".join(fail_lines))
 
         session_path.write_text(
             render_frontmatter(fm) + "\n\n"

@@ -29,13 +29,27 @@ def _is_windows() -> bool:
     return platform.system() == "Windows"
 
 
+def _resolve_weave_dir_value(value: str, vault_root: Path) -> Path:
+    """Expand ``~`` and anchor a relative path at ``vault_root``.
+
+    Shared by the ``weave_dir`` TOML key and the ``THINKWEAVE_WEAVE_DIR``
+    env override so both tiers apply the same rule: absolute paths pass
+    through unchanged; relative paths resolve against the vault root, not
+    the process cwd.
+    """
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = vault_root / path
+    return path
+
+
 @dataclass
 class PromptTimeRetrieval:
     """Config for prompt-time retrieval enrichment (R2).
 
     On each substantive user prompt the UserPromptSubmit hook runs a bounded
-    hybrid search, drops anything already served this session, applies hard
-    caps, and prepends a small ignorable block. Defaults are deliberately
+    similarity search, drops anything already served this session, applies
+    hard caps, and prepends a small ignorable block. Defaults are deliberately
     conservative — this is default-on, so the caps are the safety net against
     the noise-tax failure mode that retired the old pre-Edit injection.
     """
@@ -45,11 +59,19 @@ class PromptTimeRetrieval:
     # we don't pay an embedding on "ok"/"yes"/"/clear". NOT a semantic filter;
     # relevance is decided entirely by the cosine floor below.
     min_prompt_chars: int = 12
-    # Wall-clock budget for the similarity (embedding) arm. The FTS arm is
-    # synchronous; on overrun the similarity arm is abandoned (daemon thread)
-    # and we fall back to FTS. Generous enough to let the embedding complete on
-    # a normal network; kept under the UserPromptSubmit hook timeout (10s).
+    # Wall-clock budget for the similarity (embedding) arm, run in a daemon
+    # thread; on overrun the arm is abandoned and the turn gets no injection
+    # (see operations/prompt_time_retrieval.py — there is no FTS fallback,
+    # it was a structural no-op against prose prompts and was removed).
+    # Generous enough to let the embedding complete on a normal network; kept
+    # under the UserPromptSubmit hook timeout.
     embed_deadline_seconds: float = 4.0
+    # Adaptive skip — consecutive deadline misses (embedding thread still
+    # running when the wall-clock deadline hits) this session before the
+    # similarity arm is skipped for the rest of the session. Protects against
+    # re-paying a sunk ~embed_deadline_seconds cost on every remaining turn
+    # when the embedding endpoint is slow or unreachable.
+    deadline_miss_limit: int = 3
     # Cosine floor on the similarity arm — THE relevance gate. Drops low-cosine
     # nearest neighbours, so generic/meta prompts (~0.22–0.36) no-op while
     # domain prompts (~0.40+) fire. Model-dependent (text-embedding-3-small);
@@ -70,6 +92,14 @@ class PromptTimeRetrieval:
 @dataclass
 class Config:
     vault_root: Path = field(default_factory=lambda: _DEFAULT_VAULT)
+    # Relocates derived state (index.db, embeddings.db, buffer/, logs — see
+    # weave_dir below) off the vault path. The vault markdown must stay put
+    # (Obsidian owns it), but everything under weave_dir is derived and
+    # rebuildable, so it can move to fast local disk when the vault lives on
+    # slow/remote/virtualized storage (e.g. a Windows drive crossed from
+    # WSL2 via 9P — measured ~30x slower SQLite reads — or a NAS/Dropbox
+    # mount). None (default) keeps the historical vault_root/.weave layout.
+    weave_dir_override: Path | None = None
     default_project: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key_env: str = "OPENAI_API_KEY"  # env var name holding the key
@@ -228,6 +258,8 @@ class Config:
 
     @property
     def weave_dir(self) -> Path:
+        if self.weave_dir_override is not None:
+            return self.weave_dir_override
         return self.vault_root / ".weave"
 
     @property
@@ -452,6 +484,10 @@ def load_config() -> Config:
             cfg.vault_root = Path(data["vault_root"])
         if "default_project" in data:
             cfg.default_project = data["default_project"]
+        if "weave_dir" in data:
+            cfg.weave_dir_override = _resolve_weave_dir_value(
+                data["weave_dir"], cfg.vault_root
+            )
         embed = data.get("embeddings", {})
         if "model" in embed:
             cfg.embedding_model = embed["model"]
@@ -597,6 +633,8 @@ def load_config() -> Config:
                 rpt.min_prompt_chars = int(pt["min_prompt_chars"])
             if "embed_deadline_seconds" in pt:
                 rpt.embed_deadline_seconds = float(pt["embed_deadline_seconds"])
+            if "deadline_miss_limit" in pt:
+                rpt.deadline_miss_limit = int(pt["deadline_miss_limit"])
             if "min_similarity" in pt:
                 rpt.min_similarity = float(pt["min_similarity"])
             if "max_pieces_per_turn" in pt:
@@ -617,10 +655,9 @@ def load_config() -> Config:
     project_env = os.environ.get("THINKWEAVE_PROJECT") or os.environ.get("PERSONAL_MEM_PROJECT")
     if project_env:
         cfg.default_project = project_env
-    db_env = os.environ.get("THINKWEAVE_DB") or os.environ.get("PERSONAL_MEM_DB")
-    if db_env:
-        # Override index db path directly
-        cfg._index_db_override = Path(db_env)
+    weave_dir_env = os.environ.get("THINKWEAVE_WEAVE_DIR")
+    if weave_dir_env:
+        cfg.weave_dir_override = _resolve_weave_dir_value(weave_dir_env, cfg.vault_root)
 
     cfg.default_project = normalize_project_name(cfg.default_project)
     return cfg

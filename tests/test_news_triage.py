@@ -1,16 +1,14 @@
-"""Tests for the Haiku-based news triage helper.
+"""Tests for the news triage fallback helper.
 
 Covers the deterministic surfaces (catalog extraction, prompt
-assembly, response parsing, CLI plumbing). The Anthropic call itself
-is stubbed — we only verify the request shape and the parser's
+assembly, response parsing, CLI plumbing). The LLM call itself is
+never made — we only verify the request shape and the parser's
 robustness to malformed responses, not the LLM's verdicts.
 
-**Provider-swap pause (2026-05-21).** ``operations/news_triage`` is
-temporarily on OpenAI ``gpt-5-mini`` (see its module docstring), so
-the four tests that lock in the Anthropic ``system: [...]`` +
-``cache_control: ephemeral`` request shape are marked ``xfail`` with
-``strict=False`` — they'll auto-pass once ``ANTHROPIC_API_KEY`` is in
-the env and the provider reverts to the long-term Haiku shape.
+The module under test is the explicit-opt-out fallback (the canonical
+triage path is the ``news-triage-worker`` CC subagent; see the module
+docstring). It builds an OpenAI ``chat.completions`` request body, and
+these tests assert that shape.
 """
 
 from __future__ import annotations
@@ -19,20 +17,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
-
-
-# The triage helper is on a temporary provider swap (Anthropic → OpenAI);
-# tests asserting the Anthropic prompt shape will pass again on revert.
-_PROVIDER_SWAP_XFAIL = pytest.mark.xfail(
-    reason=(
-        "news_triage is temporarily on OpenAI gpt-5-mini per its module "
-        "docstring; Anthropic shape (system blocks + cache_control) "
-        "regression checks pause until ANTHROPIC_API_KEY is available."
-    ),
-    strict=False,
-)
 
 from thinkweave.operations.news_triage import (
     ALLOWED_VERDICTS,
@@ -89,8 +73,10 @@ class TestExtractCatalog:
 
 
 class TestBuildTriageMessages:
-    @_PROVIDER_SWAP_XFAIL
-    def test_request_shape(self):
+    def test_catalog_and_items_land_in_messages(self):
+        """The catalog folds into the system message; the user message
+        lists items by 1-based index — the contract
+        ``parse_triage_response`` keys its verdicts on."""
         catalog = f"{CATALOG_HEADING}\n\n### Theme A\n> essence"
         items = [
             {"id": "q-1", "title": "Memory chip rally", "outlet": "cnbc", "tier": 1},
@@ -98,30 +84,22 @@ class TestBuildTriageMessages:
         ]
         req = build_triage_messages(catalog, items)
 
-        assert req["model"] == DEFAULT_MODEL
-        # Two system blocks: instructions + cached catalog.
-        assert isinstance(req["system"], list)
-        assert len(req["system"]) == 2
-        assert req["system"][0]["type"] == "text"
-        # The cached block carries the catalog and the cache_control marker.
-        cached = req["system"][1]
-        assert cached.get("cache_control") == {"type": "ephemeral"}
-        assert "Theme A" in cached["text"]
-        # User message lists items by index.
-        user = req["messages"][0]["content"]
-        assert "1. [outlet=cnbc, tier=1] Memory chip rally" in user
-        assert "2. [outlet=marketwatch, tier=1] Sports gossip" in user
+        system, user = req["messages"]
+        assert system["role"] == "system"
+        assert "Theme A" in system["content"]
+        assert user["role"] == "user"
+        assert "1. [outlet=cnbc, tier=1] Memory chip rally" in user["content"]
+        assert "2. [outlet=marketwatch, tier=1] Sports gossip" in user["content"]
 
-    @_PROVIDER_SWAP_XFAIL
     def test_empty_catalog_uses_placeholder(self):
         """When the vault has no active themes, the catalog block falls
         back to a placeholder so the LLM's instructions still parse —
         the bias toward keep_unfiled in the system prompt then kicks in."""
         items = [{"id": "q-1", "title": "X", "outlet": "y", "tier": 1}]
         req = build_triage_messages("", items)
-        cached_text = req["system"][1]["text"]
-        assert "no active themes" in cached_text
-        assert CATALOG_HEADING in cached_text
+        system_text = req["messages"][0]["content"]
+        assert "no active themes" in system_text
+        assert CATALOG_HEADING in system_text
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +202,6 @@ class TestParseTriageResponse:
 
 
 class TestCLI:
-    @_PROVIDER_SWAP_XFAIL
     def test_dry_run_emits_drops_and_logs_request_to_stderr(
         self, tmp_path: Path
     ):
@@ -252,9 +229,9 @@ class TestCLI:
             timeout=15,
         )
         assert proc.returncode == 0, proc.stderr
-        # stderr carries the prepared request (for cache-key inspection).
+        # stderr carries the prepared request (for prompt inspection).
         assert "messages" in proc.stderr
-        assert "ephemeral" in proc.stderr
+        assert "1. [outlet=y, tier=1] x" in proc.stderr
         # stdout carries the verdict list — all drops with reason "dry-run".
         out = json.loads(proc.stdout)
         assert len(out) == 2
@@ -289,9 +266,8 @@ class TestVerdictConstants:
     def test_allowed_verdicts_set(self):
         assert ALLOWED_VERDICTS == {VERDICT_KEEP, VERDICT_UNFILED, VERDICT_DROP}
 
-    @_PROVIDER_SWAP_XFAIL
-    def test_default_model_is_haiku(self):
+    def test_default_model_is_cheap(self):
         # The triage layer should be cheap by default. If someone bumps
-        # this to sonnet, tests should fail loudly so the change is
-        # deliberate.
-        assert DEFAULT_MODEL.startswith("claude-haiku-")
+        # this to a bigger model, tests should fail loudly so the
+        # change is deliberate.
+        assert DEFAULT_MODEL == "gpt-5-mini"

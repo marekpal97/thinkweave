@@ -2730,7 +2730,7 @@ wheels = [
 
 [[package]]
 name = "thinkweave"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },
@@ -2742,6 +2742,7 @@ all = [
     { name = "google-genai" },
     { name = "httpx" },
     { name = "mcp" },
+    { name = "numpy" },
     { name = "openai" },
     { name = "readability-lxml" },
     { name = "youtube-transcript-api" },
@@ -2752,6 +2753,7 @@ dev = [
 ]
 embeddings = [
     { name = "httpx" },
+    { name = "numpy" },
     { name = "openai" },
 ]
 embeddings-litellm = [
@@ -2781,6 +2783,7 @@ youtube = [
 [package.dev-dependencies]
 dev = [
     { name = "bump-my-version" },
+    { name = "mcp" },
     { name = "pytest" },
 ]
 
@@ -2792,6 +2795,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'news'" },
     { name = "litellm", marker = "extra == 'embeddings-litellm'", specifier = ">=1.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "numpy", marker = "extra == 'embeddings'", specifier = ">=1.26" },
     { name = "openai", marker = "extra == 'embeddings'", specifier = ">=1.50" },
     { name = "openai", marker = "extra == 'hubs'", specifier = ">=1.50" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -2807,6 +2811,7 @@ provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm"
 [package.metadata.requires-dev]
 dev = [
     { name = "bump-my-version", specifier = ">=0.28" },
+    { name = "mcp", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=9.0.2" },
 ]
 

@@ -2070,6 +2070,7 @@ def _auto_resolve_stale_themes(cfg: Config, result: "DreamCycleResult") -> None:
         return
 
     from thinkweave.core.indexer import Indexer
+    from thinkweave.core.vault import parse_frontmatter
     from thinkweave.synthesis import theme_registry
     from thinkweave.synthesis.hub import set_frontmatter_keys
 
@@ -2100,6 +2101,15 @@ def _auto_resolve_stale_themes(cfg: Config, result: "DreamCycleResult") -> None:
                 continue
             theme_path = cfg.vault_root / str(row["path"])
             if not theme_path.exists():
+                continue
+            # The index status (``fm`` above) can be stale within a single
+            # apply(): theme merges run earlier in the same cycle with
+            # ``rebuild_index=False``, so a just-tombstoned loser still shows
+            # ``active`` here. Re-read the authoritative on-disk status before
+            # flipping — never clobber a fresh ``merged-into:`` (or any
+            # non-active) stamp written this cycle.
+            disk_fm, _ = parse_frontmatter(theme_path.read_text(encoding="utf-8"))
+            if str(disk_fm.get("status") or "active").split(":")[0] != "active":
                 continue
             set_frontmatter_keys(theme_path, {"status": "resolved"})
             try:
@@ -3136,7 +3146,7 @@ def _render_dream_report(result: DreamCycleResult, plan: dict) -> str:
     lines.append("")
     lines.append(f"- **Timestamp**: {ts}")
     lines.append(f"- **Project**: {project}")
-    lines.append(f"- **Maintenance log**: `vault/.weave/maintenance.jsonl`")
+    lines.append("- **Maintenance log**: `vault/.weave/maintenance.jsonl`")
     lines.append("")
 
     # --- Summary table ---------------------------------------------------

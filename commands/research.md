@@ -82,7 +82,15 @@ splits acquisition by source type, so there's no single "research queue"
 to drain — there's a paper queue, a repo queue, an article queue.
 
 If the user invokes `/research --queue` without a slug, ask once which
-queue they meant or default to `paper` (the most common case).
+queue they meant or default to `paper` (the most common case). **In a
+non-interactive session (headless `claude -p`, no way to ask) default to
+`paper` immediately — do not emit the question.** An unanswerable question
+is a silent, permanent no-op in that context: cron invocations of
+`/research --queue --batch N` have historically hung on this exact
+question every single run. Cron should prefer calling `/drain
+--source-type <slug>` directly for each queue anyway (see
+`scripts/example-crontab` / `vault/config/scheduling.yaml`), but this
+skill must not dead-end headlessly regardless of how it's invoked.
 
 ## What this skill does NOT do
 

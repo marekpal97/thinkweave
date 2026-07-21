@@ -9,7 +9,6 @@ So tests cover query composition, allowlist enforcement, and
 
 from __future__ import annotations
 
-import pytest
 
 from thinkweave.acquisition.discover.strategies.mail_poll import MailPollStrategy
 

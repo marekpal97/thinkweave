@@ -27,6 +27,7 @@ from thinkweave.acquisition.discover.strategies.rss_poll import (
     _build_podcast_item,
     _parse_itunes_duration,
 )
+from thinkweave.acquisition.sources.queue import Queue
 
 
 class FakeParsed:
@@ -291,13 +292,14 @@ def test_strategy_polls_podcast_feeds_and_enqueues(
     assert summaries[0]["stats"]["enqueued"] == 2
     assert all(d["source_type"] == "podcast-events" for d in enqueued)
 
-    queue_path = tmp_path / ".weave" / "queues" / "podcast-events.jsonl"
-    assert queue_path.exists()
-    body = queue_path.read_text(encoding="utf-8")
-    assert "https://cdn.example.com/a.mp3" in body
-    assert "https://cdn.example.com/b.mp3" in body
-    assert "guid/a" in body
-    assert "guid/b" in body
+    items = Queue.for_source_type("podcast-events", tmp_path).peek(10)
+    audio_urls = {it.get("audio_url") for it in items}
+    entry_ids = {it.get("entry_id") for it in items}
+    assert audio_urls == {
+        "https://cdn.example.com/a.mp3",
+        "https://cdn.example.com/b.mp3",
+    }
+    assert entry_ids == {"guid/a", "guid/b"}
 
 
 def test_strategy_podcast_lookback_filters_stale(

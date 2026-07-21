@@ -72,6 +72,8 @@ If the session note has a `## Candidate Insights` section (populated when hooks 
 weave wrap-finalize <session_id> --project <project>
 ```
 
+**CLI resolution — PATH-independent by design (#47).** The `weave` above (and in every other Bash call in this skill) is the committed launcher `bin/weave` from the thinkweave checkout: it self-locates the repo and resolves uv via the same ladder as the MCP server's `bin/weave-mcp-launch`, so it works without the venv on PATH. On the plugin route Claude Code puts the plugin's `bin/` on the Bash PATH, so the bare call just resolves. If `command -v weave` comes up empty (dev checkout wired via `.mcp.json`, or a pip install whose venv scripts dir isn't on PATH), invoke the launcher by path — `<thinkweave-repo>/bin/weave wrap-finalize …` — where `<thinkweave-repo>` is the checkout you're working in, or the `--project` value in the registered thinkweave MCP server entry (`.mcp.json` / `~/.claude.json`). Never fall back to hoping the venv's console script is on PATH: that is the asymmetry where the MCP half of `/wrap` works while the finalize half silently fails.
+
 Does in one process, zero model turns:
 - prune orphan session folders (conservative GC; this session is protected)
 - incremental reindex (picks up freshly written notes, drops pruned rows)

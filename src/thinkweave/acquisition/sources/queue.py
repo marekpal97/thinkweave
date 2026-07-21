@@ -26,6 +26,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from itertools import chain
 from pathlib import Path
 from typing import Any, Iterable, TypedDict
 
@@ -270,6 +271,26 @@ class Queue:
         with archive_file.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(target, ensure_ascii=False) + "\n")
 
+    def items_since(self, cutoff_iso: str) -> list[QueueItem]:
+        """Return every item ``enqueued_at`` at or after ``cutoff_iso``.
+
+        Spans both halves of the queue's lifecycle — the live active file
+        and the dated archive — so callers get "recent items" without
+        knowing the archive exists or how it's laid out. The archive's
+        ``_processed/YYYY-MM-DD/`` day-bucketing is an implementation
+        detail bounded internally from the cutoff date; callers pass a
+        plain ISO-8601 timestamp and read back a flat list.
+
+        The comparison is inclusive (``>=``) and lexical over ISO-8601 UTC
+        strings — the format :meth:`enqueue` writes — so an item stamped
+        exactly at the cutoff is kept.
+        """
+        return [
+            item
+            for item in chain(self._read_all(), self._archive_items_since(cutoff_iso))
+            if (item.get("enqueued_at") or "") >= cutoff_iso
+        ]
+
     # ------------------------------------------------------------------
     # dedup
     # ------------------------------------------------------------------
@@ -289,8 +310,10 @@ class Queue:
         """
         if not keys:
             return None
+        today = datetime.now(timezone.utc).date()
+        since = (today - timedelta(days=_DEDUP_LOOKBACK_DAYS)).isoformat()
         candidates: list[QueueItem] = list(self._read_all())
-        candidates.extend(self._recent_archive_items(_DEDUP_LOOKBACK_DAYS))
+        candidates.extend(self._archive_items_since(since))
         for other in candidates:
             if other.get("id") == item.get("id"):
                 continue
@@ -347,15 +370,23 @@ class Queue:
                     pass
             raise
 
-    def _recent_archive_items(self, days: int) -> Iterable[QueueItem]:
-        """Yield archived items from the last ``days`` (inclusive of today)."""
+    def _archive_items_since(self, start_iso: str) -> Iterable[QueueItem]:
+        """Yield archived items from every day-bucket on or after ``start_iso``.
+
+        ``start_iso`` may be a bare ISO date (``YYYY-MM-DD``) or a full
+        timestamp; only its date component selects the day-buckets to scan
+        (from that date through today, inclusive). This is the sole reader
+        of the ``_processed/YYYY-MM-DD/`` layout — the day-bucketing stays
+        contained here and never leaks to callers.
+        """
         if not self.archive_root.exists():
             return []
+        start_date = datetime.fromisoformat(start_iso).date()
         today = datetime.now(timezone.utc).date()
         out: list[QueueItem] = []
-        for delta in range(days + 1):
-            day = (today - timedelta(days=delta)).isoformat()
-            archive_file = self.archive_root / day / f"{self.source_type}.jsonl"
+        for delta in range((today - start_date).days + 1):
+            day = start_date + timedelta(days=delta)
+            archive_file = self.archive_root / day.isoformat() / f"{self.source_type}.jsonl"
             if not archive_file.exists():
                 continue
             for line in archive_file.read_text(encoding="utf-8").splitlines():

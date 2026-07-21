@@ -1,0 +1,82 @@
+# Issue-to-PR loop configuration — the DEFAULTS.
+# Read by scripts/issue_loop.py (deterministic rail) and the /issue-loop
+# command (orchestration). Semantics: docs/agents/issue-loop.md.
+#
+# Per-run posture belongs on the command line, not in edits to this file:
+# every knob in [loop]/[labels]/[tdd] can be overridden for one run via
+# `--set [section.]key=value` (section defaults to loop), with /issue-loop
+# sugar `--stacked` and `--max-issues <n>`. Gates are file-only by design.
+
+[loop]
+max_issues_per_run = 3   # token guardrail: issues processed per invocation
+max_parallel = 1         # frontier width dispatched concurrently (>1 = worktrees)
+max_fix_rounds = 2       # implement→gates→fix iterations before routing to human
+training_mode = true     # pause for human approval before push/PR; flip when trusted
+draft_pr = true
+branch_prefix = "loop/issue-"
+require_green_baseline = true   # red suite on main → refuse to implement (fix the baseline issue first)
+claim_mode = "assign"    # assign: the assignee IS the claim (wayfinder convention) | label
+# run_mode distinguishes the two ways to run the loop:
+#   pass    — one pass over the current frontier. Unrelated issues (distinct
+#             DAG components) may run in parallel; stop when the pass ends.
+#   exhaust — whole-DAG chasing: after each shipped issue, re-plan and keep
+#             going while the frontier is non-empty. Advances only as fast
+#             as blockers close (= PRs merge), so it pairs with a human
+#             merging concurrently; max_issues_per_run still caps the run.
+run_mode = "pass"
+# delivery decides what a shipped issue looks like:
+#   pr-per-issue — every issue gets its own branch and draft PR; blockers
+#                  close on merge (small-PR discipline, review per slice).
+#   stacked      — for one scoped DAG (/issue-loop --dag N): all slices land
+#                  as stacked commits on ONE branch, no intermittent PRs;
+#                  dependents proceed via plan --assume-done; a single draft
+#                  PR closes the whole set at the end. One review, no
+#                  merge-waits mid-DAG — the trade is a bigger diff to review.
+delivery = "pr-per-issue"
+
+[tdd]
+# auto: red→green TDD is ENFORCED in implementer standing orders iff the
+#       per-run baseline probe (tests gate on the pristine worktree) is
+#       green. Refactoring is NOT part of the TDD cycle — it belongs to the
+#       review stage (Pocock skills v1.1.0).
+# always / never: override the probe.
+mode = "auto"
+
+[labels]
+runnable = "ready-for-agent"
+claimed = "agent-claimed"
+on_gate_failure = "ready-for-human"
+
+# ── Gate pipeline ─────────────────────────────────────────────────────────
+# Ordered. kinds: command | diff (deterministic, run by the script)
+#                 acceptance | review (LLM-judged, run by the command in
+#                 fresh subagent contexts). Adding another command/diff gate
+# is config-only; a new *kind* needs a dispatch branch in issue_loop.py or
+# a section in the /issue-loop command.
+
+[[gates]]
+id = "diff-guard"
+kind = "diff"
+required = true
+forbidden_paths = [".github/workflows/", "dist/", "_old/"]
+max_changed_lines = 2000
+
+[[gates]]
+id = "tests"
+kind = "command"
+required = true
+cmd = "uv run --extra mcp pytest -x -q"
+timeout_sec = 1200
+
+[[gates]]
+id = "acceptance"
+kind = "acceptance"
+required = true
+threshold = "all"        # all | majority — of the issue's acceptance criteria
+
+[[gates]]
+id = "review"
+kind = "review"
+required = true
+block_on = ["critical", "major"]   # finding severities that fail the gate
+smells_baseline = true   # report Fowler code smells as judgement calls — never gate-failing

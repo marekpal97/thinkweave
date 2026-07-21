@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
@@ -453,7 +452,7 @@ class TestBatchedGitLog:
         )
         from thinkweave.synthesis.judge import _check_committed_via_git
 
-        result = _check_committed_via_git(
+        _check_committed_via_git(
             ["src/a.py", "src/b.py", "src/c.py"],
             "2026-04-01",
         )

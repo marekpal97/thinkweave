@@ -38,21 +38,8 @@ from thinkweave.operations.dream import (
 )
 
 
-@pytest.fixture
-def vault_dir(tmp_path: Path) -> Path:
-    return tmp_path / "vault"
-
-
-@pytest.fixture
-def config(vault_dir: Path) -> Config:
-    return Config(vault_root=vault_dir)
-
-
-@pytest.fixture
-def vault(config: Config) -> VaultManager:
-    vm = VaultManager(config=config)
-    vm.ensure_dirs()
-    return vm
+# vault / config fixtures come from tests/conftest.py (vault_factory), migrated
+# per the opportunistic-migration rule.
 
 
 def _index(config: Config) -> None:
@@ -740,10 +727,17 @@ class TestApply:
 
         assert isinstance(result, DreamCycleResult)
         assert result.promotions_applied == 1
-        # ontology was updated
+        # ontology was updated — read the override apply actually wrote.
+        # A bare load_ontology() resolves the vault via ambient load_config()
+        # (THINKWEAVE_VAULT / PERSONAL_MEM_VAULT / user config), NOT the test
+        # fixture's Config, so it reads whatever vault the host env points at
+        # — or the shipped seed on CI, where this assertion then fails.
+        from thinkweave.core.config import resolve_config_file
         from thinkweave.synthesis.concepts import load_ontology
 
-        ontology = load_ontology()
+        ontology = load_ontology(
+            resolve_config_file(config.vault_root, "ontology.yaml")
+        )
         all_terms = {t.lower() for terms in ontology.values() for t in terms}
         assert "diagnostics" in all_terms
 

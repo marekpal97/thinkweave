@@ -44,7 +44,7 @@ mcp = ["mcp>=1.0"]
 # (the wrapper uses AsyncOpenAI with custom base_url for Anthropic/Gemini
 # OpenAI-compat endpoints) — moved out of the [hubs] extra into [embeddings]
 # so any opt-in extra that pulls openai also pulls httpx for embeddings.
-embeddings = ["httpx", "openai>=1.50"]
+embeddings = ["httpx", "openai>=1.50", "numpy>=1.26"]
 embeddings-local = ["sentence-transformers>=2.5"]
 embeddings-litellm = ["litellm>=1.0"]
 hubs = ["openai>=1.50"]
@@ -78,6 +78,12 @@ packages = ["src/thinkweave"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# E741 (ambiguous name `l`/`I`/`O`): purely stylistic; the tree uses `l` as a
+# short-lived line/loop variable in ~33 comprehensions and renaming them is
+# churn without a readability win. Revisit if a real confusion bug ever lands.
+ignore = ["E741"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -121,7 +127,16 @@ search = "\"version\": \"{current_version}\""
 replace = "\"version\": \"{new_version}\""
 
 [dependency-groups]
+# `uv sync` installs this group by default. The test suite exercises the MCP
+# surface (surfaces/mcp/tools), which imports the optional `mcp` extra — so
+# `mcp` belongs here even though it stays an OPTIONAL runtime extra for the
+# shipped package (dependency-groups are dev-only and never published). Without
+# it a fresh `uv sync` + `pytest` hard-fails ~18 MCP tests with
+# ModuleNotFoundError instead of exercising the product's core surface.
+# CI installs the full surface with `uv sync --all-extras` (see the CI note in
+# the PR / docs) so embeddings/news/gemini/youtube paths are covered too.
 dev = [
     "pytest>=9.0.2",
     "bump-my-version>=0.28",
+    "mcp>=1.0",
 ]

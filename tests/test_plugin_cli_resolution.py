@@ -44,6 +44,24 @@ def test_bin_weave_shim_runs_via_plugin_root_not_cwd():
     assert "BASH_SOURCE" in body or "$0" in body, (
         "bin/weave must resolve its own path to find the plugin root"
     )
-    assert "uv run --project" in body, (
-        "bin/weave must run the bundled CLI via `uv run --project <root>`"
+    assert (
+        'exec "$uv_bin" run --project "$root" --extra mcp weave "$@"' in body
+    ), "bin/weave must run the bundled CLI via `uv run --project <root>`"
+
+
+def test_bin_weave_shim_resolves_uv_like_the_mcp_launcher():
+    """#47 rides on #52's resolution story: the shim must resolve uv via the
+    same ladder as bin/weave-mcp-launch (PATH -> ~/.local/bin/uv ->
+    $UV_INSTALL_DIR/uv) and fail loudly when uv is genuinely missing —
+    a bare `uv` would silently fail on harness shells that lack
+    ~/.local/bin on PATH, breaking /wrap's finalize step invisibly."""
+    body = (REPO_ROOT / "bin" / "weave").read_text(encoding="utf-8")
+    assert "$HOME/.local/bin/uv" in body, (
+        "bin/weave must fall back to ~/.local/bin/uv when uv is off PATH"
+    )
+    assert "UV_INSTALL_DIR" in body, (
+        "bin/weave must honour $UV_INSTALL_DIR as the last resolution rung"
+    )
+    assert "exit 127" in body, (
+        "bin/weave must fail loudly (not silently) when uv cannot be resolved"
     )

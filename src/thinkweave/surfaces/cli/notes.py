@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -28,7 +29,7 @@ def cmd_add(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    from thinkweave.retrieval.search import Search
+    from thinkweave.operations import search as ops_search
 
     cfg = load_config()
 
@@ -36,14 +37,18 @@ def cmd_search(args: argparse.Namespace) -> None:
     if args.semantic and mode == "fts":
         mode = "similar"
 
-    s = Search(config=cfg)
-
     type_arg: str | list[str] = args.type
     if args.type and "," in args.type:
         type_arg = [t.strip() for t in args.type.split(",") if t.strip()]
 
+    # Concept lookup is a distinct retrieval operation (search_by_concept),
+    # not part of the fts/similar/hybrid seam wired through operations.search,
+    # so it keeps its own Search instance until an ops wrapper exists.
     if args.concept:
+        from thinkweave.retrieval.search import Search
+
         concept_list = [c.strip() for c in args.concept.split(",") if c.strip()]
+        s = Search(config=cfg)
         results = s.search_by_concept(
             concept=concept_list if len(concept_list) > 1 else concept_list[0],
             project=args.project,
@@ -74,29 +79,28 @@ def cmd_search(args: argparse.Namespace) -> None:
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
 
     if mode == "similar":
-        results = s.similar(
-            args.query, project=args.project, note_type=type_arg, limit=args.limit
+        results = ops_search.query_similar(
+            cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
         )
         if not results:
-            s.close()
             print(
                 "No semantic results. If embeddings aren't set up yet, run "
                 "`weave index --embed` with OPENAI_API_KEY set."
             )
             return
     elif mode == "hybrid":
-        results = s.hybrid_search(
-            args.query, project=args.project, note_type=type_arg, limit=args.limit
+        results = ops_search.query_hybrid(
+            cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
         )
     else:
-        results = s.search(
-            query=args.query,
+        results = ops_search.query_fts(
+            cfg,
+            args.query,
             note_type=type_arg,
             project=args.project,
             tags=tags,
             limit=args.limit,
         )
-    s.close()
 
     if not results:
         print("No results found.")
@@ -170,21 +174,20 @@ def cmd_link(args: argparse.Namespace) -> None:
 
 
 def cmd_context(args: argparse.Namespace) -> None:
-    from thinkweave.retrieval.search import Search
+    from thinkweave.operations.search import query_context
 
     cfg = load_config()
-    s = Search(config=cfg)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     concepts = [c.strip() for c in args.concepts.split(",") if c.strip()] if args.concepts else None
 
-    results = s.get_context(
+    results = query_context(
+        cfg,
         project=args.project,
         tags=tags,
         query=args.query,
         concepts=concepts,
         limit=args.limit,
     )
-    s.close()
 
     if not results:
         print("No context available.")
@@ -197,8 +200,19 @@ def cmd_context(args: argparse.Namespace) -> None:
 
 def _parse_fm_token(kv: str) -> tuple[str, object]:
     if "=" not in kv:
-        print(f"Bad --frontmatter token (need key=value): {kv}"); sys.exit(1)
+        print(f"Bad --frontmatter token (need key=value): {kv}")
+        sys.exit(1)
     key, val = kv.split("=", 1)
+    # Structured values: a value that looks like JSON ([...] / {...}) is
+    # parsed as JSON, so list-of-dict fields (e.g. a decision's
+    # prediction_history) survive the CLI round-trip instead of being
+    # comma-split into broken strings. Malformed JSON falls through to the
+    # legacy string handling.
+    if val[:1] in ("[", "{"):
+        try:
+            return key, json.loads(val)
+        except json.JSONDecodeError:
+            pass
     if val.lower() in ("true", "false"):
         return key, val.lower() == "true"
     if "," in val:
@@ -211,11 +225,31 @@ def cmd_update(args: argparse.Namespace) -> None:
     from thinkweave.operations.notes import update_note
     cfg = load_config()
     fm_updates = dict(_parse_fm_token(kv) for kv in args.frontmatter)
+    # --frontmatter-json: a whole updates dict from a file (or '-' = stdin).
+    # The headless-worker path — writing a temp JSON file and passing its
+    # path avoids every layer of shell quoting, which matters doubly under
+    # Windows Git Bash. Explicit -f tokens win on key collision.
+    if getattr(args, "frontmatter_json", None):
+        raw = (
+            sys.stdin.read()
+            if args.frontmatter_json == "-"
+            else Path(args.frontmatter_json).expanduser().read_text(encoding="utf-8")
+        )
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"Bad --frontmatter-json payload: {e}")
+            sys.exit(1)
+        if not isinstance(loaded, dict):
+            print("Bad --frontmatter-json payload: expected a JSON object")
+            sys.exit(1)
+        fm_updates = {**loaded, **fm_updates}
     body_append = Path(args.body_append).expanduser().read_text(encoding="utf-8") if args.body_append else ""
     try:
         note = update_note(cfg, args.note_id, frontmatter_updates=fm_updates or None, body_append=body_append)
     except (FileNotFoundError, ValueError) as e:
-        print(str(e)); sys.exit(1)
+        print(str(e))
+        sys.exit(1)
     print(f"Updated {args.note_id} ({(cfg.vault_root / note.path).relative_to(cfg.vault_root)})")
 
 

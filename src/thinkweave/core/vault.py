@@ -803,12 +803,18 @@ class VaultManager:
         if frontmatter_updates:
             for key, value in frontmatter_updates.items():
                 if isinstance(value, list) and isinstance(fm.get(key), list):
+                    # Union-merge for hashable lists (tags, concepts). If
+                    # EITHER side holds unhashables (list-of-dict fields like
+                    # prediction_history), replace wholesale — the membership
+                    # test hashes the incoming values too, so it must live
+                    # inside the guard.
                     try:
                         existing = set(fm[key])
+                        merged = fm[key] + [v for v in value if v not in existing]
                     except TypeError:
                         fm[key] = value
                         continue
-                    fm[key] = fm[key] + [v for v in value if v not in existing]
+                    fm[key] = merged
                 else:
                     fm[key] = value
 

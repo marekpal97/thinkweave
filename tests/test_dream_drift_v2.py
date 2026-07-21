@@ -336,6 +336,61 @@ class TestApplyDriftV2:
         reg = theme_registry.load(config)
         assert reg[tid_a]["status"] == f"merged-into:{tid_b}"
 
+    def test_auto_resolve_honours_disk_tombstone_over_stale_index(
+        self, config, vault
+    ):
+        """Regression: within one apply(), theme merges run before the stale-
+        theme auto-resolve with ``rebuild_index=False``, so the just-tombstoned
+        loser still reads ``active`` in the index. ``_auto_resolve_stale_themes``
+        must re-read the authoritative on-disk status and skip it — never
+        overwrite a fresh ``merged-into:`` with ``resolved``."""
+        from thinkweave.operations.dream import (
+            DreamCycleResult,
+            _auto_resolve_stale_themes,
+        )
+        from thinkweave.synthesis.hub import set_frontmatter_keys
+
+        tid, path = _make_theme(
+            vault, "stale arc",
+            entries=["- 2026-01-02 · *new* — old catalyst. — [[src-cccc3333]]"],
+            cites=["src-cccc3333"],
+        )
+        _index(config)  # index now records status: active
+        # Simulate the mid-apply merge tombstone written without a reindex.
+        set_frontmatter_keys(path, {"status": "merged-into:thm-deadbeef"})
+
+        result = DreamCycleResult(cycle_id="dream-tomb", project="t")
+        _auto_resolve_stale_themes(config, result)
+
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fm["status"] == "merged-into:thm-deadbeef"
+        assert result.themes_resolved == 0
+
+    def test_auto_resolve_still_freezes_a_stale_active_theme(
+        self, config, vault
+    ):
+        """Positive control: a genuinely stale *active* theme (no tombstone)
+        is still flipped to ``resolved`` — the fix narrows the guard, it does
+        not disable the feature."""
+        from thinkweave.operations.dream import (
+            DreamCycleResult,
+            _auto_resolve_stale_themes,
+        )
+
+        _tid, path = _make_theme(
+            vault, "forgotten arc",
+            entries=["- 2026-01-02 · *new* — old catalyst. — [[src-dddd4444]]"],
+            cites=["src-dddd4444"],
+        )
+        _index(config)
+
+        result = DreamCycleResult(cycle_id="dream-freeze", project="t")
+        _auto_resolve_stale_themes(config, result)
+
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fm["status"] == "resolved"
+        assert result.themes_resolved == 1
+
     def test_distinct_pairs_recorded_in_maintenance(self, config, vault):
         plan = {"distinct_pairs": [
             {"kind": "concept", "pair": ["derivative", "derivatives"],
