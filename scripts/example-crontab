@@ -46,20 +46,21 @@ PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 # queue accumulates a useful batch before Haiku triage runs.
 30 */6 * * * cd /path/to/thinkweave && uv run weave flow run news-cycle >> ~/.cache/thinkweave/cron.log 2>&1
 
-# Email-newsletter intake (daily 06:30 — ahead of the morning news drain so
-# the two rails don't contend for writer subagents). One firing runs the
-# whole rail: `mail_poll` plan → Gmail fetch → enqueue → /drain → apply the
-# processed label. Requires the `newsletter-*` source types configured with a
-# sender allowlist and a Gmail connector grant on the account; the grant is
-# one-time, cached account-side, and survives headless `claude -p` firings,
-# which is what makes this schedulable. `--model sonnet` because the
-# orchestrator is routing work, not composing briefs — the writer subagents
-# /drain fans out pick their own model.
+# Email-newsletter intake (daily 06:00 — see the cadence rationale on the
+# `newsletter` job in vault/config/scheduling.yaml; the 06:00 slot is chosen
+# against the news-cycle line above, so change both together or neither).
+# One firing runs the whole rail: `mail_poll` plan → Gmail fetch → enqueue →
+# /drain → apply the processed label. Requires the `newsletter-*` source
+# types configured with a sender allowlist and a Gmail connector grant on the
+# account; the grant is one-time, cached account-side, and survives headless
+# `claude -p` firings, which is what makes this schedulable. `--model sonnet`
+# because the orchestrator is routing work, not composing briefs — the writer
+# subagents /drain fans out pick their own model.
 #
 # flock: the first run after a long gap drains a whole backlog and can
 # outlast the cadence. The mail label makes an overlap mostly harmless, but
 # skipping the next firing keeps the log readable.
-30 6 * * * flock -n /tmp/thinkweave-newsletter.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude --model sonnet -p "/newsletter" --dangerously-skip-permissions' >> ~/.cache/thinkweave/newsletter.log 2>&1
+0 6 * * * flock -n /tmp/thinkweave-newsletter.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude --model sonnet -p "/newsletter" --dangerously-skip-permissions' >> ~/.cache/thinkweave/newsletter.log 2>&1
 
 # Embeddings keep-warm + SQLite index refresh: every 4h. `weave index`
 # always rebuilds the SQLite index incrementally (mtime-gated, so

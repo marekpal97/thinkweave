@@ -24,6 +24,29 @@ from thinkweave.scheduling.cron import FENCE_END, FENCE_START, _splice
 from thinkweave.scheduling.registry import ScheduledJob, _parse, resolve_command
 
 
+TEMPLATE_SCHEDULING = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "thinkweave"
+    / "vault_templates"
+    / "config"
+    / "scheduling.yaml"
+)
+
+
+def _hours(field: str) -> set[int]:
+    """Expand a cron hour field to the set of hours it fires on.
+
+    Only the forms the shipped template uses: ``*``, ``*/N``, a literal.
+    """
+    if field == "*":
+        return set(range(24))
+    if field.startswith("*/"):
+        step = int(field[2:])
+        return set(range(0, 24, step))
+    return {int(field)}
+
+
 @pytest.fixture
 def config(tmp_path: Path) -> Config:
     return Config(vault_root=tmp_path / "vault")
@@ -136,9 +159,7 @@ class TestRegistry:
     def test_load_from_template(self, config):
         # The shipped vault template should parse cleanly with the dream +
         # embeddings jobs enabled by default.
-        pkg = Path(__file__).resolve().parents[1] / "src" / "thinkweave"
-        template = pkg / "vault_templates" / "config" / "scheduling.yaml"
-        jobs = load_jobs(config, path=template)
+        jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
         assert "dream" in jobs and jobs["dream"].enabled
         assert "embeddings-keepwarm" in jobs and jobs["embeddings-keepwarm"].enabled
         assert jobs["dream"].env == ("ANTHROPIC_API_KEY",)
@@ -150,19 +171,39 @@ class TestRegistry:
 
     def test_template_ships_newsletter_job(self, config):
         # The Gmail connector runs headless (the cached grant survives a
-        # `claude -p` firing), so the newsletter rail is schedulable. Daily at
-        # 06:30 puts it ahead of the 07:00 news drain; a backlogged first run
-        # can outlast the cadence, so it takes the never-overlap lock too.
-        pkg = Path(__file__).resolve().parents[1] / "src" / "thinkweave"
-        template = pkg / "vault_templates" / "config" / "scheduling.yaml"
-        jobs = load_jobs(config, path=template)
+        # `claude -p` firing), so the newsletter rail is schedulable.
+        jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
         job = jobs["newsletter"]
-        assert job.cadence == "30 6 * * *"
+        assert job.cadence == "0 6 * * *"
         assert job.runner == "direct"
         assert job.serialize is True
         assert job.log == "newsletter.log"
+        assert job.env == ("ANTHROPIC_API_KEY",)
+        # Needs a sender allowlist AND a Gmail grant before it can do
+        # anything but fail into its log — opt-in, like the other
+        # source-type-gated rails.
+        assert job.enabled is False
         assert "-p" in job.command.split()
         assert "/newsletter" in job.command.split()
+
+    def test_template_cadences_do_not_collide(self, config):
+        """No two enabled-or-not jobs may fire on the same minute.
+
+        Guards the newsletter/news-cycle case specifically: `news-cycle` is
+        ``30 */6 * * *`` (00:30, 06:30, 12:30, 18:30), so a newsletter rail
+        at 06:30 would put two subagent fan-outs on one minute.
+        """
+        jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
+        news = jobs["news-cycle"].cadence.split()
+        letter = jobs["newsletter"].cadence.split()
+        news_minute, news_hour = news[0], news[1]
+        letter_minute, letter_hour = letter[0], letter[1]
+        # Same minute-of-hour is only safe if the hours can't coincide.
+        if news_minute == letter_minute:
+            assert _hours(news_hour).isdisjoint(_hours(letter_hour)), (
+                f"news-cycle {jobs['news-cycle'].cadence!r} and newsletter "
+                f"{jobs['newsletter'].cadence!r} share a firing minute"
+            )
 
 
 # --------------------------------------------------------------------------- #

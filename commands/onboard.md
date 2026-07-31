@@ -844,8 +844,9 @@ AskUserQuestion({
 ```
 
 Validate: regex-check the address parses as RFC-5322 (`<local>@<domain>`).
-If the user hasn't authenticated Gmail yet, flag — the `/newsletter`
-skill will OAuth-prompt on first run; doesn't block `/onboard`.
+If the user hasn't authenticated Gmail yet, flag it — `/newsletter` never
+prompts, so the grant has to be established once by running
+`/newsletter --grant` interactively. Doesn't block `/onboard`.
 
 #### youtube-events / youtube-concepts
 
