@@ -960,7 +960,15 @@ across OSes; only the trigger mechanism differs. Idempotent.
 
 Pick which registry jobs to install from what the user enabled in Step 5
 (naming a job via `--only` installs it regardless of its default `enabled`
-flag in the template):
+flag in the template).
+
+`--only` is **replacing**, not adding: the rendered set becomes the entire
+thinkweave crontab block, so any installed job you leave out is uninstalled.
+The list you build below must therefore name *everything* that should be
+running, not just what's new — which is what it already does on a first run,
+when nothing is installed yet. If you are re-running `/onboard` on a machine
+that already has jobs, run `weave schedule list` first and fold the existing
+names in.
 
 - **Always** include `embeddings-keepwarm` and (if any active project
   exists from 5a) `dream`. Also include `weekly-hygiene` — concept/theme
@@ -978,6 +986,13 @@ flag in the template):
 
 Build a comma-separated `ONLY` string from the selected names, e.g.
 `embeddings-keepwarm,dream,weekly-hygiene`.
+
+A name that isn't in the vault's `scheduling.yaml` is dropped from the list
+in silence — no warning, and the install still reports success for the rest.
+Vaults seeded before a job was added to the template won't have it (seeding
+is copy-if-absent), so if the 6b preview is missing a job you selected, paste
+that job's block from `src/thinkweave/vault_templates/config/scheduling.yaml`
+into `vault/config/scheduling.yaml` and re-run the preview before installing.
 
 ### 6b. Preview (dry-run, OS-aware)
 

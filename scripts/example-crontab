@@ -61,7 +61,12 @@ PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 # flock: the first run after a long gap drains a whole backlog and can
 # outlast the cadence. The mail label makes an overlap mostly harmless, but
 # skipping the next firing keeps the log readable.
-0 5 * * * flock -n /tmp/thinkweave-newsletter.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude --model sonnet -p "/newsletter" --dangerously-skip-permissions' >> ~/.cache/thinkweave/newsletter.log 2>&1
+#
+# As with the dream line below, `weave schedule install` appends
+# --dangerously-skip-permissions to headless `claude -p` jobs at render time;
+# a hand-pasted copy of this line needs it added, or the run no-ops at its
+# first tool call.
+0 5 * * * flock -n /tmp/thinkweave-newsletter.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude --model sonnet -p "/newsletter"' >> ~/.cache/thinkweave/newsletter.log 2>&1
 
 # Embeddings keep-warm + SQLite index refresh: every 4h. `weave index`
 # always rebuilds the SQLite index incrementally (mtime-gated, so
