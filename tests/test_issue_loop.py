@@ -2060,3 +2060,95 @@ def test_arch_proposal_label_documented_in_triage_labels():
     assert "arch-proposal" in labels
     # The human-triage transition it feeds: accept → ready-for-agent.
     assert "ready-for-agent" in labels
+
+
+# ---------------------------------------------------------------------------
+# Dispatch persona + north-star splice (issue #89) — write-time simplification
+# pressure at the only point it works: dispatch. Seams: the [dispatch] persona
+# knob (default + override validation in the rail) and doc-grep contracts on
+# the command doc + vendored persona file, mirroring the #58/#61 pins.
+
+
+def test_dispatch_persona_knob_defaults_on():
+    """[dispatch] persona = true is the default AND file-backed in loop.toml
+    (3-edit config pattern: file entry + DEFAULT_CONFIG + override path)."""
+    cfg = issue_loop.load_config()
+    assert cfg["dispatch"]["persona"] is True
+    assert issue_loop.DEFAULT_CONFIG["dispatch"]["persona"] is True
+    toml_text = (issue_loop.REPO_ROOT / "docs" / "agents" / "loop.toml").read_text(
+        encoding="utf-8"
+    )
+    assert "[dispatch]" in toml_text
+    assert "persona = true" in toml_text
+
+
+def test_dispatch_persona_overridable_per_run():
+    """--set dispatch.persona=false flips the knob for one run; an unknown key
+    in [dispatch] stays a hard error (typo protection, same as every section)."""
+    cfg = issue_loop.apply_overrides(issue_loop.load_config(), ["dispatch.persona=false"])
+    assert cfg["dispatch"]["persona"] is False
+    with pytest.raises(ValueError):
+        issue_loop.apply_overrides(issue_loop.load_config(), ["dispatch.personna=false"])
+
+
+def test_vendored_ponytail_persona_present_with_provenance():
+    """The AGENTS.md ladder persona is vendored under docs/agents/ with the
+    SAME pinned-upstream provenance as the #58/#61 vendorings (source repo +
+    pinned sha + MIT notice). It is a dispatch splice source, not a slash
+    command — the command doc references this file, never duplicates it."""
+    vendored = issue_loop.REPO_ROOT / "docs" / "agents" / "ponytail-persona.md"
+    assert vendored.exists()
+    text = vendored.read_text(encoding="utf-8")
+    # Provenance: canonical upstream repo + pinned sha; the upstream path is
+    # AGENTS.md (the ladder), not a skills/ SKILL.md.
+    assert "DietrichGebert/ponytail" in text
+    assert "16f29800fd2681bdf24f3eb4ccffe38be3baec6b" in text
+    assert "AGENTS.md" in text
+    # MIT obligation carried per the upstream LICENSE (#58 lesson).
+    assert "MIT" in text
+    assert "Copyright (c) 2026 DietrichGebert" in text
+    assert "Permission is hereby granted" in text
+    # The ladder itself survived vendoring: persona line, first rung, last rung.
+    assert "lazy senior developer" in text
+    assert "YAGNI" in text
+    assert "write the minimum code that works" in text
+
+
+def _issue_loop_doc() -> str:
+    return (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_issue_loop_doc_splices_persona_by_reference():
+    """Implementer (§1b) and fix-round dispatches carry the vendored persona —
+    referenced from docs/agents/ponytail-persona.md, never inlined (the ladder
+    text must not be duplicated into the command doc)."""
+    doc = _issue_loop_doc()
+    assert "ponytail-persona.md" in doc
+    # Reference, not duplication: the ladder's persona line stays vendored-only.
+    assert "lazy senior developer" not in doc
+    # The fix-round feedback re-splices the dispatch blocks.
+    assert "both dispatch blocks" in doc
+
+
+def test_issue_loop_doc_carries_north_star_verbatim():
+    """The epic's north-star block is spliced verbatim adjacent to the prime
+    block: goal, anti-goals and provenance lines all survive in the doc."""
+    doc = _issue_loop_doc()
+    assert "fewer POCs" in doc
+    assert "conceptual fidelity" in doc
+    assert "no new half-mechanisms" in doc
+    assert "no contract asserted in prose without an enforcing seam" in doc
+    assert "distilled from the owner's 18 review comments on PR #86" in doc
+
+
+def test_issue_loop_doc_gates_splice_on_dispatch_persona_knob():
+    """Knob off → splice nothing anywhere: every dispatch prompt must be
+    byte-identical to the pre-#89 loop. Reviewer + acceptance-judge dispatches
+    get the north-star block only (they judge against the goal, not the
+    persona)."""
+    doc = _issue_loop_doc()
+    assert "dispatch.persona" in doc
+    assert "byte-identical" in doc
+    assert "north-star block only" in doc.lower()
