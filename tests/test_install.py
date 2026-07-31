@@ -6,10 +6,13 @@ manifests under ``.claude-plugin/`` — must all produce equivalent server
 entries so that Claude Code's MCP launcher sees the same invocation
 regardless of how the user installed the package.
 
-"Equivalent" here means: same ``args`` list, same ``env`` keys, and
-command resolves to ``uv`` (the absolute path baked into
-``~/.claude.json`` and the bare ``"uv"`` used in checked-in manifests
-are both legitimate forms).
+"Equivalent" here means: every route converges on the same invocation
+``uv run --project <root> --extra mcp weave-mcp``. The checked-in
+manifests (``.mcp.json``, ``.claude-plugin/plugin.json``) reach it via
+the portable launcher ``bin/weave-mcp-launch`` — which resolves uv even
+when the harness PATH omits ``~/.local/bin`` and fails loudly otherwise
+(#52) — while ``weave install`` bakes an absolute uv path resolved at
+install time into ``~/.claude.json``.
 """
 
 from __future__ import annotations
@@ -24,9 +27,12 @@ from thinkweave.surfaces.cli.install import (
     CLAUDE_MD_BLOCK_BODY,
     CLAUDE_MD_BLOCK_END,
     CLAUDE_MD_BLOCK_START,
+    REQUIRED_SCRIPTS,
     SERVER_NAME,
+    ScriptsCheck,
     _build_server_entry,
     _check_pyproject_reachable,
+    _check_scripts,
     _check_uv_available,
     _detect_project_root,
     _extract_claude_md_block,
@@ -81,15 +87,33 @@ def _entry_from_plugin_manifest(path: Path) -> dict:
 
 
 class TestMcpInvocationConsistency:
-    """All three scopes resolve to the same launcher + args shape."""
+    """Checked-in manifests launch via the portable launcher; ``weave
+    install`` (machine scope) still writes the uv-run shape with an
+    absolute uv path. The launcher's exec line carries the exact same
+    uv-run invocation, so every route converges (#52)."""
 
-    def test_mcp_json_uses_uv_run_shape(self):
+    LAUNCHER = REPO_ROOT / "bin" / "weave-mcp-launch"
+
+    def test_mcp_json_launches_via_portable_launcher(self):
         entry = _entry_from_mcp_json()
-        assert _command_basename(entry["command"]) == "uv"
-        assert entry["args"][:2] == ["run", "--project"]
-        assert "--extra" in entry["args"]
-        assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "weave-mcp"
+        assert entry["command"] == "bin/weave-mcp-launch"
+        assert entry["args"] == []
+
+    def test_mcp_json_has_no_machine_specific_paths(self):
+        """Acceptance #2 of issue #52: a fresh clone must work as-committed
+        — no user-specific absolute paths anywhere in .mcp.json."""
+        raw = PROJECT_MCP_JSON.read_text(encoding="utf-8")
+        assert "/home/" not in raw
+        assert "/Users/" not in raw
+        entry = _entry_from_mcp_json()
+        assert not Path(entry["command"]).is_absolute()
+
+    def test_plugin_manifest_root_launches_via_portable_launcher(self):
+        """Acceptance #3 of issue #52: the plugin route uses the SAME
+        resolution — the launcher, addressed via ${CLAUDE_PLUGIN_ROOT}."""
+        entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
+        assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/weave-mcp-launch"
+        assert entry["args"] == []
 
     def test_weave_install_uses_uv_run_shape(self):
         entry = _entry_from_install()
@@ -99,40 +123,30 @@ class TestMcpInvocationConsistency:
         assert "mcp" in entry["args"]
         assert entry["args"][-1] == "weave-mcp"
 
-    def test_plugin_manifest_root_uses_uv_run_shape(self):
-        entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
-        assert _command_basename(entry["command"]) == "uv"
-        assert entry["args"][:2] == ["run", "--project"]
-        assert "--extra" in entry["args"]
-        assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "weave-mcp"
-
-    def test_all_scopes_normalise_to_same_args_shape(self):
-        """Once the per-scope project path is replaced with a sentinel,
-        every config produces exactly the same args list and env keys."""
-        sentinel = "<PROJECT_PATH>"
+    def test_launcher_execs_the_same_uv_run_shape_as_weave_install(self):
+        """Cross-route equivalence: the launcher's exec line IS the uv-run
+        invocation ``weave install`` writes to ~/.claude.json."""
         install_entry = _entry_from_install()
-        mcp_entry = _entry_from_mcp_json()
-        plugin_root_entry = _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT)
-
-        norm_install = _normalise_args_for_compare(install_entry["args"], sentinel)
-        norm_mcp = _normalise_args_for_compare(mcp_entry["args"], sentinel)
-        norm_root = _normalise_args_for_compare(plugin_root_entry["args"], sentinel)
-
-        assert norm_install == norm_mcp == norm_root, (
-            f"args shape diverged:\n"
-            f"  install={norm_install}\n"
-            f"  mcp.json={norm_mcp}\n"
-            f"  plugin/root={norm_root}"
+        norm = _normalise_args_for_compare(install_entry["args"], "<PROJECT_PATH>")
+        assert norm == [
+            "run", "--project", "<PROJECT_PATH>", "--extra", "mcp", "weave-mcp",
+        ]
+        launcher_text = self.LAUNCHER.read_text(encoding="utf-8")
+        assert (
+            'exec "$uv_bin" run --project "$root" --extra mcp weave-mcp "$@"'
+            in launcher_text
         )
 
-        # env keys (not values — install may inject THINKWEAVE_VAULT)
-        for entry in (mcp_entry, plugin_root_entry):
+    def test_no_route_bakes_env_vars(self):
+        for entry in (
+            _entry_from_mcp_json(),
+            _entry_from_plugin_manifest(PLUGIN_MANIFEST_ROOT),
+        ):
             assert entry.get("env", {}) == {}, (
                 f"checked-in manifest must not bake env vars: {entry}"
             )
         # install with vault_root=None matches
-        assert install_entry.get("env", {}) == {}
+        assert _entry_from_install().get("env", {}) == {}
 
 
 class TestClaudeMdBlock:
@@ -434,7 +448,10 @@ class TestPluginRouteInstall:
     ):
         # stub the script availability check (we don't install thinkweave
         # console scripts in CI's test env via this fixture)
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "thinkweave",
             declares_thinkweave=True,
@@ -456,7 +473,10 @@ class TestPluginRouteInstall:
     def test_plugin_route_respects_no_claude_md_flag(
         self, fake_claude_home, stub_install_validators, monkeypatch
     ):
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "thinkweave",
             declares_thinkweave=True,
@@ -473,7 +493,10 @@ class TestPluginRouteInstall:
         """--vault is a no-op on plugin route because the MCP entry is
         plugin-owned. Surface that explicitly rather than silently
         ignoring."""
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
         _write_plugin_manifest(
             fake_claude_home["plugins_root"], "thinkweave",
             declares_thinkweave=True,
@@ -488,7 +511,10 @@ class TestPluginRouteInstall:
     ):
         """Sanity: with no plugin manifest, the existing pip-route logic
         still kicks in — `cmd_install` writes both MCP entry and CLAUDE.md."""
-        monkeypatch.setattr(install_mod, "_check_scripts", lambda: [])
+        monkeypatch.setattr(
+            install_mod, "_check_scripts",
+            lambda: ScriptsCheck("ok", [], Path("/unused")),
+        )
 
         cmd_install(_ns(yes=True))
 
@@ -589,14 +615,16 @@ class TestPluginManifestContract:
     Claude Code has no `post_install` manifest hook (verified against the
     plugin docs 2026-06-12 — the key is silently ignored), so nothing on
     the plugin route may depend on one. Hooks ship via `hooks/hooks.json`
-    and agents via the auto-discovered root `agents/` dir; every launcher
-    uses the canonical `uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra
-    mcp` shape because the plugin route never puts console scripts on
-    PATH.
+    and agents via the auto-discovered root `agents/` dir; every launch
+    surface routes through a committed `${CLAUDE_PLUGIN_ROOT}/bin/…` shim
+    (weave-mcp-launch for the server, weave-hook-launch for the hooks) that
+    runs the uv-resolution ladder — because the plugin route never puts
+    console scripts on PATH and the harness fires with a stripped PATH that
+    a bare `uv` can't survive (#47/#52).
     """
 
     MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
-    HOOK_LAUNCHER = 'uv run --project "${CLAUDE_PLUGIN_ROOT}" --extra mcp weave-hook '
+    HOOK_LAUNCHER = '"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch" '
 
     def test_no_post_install(self):
         data = json.loads(self.MANIFEST.read_text(encoding="utf-8"))
@@ -618,9 +646,35 @@ class TestPluginManifestContract:
         assert commands, "plugin ships no hook commands"
         for cmd in commands:
             assert cmd.startswith(self.HOOK_LAUNCHER), (
-                f"hook command {cmd!r} bypasses the canonical uv launcher — "
-                "bare `weave-hook` is not on PATH for plugin-route users"
+                f"hook command {cmd!r} bypasses the committed launcher shim — "
+                "a bare `uv` here dies on the harness's stripped PATH (#47/#52), "
+                "and bare `weave-hook` is not on PATH for plugin-route users"
             )
+
+    def test_hooks_json_covers_mcp_post_tool_use_matcher(self):
+        """The RLVR context-served substrate needs PostToolUse to fire on
+        ``mcp__thinkweave__*`` tool calls (see
+        operations/retrieval_log.RETRIEVAL_TOOLS). The matcher existed only
+        in the ``weave hooks install`` machine route (#50) — plugin-route
+        users never logged a single MCP retrieval. hooks/hooks.json is the
+        single authoring place for hook shapes, so the matcher must live
+        here; the installer derives from this file."""
+        hooks = json.loads(
+            (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        matchers = {e["matcher"] for e in hooks["hooks"]["PostToolUse"]}
+        assert "mcp__thinkweave__.*" in matchers, (
+            "hooks.json PostToolUse lacks the MCP-tool matcher — the plugin "
+            "route never feeds retrieval_log/context_served without it"
+        )
+        mcp_entry = next(
+            e for e in hooks["hooks"]["PostToolUse"]
+            if e["matcher"] == "mcp__thinkweave__.*"
+        )
+        hook = mcp_entry["hooks"][0]
+        # Same handler entry point + timeout as the action-tool gate.
+        assert hook["command"].endswith(" post_tool_use")
+        assert hook["timeout"] == 30
 
     def test_agents_shipped_at_plugin_root(self):
         """Every worker the dream registry fans out to (plus the drain
@@ -717,3 +771,125 @@ class TestDevLink:
     def test_dev_unlink_noop_when_absent(self, dev_link_env, capsys):
         cmd_dev_unlink(_ns())
         assert "No dev-link" in capsys.readouterr().out
+
+
+def _fake_scripts_dir(tmp_path: Path, names=REQUIRED_SCRIPTS, exe: bool = False) -> Path:
+    """A controlled fake venv scripts dir containing the console scripts."""
+    d = tmp_path / "venv-scripts"
+    d.mkdir(exist_ok=True)
+    for name in names:
+        f = d / (f"{name}.exe" if exe else name)
+        f.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        f.chmod(0o755)
+    return d
+
+
+class TestCheckScriptsPathDistinction:
+    """Issue #47: `_check_scripts` must distinguish (a) console scripts
+    genuinely missing from the venv (pip-install remediation) from (b)
+    scripts present in the venv's Scripts/bin but that dir absent from
+    PATH (PATH remediation naming the exact dir). Controlled fake venv
+    layout + controlled PATH env — no internals mocked."""
+
+    def test_ok_when_scripts_resolve_on_path(self, tmp_path):
+        scripts_dir = _fake_scripts_dir(tmp_path)
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(scripts_dir))
+        assert check.state == "ok"
+        assert check.missing == []
+
+    def test_venv_off_path_when_scripts_exist_but_dir_not_on_path(self, tmp_path):
+        scripts_dir = _fake_scripts_dir(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(elsewhere))
+        assert check.state == "venv_off_path"
+        assert check.missing == list(REQUIRED_SCRIPTS)
+        assert check.scripts_dir == scripts_dir
+
+    def test_windows_exe_layout_counts_as_present_in_venv(self, tmp_path):
+        """On Windows the console scripts are weave.exe etc. — the venv-
+        presence probe must accept the .exe form."""
+        scripts_dir = _fake_scripts_dir(tmp_path, exe=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(elsewhere))
+        assert check.state == "venv_off_path"
+
+    def test_absent_when_scripts_not_in_venv_either(self, tmp_path):
+        empty_dir = tmp_path / "empty-venv-scripts"
+        empty_dir.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=empty_dir, path_env=str(elsewhere))
+        assert check.state == "absent"
+        assert check.missing == list(REQUIRED_SCRIPTS)
+
+    def test_partial_venv_is_absent_not_off_path(self, tmp_path):
+        """Only some scripts in the venv → a broken install, not a PATH
+        problem. Keep the pip remediation."""
+        scripts_dir = _fake_scripts_dir(tmp_path, names=REQUIRED_SCRIPTS[:1])
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        check = _check_scripts(scripts_dir=scripts_dir, path_env=str(elsewhere))
+        assert check.state == "absent"
+
+
+class TestInstallPathRemediation:
+    """cmd_install behavior per #47: venv_off_path yields a PATH-specific,
+    actionable message (exact dir + exact shell line), gated on --yes like
+    the other install writes; scripts-absent keeps the pip advice."""
+
+    @pytest.fixture
+    def off_path_env(self, tmp_path, monkeypatch):
+        """Real off-PATH condition via env/tmp control: scripts exist in a
+        fake interpreter scripts dir; PATH points elsewhere."""
+        scripts_dir = _fake_scripts_dir(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(install_mod, "_venv_scripts_dir", lambda: scripts_dir)
+        monkeypatch.setenv("PATH", str(elsewhere))
+        return scripts_dir
+
+    def test_off_path_without_yes_exits_with_path_specific_advice(
+        self, fake_claude_home, stub_install_validators, off_path_env, capsys
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cmd_install(_ns(yes=False))
+        assert exc.value.code != 0
+        err = capsys.readouterr().err
+        # PATH-specific: names the exact dir and the exact shell line
+        assert str(off_path_env) in err
+        assert "not on PATH" in err
+        assert f'export PATH="{off_path_env}:$PATH"' in err
+        # NOT the generic pip advice — the scripts are installed fine
+        assert "pip install" not in err
+        assert "Re-run with --yes" in err
+        # nothing written before consent
+        assert not fake_claude_home["claude_json"].exists()
+
+    def test_off_path_with_yes_warns_and_continues(
+        self, fake_claude_home, stub_install_validators, off_path_env, capsys
+    ):
+        cmd_install(_ns(yes=True))
+        captured = capsys.readouterr()
+        assert str(off_path_env) in captured.err
+        assert "not on PATH" in captured.err
+        # install proceeded: MCP entry written
+        cfg = json.loads(fake_claude_home["claude_json"].read_text())
+        assert SERVER_NAME in cfg["mcpServers"]
+
+    def test_absent_scripts_keep_pip_advice(
+        self, fake_claude_home, stub_install_validators, tmp_path, monkeypatch, capsys
+    ):
+        empty_dir = tmp_path / "empty-venv-scripts"
+        empty_dir.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(install_mod, "_venv_scripts_dir", lambda: empty_dir)
+        monkeypatch.setenv("PATH", str(elsewhere))
+        with pytest.raises(SystemExit) as exc:
+            cmd_install(_ns(yes=True))
+        assert exc.value.code != 0
+        err = capsys.readouterr().err
+        assert "required console scripts missing from PATH" in err
+        assert "pip install -e .[all]" in err

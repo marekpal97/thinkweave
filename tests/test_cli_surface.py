@@ -237,3 +237,40 @@ class TestHelpFormatting:
         for name, subparser in sub.choices.items():
             # Raises ValueError on an unescaped ``%`` in any help string.
             subparser.format_help()
+
+
+def _registered_subcommands() -> list[str]:
+    import argparse
+
+    from thinkweave.surfaces.cli import build_parser
+
+    parser = build_parser()
+    sub = next(
+        a for a in parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    return sorted(sub.choices)
+
+
+class TestHelpExitCode:
+    """Regression seam for #51: ``weave --help`` crashed with ValueError
+    (unescaped ``%`` rendered via argparse's ``help % params``) instead of
+    printing help. Drive the real entry point with ``--help`` argv — argparse's
+    help action must print and raise ``SystemExit(0)``; any unescaped ``%`` in
+    a reachable help string surfaces here as a ValueError instead."""
+
+    @staticmethod
+    def _assert_help_exits_zero(argv: list[str], capsys) -> None:
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 0, (
+            f"`weave {' '.join(argv)}` exited {exc.value.code}"
+        )
+        assert capsys.readouterr().out.strip() != ""
+
+    def test_top_level_help_exits_zero(self, capsys):
+        self._assert_help_exits_zero(["--help"], capsys)
+
+    @pytest.mark.parametrize("name", _registered_subcommands())
+    def test_subcommand_help_exits_zero(self, name: str, capsys):
+        self._assert_help_exits_zero([name, "--help"], capsys)

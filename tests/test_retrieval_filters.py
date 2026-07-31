@@ -190,12 +190,12 @@ class TestGraphFilters:
         self, vault: VaultManager, indexer: Indexer, search: Search
     ):
         # Build a small graph: note A -> source B, note A -> decision C.
-        a = vault.create_note(
+        vault.create_note(
             note_type=NoteType.NOTE,
             title="A",
             extra_frontmatter={"id": "n-aaaa1111"},
         )
-        b = vault.create_note(
+        vault.create_note(
             note_type=NoteType.SOURCE,
             title="B-source",
             extra_frontmatter={
@@ -205,7 +205,7 @@ class TestGraphFilters:
                 "cites": ["n-aaaa1111"],
             },
         )
-        c = vault.create_note(
+        vault.create_note(
             note_type=NoteType.DECISION,
             title="C-decision",
             extra_frontmatter={

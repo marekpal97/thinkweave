@@ -360,7 +360,7 @@ class TestIndexerExclusion:
         write_landing_docs(config, "test_proj", docs="all")
 
         # Re-index
-        stats = indexer.rebuild(full=True)
+        indexer.rebuild(full=True)
 
         # Landing docs should NOT be in the index
         from thinkweave.retrieval.search import Search

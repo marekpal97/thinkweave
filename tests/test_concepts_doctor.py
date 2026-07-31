@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from thinkweave.synthesis.concepts import (
-    DEAD_VOCAB_THRESHOLD,
     DOMAIN_MARKERS,
     _RESERVED_ONTOLOGY_KEYS,
     delete_concept_hub,

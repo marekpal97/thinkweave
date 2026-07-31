@@ -1030,7 +1030,9 @@ class Search:
             return f"Note {note_id} not found."
 
         lines = ["graph LR"]
-        safe = lambda s: s.replace('"', "'")
+        def safe(s: str) -> str:
+            return s.replace('"', "'")
+
         lines.append(f'  {note_id}["{safe(center["title"])}"]')
 
         nodes = self.get_related(note_id, depth=depth)

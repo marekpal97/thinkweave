@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from thinkweave.retrieval.temporal import (
-    TemporalEdge,
     TemporalGraph,
-    TemporalNode,
     entries_to_graph,
     render_evolution_section,
     render_mermaid,

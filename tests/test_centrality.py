@@ -133,11 +133,11 @@ class TestStorageAndQuery:
     ):
         # Create two notes so they appear in the index for the canonical_for
         # JOIN.
-        path_a = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "A", body="x", project="p",
             extra_frontmatter={"concepts": ["alpha"]},
         )
-        path_b = vault.create_note(
+        vault.create_note(
             NoteType.NOTE, "B", body="y", project="p",
             extra_frontmatter={"concepts": ["alpha"]},
         )

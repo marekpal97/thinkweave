@@ -10,11 +10,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
-from thinkweave.core import embedding_provider as ep
 from thinkweave.core.embedding_provider import (
     LiteLLMEmbeddingProvider,
     OpenAIEmbeddingProvider,

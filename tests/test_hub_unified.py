@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from thinkweave.synthesis.hub import (
     ALLOWED_FLAGS,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -409,6 +409,32 @@ class TestImportChatgpt:
         assert "source_type: conversation" in content
         assert "imported_from: chatgpt" in content
         assert "Test summary." in content
+
+    @patch("thinkweave.acquisition.importers.chatgpt.summarize_thread")
+    def test_source_frontmatter_shape(self, mock_summarize, conversations_file, vault_config):
+        """Pin the on-disk source frontmatter: the canonical source_type/title/
+        authors keys plus the chatgpt-specific fields. Empty url is dropped by
+        render_frontmatter. Holds identically before/after the
+        build_source_frontmatter adoption."""
+        from thinkweave.core.vault import parse_frontmatter
+
+        mock_summarize.return_value = {
+            "summary": "S", "key_questions": "", "key_insights": "", "concepts": ["python"],
+        }
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            import_chatgpt(config=vault_config, conversations_path=conversations_file)
+
+        sources = sorted(
+            (vault_config.vault_root / "sources" / "conversations").glob("*.md")
+        )
+        fm, _ = parse_frontmatter(sources[0].read_text(encoding="utf-8"))
+        assert fm["source_type"] == "conversation"
+        assert fm["title"]  # thread title preserved
+        assert fm["authors"] == []
+        assert "url" not in fm  # empty url dropped by render_frontmatter
+        assert fm["imported_from"] == "chatgpt"
+        assert "source_id" in fm
+        assert fm["proposed_concepts"] == ["python"]
 
     @patch("thinkweave.acquisition.importers.chatgpt.summarize_thread")
     def test_idempotency(self, mock_summarize, conversations_file, vault_config):

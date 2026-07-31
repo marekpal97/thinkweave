@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from thinkweave.core.config import Config
-from thinkweave.core.schemas import DecisionStatus, NoteType
+from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import (
     VaultManager,
     content_hash,

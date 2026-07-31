@@ -10,9 +10,7 @@ fallback when PRIORITIES is unset. The standalone ``*_feeds.yaml``
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-import pytest
 
 from thinkweave.acquisition.discover.strategies.rss_poll import RssPollStrategy
 

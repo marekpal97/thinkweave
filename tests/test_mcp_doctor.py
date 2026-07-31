@@ -49,6 +49,25 @@ CANONICAL_ENTRY = {
     "env": {},
 }
 
+# The portable-launcher shape the committed .mcp.json uses since #52.
+LAUNCHER_ENTRY = {
+    "type": "stdio",
+    "command": "bin/weave-mcp-launch",
+    "args": [],
+    "env": {},
+}
+
+
+def _make_fake_launcher(root: Path) -> Path:
+    """Executable stand-in for bin/weave-mcp-launch that exits 0 — the
+    doctor treats a clean exit as a resolving launcher."""
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    fake = bin_dir / "weave-mcp-launch"
+    fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    return fake
+
 
 # ---------- scope-detection tests ----------
 
@@ -182,6 +201,21 @@ class TestRegistrationScopes:
         assert result.passed, result.detail
 
 
+    def test_machine_uv_plus_project_launcher_is_equivalent(
+        self, tmp_path, monkeypatch
+    ):
+        """The portable launcher IS the uv-run invocation (#52): a machine
+        scope written by `weave install` (uv run shape) plus the committed
+        .mcp.json (launcher shape) must NOT read as conflicting scopes."""
+        claude_json = tmp_path / "claude.json"
+        _write_claude_json(claude_json, CANONICAL_ENTRY)
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
+        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        result = md.check_registration_scopes(tmp_path)
+        assert result.passed, result.detail
+        assert "identically" in result.detail
+
+
 # ---------- top-level driver tests ----------
 
 
@@ -285,6 +319,74 @@ class TestLauncherResolves:
         result = md.check_launcher_resolves(tmp_path, timeout_s=0.1)
         assert not result.passed
         assert "exited 2" in result.detail
+
+
+    def test_relative_launcher_command_resolves_against_project_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """.mcp.json's `bin/weave-mcp-launch` is relative to the PROJECT
+        dir (Claude Code spawns project-scope servers with cwd = project),
+        not to wherever the doctor process happens to run."""
+        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
+        _make_fake_launcher(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        result = md.check_launcher_resolves(tmp_path, timeout_s=5.0)
+        assert result.passed, result.detail
+        assert "exited 0" in result.detail
+
+    def test_plugin_launcher_command_expands_claude_plugin_root(
+        self, tmp_path, monkeypatch
+    ):
+        """The plugin manifest's command embeds ${CLAUDE_PLUGIN_ROOT};
+        the probe must expand it to the manifest's own plugin root."""
+        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        skills = tmp_path / "skills"
+        monkeypatch.setattr(md, "SKILLS_DIR", skills)
+        plugin_root = skills / "thinkweave"
+        manifest_dir = plugin_root / ".claude-plugin"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "thinkweave",
+                    "mcpServers": {
+                        "thinkweave": {
+                            "type": "stdio",
+                            "command": (
+                                "${CLAUDE_PLUGIN_ROOT}/bin/weave-mcp-launch"
+                            ),
+                            "args": [],
+                            "env": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        _make_fake_launcher(plugin_root)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        result = md.check_launcher_resolves(tmp_path, timeout_s=5.0)
+        assert result.passed, result.detail
+
+    def test_missing_relative_launcher_fails_with_resolved_path(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)  # no launcher on disk
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        result = md.check_launcher_resolves(tmp_path, timeout_s=5.0)
+        assert not result.passed
+        assert "bin/weave-mcp-launch" in result.detail
 
 
 # ---------- env-var check ----------

@@ -21,8 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
+from thinkweave.acquisition.importers.common import ImportManifest, index_imported_notes
 from thinkweave.core.config import Config, load_config
-from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 
@@ -349,22 +349,6 @@ def resolve_facebook_url(url: str, timeout: float = 15) -> ResolvedURL:
     )
 
 
-# ── Manifest I/O ──────────────────────────────────────────────────
-
-
-def _load_manifest(weave_dir: Path) -> dict:
-    path = weave_dir / _MANIFEST_NAME
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {"version": 1, "imported_urls": {}}
-
-
-def _save_manifest(weave_dir: Path, manifest: dict) -> None:
-    path = weave_dir / _MANIFEST_NAME
-    weave_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
-
 # ── Queue item creation ───────────────────────────────────────────
 
 
@@ -380,7 +364,7 @@ def _build_queue_body(resolved: ResolvedURL, msg: Message) -> str:
         parts.append("")
 
     parts.append("## Source")
-    parts.append(f"- **From**: Messenger self-chat")
+    parts.append("- **From**: Messenger self-chat")
     parts.append(f"- **Date sent**: {msg.timestamp.strftime('%Y-%m-%d')}")
     if resolved.original_url != resolved.url:
         parts.append(f"- **Original URL**: {resolved.original_url}")
@@ -479,7 +463,7 @@ def import_messenger(
         else:
             noise_count += 1
 
-    print(f"\n── Classification ──────────────────────────────────")
+    print("\n── Classification ──────────────────────────────────")
     print(f"  Direct (non-Facebook):  {len(direct)}")
     print(f"  Facebook (need resolve): {len(facebook)}")
     print(f"  Noise (filtered out):    {noise_count}")
@@ -535,21 +519,22 @@ def import_messenger(
 
             time.sleep(1.0)  # rate limit
 
-        print(f"\n  Facebook resolution complete:")
+        print("\n  Facebook resolution complete:")
         print(f"    Resolved (has URL):     {resolved_count}")
         print(f"    Description only:       {desc_only_count}")
         print(f"    Empty (no content):     {empty_count}")
         print(f"    Errors:                 {error_count}")
     elif not resolve:
-        print(f"\n  Skipping Facebook resolution (--no-resolve)")
+        print("\n  Skipping Facebook resolution (--no-resolve)")
 
     # Phase 3: Create queue items
-    print(f"\n── Creating queue items ─────────────────────────────")
+    print("\n── Creating queue items ─────────────────────────────")
     vm = VaultManager(config=config)
     vm.ensure_dirs()
 
-    manifest = _load_manifest(config.weave_dir)
-    imported_urls = manifest.get("imported_urls", {})
+    manifest = ImportManifest.load(
+        config.weave_dir, _MANIFEST_NAME, id_field="imported_urls"
+    )
 
     stats = {
         "total": len(messages),
@@ -560,11 +545,12 @@ def import_messenger(
         "noise": noise_count,
         "errors": 0,
     }
+    written_paths: list[Path] = []
 
     for msg, resolved in resolved_items:
         # Dedup key: resolved URL for direct/resolved, original FB URL for description_only
         dedup_key = resolved.url if resolved.category in ("direct", "resolved") else resolved.original_url
-        if dedup_key in imported_urls:
+        if manifest.is_imported(dedup_key):
             stats["skipped"] += 1
             continue
 
@@ -583,13 +569,9 @@ def import_messenger(
                 body=body,
                 tags=tags,
             )
+            written_paths.append(path)
 
-            # Index immediately
-            idx = Indexer(config=config)
-            idx.index_file(path)
-            idx.close()
-
-            imported_urls[dedup_key] = str(path.name)
+            manifest.mark(dedup_key, str(path.name))
             stats["queued"] += 1
             if resolved.category == "description_only":
                 stats["queued_needs_url"] += 1
@@ -602,16 +584,19 @@ def import_messenger(
 
         # Save manifest periodically
         if stats["queued"] % 50 == 0 and stats["queued"] > 0:
-            manifest["imported_urls"] = imported_urls
-            _save_manifest(config.weave_dir, manifest)
+            manifest.save()
 
     # Final manifest save
-    manifest["imported_urls"] = imported_urls
-    manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["source_file"] = str(json_path)
-    _save_manifest(config.weave_dir, manifest)
+    manifest.set_meta(
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        source_file=str(json_path),
+    )
+    manifest.save()
 
-    print(f"\n── Done ────────────────────────────────────────────")
+    # Index everything written this run in one pass (shared policy).
+    index_imported_notes(config, written_paths)
+
+    print("\n── Done ────────────────────────────────────────────")
     print(f"  Queued (with URL):    {stats['queued_resolved']}")
     print(f"  Queued (needs URL):   {stats['queued_needs_url']}")
     print(f"  Skipped (duplicate):  {stats['skipped']}")
@@ -629,7 +614,7 @@ def _dry_run_report(
     """Print a summary without fetching or writing."""
     total = len(direct) + len(facebook) + noise_count
 
-    print(f"\n── Dry Run Report ──────────────────────────────────\n")
+    print("\n── Dry Run Report ──────────────────────────────────\n")
     print(f"  Total messages:          {total}")
     print(f"  Direct (ready to queue): {len(direct)}")
     print(f"  Facebook (need resolve): {len(facebook)}")
@@ -645,7 +630,7 @@ def _dry_run_report(
 
     # Sample direct URLs
     if direct:
-        print(f"\n  Sample direct URLs:")
+        print("\n  Sample direct URLs:")
         for msg, url in direct[:10]:
             print(f"    {msg.timestamp.strftime('%Y-%m-%d')}  {url[:80]}")
         if len(direct) > 10:
@@ -655,7 +640,7 @@ def _dry_run_report(
     share_p = sum(1 for m in facebook if "/share/p/" in m.url)
     share = sum(1 for m in facebook if "/share/" in m.url and "/share/p/" not in m.url)
     other = len(facebook) - share_p - share
-    print(f"\n  Facebook URL types:")
+    print("\n  Facebook URL types:")
     print(f"    share/p/ (post links):   {share_p}")
     print(f"    share/ (photo/other):    {share}")
     print(f"    other (story/photo):     {other}")

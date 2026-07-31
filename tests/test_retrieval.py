@@ -3,14 +3,13 @@ decision_files, hybrid search, empty-query listing."""
 
 from __future__ import annotations
 
-from unittest.mock import patch
 
 import pytest
 
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
-from thinkweave.retrieval.search import Search
+from thinkweave.retrieval.search import Search, SearchResult
 from thinkweave.core.vault import VaultManager
 
 
@@ -758,9 +757,7 @@ class TestRrfKFromConfig:
     ``retrieval.rrf_k`` when no explicit ``rrf_k`` is passed."""
 
     @staticmethod
-    def _result(nid: str) -> "SearchResult":
-        from thinkweave.retrieval.search import SearchResult
-
+    def _result(nid: str) -> SearchResult:
         return SearchResult(
             id=nid, type="note", title=nid, path=f"{nid}.md",
             project="p1", date="2026-06-01", tags=[],

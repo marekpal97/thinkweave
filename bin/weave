@@ -12,6 +12,32 @@
 # (cd -P follows the dev-link symlink to the real checkout) and run the bundled
 # CLI via uv. `uv run weave` resolves the venv's console script, not this shim,
 # so there is no recursion.
+#
+# uv resolution matches bin/weave-mcp-launch (#52): PATH -> ~/.local/bin/uv ->
+# $UV_INSTALL_DIR/uv, loud failure otherwise. Harness shells frequently lack
+# ~/.local/bin on PATH (non-login shells); a bare `uv` here would make every
+# CLI call routed through this shim — /wrap's `weave wrap-finalize` first among
+# them (#47) — fail with a confusing "uv: command not found" or nothing at all.
+# Self-location is shell-builtin-only (no dirname) — same as
+# bin/weave-mcp-launch — so the shim still works on minimal harness shells
+# with a stripped PATH.
 set -euo pipefail
-root="$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-exec uv run --project "$root" --extra mcp weave "$@"
+src="${BASH_SOURCE[0]:-$0}"
+case $src in
+    */*) script_dir=${src%/*} ;;
+    *)   script_dir=. ;;
+esac
+root="$(CDPATH='' cd -P -- "$script_dir/.." && pwd)"
+
+if command -v uv >/dev/null 2>&1; then
+    uv_bin=$(command -v uv)
+elif [ -x "${HOME:-}/.local/bin/uv" ]; then
+    uv_bin="$HOME/.local/bin/uv"
+elif [ -n "${UV_INSTALL_DIR:-}" ] && [ -x "$UV_INSTALL_DIR/uv" ]; then
+    uv_bin="$UV_INSTALL_DIR/uv"
+else
+    echo 'bin/weave: uv not found (checked PATH, ~/.local/bin/uv, $UV_INSTALL_DIR/uv); install uv from https://docs.astral.sh/uv/getting-started/installation/ or add it to PATH' >&2
+    exit 127
+fi
+
+exec "$uv_bin" run --project "$root" --extra mcp weave "$@"

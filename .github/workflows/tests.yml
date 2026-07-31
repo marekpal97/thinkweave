@@ -37,17 +37,16 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run test suite
-        # Perf assertions can be flaky on shared CI runners; keep them in the
-        # run but tolerate host jitter by deselecting on the slowest matrix leg
-        # if it ever proves noisy: `-m "not perf"`.
-        run: uv run pytest -q -p no:cacheprovider
+        # Perf assertions proved flaky on shared runners (timing jitter redded
+        # the 3.12 leg on the #69 run), so CI deselects them; run them locally
+        # with plain `uv run pytest`.
+        run: uv run pytest -q -p no:cacheprovider -m "not perf"
 
   lint:
     runs-on: ubuntu-latest
-    # Informational for now: the tree has ~149 pre-existing ruff findings
-    # (mostly F401 unused imports in tests). Flip `continue-on-error` off once a
-    # dedicated cleanup pass lands, so lint becomes a required check.
-    continue-on-error: true
+    # Required check: the pre-existing findings were cleaned up (F-series
+    # fixed, E741 ignored in pyproject with rationale), so a red lint job now
+    # means a genuine regression.
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

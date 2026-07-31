@@ -29,7 +29,6 @@ from typing import Any
 
 import pytest
 
-from thinkweave.acquisition.discover.strategies import rss_poll
 from thinkweave.acquisition.discover.strategies.rss_poll import (
     RssPollStrategy,
     _build_news_item,

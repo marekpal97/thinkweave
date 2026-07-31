@@ -181,7 +181,7 @@ def test_get_completion_missing_key_raises(patched_sdk, monkeypatch):
     # the project root's real key.
     from thinkweave.core import api_keys
     monkeypatch.setattr(api_keys, "_PROJECT_ROOT", monkeypatch.__class__.__module__)  # placeholder; replaced below
-    import tempfile, os
+    import tempfile
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setattr(api_keys, "_PROJECT_ROOT", __import__("pathlib").Path(td))
         monkeypatch.chdir(td)
