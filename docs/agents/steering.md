@@ -10,7 +10,7 @@ substrate, and only the top-`weekly_budget` by evidence weight survive per run.
 lands it MUST route its candidates through `weave steering gate` and file **only
 what the `filed` list returns** — never a raw improve-arch/ponytail suggestion.
 
-## The four signals
+## The three signals
 
 All computed read-only from the derived index (`operations/steering.build_evidence_index`),
 each a pure aggregation over queried rows. Raw counts only — never a composite
@@ -21,20 +21,18 @@ score baked in; the weights rank, the counts ride the evidence block.
 | **rework / churn** | loop-run trajectory notes' `outcome_label` ∈ {`reworked`, `reworked-post-merge`} (#60 phase-1/2 verdicts) + summed `fix_rounds` | `files_touched` |
 | **superseded/contested decisions** | decisions with status `superseded`/`deprecated` OR a `supersedes`/`superseded_by` link | `file_paths` |
 | **gate-failure hotspots** | trajectory `gates[]` entries with `passed=false` | `files_touched` |
-| **behavioral pressure** | per-concept PageRank from `graph_ranks` (`pagerank:{concept}`) | concept |
 
-**Behavioral pressure is optional / zero-default.** `graph_ranks` is only
-populated by the dream apply phase when `dream.compute_pagerank` is on, so on a
-vault that has not dreamed this signal is uniformly `0` and contributes nothing
-— the other three signals still gate. A candidate carries the concepts it
-touches; its hub pressure is the sum of those concepts' PageRank.
+(A fourth signal — "behavioral pressure", per-concept PageRank from
+`graph_ranks` — was deleted by #96: knowledge-ontology centrality is a category
+error as a code-module-importance measure, and it was zero-default on any
+undreamed vault anyway. Steering runs on the three observable signals above.)
 
 ## The gate contract
 
 `gate_proposals(candidates, evidence_index, cfg) -> {filed, dropped}`:
 
-- A **candidate** is `{module | paths, rationale, concepts?}`. `paths` (or a
-  single `module`) are repo paths; matching is prefix-aware (`src/ops/` covers
+- A **candidate** is `{module | paths, rationale}`. `paths` (or a single
+  `module`) are repo paths; matching is prefix-aware (`src/ops/` covers
   `src/ops/dream.py`; `a/b.py` does not swallow `a/bc.py`).
 - A candidate with **no nonzero evidence signal** is **dropped**
   (`reason: "no cited evidence"`) — the anti-invention gate. Admission is about
@@ -45,8 +43,8 @@ touches; its hub pressure is the sum of those concepts' PageRank.
   (`reason: "exceeded weekly budget"`).
 - Each **filed** entry gains a `body` embedding a machine-readable ` ```json `
   evidence block (`{module, rework_count, fix_rounds, superseded_decisions,
-  gate_failures, hub_pressure, weight}`) — real counts from the index, never
-  invented — plus an `evidence` dict of the same.
+  gate_failures, weight}`) — real counts from the index, never invented — plus
+  an `evidence` dict of the same.
 
 ## CLI
 
@@ -68,7 +66,6 @@ weight_rework = 1.0        # per-signal multipliers for the evidence weight;
 weight_fix_rounds = 1.0    # raw counts are always preserved, weights only rank
 weight_superseded = 1.0
 weight_gate_failures = 1.0
-weight_hub_pressure = 1.0
 ```
 
 All optional; unset keys keep the defaults (budget 3, every weight 1.0). Nothing

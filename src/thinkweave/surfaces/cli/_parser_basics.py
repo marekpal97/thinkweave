@@ -666,7 +666,7 @@ def add_admin_subparsers(sub) -> None:
     steer_sub = p_steer.add_subparsers(dest="steering_action")
     p_steer_ev = steer_sub.add_parser(
         "evidence",
-        help="Show computed per-module evidence signals (rework, superseded, gate-failures, hub pressure).",
+        help="Show computed per-module evidence signals (rework, superseded, gate-failures).",
     )
     p_steer_ev.add_argument(
         "--module", default="",
