@@ -1,6 +1,6 @@
 ---
 name: issue-loop
-description: "Drain the ready-for-agent frontier of the GitHub issue DAG: implement each unblocked issue in an isolated worktree, run the configured gate pipeline (tests/diff/acceptance/review), and open a draft PR per issue. Headless-safe."
+description: "Drain the ready-for-agent frontier of the GitHub issue DAG: implement each unblocked issue in an isolated worktree, run the configured gate pipeline (diff/tests/acceptance/review/simplify), and open a draft PR per issue. Headless-safe."
 argument-hint: "[issue-number] | --dag <issue> to work one DAG | --stacked | --max-issues <n> | --set key=value | nothing to drain the frontier"
 disable-model-invocation: true
 ---
@@ -100,15 +100,40 @@ python scripts/issue_loop.py claim <N> --run-id <run-id>
 
 ### 1b. Implement
 
+**Prime from prior trajectories (claim-time).** Before spawning the
+implementer, fetch the reusable half of prior similar runs — this is the native
+`bd prime`: prior trajectory notes' Lessons for work whose concepts match this
+issue's labels.
+
+```bash
+python scripts/issue_loop.py prime <N> --run-id <run-id> \
+  --labels "<comma-separated issue labels>" --vault <vault-root> \
+  [--buffer <weave_dir>/buffer/<this-session-id>.jsonl] <set-flags>
+```
+
+The rail reads the derived index read-only, matches `[loop-run]` notes by the
+issue's concepts (labels), and emits JSON: `block` (markdown to splice),
+`primed`, `holdout`, `served` (the note ids surfaced). **Splice `block`
+verbatim into the implementer prompt, adjacent to the `decisions_for_file`
+standing order below** — it is the same class of context (prior decisions for
+touched files + prior lessons for similar work). When `block` is empty (a
+deliberate holdout — every `prime_holdout`th run runs unprimed for the
+served-context regression — or simply no matching trajectories), splice
+nothing and dispatch unchanged; the loop runs identically. Record `primed` and
+`served` for §3. When you pass `--buffer` (the loop session's buffer JSONL),
+the rail also logs the served ids as a `loop_prime` event that the indexer
+projects to `context_served(source='loop-prime')`, making served context
+recoverable per run from the index.
+
 Read the issue: `gh issue view <N> --comments`. Then dispatch an
 **implementer subagent** with worktree isolation (Agent tool,
 `isolation: "worktree"`). Its prompt must contain, verbatim: the issue body,
-the acceptance criteria, the branch name (`<branch_prefix><N>`), and these
-standing orders:
+the acceptance criteria, the branch name (`<branch_prefix><N>`), the spliced
+prime block (when non-empty), and these standing orders:
 
 - Read `ARCHITECTURE.md` §-relevant parts and check prior decisions for every
   file you touch (`weave_graph(file_path=…, filter='decisions_for_file')`;
-  fall back to `weave decisions-for-file` CLI if MCP is absent). Do not
+  fall back to `weave decisions --file <path>` CLI if MCP is absent). Do not
   re-litigate a settled decision — surface conflicts instead.
 - TDD per the probe (§0.5): when enforced, for each acceptance criterion
   write the failing test FIRST, watch it fail, then implement to green.
@@ -152,6 +177,37 @@ Run the configured gates **in order**, inside the implementer's worktree.
   refused bequest) — smells are **judgement calls reported in the PR body,
   never gate-failing**, and a documented repo standard overrides the
   baseline.
+- `kind: simplify` — the over-engineering trim. Runs **last, only after every
+  required gate is green**, and is safe by construction: it can only *shrink*
+  the verified diff and must preserve verified behavior. See the dedicated
+  flow below. `required = false` — it can never fail the pipeline; its
+  "failure" mode is a revert, not a block.
+
+**The simplify stage (`kind: simplify`, after review).** Once review passes:
+
+1. **Snapshot the tip.** `pre=$(git -C <worktree> rev-parse HEAD)`. In stacked
+   mode this is per-slice — the snapshot is the tip *before* this slice's
+   simplify, so a revert only unwinds the trim, never prior slices.
+2. **Get the delete-list.** Dispatch a **fresh subagent** with the text of the
+   **vendored** `docs/agents/ponytail-review.command.md` skill (host
+   `/simplify` is the fallback if unavailable) and `git diff origin/main...HEAD`
+   for the slice. It returns a delete-list (one line per cut) and a
+   `net: -<N> lines possible` tally. If it says `Lean already. Ship.`, skip the
+   rest — note "simplify: lean already" in the PR body and move on.
+3. **Apply.** Apply the delete-list as a single commit on the branch.
+4. **Re-verify.** Re-run the gates named in the gate's `rerun` key (`tests`,
+   then `acceptance`) on the shrunk diff, in order — `tests` via the rail
+   (`check --gate tests`), `acceptance` via a fresh judge subagent, same as §1c.
+5. **Keep or revert.**
+   - **Both green** → keep the shrink. Note the win in the PR body
+     (`simplify: -<N> lines, tests+acceptance green`).
+   - **Either red** → `git -C <worktree> reset --hard $pre` to discard the
+     trim and ship the **pre-simplify** diff. Add the gate's `revert_note`
+     (`⚠ simplify-reverted`) to the PR body with the failing gate named.
+
+Because a red re-verify resets to `$pre`, simplify never blocks shipping and
+never regresses behavior — worst case the shipped diff is exactly the
+post-review diff. That is the whole point of running it last and non-required.
 
 **On a required-gate failure:** feed the evidence (gate id, summary, detail,
 per-criterion verdicts, review findings) back to the implementer subagent
@@ -189,6 +245,57 @@ the issue closes on merge. Release is implicit: the claim (the assignee in
 `claim_mode = assign`, the label otherwise) stays until merge closes the
 issue — a claimed+closed issue is inert; if the PR is rejected, a human
 unassigns / unlabels to re-queue.
+
+**Risk-lane triage — label what a human should look at.** Daily runs
+outpace review, so after the PR is opened, classify it so a human reviews
+only what matters. Assemble the shipped PR's signal set — you already hold
+all of it — into a JSON file and run:
+
+```bash
+python scripts/issue_loop.py triage <N> --signals-json <signals-file>
+```
+
+Signals schema (you compute them per shipped PR). The three **safety-critical**
+keys are REQUIRED and fail closed — an absent key or an unrecognized enum value
+classifies **red** (naming the offending key/value), never green-eligible,
+because you assemble these signals and enum drift (`high` / `partial`) is
+realistic. The rest are optional and default benignly:
+
+| key               | type      | required | meaning                                             |
+| ----------------- | --------- | -------- | --------------------------------------------------- |
+| `review_severity` | str       | **yes**  | worst review finding: `none`/`minor`/`major`/`critical` |
+| `baseline_green`  | bool      | **yes**  | the tests gate was green on the pristine worktree   |
+| `acceptance`      | str       | **yes**  | acceptance verdict: `met`/`uncertain`/`not-met`     |
+| `fix_rounds`      | int       | no (→0)  | implement→gate→fix iterations (0 = first try)       |
+| `diff_lines`      | int       | no (→0)  | total changed lines (the diff-guard gate's count)   |
+| `files_touched`   | list[str] | no (→[]) | repo-relative paths the PR changed                  |
+| `tests_touched`   | bool      | no (→F)  | the change carries test coverage                    |
+
+The rail returns `{issue, lane, label, reasons}` — precedence red > yellow >
+green, `reasons` lists every triggered rule. **You** apply the label via gh
+(the rail only classifies):
+
+```bash
+gh issue edit <N> --add-label <label>   # or: gh pr edit <pr-url> --add-label
+```
+
+- **green** (`auto-merge-ok`) — first-try, small, test-covered, `<= minor`
+  review, green baseline, no sensitive path. Only emitted when
+  `triage.green_enabled = true` (ship default: **false** → a would-be-green
+  PR is labeled `review-light` instead). Green is safe ONLY where GitHub
+  branch protection + required CI actually guard the merge; enable it per the
+  training-mode graduation, not before.
+- **yellow** (`review-light`) — passed, but with fix rounds, a medium diff, a
+  watched path, or no coverage signal: a human skims the trajectory note's
+  "How it went".
+- **red** (`ready-for-human`) — sensitive path (always, regardless of size),
+  big diff, degraded baseline, `major`/`critical` review, or uncertain/not-met
+  acceptance. This reuses the `on_gate_failure` label `ready-for-human`
+  deliberately — same "human, please look" rung as a gate failure.
+
+Thresholds and the sensitive-path list are `[triage]` knobs in `loop.toml`
+(override per run with `--set triage.green_enabled=true` etc.), never
+hardcoded.
 
 **Teardown.** Once the PR is open the worktree has served its purpose —
 the branch lives on origin and review happens from there. From the main
@@ -253,22 +360,122 @@ path + branch + why), so a human can `git worktree remove` them after
 acting on the evidence. If nothing was shippable, say what the human must do to
 unblock the DAG (usually: merge open loop PRs).
 
-## 3. Feed the vault — PROPOSAL, do not execute until accepted
+## 3. Feed the vault — write one trajectory note per processed issue
 
-Design: `docs/agents/issue-loop-memory.md`. Once accepted: for each
-processed issue, assemble the deterministic half —
+Owner-approved 2026-07-15 and enabled (design: `docs/agents/issue-loop-memory.md`).
+Run unattended — do not gate on user approval. For each processed issue,
+assemble the deterministic half —
 
 ```bash
 python scripts/issue_loop.py trajectory <N> --cwd <worktree> \
-  --gates-json <results-file> --fix-rounds <R> --outcome <o> \
-  --pr-url <url> --run-id <run-id>
+  --gates-json <results-file> --skills-json <dispatch-log> [--skill-centric] \
+  [--primed | --no-primed] [--served-json <served-ids-file>] \
+  [--trace-json <trace-file>] \
+  --fix-rounds <R> --outcome <o> --pr-url <url> --run-id <run-id>
 ```
 
-— then fill the judgment half and write ONE note: body ≤1K chars
-(What / How it went / Lessons; omit Lessons when there are none), concepts
-chosen from the ontology (`weave_concepts` first; the payload's
-`concept_hints` are raw material, not concepts), and
-`weave_create(type=note, tags=[loop-run], session_id=<this session>,
-frontmatter=<payload frontmatter>)`. If MCP is down, fall back to
-`weave add -f …`. Do not duplicate gate evidence or run history — the
-tracker and PR own those.
+Mirror the §1b prime verdict: pass `--primed` with `--served-json` (a JSON list
+of the `served` ids the prime emitted) when this issue's implementer received
+prime context, or `--no-primed` when it was a holdout (`primed: false`, no
+served ids). Omitting both keeps the pre-#57 shape. This frontmatter mirror is
+markdown-truth for the served-context regression — the trajectory's `outcome`
+(and #60's outcome judge) regressed against `primed`/`served` separates
+"context helped" from "easy issue".
+
+`--skills-json` points at a JSON file you write from what the loop dispatched
+for this issue: a list of `{id, role, outcome, fix_rounds_attributed}`, one
+per stage skill you ran — the implementer subagent, the acceptance judge
+(`kind: acceptance` gate), the reviewer (`kind: review` gate), and any future
+stage (ponytail, tdd). `role` is the stage role, `outcome` is how that
+invocation resolved (e.g. `shipped` / `met` / `not-met` / `passed`), and
+`fix_rounds_attributed` is how many fix rounds that gate/skill caused (attribute
+each round in §1c to the gate that triggered it; the total is `--fix-rounds`).
+Omit `--skills-json` and the payload carries `skills: []`. Add `--skill-centric`
+when the record is primarily about a skill invocation (SkillOpt raw material) —
+it adds the `skill-invocation` tag so `weave_search(tags=[skill-invocation])`
+returns skill-attributed records.
+
+`--trace-json` (issue #85) points at a JSON file **you compose from the gate
+agents' own reports** — no new model call, you already have these in context:
+the reviewer's findings + reasoning, the simplify gate's cut/keep rationale (the
+over-engineering description), the acceptance judge's per-criterion evidence and
+any verdict flips, and the TDD red-confirmation. Condense them into the envelope
+
+```json
+{
+  "rounds":     [{"gate": "review", "finding": "<prose>", "severity": "minor",
+                  "disposition": "accepted", "fixed_by": "<prose>"}],
+  "criteria":   [{"id": "AC1", "verdict": "met", "flipped_by_round": 1}],
+  "simplify":   {"outcome": "applied", "lines_delta": -12,
+                 "cuts": [{"what": "<prose>", "why": "<prose>"}],
+                 "kept": [{"what": "<prose>", "why": "<prose>"}]},
+  "edge_cases": ["<prose>"],
+  "tdd":        {"red_confirmed": true}
+}
+```
+
+The rail only accepts and shapes it (unknown keys dropped; a non-dict trace is
+rejected). It lands under the single `trace` frontmatter key — the
+machine-readable half of the tracker's gate evidence, not a second prose owner.
+Counts (`lines_delta`, `flipped_by_round`) are filter/join keys, not signal.
+Omit `--trace-json` for the pre-#85 shape.
+
+**Mint portable lessons as insight notes, then link them (issue #85).** The
+trajectory body is the run-causal register only (What / How it went) — there is
+`no Lessons section`. The reusable wisdom a *future* run would apply is minted as
+one or more separate **insight notes** at ship time (concepts at creation, from
+the ontology — `weave_concepts` first), then linked from the trajectory via
+`builds_on`. The register test that sorts every artifact:
+`run-bound semantic trace` → the trajectory's `trace`; a `portable lesson` → an
+`insight note`, linked; an enumerable fact → a `frontmatter key`. Prime v2 serves
+those insight bodies by following the `builds_on` links, so a lesson written once
+is reused verbatim.
+
+Compose, per issue:
+
+1. **Insight notes** for the portable lessons (skip when the run taught nothing
+   reusable). The MCP `weave_create` schema accepts only
+   `type/title/body/project/tags/frontmatter/session_id` — extra top-level
+   kwargs are **silently dropped**, so `concepts` MUST be nested under
+   `frontmatter=`:
+
+   ```python
+   weave_create(type=note, title="<portable lesson title>",
+                body="<the reusable wisdom, prose>",
+                session_id="<this run's session>",
+                frontmatter={"concepts": ["<ontology-term>", "<ontology-term>"]})
+   ```
+
+   Capture each returned insight id.
+
+2. **The trajectory note** — body ≤1K chars (What / How it went only), then one
+   `weave_create` with the payload's frontmatter **plus** a `builds_on` list of
+   the insight ids from step 1 (again nested under `frontmatter=`, same
+   dropped-kwarg trap):
+
+   ```python
+   weave_create(type=note, tags=<payload tags>,
+                session_id="<this run's session>",
+                frontmatter={**<payload frontmatter>, "builds_on": [<insight ids>]})
+   ```
+
+   The payload's `tags` already carry `loop-run` (plus `skill-invocation` when
+   `--skill-centric`). If MCP is down, fall back to `weave add -f …`.
+
+Do not duplicate gate evidence or run history — the tracker and PR own those.
+Optionally print the first run's composed notes as a sanity check; non-blocking.
+
+## 4. Wrap coverage — do NOT run `/wrap` here
+
+Headless loop runs are wrap-covered without an explicit run-end `/wrap`. The
+`SessionStart` hook mints this run's session note (with a `source_session` UUID,
+no `processed` flag); the nightly `/dream` phase-2 `dream-wrap-worker` catch-up
+picks it up (`type: session`, not processed, recent, non-empty `events.jsonl`)
+and synthesises + `weave wrap-finalize`s it. The deterministic per-issue content
+is already in the §3 trajectory notes, so nothing is lost by wrap time.
+
+Do not run `/wrap` or `weave wrap-finalize` from the loop: session synthesis and
+**decision promotion** belong to the session-note owner, and letting the loop
+mint decisions would break the single-owner rule. See
+[`vault-issue-contract.md`](vault-issue-contract.md) for the full division of
+labor and its contract test.

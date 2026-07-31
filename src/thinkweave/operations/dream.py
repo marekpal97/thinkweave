@@ -205,6 +205,13 @@ class DreamCycleScan:
     # stays API-free. ``has_signal`` fires when ``dirty`` or ``removed`` is
     # non-empty.
     memory_seam: dict = field(default_factory=dict)
+    # Loop trajectory notes with an outcome judgment due — the phase-2
+    # ``dream-outcome-worker`` input (issue #60). Each entry
+    # ``{id, path, pr_url, due_phases: [1|2...]}``; phase 1 is due when no
+    # phase-1 entry exists, phase 2 when a merged phase-1 entry's window
+    # (``dream.trajectory_phase2_days``) has elapsed. Index-driven (loop-run
+    # tag + ``pr_url``); the worker drains via ``weave trajectory judge``.
+    trajectory_outcomes: list = field(default_factory=list)
     timings: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
 
@@ -1634,6 +1641,20 @@ def scan(
     finally:
         result.timings["memory_seam"] = time.perf_counter() - _t
 
+    # 10. trajectory outcomes (phase-2 dream-outcome-worker input) --------
+    # Index-driven diff of loop-run trajectory notes needing a phase-1 or
+    # phase-2 outcome judgment. Read-only — the worker fetches PR state and
+    # writes via `weave trajectory judge`.
+    _t = time.perf_counter()
+    try:
+        from thinkweave.operations.trajectory_outcome import scan_trajectory_outcomes
+
+        result.trajectory_outcomes = scan_trajectory_outcomes(cfg)
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"trajectory_outcomes: {e}")
+    finally:
+        result.timings["trajectory_outcomes"] = time.perf_counter() - _t
+
     # ``knowledge_delta`` stats are sub-keyed by grain (``concept`` /
     # ``event``) so cycle telemetry can see at a glance whether the cycle
     # has work for both digest variants, just one, or neither.
@@ -1662,6 +1683,7 @@ def scan(
         "unwrapped_sessions": len(result.unwrapped_sessions),
         "rejudge_queue": len(result.rejudge_queue),
         "seam_link_queue": len(result.seam_link_queue),
+        "trajectory_outcomes": len(result.trajectory_outcomes),
         "memory_seam": {
             "dirty": len((result.memory_seam or {}).get("dirty", [])),
             "removed": len((result.memory_seam or {}).get("removed", [])),

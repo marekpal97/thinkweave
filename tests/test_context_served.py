@@ -188,6 +188,68 @@ class TestRebuildProjection:
         assert rows[0]["note_id"] == "n-fresh999"
 
 
+class TestLoopPrimeProjection:
+    def test_loop_prime_event_projects_distinct_source(
+        self, config: Config, vault: VaultManager
+    ):
+        """A claim-time prime served-context event (issue_loop.py writes a
+        retrieval event tagged tool='loop_prime') projects to
+        context_served(source='loop-prime') — distinct from agent-pulled
+        onthefly — so served ids are recoverable per run from the index."""
+        sess_id, _ = _seed_session(vault, [
+            {"ts": "2026-07-18T00:30:00Z", "type": "retrieval",
+             "tool": "loop_prime",
+             "args": {"run_id": "loop-20260718-abcd", "issue": 57},
+             "returned_ids": ["n-prior111", "dec-abc222"]},
+            {"ts": "2026-07-18T00:31:00Z", "type": "retrieval",
+             "tool": "mcp__thinkweave__weave_search",
+             "returned_ids": ["n-prior111"]},  # same note, agent-pulled later
+        ])
+        idx = Indexer(config=config)
+        try:
+            idx.rebuild(full=True)
+            rows = _select_all(idx, sess_id)
+        finally:
+            idx.close()
+        prime = {r["note_id"] for r in rows if r["source"] == "loop-prime"}
+        onthefly = {r["note_id"] for r in rows if r["source"] == "onthefly"}
+        assert prime == {"n-prior111", "dec-abc222"}
+        # The later agent-pull is onthefly, NOT folded into loop-prime.
+        assert onthefly == {"n-prior111"}
+
+    def test_narrow_check_table_is_migrated_to_admit_loop_prime(
+        self, config: Config, vault: VaultManager
+    ):
+        """A pre-#57 vault created context_served with a CHECK that rejects
+        'loop-prime'. Opening the Indexer drops+recreates the derived table
+        (SQLite can't ALTER a CHECK), so the loop-prime projection succeeds
+        instead of raising IntegrityError."""
+        sess_id, sess_path = _seed_session(vault, [
+            {"type": "retrieval", "tool": "loop_prime", "returned_ids": ["n-p1"]},
+        ])
+        # Simulate the legacy schema: narrow CHECK without 'loop-prime'.
+        idx0 = Indexer(config=config)
+        idx0.db.execute("DROP TABLE context_served")
+        idx0.db.executescript(
+            "CREATE TABLE context_served ("
+            " session_id TEXT NOT NULL, note_id TEXT NOT NULL,"
+            " source TEXT NOT NULL CHECK(source IN ('startup','onthefly','prompttime')),"
+            " ts TEXT, PRIMARY KEY (session_id, note_id, source));"
+        )
+        idx0.db.commit()
+        idx0.close()
+
+        # Reopening triggers the migration in _init_schema; rebuild then
+        # projects the loop-prime row without a CHECK violation.
+        idx = Indexer(config=config)
+        try:
+            idx.rebuild(full=True)
+            rows = _select_all(idx, sess_id)
+        finally:
+            idx.close()
+        assert [(r["note_id"], r["source"]) for r in rows] == [("n-p1", "loop-prime")]
+
+
 class TestIndexFileProjection:
     def test_index_file_on_session_projects_log(
         self, config: Config, vault: VaultManager

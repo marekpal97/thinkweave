@@ -40,11 +40,22 @@ def cmd_rlvr(args: argparse.Namespace) -> None:
 
 
 def _cmd_export(args: argparse.Namespace) -> None:
-    from thinkweave.operations.rlvr_export import export_rows
+    from thinkweave.operations.rlvr_export import export_rows, export_trajectory_rows
 
     cfg = load_config()
     project = args.project or ""
     explode = bool(getattr(args, "explode_history", False))
+
+    def _emit(row: dict) -> int:
+        if explode:
+            n = 0
+            for sub_row in _explode_row(row):
+                print(json.dumps(sub_row))
+                n += 1
+            return n
+        print(json.dumps(row))
+        return 1
+
     # Stream — no buffering. A vault with thousands of decisions should
     # still produce its first row immediately.
     count = 0
@@ -55,13 +66,18 @@ def _cmd_export(args: argparse.Namespace) -> None:
         until=args.until or "",
         committed_only=bool(args.committed_only),
     ):
-        if explode:
-            for sub_row in _explode_row(row):
-                print(json.dumps(sub_row))
-                count += 1
-        else:
-            print(json.dumps(row))
-            count += 1
+        count += _emit(row)
+
+    # Loop task-trajectories (issue #60) stream after decisions, same schema.
+    # `--committed-only` is a decision-only filter (trajectories have no
+    # commit gate) so it does not apply here.
+    for row in export_trajectory_rows(
+        cfg,
+        project=project,
+        since=args.since or "",
+        until=args.until or "",
+    ):
+        count += _emit(row)
 
     # Status line goes to stderr so the JSONL on stdout stays clean for
     # downstream pipes. Match the shell convention "stdout is data; stderr

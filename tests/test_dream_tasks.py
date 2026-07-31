@@ -90,6 +90,7 @@ def _populated_scan() -> SimpleNamespace:
         # Phase-2 surfaces — populated to exercise the phase-2 path too.
         unwrapped_sessions=[{"session_id": "ses-zzz"}],
         rejudge_queue=[{"decision_id": "dec-zzz"}],
+        trajectory_outcomes=[{"id": "n-traj1", "pr_url": "u", "due_phases": [1]}],
         memory_seam={"dirty": [{"key": "proj::fact-a"}], "removed": []},
         # Post-2026-06-07 grain split: knowledge_delta is {concept,event} →
         # has_signal needs at least one substantive bucket on *either* slice.
@@ -130,8 +131,8 @@ def _populated_scan() -> SimpleNamespace:
 class TestRegistrySanity:
     """The shape-correctness contract every spec promises."""
 
-    def test_registry_has_ten_specs(self):
-        assert len(REGISTRY) == 10
+    def test_registry_has_eleven_specs(self):
+        assert len(REGISTRY) == 11
 
     def test_every_spec_has_nonempty_surface_and_worker(self):
         for spec in REGISTRY:
@@ -178,6 +179,7 @@ class TestRegistrySanity:
             "dream-seam-link-worker",
             "dream-seam-worker",
             "dream-digest-worker",
+            "dream-outcome-worker",
         }
         assert names == expected, f"registry missing {expected - names}"
 
@@ -215,9 +217,10 @@ class TestEnabledTasks:
             "dream-priority-worker",
         }
 
-    def test_populated_scan_phase2_emits_all_four(self):
+    def test_populated_scan_phase2_emits_all_five(self):
         # seam-link is absent (no seam_link_queue on the populated scan);
-        # the memory-seam worker fires on the populated memory_seam.dirty.
+        # the memory-seam worker fires on the populated memory_seam.dirty;
+        # the outcome worker fires on the populated trajectory_outcomes.
         tasks = enabled_tasks(_populated_scan(), phase=2)
         names = {t["worker_name"] for t in tasks}
         assert names == {
@@ -225,6 +228,7 @@ class TestEnabledTasks:
             "dream-judge-worker",
             "dream-seam-worker",
             "dream-digest-worker",
+            "dream-outcome-worker",
         }
 
     def test_partial_phase1_only_emits_promotion(self):

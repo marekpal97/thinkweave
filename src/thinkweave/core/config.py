@@ -184,6 +184,30 @@ class Config:
     # the cap survives for the next cycle.
     dream_rejudge_cap: int = 20
 
+    # Trajectory outcome judge (issue #60 — the phase-2 ``dream-outcome-worker``).
+    # ``phase2_days``: the closed-horizon delay before the delayed-signal
+    # (rework-blame + revert) pass runs, measured from the PR's merge date.
+    # ``rework_threshold``: the fraction of a merged diff rewritten within that
+    # window above which phase-2 rules ``reworked-post-merge`` (a categorical
+    # label — the raw blame counts are always recorded on the entry, never a
+    # composite score). ``agent_identities``: substrings that mark a PR commit
+    # as agent-produced (matched against author login/email/name, incl.
+    # co-authors) — loop commits carry the Claude co-author, so a pure-human
+    # rework commit lacking it flips merged-clean → reworked.
+    dream_trajectory_phase2_days: int = 14
+    dream_trajectory_rework_threshold: float = 0.5
+    dream_trajectory_agent_identities: tuple[str, ...] = ("claude", "noreply@anthropic.com")
+
+    # Evidence-gated steering (issue #62 — the gate the slow self-improvement
+    # loop #61 calls before filing proposals). ``weekly_budget``: max proposals
+    # filed per run, ranked by evidence weight — the anti-invention cap.
+    # ``steering_weights``: per-signal multipliers for the evidence weight (raw
+    # counts are always preserved; the weights only rank). Empty by default so
+    # every signal weighs 1.0 (see operations/steering.DEFAULT_WEIGHTS); the
+    # ``[steering]`` TOML section fills it from ``weight_<signal>`` keys.
+    steering_weekly_budget: int = 3
+    steering_weights: dict = field(default_factory=dict)
+
     # Knowledge-delta window (hours) for the phase-2 digest worker.
     dream_knowledge_delta_hours: int = 24
 
@@ -541,6 +565,17 @@ def load_config() -> Config:
             cfg.dream_probe_window_days = int(dream_cfg["probe_window_days"])
         if "rejudge_cap" in dream_cfg:
             cfg.dream_rejudge_cap = int(dream_cfg["rejudge_cap"])
+        if "trajectory_phase2_days" in dream_cfg:
+            cfg.dream_trajectory_phase2_days = int(dream_cfg["trajectory_phase2_days"])
+        if "trajectory_rework_threshold" in dream_cfg:
+            cfg.dream_trajectory_rework_threshold = float(
+                dream_cfg["trajectory_rework_threshold"]
+            )
+        if "trajectory_agent_identities" in dream_cfg:
+            raw = dream_cfg["trajectory_agent_identities"]
+            if isinstance(raw, str):
+                raw = [t.strip() for t in raw.split(",") if t.strip()]
+            cfg.dream_trajectory_agent_identities = tuple(raw)
         if "knowledge_delta_hours" in dream_cfg:
             cfg.dream_knowledge_delta_hours = int(
                 dream_cfg["knowledge_delta_hours"]
@@ -566,6 +601,20 @@ def load_config() -> Config:
             cfg.seam_recheck_days = int(seam_cfg["recheck_days"])
         if "cap" in seam_cfg:
             cfg.seam_cap = int(seam_cfg["cap"])
+
+        # Evidence-gated steering ([steering] — issue #62)
+        steering_cfg = data.get("steering", {})
+        if "weekly_budget" in steering_cfg:
+            cfg.steering_weekly_budget = int(steering_cfg["weekly_budget"])
+        # Signal weights arrive as ``weight_<signal>`` keys (weight_rework,
+        # weight_fix_rounds, weight_superseded, weight_gate_failures,
+        # weight_hub_pressure); strip the prefix into the steering_weights map.
+        weights: dict = {}
+        for key, val in steering_cfg.items():
+            if key.startswith("weight_"):
+                weights[key[len("weight_"):]] = float(val)
+        if weights:
+            cfg.steering_weights = weights
 
         # Extraction policy
         extract_cfg = data.get("extract", {})

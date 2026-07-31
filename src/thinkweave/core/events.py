@@ -452,6 +452,147 @@ def classify_probe(prompt: Prompt, events: list[dict]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Feedback register (issue #70) — the human reward channel
+# ---------------------------------------------------------------------------
+#
+# A deterministic, text-only classifier that labels a user prompt as a
+# ``correction``, a ``confirmation``, or ``neutral``. This is the reward
+# signal for the self-improvement flywheel: which of our actions the user
+# pushed back on, and which they endorsed. It is deliberately a heuristic
+# with NO model call — the UserPromptSubmit hook runs it inline on every
+# prompt (see ``surfaces/hooks/handler._handle_user_prompt_submit``), so it
+# must be pure regex/string work.
+#
+# Recall is best-effort and FALSE-NEUTRAL is the safe failure mode: a missed
+# correction is lost signal (recoverable — the next turn usually re-states
+# it), whereas a false ``correction``/``confirmation`` injects noise into a
+# reward channel that downstream RLVR consumers trust. So we bias for
+# PRECISION on the two non-neutral registers and let the ambiguous middle
+# fall through to ``neutral``.
+#
+# Detection is two-tier, both anchored to avoid substring collisions:
+#   1. Leading word — the first alphabetic token (skipping leading
+#      punctuation/emoji) matched against a small lexicon. Whole-token match,
+#      so "yesterday"/"note"/"nothing" never trip the "yes"/"no" leads.
+#   2. Strong phrases — matched anywhere, but only unambiguous multi-word
+#      phrases ("that's wrong", "looks good") that don't fire inside a
+#      neutral instruction.
+# Lexicons are module-level tuples so they are documented and testable.
+#
+# Lead-lexicon precision carve-outs (fix round 1, learned from real task
+# prompts that leaked non-neutral):
+#   - ``correct`` is NOT a confirmation lead — "correct the typo in line 5"
+#     is an imperative verb, not an endorsement.
+#   - ``wait`` / ``don't`` / ``stop`` are NOT correction leads — too common as
+#     the head of an ordinary instruction ("wait for the build then run
+#     tests", "don't forget the changelog", "stop the server before deploy").
+#   - ``revert`` / ``undo`` ARE kept as correction leads: in a coding-agent
+#     session a leading "revert"/"undo" is overwhelmingly corrective of prior
+#     agent work, which outweighs the rare neutral use.
+# Two guard sets refine the leads further:
+#   - Neutral overrides — a leading "no <softener>" ("no problem/worries/
+#     rush") is courtesy, not correction; checked before the correction rule.
+#   - Hedge suppression — a confirming signal FOLLOWED by "but/except/
+#     although" is a partial-correction wearing a confirmation mask, the worst
+#     mislabel for the reward channel; downgraded to neutral.
+
+_FEEDBACK_CORRECTION_LEADS = frozenset({
+    "no", "nope", "nah", "wrong", "incorrect", "actually", "revert", "undo",
+})
+_FEEDBACK_CORRECTION_PHRASES = (
+    "that's wrong", "thats wrong", "that is wrong",
+    "that's not right", "thats not right", "that's incorrect",
+    "not what i asked", "not what i wanted", "not what i meant",
+    "don't do that", "that's not what", "you got it wrong",
+)
+_FEEDBACK_CONFIRMATION_LEADS = frozenset({
+    "yes", "yep", "yeah", "yup", "perfect", "great",
+    "exactly", "lgtm", "nice", "awesome", "ty", "thanks",
+})
+_FEEDBACK_CONFIRMATION_PHRASES = (
+    "looks good", "that's right", "thats right", "that's exactly",
+    "that's perfect", "well done", "good job", "ship it",
+    "nailed it", "keep going",
+)
+
+# Leading courtesy phrases whose "no" is not a correction.
+_FEEDBACK_NEUTRAL_OVERRIDES = (
+    "no problem", "no worries", "no worry", "no rush",
+)
+
+_FEEDBACK_LEAD_WORD_RE = re.compile(r"[^a-z]*([a-z']+)")
+# Hedge words that, when they trail a confirming signal, void the confirmation.
+_FEEDBACK_HEDGE_RE = re.compile(r"\b(but|except|although)\b")
+
+
+def classify_feedback(text: str) -> str:
+    """Register a user prompt as ``correction`` | ``confirmation`` | ``neutral``.
+
+    Deterministic, recall-best-effort, false-neutral-safe (see the module
+    section header above). Correction takes precedence over confirmation
+    when a prompt carries both signals — the corrective push-back is the
+    stronger improvement signal.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return "neutral"
+
+    # Neutral overrides beat the leading-"no" correction rule.
+    if any(t.startswith(p) for p in _FEEDBACK_NEUTRAL_OVERRIDES):
+        return "neutral"
+
+    m = _FEEDBACK_LEAD_WORD_RE.match(t)
+    first = m.group(1) if m else ""
+
+    if first in _FEEDBACK_CORRECTION_LEADS or any(
+        p in t for p in _FEEDBACK_CORRECTION_PHRASES
+    ):
+        return "correction"
+
+    # Confirmation — but a hedge that FOLLOWS the confirming signal suppresses
+    # it (a hedged partial-correction must not be logged as endorsement).
+    conf_idx = 0 if first in _FEEDBACK_CONFIRMATION_LEADS else -1
+    if conf_idx == -1:
+        for p in _FEEDBACK_CONFIRMATION_PHRASES:
+            i = t.find(p)
+            if i != -1:
+                conf_idx = i
+                break
+    if conf_idx != -1:
+        if _FEEDBACK_HEDGE_RE.search(t, conf_idx):
+            return "neutral"
+        return "confirmation"
+
+    return "neutral"
+
+
+def feedback_events(events_jsonl: Path) -> list[dict]:
+    """Enumerate ``type == "feedback"`` events from a session's events JSONL.
+
+    The enumeration seam for wrap/export consumers of the feedback register.
+    Reads either the archived ``events.jsonl`` (post-Stop) or a live buffer
+    file — both share the append-only JSONL shape — and returns the feedback
+    event dicts (``register``, ``ts``, ``session_id``, ``prompt_ref``) in
+    file order. Skips malformed rows; returns ``[]`` when the file is absent
+    or carries no feedback rows. No attribution is resolved here: consumers
+    fuzzy-join on timestamp adjacency within the session.
+    """
+    if not events_jsonl.exists():
+        return []
+    out: list[dict] = []
+    for line in events_jsonl.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("type") == "feedback":
+            out.append(row)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Auto-todo extraction (Phase 4 E5)
 # ---------------------------------------------------------------------------
 

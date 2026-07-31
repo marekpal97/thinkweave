@@ -458,6 +458,43 @@ class TestScan:
         assert result.stats["unwrapped_sessions"] == 0
         assert "unwrapped_sessions" in result.timings
 
+    def test_unwrapped_sessions_surfaces_headless_loop_session(
+        self, config: Config, vault: VaultManager
+    ):
+        """Capture-parity contract (issue #63): a *loop-shaped* session — the
+        one the SessionStart hook mints for a headless ``claude -p`` / worktree
+        run, carrying a ``source_session`` UUID and no interactive ``/wrap`` —
+        meets the dream-wrap-worker catch-up eligibility exactly like an
+        interactive session. This proves headless loop runs are wrap-covered
+        without an explicit run-end ``/wrap``.
+        """
+        # Mirror hooks/handler.py::_ensure_session: session note stamped with
+        # the Claude Code session UUID, no ``processed`` flag.
+        sess_path = vault.create_note(
+            NoteType.SESSION,
+            "Session 2026-07-18 00:30",
+            body="# headless loop run\n",
+            project="t",
+            extra_frontmatter={"source_session": "ff51b921-dead-beef-0000-000000000063"},
+        )
+        # The hook buffers events into a sibling events.jsonl; a headless loop
+        # run accrues at least the launch prompt.
+        (sess_path.parent / "events.jsonl").write_text(
+            '{"type":"prompt","text":"/loop","session_id":"ff51b921","ts":"2026-07-18T00:30:00Z"}\n',
+            encoding="utf-8",
+        )
+        _index(config)
+
+        result = scan(config, project="t")
+        fm, _ = parse_frontmatter(sess_path.read_text(encoding="utf-8"))
+        assert fm.get("source_session")  # the loop-shaped marker is present
+        assert "processed" not in fm     # never interactively wrapped
+        ids = [e["session_id"] for e in result.unwrapped_sessions]
+        assert fm["id"] in ids, (
+            "a headless loop session must be a dream-wrap-worker catch-up "
+            "candidate — otherwise headless runs land unwrapped"
+        )
+
     # --- rejudge_queue surface (phase-2 judge-worker input) --------------
 
     def test_rejudge_queue_drains_disk_entries(

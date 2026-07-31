@@ -119,14 +119,16 @@ CREATE INDEX IF NOT EXISTS idx_ch_ancestor ON concept_hierarchy(ancestor);
 -- Context served to a session, projected from per-session retrieval_log.jsonl.
 -- One row per (session, note, source). `source` is the closed-set distinction
 -- between SessionStart payload notes ('startup'), on-the-fly MCP retrievals the
--- agent pulled ('onthefly'), and system-pushed prompt-time enrichment
--- ('prompttime', R2). Keeping prompttime distinct from onthefly preserves the
--- agent-judgment signal in the RLVR export. Feeds the RLVR decision-context
--- export. Rebuildable from retrieval_log.jsonl — markdown stays truth.
+-- agent pulled ('onthefly'), system-pushed prompt-time enrichment
+-- ('prompttime', R2), and claim-time issue-loop priming ('loop-prime', #57 —
+-- prior-trajectory Lessons served into the implementer prompt). Keeping each
+-- push source distinct from agent-pulled onthefly preserves the agent-judgment
+-- signal in the RLVR export. Feeds the RLVR decision-context export.
+-- Rebuildable from retrieval_log.jsonl — markdown stays truth.
 CREATE TABLE IF NOT EXISTS context_served (
     session_id TEXT NOT NULL,
     note_id    TEXT NOT NULL,
-    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime')),
+    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime', 'loop-prime')),
     ts         TEXT,
     PRIMARY KEY (session_id, note_id, source)
 );
@@ -340,18 +342,20 @@ class Indexer:
                 )
             self.db.commit()
 
-        # R2: context_served gained a 'prompttime' source. Older vaults created
-        # the table with CHECK(source IN ('startup','onthefly')), which rejects
-        # prompttime INSERTs. SQLite can't ALTER a CHECK constraint, but the
-        # table is 100% derived from retrieval_log.jsonl — drop and let
-        # SCHEMA_SQL recreate it with the widened constraint; the next
-        # _rebuild_context_served (same rebuild) repopulates it.
+        # context_served's `source` CHECK has widened over time (R2 added
+        # 'prompttime'; #57 added 'loop-prime'). Older vaults created the table
+        # with a narrower CHECK that rejects the new-source INSERTs. SQLite
+        # can't ALTER a CHECK, but the table is 100% derived from
+        # retrieval_log.jsonl — drop and let SCHEMA_SQL recreate it with the
+        # current constraint; the next _rebuild_context_served (same rebuild)
+        # repopulates it. Gate on the newest token: any table lacking
+        # 'loop-prime' predates the current schema.
         cs_sql_row = self.db.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type='table' AND name='context_served'"
         ).fetchone()
         cs_sql = cs_sql_row[0] if cs_sql_row else None
-        if cs_sql and "prompttime" not in cs_sql:
+        if cs_sql and "loop-prime" not in cs_sql:
             self.db.execute("DROP TABLE context_served")
             self.db.executescript(SCHEMA_SQL)
             self.db.commit()
@@ -1443,14 +1447,19 @@ class Indexer:
                 if etype == "startup":
                     src = "startup"
                 elif etype == "retrieval":
-                    # R2 write-backs are retrieval events tagged with the
-                    # prompt-time sentinel — system-pushed, not agent-pulled —
-                    # so they get their own source to keep onthefly clean.
-                    src = (
-                        "prompttime"
-                        if ev.get("tool") == "prompt_time_retrieval"
-                        else "onthefly"
-                    )
+                    # Retrieval events carry a source distinction by their tool
+                    # sentinel: system-pushed enrichment (prompt-time R2, or
+                    # issue-loop claim-time priming #57 — see
+                    # scripts/issue_loop.py:LOOP_PRIME_TOOL) each gets its own
+                    # source so agent-pulled 'onthefly' stays a clean signal for
+                    # the RLVR export.
+                    tool = ev.get("tool")
+                    if tool == "prompt_time_retrieval":
+                        src = "prompttime"
+                    elif tool == "loop_prime":
+                        src = "loop-prime"
+                    else:
+                        src = "onthefly"
                 else:
                     continue
                 ts = ev.get("ts", "")

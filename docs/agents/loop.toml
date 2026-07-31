@@ -33,6 +33,13 @@ run_mode = "pass"
 #                  PR closes the whole set at the end. One review, no
 #                  merge-waits mid-DAG — the trade is a bigger diff to review.
 delivery = "pr-per-issue"
+# prime_holdout: claim-time priming (issue_loop.py prime <N>) splices prior
+# trajectories' Lessons into the implementer prompt. Every Nth run is a
+# deliberate HOLDOUT — dispatched unprimed — so #60's outcome regression can
+# separate "context helped" from "easy issue". The holdout is deterministic
+# per run-id (sha1(run_id) mod N == 0), not random. 0 disables holdout (always
+# prime). Per-run override: --set prime_holdout=0.
+prime_holdout = 5
 
 [tdd]
 # auto: red→green TDD is ENFORCED in implementer standing orders iff the
@@ -47,12 +54,46 @@ runnable = "ready-for-agent"
 claimed = "agent-claimed"
 on_gate_failure = "ready-for-human"
 
+# ── Risk-lane triage (issue_loop.py triage) ───────────────────────────────
+# After all gates pass, the orchestrator assembles the shipped PR's signal set
+# and runs `triage --signals-json` to classify it into a lane — green
+# (auto-merge-ok), yellow (review-light), red (ready-for-human) — so a human
+# reviews only what matters. The rail only CLASSIFIES; the orchestrator applies
+# the label via gh. red reuses the on_gate_failure label `ready-for-human`
+# deliberately (same "human, please look" rung). Precedence red > yellow >
+# green; every triggered rule is reported. All thresholds are knobs here.
+[triage]
+# green (auto-merge-ok) only makes sense where GitHub branch protection +
+# required CI actually guard the merge. Ship conservative: OFF by default. A
+# would-be-green PR is labeled review-light instead until a repo graduates out
+# of training mode. Per-run: --set triage.green_enabled=true.
+green_enabled = false
+# Sensitive paths → always red, regardless of size/first-try/review. Three
+# pattern forms: dir prefix (trailing '/'), bare basename (matches at any
+# depth), glob (*/?/[ — matched against the basename). Translated to THIS
+# repo's layout: the hooks, the CLI+MCP surface (surfaces/mcp/ holds the MCP
+# tool-signature files), the ontology + sources config by basename, any schema.
+sensitive_paths = [
+    "hooks/",
+    "src/thinkweave/surfaces/",
+    "ontology.yaml",
+    "sources.yaml",
+    "*schema*",
+]
+# Watched paths → at most yellow (skim, never gate). Empty by default; add
+# dirs that warrant a human glance without being hard-sensitive.
+watched_paths = []
+green_max_diff_lines = 150     # green requires the diff below this; >= is a medium diff (yellow)
+green_requires_first_try = true  # green requires fix_rounds == 0
+red_min_diff_lines = 800       # "big diff" → red
+
 # ── Gate pipeline ─────────────────────────────────────────────────────────
 # Ordered. kinds: command | diff (deterministic, run by the script)
-#                 acceptance | review (LLM-judged, run by the command in
-#                 fresh subagent contexts). Adding another command/diff gate
-# is config-only; a new *kind* needs a dispatch branch in issue_loop.py or
-# a section in the /issue-loop command.
+#                 acceptance | review | simplify (LLM-judged / orchestrated,
+#                 run by the command in fresh subagent contexts). Adding
+# another command/diff gate is config-only; a new *kind* needs a dispatch
+# branch in issue_loop.py (deterministic kinds) or a section in the
+# /issue-loop command (orchestrated kinds).
 
 [[gates]]
 id = "diff-guard"
@@ -80,3 +121,21 @@ kind = "review"
 required = true
 block_on = ["critical", "major"]   # finding severities that fail the gate
 smells_baseline = true   # report Fowler code smells as judgement calls — never gate-failing
+
+# simplify runs LAST, after review, and is safe by construction: it can only
+# SHRINK an already-verified diff and must preserve verified behavior. The
+# orchestrator (issue-loop.command.md §1c-simplify) snapshots the tip, dispatches
+# a subagent with the VENDORED ponytail-review skill on the slice diff, applies
+# its delete-list as a commit, then re-runs `rerun` (the deterministic + behavioral
+# gates) on the shrunk diff. If either goes red it hard-resets to the pre-simplify
+# tip and ships the original diff with `revert_note` in the PR body — so this gate
+# NEVER fails the pipeline. That is why required=false: its "failure" mode is the
+# revert, not a block. skill names the vendored delete-list source
+# (docs/agents/ponytail-review.command.md; the host /simplify skill is the fallback).
+[[gates]]
+id = "simplify"
+kind = "simplify"
+required = false
+skill = "ponytail-review"          # vendored under docs/agents/; host /simplify is the fallback
+rerun = ["tests", "acceptance"]    # re-verify the shrunk diff against these gate ids, in order
+revert_note = "⚠ simplify-reverted"  # PR-body note when the shrunk diff is discarded

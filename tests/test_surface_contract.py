@@ -122,9 +122,16 @@ class TestCliSurface:
         # `weave config` (show + set-vault — a platform-resolved user-config
         # surface so /onboard never shells `uv run python -c` or hardcodes the
         # XDG path, which is wrong on Windows) added 2026-06-21: 45 → 46.
-        # CLAUDE.md §7 reflects the same count; if either slips, the
-        # other catches doc drift.
-        assert len(_DISPATCH) == 46
+        # `weave trajectory` (judge — the deterministic issue-loop trajectory
+        # outcome judge / phase-2 dream-outcome-worker rail, issue #60) added
+        # 2026-07-18: 46 → 47.
+        # `weave steering` (evidence / gate — the evidence-gated steering + weekly
+        # budget the slow self-improvement loop #61 calls before filing proposals,
+        # issue #62) added 2026-07-18: 47 → 48.
+        # docs/CLI-AND-MCP.md ("The CLI exposes N subcommands" + the "N CLI
+        # subcommands × 17 MCP tools" inventory header) reflects the same count;
+        # if either slips, the other catches doc drift.
+        assert len(_DISPATCH) == 48
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():
@@ -178,6 +185,21 @@ class TestDocReferences:
         assert not unknown, (
             "skill/agent markdown references `weave` subcommands that are "
             f"not in _DISPATCH: {unknown}"
+        )
+
+    def test_every_dispatch_subcommand_documented_in_cli_reference(self):
+        # The reverse of test_doc_cli_invocations_exist_in_dispatch: every
+        # `weave <subcommand>` in _DISPATCH must appear in the CLI reference
+        # (docs/CLI-AND-MCP.md), so a new subcommand that skips the doc is
+        # caught here — the exact drift that shipped `weave trajectory` /
+        # `weave steering` while the doc still said 46/47.
+        doc = (REPO_ROOT / "docs" / "CLI-AND-MCP.md").read_text(encoding="utf-8")
+        documented = set(self._BACKTICK.findall(doc))
+        documented |= set(self._LINE_START.findall(doc))
+        undocumented = set(_DISPATCH) - documented
+        assert not undocumented, (
+            "weave subcommands in _DISPATCH but absent from docs/CLI-AND-MCP.md: "
+            f"{sorted(undocumented)}"
         )
 
     def test_agent_allowlisted_mcp_tools_exist(self):

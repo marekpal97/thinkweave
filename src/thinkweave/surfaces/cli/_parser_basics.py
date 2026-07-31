@@ -626,6 +626,69 @@ def add_admin_subparsers(sub) -> None:
         help="Print a 'N rows emitted' summary on stderr after streaming.",
     )
 
+    p_traj = sub.add_parser(
+        "trajectory",
+        help=(
+            "Judge issue-loop trajectory notes for PR outcomes (the phase-2 "
+            "dream-outcome-worker rail). Appends prediction_history-shaped "
+            "outcome entries + an outcome_label. Logic in "
+            "operations/trajectory_outcome."
+        ),
+    )
+    traj_sub = p_traj.add_subparsers(dest="trajectory_action")
+    p_traj_judge = traj_sub.add_parser(
+        "judge",
+        help="Fetch PR state (gh) + delayed signals (git), classify, append outcome entries.",
+    )
+    p_traj_judge.add_argument(
+        "--phase", choices=["both", "1", "2"], default="both",
+        help="Which judgment phase(s) to run (default: both). 1 = at merge/close; "
+             "2 = delayed signals at +dream.trajectory_phase2_days.",
+    )
+    p_traj_judge.add_argument(
+        "--limit", type=int, default=None,
+        help="Cap trajectory notes examined this run (default: all due).",
+    )
+    p_traj_judge.add_argument(
+        "--json", action="store_true",
+        help="Emit the {judged, skipped, errors} result as one JSON line.",
+    )
+
+    p_steer = sub.add_parser(
+        "steering",
+        help=(
+            "Evidence-gated steering for the slow self-improvement loop (#61). "
+            "Compute per-module evidence signals and gate candidate proposals "
+            "against them — no evidence → dropped, capped at the weekly budget. "
+            "Logic in operations/steering."
+        ),
+    )
+    steer_sub = p_steer.add_subparsers(dest="steering_action")
+    p_steer_ev = steer_sub.add_parser(
+        "evidence",
+        help="Show computed per-module evidence signals (rework, superseded, gate-failures, hub pressure).",
+    )
+    p_steer_ev.add_argument(
+        "--module", default="",
+        help="Aggregate the evidence for a single module path prefix (default: all modules with signal).",
+    )
+    p_steer_ev.add_argument(
+        "--json", action="store_true",
+        help="Emit the evidence signals as one JSON line.",
+    )
+    p_steer_gate = steer_sub.add_parser(
+        "gate",
+        help="Gate candidate proposals against the evidence substrate; print {filed, dropped}.",
+    )
+    p_steer_gate.add_argument(
+        "--proposals-json", required=True,
+        help="File with the candidate proposals: a list of {module|paths, rationale, concepts?} (or {candidates: [...]}).",
+    )
+    p_steer_gate.add_argument(
+        "--json", action="store_true",
+        help="Emit the {filed, dropped} result as one JSON line.",
+    )
+
     p_sources = sub.add_parser(
         "sources",
         help="List, inspect, and scaffold source types",

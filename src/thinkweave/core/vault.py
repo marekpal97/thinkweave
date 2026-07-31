@@ -862,10 +862,15 @@ class VaultManager:
                 continue
 
             results.append(note)
-            if len(results) >= limit:
-                break
 
-        return results
+        # Sort newest-first, THEN truncate. rglob yields files in arbitrary
+        # filesystem order, so a bare truncation would silently drop the most
+        # recent notes on a large vault (#81: empty weave_timeline past 100
+        # sessions). Newest-first determinism benefits every caller. The
+        # index-driven rewrite that would avoid the O(vault) scan stays
+        # deferred (#31).
+        results.sort(key=lambda n: n.date, reverse=True)
+        return results[:limit]
 
     def resolve_wikilink(self, name: str) -> Path | None:
         """Find the note file matching a [[wikilink]] name."""
