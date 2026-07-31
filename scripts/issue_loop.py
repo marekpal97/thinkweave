@@ -64,12 +64,7 @@ DEFAULT_CONFIG: dict = {
         "mode": "auto",  # auto: enforced iff the baseline probe is green
     },
     "dispatch": {
-        # Write-time simplification pressure at dispatch (issue #89): true →
-        # the orchestrator splices the vendored ponytail persona
-        # (docs/agents/ponytail-persona.md) + the epic's north-star block into
-        # implementer/fix-round prompts (reviewer + acceptance judge get the
-        # north-star block only). false → splice nothing; dispatch prompts
-        # are byte-identical to the pre-#89 loop.
+        # Splice persona + north-star into dispatch prompts (issue #89); semantics: issue-loop.command.md §1b.
         "persona": True,
     },
     "labels": {

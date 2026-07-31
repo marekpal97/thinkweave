@@ -127,16 +127,12 @@ recoverable per run from the index.
 
 **Dispatch blocks (issue #89) — write-time simplification pressure.** When
 `dispatch.persona` is on (loop.toml `[dispatch] persona = true`, the default),
-splice two blocks into the implementer prompt, adjacent to the prime block —
-they are the same class of context (steering that must be present while the
-code is being written, because dispatch is the only point where write-time
-pressure works):
+splice two blocks into the implementer prompt, adjacent to the prime block:
 
 1. **The ponytail persona** — the body of the **vendored**
    `docs/agents/ponytail-persona.md` (everything below its provenance header).
-   Read that file and splice its text; NEVER paste a copy maintained anywhere
-   else — the vendored file is the single source (pinned upstream sha, MIT
-   notice in-header), and this doc deliberately does not duplicate it.
+   Read that file and splice its text; never duplicate it here — the
+   vendored file is the single source.
 2. **The epic's north-star block, verbatim.** When the issue belongs to an
    epic that carries a north-star block, splice that epic's block; the current
    one (epic #88) is:
@@ -197,8 +193,7 @@ Run the configured gates **in order**, inside the implementer's worktree.
   passes per its `threshold` (`all` or `majority`).
 - `kind: review` — dispatch a **fresh reviewer subagent** (code-reviewer
   type) on the diff, with — when `dispatch.persona` is on — the
-  **north-star block only** (§1b; same rule as the acceptance judge: goal,
-  not persona). It returns findings with severities
+  **north-star block only** (§1b). It returns findings with severities
   (critical/major/minor/nit). The gate fails if any finding's severity is in
   `block_on`. With `smells_baseline = true`, the reviewer also checks the
   Fowler smell baseline (mysterious name, duplicated code, feature envy,
@@ -244,8 +239,7 @@ per-criterion verdicts, review findings) back to the implementer subagent
 (SendMessage to the same agent — it keeps its context) for a fix round.
 When `dispatch.persona` is on, re-splice **both dispatch blocks** (§1b —
 persona from the vendored file + north-star verbatim) into the fix-round
-message: fix rounds are write-time too, and the pressure must survive the
-round trip.
+message.
 Re-run the pipeline **from the first failed gate**. After `max_fix_rounds`
 exhausted:
 
