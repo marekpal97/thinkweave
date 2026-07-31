@@ -38,8 +38,9 @@ centrality measuring code-module importance):
    ``passed=false`` counted over ``files_touched``.
 
 Config knobs live in the ``[steering]`` section of ``config.toml`` (see
-``core/config.py``): ``weekly_budget`` (default 3) and the four signal weights.
-Nothing here is hardcoded posture — the numbers are all knobs.
+``core/config.py``): ``weekly_budget`` (default 3) and the four weight knobs —
+one per signal, plus the rework signal carries a separate ``fix_rounds`` churn
+weight. Nothing here is hardcoded posture — the numbers are all knobs.
 """
 
 from __future__ import annotations

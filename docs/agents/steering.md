@@ -68,5 +68,6 @@ weight_superseded = 1.0
 weight_gate_failures = 1.0
 ```
 
-All optional; unset keys keep the defaults (budget 3, every weight 1.0). Nothing
-is hardcoded posture — the budget and weights are loop config knobs.
+All optional; unset keys keep the defaults (budget 3, every weight 1.0). Unknown
+`weight_*` keys (e.g. the #96-deleted `weight_hub_pressure`) are ignored.
+Nothing is hardcoded posture — the budget and weights are loop config knobs.

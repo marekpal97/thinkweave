@@ -175,7 +175,7 @@ class TestEvidenceFor:
 # ---------------------------------------------------------------------------
 
 
-THREE_SIGNALS = {"rework", "fix_rounds", "superseded", "gate_failures"}
+SIGNAL_WEIGHT_KEYS = {"rework", "fix_rounds", "superseded", "gate_failures"}
 BLOCK_SCHEMA = {
     "module", "paths", "rework_count", "fix_rounds",
     "superseded_decisions", "gate_failures", "weight",
@@ -189,14 +189,15 @@ class TestThreeSignalContract:
     """
 
     def test_default_weights_carry_exactly_the_three_signals(self):
-        # The weight vocabulary IS the signal set — config seam.
-        assert set(steering.DEFAULT_WEIGHTS) == THREE_SIGNALS
+        # The weight vocabulary IS the signal set (rework carries its
+        # fix_rounds churn companion, hence four keys) — config seam.
+        assert set(steering.DEFAULT_WEIGHTS) == SIGNAL_WEIGHT_KEYS
 
     def test_evidence_index_has_exactly_the_file_keyed_maps(self):
         import dataclasses
 
         names = {f.name for f in dataclasses.fields(steering.EvidenceIndex)}
-        assert names == THREE_SIGNALS
+        assert names == SIGNAL_WEIGHT_KEYS
 
     def test_evidence_block_schema_has_no_hub_pressure(self):
         block = steering.evidence_for(_index(rework={"m.py": 1}), {"module": "m.py"})
@@ -410,7 +411,10 @@ class TestConfigKnobs:
             "vault_root = "
             + repr(str(vault))
             + "\n\n[steering]\nweekly_budget = 5\n"
-            "weight_rework = 2.5\nweight_gate_failures = 0.0\n",
+            "weight_rework = 2.5\nweight_gate_failures = 0.0\n"
+            # An unknown signal weight (e.g. the #96-deleted hub_pressure) must
+            # pass through inert — evidence_for only reads the known keys.
+            "weight_hub_pressure = 9.0\n",
             encoding="utf-8",
         )
         import os
@@ -433,6 +437,15 @@ class TestConfigKnobs:
         assert merged["superseded"] == 1.0
         # the gate reads the same merged view through cfg
         assert steering._cfg_budget(cfg) == 5
+        # the unknown weight_hub_pressure key is inert: the computed weight is
+        # the hand-summed product of the four known signals only
+        # (2.5*2 rework + 1.0*3 fix_rounds + 1.0*1 superseded + 0.0*4 gates)
+        idx = _index(
+            rework={"m.py": 2}, fix_rounds={"m.py": 3},
+            superseded={"m.py": 1}, gate_failures={"m.py": 4},
+        )
+        block = steering.evidence_for(idx, {"module": "m.py"}, weights=merged)
+        assert block["weight"] == pytest.approx(2.5 * 2 + 1.0 * 3 + 1.0 * 1 + 0.0 * 4)
 
     def test_budget_zero_is_honored_not_swallowed_to_default(self, tmp_path):
         # A config weekly_budget = 0 means "file nothing" (a valid pause knob);
@@ -535,6 +548,31 @@ class TestCliContract:
         mods = {m["module"]: m for m in result["modules"]}
         assert mods["src/a.py"]["rework_count"] == 1
         assert mods["src/a.py"]["fix_rounds"] == 3
+
+    def test_evidence_cli_human_readable_prints_the_three_signals(
+        self, vault_factory, monkeypatch, capsys
+    ):
+        # The json=False path (_print_block) — one line per module carrying
+        # exactly the three-signal vocabulary, no hub_pressure.
+        from thinkweave.surfaces.cli.steering import cmd_steering
+
+        tv = vault_factory()
+        _loop_run(tv, issue=1, outcome_label="reworked", fix_rounds=3,
+                  files=["src/a.py"],
+                  gates=[{"id": "tests", "passed": False}])
+        tv.indexed()
+        monkeypatch.setattr(
+            "thinkweave.surfaces.cli.steering.load_config", lambda: tv.config
+        )
+        args = argparse_ns(steering_action="evidence", module="", json=False)
+        cmd_steering(args)
+        out = capsys.readouterr().out
+        assert "src/a.py" in out
+        assert "rework=1" in out
+        assert "fix_rounds=3" in out
+        assert "superseded=0" in out
+        assert "gate_failures=1" in out
+        assert "hub" not in out
 
 
 def argparse_ns(**kw):
