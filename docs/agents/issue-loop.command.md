@@ -125,11 +125,37 @@ the rail also logs the served ids as a `loop_prime` event that the indexer
 projects to `context_served(source='loop-prime')`, making served context
 recoverable per run from the index.
 
+**Dispatch blocks (issue #89) — write-time simplification pressure.** When
+`dispatch.persona` is on (loop.toml `[dispatch] persona = true`, the default),
+splice two blocks into the implementer prompt, adjacent to the prime block —
+they are the same class of context (steering that must be present while the
+code is being written, because dispatch is the only point where write-time
+pressure works):
+
+1. **The ponytail persona** — the body of the **vendored**
+   `docs/agents/ponytail-persona.md` (everything below its provenance header).
+   Read that file and splice its text; NEVER paste a copy maintained anywhere
+   else — the vendored file is the single source (pinned upstream sha, MIT
+   notice in-header), and this doc deliberately does not duplicate it.
+2. **The epic's north-star block, verbatim.** When the issue belongs to an
+   epic that carries a north-star block, splice that epic's block; the current
+   one (epic #88) is:
+
+   <!-- verbatim from epic #88 — three lines, kept unwrapped on purpose -->
+   > **Goal:** fewer POCs; deep but interpretable modules with boundaries at likely redesign points; conceptual fidelity — retrieval, triaging, and trajectory composition are different concerns and never share a bucket; generic utils (parsing, coercion, path matching) are never defined alongside key logic.
+   > **Anti-goals:** no new half-mechanisms (a capability ships with its consumer or not at all); no contract asserted in prose without an enforcing seam; no behavior change during the mechanical package split.
+   > **Provenance:** distilled from the owner's 18 review comments on PR #86 and the loop-v3 plan (session 2026-07-31).
+
+When `dispatch.persona` is off (`--set dispatch.persona=false`), splice
+neither block anywhere — every dispatch prompt (implementer, fix round,
+reviewer, acceptance judge) is **byte-identical** to the pre-#89 loop.
+
 Read the issue: `gh issue view <N> --comments`. Then dispatch an
 **implementer subagent** with worktree isolation (Agent tool,
 `isolation: "worktree"`). Its prompt must contain, verbatim: the issue body,
 the acceptance criteria, the branch name (`<branch_prefix><N>`), the spliced
-prime block (when non-empty), and these standing orders:
+prime block (when non-empty), the two dispatch blocks above (when
+`dispatch.persona` is on), and these standing orders:
 
 - Read `ARCHITECTURE.md` §-relevant parts and check prior decisions for every
   file you touch (`weave_graph(file_path=…, filter='decisions_for_file')`;
@@ -164,11 +190,15 @@ Run the configured gates **in order**, inside the implementer's worktree.
   ```
 - `kind: acceptance` — dispatch a **fresh judge subagent** (no implementation
   context). Give it: the issue's acceptance criteria, `git diff
-  origin/main...HEAD` from the worktree, and the test output. It returns one
+  origin/main...HEAD` from the worktree, the test output, and — when
+  `dispatch.persona` is on — the **north-star block only** (§1b; it judges
+  against the goal, not the persona). It returns one
   verdict per criterion (`met` / `not-met` + one-line evidence). The gate
   passes per its `threshold` (`all` or `majority`).
 - `kind: review` — dispatch a **fresh reviewer subagent** (code-reviewer
-  type) on the diff. It returns findings with severities
+  type) on the diff, with — when `dispatch.persona` is on — the
+  **north-star block only** (§1b; same rule as the acceptance judge: goal,
+  not persona). It returns findings with severities
   (critical/major/minor/nit). The gate fails if any finding's severity is in
   `block_on`. With `smells_baseline = true`, the reviewer also checks the
   Fowler smell baseline (mysterious name, duplicated code, feature envy,
@@ -212,6 +242,10 @@ post-review diff. That is the whole point of running it last and non-required.
 **On a required-gate failure:** feed the evidence (gate id, summary, detail,
 per-criterion verdicts, review findings) back to the implementer subagent
 (SendMessage to the same agent — it keeps its context) for a fix round.
+When `dispatch.persona` is on, re-splice **both dispatch blocks** (§1b —
+persona from the vendored file + north-star verbatim) into the fix-round
+message: fix rounds are write-time too, and the pressure must survive the
+round trip.
 Re-run the pipeline **from the first failed gate**. After `max_fix_rounds`
 exhausted:
 
