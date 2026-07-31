@@ -610,6 +610,28 @@ def _normalize_trace_whatwhy(entry: dict) -> dict:
     }
 
 
+def _normalize_trace_simplify(section: dict) -> dict:
+    """Project one simplify envelope to ``{outcome, cuts, kept, lines_delta}``.
+
+    Shared by the per-slice ``simplify`` key (#58 gate) and the stack-tip
+    ``stack_simplify`` key (#90 — same pass, run once over the cumulative
+    merge-base diff before PR-open): one shape, one normalizer.
+    """
+    cuts = section.get("cuts")
+    kept = section.get("kept")
+    return {
+        "outcome": str(section.get("outcome", "") or ""),
+        "cuts": [_normalize_trace_whatwhy(c) for c in cuts if isinstance(c, dict)]
+                if isinstance(cuts, list) else [],
+        "kept": [_normalize_trace_whatwhy(c) for c in kept if isinstance(c, dict)]
+                if isinstance(kept, list) else [],
+        # A count like any other join key: a malformed value (list/dict)
+        # degrades to 0 via _as_int_or_none rather than escaping as a
+        # TypeError that would crash the trajectory command (rc-1).
+        "lines_delta": _as_int_or_none(section.get("lines_delta")) or 0,
+    }
+
+
 def _normalize_trace(raw: object) -> dict:
     """Shape an incoming semantic-trace object into its stored envelope.
 
@@ -628,21 +650,12 @@ def _normalize_trace(raw: object) -> dict:
     criteria = raw.get("criteria")
     if isinstance(criteria, list):
         out["criteria"] = [_normalize_trace_criterion(e) for e in criteria if isinstance(e, dict)]
-    simplify = raw.get("simplify")
-    if isinstance(simplify, dict):
-        cuts = simplify.get("cuts")
-        kept = simplify.get("kept")
-        out["simplify"] = {
-            "outcome": str(simplify.get("outcome", "") or ""),
-            "cuts": [_normalize_trace_whatwhy(c) for c in cuts if isinstance(c, dict)]
-                    if isinstance(cuts, list) else [],
-            "kept": [_normalize_trace_whatwhy(c) for c in kept if isinstance(c, dict)]
-                    if isinstance(kept, list) else [],
-            # A count like any other join key: a malformed value (list/dict)
-            # degrades to 0 via _as_int_or_none rather than escaping as a
-            # TypeError that would crash the trajectory command (rc-1).
-            "lines_delta": _as_int_or_none(simplify.get("lines_delta")) or 0,
-        }
+    # Per-slice gate result and the run-end stack-tip pass (#90) share one
+    # envelope shape; only provided keys appear.
+    for key in ("simplify", "stack_simplify"):
+        section = raw.get(key)
+        if isinstance(section, dict):
+            out[key] = _normalize_trace_simplify(section)
     edge_cases = raw.get("edge_cases")
     if isinstance(edge_cases, list):
         out["edge_cases"] = [str(x) for x in edge_cases if isinstance(x, str)]
