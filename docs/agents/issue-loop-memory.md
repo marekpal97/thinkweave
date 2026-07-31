@@ -89,6 +89,7 @@ trace:
   rounds:     [{gate, finding, severity, disposition, fixed_by}]   # prose-valued
   criteria:   [{id, verdict, flipped_by_round}]                    # flip = int|null
   simplify:   {outcome, cuts:[{what,why}], kept:[{what,why}], lines_delta}
+  stack_simplify: {outcome, cuts:[{what,why}], kept:[{what,why}], lines_delta}  # §1e stack-tip pass (#90), stacked runs only
   edge_cases: [<prose>]
   tdd:        {red_confirmed}
 ```

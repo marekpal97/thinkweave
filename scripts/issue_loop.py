@@ -1243,7 +1243,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "mirror into the trajectory note frontmatter")
     p_traj.add_argument("--trace-json", default=None,
                         help="file with the semantic execution trace (issue #85): a JSON "
-                             "object {rounds[], criteria[], simplify, edge_cases[], tdd} "
+                             "object {rounds[], criteria[], simplify, stack_simplify, "
+                             "edge_cases[], tdd} "
                              "the orchestrator condenses from the gate agents' own reports. "
                              "Omit to leave the trace key out (pre-#85 shape).")
     p_traj.add_argument("--fix-rounds", type=int, default=0)
