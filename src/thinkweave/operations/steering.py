@@ -24,9 +24,8 @@ Design mirrors #60's ``operations/trajectory_outcome`` split:
 
 The three signals — all observable from the loop's own artifacts, all raw
 counts, never a composite score; the weights are for ranking, the raw counts
-ride the evidence block (a fourth signal, concept-hub PageRank "behavioral
-pressure", was deleted by #96 as a category error — knowledge-ontology
-centrality measuring code-module importance):
+ride the evidence block (a fourth hub-pressure signal was deleted by #96 —
+rationale in docs/agents/steering.md):
 
 1. **rework rate** per module path — loop-run trajectory notes' ``outcome_label``
    in {reworked, reworked-post-merge} (#60's phase-1/2 verdicts) counted over

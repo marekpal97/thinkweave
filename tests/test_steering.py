@@ -6,9 +6,7 @@ to file self-improvement issues. This module is the gate #61 must call: every
 proposal must cite evidence from the self-improvement substrate (trajectory
 outcome labels from #60/#56, superseded-decision density, gate-failure
 hotspots), a proposal with no cited evidence is dropped, and only the
-top-``weekly_budget`` by evidence weight survive per run. (#96 deleted the
-fourth concept-hub PageRank signal — the three-signal contract is pinned in
-``TestThreeSignalContract``.)
+top-``weekly_budget`` by evidence weight survive per run.
 
 Coverage layers, mirroring the #60 trajectory-outcome split (pure functions
 over queried rows; the index/CLI are thin seams):
@@ -189,8 +187,6 @@ class TestThreeSignalContract:
     """
 
     def test_default_weights_carry_exactly_the_three_signals(self):
-        # The weight vocabulary IS the signal set (rework carries its
-        # fix_rounds churn companion, hence four keys) — config seam.
         assert set(steering.DEFAULT_WEIGHTS) == SIGNAL_WEIGHT_KEYS
 
     def test_evidence_index_has_exactly_the_file_keyed_maps(self):
@@ -238,10 +234,6 @@ class TestThreeSignalContract:
         )
         assert out["filed"] == []
         assert out["dropped"][0]["reason"] == "no cited evidence"
-
-    def test_hub_pressure_plumbing_is_gone(self):
-        assert not hasattr(steering, "hub_pressure_from_ranks")
-        assert not hasattr(steering, "candidate_concepts")
 
     def test_evidence_signals_view_has_no_hub_pressure_key(self, vault_factory):
         tv = vault_factory()
