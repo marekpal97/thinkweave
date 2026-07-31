@@ -1,10 +1,15 @@
 # Vault ↔ issue contract — division of labor for loop runs
 
 This is the **capture-parity contract** (n-04674047): a headless loop run —
-the fast loop, a Routine, `/loop` — must land in the vault *identically* to
-interactive work, and the boundary between the surfaces a run writes to must
-be a written, tested contract rather than tribal knowledge. The contract test
-lives at `tests/test_vault_issue_contract.py`; this doc is its prose half.
+the fast loop, a Routine, `/loop` — must achieve the same vault *coverage* as
+interactive work (every surface has exactly one owner, and no surface goes
+silently unwritten), and the boundary between the surfaces a run writes to must
+be a written, tested contract rather than tribal knowledge. Parity means
+coverage, **not identicality**: a loop run writes surfaces interactive work
+never produces (trajectory notes), and an interactive `/wrap` carries narrative
+context a headless run cannot reconstruct — the guarantee is the ownership
+partition below, not byte-equivalent records. The contract test lives at
+`tests/test_vault_issue_contract.py`; this doc is its prose half.
 
 A finished issue produces outputs on four surfaces. Each owns a disjoint slice
 of the record — **no field is written by two owners.**

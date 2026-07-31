@@ -98,7 +98,7 @@ the #62 gate's schema — a `{module | paths, rationale, concepts?, title?}` dic
 | --------------- | ----------- |
 | `paths` (or `module`) | the repo path(s) the finding touches — ponytail-audit's `[path]` annotation, or the module improve-arch is deepening. `paths` for a multi-file proposal, `module` for a single path. |
 | `rationale`     | the proposal in prose: what to change and why (the axis's finding text). Becomes the issue body's lead paragraph. |
-| `concepts`      | the domain concepts the area touches (drives the gate's optional hub-pressure signal). Pull from the touched files' concepts; omit if none. |
+| `concepts`      | **existing canonical ontology terms only**, and only when the area genuinely maps to domain vocabulary — concepts are vault-level artifacts, never repo- or module-specific labels; never invent a term here (that's `proposed_concepts`' job, and code areas are not concept material). Omit when nothing maps cleanly — an empty list is the common, correct case. Drives the gate's optional zero-default hub-pressure signal. |
 | `title`         | a short issue title (`<verb> <what> in <area>`). |
 
 Write the candidate list to a JSON file (a bare list, or `{"candidates": [...]}`):
