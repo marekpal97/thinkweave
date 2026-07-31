@@ -89,6 +89,25 @@ jobs:
     log: news-pull.log
     enabled: false
 
+  # Email-newsletter intake — plan, fetch, enqueue, drain, label, once a
+  # day at 06:30 (ahead of the morning news drain, so the two rails don't
+  # contend for writer subagents). Disabled by default: it needs the
+  # `newsletter-*` source types configured with a sender allowlist AND a
+  # Gmail connector grant on the account. The grant is one-time and cached
+  # account-side — it survives headless `claude -p` firings, which is what
+  # makes this rail schedulable at all.
+  # serialize: the first run after a long gap drains a whole backlog and can
+  # outlast the cadence; the mail label makes an overlap mostly harmless, but
+  # never-overlap matches the /dream precedent and keeps the log readable.
+  newsletter:
+    cadence: "30 6 * * *"
+    command: "claude --model sonnet -p /newsletter"
+    runner: direct
+    env: [ANTHROPIC_API_KEY]
+    log: newsletter.log
+    enabled: false
+    serialize: true
+
   # News drain — triage + brief, every 6h, spaced from the polls so the
   # queue accumulates a useful batch first.
   news-cycle:

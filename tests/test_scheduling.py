@@ -144,9 +144,25 @@ class TestRegistry:
         assert jobs["dream"].env == ("ANTHROPIC_API_KEY",)
         assert jobs["embeddings-keepwarm"].env == ("OPENAI_API_KEY",)
         # /dream must never overlap itself (SQLite index race) — the template
-        # ships it serialized; nothing else needs the lock.
+        # ships it serialized.
         assert jobs["dream"].serialize is True
         assert jobs["embeddings-keepwarm"].serialize is False
+
+    def test_template_ships_newsletter_job(self, config):
+        # The Gmail connector runs headless (the cached grant survives a
+        # `claude -p` firing), so the newsletter rail is schedulable. Daily at
+        # 06:30 puts it ahead of the 07:00 news drain; a backlogged first run
+        # can outlast the cadence, so it takes the never-overlap lock too.
+        pkg = Path(__file__).resolve().parents[1] / "src" / "thinkweave"
+        template = pkg / "vault_templates" / "config" / "scheduling.yaml"
+        jobs = load_jobs(config, path=template)
+        job = jobs["newsletter"]
+        assert job.cadence == "30 6 * * *"
+        assert job.runner == "direct"
+        assert job.serialize is True
+        assert job.log == "newsletter.log"
+        assert "-p" in job.command.split()
+        assert "/newsletter" in job.command.split()
 
 
 # --------------------------------------------------------------------------- #
