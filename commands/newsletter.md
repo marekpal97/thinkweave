@@ -18,7 +18,7 @@ tools:
   - weave_link
   - weave_queue
   - weave_sources_config
-description: Orchestrator over the email-newsletter intake rails. Authenticates Gmail, reads the per-type `mail_poll` discover-strategy plan (effective_query + processed_label), fetches threads via Gmail MCP, enqueues, drains, then applies the processed_label.
+description: Orchestrator over the email-newsletter intake rails. Probes the Gmail connector, reads the per-type `mail_poll` discover-strategy plan (effective_query + processed_label), fetches threads via Gmail MCP, enqueues, drains, then applies the processed_label. Headless-safe.
 ---
 
 # /newsletter — Email-newsletter intake (orchestrator)
@@ -29,7 +29,7 @@ description: Orchestrator over the email-newsletter intake rails. Authenticates 
 2. **Drain** — `/drain --source-type newsletter-*` consumes the queue and fans out `research-newsletter-worker` Sonnet subagents.
 3. **Label** — apply `processed_label` server-side on every thread whose write succeeded. This is the skill's only post-drain concern (and the primary re-read guard for the next run).
 
-Gmail OAuth lives in this skill because OAuth is interactive and stateful — `weave discover` is headless-safe. After the first consent, subsequent runs use the cached token; the connector is operationally headless-equivalent. Still, current contract is interactive.
+Gmail access lives in this skill because the connector only exists inside the Claude Code MCP runtime — `weave discover` is pure Python and can't reach it. The OAuth grant is one-time and cached account-side; it survives headless `claude -p` firings, so **this skill is cron-safe** (see [Cron contract](#cron-contract)). Only the first-ever grant on a fresh account needs a browser.
 
 **Arguments (all optional):**
 - `<source-type>` — limit to one type, e.g. `/newsletter newsletter-events`. Default: all `newsletter-*` types from config.
@@ -47,25 +47,35 @@ Pick every key under `sources.` whose slug starts with `newsletter-`. If `<sourc
 
 ---
 
-## Step 1 — Authenticate Gmail (one-time per session)
+## Step 1 — Reach Gmail (probe, never prompt)
 
-The Gmail MCP tools are deferred — the auth tools load at session start; thread tools load on demand.
+For `mail_provider: outlook` or `imap` (formerly `mail_connector:`; both names accepted): not implemented in v1. Stop with `"Provider '<value>' not implemented yet — only gmail is wired."` before probing anything.
 
-```
-ToolSearch(query="select:mcp__claude_ai_Gmail__authenticate,mcp__claude_ai_Gmail__complete_authentication", max_results=2)
-```
-
-Call `mcp__claude_ai_Gmail__authenticate`. The connector will either return "already authenticated" or walk you through OAuth via `mcp__claude_ai_Gmail__complete_authentication`. After the first grant, the token is cached and re-runs use it directly — no interactive prompt.
-
-Then load the thread tools:
+The Gmail MCP tools are deferred. Load the ones this skill uses:
 
 ```
 ToolSearch(query="select:mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Gmail__get_thread,mcp__claude_ai_Gmail__label_thread,mcp__claude_ai_Gmail__list_labels,mcp__claude_ai_Gmail__create_label", max_results=5)
 ```
 
-If the names differ in your connector version, search by keyword and adapt. If thread-search isn't discoverable, stop with `"Gmail MCP is connected but I can't find a thread-search tool. Confirm the Gmail connector is up to date and re-run."`.
+Then probe the connector with the cheapest read it offers:
 
-For `mail_provider: outlook` or `imap` (formerly `mail_connector:`; both names accepted): not implemented in v1. Stop with `"Provider '<value>' not implemented yet — only gmail is wired."`.
+```
+mcp__claude_ai_Gmail__list_labels()
+```
+
+A successful call is the whole auth check — the cached grant is live, and you already hold the label list step 2 needs. **Do not call `authenticate`.** It is an interactive-consent tool; under cron there is no one to consent, and calling it turns a clean failure into a hang.
+
+**On any failure** — the tools don't load, `list_labels` errors, the grant has lapsed — emit exactly one line and stop:
+
+```
+newsletter: Gmail MCP unavailable — <reason>
+```
+
+`<reason>` is the connector's own error text (or `tool not loadable` when ToolSearch returns nothing). Then exit **without touching queues or mail labels**: no `weave_queue` calls, no `/drain`, no `label_thread`. A run that can't read mail has nothing to record, and a half-run that labels threads it never briefed would silently lose them. Failing loudly on one line is deliberate — under cron this line is the only evidence anyone will see, and the dream-cron outage (dead three weeks, unnoticed) is why it must not be swallowed.
+
+**First-ever grant (interactive only).** On a fresh account with no grant, `list_labels` fails and the run stops — that is correct. To establish the grant, run `/newsletter` once from an interactive session, where you may load `mcp__claude_ai_Gmail__authenticate` / `mcp__claude_ai_Gmail__complete_authentication` and walk the OAuth consent. Once granted, the token is cached account-side and every later run — interactive or cron — takes the probe path above.
+
+If thread-search isn't discoverable but the probe succeeded, stop with `"Gmail MCP is connected but I can't find a thread-search tool. Confirm the Gmail connector is up to date and re-run."`.
 
 ---
 
@@ -103,10 +113,9 @@ Or, if the allowlist is empty:
 
 Halt this source type on error; the hint goes verbatim to the user.
 
-**Ensure the `processed_label` exists** (one-time setup, idempotent):
+**Ensure the `processed_label` exists** (one-time setup, idempotent) — reuse the label list step 1's probe already returned:
 
 ```
-labels = list_labels()
 if processed_label not in {l.name for l in labels}:
     create_label(name=processed_label)
 ```
@@ -197,6 +206,23 @@ Newsletter intake summary:
     (signals surface on next `/dream` scan; no per-drain count)
 ```
 
+Write this summary to stdout unconditionally, including when every tally is zero. Under cron it is the run's only trace — a silent success and a dead rail look identical in an empty log.
+
+---
+
+## Cron contract
+
+`/newsletter` is unattended-safe and is a registry job (`newsletter` in `vault/config/scheduling.yaml`, daily 06:30, `serialize: true`, log `newsletter.log`). Install it with `weave schedule install --only newsletter`; it ships `enabled: false` because it needs both a `newsletter-*` sender allowlist and a Gmail grant before it can do anything.
+
+What "unattended-safe" obliges:
+
+- **Never prompt.** No `AskUserQuestion`, no interactive auth tool, no waiting on a decision. Every branch in this skill either proceeds or stops with a printed line.
+- **Fail loudly, on one line.** The step-1 diagnostic is the contract with whoever reads `newsletter.log` next month.
+- **Leave no half-state.** Stop before the first `weave_queue` write, or finish the rail. Labels go on only after a `done` archive (step 5).
+- **Always print the step-6 summary** so the log distinguishes "ran, nothing new" from "never fired".
+
+A backlogged first run (weeks of unread mail) is normal and can outrun the cadence — hence the `flock` guard. The mail label plus queue dedup make an overlap harmless anyway; the lock is for log legibility.
+
 ---
 
 ## Three-layer re-read guard recap
@@ -227,4 +253,4 @@ In normal operation guard 1 stops every re-read at the mail layer; 2 and 3 cover
 - **Spawn writer subagents.** That lives in `/drain` Path B.
 - **Auto-enqueue follow-up links from briefs into `/research` queues.** The brief lists them in `## Follow-ups` for you to scan; bridging into `/research` is an explicit future enhancement.
 - **Run a Haiku admission triage.** Newsletter subscriptions are pre-curated by your sender allowlist; the user already decided this publication is worth reading.
-- **Support headless cron.** Gmail's first-run OAuth is interactive; cron use needs the `imap` connector (not implemented in this version). The token cache means *subsequent* runs are headless-equivalent, but the first ever needs a browser.
+- **Establish the first Gmail grant.** That one step is interactive by nature (OAuth consent) and belongs to a human at a terminal. Every run after it — including cron — takes the step-1 probe path.

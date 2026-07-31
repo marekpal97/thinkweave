@@ -24,7 +24,7 @@ Generated from `commands/*.md` frontmatter. Re-run `weave skill list` to regener
 | `/drain` | queue_drain | — | acquire | Consumer rail. Drains a per-source-type acquisition queue; Path A (sequential) for paper/repo/article, Path B (subagent fan-out) for news/youtube-*/newsletter-*/podcast-*. |
 | `/discover` | research_discovery | * | discover | Producer rail. Runs registered strategies — internal-state (`decision_review`, `prompt_gap`) and external-trigger (`rss_poll`, `mail_poll`, `external_tool_runner`). |
 | `/substack` | substack_inbox | substack | acquire | Drain Substack disk inbox (no queue — user clipped post is itself the discovery step). |
-| `/newsletter` | newsletter_inbox | newsletter-events, newsletter-concepts | acquire | Orchestrator: Gmail auth → `mail_poll` plan from discover → fetch threads → enqueue → `/drain` → apply `processed_label`. |
+| `/newsletter` | newsletter_inbox | newsletter-events, newsletter-concepts | acquire | Orchestrator: Gmail probe → `mail_poll` plan from discover → fetch threads → enqueue → `/drain` → apply `processed_label`. Headless-safe (cached OAuth grant; only the first-ever grant is interactive). |
 | `/youtube` | youtube_inbox | youtube-events, youtube-concepts | acquire | Orchestrator: `rss_poll` from discover → `/drain`. Headless-safe (no OAuth). |
 | `/podcast` | podcast_inbox | podcast-events, podcast-concepts | acquire | Orchestrator: `rss_poll` from discover (per-show RSS, picks `<enclosure>` audio URL) → `/drain` (workers hand MP3 to Gemini Flash via Files API). Headless-safe. |
 | `/news` | news_url_ingest | news | import | One-off news URL ingest. No triage gate — atomic-unit dispatch (same posture as `/research <url>` for paper/repo/article). |

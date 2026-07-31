@@ -968,6 +968,10 @@ flag in the template):
   `daily-research` (the discover → drain → hub-refresh flow).
 - **If `news` was enabled** in 5b, also include `news-poll` and
   `news-cycle`.
+- **If any `newsletter-*` type was enabled** in 5b, also include
+  `newsletter`. Note in the preview that its first run must be interactive
+  (`/newsletter` from a session) to establish the Gmail grant — after that
+  the cached grant carries the scheduled runs.
 
 Build a comma-separated `ONLY` string from the selected names, e.g.
 `embeddings-keepwarm,dream,weekly-hygiene`.
