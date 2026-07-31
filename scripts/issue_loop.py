@@ -613,9 +613,7 @@ def _normalize_trace_whatwhy(entry: dict) -> dict:
 def _normalize_trace_simplify(section: dict) -> dict:
     """Project one simplify envelope to ``{outcome, cuts, kept, lines_delta}``.
 
-    Shared by the per-slice ``simplify`` key (#58 gate) and the stack-tip
-    ``stack_simplify`` key (#90 — same pass, run once over the cumulative
-    merge-base diff before PR-open): one shape, one normalizer.
+    Shared by per-slice ``simplify`` (#58) and stack-tip ``stack_simplify`` (#90).
     """
     cuts = section.get("cuts")
     kept = section.get("kept")
@@ -650,8 +648,6 @@ def _normalize_trace(raw: object) -> dict:
     criteria = raw.get("criteria")
     if isinstance(criteria, list):
         out["criteria"] = [_normalize_trace_criterion(e) for e in criteria if isinstance(e, dict)]
-    # Per-slice gate result and the run-end stack-tip pass (#90) share one
-    # envelope shape; only provided keys appear.
     for key in ("simplify", "stack_simplify"):
         section = raw.get(key)
         if isinstance(section, dict):

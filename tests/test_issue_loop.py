@@ -1425,20 +1425,10 @@ def test_trajectory_trace_argparse_contract():
 # frontmatter=; CLI examples parse through the real argparse).
 
 
-def _command_doc_section3() -> str:
-    doc = issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md"
-    assert doc.exists(), "issue-loop.command.md must ship under docs/agents/"
-    lines = doc.read_text(encoding="utf-8").splitlines()
-    start = next(i for i, ln in enumerate(lines) if ln.startswith("## 3."))
-    end = next((i for i in range(start + 1, len(lines))
-                if lines[i].startswith("## ")), len(lines))
-    return "\n".join(lines[start:end])
-
-
 def test_command_doc_section3_retires_lessons_body():
     """§3 no longer instructs a Lessons body section — the body is the
     run-causal register (What / How it went) only."""
-    sec = _command_doc_section3()
+    sec = _command_doc_subsection("## 3.")
     assert "What / How it went" in sec
     # The old '(What / How it went / Lessons …)' compose instruction is gone.
     assert "How it went / Lessons" not in sec
@@ -1448,7 +1438,7 @@ def test_command_doc_section3_retires_lessons_body():
 def test_command_doc_section3_instructs_insight_minting_and_builds_on():
     """§3 instructs minting portable lessons as separate insight notes and
     linking them from the trajectory via builds_on."""
-    low = _command_doc_section3().lower()
+    low = _command_doc_subsection("## 3.").lower()
     assert "insight note" in low
     assert "builds_on" in low
     assert "concepts at creation" in low or "concepts-at-creation" in low
@@ -1456,7 +1446,7 @@ def test_command_doc_section3_instructs_insight_minting_and_builds_on():
 
 def test_command_doc_section3_states_register_test():
     """§3 states the register test that sorts every artifact."""
-    low = _command_doc_section3().lower()
+    low = _command_doc_subsection("## 3.").lower()
     assert "run-bound semantic trace" in low
     assert "portable lesson" in low
     assert "insight note" in low
@@ -1467,7 +1457,7 @@ def test_command_doc_section3_trace_cli_example_is_executable():
     """Executability pin (#72 trap): §3 documents the --trace-json flag on the
     trajectory command, and that exact invocation shape parses through the REAL
     argparse — not a drifted or hand-waved flag."""
-    sec = _command_doc_section3()
+    sec = _command_doc_subsection("## 3.")
     assert "--trace-json" in sec
     ns = issue_loop.build_arg_parser().parse_args([
         "trajectory", "85", "--cwd", "wt", "--gates-json", "g.json",
@@ -1483,7 +1473,7 @@ def test_command_doc_section3_weave_create_nests_concepts_and_builds_on():
     frontmatter/session_id — extra top-level kwargs are silently dropped. So the
     insight note's `concepts` and the trajectory's `builds_on` link MUST be
     nested under frontmatter={…}. Pin the dict-style nesting."""
-    sec = _command_doc_section3()
+    sec = _command_doc_subsection("## 3.")
     assert "frontmatter={" in sec
     assert '"concepts":' in sec
     assert '"builds_on":' in sec
@@ -2063,14 +2053,9 @@ def test_arch_proposal_label_documented_in_triage_labels():
 
 
 # ---------------------------------------------------------------------------
-# Stack-tip simplify pass (issue #90) — whole-branch ponytail review before
-# PR-open. The per-slice gate (#58) cannot see cross-slice redundancy, so the
-# stacked ship step runs ONE more simplify over the cumulative merge-base diff
-# with whole-file contents of touched files. It reuses the existing simplify
-# gate config (rerun / revert_note — no parallel mechanism); its result lands
-# in the trace envelope as `stack_simplify`, shaped by the SAME normalizer as
-# the per-slice `simplify` key. Doc-grep contracts mirror the #58/#85 style;
-# expected values are hand-written from the issue's acceptance criteria.
+# Stack-tip simplify (issue #90): whole-branch ponytail review before PR-open,
+# reusing the existing simplify gate config; result lands in the trace as
+# `stack_simplify`, shaped by the same normalizer as per-slice `simplify`.
 
 
 def _command_doc_subsection(marker: str) -> str:
@@ -2128,7 +2113,7 @@ def test_pr_per_issue_ship_states_stack_tip_noop():
 def test_command_doc_section3_documents_stack_simplify_trace_key():
     """§3's trace envelope documents the `stack_simplify` key so the recording
     instruction in §1e has its schema stated where the envelope lives."""
-    assert "stack_simplify" in _command_doc_section3()
+    assert "stack_simplify" in _command_doc_subsection("## 3.")
 
 
 def test_build_trajectory_shapes_stack_simplify_like_slice_simplify():

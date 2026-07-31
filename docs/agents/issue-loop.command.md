@@ -248,12 +248,10 @@ the issue closes on merge. Release is implicit: the claim (the assignee in
 issue — a claimed+closed issue is inert; if the PR is rejected, a human
 unassigns / unlabels to re-queue.
 
-**No stack-tip simplify here — a documented no-op.** In pr-per-issue
-delivery each branch holds one slice, so the per-slice simplify gate (§1c)
-already ran at what IS the stack tip: `origin/main...HEAD` is both the slice
-diff and the cumulative diff, and cross-slice redundancy cannot arise within
-a single-slice branch. The whole-branch pass exists only in stacked delivery
-(§1e); do not run a second pass before `gh pr create`.
+**No stack-tip simplify here — a documented no-op.** Each pr-per-issue
+branch holds one slice, so the per-slice simplify gate (§1c) already ran at
+what IS the stack tip; the whole-branch pass exists only in stacked delivery
+(§1e).
 
 **Risk-lane triage — label what a human should look at.** Daily runs
 outpace review, so after the PR is opened, classify it so a human reviews
@@ -455,12 +453,10 @@ any verdict flips, and the TDD red-confirmation. Condense them into the envelope
 
 The rail only accepts and shapes it (unknown keys dropped; a non-dict trace is
 rejected). `stack_simplify` (issue #90) shares the `simplify` envelope and
-records the §1e stack-tip pass: it appears at most once per stacked run — on
-the **final completed issue's** trajectory, since the pass covers the whole
-branch, not one slice — and never on pr-per-issue runs (the pass is a
-documented no-op there, §1d). The placement rule is deliberately unenforced by
-the rail: the shaper stays dumb, and which issue is final is orchestrator
-knowledge the rail never holds. It lands under the single `trace` frontmatter key — the
+records the §1e stack-tip pass: at most once per stacked run, on the **final
+completed issue's** trajectory. The placement rule is deliberately unenforced
+by the rail — which issue is final is orchestrator knowledge the rail never
+holds. It lands under the single `trace` frontmatter key — the
 machine-readable half of the tracker's gate evidence, not a second prose owner.
 Counts (`lines_delta`, `flipped_by_round`) are filter/join keys, not signal.
 Omit `--trace-json` for the pre-#85 shape.
