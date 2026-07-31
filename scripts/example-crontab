@@ -46,10 +46,9 @@ PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 # queue accumulates a useful batch before Haiku triage runs.
 30 */6 * * * cd /path/to/thinkweave && uv run weave flow run news-cycle >> ~/.cache/thinkweave/cron.log 2>&1
 
-# Email-newsletter intake (daily 05:00 — the slot is picked against the news
-# lines above, which hold :30 of every 6th hour and :00 of every even hour;
-# full rationale sits on the `newsletter` job in vault/config/scheduling.yaml.
-# Change the cadence there and here together, or neither.)
+# Email-newsletter intake (daily 05:00). Cadence and serialize rationale are
+# canonical on the `newsletter` job in vault/config/scheduling.yaml — change
+# the cadence there and here together, or neither.
 # One firing runs the whole rail: `mail_poll` plan → Gmail fetch → enqueue →
 # /drain → apply the processed label. Requires the `newsletter-*` source
 # types configured with a sender allowlist and a Gmail connector grant on the
@@ -57,10 +56,6 @@ PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 # `claude -p` firings, which is what makes this schedulable. `--model sonnet`
 # because the orchestrator is routing work, not composing briefs — the writer
 # subagents /drain fans out pick their own model.
-#
-# flock: the first run after a long gap drains a whole backlog and can
-# outlast the cadence. The mail label makes an overlap mostly harmless, but
-# skipping the next firing keeps the log readable.
 #
 # As with the dream line below, `weave schedule install` appends
 # --dangerously-skip-permissions to headless `claude -p` jobs at render time;

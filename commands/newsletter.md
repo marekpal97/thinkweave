@@ -50,8 +50,6 @@ ToolSearch(query="select:mcp__claude_ai_Gmail__authenticate,mcp__claude_ai_Gmail
 
 Call `authenticate`. It either reports an existing grant or walks OAuth consent via `complete_authentication`. Report the outcome in one line — `newsletter: Gmail grant established` or `newsletter: Gmail grant failed — <reason>` — and **stop there.** `--grant` does not read config, fetch, enqueue, drain, or label; a human runs it once, checks the line, and then runs `/newsletter` normally.
 
-The grant is cached account-side, so every later run — interactive or cron — takes the step-1 probe path and never touches these tools again.
-
 ---
 
 ## Step 0 — Discover the source-type set
