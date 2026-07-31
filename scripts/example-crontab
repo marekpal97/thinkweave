@@ -46,9 +46,10 @@ PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 # queue accumulates a useful batch before Haiku triage runs.
 30 */6 * * * cd /path/to/thinkweave && uv run weave flow run news-cycle >> ~/.cache/thinkweave/cron.log 2>&1
 
-# Email-newsletter intake (daily 06:00 — see the cadence rationale on the
-# `newsletter` job in vault/config/scheduling.yaml; the 06:00 slot is chosen
-# against the news-cycle line above, so change both together or neither).
+# Email-newsletter intake (daily 05:00 — the slot is picked against the news
+# lines above, which hold :30 of every 6th hour and :00 of every even hour;
+# full rationale sits on the `newsletter` job in vault/config/scheduling.yaml.
+# Change the cadence there and here together, or neither.)
 # One firing runs the whole rail: `mail_poll` plan → Gmail fetch → enqueue →
 # /drain → apply the processed label. Requires the `newsletter-*` source
 # types configured with a sender allowlist and a Gmail connector grant on the
@@ -60,7 +61,7 @@ PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 # flock: the first run after a long gap drains a whole backlog and can
 # outlast the cadence. The mail label makes an overlap mostly harmless, but
 # skipping the next firing keeps the log readable.
-0 6 * * * flock -n /tmp/thinkweave-newsletter.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude --model sonnet -p "/newsletter" --dangerously-skip-permissions' >> ~/.cache/thinkweave/newsletter.log 2>&1
+0 5 * * * flock -n /tmp/thinkweave-newsletter.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude --model sonnet -p "/newsletter" --dangerously-skip-permissions' >> ~/.cache/thinkweave/newsletter.log 2>&1
 
 # Embeddings keep-warm + SQLite index refresh: every 4h. `weave index`
 # always rebuilds the SQLite index incrementally (mtime-gated, so

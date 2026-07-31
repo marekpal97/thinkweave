@@ -23,7 +23,6 @@ from thinkweave.scheduling import (
 from thinkweave.scheduling.cron import FENCE_END, FENCE_START, _splice
 from thinkweave.scheduling.registry import ScheduledJob, _parse, resolve_command
 
-
 TEMPLATE_SCHEDULING = (
     Path(__file__).resolve().parents[1]
     / "src"
@@ -34,17 +33,23 @@ TEMPLATE_SCHEDULING = (
 )
 
 
-def _hours(field: str) -> set[int]:
-    """Expand a cron hour field to the set of hours it fires on.
+def _field(value: str, period: int) -> set[int]:
+    """Expand one cron field (minute or hour) to the values it fires on.
 
-    Only the forms the shipped template uses: ``*``, ``*/N``, a literal.
+    Handles only the forms the shipped template actually uses: ``*``,
+    ``*/N``, and a literal. Anything else fails the test loudly rather
+    than being silently mis-parsed into a false all-clear.
     """
-    if field == "*":
-        return set(range(24))
-    if field.startswith("*/"):
-        step = int(field[2:])
-        return set(range(0, 24, step))
-    return {int(field)}
+    if value == "*":
+        return set(range(period))
+    if value.startswith("*/") and value[2:].isdigit():
+        return set(range(0, period, int(value[2:])))
+    if value.isdigit():
+        return {int(value)}
+    pytest.fail(
+        f"cron field {value!r} uses a form this test can't expand "
+        f"(ranges/lists). Extend _field before adding it to the template."
+    )
 
 
 @pytest.fixture
@@ -174,7 +179,7 @@ class TestRegistry:
         # `claude -p` firing), so the newsletter rail is schedulable.
         jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
         job = jobs["newsletter"]
-        assert job.cadence == "0 6 * * *"
+        assert job.cadence == "0 5 * * *"
         assert job.runner == "direct"
         assert job.serialize is True
         assert job.log == "newsletter.log"
@@ -186,23 +191,34 @@ class TestRegistry:
         assert "-p" in job.command.split()
         assert "/newsletter" in job.command.split()
 
-    def test_template_cadences_do_not_collide(self, config):
-        """No two enabled-or-not jobs may fire on the same minute.
+    def test_newsletter_cadence_shares_no_slot(self, config):
+        """The `newsletter` job must not fire at the same time as any other.
 
-        Guards the newsletter/news-cycle case specifically: `news-cycle` is
-        ``30 */6 * * *`` (00:30, 06:30, 12:30, 18:30), so a newsletter rail
-        at 06:30 would put two subagent fan-outs on one minute.
+        Scoped deliberately to this one job. The template is NOT collision-
+        free in general — `daily-research` and `news-poll` both fire at
+        08:00, `weekly-hygiene` and `news-poll` both at 04:00 Sunday — and
+        those are tolerated. What this pins is that the rail added for #113
+        stays clear of everything, because the two morning slots a reader
+        would reach for are exactly the ones the news rails hold: 06:30
+        (`news-cycle`, ``30 */6``) and 06:00 (`news-poll`, ``0 */2``).
+        Both were proposed for this job and both were wrong.
+
+        Day-of-week is ignored, which can only over-report (weekly jobs are
+        treated as if they ran daily) — conservative in the safe direction.
         """
         jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
-        news = jobs["news-cycle"].cadence.split()
-        letter = jobs["newsletter"].cadence.split()
-        news_minute, news_hour = news[0], news[1]
-        letter_minute, letter_hour = letter[0], letter[1]
-        # Same minute-of-hour is only safe if the hours can't coincide.
-        if news_minute == letter_minute:
-            assert _hours(news_hour).isdisjoint(_hours(letter_hour)), (
-                f"news-cycle {jobs['news-cycle'].cadence!r} and newsletter "
-                f"{jobs['newsletter'].cadence!r} share a firing minute"
+        mine = jobs["newsletter"].cadence.split()
+        my_minutes, my_hours = _field(mine[0], 60), _field(mine[1], 24)
+        for name, job in jobs.items():
+            if name == "newsletter":
+                continue
+            other = job.cadence.split()
+            clash_m = my_minutes & _field(other[0], 60)
+            clash_h = my_hours & _field(other[1], 24)
+            assert not (clash_m and clash_h), (
+                f"newsletter {jobs['newsletter'].cadence!r} collides with "
+                f"{name} {job.cadence!r} at "
+                f"{sorted(clash_h)[0]:02d}:{sorted(clash_m)[0]:02d}"
             )
 
 
