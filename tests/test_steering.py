@@ -5,15 +5,17 @@ The slow loop (#61, not yet built) runs improve-arch / ponytail-audit and wants
 to file self-improvement issues. This module is the gate #61 must call: every
 proposal must cite evidence from the self-improvement substrate (trajectory
 outcome labels from #60/#56, superseded-decision density, gate-failure
-hotspots, concept-hub pressure), a proposal with no cited evidence is dropped,
-and only the top-``weekly_budget`` by evidence weight survive per run.
+hotspots), a proposal with no cited evidence is dropped, and only the
+top-``weekly_budget`` by evidence weight survive per run. (#96 deleted the
+fourth concept-hub PageRank signal — the three-signal contract is pinned in
+``TestThreeSignalContract``.)
 
 Coverage layers, mirroring the #60 trajectory-outcome split (pure functions
 over queried rows; the index/CLI are thin seams):
 
 - pure aggregators (``aggregate_rework`` / ``aggregate_gate_failures`` /
-  ``aggregate_superseded`` / ``hub_pressure_from_ranks``) — hand-computed
-  expecteds over fixture rows, never the index;
+  ``aggregate_superseded``) — hand-computed expecteds over fixture rows,
+  never the index;
 - ``evidence_for`` / ``has_evidence`` — per-candidate evidence block assembly;
 - ``gate_proposals`` — the two acceptance criteria (no-evidence drop, budget
   cap) plus ranking and evidence-block content;
@@ -113,21 +115,6 @@ class TestAggregateSuperseded:
         assert steering.aggregate_superseded(rows) == {"x.py": 1}
 
 
-class TestHubPressureFromRanks:
-    def test_max_score_per_concept(self):
-        rows = [
-            ("pagerank:indexer", 0.4),
-            ("pagerank:indexer", 0.7),
-            ("pagerank:retrieval", 0.2),
-            ("betweenness:indexer", 0.9),  # not a pagerank row → ignored
-        ]
-        out = steering.hub_pressure_from_ranks(rows)
-        assert out == {"indexer": 0.7, "retrieval": 0.2}
-
-    def test_empty_when_no_pagerank_rows(self):
-        assert steering.hub_pressure_from_ranks([]) == {}
-
-
 # ---------------------------------------------------------------------------
 # evidence_for / has_evidence
 # ---------------------------------------------------------------------------
@@ -139,7 +126,6 @@ def _index(**kw) -> steering.EvidenceIndex:
         fix_rounds=kw.get("fix_rounds", {}),
         superseded=kw.get("superseded", {}),
         gate_failures=kw.get("gate_failures", {}),
-        hub_pressure=kw.get("hub_pressure", {}),
     )
 
 
@@ -163,26 +149,16 @@ class TestEvidenceFor:
         block = steering.evidence_for(idx, {"paths": ["a/b.py"]})
         assert block["rework_count"] == 2
 
-    def test_hub_pressure_from_candidate_concepts(self):
-        idx = _index(hub_pressure={"indexer": 0.7, "retrieval": 0.2})
-        block = steering.evidence_for(
-            idx, {"module": "src/x.py", "concepts": ["indexer", "retrieval"]}
-        )
-        assert block["hub_pressure"] == pytest.approx(0.9)
-
     def test_weight_is_weighted_sum_of_raw_counts(self):
         idx = _index(
             rework={"m.py": 2}, fix_rounds={"m.py": 3},
             superseded={"m.py": 1}, gate_failures={"m.py": 4},
-            hub_pressure={"c": 0.5},
         )
         weights = {"rework": 2.0, "fix_rounds": 1.0, "superseded": 3.0,
-                   "gate_failures": 1.0, "hub_pressure": 10.0}
-        block = steering.evidence_for(
-            idx, {"module": "m.py", "concepts": ["c"]}, weights=weights
-        )
-        # 2*2 + 1*3 + 3*1 + 1*4 + 10*0.5 = 4+3+3+4+5 = 19
-        assert block["weight"] == pytest.approx(19.0)
+                   "gate_failures": 1.0}
+        block = steering.evidence_for(idx, {"module": "m.py"}, weights=weights)
+        # 2*2 + 1*3 + 3*1 + 1*4 = 4+3+3+4 = 14
+        assert block["weight"] == pytest.approx(14.0)
         # raw counts preserved, never a composite only
         assert block["rework_count"] == 2
         assert block["superseded_decisions"] == 1
@@ -192,6 +168,86 @@ class TestEvidenceFor:
         assert steering.has_evidence(empty) is False
         one = steering.evidence_for(_index(gate_failures={"m.py": 1}), {"module": "m.py"})
         assert steering.has_evidence(one) is True
+
+
+# ---------------------------------------------------------------------------
+# The three-signal contract (issue #96) — hub pressure is deleted
+# ---------------------------------------------------------------------------
+
+
+THREE_SIGNALS = {"rework", "fix_rounds", "superseded", "gate_failures"}
+BLOCK_SCHEMA = {
+    "module", "paths", "rework_count", "fix_rounds",
+    "superseded_decisions", "gate_failures", "weight",
+}
+
+
+class TestThreeSignalContract:
+    """Issue #96: steering runs on rework / superseded-density / gate-failures
+    (rework carries its fix_rounds churn companion). The concept-hub PageRank
+    signal, its config weight, and the candidate ``concepts`` plumbing are gone.
+    """
+
+    def test_default_weights_carry_exactly_the_three_signals(self):
+        # The weight vocabulary IS the signal set — config seam.
+        assert set(steering.DEFAULT_WEIGHTS) == THREE_SIGNALS
+
+    def test_evidence_index_has_exactly_the_file_keyed_maps(self):
+        import dataclasses
+
+        names = {f.name for f in dataclasses.fields(steering.EvidenceIndex)}
+        assert names == THREE_SIGNALS
+
+    def test_evidence_block_schema_has_no_hub_pressure(self):
+        block = steering.evidence_for(_index(rework={"m.py": 1}), {"module": "m.py"})
+        assert set(block) == BLOCK_SCHEMA
+
+    def test_rendered_evidence_block_has_no_hub_pressure(self):
+        block = steering.evidence_for(_index(rework={"m.py": 1}), {"module": "m.py"})
+        fenced = steering.render_evidence_block(block)
+        payload = json.loads(fenced.split("```json", 1)[1].split("```", 1)[0])
+        assert "hub_pressure" not in payload
+        assert payload["rework_count"] == 1
+
+    def test_candidate_concepts_are_inert_even_on_a_dreamed_vault(self, vault_factory):
+        # A candidate whose ONLY claim is concepts must be dropped as
+        # no-cited-evidence even when graph_ranks carries PageRank — the
+        # hub-pressure signal no longer exists.
+        tv = vault_factory()
+        _loop_run(tv, issue=1, outcome_label="reworked", files=["a.py"])
+        tv.indexed()
+        from thinkweave.core.indexer import Indexer
+
+        idx_db = Indexer(config=tv.config)
+        try:
+            idx_db.db.execute(
+                "INSERT INTO graph_ranks (note_id, rank_type, score, computed_at) "
+                "VALUES (?,?,?,?)",
+                ("n-1", "pagerank:indexer", 0.42, "2026-07-18"),
+            )
+            idx_db.db.commit()
+        finally:
+            idx_db.close()
+
+        ev = steering.build_evidence_index(tv.config)
+        out = steering.gate_proposals(
+            [{"module": "src/unrelated.py", "concepts": ["indexer"]}],
+            ev,
+            weekly_budget=3,
+        )
+        assert out["filed"] == []
+        assert out["dropped"][0]["reason"] == "no cited evidence"
+
+    def test_hub_pressure_plumbing_is_gone(self):
+        assert not hasattr(steering, "hub_pressure_from_ranks")
+        assert not hasattr(steering, "candidate_concepts")
+
+    def test_evidence_signals_view_has_no_hub_pressure_key(self, vault_factory):
+        tv = vault_factory()
+        _loop_run(tv, issue=1, outcome_label="reworked", files=["a.py"])
+        tv.indexed()
+        result = steering.evidence_signals(tv.config)
+        assert set(result) == {"modules"}
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +310,7 @@ class TestGateProposals:
         # ranking is about weight.
         idx = _index(gate_failures={"m.py": 2})
         zero = {"rework": 0.0, "fix_rounds": 0.0, "superseded": 0.0,
-                "gate_failures": 0.0, "hub_pressure": 0.0}
+                "gate_failures": 0.0}
         out = steering.gate_proposals(
             [{"module": "m.py"}], idx, weekly_budget=3, weights=zero
         )
@@ -314,30 +370,6 @@ class TestBuildEvidenceIndex:
         assert idx.fix_rounds == {"src/ops/dream.py": 3, "src/ops/steering.py": 2}
         assert idx.gate_failures == {"src/ops/dream.py": 1}
         assert idx.superseded == {"src/ops/dream.py": 1}
-        # No dream cycle ran → no PageRank → behavioral pressure empty (optional).
-        assert idx.hub_pressure == {}
-
-    def test_hub_pressure_reads_graph_ranks_when_present(self, vault_factory):
-        tv = vault_factory()
-        _loop_run(tv, issue=1, outcome_label="reworked", files=["a.py"])
-        tv.indexed()
-        # Simulate a dreamed vault: seed graph_ranks directly (the dream apply
-        # phase's output). build_evidence_index must surface it as hub pressure.
-        from thinkweave.core.indexer import Indexer
-
-        idx_db = Indexer(config=tv.config)
-        try:
-            idx_db.db.execute(
-                "INSERT INTO graph_ranks (note_id, rank_type, score, computed_at) "
-                "VALUES (?,?,?,?)",
-                ("n-1", "pagerank:indexer", 0.42, "2026-07-18"),
-            )
-            idx_db.db.commit()
-        finally:
-            idx_db.close()
-
-        ev = steering.build_evidence_index(tv.config)
-        assert ev.hub_pressure == {"indexer": 0.42}
 
     def test_gate_over_built_index_drops_no_evidence_candidate(self, vault_factory):
         tv = vault_factory()
