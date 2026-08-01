@@ -2077,6 +2077,49 @@ def test_arch_proposal_input_context_is_thinkweave_native():
     assert "Read `ARCHITECTURE.md` end-to-end" not in text
 
 
+def _gate_split_marker() -> str:
+    return "**The gate split"
+
+
+def test_gate_split_stated_exactly_once_where_gates_are_introduced():
+    """The gate split (command/diff EXECUTE in the rail; acceptance/review/
+    simplify are orchestrator-dispatched and only recognised there) is stated
+    ONCE, in the gate-pipeline section of the command doc — never duplicated
+    across the loop docs."""
+    docs = sorted((issue_loop.REPO_ROOT / "docs" / "agents").glob("*.md"))
+    hits = [p for p in docs if _gate_split_marker() in p.read_text(encoding="utf-8")]
+    assert [p.name for p in hits] == ["issue-loop.command.md"]
+
+    text = (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
+        encoding="utf-8"
+    )
+    # It lives inside §1c — where gates are introduced — not somewhere else.
+    start = text.index("### 1c. Gate pipeline")
+    end = text.index("\n### ", start + 1)
+    section = text[start:end]
+    assert _gate_split_marker() in section
+    # Both halves of the split are actually stated, with the kinds named.
+    for kind in ("command", "diff", "acceptance", "review", "simplify"):
+        assert kind in section
+    assert "execute in the rail" in section.lower()
+    assert "never" in section.lower() and "executed by the rail" in section.lower()
+    # And it defers to the protocol spec rather than restating it.
+    assert "devloop-boundaries.md" in section
+
+
+def test_extension_points_do_not_claim_the_rail_runs_judgment_kinds():
+    """Regression guard on the claim this issue corrected: `check` refuses a
+    judgment kind (rail line ~1321), it does not run it as a command. The
+    semantics doc must not say otherwise, and must point at the one statement
+    of the split instead of restating it."""
+    text = (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.md").read_text(
+        encoding="utf-8"
+    )
+    assert "reports them as command-run" not in text
+    assert _gate_split_marker() not in text
+    assert "issue-loop.command.md" in text
+
+
 # ---------------------------------------------------------------------------
 # Dispatch persona + north-star splice (issue #89) — write-time simplification
 # pressure at the only point it works: dispatch. Seams: the [dispatch] persona

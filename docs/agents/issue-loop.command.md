@@ -180,6 +180,18 @@ prime block (when non-empty), the two dispatch blocks above (when
 
 Run the configured gates **in order**, inside the implementer's worktree.
 
+**The gate split — which plane runs which kind.** `command` and `diff` gates
+**execute in the rail**: Python runs the shell command / the diff arithmetic
+and returns the verdict. `acceptance`, `review`, and `simplify` are **never
+executed by the rail** — *this* orchestrator dispatches a fresh subagent. The
+rail's only role for them is to recognise the kind as judgment-side and refuse
+it: `check` returns `gate kind '<k>' is LLM-judged — run it from the
+/issue-loop command`. (Validating the subagent's *return* against the shared
+result shape is the rail's other judgment-side verb; it lands with #99. Until
+then the split is: rail executes deterministic kinds, orchestrator owns
+judgment kinds end to end.) Protocol detail — the two registries, the shared
+`GateResult` shape, execute-vs-validate: `docs/agents/devloop-boundaries.md` §3.
+
 - `kind: command` / `kind: diff` — deterministic, via the rail:
   ```bash
   python scripts/issue_loop.py check --gate <id> --cwd <worktree> --base-ref origin/main
