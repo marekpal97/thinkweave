@@ -42,11 +42,8 @@ def run_command_gate(gate: dict, cwd: Path, base_ref: str | None = None) -> dict
 def evaluate_diff_gate(gate: dict, numstat: str) -> dict:
     """Pure evaluation of `git diff --numstat` output against constraints.
 
-    ``forbidden_paths`` entries use the same three-form convention as triage's
-    sensitive/watched paths (:func:`devloop.paths.match`): a trailing ``/`` is a
-    dir prefix (exactly the old ``startswith``, which is what every shipped
-    entry is), a bare name matches that basename at any depth, and a glob is
-    fnmatched.
+    ``forbidden_paths`` patterns use :func:`devloop.paths.match`'s three forms;
+    every shipped entry is the trailing-``/`` prefix case (the old ``startswith``).
     """
     forbidden = gate.get("forbidden_paths", [])
     max_lines = gate.get("max_changed_lines")

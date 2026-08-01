@@ -73,20 +73,15 @@ def test_index_schema_pin_against_the_real_indexer(vault_factory):
 _SQLITE_IMPORT = re.compile(r"^\s*(?:import sqlite3|from sqlite3\b)", re.MULTILINE)
 
 
-def _module_name(py: Path, pkg_root: Path) -> str:
-    rel = py.relative_to(pkg_root.parent).with_suffix("")
-    return ".".join(p for p in rel.parts if p != "__init__")
-
-
 def test_only_the_index_seam_and_prime_import_sqlite3():
     pkg_root = Path(devloop.__file__).resolve().parent
     importers = {
-        _module_name(py, pkg_root)
+        str(py.relative_to(pkg_root).with_suffix(""))
         for py in pkg_root.rglob("*.py")
         if _SQLITE_IMPORT.search(py.read_text(encoding="utf-8"))
     }
     # #100 moves prime's SQL into index_client and tightens this to a singleton.
-    assert importers == {"devloop.index_client", "devloop.trajectory.prime"}
+    assert importers == {"index_client", "trajectory/prime"}
 
 
 # ---------------------------------------------------------------------------
