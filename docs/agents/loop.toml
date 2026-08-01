@@ -137,6 +137,8 @@ smells_baseline = true   # report Fowler code smells as judgement calls — neve
 # NEVER fails the pipeline. That is why required=false: its "failure" mode is the
 # revert, not a block. skill names the vendored delete-list source
 # (docs/agents/ponytail-review.command.md; the host /simplify skill is the fallback).
+# Also drives the §1e stack-tip pass (#90): one whole-branch run before PR-open
+# — same rerun/revert_note, no separate gate.
 [[gates]]
 id = "simplify"
 kind = "simplify"

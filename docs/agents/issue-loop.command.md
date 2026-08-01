@@ -215,8 +215,10 @@ Run the configured gates **in order**, inside the implementer's worktree.
    simplify, so a revert only unwinds the trim, never prior slices.
 2. **Get the delete-list.** Dispatch a **fresh subagent** with the text of the
    **vendored** `docs/agents/ponytail-review.command.md` skill (host
-   `/simplify` is the fallback if unavailable) and `git diff origin/main...HEAD`
-   for the slice. It returns a delete-list (one line per cut) and a
+   `/simplify` is the fallback if unavailable) and the slice diff —
+   `git diff origin/main...HEAD`; in stacked mode
+   `git diff <tip-before-this-issue>...HEAD`, per §1e's scoped-diffs bullet.
+   It returns a delete-list (one line per cut) and a
    `net: -<N> lines possible` tally. If it says `Lean already. Ship.`, skip the
    rest — note "simplify: lean already" in the PR body and move on.
 3. **Apply.** Apply the delete-list as a single commit on the branch.
@@ -273,6 +275,11 @@ the issue closes on merge. Release is implicit: the claim (the assignee in
 `claim_mode = assign`, the label otherwise) stays until merge closes the
 issue — a claimed+closed issue is inert; if the PR is rejected, a human
 unassigns / unlabels to re-queue.
+
+**No stack-tip simplify here — a documented no-op.** Each pr-per-issue
+branch holds one slice, so the per-slice simplify gate (§1c) already ran at
+what IS the stack tip; the whole-branch pass exists only in stacked delivery
+(§1e).
 
 **Risk-lane triage — label what a human should look at.** Daily runs
 outpace review, so after the PR is opened, classify it so a human reviews
@@ -359,11 +366,38 @@ gate pipeline, fix rounds, failure routing) is identical:
   --base-ref <tip-before-this-issue>` so diff limits apply per slice, not
   cumulatively; the tests gate always runs on the whole branch (earlier
   slices must stay green — that IS the stacking guarantee). The acceptance
-  judge sees the per-issue diff (`git diff <tip-before>...HEAD`).
+  judge sees the per-issue diff (`git diff <tip-before>...HEAD`), and so does
+  the per-slice simplify subagent (§1c step 2) — cross-slice trimming belongs
+  to the stack-tip pass below, never to a slice's own gate.
 - **Tracker visibility without PRs.** After each issue passes:
   `gh issue comment <N> --body "🤖 issue-loop run <id>: slice landed on
   loop/dag-<root> at <sha> — PR at end of run. <gate table>"`. Do NOT
   close the issue; do NOT open a PR yet.
+- **Stack-tip simplify — whole-branch ponytail review before PR-open.** The
+  per-slice simplify gate (§1c) sees one slice at a time and cannot see
+  cross-slice redundancy (a later slice re-rolling an earlier slice's
+  helper, hand-rolled retrieval a sibling already ships). So once the stack
+  is final — DAG exhausted, cap hit, or an issue routed to human — run the
+  §1c simplify flow ONCE more over the whole branch, before pushing
+  anything. Same gate entry, same five steps, differing in exactly two
+  inputs: the diff is the **cumulative merge-base diff**
+  `git diff origin/main...HEAD` (the whole ponytail, not one slice), and the
+  subagent also receives the **whole-file contents** of every touched file
+  (`git diff --name-only origin/main...HEAD`, then read each) so it can
+  judge duplication across slices. Keep-or-revert is unchanged and reuses
+  the existing gate config: snapshot `pre=$(git rev-parse HEAD)`, apply the
+  delete-list as one commit, re-run the gate's `rerun` list — `tests` on the
+  whole branch via the rail, `acceptance` as one fresh judge over EVERY
+  completed issue's criteria against the cumulative diff, judged per the
+  gate's `threshold` same as §1c — and on any red `git reset --hard $pre` and
+  add the gate's `revert_note` (`⚠ simplify-reverted`, suffixed
+  `(stack-tip)`) to the PR body. A run whose slices **individually passed**
+  simplify can still receive cuts here — that is the point of the pass.
+  Record the result in the final completed issue's §3 trace under
+  `stack_simplify` (same outcome/lines_delta/cuts/kept envelope as the
+  per-slice `simplify` key), and note the win
+  (`stack-tip simplify: -<N> lines, tests+acceptance green`) or the revert
+  in the PR body.
 - **One PR at the end** (DAG exhausted, cap hit, or an issue routed to
   human): push the branch and open a single draft PR whose body carries
   `Closes #A` lines for every completed issue, the per-issue gate tables,
@@ -437,13 +471,20 @@ any verdict flips, and the TDD red-confirmation. Condense them into the envelope
   "simplify":   {"outcome": "applied", "lines_delta": -12,
                  "cuts": [{"what": "<prose>", "why": "<prose>"}],
                  "kept": [{"what": "<prose>", "why": "<prose>"}]},
+  "stack_simplify": {"outcome": "applied", "lines_delta": -31,
+                     "cuts": [{"what": "<prose>", "why": "<prose>"}],
+                     "kept": [{"what": "<prose>", "why": "<prose>"}]},
   "edge_cases": ["<prose>"],
   "tdd":        {"red_confirmed": true}
 }
 ```
 
 The rail only accepts and shapes it (unknown keys dropped; a non-dict trace is
-rejected). It lands under the single `trace` frontmatter key — the
+rejected). `stack_simplify` (issue #90) shares the `simplify` envelope and
+records the §1e stack-tip pass: at most once per stacked run, on the **final
+completed issue's** trajectory. The placement rule is deliberately unenforced
+by the rail — which issue is final is orchestrator knowledge the rail never
+holds. It lands under the single `trace` frontmatter key — the
 machine-readable half of the tracker's gate evidence, not a second prose owner.
 Counts (`lines_delta`, `flipped_by_round`) are filter/join keys, not signal.
 Omit `--trace-json` for the pre-#85 shape.

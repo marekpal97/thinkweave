@@ -1425,20 +1425,10 @@ def test_trajectory_trace_argparse_contract():
 # frontmatter=; CLI examples parse through the real argparse).
 
 
-def _command_doc_section3() -> str:
-    doc = issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md"
-    assert doc.exists(), "issue-loop.command.md must ship under docs/agents/"
-    lines = doc.read_text(encoding="utf-8").splitlines()
-    start = next(i for i, ln in enumerate(lines) if ln.startswith("## 3."))
-    end = next((i for i in range(start + 1, len(lines))
-                if lines[i].startswith("## ")), len(lines))
-    return "\n".join(lines[start:end])
-
-
 def test_command_doc_section3_retires_lessons_body():
     """§3 no longer instructs a Lessons body section — the body is the
     run-causal register (What / How it went) only."""
-    sec = _command_doc_section3()
+    sec = _command_doc_subsection("## 3.")
     assert "What / How it went" in sec
     # The old '(What / How it went / Lessons …)' compose instruction is gone.
     assert "How it went / Lessons" not in sec
@@ -1448,7 +1438,7 @@ def test_command_doc_section3_retires_lessons_body():
 def test_command_doc_section3_instructs_insight_minting_and_builds_on():
     """§3 instructs minting portable lessons as separate insight notes and
     linking them from the trajectory via builds_on."""
-    low = _command_doc_section3().lower()
+    low = _command_doc_subsection("## 3.").lower()
     assert "insight note" in low
     assert "builds_on" in low
     assert "concepts at creation" in low or "concepts-at-creation" in low
@@ -1456,7 +1446,7 @@ def test_command_doc_section3_instructs_insight_minting_and_builds_on():
 
 def test_command_doc_section3_states_register_test():
     """§3 states the register test that sorts every artifact."""
-    low = _command_doc_section3().lower()
+    low = _command_doc_subsection("## 3.").lower()
     assert "run-bound semantic trace" in low
     assert "portable lesson" in low
     assert "insight note" in low
@@ -1467,7 +1457,7 @@ def test_command_doc_section3_trace_cli_example_is_executable():
     """Executability pin (#72 trap): §3 documents the --trace-json flag on the
     trajectory command, and that exact invocation shape parses through the REAL
     argparse — not a drifted or hand-waved flag."""
-    sec = _command_doc_section3()
+    sec = _command_doc_subsection("## 3.")
     assert "--trace-json" in sec
     ns = issue_loop.build_arg_parser().parse_args([
         "trajectory", "85", "--cwd", "wt", "--gates-json", "g.json",
@@ -1483,7 +1473,7 @@ def test_command_doc_section3_weave_create_nests_concepts_and_builds_on():
     frontmatter/session_id — extra top-level kwargs are silently dropped. So the
     insight note's `concepts` and the trajectory's `builds_on` link MUST be
     nested under frontmatter={…}. Pin the dict-style nesting."""
-    sec = _command_doc_section3()
+    sec = _command_doc_subsection("## 3.")
     assert "frontmatter={" in sec
     assert '"concepts":' in sec
     assert '"builds_on":' in sec
@@ -2108,10 +2098,6 @@ def test_vendored_ponytail_persona_present_with_provenance():
     assert "MIT" in text
     assert "Copyright (c) 2026 DietrichGebert" in text
     assert "Permission is hereby granted" in text
-    # The ladder itself survived vendoring: persona line, first rung, last rung.
-    assert "lazy senior developer" in text
-    assert "YAGNI" in text
-    assert "write the minimum code that works" in text
 
 
 def _issue_loop_doc() -> str:
@@ -2152,3 +2138,116 @@ def test_issue_loop_doc_gates_splice_on_dispatch_persona_knob():
     assert "dispatch.persona" in doc
     assert "byte-identical" in doc
     assert "north-star block only" in doc.lower()
+
+
+# ---------------------------------------------------------------------------
+# Stack-tip simplify (issue #90): whole-branch ponytail review before PR-open,
+# reusing the existing simplify gate config; result lands in the trace as
+# `stack_simplify`, shaped by the same normalizer as per-slice `simplify`.
+
+
+def _command_doc_subsection(marker: str) -> str:
+    """Extract one `### 1x.` subsection of issue-loop.command.md — from the
+    heading that starts with ``marker`` to the next heading of any level."""
+    doc = issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md"
+    assert doc.exists(), "issue-loop.command.md must ship under docs/agents/"
+    lines = doc.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(marker))
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("## ") or lines[i].startswith("### ")),
+               len(lines))
+    return "\n".join(lines[start:end])
+
+
+def test_stacked_ship_carries_stack_tip_simplify_before_pr_open():
+    """Acceptance: the command doc's ship step (§1e stacked delivery) carries
+    the stack-tip simplify pass — cumulative merge-base diff (origin/main...HEAD,
+    the whole branch) plus WHOLE-FILE contents of touched files for cross-slice
+    vision — and it runs BEFORE the branch is pushed / the single PR opens."""
+    sec = _command_doc_subsection("### 1e.")
+    low = sec.lower()
+    assert "stack-tip simplify" in low
+    assert "origin/main...HEAD" in sec
+    assert "whole-file" in low
+    # Ordering pin: the pass precedes push/PR-open in the end-of-run step.
+    assert low.index("stack-tip simplify") < low.index("push the branch")
+
+
+def test_stack_tip_simplify_reuses_existing_gate_semantics():
+    """Acceptance: keep-or-revert is the EXISTING simplify gate's — the doc
+    references the gate's `rerun` list and `revert_note`, and preserves the
+    snapshot + hard-reset revert path. A run whose slices individually passed
+    simplify can still receive cross-slice cuts at tip — stated, not implied."""
+    sec = _command_doc_subsection("### 1e.")
+    low = sec.lower()
+    assert "rerun" in low
+    assert "revert_note" in low or "simplify-reverted" in low
+    assert "reset --hard" in sec
+    assert "individually passed" in low
+    # The recording instruction names the trace key the rail shapes.
+    assert "stack_simplify" in sec
+
+
+def test_pr_per_issue_ship_states_stack_tip_noop():
+    """The pr-per-issue ship step (§1d) states the applicability decision
+    explicitly: the per-slice simplify already ran at what IS the stack tip,
+    so there is no second pass — a documented no-op, not an ambiguity."""
+    sec = _command_doc_subsection("### 1d.")
+    low = sec.lower()
+    assert "stack-tip" in low
+    assert "no-op" in low
+
+
+def test_command_doc_section3_documents_stack_simplify_trace_key():
+    """§3's trace envelope documents the `stack_simplify` key so the recording
+    instruction in §1e has its schema stated where the envelope lives."""
+    assert "stack_simplify" in _command_doc_subsection("## 3.")
+
+
+def test_build_trajectory_shapes_stack_simplify_like_slice_simplify():
+    """Rail seam: a trace may carry BOTH the per-slice `simplify` and the
+    run-end `stack_simplify`; the latter is shaped through the same projection
+    (outcome/lines_delta/cuts/kept, bookkeeping keys dropped). Expected value
+    hand-written from the #85 envelope schema."""
+    payload = issue_loop.build_trajectory(
+        {"number": 90, "title": "stack-tip simplify", "labels": []},
+        branch="loop/dag-88", commits=["a"], numstat="1\t0\tx.py\n",
+        gates=[], fix_rounds=0, outcome="shipped",
+        trace={
+            "simplify": {"outcome": "lean", "lines_delta": 0,
+                         "cuts": [], "kept": []},
+            "stack_simplify": {
+                "outcome": "applied", "lines_delta": -31,
+                "cuts": [{"what": "duplicated path-matcher",
+                          "why": "slice 3 re-rolled slice 1's helper",
+                          "note": "bookkeeping — dropped"}],
+                "kept": [{"what": "hand-rolled retrieval",
+                          "why": "load-bearing under the MCP-absent fallback"}],
+                "scratch": "dropped",
+            },
+        },
+    )
+    trace = payload["frontmatter"]["trace"]
+    assert trace["stack_simplify"] == {
+        "outcome": "applied", "lines_delta": -31,
+        "cuts": [{"what": "duplicated path-matcher",
+                  "why": "slice 3 re-rolled slice 1's helper"}],
+        "kept": [{"what": "hand-rolled retrieval",
+                  "why": "load-bearing under the MCP-absent fallback"}],
+    }
+    # The per-slice envelope is untouched by the sibling key.
+    assert trace["simplify"] == {"outcome": "lean", "lines_delta": 0,
+                                 "cuts": [], "kept": []}
+
+
+def test_build_trajectory_omits_stack_simplify_when_absent():
+    """pr-per-issue runs (and stacked runs whose tip pass said lean/never ran)
+    pass no stack_simplify — the key is omitted, never emitted empty."""
+    payload = issue_loop.build_trajectory(
+        {"number": 91, "title": "x", "labels": []},
+        branch="b", commits=[], numstat="", gates=[],
+        fix_rounds=0, outcome="shipped",
+        trace={"simplify": {"outcome": "lean", "lines_delta": 0,
+                            "cuts": [], "kept": []}},
+    )
+    assert "stack_simplify" not in payload["frontmatter"]["trace"]

@@ -618,6 +618,26 @@ def _normalize_trace_whatwhy(entry: dict) -> dict:
     }
 
 
+def _normalize_trace_simplify(section: dict) -> dict:
+    """Project one simplify envelope to ``{outcome, cuts, kept, lines_delta}``.
+
+    Shared by per-slice ``simplify`` (#58) and stack-tip ``stack_simplify`` (#90).
+    """
+    cuts = section.get("cuts")
+    kept = section.get("kept")
+    return {
+        "outcome": str(section.get("outcome", "") or ""),
+        "cuts": [_normalize_trace_whatwhy(c) for c in cuts if isinstance(c, dict)]
+                if isinstance(cuts, list) else [],
+        "kept": [_normalize_trace_whatwhy(c) for c in kept if isinstance(c, dict)]
+                if isinstance(kept, list) else [],
+        # A count like any other join key: a malformed value (list/dict)
+        # degrades to 0 via _as_int_or_none rather than escaping as a
+        # TypeError that would crash the trajectory command (rc-1).
+        "lines_delta": _as_int_or_none(section.get("lines_delta")) or 0,
+    }
+
+
 def _normalize_trace(raw: object) -> dict:
     """Shape an incoming semantic-trace object into its stored envelope.
 
@@ -636,21 +656,10 @@ def _normalize_trace(raw: object) -> dict:
     criteria = raw.get("criteria")
     if isinstance(criteria, list):
         out["criteria"] = [_normalize_trace_criterion(e) for e in criteria if isinstance(e, dict)]
-    simplify = raw.get("simplify")
-    if isinstance(simplify, dict):
-        cuts = simplify.get("cuts")
-        kept = simplify.get("kept")
-        out["simplify"] = {
-            "outcome": str(simplify.get("outcome", "") or ""),
-            "cuts": [_normalize_trace_whatwhy(c) for c in cuts if isinstance(c, dict)]
-                    if isinstance(cuts, list) else [],
-            "kept": [_normalize_trace_whatwhy(c) for c in kept if isinstance(c, dict)]
-                    if isinstance(kept, list) else [],
-            # A count like any other join key: a malformed value (list/dict)
-            # degrades to 0 via _as_int_or_none rather than escaping as a
-            # TypeError that would crash the trajectory command (rc-1).
-            "lines_delta": _as_int_or_none(simplify.get("lines_delta")) or 0,
-        }
+    for key in ("simplify", "stack_simplify"):
+        section = raw.get(key)
+        if isinstance(section, dict):
+            out[key] = _normalize_trace_simplify(section)
     edge_cases = raw.get("edge_cases")
     if isinstance(edge_cases, list):
         out["edge_cases"] = [str(x) for x in edge_cases if isinstance(x, str)]
@@ -1238,7 +1247,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "mirror into the trajectory note frontmatter")
     p_traj.add_argument("--trace-json", default=None,
                         help="file with the semantic execution trace (issue #85): a JSON "
-                             "object {rounds[], criteria[], simplify, edge_cases[], tdd} "
+                             "object {rounds[], criteria[], simplify, stack_simplify, "
+                             "edge_cases[], tdd} "
                              "the orchestrator condenses from the gate agents' own reports. "
                              "Omit to leave the trace key out (pre-#85 shape).")
     p_traj.add_argument("--fix-rounds", type=int, default=0)
