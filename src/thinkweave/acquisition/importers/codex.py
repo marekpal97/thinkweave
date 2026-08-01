@@ -57,11 +57,9 @@ from pathlib import Path
 from thinkweave.acquisition.importers.common import ImportManifest
 from thinkweave.core.config import Config, load_config, normalize_project
 from thinkweave.core.schemas import NoteType
-from thinkweave.core.vault import VaultManager
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 
 DEFAULT_CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
-MANIFEST_SUBDIR = "onboarding"
-MANIFEST_FILE = "codex.json"
 
 # Lines above this are tool-result payloads, not conversation: dropped without
 # being decoded or parsed. ponytail: a single chat message larger than this is
@@ -189,9 +187,7 @@ def _extract_text(payload: dict) -> str:
     Content is a list of typed blocks; ``input_text`` (user) and ``output_text``
     (assistant) carry the conversation, everything else is operational.
     """
-    content = payload.get("content", "")
-    if isinstance(content, str):
-        return content.strip()
+    content = payload.get("content", [])
     if not isinstance(content, list):
         return ""
     parts: list[str] = []
@@ -397,8 +393,6 @@ def materialize_session(vm: VaultManager, session: CodexSession) -> str:
         tags=["imported", "codex"],
         extra_frontmatter=extra_fm,
     )
-    from thinkweave.core.vault import parse_frontmatter
-
     fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
     return fm.get("id", "")
 
@@ -460,7 +454,7 @@ def import_codex(
     vm = VaultManager(config=cfg) if not dry_run else None
     if vm:
         vm.ensure_dirs()
-    manifest = ImportManifest.load(cfg.weave_dir / MANIFEST_SUBDIR, MANIFEST_FILE)
+    manifest = ImportManifest.load(cfg.weave_dir / "onboarding", "codex.json")
 
     for path in discover_rollouts(root):
         stats["discovered"] += 1

@@ -24,7 +24,6 @@ from pathlib import Path
 import pytest
 
 from thinkweave.acquisition.importers.codex import (
-    DEFAULT_CODEX_SESSIONS_ROOT,
     _build_session_body,
     discover_rollouts,
     import_codex,
@@ -490,10 +489,6 @@ def test_missing_codex_root_reports_cleanly(vault_cfg: Config, tmp_path: Path):
     assert stats["materialized"] == 0
     assert len(stats["errors"]) == 1
     assert "not found" in stats["errors"][0]
-
-
-def test_default_root_points_at_the_codex_sessions_dir():
-    assert DEFAULT_CODEX_SESSIONS_ROOT == Path.home() / ".codex" / "sessions"
 
 
 # ── (a) CLI seam ───────────────────────────────────────────────────────

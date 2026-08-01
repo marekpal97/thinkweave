@@ -11,10 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from thinkweave.onboarding.claude_code_seed import (
-    UNSCOPED_PROJECT,
-    normalize_project,
-)
+from thinkweave.core.config import UNSCOPED_PROJECT, normalize_project
 
 
 class TestNormalizeProjectPosix:

@@ -28,31 +28,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from thinkweave.core.config import (
-    UNSCOPED_PROJECT,
-    Config,
-    load_config,
-    normalize_project,
-)
+from thinkweave.core.config import Config, load_config, normalize_project
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
-
-# ``normalize_project`` / ``UNSCOPED_PROJECT`` moved to ``core.config`` when the
-# Codex importer needed the same cwd→project rules; re-exported here because
-# this module is their established import site.
-__all__ = [
-    "DEFAULT_CC_PROJECTS_ROOT",
-    "MANIFEST_REL",
-    "UNSCOPED_PROJECT",
-    "ClaudeCodeSession",
-    "discover_sessions",
-    "import_claude_code",
-    "load_manifest",
-    "materialize_session",
-    "normalize_project",
-    "parse_session",
-    "save_manifest",
-]
 
 DEFAULT_CC_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 MANIFEST_REL = ".weave/onboarding/claude_code.json"
