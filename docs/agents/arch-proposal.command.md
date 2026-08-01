@@ -54,8 +54,8 @@ call, not a hand-curated doc list.** It already carries everything this loop
 needs to orient: the state-of-play (its `state` section **is** the project's
 `STATE.md` verbatim — truncated only if it blows the token budget, and it says
 so inline — so no separate read), the open backlog, recent decisions, and open
-probes. Curated doc lists rot; the snapshot is regenerated
-from the vault every time.
+probes. Curated doc lists rot; the snapshot is regenerated from the vault
+every time.
 
 1. **Project snapshot.** One call, at the top of the run:
    - MCP available: `weave_project_snapshot(project=<slug>,
