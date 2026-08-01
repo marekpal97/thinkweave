@@ -242,8 +242,10 @@ def add_index_subparsers(sub) -> None:
         "--enrich",
         action="store_true",
         help=(
-            "claude-code / codex: enrich previously-materialized sessions "
-            "with decisions/insights (does not re-materialize)."
+            "Synthesise previously-materialized sessions into "
+            "decisions/insights (does not re-materialize). The pending set is "
+            "harness-agnostic: it is every imported-but-unsynthesised session "
+            "note, whichever source is named on this command line."
         ),
     )
     p_import.add_argument(

@@ -25,6 +25,7 @@ import pytest
 
 from thinkweave.acquisition.importers.codex import (
     DEFAULT_CODEX_SESSIONS_ROOT,
+    _build_session_body,
     discover_rollouts,
     import_codex,
     parse_rollout,
@@ -174,11 +175,9 @@ class TestParseRollout:
         assert session.cwd == "/home/u/projects/thinkmesh"
         assert session.project == "thinkmesh"
         assert session.git_branch == "feature/geo"
-        assert session.user_turns == [
-            "Why does the z-score threshold not change the count?"
-        ]
-        assert session.assistant_turns == [
-            "The threshold is read before the events are added."
+        assert session.turns == [
+            ("user", "Why does the z-score threshold not change the count?"),
+            ("assistant", "The threshold is read before the events are added."),
         ]
         assert session.started_at is not None
         assert session.started_at.isoformat().startswith("2025-12-04T16:53:57")
@@ -191,7 +190,7 @@ class TestParseRollout:
 
         assert parse_rollout(path) is None
 
-    def test_compaction_replay_is_not_double_counted(self, codex_root: Path):
+    def test_compaction_replay_block_is_recorded_once(self, codex_root: Path):
         """Compaction re-records earlier history inside the same rollout."""
         replayed_user = "Why does the z-score threshold not change the count?"
         replayed_reply = "The threshold is read before the events are added."
@@ -209,11 +208,89 @@ class TestParseRollout:
         session = parse_rollout(path)
 
         assert session is not None
-        assert session.user_turns == [replayed_user, "Now fix it."]
-        assert session.assistant_turns == [
-            replayed_reply,
-            "Moved the threshold read inside the loop.",
+        assert session.turns == [
+            ("user", replayed_user),
+            ("assistant", replayed_reply),
+            ("user", "Now fix it."),
+            ("assistant", "Moved the threshold read inside the loop."),
         ]
+
+    def test_genuine_repeats_are_kept_and_pairing_survives(self, codex_root: Path):
+        """A user typing "continue" twice is not a compaction replay.
+
+        Suppressing it would also shift every later pairing by one, silently
+        attributing "Opened the PR" to "Now ship it" in the permanent record.
+        """
+        events = [
+            _meta(),
+            _msg("user", "Add the parser", "2025-12-04T16:54:00.000Z"),
+            _msg("assistant", "Added the parser", "2025-12-04T16:54:30.000Z"),
+            _msg("user", "continue", "2025-12-04T16:55:00.000Z"),
+            _msg("assistant", "Added the tests", "2025-12-04T16:55:30.000Z"),
+            _msg("user", "continue", "2025-12-04T16:56:00.000Z"),
+            _msg("assistant", "Opened the PR", "2025-12-04T16:56:30.000Z"),
+            _msg("user", "Now ship it", "2025-12-04T16:57:00.000Z"),
+            _msg("assistant", "Shipped", "2025-12-04T16:57:30.000Z"),
+        ]
+        path = _write_rollout(codex_root, events)
+
+        session = parse_rollout(path)
+
+        assert session is not None
+        assert session.turns == [
+            ("user", "Add the parser"),
+            ("assistant", "Added the parser"),
+            ("user", "continue"),
+            ("assistant", "Added the tests"),
+            ("user", "continue"),
+            ("assistant", "Opened the PR"),
+            ("user", "Now ship it"),
+            ("assistant", "Shipped"),
+        ]
+
+    def test_turn_order_survives_a_suppressed_replay_block(self, codex_root: Path):
+        """The rendered body must never pair a reply with the wrong request.
+
+        Replay of a block, then new content — the markdown is what lands in the
+        vault permanently and what synthesis reads, so pairing is asserted on
+        the rendered text, not just the parsed list.
+        """
+        events = [
+            _meta(),
+            _msg("user", "Add the parser", "2025-12-04T16:54:00.000Z"),
+            _msg("assistant", "Added the parser", "2025-12-04T16:54:30.000Z"),
+            _msg("user", "continue", "2025-12-04T16:55:00.000Z"),
+            _msg("assistant", "Added the tests", "2025-12-04T16:55:30.000Z"),
+            # compaction: the whole exchange above is re-emitted verbatim
+            _msg("user", "Add the parser", "2025-12-04T17:00:00.000Z"),
+            _msg("assistant", "Added the parser", "2025-12-04T17:00:01.000Z"),
+            _msg("user", "continue", "2025-12-04T17:00:02.000Z"),
+            _msg("assistant", "Added the tests", "2025-12-04T17:00:03.000Z"),
+            _msg("user", "Now ship it", "2025-12-04T17:01:00.000Z"),
+            _msg("assistant", "Shipped", "2025-12-04T17:01:30.000Z"),
+        ]
+        path = _write_rollout(codex_root, events)
+
+        session = parse_rollout(path)
+
+        assert session is not None
+        assert session.turns == [
+            ("user", "Add the parser"),
+            ("assistant", "Added the parser"),
+            ("user", "continue"),
+            ("assistant", "Added the tests"),
+            ("user", "Now ship it"),
+            ("assistant", "Shipped"),
+        ]
+        body = _build_session_body(session)
+        # Each request is immediately followed by its own reply.
+        for request, reply in [
+            ("Add the parser", "Added the parser"),
+            ("continue", "Added the tests"),
+            ("Now ship it", "Shipped"),
+        ]:
+            assert f"{request}\n\n### Assistant" in body, request
+            assert reply in body.split(request, 1)[1][:120], (request, reply)
 
     def test_malformed_lines_are_skipped(self, codex_root: Path):
         path = _write_rollout(codex_root, _simple_events())
@@ -224,7 +301,7 @@ class TestParseRollout:
         session = parse_rollout(path)
 
         assert session is not None
-        assert len(session.user_turns) == 1
+        assert session.count("user") == 1
 
 
 @pytest.mark.parametrize("junk_mb", [4, 16])
@@ -260,8 +337,10 @@ def test_memory_stays_bounded_regardless_of_rollout_size(
 
     # Content on both sides of the oversized line still lands.
     assert session is not None
-    assert session.user_turns == ["before the giant tool output"]
-    assert session.assistant_turns == ["after the giant tool output"]
+    assert session.turns == [
+        ("user", "before the giant tool output"),
+        ("assistant", "after the giant tool output"),
+    ]
     # Constant bound: generous enough for the reader's buffers, far below the
     # smallest junk line, and identical for both parametrised sizes.
     assert peak < 3 * 1024 * 1024, f"peak {peak} bytes on a {junk_mb}MB rollout"

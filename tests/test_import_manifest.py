@@ -98,3 +98,39 @@ def test_save_creates_parent_directory(tmp_path: Path):
     m.mark("conv-1", "n-1")
     m.save()
     assert (weave_dir / "chatgpt_import.json").exists()
+
+
+def test_corrupt_manifest_degrades_to_empty_with_a_warning(
+    tmp_path: Path, capsys
+):
+    """A truncated ledger must not abort the import.
+
+    Re-importing content is visible and fixable; a traceback leaves the user
+    with no way to run the importer at all.
+    """
+    (tmp_path / "codex.json").write_text('{"version": 1, "imported_i', encoding="utf-8")
+
+    m = ImportManifest.load(tmp_path, "codex.json")
+
+    assert m.ids == {}
+    assert m.is_imported("anything") is False
+    assert "unreadable" in capsys.readouterr().err
+
+
+def test_save_is_atomic_and_leaves_no_temp_file(tmp_path: Path):
+    """Importers save mid-run; a half-written ledger would fail to load and
+    re-import everything."""
+    m = ImportManifest.load(tmp_path, "codex.json")
+    m.mark("rollout-1", "ses-abc123")
+    m.save()
+
+    assert json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))[
+        "imported_ids"
+    ] == {"rollout-1": "ses-abc123"}
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_non_dict_manifest_is_treated_as_empty(tmp_path: Path):
+    (tmp_path / "codex.json").write_text("[]", encoding="utf-8")
+
+    assert ImportManifest.load(tmp_path, "codex.json").ids == {}

@@ -41,11 +41,17 @@ from thinkweave.core.vault import VaultManager
 # Codex importer needed the same cwd→project rules; re-exported here because
 # this module is their established import site.
 __all__ = [
+    "DEFAULT_CC_PROJECTS_ROOT",
+    "MANIFEST_REL",
     "UNSCOPED_PROJECT",
     "ClaudeCodeSession",
+    "discover_sessions",
     "import_claude_code",
+    "load_manifest",
+    "materialize_session",
     "normalize_project",
     "parse_session",
+    "save_manifest",
 ]
 
 DEFAULT_CC_PROJECTS_ROOT = Path.home() / ".claude" / "projects"

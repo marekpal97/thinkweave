@@ -23,12 +23,14 @@ re-records history, so a long session's JSONL reaches 700MB-2GB
 (openai/codex#24948). Nothing here reads a whole file, or even a whole *line*:
 :func:`_iter_lines` streams fixed-size chunks and discards any line over
 :data:`MAX_LINE_BYTES` without decoding it, so peak memory is a constant
-independent of rollout size.
+(``MAX_LINE_BYTES + _CHUNK_BYTES``) independent of rollout size.
 
 **Compaction replays repeat exchanges.** After a compaction the earlier turns
-are re-emitted as fresh ``response_item`` messages inside the same rollout.
-Turns are therefore deduped on exact text, so a replayed exchange is recorded
-once rather than read downstream as "discussed N times".
+are re-emitted as fresh ``response_item`` messages inside the same rollout, so
+a replayed exchange would otherwise read downstream as "discussed N times".
+:class:`_ReplayFilter` suppresses those — anchored to contiguous replayed
+*runs*, never to bare text repetition, so a user typing "continue" twice keeps
+both turns and no reply is re-attributed to the wrong request.
 
 Project resolution reuses :func:`thinkweave.core.config.normalize_project` —
 the same worktree-stripping and homedir → ``_unscoped`` rules the Claude Code
@@ -58,7 +60,7 @@ from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 
 DEFAULT_CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
-MANIFEST_DIR_REL = ".weave/onboarding"
+MANIFEST_SUBDIR = "onboarding"
 MANIFEST_FILE = "codex.json"
 
 # Lines above this are tool-result payloads, not conversation: dropped without
@@ -69,14 +71,22 @@ MANIFEST_FILE = "codex.json"
 MAX_LINE_BYTES = 1 << 20
 _CHUNK_BYTES = 1 << 16
 
-# Codex injects these as pseudo-user messages every turn; they are harness
-# plumbing, not something the user said.
-_SYNTHETIC_USER_PREFIX = "<environment_context>"
+# Codex injects these as pseudo-user messages: the per-turn sandbox/cwd block
+# and the AGENTS.md dump. Harness plumbing, not something the user said.
+# (Only <environment_context> appears in the Dec-2025 rollouts on hand; the
+# instructions wrapper arrived with AGENTS.md support.)
+_SYNTHETIC_USER_PREFIXES = ("<environment_context>", "<user_instructions>")
 
 
 @dataclass
 class CodexSession:
-    """Parsed view of one Codex rollout JSONL."""
+    """Parsed view of one Codex rollout JSONL.
+
+    ``turns`` is one ordered ``(role, text)`` sequence rather than a pair of
+    per-role lists. That is load-bearing, not tidiness: the body renders
+    straight from this order, so dropping a turn can never shift which reply
+    is attributed to which request.
+    """
 
     rollout_id: str
     project: str
@@ -84,9 +94,11 @@ class CodexSession:
     git_branch: str
     started_at: datetime | None
     ended_at: datetime | None
-    user_turns: list[str] = field(default_factory=list)
-    assistant_turns: list[str] = field(default_factory=list)
+    turns: list[tuple[str, str]] = field(default_factory=list)
     file_path: Path | None = None
+
+    def count(self, role: str) -> int:
+        return sum(1 for r, _ in self.turns if r == role)
 
 
 # ── Walker + parser ────────────────────────────────────────────────────
@@ -107,7 +119,12 @@ def rollout_id(path: Path) -> str:
 
 
 def _filename_date(path: Path) -> datetime | None:
-    """The rollout's start date, read off ``rollout-YYYY-MM-DDT...``."""
+    """The rollout's start date, read off ``rollout-YYYY-MM-DDT...``.
+
+    ``None`` for a filename that doesn't follow the convention; callers treat
+    that as "don't know", which means ``--since`` keeps the rollout rather than
+    silently dropping it.
+    """
     try:
         return datetime.strptime(path.stem[8:18], "%Y-%m-%d").replace(tzinfo=UTC)
     except ValueError:
@@ -134,7 +151,12 @@ def _iter_lines(path: Path) -> Iterator[str]:
 
     The whole point: a rollout can be gigabytes and a *single* tool-output line
     can be hundreds of megabytes, so neither ``read()`` nor ``for line in fh``
-    is safe here. Peak memory is ``MAX_LINE_BYTES + _CHUNK_BYTES``.
+    is safe here.
+
+    The cap is applied to whatever *partial* line remains after complete lines
+    have been drained — checking before the drain would discard a buffer full
+    of perfectly good short lines. Peak resident bytes are therefore
+    ``MAX_LINE_BYTES + _CHUNK_BYTES``, not ``MAX_LINE_BYTES``.
     """
     buf = bytearray()
     dropping = False
@@ -183,6 +205,69 @@ def _extract_text(payload: dict) -> str:
     return "\n\n".join(parts)
 
 
+class _ReplayFilter:
+    """Records turns in order, suppressing compaction *replays* only.
+
+    A compaction replay re-emits a contiguous block of earlier turns verbatim,
+    in their original order. A user typing "continue" twice does not. Keying
+    suppression on "have I seen this text before" cannot tell those apart, and
+    getting it wrong is not a cosmetic loss: the recorded order is what the
+    session body renders and what the synthesis pass reads, so a wrongly
+    dropped turn silently re-attributes every later reply to the wrong request.
+
+    So suppression is anchored to a *run*: a repeat is held back one turn
+    (``_pending``) and only dropped once the next turn also continues the same
+    earlier sequence. If it doesn't, the held turn is a genuine repeat and gets
+    recorded. Deliberately conservative in one direction — a replayed block of
+    exactly one turn reads as a genuine repeat and is kept, because recording a
+    turn twice is recoverable and dropping a real one is not.
+    """
+
+    def __init__(self) -> None:
+        self._turns: list[tuple[str, str]] = []
+        self._first_seen: dict[tuple[str, str], int] = {}
+        self._pending: tuple[str, str] | None = None
+        self._cursor: int | None = None  # next index a replay run would match
+
+    def _record(self, turn: tuple[str, str]) -> None:
+        self._first_seen.setdefault(turn, len(self._turns))
+        self._turns.append(turn)
+
+    def feed(self, role: str, text: str) -> None:
+        turn = (role, text)
+
+        # Does this continue the run the pending repeat opened?
+        if (
+            self._cursor is not None
+            and self._cursor < len(self._turns)
+            and self._turns[self._cursor] == turn
+        ):
+            self._pending = None  # confirmed replay: drop its first turn too
+            self._cursor += 1
+            return
+
+        # The run (if any) ended here, so anything held back was genuine.
+        if self._pending is not None:
+            self._record(self._pending)
+            self._pending = None
+        self._cursor = None
+
+        if turn in self._first_seen:
+            # Might open a replay; decide when the next turn arrives.
+            self._pending = turn
+            self._cursor = self._first_seen[turn] + 1
+        else:
+            self._record(turn)
+
+    def result(self) -> list[tuple[str, str]]:
+        """The ordered turns. Flushes a trailing unresolved repeat — nothing
+        followed it to confirm a replay, so it counts as genuine."""
+        if self._pending is not None:
+            self._record(self._pending)
+            self._pending = None
+        return self._turns
+
+
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -197,15 +282,15 @@ def parse_rollout(path: Path) -> CodexSession | None:
 
     Only ``response_item`` messages are read — Codex mirrors each of them as an
     ``event_msg`` (``user_message`` / ``agent_message``), and reading both
-    streams would double every turn.
+    streams would double every turn. Compaction replays are suppressed by
+    :class:`_ReplayFilter`; see its docstring for why a global "seen this text"
+    set is the wrong rule.
     """
     cwd = ""
     git_branch = ""
     started_at: datetime | None = None
     ended_at: datetime | None = None
-    user_turns: list[str] = []
-    assistant_turns: list[str] = []
-    seen: set[tuple[str, str]] = set()
+    turns = _ReplayFilter()
 
     for line in _iter_lines(path):
         line = line.strip()
@@ -240,15 +325,12 @@ def parse_rollout(path: Path) -> CodexSession | None:
         if role not in ("user", "assistant"):
             continue
         text = _extract_text(payload)
-        if not text or text.startswith(_SYNTHETIC_USER_PREFIX):
+        if not text or text.startswith(_SYNTHETIC_USER_PREFIXES):
             continue
-        # Compaction replays re-emit earlier turns inside the same rollout.
-        if (role, text) in seen:
-            continue
-        seen.add((role, text))
-        (user_turns if role == "user" else assistant_turns).append(text)
+        turns.feed(role, text)
 
-    if not user_turns and not assistant_turns:
+    recorded = turns.result()
+    if not recorded:
         return None
 
     return CodexSession(
@@ -258,8 +340,7 @@ def parse_rollout(path: Path) -> CodexSession | None:
         git_branch=git_branch,
         started_at=started_at,
         ended_at=ended_at,
-        user_turns=user_turns,
-        assistant_turns=assistant_turns,
+        turns=recorded,
         file_path=path,
     )
 
@@ -278,17 +359,16 @@ def _build_session_body(session: CodexSession) -> str:
     if session.git_branch:
         lines.append(f"Git branch at session start: `{session.git_branch}`")
     lines += ["", "## Transcript", ""]
-    n_user = len(session.user_turns)
-    n_asst = len(session.assistant_turns)
-    for i in range(max(n_user, n_asst)):
-        if i < n_user:
-            lines += [f"### User (turn {i + 1})", "", session.user_turns[i], ""]
-        if i < n_asst:
-            lines += [f"### Assistant (turn {i + 1})", "", session.assistant_turns[i], ""]
+    # Rendered straight from the recorded order, so a suppressed turn can never
+    # pair a reply with the wrong request.
+    numbered: dict[str, int] = {}
+    for role, text in session.turns:
+        numbered[role] = numbered.get(role, 0) + 1
+        lines += [f"### {role.capitalize()} (turn {numbered[role]})", "", text, ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
-def materialize_session(cfg: Config, vm: VaultManager, session: CodexSession) -> str:
+def materialize_session(vm: VaultManager, session: CodexSession) -> str:
     """Write one session note; returns its vault note id."""
     title_ts = (session.started_at or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M")
     title = f"Codex session {title_ts} ({session.project})"
@@ -297,8 +377,8 @@ def materialize_session(cfg: Config, vm: VaultManager, session: CodexSession) ->
         "imported_from": "codex",
         "codex_rollout_id": session.rollout_id,
         "original_jsonl": str(session.file_path) if session.file_path else "",
-        "user_turn_count": len(session.user_turns),
-        "assistant_turn_count": len(session.assistant_turns),
+        "user_turn_count": session.count("user"),
+        "assistant_turn_count": session.count("assistant"),
     }
     if session.cwd:
         extra_fm["source_cwd"] = session.cwd
@@ -380,7 +460,7 @@ def import_codex(
     vm = VaultManager(config=cfg) if not dry_run else None
     if vm:
         vm.ensure_dirs()
-    manifest = ImportManifest.load(Path(cfg.vault_root) / MANIFEST_DIR_REL, MANIFEST_FILE)
+    manifest = ImportManifest.load(cfg.weave_dir / MANIFEST_SUBDIR, MANIFEST_FILE)
 
     for path in discover_rollouts(root):
         stats["discovered"] += 1
@@ -420,7 +500,7 @@ def import_codex(
             stats["materialized"] += 1
         else:
             try:
-                note_id = materialize_session(cfg, vm, session)
+                note_id = materialize_session(vm, session)
             except Exception as e:  # noqa: BLE001
                 stats["errors"].append(f"{path}: {type(e).__name__}: {e}")
                 continue
