@@ -63,6 +63,10 @@ DEFAULT_CONFIG: dict = {
     "tdd": {
         "mode": "auto",  # auto: enforced iff the baseline probe is green
     },
+    "dispatch": {
+        # Splice persona + north-star into dispatch prompts (issue #89); semantics: issue-loop.command.md §1b.
+        "persona": True,
+    },
     "labels": {
         "runnable": "ready-for-agent",
         "claimed": "agent-claimed",
@@ -104,6 +108,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         "loop": dict(DEFAULT_CONFIG["loop"]),
         "labels": dict(DEFAULT_CONFIG["labels"]),
         "tdd": dict(DEFAULT_CONFIG["tdd"]),
+        "dispatch": dict(DEFAULT_CONFIG["dispatch"]),
         "triage": dict(DEFAULT_CONFIG["triage"]),
         "gates": [],
     }
@@ -112,6 +117,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         cfg["loop"].update(data.get("loop", {}))
         cfg["labels"].update(data.get("labels", {}))
         cfg["tdd"].update(data.get("tdd", {}))
+        cfg["dispatch"].update(data.get("dispatch", {}))
         cfg["triage"].update(data.get("triage", {}))
         cfg["gates"] = data.get("gates", [])
     return cfg
@@ -147,8 +153,10 @@ def apply_overrides(cfg: dict, specs: list[str]) -> dict:
     """
     for spec in specs:
         section, key, value = parse_override(spec)
-        if section not in ("loop", "labels", "tdd", "triage"):
-            raise ValueError(f"--set section '{section}' not overridable (loop | labels | tdd | triage)")
+        if section not in ("loop", "labels", "tdd", "dispatch", "triage"):
+            raise ValueError(
+                f"--set section '{section}' not overridable (loop | labels | tdd | dispatch | triage)"
+            )
         if key not in DEFAULT_CONFIG[section]:
             known = ", ".join(sorted(DEFAULT_CONFIG[section]))
             raise ValueError(f"--set unknown key '{section}.{key}' (known: {known})")
