@@ -23,6 +23,34 @@ from thinkweave.scheduling import (
 from thinkweave.scheduling.cron import FENCE_END, FENCE_START, _splice
 from thinkweave.scheduling.registry import ScheduledJob, _parse, resolve_command
 
+TEMPLATE_SCHEDULING = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "thinkweave"
+    / "vault_templates"
+    / "config"
+    / "scheduling.yaml"
+)
+
+
+def _field(value: str, period: int) -> set[int]:
+    """Expand one cron field (minute or hour) to the values it fires on.
+
+    Handles only the forms the shipped template actually uses: ``*``,
+    ``*/N``, and a literal. Anything else fails the test loudly rather
+    than being silently mis-parsed into a false all-clear.
+    """
+    if value == "*":
+        return set(range(period))
+    if value.startswith("*/") and value[2:].isdigit():
+        return set(range(0, period, int(value[2:])))
+    if value.isdigit():
+        return {int(value)}
+    pytest.fail(
+        f"cron field {value!r} uses a form this test can't expand "
+        f"(ranges/lists). Extend _field before adding it to the template."
+    )
+
 
 @pytest.fixture
 def config(tmp_path: Path) -> Config:
@@ -136,17 +164,62 @@ class TestRegistry:
     def test_load_from_template(self, config):
         # The shipped vault template should parse cleanly with the dream +
         # embeddings jobs enabled by default.
-        pkg = Path(__file__).resolve().parents[1] / "src" / "thinkweave"
-        template = pkg / "vault_templates" / "config" / "scheduling.yaml"
-        jobs = load_jobs(config, path=template)
+        jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
         assert "dream" in jobs and jobs["dream"].enabled
         assert "embeddings-keepwarm" in jobs and jobs["embeddings-keepwarm"].enabled
         assert jobs["dream"].env == ("ANTHROPIC_API_KEY",)
         assert jobs["embeddings-keepwarm"].env == ("OPENAI_API_KEY",)
         # /dream must never overlap itself (SQLite index race) — the template
-        # ships it serialized; nothing else needs the lock.
+        # ships it serialized.
         assert jobs["dream"].serialize is True
         assert jobs["embeddings-keepwarm"].serialize is False
+
+    def test_template_ships_newsletter_job(self, config):
+        # The Gmail connector runs headless (the cached grant survives a
+        # `claude -p` firing), so the newsletter rail is schedulable.
+        jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
+        job = jobs["newsletter"]
+        assert job.cadence == "0 5 * * *"
+        assert job.runner == "direct"
+        assert job.serialize is True
+        assert job.log == "newsletter.log"
+        assert job.env == ("ANTHROPIC_API_KEY",)
+        # Needs a sender allowlist AND a Gmail grant before it can do
+        # anything but fail into its log — opt-in, like the other
+        # source-type-gated rails.
+        assert job.enabled is False
+        assert "-p" in job.command.split()
+        assert "/newsletter" in job.command.split()
+
+    def test_newsletter_cadence_shares_no_slot(self, config):
+        """The `newsletter` job must not fire at the same time as any other.
+
+        Scoped deliberately to this one job. The template is NOT collision-
+        free in general — `daily-research` and `news-poll` both fire at
+        08:00, `weekly-hygiene` and `news-poll` both at 04:00 Sunday — and
+        those are tolerated. What this pins is that the rail added for #113
+        stays clear of everything, because the two morning slots a reader
+        would reach for are exactly the ones the news rails hold: 06:30
+        (`news-cycle`, ``30 */6``) and 06:00 (`news-poll`, ``0 */2``).
+        Both were proposed for this job and both were wrong.
+
+        Day-of-week is ignored, which can only over-report (weekly jobs are
+        treated as if they ran daily) — conservative in the safe direction.
+        """
+        jobs = load_jobs(config, path=TEMPLATE_SCHEDULING)
+        mine = jobs["newsletter"].cadence.split()
+        my_minutes, my_hours = _field(mine[0], 60), _field(mine[1], 24)
+        for name, job in jobs.items():
+            if name == "newsletter":
+                continue
+            other = job.cadence.split()
+            clash_m = my_minutes & _field(other[0], 60)
+            clash_h = my_hours & _field(other[1], 24)
+            assert not (clash_m and clash_h), (
+                f"newsletter {jobs['newsletter'].cadence!r} collides with "
+                f"{name} {job.cadence!r} at "
+                f"{sorted(clash_h)[0]:02d}:{sorted(clash_m)[0]:02d}"
+            )
 
 
 # --------------------------------------------------------------------------- #

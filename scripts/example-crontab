@@ -46,6 +46,23 @@ PATH=/home/you/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 # queue accumulates a useful batch before Haiku triage runs.
 30 */6 * * * cd /path/to/thinkweave && uv run weave flow run news-cycle >> ~/.cache/thinkweave/cron.log 2>&1
 
+# Email-newsletter intake (daily 05:00). Cadence and serialize rationale are
+# canonical on the `newsletter` job in vault/config/scheduling.yaml — change
+# the cadence there and here together, or neither.
+# One firing runs the whole rail: `mail_poll` plan → Gmail fetch → enqueue →
+# /drain → apply the processed label. Requires the `newsletter-*` source
+# types configured with a sender allowlist and a Gmail connector grant on the
+# account; the grant is one-time, cached account-side, and survives headless
+# `claude -p` firings, which is what makes this schedulable. `--model sonnet`
+# because the orchestrator is routing work, not composing briefs — the writer
+# subagents /drain fans out pick their own model.
+#
+# As with the dream line below, `weave schedule install` appends
+# --dangerously-skip-permissions to headless `claude -p` jobs at render time;
+# a hand-pasted copy of this line needs it added, or the run no-ops at its
+# first tool call.
+0 5 * * * flock -n /tmp/thinkweave-newsletter.lock -c 'cd /path/to/thinkweave && ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" claude --model sonnet -p "/newsletter"' >> ~/.cache/thinkweave/newsletter.log 2>&1
+
 # Embeddings keep-warm + SQLite index refresh: every 4h. `weave index`
 # always rebuilds the SQLite index incrementally (mtime-gated, so
 # out-of-band Obsidian edits land here too), then `--embed --only-new`

@@ -844,8 +844,9 @@ AskUserQuestion({
 ```
 
 Validate: regex-check the address parses as RFC-5322 (`<local>@<domain>`).
-If the user hasn't authenticated Gmail yet, flag — the `/newsletter`
-skill will OAuth-prompt on first run; doesn't block `/onboard`.
+If the user hasn't authenticated Gmail yet, flag it — `/newsletter` never
+prompts, so the grant has to be established once by running
+`/newsletter --grant` interactively. Doesn't block `/onboard`.
 
 #### youtube-events / youtube-concepts
 
@@ -959,7 +960,15 @@ across OSes; only the trigger mechanism differs. Idempotent.
 
 Pick which registry jobs to install from what the user enabled in Step 5
 (naming a job via `--only` installs it regardless of its default `enabled`
-flag in the template):
+flag in the template).
+
+`--only` is **replacing**, not adding: the rendered set becomes the entire
+thinkweave crontab block, so any installed job you leave out is uninstalled.
+The list you build below must therefore name *everything* that should be
+running, not just what's new — which is what it already does on a first run,
+when nothing is installed yet. If you are re-running `/onboard` on a machine
+that already has jobs, run `weave schedule list` first and fold the existing
+names in.
 
 - **Always** include `embeddings-keepwarm` and (if any active project
   exists from 5a) `dream`. Also include `weekly-hygiene` — concept/theme
@@ -968,9 +977,22 @@ flag in the template):
   `daily-research` (the discover → drain → hub-refresh flow).
 - **If `news` was enabled** in 5b, also include `news-poll` and
   `news-cycle`.
+- **If any `newsletter-*` type was enabled** in 5b, also include
+  `newsletter`. Note in the preview that the Gmail grant must be
+  established once by running `/newsletter --grant` interactively — the
+  scheduled runs never prompt, so until that is done they will only log
+  `newsletter: Gmail MCP unavailable`. After the grant, the cached token
+  carries the scheduled runs.
 
 Build a comma-separated `ONLY` string from the selected names, e.g.
 `embeddings-keepwarm,dream,weekly-hygiene`.
+
+A name that isn't in the vault's `scheduling.yaml` is dropped from the list
+in silence — no warning, and the install still reports success for the rest.
+Vaults seeded before a job was added to the template won't have it (seeding
+is copy-if-absent), so if the 6b preview is missing a job you selected, paste
+that job's block from `src/thinkweave/vault_templates/config/scheduling.yaml`
+into `vault/config/scheduling.yaml` and re-run the preview before installing.
 
 ### 6b. Preview (dry-run, OS-aware)
 

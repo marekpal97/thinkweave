@@ -89,6 +89,38 @@ jobs:
     log: news-pull.log
     enabled: false
 
+  # Email-newsletter intake — plan, fetch, enqueue, drain, label, once a day.
+  #
+  # CADENCE RATIONALE (canonical — other surfaces point here rather than
+  # restating it). 05:00 is chosen as a slot no other job in this file
+  # occupies: `news-cycle` takes :30 of every 6th hour (06:30 included),
+  # and `news-poll` takes :00 of every EVEN hour (06:00 included), so the
+  # obvious morning slots are both taken by the news rails. An odd hour on
+  # the hour is clear, and 05:00 still lands ahead of the 06:30 news drain
+  # — which matters because both fan out writer subagents. Other jobs in
+  # this file DO share firing minutes with each other (daily-research and
+  # news-poll at 08:00; weekly-hygiene and news-poll at 04:00 Sunday);
+  # that is pre-existing and tolerated, not a pattern to copy here.
+  #
+  # Disabled by default: it needs the `newsletter-*` source types configured
+  # with a sender allowlist AND a Gmail connector grant on the account. The
+  # grant is one-time and cached account-side — it survives headless
+  # `claude -p` firings, which is what makes this rail schedulable at all.
+  # serialize: the first run after a long gap drains a whole backlog and can
+  # outlast the cadence; the mail label makes an overlap mostly harmless, but
+  # never-overlap matches the /dream precedent and keeps the log readable.
+  # --model sonnet: this job orchestrates (plan, fetch, enqueue, label) and
+  # composes nothing — the briefs are written by the worker subagents /drain
+  # fans out, which pick their own model. Routing doesn't need the big model.
+  newsletter:
+    cadence: "0 5 * * *"
+    command: "claude --model sonnet -p /newsletter"
+    runner: direct
+    env: [ANTHROPIC_API_KEY]
+    log: newsletter.log
+    enabled: false
+    serialize: true
+
   # News drain — triage + brief, every 6h, spaced from the polls so the
   # queue accumulates a useful batch first.
   news-cycle:
