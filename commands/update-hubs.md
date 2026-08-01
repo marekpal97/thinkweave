@@ -53,17 +53,27 @@ Run `weave hubs status` to see per-concept processed state. Look at the `todo` c
 
 If `todo` is small (roughly 1–20 notes across a handful of concepts, a normal daily delta), continue here.
 
-If `todo` is large (>50 notes total), this is a backfill-scale job — stop.
-In an interactive session, suggest `/update-hubs --bulk` (with `inline` or
-`batch` sub-mode) and let the user pick. **In a non-interactive session
-(headless `claude -p`), there's no one to pick a sub-mode — run
-`weave drain --target hubs --via batch` yourself** (pure CLI, non-
-interactive, OpenAI Batches API) rather than just reporting the backlog
-and stopping. A cron `/update-hubs` that only ever reports "backlog is
-large, run --bulk" every night is a permanent no-op: the backlog never
-shrinks because nothing headless ever answers that suggestion. Don't try
-to process a backfill in incremental mode either way; the per-invocation
-cap and the "watch every entry" posture both stop making sense.
+If `todo` is large (>50 notes total), this is backfill-scale — do **not**
+process it in incremental mode, do **not** ask which sub-mode, and do
+**not** run the OpenAI batch yourself. Emit exactly one deferral line and
+stop:
+
+```
+update-hubs: backlog <N> pairs exceeds the incremental threshold — deferred to the bulk rail (weave drain --target hubs --via batch, or /update-hubs --bulk interactively)
+```
+
+The rule is unconditional, for two reasons. First, you cannot tell from
+inside the session whether you are interactive or headless, so never ask
+— under cron nothing answers "inline or batch?", and a run that ends on
+that question is a silent no-op while the backlog keeps growing. Second,
+the previous instruction to fire the OpenAI Batches API yourself when
+headless is retired deliberately: auto-launching raw-API spend from an
+unattended session conflicts with the subscription-compute-first decision
+— raw-API routes are strictly operator-opt-in. The standing weekly cron
+/ the operator owns bulk clearing, and the one-line deferral is safe
+precisely because that safety net exists. Don't try to process a
+backfill in incremental mode either way; the per-invocation cap and the
+"watch every entry" posture both stop making sense.
 
 ### 2. Pick concepts to process
 
