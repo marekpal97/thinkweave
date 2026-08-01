@@ -1992,9 +1992,10 @@ def test_arch_proposal_command_wires_steering_gate():
 
 
 def test_arch_proposal_command_cites_architecture_and_prior_decisions():
-    """The command reads ARCHITECTURE.md and prior decisions first so it does
-    not re-propose against already-decided work (a skip-list of decided-against
-    directions)."""
+    """The command consults ARCHITECTURE.md (the invariant authority) and prior
+    decisions before proposing, so it does not re-propose against already-decided
+    work (a skip-list of decided-against directions). Input *context* comes from
+    the project snapshot instead — see the thinkweave-native test below."""
     text = _arch_proposal_doc()
     assert "ARCHITECTURE.md" in text
     lowered = text.lower()
@@ -2050,6 +2051,30 @@ def test_arch_proposal_label_documented_in_triage_labels():
     assert "arch-proposal" in labels
     # The human-triage transition it feeds: accept → ready-for-agent.
     assert "ready-for-agent" in labels
+
+
+# ---------------------------------------------------------------------------
+# Doc truth (issue #91): the slow loop reads thinkweave-native state, and the
+# gate split is stated in exactly one place. Doc-grep contracts, same idiom as
+# the #61 block above.
+
+
+def test_arch_proposal_input_context_is_thinkweave_native():
+    """§1's input context comes from a thinkweave-native surface, not a
+    hand-curated doc list: the project snapshot (whose `state` section IS
+    STATE.md), with the CLI parity command as the headless degrade. The choice
+    of surface must be stated, not left implicit."""
+    text = _arch_proposal_doc()
+    start = text.index("\n## 1. ")
+    section = text[start:text.index("\n## 2. ", start)]
+    # The surface lives in §1, named as such rather than left implicit.
+    assert "weave_project_snapshot" in section
+    assert "input-context surface" in section.lower()
+    # Headless degrade: the CLI parity command, then STATE.md on disk.
+    assert "weave project-snapshot" in section
+    assert "STATE.md" in section
+    # The curated-doc-list instruction it replaced must NOT come back.
+    assert "Read `ARCHITECTURE.md` end-to-end" not in text
 
 
 # ---------------------------------------------------------------------------

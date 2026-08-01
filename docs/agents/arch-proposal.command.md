@@ -25,9 +25,10 @@ Gate: `weave steering gate` (rail: `operations/steering.py`; contract:
 
 ## Contract in one line
 
-**Read ARCHITECTURE.md + prior decisions → run both axes → convert findings to
-gate candidates → `weave steering gate` → file ONLY the gate's `filed` list as
-`arch-proposal` issues.** No PR is ever opened; no file is ever edited.
+**Load the project snapshot + prior decisions → run both axes → convert
+findings to gate candidates → `weave steering gate` → file ONLY the gate's
+`filed` list as `arch-proposal` issues.** No PR is ever opened; no file is
+ever edited.
 
 ## 0. Ensure the label exists (idempotent)
 
@@ -43,17 +44,34 @@ gh label create arch-proposal --force \
 `arch-proposal` is documented in `docs/agents/triage-labels.md` alongside the
 canonical triage roles.
 
-## 1. Read the ground truth first (anti-re-proposal)
+## 1. Load the ground truth first (anti-re-proposal)
 
-Before proposing anything, load what is already decided so the loop does not
+Before proposing anything, load what is already true so the loop does not
 re-propose against settled work.
 
-1. **Architecture.** Read `ARCHITECTURE.md` end-to-end — it is the narrative
-   authority for the two layers, the source primitive, the capability lanes,
-   the operations seam, and the surface contract. A proposal that contradicts a
-   stated architectural invariant is out of scope.
-2. **Prior decisions.** For each area you are about to consider, query prior
-   decisions and build a **skip-list of already-decided-against directions**:
+**The input-context surface is `weave_project_snapshot` — one thinkweave-native
+call, not a hand-curated doc list.** It already carries everything this loop
+needs to orient: the state-of-play (its `state` section **is** the project's
+`STATE.md` verbatim — truncated only if it blows the token budget, and it says
+so inline — so no separate read), the open backlog, recent decisions, and open
+probes. Curated doc lists rot; the snapshot is regenerated
+from the vault every time.
+
+1. **Project snapshot.** One call, at the top of the run:
+   - MCP available: `weave_project_snapshot(project=<slug>,
+     sections=["state", "backlog", "decisions", "probes"])`.
+   - MCP absent (headless degrade): the CLI parity command —
+     `weave project-snapshot <slug> --sections state,backlog,decisions,probes`.
+   - Neither resolves (no vault wired on this machine): read the project's
+     `STATE.md` directly, and note `snapshot unavailable: read STATE.md` in the
+     run output (§6) — a degraded run, never a failed one.
+
+   `<slug>` is this repo's project name in the vault (`thinkweave` — the
+   vault `config.toml`'s `default_project`).
+2. **Prior decisions, per candidate area.** The snapshot's `decisions` section
+   is the *recent* window; a settled decision can be older than it. So for each
+   area you are about to consider, query prior decisions directly and build a
+   **skip-list of already-decided-against directions**:
    - MCP available: `weave_graph(id=<file>, filter='decisions_for_file')` per
      candidate file, and `weave_search(query=<area>, type=[decision])` for the
      area's decisions. (weave_graph read-only is allowed.)
@@ -66,6 +84,13 @@ re-propose against settled work.
    then, as a proposal, not an edit).
 
 Anything on the skip-list is dropped before the gate ever sees it.
+
+**Architectural invariants.** The snapshot is the project's *state*;
+`ARCHITECTURE.md` remains the authority on *invariants* (the two layers, the
+source primitive, the capability lanes, the operations seam, the surface
+contract). It is consulted per-area by the axes that need it — the deepening
+axis is fed it in §2 — not read end-to-end as curated context here. A proposal
+that contradicts a stated invariant is out of scope.
 
 ## 2. Run the two axes (read-only)
 
