@@ -223,7 +223,7 @@ def add_index_subparsers(sub) -> None:
     p_import = sub.add_parser("import", help="Import from external sources")
     p_import.add_argument(
         "source",
-        choices=["claude-code", "claude-history", "file", "chatgpt", "messenger"],
+        choices=["claude-code", "codex", "claude-history", "file", "chatgpt", "messenger"],
     )
     p_import.add_argument("path", nargs="?", default="", help="File path (for 'file'/'chatgpt' source)")
     p_import.add_argument("--source-type", default="article", help="Source type for file import")
@@ -233,14 +233,17 @@ def add_index_subparsers(sub) -> None:
     p_import.add_argument(
         "--cc-root",
         default="",
-        help="Override Claude Code projects root (default ~/.claude/projects)",
+        help=(
+            "Override the harness session root (claude-code: "
+            "~/.claude/projects; codex: ~/.codex/sessions)"
+        ),
     )
     p_import.add_argument(
         "--enrich",
         action="store_true",
         help=(
-            "claude-code: enrich previously-materialized sessions with "
-            "decisions/insights (does not re-materialize)."
+            "claude-code / codex: enrich previously-materialized sessions "
+            "with decisions/insights (does not re-materialize)."
         ),
     )
     p_import.add_argument(
@@ -275,8 +278,8 @@ def add_index_subparsers(sub) -> None:
         default=0,
         help=(
             "Cap on imported sessions/conversations (0 = unbounded). "
-            "For claude-code, newest-first ordering is applied so the cap "
-            "retains the most recent work."
+            "For claude-code and codex, newest-first ordering is applied so "
+            "the cap retains the most recent work."
         ),
     )
     p_import.add_argument(
@@ -284,7 +287,7 @@ def add_index_subparsers(sub) -> None:
         default="",
         help=(
             "Import sessions/conversations from this date (YYYY-MM-DD). "
-            "Honored by claude-code, chatgpt, messenger."
+            "Honored by claude-code, codex, chatgpt, messenger."
         ),
     )
     p_import.add_argument("--until", default="", help="Import conversations until this date (YYYY-MM-DD)")
@@ -292,7 +295,7 @@ def add_index_subparsers(sub) -> None:
         "--sample-only",
         action="store_true",
         help=(
-            "claude-code: shorthand for `--limit 50` — materialise a recent "
+            "claude-code / codex: shorthand for `--limit 50` — materialise a recent "
             "sample for ontology bootstrap before committing to a full "
             "backfill. Re-run without the flag to ingest the rest."
         ),

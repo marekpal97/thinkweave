@@ -54,7 +54,7 @@ weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL st
 weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic issue-loop trajectory outcome judge (phase-2 dream-outcome-worker rail)
 weave steering {evidence [--module PATH] | gate --proposals-json FILE} [--json]  # evidence-gated steering: per-module signals + drop-no-evidence/budget-cap gate the slow loop #61 calls
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
-weave import {claude-code|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
+weave import {claude-code|codex|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
 weave intake {enumerate|archive}              # drop-folder helpers for /substack and friends
 weave discover [--project X]                  # cross-project research gap analysis
 weave show <id>                               # render a single note
@@ -103,7 +103,7 @@ Full inventory — 48 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Decision ledger lookup | `weave decisions` | — | admin-cron |
 | Todo backlog | `weave backlog` | — | admin-cron |
 | SQLite index rebuild | `weave index` | — | admin-cron |
-| Importers (claude-code / chatgpt / …) | `weave import` | — | admin-cron |
+| Importers (claude-code / codex / chatgpt / …) | `weave import` | — | admin-cron |
 | Vault health | `weave stats` | — | admin-cron |
 | Coherence linter | `weave doctor` | — | admin-cron |
 | Named workflow pipelines | `weave flow` | — | admin-cron |

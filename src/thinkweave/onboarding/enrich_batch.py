@@ -49,11 +49,17 @@ def find_pending_sessions(
 ) -> list[PendingSession]:
     """Scan on-disk session notes for imported-but-not-yet-synthesised ones.
 
-    The gate is ``imported_from == "claude-code"`` AND not ``processed`` —
-    ``processed: true`` is the canonical "synthesised" marker (stamped by
+    The gate is ``imported_from`` set AND not ``processed`` — ``processed:
+    true`` is the canonical "synthesised" marker (stamped by
     ``extract_session``), identical to a live-wrapped session. The legacy
     ``enrichment_status: pending`` discriminator was retired with the
     transcript→companion move.
+
+    Deliberately harness-agnostic: any importer that materialises a session
+    note holding a raw transcript (claude-code, codex) is pending on the same
+    terms, so ``--enrich`` needs no per-harness branch. Importers that write
+    *already-synthesised* sessions (claude-mem) stamp ``processed: true`` at
+    creation and are excluded by the second half of the gate.
 
     Walks the disk (not the index) because the discriminator is frontmatter;
     transcript is read from the ``transcript.md`` companion if it's already
@@ -86,7 +92,7 @@ def find_pending_sessions(
                 fm, body = parse_frontmatter(session_md.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if fm.get("imported_from") != "claude-code":
+            if not fm.get("imported_from"):
                 continue
             if fm.get("processed"):
                 continue
