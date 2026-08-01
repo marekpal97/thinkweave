@@ -3,7 +3,7 @@
 # command (orchestration). Semantics: docs/agents/issue-loop.md.
 #
 # Per-run posture belongs on the command line, not in edits to this file:
-# every knob in [loop]/[labels]/[tdd] can be overridden for one run via
+# every knob in [loop]/[labels]/[tdd]/[dispatch]/[triage] can be overridden for one run via
 # `--set [section.]key=value` (section defaults to loop), with /issue-loop
 # sugar `--stacked` and `--max-issues <n>`. Gates are file-only by design.
 
@@ -40,6 +40,11 @@ delivery = "pr-per-issue"
 # per run-id (sha1(run_id) mod N == 0), not random. 0 disables holdout (always
 # prime). Per-run override: --set prime_holdout=0.
 prime_holdout = 5
+
+[dispatch]
+# Splice ponytail persona + epic north-star into dispatch prompts (issue #89);
+# semantics: issue-loop.command.md §1b. Per-run override: --set dispatch.persona=false.
+persona = true
 
 [tdd]
 # auto: red→green TDD is ENFORCED in implementer standing orders iff the
