@@ -2101,6 +2101,14 @@ def test_gate_split_stated_exactly_once_where_gates_are_introduced():
     assert "never" in section.lower() and "executed by the rail" in section.lower()
     # And it defers to the protocol spec rather than restating it.
     assert "devloop-boundaries.md" in section
+    # The quoted refusal is the rail's ACTUAL string, not an approximation —
+    # the doc-vs-code pin that caught this doc quoting a truncated error.
+    # (Moves with the message when #94 relocates `check` out of the script.)
+    refusal = "is LLM-judged — run it from the /issue-loop command, not the script"
+    assert refusal in " ".join(section.split())  # the doc wraps it across lines
+    assert refusal in (issue_loop.REPO_ROOT / "scripts" / "issue_loop.py").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_extension_points_do_not_claim_the_rail_runs_judgment_kinds():
@@ -2112,7 +2120,10 @@ def test_extension_points_do_not_claim_the_rail_runs_judgment_kinds():
         encoding="utf-8"
     )
     assert "reports them as command-run" not in text
-    assert "issue-loop.command.md" in text
+    # The pointer that replaced it, anchored to the cross-reference itself —
+    # the bare filename appears elsewhere in this doc, so it proves nothing.
+    assert "gate-split" in text
+    assert "`issue-loop.command.md` §1c" in text
 
 
 # ---------------------------------------------------------------------------

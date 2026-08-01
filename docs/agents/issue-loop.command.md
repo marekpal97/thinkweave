@@ -184,10 +184,11 @@ Run the configured gates **in order**, inside the implementer's worktree.
 **execute in the rail**: Python runs the shell command / the diff arithmetic
 and returns the verdict. `acceptance`, `review`, and `simplify` are **never
 executed by the rail** — *this* orchestrator dispatches a fresh subagent. The
-rail's only role for them is to recognise the kind as judgment-side and refuse
-it: `check` returns `gate kind '<k>' is LLM-judged — run it from the
-/issue-loop command`. Protocol detail — the two registries, the shared
-`GateResult` shape, execute-vs-validate: `docs/agents/devloop-boundaries.md` §3.
+rail's `check` runs those two kinds and refuses every other kind — judgment
+kind or typo alike — with `gate kind '<k>' is LLM-judged — run it from the
+/issue-loop command, not the script`. Protocol detail — the two registries, the
+shared `GateResult` shape, execute-vs-validate:
+`docs/agents/devloop-boundaries.md` §3.
 
 - `kind: command` / `kind: diff` — deterministic, via the rail:
   ```bash
