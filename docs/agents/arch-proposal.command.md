@@ -49,25 +49,15 @@ canonical triage roles.
 Before proposing anything, load what is already true so the loop does not
 re-propose against settled work.
 
-**The input-context surface is `weave_project_snapshot` — one thinkweave-native
-call, not a hand-curated doc list.** It already carries everything this loop
-needs to orient: the state-of-play (its `state` section **is** the project's
-`STATE.md` verbatim — truncated only if it blows the token budget, and it says
-so inline — so no separate read), the open backlog, recent decisions, and open
-probes. Curated doc lists rot; the snapshot is regenerated from the vault
-every time.
+**The input-context surface is `weave_project_snapshot`** — one
+thinkweave-native call (its `state` section is the project's `STATE.md`
+verbatim), not a hand-curated doc list.
 
 1. **Project snapshot.** One call, at the top of the run:
-   - MCP available: `weave_project_snapshot(project=<slug>,
+   - MCP available: `weave_project_snapshot(project="thinkweave",
      sections=["state", "backlog", "decisions", "probes"])`.
    - MCP absent (headless degrade): the CLI parity command —
-     `weave project-snapshot <slug> --sections state,backlog,decisions,probes`.
-   - Neither resolves (no vault wired on this machine): read the project's
-     `STATE.md` directly, and note `snapshot unavailable: read STATE.md` in the
-     run output (§6) — a degraded run, never a failed one.
-
-   `<slug>` is this repo's project name in the vault (`thinkweave` — the
-   vault `config.toml`'s `default_project`).
+     `weave project-snapshot thinkweave --sections state,backlog,decisions,probes`.
 2. **Prior decisions, per candidate area.** The snapshot's `decisions` section
    is the *recent* window; a settled decision can be older than it. So for each
    area you are about to consider, query prior decisions directly and build a
@@ -85,12 +75,9 @@ every time.
 
 Anything on the skip-list is dropped before the gate ever sees it.
 
-**Architectural invariants.** The snapshot is the project's *state*;
-`ARCHITECTURE.md` remains the authority on *invariants* (the two layers, the
-source primitive, the capability lanes, the operations seam, the surface
-contract). It is consulted per-area by the axes that need it — the deepening
-axis is fed it in §2 — not read end-to-end as curated context here. A proposal
-that contradicts a stated invariant is out of scope.
+**Architectural invariants.** `ARCHITECTURE.md` remains the authority on
+*invariants*, consulted per-area by the axes (§2) rather than read end-to-end
+here. A proposal contradicting a stated invariant is out of scope.
 
 ## 2. Run the two axes (read-only)
 
