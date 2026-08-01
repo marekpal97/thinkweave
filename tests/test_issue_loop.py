@@ -205,6 +205,19 @@ def test_diff_gate_forbidden_path():
     assert ".github/workflows/ci.yml" in result["summary"]
 
 
+def test_diff_gate_forbidden_paths_use_the_three_form_convention():
+    """Issue #94's one unification: forbidden_paths goes through paths.match,
+    so it ADOPTS the convention triage already used. Trailing-slash entries (all
+    the shipped ones) are byte-identical startswith; a bare name now matches
+    that basename at any depth instead of only at the repo root."""
+    gate = {"id": "g", "forbidden_paths": ["dist/", "secrets.env"]}
+    # dir prefix: unchanged semantics.
+    assert gates.evaluate_diff_gate(gate, "1\t0\tdist/bundle.js\n")["passed"] is False
+    # bare basename: matches at depth, and a prefix-sharing sibling does not.
+    assert gates.evaluate_diff_gate(gate, "1\t0\tops/secrets.env\n")["passed"] is False
+    assert gates.evaluate_diff_gate(gate, "1\t0\tops/secrets.env.example\n")["passed"] is True
+
+
 def test_diff_gate_max_lines():
     gate = {"id": "g", "forbidden_paths": [], "max_changed_lines": 5}
     numstat = "4\t3\tsrc/a.py\n"

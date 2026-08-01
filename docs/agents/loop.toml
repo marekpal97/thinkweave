@@ -104,6 +104,9 @@ red_min_diff_lines = 800       # "big diff" → red
 id = "diff-guard"
 kind = "diff"
 required = true
+# forbidden_paths uses the same three pattern forms as [triage]'s
+# sensitive_paths (issue #94 put both behind devloop/paths.py): dir prefix
+# (trailing '/'), bare basename (matches at any depth), glob (*/?/[).
 forbidden_paths = [".github/workflows/", "dist/", "_old/"]
 max_changed_lines = 2000
 
