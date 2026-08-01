@@ -24,8 +24,9 @@ Owns the synthesis-side update of `vault/concepts/topics/*.md`. Two modes:
   Two sub-modes:
   - `--bulk` or `--bulk inline` — runs `weave drain --target hubs --via inline`
     (Claude Code session, interactive review, current LLM does the extraction).
-  - `--bulk batch` — runs `weave drain --target hubs --via batch` (OpenAI
-    Batches API + gpt-5-mini, 50% discount, async, no interactive review).
+  - `--bulk batch` — runs `weave hubs plan && weave drain --target hubs
+    --via batch` (OpenAI Batches API + gpt-5-mini, 50% discount, async, no
+    interactive review). Always plan-then-drain — see the sub-mode dispatch.
 
 **Cap policy.** Bulk mode is the right tool when the plan has 100+ unprocessed
 `(concept, note)` pairs. For small daily deltas (1–20 pairs) stay on the
@@ -59,7 +60,7 @@ process it in incremental mode, do **not** ask which sub-mode, and do
 stop:
 
 ```
-update-hubs: backlog <N> pairs exceeds the incremental threshold — deferred to the bulk rail (weave drain --target hubs --via batch, or /update-hubs --bulk interactively)
+update-hubs: backlog <N> pairs exceeds the incremental threshold — deferred to the bulk rail (weave hubs plan && weave drain --target hubs --via batch, or /update-hubs --bulk interactively)
 ```
 
 The rule is unconditional, for two reasons. First, you cannot tell from
@@ -167,16 +168,22 @@ project) — incremental mode is the wrong shape for that.
   OpenAI Batches API with gpt-5-mini, polls for completion, and applies the
   appended log entries. No Claude Code work to do beyond launching it.
   ```
-  Bash("weave drain --target hubs --via batch")
+  Bash("weave hubs plan && weave drain --target hubs --via batch")
   ```
-  Report the CLI's stdout verbatim and stop.
+  The `hubs plan` step is not optional: `drain` consumes whatever plan file
+  is present, however stale — a months-old plan silently caps the run at
+  its old contents while the real backlog sits outside it. Regenerate,
+  then drain. Report the CLI's stdout verbatim and stop.
 
-### B1. Load or build the plan (inline sub-mode only)
+### B1. Build the plan (inline sub-mode only)
 
-If `.weave/hubs_plan.json` already exists, `Read` it. Otherwise run:
+Regenerate the plan first — do not trust an existing `hubs_plan.json`
+unless you built it earlier in this same session (a stale plan reflects a
+stale backlog snapshot and silently caps the run):
 ```
 weave hubs plan [--concept X] [--project Y] [--limit-notes N] [--limit-concepts M]
 ```
+Then `Read` the file it reports writing.
 
 The plan is a JSON object:
 ```
