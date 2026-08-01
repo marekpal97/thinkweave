@@ -23,19 +23,33 @@ Re-runs skip UUIDs already in the manifest.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Iterator
 
-from thinkweave.core.config import Config, load_config
+from thinkweave.core.config import (
+    UNSCOPED_PROJECT,
+    Config,
+    load_config,
+    normalize_project,
+)
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 
+# ``normalize_project`` / ``UNSCOPED_PROJECT`` moved to ``core.config`` when the
+# Codex importer needed the same cwd→project rules; re-exported here because
+# this module is their established import site.
+__all__ = [
+    "UNSCOPED_PROJECT",
+    "ClaudeCodeSession",
+    "import_claude_code",
+    "normalize_project",
+    "parse_session",
+]
+
 DEFAULT_CC_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 MANIFEST_REL = ".weave/onboarding/claude_code.json"
-UNSCOPED_PROJECT = "_unscoped"
 
 
 @dataclass
@@ -55,55 +69,6 @@ class ClaudeCodeSession:
     @property
     def turn_count(self) -> int:
         return len(self.user_turns) + len(self.assistant_turns)
-
-
-# ── Project resolution ─────────────────────────────────────────────────
-
-
-def normalize_project(cwd: str) -> str:
-    """Derive a vault project name from a session's cwd.
-
-    Three steps:
-
-    1. Strip a trailing ``.claude/worktrees/<branch>`` (Claude Code
-       worktree sessions; we want the repo root, not the branch name).
-    2. Drop sessions whose cwd is the homedir or ``~/.claude`` itself —
-       they map to ``_unscoped``.
-    3. Take basename → lowercase → ``-`` → ``_``.
-    """
-    if not cwd:
-        return UNSCOPED_PROJECT
-
-    # Normalize separators up front so a Windows cwd (``C:\\Users\\x\\repo``)
-    # and a POSIX cwd parse identically, regardless of which OS runs the
-    # import. PurePosixPath then gives consistent ``.parts`` semantics on
-    # the normalized string (a drive like ``C:`` becomes a leading part).
-    parts = list(PurePosixPath(cwd.replace("\\", "/").rstrip("/")).parts)
-
-    # Strip a trailing ``.claude/worktrees/<branch>[/...]`` — we want the
-    # repo root, not the worktree branch dir.
-    for i in range(len(parts) - 1):
-        if parts[i] == ".claude" and parts[i + 1] == "worktrees":
-            parts = parts[:i]
-            break
-
-    # Drop sessions whose cwd is the homedir, ``~/.claude``, or the root.
-    home_parts = PurePosixPath(str(Path.home()).replace("\\", "/")).parts
-    if (
-        not parts
-        or tuple(parts) == home_parts
-        or tuple(parts) == home_parts + (".claude",)
-    ):
-        return UNSCOPED_PROJECT
-
-    name = parts[-1]
-    # Guard a bare drive root (``C:``) and dotfile dirs.
-    if not name or name.startswith(".") or name.endswith(":"):
-        return UNSCOPED_PROJECT
-
-    name = name.lower().replace("-", "_")
-    name = re.sub(r"_{2,}", "_", name).strip("_")
-    return name or UNSCOPED_PROJECT
 
 
 # ── Walker + parser ────────────────────────────────────────────────────
