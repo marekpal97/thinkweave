@@ -11,7 +11,6 @@ from devloop.trajectory.prime import (
     LOOP_PRIME_TOOL,
     append_served_event,
     build_prime_payload,
-    is_holdout,
 )
 
 __all__ = [
@@ -19,5 +18,4 @@ __all__ = [
     "append_served_event",
     "build_prime_payload",
     "build_trajectory",
-    "is_holdout",
 ]

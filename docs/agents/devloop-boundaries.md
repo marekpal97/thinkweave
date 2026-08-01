@@ -136,26 +136,28 @@ detail}` — already what both executors emit and what the trajectory
 frontmatter stores; the shape is shared by both verbs so downstream consumers
 (`--gates-json`, the PR evidence table) never care which plane produced it.
 
-Structurally, `gates.py` carries two registries:
+Structurally, `gates.py` carries the deterministic registry:
 
 ```python
 DETERMINISTIC = {"command": run_command_gate, "diff": run_diff_gate}
-JUDGMENT = {"acceptance", "review", "simplify"}   # validators land with #99
 ```
 
-The `check` subcommand dispatches **only** through `DETERMINISTIC`; a kind in
-`JUDGMENT` gets the existing "LLM-judged — run it from the /issue-loop
-command" error (today that sentence is an `else` branch — the protocol
-promotes it from error-message prose to structure, byte-identical output). A
-future `validate` subcommand (#99) dispatches only through the judgment
-validators. The enforcing seam is a test asserting the registries are disjoint
-and that together they cover every kind `loop.toml` uses.
+The `check` subcommand dispatches **only** through `DETERMINISTIC`; any other
+kind — judgment-side or typo — gets the existing "LLM-judged — run it from
+the /issue-loop command" error (previously an `else` branch; the registry
+promotes it from error-message prose to structure, byte-identical output).
+Judgment kinds get **no rail-side artifact until #99**: the validator
+registry arrives with its validators and a `validate` dispatch, plus the
+disjointness/coverage tests that only then become falsifiable.
 
-**No class hierarchy.** Two dict registries + one shared result shape state
-the split completely; `typing.Protocol` machinery would be interface without
-behavior (a half-mechanism until #99, and thin even after). Per #94's freeze:
-the `JUDGMENT` set ships as data + the existing error path only; validators
-arrive **with their consumer** in #99 — no stubs.
+*(Amended 2026-08-01, owner ruling during #94: the original draft shipped
+`JUDGMENT` as a data-only set now. Both the review and simplify gates
+independently flagged that as the epic's own half-mechanism shape, and the
+owner sided with the anti-goal over the draft.)*
+
+**No class hierarchy.** A dict registry + one shared result shape state the
+split completely; `typing.Protocol` machinery would be interface without
+behavior.
 
 ## 4. The trajectory module — one primitive, two faces
 
@@ -176,7 +178,6 @@ internal):
 - `build_prime_payload(issue_number, run_id, concepts, *, conn, holdout,
   limit, budget_chars, decisions) -> dict` — the claim-time payload.
   (prime face)
-- `is_holdout(run_id, holdout) -> bool` — deterministic sha1 holdout.
 - `append_served_event(buffer_path, run_id, issue_number, served, session_id)`
   + `LOOP_PRIME_TOOL` — the served-context write-through to the session
   buffer JSONL.
@@ -184,6 +185,8 @@ internal):
 Internal to `mint.py`: the trace normalizers (`_normalize_trace*`,
 `_as_int_or_none`) and the skill projection — #99 shrinks `_normalize_trace`
 to a documented backstop, single-file change. Internal to `prime.py`:
+`is_holdout` (the sha1 holdout — `build_prime_payload` computes it; moved
+off the public list 2026-08-01, it had no external consumer),
 `extract_lessons` + the v1 fallback branch (#98 deletes both, single-file
 change), `_coerce_builds_on`, the outcome-rank table, `render_prime_block`,
 and — transitionally, §5 — `query_trajectories` / `resolve_insights`.
@@ -210,6 +213,9 @@ Interface now (#94):
   legacy `.weave/config.toml` (mirroring `core.config` resolution), else
   `THINKWEAVE_INDEX_DB`; `None` when nothing resolves (never guess a path).
 - `open_ro(db_path) -> sqlite3.Connection` — URI `mode=ro`, `Row` factory.
+- `Error = sqlite3.Error`, `Connection = sqlite3.Connection` — aliases so no
+  other module ever imports `sqlite3` (cli's degrade guard now, prime's
+  annotations post-#100), keeping the importer-allowlist seam tight.
 
 End state (**#100 completes it**): every SQL string in `devloop` lives in
 `index_client`; its query surface is *index-vocabulary-shaped* (tags,
@@ -266,7 +272,7 @@ The boundary placement is justified by what it localizes:
 |---|---|---|
 | #95 | delete body-regex DAG grammar (native deps) | `dag.py` only |
 | #98 | delete v1 Lessons fallback | `trajectory/prime.py` only |
-| #99 | judgment-gate validators + normalize-to-backstop | `gates.py` (fills `JUDGMENT`), `trajectory/mint.py` |
+| #99 | judgment-gate validators + normalize-to-backstop | `gates.py` (introduces the `JUDGMENT` validator registry + its tests), `trajectory/mint.py` |
 | #100 | prime v3 retrieval (FTS+concept via the seam) | `index_client.py`, `trajectory/prime.py` |
 | #102 | rework-evidence stamps | `trajectory/mint.py` (+ orchestrator) |
 
@@ -281,7 +287,7 @@ Function → destination, exhaustive; everything is a pure move unless marked:
 |---|---|
 | `DEFAULT_CONFIG`, `load_config`, `parse_override`, `apply_overrides` | `cli.py` |
 | `_HEADER_RE` … `_PARALLEL_RE`, `parse_blockers`, `parse_wave`, `parse_parallel_safe`, `all_blockers`, `compute_components`, `scope_to_dag`, `apply_assume_done`, `compute_frontier` | `dag.py` |
-| `run_command_gate`, `evaluate_diff_gate`, `run_diff_gate` | `gates.py` (+ `DETERMINISTIC`/`JUDGMENT` registries; `check` dispatch via registry, byte-identical output) |
+| `run_command_gate`, `evaluate_diff_gate`, `run_diff_gate` | `gates.py` (+ the `DETERMINISTIC` registry; `check` dispatch via registry, byte-identical output) |
 | `_VALID_*`, `_RED_*`, `TRIAGE_LABELS`, `classify_pr` | `triage.py` |
 | `_path_matches`, `_path_hits` | `paths.py` as `match`, `hits` (**the one unification**: diff gate's inline `startswith` loop → `paths` call) |
 | `_normalize_skill`, `_as_int_or_none`, `_normalize_trace*`, `build_trajectory` | `trajectory/mint.py` |
@@ -298,5 +304,5 @@ imports at the devloop modules — mechanical, part of #94.
 
 Acceptance restated: whole suite green; CLI surface byte-compatible (including
 the judgment-kind error message and `--help` text); new tests = schema-pin,
-importer-allowlist, registry-disjointness; no semantic diff beyond the paths
+importer-allowlist; no semantic diff beyond the paths
 unification.

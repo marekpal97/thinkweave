@@ -8,8 +8,9 @@ is the night shift.
 
 Surfaces:
 
-- **`scripts/issue_loop.py`** — deterministic rail (stdlib-only). DAG
-  snapshot, frontier computation, claim/release, command+diff gates.
+- **`devloop/`** (via the `scripts/issue_loop.py` shim) — deterministic rail
+  (stdlib-only). DAG snapshot, frontier computation, claim/release,
+  command+diff gates. Package map: `devloop-boundaries.md` §2.
 - **`docs/agents/loop.toml`** — every tunable: run caps, fix rounds,
   training mode, label names, and the gate pipeline.
 - **`/issue-loop`** (`docs/agents/issue-loop.command.md`) — the orchestrator:
@@ -167,7 +168,7 @@ implementer worktree — a deterministic baseline probe of origin/main.
 
 - **New deterministic check** → add a `[[gates]]` entry (config-only).
 - **New gate kind** (e.g. a benchmark-vs-baseline judge, a docs-drift
-  checker) → one dispatch branch in `issue_loop.py` (deterministic) or one
+  checker) → one `DETERMINISTIC` entry in `devloop/gates.py` (deterministic) or one
   subsection in the `/issue-loop` command (LLM-judged / orchestrated, like
   `simplify`). The rail passes unknown kinds through — `config` surfaces
   them and `check` reports them as command-run, so no rail change is needed

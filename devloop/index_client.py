@@ -16,6 +16,9 @@ from pathlib import Path
 # problem without importing sqlite3 themselves (see the importer-allowlist
 # test in tests/test_devloop_boundaries.py).
 Error = sqlite3.Error
+# Aliases so no caller ever imports sqlite3 itself (cli's degrade guard now,
+# prime's annotations post-#100) — keeps the importer-allowlist seam tight.
+Connection = sqlite3.Connection
 
 
 def open_ro(db_path: str) -> sqlite3.Connection:

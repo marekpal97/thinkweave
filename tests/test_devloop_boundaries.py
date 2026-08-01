@@ -1,6 +1,6 @@
 """Enforcing seams for the devloop/ boundary spec (docs/agents/devloop-boundaries.md).
 
-Three contracts the spec states in prose and this file makes falsifiable:
+Two contracts the spec states in prose and this file makes falsifiable:
 
 1. **Schema pin** — the derived-index tables/columns devloop reads are built
    here by the REAL thinkweave indexer, so indexer schema drift fails a test
@@ -10,17 +10,15 @@ Three contracts the spec states in prose and this file makes falsifiable:
 2. **Importer allowlist** — which devloop modules may import ``sqlite3``:
    ``{index_client, trajectory.prime}`` after #94, tightened to
    ``{index_client}`` by #100, so the transition is enforced not remembered.
-3. **Registry disjointness** — the Gate protocol's structural claim: every kind
-   has exactly one verb, and the two registries together cover loop.toml.
 """
 
 from __future__ import annotations
 
-import re
+import ast
 from pathlib import Path
 
 import devloop
-from devloop import cli, gates, index_client
+from devloop import index_client
 from devloop.trajectory import prime
 from thinkweave.core.schemas import NoteType
 
@@ -70,30 +68,23 @@ def test_index_schema_pin_against_the_real_indexer(vault_factory):
 # ---------------------------------------------------------------------------
 # 2. Importer allowlist — the sqlite3 blast radius, enforced
 
-_SQLITE_IMPORT = re.compile(r"^\s*(?:import sqlite3|from sqlite3\b)", re.MULTILINE)
+def _imports_sqlite3(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            a.name.split(".")[0] == "sqlite3" for a in node.names
+        ):
+            return True
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "sqlite3":
+            return True
+    return False
 
 
 def test_only_the_index_seam_and_prime_import_sqlite3():
     pkg_root = Path(devloop.__file__).resolve().parent
-    importers = {
-        str(py.relative_to(pkg_root).with_suffix(""))
-        for py in pkg_root.rglob("*.py")
-        if _SQLITE_IMPORT.search(py.read_text(encoding="utf-8"))
-    }
+    importers = set()
+    for py in pkg_root.rglob("*.py"):
+        if _imports_sqlite3(ast.parse(py.read_text(encoding="utf-8"))):
+            rel = py.relative_to(pkg_root.parent).with_suffix("")
+            importers.add(".".join(p for p in rel.parts if p != "__init__"))
     # #100 moves prime's SQL into index_client and tightens this to a singleton.
-    assert importers == {"index_client", "trajectory/prime"}
-
-
-# ---------------------------------------------------------------------------
-# 3. Registry disjointness — one verb per kind, and the pair covers loop.toml
-
-
-def test_gate_registries_are_disjoint():
-    """A kind is executed by the rail or validated by it, never both."""
-    assert set(gates.DETERMINISTIC) & gates.JUDGMENT == set()
-
-
-def test_gate_registries_cover_every_configured_kind():
-    kinds = {g["kind"] for g in cli.load_config()["gates"]}
-    assert kinds  # the repo's loop.toml actually ships gates
-    assert kinds <= set(gates.DETERMINISTIC) | gates.JUDGMENT
+    assert importers == {"devloop.index_client", "devloop.trajectory.prime"}

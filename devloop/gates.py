@@ -2,12 +2,11 @@
 
 Every gate kind has exactly one verb, and which verb it has states which
 plane runs it (boundary spec §3): a DETERMINISTIC kind is *executed* here
-(``execute(gate_cfg, cwd, base_ref) -> GateResult``); a JUDGMENT kind is
-never executed by the rail — the /issue-loop orchestrator dispatches a
-subagent and the rail validates its return (validators land with #99).
+(``execute(gate_cfg, cwd, base_ref) -> GateResult``); every other kind is
+judgment-side — the /issue-loop orchestrator dispatches a subagent and the
+rail refuses it (the validator registry arrives with its consumer in #99).
 ``GateResult`` is a plain dict — ``{id, kind, passed, summary, detail}`` —
-shared by both verbs so downstream consumers never care which plane
-produced it.
+shared by both planes so downstream consumers never care which produced it.
 """
 
 from __future__ import annotations
@@ -81,10 +80,8 @@ def run_diff_gate(gate: dict, cwd: Path, base_ref: str) -> dict:
     return evaluate_diff_gate(gate, numstat)
 
 
-# The two registries the protocol's structural claim reduces to. `check`
-# dispatches ONLY through DETERMINISTIC; anything else (a JUDGMENT kind, or
-# an unrecognized one) gets the LLM-judged error. JUDGMENT ships as data +
-# that existing error path only — the validators arrive with their consumer
-# in #99, no stubs.
+# The registry the protocol's structural claim reduces to. `check` dispatches
+# ONLY through DETERMINISTIC; any other kind — judgment-side or typo — gets
+# the LLM-judged error. The judgment-side validator registry arrives with its
+# consumer in #99 (no data-only stub before then; owner ruling 2026-08-01).
 DETERMINISTIC = {"command": run_command_gate, "diff": run_diff_gate}
-JUDGMENT = {"acceptance", "review", "simplify"}

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from devloop.cli import main  # noqa: E402  — needs the sys.path line above
+from devloop.cli import main  # import must follow the sys.path line above
 
 if __name__ == "__main__":
     sys.exit(main())

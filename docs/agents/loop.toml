@@ -96,8 +96,8 @@ red_min_diff_lines = 800       # "big diff" → red
 # Ordered. kinds: command | diff (deterministic, run by the script)
 #                 acceptance | review | simplify (LLM-judged / orchestrated,
 #                 run by the command in fresh subagent contexts). Adding
-# another command/diff gate is config-only; a new *kind* needs a dispatch
-# branch in issue_loop.py (deterministic kinds) or a section in the
+# another command/diff gate is config-only; a new *kind* needs a DETERMINISTIC
+# entry in devloop/gates.py (deterministic kinds) or a section in the
 # /issue-loop command (orchestrated kinds).
 
 [[gates]]
