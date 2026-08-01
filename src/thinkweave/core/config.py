@@ -607,8 +607,10 @@ def load_config() -> Config:
         if "weekly_budget" in steering_cfg:
             cfg.steering_weekly_budget = int(steering_cfg["weekly_budget"])
         # Signal weights arrive as ``weight_<signal>`` keys (weight_rework,
-        # weight_fix_rounds, weight_superseded, weight_gate_failures,
-        # weight_hub_pressure); strip the prefix into the steering_weights map.
+        # weight_fix_rounds, weight_superseded, weight_gate_failures); strip
+        # the prefix into the steering_weights map. Unknown signals (e.g. the
+        # #96-deleted weight_hub_pressure) pass through inert — evidence_for
+        # only reads the known signal keys.
         weights: dict = {}
         for key, val in steering_cfg.items():
             if key.startswith("weight_"):

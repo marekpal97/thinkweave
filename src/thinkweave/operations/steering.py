@@ -11,7 +11,7 @@ Design mirrors #60's ``operations/trajectory_outcome`` split:
 
 - **Pure logic** (unit-tested, no I/O): the per-signal aggregators
   (:func:`aggregate_rework`, :func:`aggregate_gate_failures`,
-  :func:`aggregate_superseded`, :func:`hub_pressure_from_ranks`),
+  :func:`aggregate_superseded`),
   :func:`evidence_for` / :func:`has_evidence`, and :func:`gate_proposals`.
   Each aggregator is a total function over *already-queried rows*, so tests feed
   hand-built fixtures and the expecteds are hand-computed.
@@ -22,8 +22,10 @@ Design mirrors #60's ``operations/trajectory_outcome`` split:
 - **The CLI** (``weave steering evidence`` / ``weave steering gate``) is the
   thin surface #61's Routine invokes.
 
-The four signals (all raw counts — never a composite score; the weights are for
-ranking, the raw counts ride the evidence block):
+The three signals — all observable from the loop's own artifacts, all raw
+counts, never a composite score; the weights are for ranking, the raw counts
+ride the evidence block (a fourth hub-pressure signal was deleted by #96 —
+rationale in docs/agents/steering.md):
 
 1. **rework rate** per module path — loop-run trajectory notes' ``outcome_label``
    in {reworked, reworked-post-merge} (#60's phase-1/2 verdicts) counted over
@@ -33,17 +35,11 @@ ranking, the raw counts ride the evidence block):
    counted per ``file_paths``.
 3. **gate-failure hotspots** — trajectory ``gates[]`` entries with
    ``passed=false`` counted over ``files_touched``.
-4. **behavioral pressure** — concept-hub centrality (per-concept PageRank from
-   the ``graph_ranks`` table). **Optional / zero-default:** PageRank is only
-   populated by the dream apply phase when ``dream.compute_pagerank`` is on, so
-   on a vault that has not dreamed this signal is uniformly ``0`` and simply
-   contributes nothing to the weight (the other three signals still gate). A
-   candidate carries the concepts it touches; its hub pressure is the sum of
-   those concepts' PageRank.
 
 Config knobs live in the ``[steering]`` section of ``config.toml`` (see
-``core/config.py``): ``weekly_budget`` (default 3) and the five signal weights.
-Nothing here is hardcoded posture — the numbers are all knobs.
+``core/config.py``): ``weekly_budget`` (default 3) and the four weight knobs —
+one per signal, plus the rework signal carries a separate ``fix_rounds`` churn
+weight. Nothing here is hardcoded posture — the numbers are all knobs.
 """
 
 from __future__ import annotations
@@ -70,7 +66,6 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "fix_rounds": 1.0,
     "superseded": 1.0,
     "gate_failures": 1.0,
-    "hub_pressure": 1.0,
 }
 
 
@@ -83,18 +78,17 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 class EvidenceIndex:
     """A read-only snapshot of the self-improvement substrate's signals.
 
-    Four file-keyed count maps + one concept-keyed pressure map. Built once from
-    the index by :func:`build_evidence_index`; the pure :func:`evidence_for`
-    reads it per candidate. Every map defaults empty so a fresh vault (no
-    trajectories, no dreamed PageRank) yields all-zero evidence — which the gate
-    correctly reads as "no evidence, drop".
+    Four file-keyed count maps. Built once from the index by
+    :func:`build_evidence_index`; the pure :func:`evidence_for` reads it per
+    candidate. Every map defaults empty so a fresh vault (no trajectories)
+    yields all-zero evidence — which the gate correctly reads as "no evidence,
+    drop".
     """
 
     rework: dict[str, int] = field(default_factory=dict)
     fix_rounds: dict[str, int] = field(default_factory=dict)
     superseded: dict[str, int] = field(default_factory=dict)
     gate_failures: dict[str, int] = field(default_factory=dict)
-    hub_pressure: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -183,29 +177,6 @@ def aggregate_superseded(decision_rows: Iterable[dict]) -> dict[str, int]:
     return out
 
 
-def hub_pressure_from_ranks(rank_rows: Iterable[tuple[str, float]]) -> dict[str, float]:
-    """``{concept: max_score}`` from ``graph_ranks`` ``(rank_type, score)`` rows.
-
-    Only ``pagerank:{concept}`` rows contribute; the per-concept scalar is the
-    MAX score across that concept's induced subgraph (its most-central note).
-    Empty in → empty out — the zero-default that makes this signal optional on a
-    vault that has not computed PageRank. Pure.
-    """
-    out: dict[str, float] = {}
-    for rank_type, score in rank_rows:
-        rt = str(rank_type or "")
-        if not rt.startswith("pagerank:"):
-            continue
-        concept = rt.split(":", 1)[1]
-        try:
-            s = float(score)
-        except (TypeError, ValueError):
-            continue
-        if concept not in out or s > out[concept]:
-            out[concept] = s
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Per-candidate evidence assembly
 # ---------------------------------------------------------------------------
@@ -218,11 +189,6 @@ def candidate_paths(candidate: dict) -> list[str]:
         module = candidate.get("module")
         paths = [module] if module else []
     return _as_str_list(paths)
-
-
-def candidate_concepts(candidate: dict) -> list[str]:
-    """The domain concepts a candidate cites (drives the hub-pressure signal)."""
-    return _as_str_list(candidate.get("concepts"))
 
 
 def _path_covers(file_key: str, target: str) -> bool:
@@ -251,27 +217,23 @@ def _sum_matching(mapping: dict[str, Any], paths: list[str]) -> Any:
 def evidence_for(index: EvidenceIndex, candidate: dict, weights: Optional[dict] = None) -> dict:
     """Assemble a candidate's machine-readable evidence block. Pure.
 
-    Sums the file-keyed signals over the candidate's paths (prefix-aware) and
-    the concept-keyed hub pressure over its concepts, then computes the weighted
-    ``weight``. Raw counts are always preserved on the block (per #60 — the
-    downstream ranker normalizes, this gate does not).
+    Sums the file-keyed signals over the candidate's paths (prefix-aware), then
+    computes the weighted ``weight``. Raw counts are always preserved on the
+    block (per #60 — the downstream ranker normalizes, this gate does not).
     """
     w = {**DEFAULT_WEIGHTS, **(weights or {})}
     paths = candidate_paths(candidate)
-    concepts = candidate_concepts(candidate)
 
     rework = _sum_matching(index.rework, paths)
     fix_rounds = _sum_matching(index.fix_rounds, paths)
     superseded = _sum_matching(index.superseded, paths)
     gate_failures = _sum_matching(index.gate_failures, paths)
-    hub = round(sum(index.hub_pressure.get(c, 0.0) for c in concepts), 4)
 
     weight = round(
         w["rework"] * rework
         + w["fix_rounds"] * fix_rounds
         + w["superseded"] * superseded
-        + w["gate_failures"] * gate_failures
-        + w["hub_pressure"] * hub,
+        + w["gate_failures"] * gate_failures,
         4,
     )
     return {
@@ -281,7 +243,6 @@ def evidence_for(index: EvidenceIndex, candidate: dict, weights: Optional[dict] 
         "fix_rounds": fix_rounds,
         "superseded_decisions": superseded,
         "gate_failures": gate_failures,
-        "hub_pressure": hub,
         "weight": weight,
     }
 
@@ -295,7 +256,7 @@ def has_evidence(block: dict) -> bool:
     """
     return any(
         block.get(k, 0) > 0
-        for k in ("rework_count", "fix_rounds", "superseded_decisions", "gate_failures", "hub_pressure")
+        for k in ("rework_count", "fix_rounds", "superseded_decisions", "gate_failures")
     )
 
 
@@ -304,7 +265,7 @@ def has_evidence(block: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
-_BLOCK_KEYS = ("module", "rework_count", "fix_rounds", "superseded_decisions", "gate_failures", "hub_pressure", "weight")
+_BLOCK_KEYS = ("module", "rework_count", "fix_rounds", "superseded_decisions", "gate_failures", "weight")
 
 
 def render_evidence_block(block: dict) -> str:
@@ -504,30 +465,6 @@ def _decision_rows(cfg: Config) -> list[dict]:
     ]
 
 
-def _rank_rows(cfg: Config) -> list[tuple[str, float]]:
-    """``(rank_type, max_score)`` for every ``pagerank:*`` concept subgraph.
-
-    One grouped query over ``graph_ranks``. Empty when the dream apply phase has
-    not computed PageRank (``dream.compute_pagerank`` off / never dreamed) — the
-    zero-default that makes behavioral pressure an optional signal.
-    """
-    from thinkweave.core.indexer import Indexer
-
-    idx = Indexer(config=cfg)
-    try:
-        rows = idx.db.execute(
-            """
-            SELECT rank_type AS rank_type, MAX(score) AS score
-              FROM graph_ranks
-             WHERE rank_type LIKE 'pagerank:%'
-             GROUP BY rank_type
-            """
-        ).fetchall()
-    finally:
-        idx.close()
-    return [(_row_get(r, "rank_type", 0), _row_get(r, "score", 1)) for r in rows]
-
-
 def build_evidence_index(cfg: Config) -> EvidenceIndex:
     """Assemble the :class:`EvidenceIndex` from the derived index (read-only)."""
     # Read the loop-run notes once — rework and gate-failure signals both derive
@@ -539,7 +476,6 @@ def build_evidence_index(cfg: Config) -> EvidenceIndex:
         fix_rounds=fix_rounds,
         superseded=aggregate_superseded(_decision_rows(cfg)),
         gate_failures=aggregate_gate_failures(trajectory_rows),
-        hub_pressure=hub_pressure_from_ranks(_rank_rows(cfg)),
     )
 
 
@@ -559,4 +495,4 @@ def evidence_signals(cfg: Config, *, module: str = "") -> dict:
     files = set(index.rework) | set(index.fix_rounds) | set(index.superseded) | set(index.gate_failures)
     modules = [evidence_for(index, {"module": f}) for f in sorted(files)]
     modules.sort(key=lambda b: b["weight"], reverse=True)
-    return {"modules": modules, "hub_pressure": dict(sorted(index.hub_pressure.items()))}
+    return {"modules": modules}

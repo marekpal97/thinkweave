@@ -5,7 +5,7 @@ ponytail-audit Routine, not yet built) invokes:
 
 - ``weave steering evidence [--module PATH] [--json]`` — show the computed
   per-module evidence signals (rework/churn, superseded-decision density,
-  gate-failure hotspots, hub pressure) from the index. Read-only.
+  gate-failure hotspots) from the index. Read-only.
 - ``weave steering gate --proposals-json <file> [--json]`` — run a batch of
   candidate proposals through :func:`operations.steering.gate_proposals` and
   print ``{filed, dropped}``. #61 files ONLY what ``filed`` returns; every
@@ -62,11 +62,6 @@ def _cmd_evidence(args: argparse.Namespace) -> None:
     for block in modules:
         print(f"  {block['module']}  (weight {block['weight']})")
         _print_block(block, indent="    ")
-    hub = result.get("hub_pressure") or {}
-    if hub:
-        print("  hub pressure (concept → centrality):")
-        for concept, score in hub.items():
-            print(f"    {concept}: {score}")
 
 
 def _print_block(block: dict, *, indent: str) -> None:
@@ -74,8 +69,7 @@ def _print_block(block: dict, *, indent: str) -> None:
         f"{indent}rework={block['rework_count']} "
         f"fix_rounds={block['fix_rounds']} "
         f"superseded={block['superseded_decisions']} "
-        f"gate_failures={block['gate_failures']} "
-        f"hub_pressure={block['hub_pressure']}"
+        f"gate_failures={block['gate_failures']}"
     )
 
 

@@ -92,13 +92,12 @@ Both axes are **read-only reports**. Nothing is applied.
 ## 3. Convert findings to gate candidates
 
 Each surviving finding (skip-list already removed) becomes one **candidate** in
-the #62 gate's schema — a `{module | paths, rationale, concepts?, title?}` dict:
+the #62 gate's schema — a `{module | paths, rationale, title?}` dict:
 
 | Candidate field | Filled from |
 | --------------- | ----------- |
 | `paths` (or `module`) | the repo path(s) the finding touches — ponytail-audit's `[path]` annotation, or the module improve-arch is deepening. `paths` for a multi-file proposal, `module` for a single path. |
 | `rationale`     | the proposal in prose: what to change and why (the axis's finding text). Becomes the issue body's lead paragraph. |
-| `concepts`      | **existing canonical ontology terms only**, and only when the area genuinely maps to domain vocabulary — concepts are vault-level artifacts, never repo- or module-specific labels; never invent a term here (that's `proposed_concepts`' job, and code areas are not concept material). Omit when nothing maps cleanly — an empty list is the common, correct case. Drives the gate's optional zero-default hub-pressure signal. |
 | `title`         | a short issue title (`<verb> <what> in <area>`). |
 
 Write the candidate list to a JSON file (a bare list, or `{"candidates": [...]}`):
@@ -107,7 +106,6 @@ Write the candidate list to a JSON file (a bare list, or `{"candidates": [...]}`
 [
   {"module": "src/thinkweave/operations/dream.py",
    "rationale": "The phase-1 fan-out re-reads the ontology per worker; hoist the read to the orchestrator and pass it down. Deepens the worker seam and drops N redundant reads.",
-   "concepts": ["dream-cycle", "ontology"],
    "title": "Hoist ontology read out of dream phase-1 workers"}
 ]
 ```
@@ -127,7 +125,7 @@ list.** Each `filed[i]` already carries:
 
 - `body` — the rationale plus a machine-readable ` ```json ` **evidence block**
   (real counts from the index: rework, fix_rounds, superseded_decisions,
-  gate_failures, hub_pressure, weight). Never invent these.
+  gate_failures, weight). Never invent these.
 - `evidence` / `weight` — the raw counts and the ranking weight.
 - `module` / `paths` / `rationale` / `title` — echoed from the candidate.
 
