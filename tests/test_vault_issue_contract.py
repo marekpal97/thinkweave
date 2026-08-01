@@ -27,24 +27,16 @@ code under test.
 
 from __future__ import annotations
 
-import importlib.util
 import re
-import sys
 from pathlib import Path
+
+from devloop.trajectory import build_trajectory
 
 _REPO = Path(__file__).resolve().parent.parent
 _DOCS = _REPO / "docs" / "agents"
 CONTRACT_DOC = _DOCS / "vault-issue-contract.md"
 COMMAND_DOC = _DOCS / "issue-loop.command.md"
 MEMORY_DOC = _DOCS / "issue-loop-memory.md"
-
-# Load the deterministic loop rail the same way tests/test_issue_loop.py does.
-_SPEC = importlib.util.spec_from_file_location(
-    "issue_loop", _REPO / "scripts" / "issue_loop.py"
-)
-issue_loop = importlib.util.module_from_spec(_SPEC)
-sys.modules["issue_loop"] = issue_loop
-_SPEC.loader.exec_module(issue_loop)
 
 
 # The four owners and the fields each owns — copied verbatim from the issue's
@@ -175,7 +167,7 @@ def _sample_trajectory() -> dict:
         "html_url": "https://github.com/x/y/issues/63",
         "labels": [{"name": "track:self-improvement"}],
     }
-    return issue_loop.build_trajectory(
+    return build_trajectory(
         issue,
         branch="loop/dag-54",
         commits=["a fix", "b test"],
