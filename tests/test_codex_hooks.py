@@ -492,3 +492,194 @@ class TestCodexSessionEndToEnd:
             "hookEventName": "SessionStart",
             "additionalContext": "PAYLOAD",
         }
+
+
+# ---------------------------------------------------------------------------
+# The serving surface: context_served.source
+# ---------------------------------------------------------------------------
+
+
+class TestServingSurfaceTagging:
+    """Owner-agreed 2026-07-31: the Codex serving surface registers its own
+    `context_served.source`. It is a materially different surface, not a
+    relabel — Codex renders injected `additionalContext` as a *visible
+    developer message* (openai/codex#16933), spills it above
+    `additionalContextLimit`, and will not deliver it at all until the hook is
+    trusted. Collapsing it into `startup` would make the RLVR export weigh
+    two different delivery guarantees as one.
+
+    The handler learns which harness fired it from its own argv, written by
+    the installer — `harness.active()` is not usable here (see `_is_internal`).
+    """
+
+    def test_installer_stamps_the_harness_into_the_codex_command(
+        self, codex_home: Path
+    ):
+        install_hooks(scope="user")
+        doc = json.loads((codex_home / "hooks.json").read_text())
+        for groups in doc["hooks"].values():
+            for group in groups:
+                for h in group["hooks"]:
+                    assert h["command"].endswith(" --harness codex"), h["command"]
+
+    def test_claude_code_command_carries_no_harness_flag(
+        self, tmp_path: Path, use_profile
+    ):
+        """Explicit acceptance criterion: CC hook install output unchanged."""
+        home = tmp_path / "cc-home"
+        use_profile(user_settings=home / ".claude" / "settings.json")
+        install_hooks(scope="user")
+        doc = json.loads((home / ".claude" / "settings.json").read_text())
+        for groups in doc["hooks"].values():
+            for group in groups:
+                for h in group["hooks"]:
+                    assert "--harness" not in h["command"]
+
+    def test_startup_event_is_stamped_with_the_surface(
+        self, tmp_path: Path, monkeypatch
+    ):
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        VaultManager(config=cfg).ensure_dirs()
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda cfg, project, budget_tokens=10000: "- [[n-1|n-1]]\n",
+        )
+        monkeypatch.setattr(
+            "sys.argv", ["weave-hook", "session_start", "--harness", "codex"]
+        )
+
+        handler_mod._handle_session_start(CODEX_SESSION_START)
+
+        events = handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID)
+        startup = next(e for e in events if e["type"] == "startup")
+        assert startup["surface"] == "codex"
+
+    def test_claude_code_startup_event_is_unstamped(
+        self, tmp_path: Path, monkeypatch
+    ):
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        VaultManager(config=cfg).ensure_dirs()
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda cfg, project, budget_tokens=10000: "- [[n-1|n-1]]\n",
+        )
+        monkeypatch.setattr("sys.argv", ["weave-hook", "session_start"])
+
+        handler_mod._handle_session_start(
+            {"session_id": "ses-cc", "cwd": str(tmp_path)}
+        )
+
+        events = handler_mod._read_buffer(cfg.weave_dir, "ses-cc")
+        startup = next(e for e in events if e["type"] == "startup")
+        assert "surface" not in startup
+
+
+class TestContextServedProjection:
+    """The indexer projects a stamped startup event to its own source value.
+    Mirrors how `retrieval` events already fan out by their `tool` sentinel."""
+
+    def _project(self, tmp_path: Path, event: dict) -> list[tuple]:
+        from thinkweave.core.indexer import Indexer
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        VaultManager(config=cfg).ensure_dirs()
+        log = tmp_path / "retrieval_log.jsonl"
+        log.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+        idx = Indexer(config=cfg)
+        try:
+            idx._project_session_retrieval_log("ses-x", log)
+            idx.db.commit()
+            return [
+                tuple(r)
+                for r in idx.db.execute(
+                    "SELECT note_id, source FROM context_served ORDER BY note_id"
+                )
+            ]
+        finally:
+            idx.close()
+
+    def test_codex_startup_gets_its_own_source(self, tmp_path: Path):
+        rows = self._project(
+            tmp_path,
+            {
+                "type": "startup",
+                "surface": "codex",
+                "returned_ids": ["n-1"],
+                "ts": "2026-08-02T00:00:00Z",
+            },
+        )
+        assert rows == [("n-1", "codex-startup")]
+
+    def test_unstamped_startup_stays_startup(self, tmp_path: Path):
+        rows = self._project(
+            tmp_path,
+            {
+                "type": "startup",
+                "returned_ids": ["n-1"],
+                "ts": "2026-08-02T00:00:00Z",
+            },
+        )
+        assert rows == [("n-1", "startup")]
+
+    def test_check_constraint_admits_the_new_source(self, tmp_path: Path):
+        """The CHECK is a closed set — a source it does not list is rejected
+        at INSERT, which is the failure this migration exists to prevent."""
+        from thinkweave.core.indexer import Indexer
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        VaultManager(config=cfg).ensure_dirs()
+        idx = Indexer(config=cfg)
+        try:
+            sql = idx.db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='context_served'"
+            ).fetchone()[0]
+            assert "codex-startup" in sql
+        finally:
+            idx.close()
+
+    def test_pre_codex_table_is_dropped_and_recreated(self, tmp_path: Path):
+        """A vault indexed before this issue carries the narrower CHECK, which
+        rejects every codex-startup INSERT. SQLite cannot ALTER a CHECK, and
+        the table is 100% derived from retrieval_log.jsonl — so the established
+        remedy is drop + recreate (the same one 'prompttime' and 'loop-prime'
+        used). Runs against a fixture DB only."""
+        from thinkweave.core.indexer import Indexer
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        VaultManager(config=cfg).ensure_dirs()
+
+        # Build the pre-#107 table by hand — independent of SCHEMA_SQL.
+        idx = Indexer(config=cfg)
+        idx.db.execute("DROP TABLE IF EXISTS context_served")
+        idx.db.execute(
+            "CREATE TABLE context_served ("
+            " session_id TEXT NOT NULL,"
+            " note_id    TEXT NOT NULL,"
+            " source     TEXT NOT NULL CHECK(source IN "
+            "  ('startup', 'onthefly', 'prompttime', 'loop-prime')),"
+            " ts         TEXT,"
+            " PRIMARY KEY (session_id, note_id, source))"
+        )
+        idx.db.execute(
+            "INSERT INTO context_served VALUES ('ses-old', 'n-old', 'startup', '')"
+        )
+        idx.db.commit()
+        idx.close()
+
+        # Reopening runs the migration.
+        idx = Indexer(config=cfg)
+        try:
+            idx._init_schema()
+            sql = idx.db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='context_served'"
+            ).fetchone()[0]
+            assert "codex-startup" in sql
+            idx.db.execute(
+                "INSERT INTO context_served VALUES "
+                "('ses-x', 'n-1', 'codex-startup', '')"
+            )
+        finally:
+            idx.close()

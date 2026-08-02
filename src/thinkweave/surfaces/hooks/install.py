@@ -102,6 +102,25 @@ def _localize_command(command: str, root: Path) -> str:
     return command.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
 
 
+def _stamp_harness(command: str, profile) -> str:
+    """Second per-route transformation: tell the handler which harness fired
+    it, by appending ``--harness <id>``.
+
+    The handler cannot read that off :func:`thinkweave.core.harness.active` —
+    the hook command carries no ``$THINKWEAVE_HARNESS``, so a hook fired by
+    Codex would resolve the Claude Code profile. It *can* read its own argv,
+    and the argv is ours: this installer writes it. ``bin/weave-hook-launch``
+    forwards ``"$@"`` untouched.
+
+    Claude Code is the shape ``hooks/hooks.json`` is authored in, so its
+    command is left byte-identical and the plugin route (which loads that file
+    directly, unstamped) keeps agreeing with what this writes.
+    """
+    if profile.id == "claude-code":
+        return command
+    return f"{command} --harness {profile.id}"
+
+
 def _settings_path(project_dir: str = "") -> Path:
     """Find the project-scope settings file."""
     root = Path(project_dir) if project_dir else Path.cwd()
@@ -161,7 +180,8 @@ def _build_installed_settings(
     hooks = settings.setdefault("hooks", {})
     canonical = _load_canonical_hooks(hooks_json)
     root = _repo_root()
-    limit = active_harness().additional_context_limit
+    profile = active_harness()
+    limit = profile.additional_context_limit
 
     for event, canonical_entries in canonical.items():
         entries = hooks.setdefault(event, [])
@@ -175,7 +195,7 @@ def _build_installed_settings(
             _ensure_hook(
                 entries,
                 matcher,
-                _localize_command(c_hook["command"], root),
+                _stamp_harness(_localize_command(c_hook["command"], root), profile),
                 slot=matcher if multi else None,
                 timeout=c_hook.get("timeout"),
                 context_limit=(

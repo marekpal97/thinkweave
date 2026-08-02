@@ -76,6 +76,22 @@ def _log_info(hook_type: str, message: str) -> None:
         pass  # Last resort: silent failure on logging itself
 
 
+def _hook_harness() -> str:
+    """Which harness fired this hook, from our own argv.
+
+    ``weave hooks install`` appends ``--harness <id>`` for every harness but
+    Claude Code (see ``install._stamp_harness`` for why argv and not
+    ``harness.active()``). Empty string means the Claude Code default, which
+    keeps its buffer bytes identical to every session written before #107.
+    """
+    argv = sys.argv
+    if "--harness" in argv:
+        i = argv.index("--harness")
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return ""
+
+
 def main() -> None:
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
@@ -1110,6 +1126,14 @@ def _handle_session_start(hook_input: dict) -> None:
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
                 }
+                # Which harness served it. The indexer projects this to its own
+                # `context_served.source` — Codex delivers `additionalContext`
+                # under different guarantees (visible developer message, spill
+                # above the limit, trust-gated), so the RLVR export must not
+                # weigh it as Claude Code's startup payload.
+                surface = _hook_harness()
+                if surface:
+                    event["surface"] = surface
                 _buffer_event(cfg.weave_dir, session_id, event)
         except Exception as e:
             # Capture is best-effort; never block the payload injection.
