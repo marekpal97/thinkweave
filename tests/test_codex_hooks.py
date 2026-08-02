@@ -884,14 +884,31 @@ class TestRetrievalGateUnderCodex:
         )
         assert handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID) == []
 
-    def test_nested_mcp_content_shape_still_yields_ids(self):
+    def test_nested_mcp_content_shape_still_yields_ids(self, tmp_path: Path, monkeypatch):
         """`tool_response` is typed "any JSON" in the 0.146.0 schema, so there
         is no key list to hardcode. A nested MCP-style payload must still
-        expose its note ids rather than logging an empty retrieval."""
-        text = handler_mod._extract_tool_output_text(
-            {"tool_response": {"content": [{"type": "text", "text": "[[n-abc123]]"}]}}
+        expose its note ids rather than logging an empty retrieval.
+
+        Driven through `_handle_post` rather than a helper: the recovery is
+        scoped to the retrieval path precisely so the action path keeps
+        ignoring shapes it doesn't recognise.
+        """
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        VaultManager(config=cfg).ensure_dirs()
+
+        handler_mod._handle_post(
+            "mcp__thinkweave__weave_search",
+            {
+                "session_id": CODEX_SESSION_ID,
+                "tool_name": "mcp__thinkweave__weave_search",
+                "tool_input": {"query": "x"},
+                "tool_response": {"content": [{"type": "text", "text": "[[n-abc123]]"}]},
+            },
         )
-        assert "n-abc123" in text
+
+        events = handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID)
+        assert events[0]["returned_ids"] == ["n-abc123"]
 
     def test_flag_only_dict_still_yields_empty(self):
         """Claude Code's Bash response with no output is genuinely textless —

@@ -163,12 +163,6 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         return
 
     tool_input = hook_input.get("tool_input", {})
-    # Claude Code's PostToolUse payload uses ``tool_response`` (newer, an
-    # object with stdout/stderr) or ``tool_output`` (older string form).
-    # _extract_tool_output_text normalises both to a single string so
-    # downstream parsers (_parse_commit_from_output, build_retrieval_event,
-    # etc.) don't need provider-version awareness.
-    tool_output = _extract_tool_output_text(hook_input)
 
     try:
         from thinkweave.core.config import load_config
@@ -182,11 +176,26 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         # events are kept in the same buffer file — the Stop-time finalizer
         # partitions them into events.jsonl vs retrieval_log.jsonl.
         if is_action_tool:
-            events = _build_events(tool_name, tool_input, tool_output, now)
+            # Claude Code's PostToolUse payload uses ``tool_response`` (newer,
+            # an object with stdout/stderr) or ``tool_output`` (older string
+            # form); _extract_tool_output_text normalises both so the parsers
+            # (_parse_commit_from_output, _extract_insight_blocks) don't need
+            # provider-version awareness. Only recognised text shapes survive
+            # it — see its docstring.
+            events = _build_events(
+                tool_name, tool_input, _extract_tool_output_text(hook_input), now
+            )
         else:
             from thinkweave.operations.retrieval_log import build_retrieval_event
 
-            events = [build_retrieval_event(tool_name, tool_input, tool_output, now)]
+            # Raw, not normalised: a retrieval response IS the rendered answer,
+            # whatever shape the harness wraps it in, and `build_retrieval_event`
+            # mines the whole object for note ids (#107).
+            events = [
+                build_retrieval_event(
+                    tool_name, tool_input, _raw_tool_response(hook_input), now
+                )
+            ]
         for event in events:
             if event:
                 _buffer_event(cfg.weave_dir, session_id, event)
@@ -569,9 +578,7 @@ def _extract_tool_output_text(hook_input: dict) -> str:
     subfield was never written. Empirically 0/405 native hook-emitted
     sessions ever carried ``commits[]``. Audit item A1.
     """
-    raw = hook_input.get("tool_response")
-    if raw is None:
-        raw = hook_input.get("tool_output", "")
+    raw = _raw_tool_response(hook_input)
     if isinstance(raw, str):
         return raw
     if isinstance(raw, dict):
@@ -586,24 +593,25 @@ def _extract_tool_output_text(hook_input: dict) -> str:
         if stdout or stderr:
             return stdout or stderr
 
-        # Neither key present — an unknown response shape. Codex's MCP tool
-        # responses are not `stdout`/`stderr` dicts, and the schema embedded in
-        # the 0.146.0 binary types `tool_response` as "any JSON", so there is
-        # no key list to hardcode. Recover whatever text the object carries
-        # instead: top-level strings, else a JSON dump so nested payloads (the
-        # MCP `{"content": [{"text": …}]}` shape) still expose their note ids
-        # to the regex scanners. Without this the retrieval log records Codex
-        # `weave_*` calls with an empty `returned_ids` — captured, but useless
-        # to the RLVR export, and silently so (#107).
-        strings = [v for v in raw.values() if isinstance(v, str) and v]
-        if strings:
-            return "\n".join(strings)
-        # A dict of only scalars (Claude Code's `{"interrupted": false,
-        # "isImage": false}`) genuinely carries no text.
-        if any(isinstance(v, (dict, list)) for v in raw.values()):
-            return json.dumps(raw)
+        # Any other dict shape is deliberately *not* mined for text. Write's
+        # and Edit's `tool_response` echo back what was written (`content`,
+        # `originalFile`), which is the edited file, not tool output — harvest
+        # it and `_extract_insight_blocks` re-captures every ★ Insight block
+        # living in the source on every touch. Unknown-shape recovery belongs
+        # to the retrieval path, where the payload really is a rendered answer;
+        # see `retrieval_log.response_text` (#107).
         return ""
     return ""
+
+
+def _raw_tool_response(hook_input: dict):
+    """The tool result exactly as the harness sent it, un-normalised.
+
+    Same key preference as :func:`_extract_tool_output_text` — that helper
+    flattens for the action path, the retrieval path wants the object.
+    """
+    raw = hook_input.get("tool_response")
+    return hook_input.get("tool_output", "") if raw is None else raw
 
 
 # Every tool name that counts as file/command activity, across both

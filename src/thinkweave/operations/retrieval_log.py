@@ -109,6 +109,35 @@ def summarize_args(tool: str, args: dict | None) -> dict:
     return {k: args[k] for k in keep if k in args and args[k] not in (None, "", [])}
 
 
+def response_text(tool_output: Any) -> str:
+    """Every string anywhere in a tool response, newline-joined.
+
+    A retrieval response *is* the rendered answer, so there is no shape here
+    that isn't worth scanning for note ids — and no shape to hardcode either:
+    Claude Code sends ``{stdout, stderr, …}``, while the schema in the codex-cli
+    0.146.0 binary types ``tool_response`` as "any JSON" and no MCP call was
+    observed in a credential-less session, so Codex's real wrapper (likely the
+    nested MCP ``{"content": [{"text": …}]}``) is unmeasured (#107).
+
+    Recursive rather than a JSON dump: dumping escapes newlines, and a
+    ``\\nses-abc123`` in the escaped form glues the ``n`` onto the id and
+    defeats the ``\\b``-anchored prefix match in :data:`_ID_RE`.
+
+    Deliberately *not* shared with the action path — Write/Edit responses echo
+    the file that was just written, and mining those re-captures the source's
+    own ★ Insight blocks on every touch (``handler._extract_tool_output_text``).
+    """
+    if isinstance(tool_output, str):
+        return tool_output
+    if isinstance(tool_output, dict):
+        parts = [response_text(v) for v in tool_output.values()]
+    elif isinstance(tool_output, (list, tuple)):
+        parts = [response_text(v) for v in tool_output]
+    else:
+        return ""
+    return "\n".join(p for p in parts if p)
+
+
 def build_retrieval_event(
     tool_name: str,
     tool_input: dict,
@@ -134,18 +163,7 @@ def build_retrieval_event(
         rid = (tool_input or {}).get("id", "")
         returned_ids = [rid] if rid else []
     else:
-        # Defensive normalisation: hook handlers normalise via
-        # ``_extract_tool_output_text`` before calling, but headless and
-        # test callers sometimes pass the raw Claude Code ``tool_response``
-        # object ({stdout, stderr, ...}). Concatenate both stream fields
-        # so the regex parser sees the rendered text in either shape.
-        if isinstance(tool_output, str):
-            text = tool_output
-        elif isinstance(tool_output, dict):
-            text = (tool_output.get("stdout") or "") + (tool_output.get("stderr") or "")
-        else:
-            text = ""
-        returned_ids = parse_returned_ids(text)
+        returned_ids = parse_returned_ids(response_text(tool_output))
 
     return {
         "ts": ts,
