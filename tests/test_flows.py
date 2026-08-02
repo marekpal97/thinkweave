@@ -155,19 +155,17 @@ class TestBuildCommand:
         cmd = _build_command("/x")
         assert cmd.startswith("/custom/claude ")
 
-    def test_namespaces_skill_under_plugin_route(self, monkeypatch, tmp_path):
+    def test_namespaces_skill_under_plugin_route(self, use_profile, tmp_path):
         # Plugin route active → stage skill tokens render namespaced
         # (plugin commands have no bare-name aliasing).
         import json
-
-        from thinkweave.core import plugin_route
 
         manifest = tmp_path / "installed_plugins.json"
         manifest.write_text(
             json.dumps({"version": 2, "plugins": {"thinkweave@mp": []}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
+        use_profile(installed_plugins=manifest)
         argv = _build_argv("/discover --strategy rss_poll")
         assert "/thinkweave:discover --strategy rss_poll" in argv
 

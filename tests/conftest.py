@@ -66,7 +66,7 @@ from thinkweave.core.vault import VaultManager
 from thinkweave.retrieval.search import Search
 
 
-def use_profile(
+def _replace_profile(
     monkeypatch: pytest.MonkeyPatch, **fields: Any
 ) -> harness.HarnessProfile:
     """Replace the active harness profile with a copy carrying ``fields``."""
@@ -75,9 +75,21 @@ def use_profile(
     return profile
 
 
+@pytest.fixture
+def use_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[..., harness.HarnessProfile]:
+    """``use_profile(mcp_config=…, pause_marker=…)`` — see the module docstring."""
+
+    def _use(**fields: Any) -> harness.HarnessProfile:
+        return _replace_profile(monkeypatch, **fields)
+
+    return _use
+
+
 @pytest.fixture(autouse=True)
 def _no_plugin_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    use_profile(
+    _replace_profile(
         monkeypatch,
         installed_plugins=tmp_path / "absent-installed_plugins.json",
         skills_dir=tmp_path / "absent-skills",
