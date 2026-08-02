@@ -9,10 +9,8 @@ from __future__ import annotations
 def _normalize_skill(entry: dict) -> dict:
     """Project one stage-dispatch record down to its stored shape.
 
-    A stage skill is effectively a gate/subagent the loop already dispatches
-    (implementer, acceptance judge, reviewer, and future ponytail/tdd) — that
-    is the whole scope: generic capture of *every* Skill invocation is parked
-    with its unpark trigger in issue-loop-memory.md (#99). So we keep only the
+    Stage dispatches only — generic capture of *every* Skill invocation is
+    parked with its unpark trigger in issue-loop-memory.md (#99). We keep the
     four fields that make the dispatch first-class:
     ``id`` (which skill), ``role`` (its stage role), ``outcome`` (how the
     invocation resolved), and ``fix_rounds_attributed`` (how many fix rounds
@@ -110,13 +108,9 @@ def _normalize_trace(raw: object) -> dict:
     """Shape an incoming semantic-trace object into its stored envelope.
 
     **A backstop, not the enforcement seam (issue #99).** Judgment-gate
-    returns are schema-checked where the subagent returns them — the rail's
-    ``validate`` verb (:mod:`devloop.gates`), which rejects a malformed return
-    with per-field reasons so the orchestrator re-asks. What arrives here is
-    therefore already validated; this projection only backstops the legacy
-    (pre-#99) and degraded paths, where dropping a stray key beats crashing
-    the trajectory write at the end of a shipped run. It never repairs a field
-    a caller should have been re-asked for.
+    returns are schema-checked at the rail's ``validate`` verb
+    (:mod:`devloop.gates`); what arrives here is already validated, so this
+    projection only backstops legacy (pre-#99) and degraded input.
 
     Strict on type: a non-dict ``raw`` raises ``ValueError`` (a list or bare
     string pasted by mistake must not silently corrupt the run-bound trace).

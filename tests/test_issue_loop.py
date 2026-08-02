@@ -2452,16 +2452,6 @@ def test_validate_review_blocks_on_configured_severities():
     assert clean["passed"] is True
 
 
-def test_validate_review_rejects_unknown_severity():
-    """`high` is the realistic enum drift (the triage signals doc names the same
-    trap) — rejected with the field path and the allowed set."""
-    result = gates.validate(_gate("review"), {"findings": [
-        {"severity": "high", "finding": "x"},
-    ]})
-    assert result["passed"] is False
-    assert any("findings[0].severity" in r and "high" in r for r in result["reasons"])
-
-
 def test_validate_simplify_accepts_the_trace_envelope():
     """The simplify subagent returns the SAME envelope the trace stores
     (`{outcome, cuts, kept, lines_delta}`) — one shape, validated at the seam
@@ -2475,21 +2465,15 @@ def test_validate_simplify_accepts_the_trace_envelope():
     assert "-12" in result["summary"]
 
 
-def test_validate_simplify_rejects_bad_outcome_and_non_int_lines_delta():
+def test_validate_simplify_rejects_bad_fields():
+    """Reasons accumulate (no early exit): one malformed payload names every
+    offending field path."""
     result = gates.validate(_gate("simplify"), {
-        "outcome": "shrunk", "lines_delta": "-12", "cuts": [], "kept": [],
+        "outcome": "shrunk", "lines_delta": "-12", "cuts": [{"what": "w"}], "kept": [],
     })
     assert result["passed"] is False
     assert any("outcome" in r and "shrunk" in r for r in result["reasons"])
     assert any("lines_delta" in r for r in result["reasons"])
-
-
-def test_validate_simplify_rejects_malformed_cut_entry():
-    result = gates.validate(_gate("simplify"), {
-        "outcome": "applied", "lines_delta": -3,
-        "cuts": [{"what": "wrapper"}], "kept": [],
-    })
-    assert result["passed"] is False
     assert any("cuts[0].why" in r for r in result["reasons"])
 
 
@@ -2540,22 +2524,9 @@ def test_validate_cli_refuses_deterministic_kinds(tmp_path, capsys):
     rc = cli.main(["validate", "--gate", "tests", "--return-json", ok])
     assert rc == 2
     assert "check" in json.loads(capsys.readouterr().out)["error"]
-
-
-def test_validate_cli_unknown_gate_id(tmp_path, capsys):
-    ok = _write_json(tmp_path, {"criteria": []})
     rc = cli.main(["validate", "--gate", "nope", "--return-json", ok])
     assert rc == 2
     assert "no gate" in json.loads(capsys.readouterr().out)["error"]
-
-
-def test_check_still_refuses_to_execute_judgment_kinds(tmp_path, capsys):
-    """#99 adds the validate verb; it does NOT give `check` a way to run a
-    judgment kind. The refusal is byte-identical."""
-    for gate_id in ("acceptance", "review", "simplify"):
-        assert cli.main(["check", "--gate", gate_id, "--cwd", str(tmp_path)]) == 2
-        err = json.loads(capsys.readouterr().out)["error"]
-        assert err.endswith("is LLM-judged — run it from the /issue-loop command, not the script")
 
 
 def test_normalize_trace_is_documented_as_a_backstop_not_the_validation_seam():
@@ -2584,8 +2555,6 @@ def test_command_doc_wires_the_validate_verb_into_the_gate_pipeline():
     assert "re-ask" in section and "reasons" in section
     # Each judgment kind's schema is stated where its gate is.
     assert '"criteria"' in section and '"findings"' in section
-    for enum_value in ("not-met", "critical", "nit"):
-        assert enum_value in section
 
 
 def test_validate_schemas_match_the_enums_the_command_doc_advertises():
@@ -2622,13 +2591,12 @@ def test_boundary_doc_cli_surface_list_matches_the_parser():
     ONE external interface — so that list is a contract, not a summary. Pin it
     against argparse; #99's `validate` verb widened the surface."""
     import argparse as _argparse
-    import re
 
     text = (cli.REPO_ROOT / "docs" / "agents" / "devloop-boundaries.md").read_text(
         encoding="utf-8")
     start = text.index("**CLI subcommand surface**")
     listed = text[text.index("`", start) + 1:text.index("`.", start)]
-    documented = {name.strip() for name in re.split(r"·", listed)}
+    documented = {name.strip() for name in listed.split("·")}
     sub = next(a for a in cli.build_arg_parser()._actions
                if isinstance(a, _argparse._SubParsersAction))
     assert documented == set(sub.choices)

@@ -84,14 +84,10 @@ def run_diff_gate(gate: dict, cwd: Path, base_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Judgment kinds — the rail never executes them. The orchestrator dispatches a
-# subagent and hands its JSON return back here: `validate(gate, raw)` checks it
-# against the kind's schema and returns the same GateResult shape plus
-# `reasons`. Non-empty `reasons` means SCHEMA rejection — the orchestrator
-# re-asks the same subagent — and is categorically different from a schema-valid
-# `passed: False`, which is a gate verdict (a fix round). Nothing is coerced:
-# an invented enum or a blank evidence line is rejected naming its field path,
-# because coercing it would put the judge's mistake in the trajectory as fact.
+# Judgment kinds — validated here, executed by the orchestrator. Nothing is
+# coerced: an invented enum or a blank evidence line is rejected naming its
+# field path, because coercing it would put the judge's mistake in the
+# trajectory as fact.
 
 ACCEPTANCE_VERDICTS = ("met", "not-met")
 REVIEW_SEVERITIES = ("critical", "major", "minor", "nit")
@@ -192,7 +188,6 @@ def validate_simplify(gate: dict, raw: dict) -> dict:
     delta = raw.get("lines_delta")
     if isinstance(delta, bool) or not isinstance(delta, int):
         reasons.append(f"payload.lines_delta: expected an int, got {delta!r}")
-        delta = 0
     for key in ("cuts", "kept"):
         for i, entry in _entries(raw, key, reasons, allow_empty=True):
             _text(entry, f"{key}[{i}]", "what", reasons)

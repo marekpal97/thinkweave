@@ -216,9 +216,6 @@ The rail emits the same `GateResult` the deterministic gates emit, plus
   rejected, treat the gate as failed and route to human with the reasons as
   the evidence.
 
-Nothing downstream re-checks these shapes: `_normalize_trace` in the rail is a
-documented backstop for legacy/degraded input, not a second enforcement point.
-
 - `kind: command` / `kind: diff` — deterministic, via the rail:
   ```bash
   python scripts/issue_loop.py check --gate <id> --cwd <worktree> --base-ref origin/main

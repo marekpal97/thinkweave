@@ -157,15 +157,12 @@ whole execute-vs-validate difference: **empty `reasons` = a verdict**
 became a verdict** — each entry names an offending field path and value, and
 the orchestrator re-asks the same subagent. `validate` maps this onto
 `check`'s exit codes with rejection on the error rung: `0` passed, `1` failed,
-`2` re-ask. Nothing coerces: `_normalize_trace` downstream is a documented
-backstop for legacy/degraded input, not a second enforcement point.
+`2` re-ask.
 
 *(Amended 2026-08-01, owner ruling during #94: the original draft shipped
 `JUDGMENT` as a data-only set at #94 time. Both the review and simplify gates
 independently flagged that as the epic's own half-mechanism shape, and the
-owner sided with the anti-goal over the draft — so the registry landed in #99
-with its validators, its `validate` dispatch, and the disjointness/coverage
-tests that only then became falsifiable.)*
+owner sided with the anti-goal over the draft.)*
 
 **No class hierarchy.** A dict registry + one shared result shape state the
 split completely; `typing.Protocol` machinery would be interface without
