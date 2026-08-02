@@ -890,7 +890,27 @@ class TestDoctorHarnessAwareMessages:
         check = mcp_doctor.check_registration_scopes(tmp_path)
         assert check.passed is False
         assert "Claude Code" not in check.detail
-        assert "codex" in check.detail
+        # `display_name`, not the `id` slug — prose that renders "claude-code
+        # will pick one" reads as a typo where "Claude Code" reads as English.
+        assert "Codex will pick one" in check.detail
+
+    def test_divergent_scope_message_reads_as_prose_under_claude_code(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thinkweave.surfaces.cli import mcp_doctor
+
+        monkeypatch.setattr(
+            mcp_doctor,
+            "_entry_from_claude_json",
+            lambda: (Path("/m"), {"command": "uv", "args": ["a"]}),
+        )
+        monkeypatch.setattr(
+            mcp_doctor,
+            "_entry_from_project_mcp_json",
+            lambda cwd: (Path("/p"), {"command": "uv", "args": ["b"]}),
+        )
+        check = mcp_doctor.check_registration_scopes(tmp_path)
+        assert "Claude Code will pick one" in check.detail
 
 
 class TestHeadlessHookTrust:

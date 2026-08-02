@@ -150,6 +150,15 @@ class HarnessProfile:
     """Flag an *unattended* run needs before the harness will run installed
     hooks at all. Empty when nothing gates them (Claude Code)."""
 
+    display_name: str = ""
+    """The harness's name as a human writes it ("Claude Code"), for messages
+    that used to hardcode it. Defaults to ``id``, which is a slug and reads as
+    a typo in prose — set it on any profile whose messages reach a user."""
+
+    def __post_init__(self) -> None:
+        if not self.display_name:
+            object.__setattr__(self, "display_name", self.id)
+
     @property
     def dev_link(self) -> Path:
         """Where ``weave dev-link`` symlinks a checkout so the harness loads it
@@ -215,6 +224,7 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
     cc = h / ".claude"
     return HarnessProfile(
         id="claude-code",
+        display_name="Claude Code",
         hooks=True,
         subagents=True,
         native_memory=True,
@@ -263,6 +273,7 @@ def codex(home: Path | None = None) -> HarnessProfile:
     )
     return HarnessProfile(
         id="codex",
+        display_name="Codex",
         hooks=True,
         # Repo-local `.codex/` hook entries do not fire in interactive sessions
         # (openai/codex#17532) and the manual gates them on the project being

@@ -238,7 +238,8 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
             passed=False,
             detail=(
                 f"{len(scopes)} scopes declare thinkweave with DIFFERENT "
-                f"invocations: {summary} — {_profile().id} will pick one and warn"
+                f"invocations: {summary} — {_profile().display_name} will pick "
+                "one and warn"
             ),
             fix=(
                 "reconcile to a single shape (re-run `weave install --yes` and "
