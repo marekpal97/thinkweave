@@ -126,8 +126,7 @@ context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
 For each concept-matched trajectory, prime follows its `builds_on` links to the
 linked **insight notes** and serves *their bodies* (the portable lesson's only
 home). A trajectory whose links resolve to nothing carries no reusable color and
-is skipped — issue #98 migrated the 13 pre-#85 notes to linked insight notes and
-deleted the inline-`## Lessons` fallback with its last consumer. When the matched set carries
+is skipped. When the matched set carries
 `outcome_label`s (from #60's judge), prime stably orders merged-clean/stable
 trajectories ahead of reworked/closed ones before the budget cap — a
 deterministic sort tweak, not a scoring framework; an all-unlabeled set keeps

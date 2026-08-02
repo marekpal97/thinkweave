@@ -290,7 +290,7 @@ Function → destination, exhaustive; everything is a pure move unless marked:
 | `_VALID_*`, `_RED_*`, `TRIAGE_LABELS`, `classify_pr` | `triage.py` |
 | `_path_matches`, `_path_hits` | `paths.py` as `match`, `hits` (**the one unification**: diff gate's inline `startswith` loop → `paths` call) |
 | `_normalize_skill`, `_as_int_or_none`, `_normalize_trace*`, `build_trajectory` | `trajectory/mint.py` |
-| `is_holdout`, `_LESSONS_RE`, `extract_lessons`, `_coerce_builds_on`, `resolve_insights`, `_OUTCOME_RANK`, `_outcome_rank`, `query_trajectories`, `render_prime_block`, `build_prime_payload`, `LOOP_PRIME_TOOL`, `_append_served_event` | `trajectory/prime.py` (`_LESSONS_RE` + `extract_lessons` since deleted by #98; SQL pair migrates onward in #100) |
+| `is_holdout`, `_LESSONS_RE`, `extract_lessons`, `_coerce_builds_on`, `resolve_insights`, `_OUTCOME_RANK`, `_outcome_rank`, `query_trajectories`, `render_prime_block`, `build_prime_payload`, `LOOP_PRIME_TOOL`, `_append_served_event` | `trajectory/prime.py` (SQL pair migrates onward in #100) |
 | `_open_index_ro`, `_read_weave_dir_override`, `_resolve_index_db` | `index_client.py` as `open_ro`, `resolve_db_path` (+ private helper) |
 | `_gh`, `fetch_issues`, `_fetch_labels` | `github.py` as `run`, `fetch_issues`, `fetch_labels` |
 | `_split_csv`, `build_arg_parser`, `main` | `cli.py` |

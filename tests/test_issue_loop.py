@@ -790,14 +790,6 @@ def test_is_holdout_deterministic_and_disable():
     assert prime.is_holdout("loop-run-10", -1) is False
 
 
-def test_v1_lessons_surface_is_deleted():
-    """Issue #98: the inline-Lessons fallback died with its last consumer — the
-    13 pre-#85 trajectory notes were migrated to linked insight notes, so the
-    parser and its regex are gone rather than dormant."""
-    assert not hasattr(prime, "extract_lessons")
-    assert not hasattr(prime, "_LESSONS_RE")
-
-
 def test_render_prime_block_splices_insight_bodies_and_lists_served():
     trajectories = [
         {"id": "n-aaa111", "title": "prime rail", "issue": 57, "outcome": "shipped",
@@ -904,8 +896,8 @@ def test_query_trajectories_filters_by_concept_and_linked_insight(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Prime v2 (issue #85) — serve insight-note bodies by following builds_on links
-# from concept-matched trajectories; fall back to inline Lessons for v1 notes;
-# prefer merged-clean-labeled trajectories over reworked when labels exist.
+# from concept-matched trajectories; prefer merged-clean-labeled trajectories
+# over reworked when labels exist.
 
 
 def _add_note(path, *, note_id, title, body, concepts=(), tags=(),
@@ -953,26 +945,6 @@ def test_query_trajectories_follows_builds_on_to_insight_bodies(tmp_path):
     assert hits[0]["insights"] == [
         {"id": "n-ins1", "body": "Portable lessons live in linked insight notes."},
     ]
-    # The v1 register is gone: no 'lessons' key on the served dict at all.
-    assert "lessons" not in hits[0]
-
-
-def test_query_trajectories_drops_v1_inline_lessons(tmp_path):
-    """Issue #98: a v1 trajectory (inline Lessons, no builds_on) carries no
-    reusable color any more — the 13 such notes were migrated, so an unmigrated
-    straggler is skipped rather than served from its body."""
-    db = tmp_path / "index.db"
-    _seed_index_db(
-        db, note_id="n-v1", title="v1 trajectory",
-        concepts=["retrieval"],
-        body="## What\nx\n\n## Lessons\nWiden the CHECK before the migration.\n",
-        frontmatter={"issue": 60, "outcome": "shipped"},  # no builds_on
-    )
-    conn = index_client.open_ro(str(db))
-    try:
-        assert prime.query_trajectories(conn, ["retrieval"], 3) == []
-    finally:
-        conn.close()
 
 
 def test_query_trajectories_prefers_merged_clean_over_reworked(tmp_path):
@@ -1028,32 +1000,6 @@ def test_query_trajectories_unlabeled_keeps_recency(tmp_path):
     assert [h["id"] for h in hits] == ["n-newer", "n-older"]
 
 
-def test_render_prime_block_serves_insight_bodies():
-    """render_prime_block serves the linked insight BODIES, recording the
-    INSIGHT ids as served — that is what the run actually received."""
-    trajectories = [
-        {"id": "n-traj", "title": "v2", "issue": 85, "outcome": "shipped",
-         "insights": [
-             {"id": "n-ins1", "body": "Portable lesson one."},
-             {"id": "n-ins2", "body": "Portable lesson two."}]},
-    ]
-    block, served = prime.render_prime_block(trajectories, decisions=[])
-    assert "Portable lesson one." in block
-    assert "Portable lesson two." in block
-    assert served == ["n-ins1", "n-ins2"]
-
-
-def test_render_prime_block_skips_trajectory_without_insights():
-    """Issue #98: a trajectory dict carrying no insights has nothing to serve —
-    it contributes neither a rendered piece nor a served id (previously it fell
-    back to its own inline Lessons and served the TRAJECTORY id)."""
-    trajectories = [
-        {"id": "n-aaa111", "title": "prime rail", "issue": 57,
-         "outcome": "shipped", "insights": []},
-    ]
-    assert prime.render_prime_block(trajectories, decisions=[]) == ("", [])
-
-
 def test_render_prime_block_v2_rendering_is_byte_stable():
     """AC2 pin: the served block for a v2 trajectory is byte-identical to the
     pre-#98 rendering. The expected string is hand-built from the documented
@@ -1062,7 +1008,8 @@ def test_render_prime_block_v2_rendering_is_byte_stable():
     renderer."""
     block, served = prime.render_prime_block(
         [{"id": "n-traj", "title": "prime rail", "issue": 57, "outcome": "shipped",
-          "insights": [{"id": "n-ins1", "body": "Portable lesson one."}]}],
+          "insights": [{"id": "n-ins1", "body": "Portable lesson one."},
+                       {"id": "n-ins2", "body": "Portable lesson two."}]}],
         decisions=["dec-ccc333"],
     )
     assert block == (
@@ -1070,10 +1017,11 @@ def test_render_prime_block_v2_rendering_is_byte_stable():
         "\n"
         "### #57 — prime rail (shipped)\n"
         "Portable lesson one.\n"
+        "Portable lesson two.\n"
         "\n"
         "Prior decisions for touched files: dec-ccc333\n"
     )
-    assert served == ["n-ins1", "dec-ccc333"]
+    assert served == ["n-ins1", "n-ins2", "dec-ccc333"]
 
 
 def test_build_prime_payload_serves_insight_bodies_end_to_end(tmp_path):
@@ -1121,10 +1069,10 @@ def test_build_trajectory_trace_lines_delta_non_int_is_zero():
 def test_resolve_insights_only_serves_note_type(tmp_path):
     """builds_on could name a decision or session id; prime must NOT serve a
     non-note body as color — only `type='note'` insight notes are served, and a
-    decision id resolves to nothing (falls back to inline Lessons upstream)."""
+    decision id resolves to nothing."""
     db = tmp_path / "index.db"
     _seed_index_db(db, note_id="n-seed", title="seed", concepts=["x"],
-                   body="## Lessons\ny\n")
+                   body="y")
     _add_note(db, note_id="dec-1", title="a decision", body="decision body",
               note_type="decision")
     _add_note(db, note_id="ses-1", title="a session", body="session body",
@@ -1156,8 +1104,7 @@ def test_coerce_builds_on_forms():
 
 def test_query_trajectories_dangling_builds_on_filtered(tmp_path):
     """A builds_on link that resolves to nothing (missing / non-note id) leaves
-    the trajectory with no reusable color → filtered out, never a crash. Since
-    #98 there is no inline-Lessons fallback beneath it."""
+    the trajectory with no reusable color → filtered out, never a crash."""
     db = tmp_path / "index.db"
     _seed_index_db(
         db, note_id="n-traj", title="t", concepts=["retrieval"],

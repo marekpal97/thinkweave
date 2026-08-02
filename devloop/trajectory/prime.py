@@ -154,8 +154,7 @@ def render_prime_block(
     Each trajectory renders its reusable color first (each capped-in as a whole
     piece until the char budget is spent — at least one always lands if any
     exist). A trajectory serves the BODIES of the insight notes it builds on,
-    and ``served`` records the insight ids — that is what the run received. A
-    trajectory carrying no insights has nothing to serve and is skipped.
+    and ``served`` records the insight ids — that is what the run received.
     ``decisions`` (the decisions_for_file note ids the orchestrator already
     resolved) are appended as an adjacency line so the served log records both
     kinds. ``served`` carries every id actually rendered. Empty input →
@@ -168,8 +167,6 @@ def render_prime_block(
     served: list[str] = []
     for t in trajectories:
         insights = t.get("insights") or []
-        if not insights:
-            continue
         head = f"### #{t.get('issue')} — {t.get('title', '')} ({t.get('outcome', '')})".rstrip()
         piece = f"{head}\n" + "\n".join(ins["body"] for ins in insights) + "\n"
         if served and sum(len(x) for x in pieces) + len(piece) > budget_chars:
@@ -179,8 +176,6 @@ def render_prime_block(
     if decisions:
         pieces.append("Prior decisions for touched files: " + ", ".join(decisions))
         served.extend(decisions)
-    if not served:
-        return "", []
     return "\n".join(pieces).strip() + "\n", served
 
 
