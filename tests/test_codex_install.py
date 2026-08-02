@@ -36,11 +36,35 @@ dir, and the suite-wide ``_sandbox_harness_home`` fixture is the backstop.
 
 from __future__ import annotations
 
+import argparse
+import shutil
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from thinkweave.core import harness
+from thinkweave.surfaces.cli import install as install_mod
+
+# The exact table `codex mcp add` emitted, transcribed by hand from that run —
+# `env` inlined, which the same CLI accepted on read-back. No `type` key.
+EXPECTED_CONFIG_TOML = """\
+[mcp_servers.thinkweave]
+command = "/usr/bin/uv"
+args = ["run", "--project", "/srv/thinkweave", "--extra", "mcp", "weave-mcp"]
+"""
+
+EXPECTED_CONFIG_TOML_WITH_VAULT = """\
+[mcp_servers.thinkweave]
+command = "/usr/bin/uv"
+args = ["run", "--project", "/srv/thinkweave", "--extra", "mcp", "weave-mcp"]
+env = { "THINKWEAVE_VAULT" = "/srv/vault" }
+"""
+
+needs_codex = pytest.mark.skipif(
+    shutil.which("codex") is None, reason="Codex CLI not installed on this machine"
+)
 
 
 @pytest.fixture
@@ -52,6 +76,32 @@ def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(harness, "_OVERRIDE", None)
     monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
     return home
+
+
+@pytest.fixture
+def installable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise the environment-probing half of ``cmd_install`` and pin the
+    two machine-dependent values, so the written bytes are fully determined."""
+    monkeypatch.setattr(
+        install_mod,
+        "_check_scripts",
+        lambda: install_mod.ScriptsCheck("ok", [], Path("/unused")),
+    )
+    monkeypatch.setattr(install_mod, "_check_uv_available", lambda: None)
+    monkeypatch.setattr(install_mod, "_check_pyproject_reachable", lambda root: None)
+    monkeypatch.setattr(install_mod, "_uv_sync", lambda root: None)
+    monkeypatch.setattr(install_mod, "_detect_uv_path", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(
+        install_mod, "_detect_project_root", lambda: Path("/srv/thinkweave")
+    )
+
+
+def _install(**kw) -> None:
+    install_mod.cmd_install(
+        argparse.Namespace(
+            **{"yes": True, "vault": None, "no_claude_md": True, **kw}
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -200,3 +250,238 @@ class TestHarnessFlag:
 
         with pytest.raises(SystemExit):
             build_parser().parse_args(["install", "--harness", "clyde"])
+
+
+# --------------------------------------------------------------------------- #
+# 2. the config.toml the install writes
+# --------------------------------------------------------------------------- #
+
+
+class TestConfigTomlWriter:
+    def test_fresh_install_writes_the_documented_table(
+        self, codex_home: Path, installable
+    ):
+        _install()
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
+            EXPECTED_CONFIG_TOML
+        )
+
+    def test_vault_lands_in_an_env_table(self, codex_home: Path, installable):
+        _install(vault="/srv/vault")
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
+            EXPECTED_CONFIG_TOML_WITH_VAULT
+        )
+
+    def test_no_type_key(self, codex_home: Path, installable):
+        """`codex mcp add` writes none, and `codex exec --strict-config` errors
+        with `unknown configuration field mcp_servers.thinkweave.type`."""
+        _install()
+        assert "type" not in (codex_home / "config.toml").read_text(encoding="utf-8")
+
+    def test_existing_user_config_survives_byte_for_byte(
+        self, codex_home: Path, installable
+    ):
+        prior = (
+            "# my codex config\n"
+            'model = "gpt-5.6"\n'
+            "\n"
+            "[mcp_servers.other]\n"
+            'command = "npx"\n'
+            'args = ["-y", "some-mcp"]\n'
+        )
+        (codex_home / "config.toml").write_text(prior, encoding="utf-8")
+
+        _install()
+
+        text = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert text.startswith(prior)
+        assert text.endswith(EXPECTED_CONFIG_TOML)
+
+    def test_a_foreign_entry_is_adopted_not_duplicated(
+        self, codex_home: Path, installable, capsys
+    ):
+        """ChatGPT desktop's Settings→Import can pre-create a `thinkweave`
+        entry carrying no sentinel of ours. Detection is key-scoped, so we
+        adopt and converge it rather than appending a second table."""
+        (codex_home / "config.toml").write_text(
+            "[mcp_servers.thinkweave]\n"
+            'command = "uvx"\n'
+            'args = ["thinkweave-mcp"]\n',
+            encoding="utf-8",
+        )
+
+        _install()
+
+        text = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert text.count("[mcp_servers.thinkweave]") == 1
+        assert "uvx" not in text
+        assert tomllib.loads(text)["mcp_servers"]["thinkweave"] == {
+            "command": "/usr/bin/uv",
+            "args": ["run", "--project", "/srv/thinkweave", "--extra", "mcp",
+                     "weave-mcp"],
+        }
+
+    def test_drift_is_reported_before_it_is_overwritten(
+        self, codex_home: Path, installable, capsys
+    ):
+        (codex_home / "config.toml").write_text(
+            "[mcp_servers.thinkweave]\n"
+            'command = "uvx"\n'
+            'args = ["thinkweave-mcp"]\n',
+            encoding="utf-8",
+        )
+        _install()
+        out = capsys.readouterr().out
+        assert "differs" in out
+        assert "uvx" in out  # the old shape…
+        assert "/usr/bin/uv" in out  # …and the new one
+
+    def test_drifted_install_needs_consent(self, codex_home: Path, installable):
+        (codex_home / "config.toml").write_text(
+            '[mcp_servers.thinkweave]\ncommand = "uvx"\nargs = []\n', encoding="utf-8"
+        )
+        with pytest.raises(SystemExit):
+            _install(yes=False)
+        # …and nothing was written behind the refusal.
+        assert "uvx" in (codex_home / "config.toml").read_text(encoding="utf-8")
+
+    def test_second_install_is_a_no_op(self, codex_home: Path, installable, capsys):
+        _install()
+        first = (codex_home / "config.toml").read_text(encoding="utf-8")
+        _install()
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == first
+        assert "already registered" in capsys.readouterr().out
+
+    def test_a_sibling_env_subtable_is_replaced_wholesale(
+        self, codex_home: Path, installable
+    ):
+        """`codex mcp add` writes env as a *sub*-table. Adopting an entry in
+        that form must not strand `[mcp_servers.thinkweave.env]` behind."""
+        (codex_home / "config.toml").write_text(
+            "[mcp_servers.thinkweave]\n"
+            'command = "uv"\n'
+            "args = []\n"
+            "\n"
+            "[mcp_servers.thinkweave.env]\n"
+            'THINKWEAVE_VAULT = "/old/vault"\n'
+            "\n"
+            "[mcp_servers.other]\n"
+            'command = "npx"\n',
+            encoding="utf-8",
+        )
+
+        _install()
+
+        doc = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
+        assert "env" not in doc["mcp_servers"]["thinkweave"]
+        assert doc["mcp_servers"]["other"] == {"command": "npx"}
+
+    def test_malformed_config_is_refused_not_clobbered(
+        self, codex_home: Path, installable
+    ):
+        (codex_home / "config.toml").write_text("this is [ not toml\n", encoding="utf-8")
+        with pytest.raises(SystemExit):
+            _install()
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
+            "this is [ not toml\n"
+        )
+
+    @needs_codex
+    def test_codex_itself_reads_back_what_we_wrote(
+        self, codex_home: Path, installable, monkeypatch
+    ):
+        """The strongest available check that criterion 1 holds: hand the file
+        to the real Codex CLI and ask it to resolve the server."""
+        _install(vault="/srv/vault")
+        proc = subprocess.run(
+            ["codex", "mcp", "get", "thinkweave"],
+            env={**dict(__import__("os").environ), "CODEX_HOME": str(codex_home)},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "transport: stdio" in proc.stdout
+        assert "command: /usr/bin/uv" in proc.stdout
+
+
+class TestUninstallAndPauseRoundTrip:
+    def test_uninstall_removes_only_our_table(self, codex_home: Path, installable):
+        (codex_home / "config.toml").write_text(
+            '[mcp_servers.other]\ncommand = "npx"\n', encoding="utf-8"
+        )
+        _install()
+        install_mod.cmd_uninstall(argparse.Namespace(yes=True))
+
+        text = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert "thinkweave" not in text
+        assert tomllib.loads(text)["mcp_servers"] == {"other": {"command": "npx"}}
+
+    def test_pause_resume_round_trips(self, codex_home: Path, installable):
+        from thinkweave.surfaces.cli import pause as pause_mod
+
+        _install()
+        before = (codex_home / "config.toml").read_text(encoding="utf-8")
+
+        pause_mod.cmd_pause(argparse.Namespace(status=False))
+        assert "thinkweave" not in (codex_home / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        assert (codex_home / "thinkweave_paused.json").exists()
+
+        pause_mod.cmd_resume(argparse.Namespace())
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == before
+        assert not (codex_home / "thinkweave_paused.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# 3. mcp-doctor
+# --------------------------------------------------------------------------- #
+
+
+class TestMcpDoctorCodexScopes:
+    def test_absent_server_is_reported(self, codex_home: Path):
+        from thinkweave.surfaces.cli.mcp_doctor import check_registration_scopes
+
+        check = check_registration_scopes(codex_home)
+        assert not check.passed
+        assert "not registered in any scope" in check.detail
+
+    def test_machine_scope_is_found_in_config_toml(
+        self, codex_home: Path, installable
+    ):
+        from thinkweave.surfaces.cli.mcp_doctor import check_registration_scopes
+
+        _install()
+        check = check_registration_scopes(codex_home)
+        assert check.passed
+        assert "1 scope (machine)" in check.detail
+
+    def test_project_scope_is_the_codex_relpath(self, codex_home: Path, tmp_path: Path):
+        from thinkweave.surfaces.cli import mcp_doctor as md
+
+        assert md._entry_from_project_mcp_json(tmp_path)[0] == (
+            tmp_path / ".codex" / "config.toml"
+        )
+
+    def test_project_scope_carries_the_trust_caveat(
+        self, codex_home: Path, tmp_path: Path
+    ):
+        """Codex reads a project `.codex/config.toml` for *trusted projects
+        only* — a registration sitting in an untrusted project is invisible,
+        which otherwise reads as "the doctor lied"."""
+        from thinkweave.surfaces.cli.mcp_doctor import check_registration_scopes
+
+        proj = tmp_path / "proj" / ".codex"
+        proj.mkdir(parents=True)
+        (proj / "config.toml").write_text(
+            '[mcp_servers.thinkweave]\ncommand = "uv"\nargs = []\n', encoding="utf-8"
+        )
+        check = check_registration_scopes(tmp_path / "proj")
+        assert "trusted" in check.detail.lower()
+
+    def test_malformed_config_does_not_crash_the_doctor(self, codex_home: Path):
+        from thinkweave.surfaces.cli.mcp_doctor import check_registration_scopes
+
+        (codex_home / "config.toml").write_text("[[[nope\n", encoding="utf-8")
+        assert not check_registration_scopes(codex_home).passed

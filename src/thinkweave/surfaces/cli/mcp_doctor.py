@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from thinkweave.core import mcp_config
 from thinkweave.core.harness import active as _profile
 
 SERVER_NAME = "thinkweave"
@@ -69,21 +70,26 @@ def _safe_load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _safe_read_entry(path: Path) -> dict | None:
+    """The thinkweave block from a harness MCP config, in whatever format that
+    harness uses (JSON for Claude Code, TOML for Codex). A malformed file reads
+    as "absent" — the doctor reports the missing registration rather than
+    aborting on someone else's syntax error."""
+    try:
+        return mcp_config.read_entry(path, SERVER_NAME)
+    except mcp_config.MalformedConfig:
+        return None
+
+
 def _entry_from_claude_json() -> tuple[Path, dict | None]:
     """The machine-scope MCP registration, read from the harness's own config."""
     path = _profile().mcp_config
-    data = _safe_load_json(path)
-    if data is None:
-        return path, None
-    return path, data.get("mcpServers", {}).get(SERVER_NAME)
+    return path, _safe_read_entry(path)
 
 
 def _entry_from_project_mcp_json(cwd: Path) -> tuple[Path, dict | None]:
     path = cwd / _profile().project_mcp_config_relpath
-    data = _safe_load_json(path)
-    if data is None:
-        return path, None
-    return path, data.get("mcpServers", {}).get(SERVER_NAME)
+    return path, _safe_read_entry(path)
 
 
 def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
@@ -189,7 +195,13 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
         scopes.append(("machine", _profile().mcp_config, machine_entry))
     project_path, project_entry = _entry_from_project_mcp_json(cwd)
     if project_entry is not None:
-        scopes.append(("project", project_path, project_entry))
+        # Some harnesses only honour a project-scope registration under a
+        # condition of their own (Codex: the project must be trusted). Saying
+        # "registered" without that would read as the doctor lying when the
+        # tools don't show up.
+        caveat = _profile().project_mcp_caveat
+        scopes.append((f"project ({caveat})" if caveat else "project",
+                       project_path, project_entry))
     for path, entry in _entries_from_plugin_manifests(cwd):
         scopes.append(("plugin", path, entry))
 

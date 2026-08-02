@@ -21,6 +21,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
+from thinkweave.core.harness import active as _profile
 from thinkweave.surfaces.cli.install import (
     _install_claude_md_block,
     _marker,
@@ -48,8 +49,13 @@ def cmd_pause(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     removed: list[str] = []
-    uninstall_hooks(project_dir="", scope="user", dry_run=False)
-    removed.append("user-scope hooks")
+    # `removed` is resume's instruction list, so it must record only what was
+    # actually taken away. On a harness with no lifecycle hooks the uninstall
+    # is a no-op — claiming it anyway would send `weave resume` into the hooks
+    # installer, which refuses, stranding the resume half-done.
+    if _profile().hooks:
+        uninstall_hooks(project_dir="", scope="user", dry_run=False)
+        removed.append("user-scope hooks")
     if _remove_mcp_entry():
         removed.append("MCP entry")
     if _remove_claude_md_block():
@@ -73,9 +79,11 @@ def cmd_pause(args: argparse.Namespace) -> None:
         print(f"  - {item}: removed")
     print(f"  - marker: {_marker()}")
     print()
-    print("Restart Claude Code for changes to take effect. `weave resume` to undo.")
-    print("Note: project-scope hooks (in <repo>/.claude/settings.local.json) survive —")
-    print("      cd to the repo and `weave hooks uninstall` if you want those gone too.")
+    print(f"Restart {_profile().cli_bin} for changes to take effect. `weave resume` to undo.")
+    if _profile().hooks:
+        rel = _profile().project_settings_relpath.as_posix()
+        print(f"Note: project-scope hooks (in <repo>/{rel}) survive —")
+        print("      cd to the repo and `weave hooks uninstall` if you want those gone too.")
 
 
 def cmd_resume(args: argparse.Namespace) -> None:
@@ -94,4 +102,4 @@ def cmd_resume(args: argparse.Namespace) -> None:
 
     _marker().unlink()
     print()
-    print("Resumed thinkweave. Restart Claude Code for changes to take effect.")
+    print(f"Resumed thinkweave. Restart {_profile().cli_bin} for changes to take effect.")

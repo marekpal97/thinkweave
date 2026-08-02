@@ -105,6 +105,10 @@ class HarnessProfile:
     per-vendor, so a shared literal cannot exist; empty means "don't pass
     ``model_flag`` at all — let the harness use its configured default"."""
 
+    project_mcp_caveat: str = ""
+    """Condition under which the harness ignores a project-scope registration,
+    for ``weave doctor --mcp`` to pass on. Empty when it always honours one."""
+
     @property
     def headless_marker(self) -> str:
         """The token that identifies a hand-written scheduler line as a
@@ -247,6 +251,7 @@ def codex(home: Path | None = None) -> HarnessProfile:
         user_settings=cx / "config.toml",
         project_settings_relpath=Path(".codex") / "config.toml",
         project_mcp_config_relpath=Path(".codex") / "config.toml",
+        project_mcp_caveat="honoured for trusted projects only",
         project_plugins_relpath=Path(".codex") / "plugins",
         pause_marker=cx / "thinkweave_paused.json",
         memory_projects_root=cx / "projects",

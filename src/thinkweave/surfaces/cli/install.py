@@ -27,6 +27,7 @@ import sysconfig
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from thinkweave.core import mcp_config
 from thinkweave.core.harness import active as _profile
 
 SERVER_NAME = "thinkweave"
@@ -98,10 +99,13 @@ def _detect_project_root() -> Path:
 
 
 def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str, Any]:
-    """Construct the canonical ``mcpServers.thinkweave`` block.
+    """Construct the canonical thinkweave server block.
 
     Uses the ``weave-mcp`` console script (stable invocation, layout-
-    independent — see ARCHITECTURE.md §Invocation surface).
+    independent — see ARCHITECTURE.md §Invocation surface). The result is
+    normalised to whatever the harness's config *format* stores — Codex's TOML
+    carries no ``type`` key — so that a re-read compares equal and a repeat
+    install is a genuine no-op.
     """
     args = ["run", "--project", str(project_root), "--extra", "mcp", "weave-mcp"]
     entry: dict[str, Any] = {
@@ -112,7 +116,7 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     }
     if vault_root:
         entry["env"]["THINKWEAVE_VAULT"] = vault_root
-    return entry
+    return mcp_config.canonical(_mcp_config(), entry)
 
 
 class ScriptsCheck(NamedTuple):
@@ -397,27 +401,15 @@ def _install_claude_md_block(yes: bool) -> None:
 
 
 def _remove_mcp_entry() -> bool:
-    """Remove the thinkweave MCP entry from ``~/.claude.json``. Other
+    """Remove the thinkweave MCP entry from the harness's config. Other
     servers and top-level keys survive. Returns False if nothing to do."""
-    if not _mcp_config().exists():
-        return False
-    cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
-    servers = cfg.get("mcpServers", {})
-    if SERVER_NAME not in servers:
-        return False
-    servers.pop(SERVER_NAME)
-    _atomic_write_json(_mcp_config(), cfg)
-    return True
+    return mcp_config.remove_entry(_mcp_config(), SERVER_NAME)
 
 
 def _restore_mcp_entry() -> None:
     """Re-register the thinkweave MCP entry. Used by ``weave resume``."""
     entry = _build_server_entry(_detect_project_root(), vault_root=None)
-    cfg: dict = {}
-    if _mcp_config().exists():
-        cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
-    cfg.setdefault("mcpServers", {})[SERVER_NAME] = entry
-    _atomic_write_json(_mcp_config(), cfg)
+    mcp_config.write_entry(_mcp_config(), SERVER_NAME, entry)
 
 
 def _remove_claude_md_block() -> bool:
@@ -439,52 +431,52 @@ def _remove_claude_md_block() -> bool:
 
 
 def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
-    """Ensure the thinkweave MCP entry exists in ``~/.claude.json``.
+    """Ensure the thinkweave MCP entry exists in the harness's MCP config.
 
     Four states: file missing, entry missing, entry matches, entry differs.
     The first and last require ``--yes`` (creating a new file or overwriting
     a divergent entry); the middle two are idempotent / write-through. Exits
     the process when consent is needed but not granted.
+
+    Detection is purely by key, so an entry written by someone else — a
+    hand-edit, or ChatGPT desktop's Settings→Import — lands in the "differs"
+    branch and is adopted, never duplicated (#106).
     """
-    if not _mcp_config().exists():
+    path = _mcp_config()
+
+    if not path.exists():
         if not args.yes:
-            print(f"{_mcp_config()} does not exist. `weave install` will create it.")
+            print(f"{path} does not exist. `weave install` will create it.")
             print("Re-run with --yes to proceed.")
             sys.exit(1)
-        cfg: dict[str, Any] = {"mcpServers": {SERVER_NAME: new_entry}}
-        _mcp_config().write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-        print(f"Wrote {_mcp_config()} with thinkweave MCP entry.")
+        mcp_config.write_entry(path, SERVER_NAME, new_entry)
+        print(f"Wrote {path} with thinkweave MCP entry.")
         return
 
     try:
-        cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        print(f"error: {_mcp_config()} is not valid JSON: {e}", file=sys.stderr)
+        existing = mcp_config.read_entry(path, SERVER_NAME)
+    except mcp_config.MalformedConfig as e:
+        print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    servers = cfg.setdefault("mcpServers", {})
-    existing = servers.get(SERVER_NAME)
-
     if existing is None:
-        servers[SERVER_NAME] = new_entry
-        _atomic_write_json(_mcp_config(), cfg)
-        print(f"Registered thinkweave MCP server in {_mcp_config()}.")
+        mcp_config.write_entry(path, SERVER_NAME, new_entry)
+        print(f"Registered thinkweave MCP server in {path}.")
         return
 
     if _entries_equal(existing, new_entry):
         print("thinkweave MCP server already registered (no change).")
         return
 
-    print(f"thinkweave MCP server already in {_mcp_config()} but differs:")
+    print(f"thinkweave MCP server already in {path} but differs:")
     for line in _diff_lines(existing, new_entry):
         print(line)
     print()
     if not args.yes:
-        print(f"Re-run with --yes to overwrite, or edit {_mcp_config()} by hand.")
+        print(f"Re-run with --yes to overwrite, or edit {path} by hand.")
         sys.exit(1)
-    servers[SERVER_NAME] = new_entry
-    _atomic_write_json(_mcp_config(), cfg)
-    print(f"Updated thinkweave MCP entry in {_mcp_config()}.")
+    mcp_config.write_entry(path, SERVER_NAME, new_entry)
+    print(f"Updated thinkweave MCP entry in {path}.")
 
 
 def cmd_install(args: argparse.Namespace) -> None:
@@ -544,13 +536,7 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         _instructions().exists()
         and CLAUDE_MD_BLOCK_START in _instructions().read_text(encoding="utf-8")
     )
-    mcp_present = False
-    if _mcp_config().exists():
-        try:
-            cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
-            mcp_present = SERVER_NAME in cfg.get("mcpServers", {})
-        except json.JSONDecodeError:
-            pass
+    mcp_present = _raw_mcp_entry_present()
 
     to_remove: list[str] = []
     if mcp_present:
@@ -584,24 +570,15 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         _marker().unlink()
         print(f"Removed pause marker {_marker()}.")
     print()
-    print("Done. Restart Claude Code so the MCP server is no longer launched.")
-
-
-def _atomic_write_json(path: Path, data: dict) -> None:
-    """Write JSON via tempfile + os.replace to avoid corrupting ~/.claude.json
-    if the process is interrupted mid-write."""
-    import os
-
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    print(f"Done. Restart {_profile().cli_bin} so the MCP server is no longer launched.")
 
 
 def _print_next_steps() -> None:
+    cli = _profile().cli_bin
     print()
     print("Next:")
-    print("  1. Restart Claude Code      # MCP server only spawns on session start")
-    print("  2. cd <repo> && claude      # open a project")
+    print(f"  1. Restart {cli}            # MCP server only spawns on session start")
+    print(f"  2. cd <repo> && {cli}       # open a project")
     print("  3. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
     print()
     print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
@@ -609,17 +586,14 @@ def _print_next_steps() -> None:
 
 
 def _raw_mcp_entry_present() -> bool:
-    """True if ``~/.claude.json`` carries a hand-written thinkweave MCP entry
-    (the ``weave install`` escape hatch). dev-link uses this to warn: the
-    plugin manifest already declares the server, so a leftover raw entry
-    would make Claude Code spawn ``thinkweave`` twice."""
-    if not _mcp_config().exists():
-        return False
+    """True if the harness's own MCP config carries a thinkweave entry (the
+    ``weave install`` escape hatch, or a hand-edit). dev-link uses this to
+    warn: the plugin manifest already declares the server, so a leftover raw
+    entry would make the harness spawn ``thinkweave`` twice."""
     try:
-        cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        return mcp_config.read_entry(_mcp_config(), SERVER_NAME) is not None
+    except mcp_config.MalformedConfig:
         return False
-    return SERVER_NAME in cfg.get("mcpServers", {})
 
 
 def _print_dev_link_next_steps() -> None:
