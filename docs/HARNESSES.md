@@ -92,11 +92,13 @@ so `Write|Edit|Bash` is already a correct Codex matcher. `UserPromptSubmit` and
    Above it Codex "spills": saves the full text to
    `<temp_dir>/hook_outputs/<session_id>/<uuid>.txt` and shows the model a
    head-and-tail preview. thinkweave's SessionStart payload is built with
-   `budget_tokens=10000`, so without an explicit `additionalContextLimit` the
-   headline promise ("the session receives the context payload") fails
-   *silently*. The profile sets 12000 on the two events whose handler can emit
-   additional context; Codex logs a configuration warning if the key rides any
-   other event.
+   `budget_tokens=SESSION_START_BUDGET_TOKENS` (`core/harness.py`), so without
+   an explicit `additionalContextLimit` the headline promise ("the session
+   receives the context payload") fails *silently*. The profile derives its
+   limit from that same constant — `2 *` it, since the budget is spent against
+   a chars//4 estimate that note-id-dense markdown beats — and writes it on the
+   two events whose handler can emit additional context; Codex logs a
+   configuration warning if the key rides any other event.
 
 3. **Hooks are trust-gated.** `[manual]``[measured]` "Before a non-managed
    command hook can run, Codex requires you to review and trust the exact hook
