@@ -1107,7 +1107,7 @@ def test_query_trajectories_degrades_each_leg_independently(tmp_path):
                                                           query="")] == ["n-a", "n-b"]
         fts_only = prime.query_trajectories(conn, [], 3,
                                             query="fuse the retrieval legs")
-        assert set(h["id"] for h in fts_only) == {"n-b", "n-c"}  # n-a has no match
+        assert {h["id"] for h in fts_only} == {"n-b", "n-c"}  # n-a has no match
         assert prime.query_trajectories(conn, [], 3, query="") == []
     finally:
         conn.close()
@@ -1184,6 +1184,23 @@ def test_prime_dry_run_prints_the_block_and_writes_no_buffer(tmp_path, capsys):
     assert payload["query"] == "fuse the retrieval legs"
     assert "lesson B" in payload["block"]
     assert not buf.exists()  # suppressed despite --buffer
+
+
+def test_prime_serves_file_anchored_decisions_without_any_trajectory(tmp_path, capsys):
+    """AC7: the orchestrator-resolved --decisions ids (the file-anchored rung of
+    the granularity ladder) still land in `served` and in the block, and they
+    prime a run on their own — the retrieval legs finding nothing does not
+    discard them."""
+    rc = cli.main([
+        "prime", "100", "--run-id", "loop-run-0", "--concepts", "retrieval",
+        "--query", "some issue text", "--decisions", "dec-1,dec-2",
+        "--db", str(tmp_path / "absent.db"),
+    ])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["primed"] is True
+    assert payload["served"] == ["dec-1", "dec-2"]
+    assert "Prior decisions for touched files: dec-1, dec-2" in payload["block"]
 
 
 def test_prime_query_argparse_contract():
