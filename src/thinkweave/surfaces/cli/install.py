@@ -356,8 +356,8 @@ def _install_claude_md_block(yes: bool) -> None:
 
     if not _instructions().exists():
         print()
-        print("~/.claude/CLAUDE.md does not exist. `weave install` will create it")
-        print("with a small thinkweave block (loaded into every Claude Code session):")
+        print(f"{_instructions()} does not exist. `weave install` will create it")
+        print("with a small thinkweave block (loaded into every session):")
         print()
         for line in new_block.splitlines():
             print(f"  {line}")
@@ -379,7 +379,7 @@ def _install_claude_md_block(yes: bool) -> None:
 
     action = "Update" if existing is not None else "Append to"
     print()
-    print(f"{action} {_instructions()} (user-global, loaded into every Claude Code session) with:")
+    print(f"{action} {_instructions()} (user-global, loaded into every session) with:")
     print()
     for line in new_block.splitlines():
         print(f"  {line}")

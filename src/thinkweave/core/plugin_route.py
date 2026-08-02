@@ -78,12 +78,12 @@ def plugin_namespace(*, manifest: Path, dev_link: Path) -> str | None:
 
 
 def namespace_prompt(arg: str, ns: str | None) -> str:
-    """Prefix the leading bare skill token of a ``claude -p`` argument.
+    """Prefix the leading bare skill token of a headless prompt argument.
 
     ``namespace_prompt("/dream --essence-cap 0", "thinkweave")`` →
     ``"/thinkweave:dream --essence-cap 0"``. Non-skill prompts, paths,
     and already-namespaced tokens pass through unchanged. ``ns=None`` is a
-    no-op so callers can pass ``plugin_namespace()`` straight in.
+    no-op so callers can pass ``HarnessProfile.namespace()`` straight in.
     """
     if not ns:
         return arg

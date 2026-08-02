@@ -40,6 +40,7 @@ a future ``--harness`` flag use.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -206,16 +207,23 @@ _OVERRIDE: HarnessProfile | None = None
 
 
 def active() -> HarnessProfile:
-    """The profile every consumer reads. Raises ``KeyError`` on an unknown
-    ``$THINKWEAVE_HARNESS`` rather than silently falling back to Claude Code —
-    a mis-set harness must not quietly write into the wrong home."""
+    """The profile every consumer reads.
+
+    An unknown ``$THINKWEAVE_HARNESS`` exits rather than falling back to Claude
+    Code — a mis-set harness must not quietly write into the wrong home. It
+    exits with a named remedy rather than raising, because every consumer calls
+    this: a typo would otherwise surface as a bare traceback from whichever
+    module happened to look first.
+    """
     if _OVERRIDE is not None:
         return _OVERRIDE
     name = os.environ.get("THINKWEAVE_HARNESS") or DEFAULT_PROFILE
-    try:
-        factory = PROFILES[name]
-    except KeyError:
-        raise KeyError(
-            f"unknown harness {name!r}; registered: {', '.join(sorted(PROFILES))}"
-        ) from None
+    factory = PROFILES.get(name)
+    if factory is None:
+        print(
+            f"error: unknown harness {name!r} in $THINKWEAVE_HARNESS.\n"
+            f"Registered profiles: {', '.join(sorted(PROFILES))}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     return factory()

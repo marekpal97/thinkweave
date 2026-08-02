@@ -97,10 +97,17 @@ class TestRegistry:
         monkeypatch.setenv("THINKWEAVE_HARNESS", "probe")
         assert harness.active().id == "probe"
 
-    def test_unknown_profile_fails_loud(self, fake_home: Path, monkeypatch):
-        monkeypatch.setenv("THINKWEAVE_HARNESS", "nope")
-        with pytest.raises(KeyError, match="nope"):
+    def test_unknown_profile_fails_loud_and_names_the_valid_ones(
+        self, fake_home: Path, monkeypatch, capsys
+    ):
+        # Fail loud rather than falling back to claude-code — a mis-set harness
+        # must not quietly write into the wrong home. But every consumer reads
+        # this, so a typo must not surface as a bare traceback.
+        monkeypatch.setenv("THINKWEAVE_HARNESS", "claud-code")
+        with pytest.raises(SystemExit):
             harness.active()
+        err = capsys.readouterr().err
+        assert "claud-code" in err and "claude-code" in err
 
 
 class TestClaudeCodeProfile:
@@ -253,16 +260,26 @@ class TestCronRendererConsultsCapabilities:
             "-p /dream"
         )
 
-    def test_direct_runner_keys_on_the_profile_binary(
-        self, fake_home: Path, monkeypatch
+    def test_absolute_path_head_still_gets_namespacing_and_bypass(
+        self, fake_home: Path
     ):
+        """A hand-edited job naming the binary by absolute path is rendered
+        exactly like the bare-token form.
+
+        `scheduling.yaml` is user-owned and this project has a history of cron
+        PATH failures, so pinning an absolute `claude` path there is a plausible
+        edit. Pre-refactor such a line got both skill namespacing and
+        `--dangerously-skip-permissions`; losing either makes the cron silently
+        no-op at its first tool call.
+        """
         from thinkweave.scheduling import registry
 
-        _override(monkeypatch, cli_bin="probe-cli", bypass_permissions_flag="")
-        # `claude` is no longer this harness's binary, so the renderer leaves
-        # the stale head token alone instead of resolving it against PATH.
-        assert registry.resolve_command(self._job("claude -p /dream")) == (
-            "claude -p /dream"
+        (fake_home / ".claude" / "skills").mkdir(parents=True)
+        (fake_home / ".claude" / "skills" / "thinkweave").symlink_to(fake_home)
+
+        rendered = registry.resolve_command(self._job("/opt/bin/claude -p /dream"))
+        assert rendered == (
+            "/opt/bin/claude -p /thinkweave:dream --dangerously-skip-permissions"
         )
 
 
@@ -274,6 +291,30 @@ class TestHooksInstallerConsultsHooksFlag:
         with pytest.raises(SystemExit):
             hooks_install.install_hooks(project_dir=str(fake_home), scope="project")
         assert not (fake_home / ".claude" / "settings.local.json").exists()
+
+    def test_uninstall_is_a_no_op_not_an_exit(self, fake_home: Path, monkeypatch):
+        """Removing what was never installed must not abort the caller.
+
+        ``weave pause`` uninstalls hooks *first*, then removes the MCP entry
+        and writes its marker — so an exit here would strand pause half-done on
+        a hooks-less harness.
+        """
+        from thinkweave.surfaces.hooks import install as hooks_install
+
+        _override(monkeypatch, hooks=False)
+        hooks_install.uninstall_hooks(project_dir=str(fake_home), scope="project")
+
+    def test_pause_completes_on_a_hooks_less_harness(
+        self, fake_home: Path, monkeypatch
+    ):
+        import argparse
+
+        from thinkweave.surfaces.cli import pause as pause_mod
+
+        marker = fake_home / "paused.json"
+        _override(monkeypatch, hooks=False, pause_marker=marker)
+        pause_mod.cmd_pause(argparse.Namespace(status=False))
+        assert marker.exists()
 
 
 # --------------------------------------------------------------------------- #

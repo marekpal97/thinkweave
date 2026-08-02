@@ -123,19 +123,24 @@ def _settings_path_for_scope(scope: str, project_dir: str = "") -> Path:
     )
 
 
-def _require_hooks_capability(action: str) -> None:
-    """Refuse to (un)install on a harness that cannot run our hooks.
+def _require_hooks_capability() -> None:
+    """Refuse to INSTALL on a harness that cannot run our hooks.
 
     The documented degradation from the epic's anti-goals: a harness without
     hook support gets an explicit pointer at manual ``/wrap``-style invocation,
     not a settings file it will never read.
+
+    Only install refuses. Uninstall is deliberately a no-op instead (see
+    :func:`uninstall_hooks`): removing what was never installed is a success,
+    and ``weave pause`` uninstalls before removing the MCP entry and writing
+    its marker — an exit here would strand pause half-done.
     """
     profile = active_harness()
     if profile.hooks:
         return
     print(
         f"error: the {profile.id!r} harness has no lifecycle hooks, so there is\n"
-        f"nothing to {action}. Run `/wrap` explicitly at the end of a session\n"
+        "nothing to install. Run `/wrap` explicitly at the end of a session\n"
         "instead — it does the same extraction the Stop hook would trigger.",
         file=sys.stderr,
     )
@@ -258,7 +263,7 @@ def install_hooks(
     ``hooks_json`` overrides the canonical-definitions source (contract
     tests only); defaults to the repo's ``hooks/hooks.json``.
     """
-    _require_hooks_capability("install")
+    _require_hooks_capability()
     settings_path = _settings_path_for_scope(scope, project_dir)
 
     # Read existing settings (no parent mkdir yet — dry-run must not
@@ -295,7 +300,9 @@ def uninstall_hooks(
     dry_run: bool = False,
 ) -> None:
     """Remove thinkweave hooks from the scoped harness settings file."""
-    _require_hooks_capability("uninstall")
+    if not active_harness().hooks:
+        print("No hooks on this harness — nothing to remove.")
+        return
     settings_path = _settings_path_for_scope(scope, project_dir)
     if not settings_path.exists():
         print("No settings file found.")

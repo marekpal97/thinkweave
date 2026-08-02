@@ -75,7 +75,7 @@ def _make_fake_launcher(root: Path) -> Path:
 
 
 class TestRegistrationScopes:
-    def test_empty_claude_json_reports_unregistered(self, tmp_path, monkeypatch, use_profile):
+    def test_empty_claude_json_reports_unregistered(self, tmp_path, use_profile):
         # No ~/.claude.json, no .mcp.json, no plugin manifests.
         use_profile(mcp_config=tmp_path / "claude.json")
         result = md.check_registration_scopes(tmp_path)
@@ -83,7 +83,7 @@ class TestRegistrationScopes:
         assert "not registered" in result.detail
         assert "weave install" in result.fix
 
-    def test_machine_only_is_pass(self, tmp_path, monkeypatch, use_profile):
+    def test_machine_only_is_pass(self, tmp_path, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         use_profile(mcp_config=claude_json)
@@ -91,7 +91,7 @@ class TestRegistrationScopes:
         assert result.passed
         assert "1 scope" in result.detail
 
-    def test_machine_plus_project_identical_is_pass(self, tmp_path, monkeypatch, use_profile):
+    def test_machine_plus_project_identical_is_pass(self, tmp_path, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         _write_mcp_json(tmp_path, CANONICAL_ENTRY)
@@ -101,8 +101,7 @@ class TestRegistrationScopes:
         assert "identically" in result.detail
 
     def test_machine_plus_project_with_divergent_invocations_is_fail(
-        self, tmp_path, monkeypatch
-    , use_profile):
+        self, tmp_path, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         divergent = {
@@ -117,7 +116,7 @@ class TestRegistrationScopes:
         assert not result.passed
         assert "DIFFERENT invocations" in result.detail
 
-    def test_plugin_only_install_is_pass(self, tmp_path, monkeypatch, use_profile):
+    def test_plugin_only_install_is_pass(self, tmp_path, use_profile):
         """A clean plugin-only install — manifest in the marketplace cache,
         no machine/project entry — must PASS. This is the false-negative a
         real plugin-route user hit: the doctor used to scan only cwd-relative
@@ -152,7 +151,7 @@ class TestRegistrationScopes:
         assert result.passed, result.detail
         assert "plugin" in result.detail
 
-    def test_dev_link_install_is_pass(self, tmp_path, monkeypatch, use_profile):
+    def test_dev_link_install_is_pass(self, tmp_path, use_profile):
         """The dev-link (@skills-dir) equivalent: manifest under
         ~/.claude/skills/<name>/.claude-plugin/, no machine/project entry."""
         use_profile(mcp_config=tmp_path / "absent.json")
@@ -182,8 +181,7 @@ class TestRegistrationScopes:
         assert "plugin" in result.detail
 
     def test_project_path_variants_normalise_to_same_invocation(
-        self, tmp_path, monkeypatch
-    , use_profile):
+        self, tmp_path, use_profile):
         """`.` vs absolute vs ${CLAUDE_PLUGIN_ROOT} for --project must
         be treated as the same invocation shape."""
         claude_json = tmp_path / "claude.json"
@@ -204,8 +202,7 @@ class TestRegistrationScopes:
 
 
     def test_machine_uv_plus_project_launcher_is_equivalent(
-        self, tmp_path, monkeypatch
-    , use_profile):
+        self, tmp_path, use_profile):
         """The portable launcher IS the uv-run invocation (#52): a machine
         scope written by `weave install` (uv run shape) plus the committed
         .mcp.json (launcher shape) must NOT read as conflicting scopes."""
@@ -241,7 +238,9 @@ class TestRunMcpDoctor:
         out = capsys.readouterr().out
         assert "overall: PASS" in out
 
-    def test_fails_when_vault_dir_missing(self, tmp_path, monkeypatch, capsys, use_profile):
+    def test_fails_when_vault_dir_missing(
+        self, tmp_path, monkeypatch, capsys, use_profile
+    ):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         use_profile(mcp_config=claude_json)
@@ -324,8 +323,7 @@ class TestLauncherResolves:
 
 
     def test_relative_launcher_command_resolves_against_project_dir(
-        self, tmp_path, monkeypatch
-    , use_profile):
+        self, tmp_path, monkeypatch, use_profile):
         """.mcp.json's `bin/weave-mcp-launch` is relative to the PROJECT
         dir (Claude Code spawns project-scope servers with cwd = project),
         not to wherever the doctor process happens to run."""
@@ -341,8 +339,7 @@ class TestLauncherResolves:
         assert "exited 0" in result.detail
 
     def test_plugin_launcher_command_expands_claude_plugin_root(
-        self, tmp_path, monkeypatch
-    , use_profile):
+        self, tmp_path, monkeypatch, use_profile):
         """The plugin manifest's command embeds ${CLAUDE_PLUGIN_ROOT};
         the probe must expand it to the manifest's own plugin root."""
         use_profile(mcp_config=tmp_path / "absent.json")
@@ -378,8 +375,7 @@ class TestLauncherResolves:
         assert result.passed, result.detail
 
     def test_missing_relative_launcher_fails_with_resolved_path(
-        self, tmp_path, monkeypatch
-    , use_profile):
+        self, tmp_path, monkeypatch, use_profile):
         use_profile(mcp_config=tmp_path / "absent.json")
         _write_mcp_json(tmp_path, LAUNCHER_ENTRY)  # no launcher on disk
         elsewhere = tmp_path / "elsewhere"

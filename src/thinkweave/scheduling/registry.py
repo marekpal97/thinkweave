@@ -154,11 +154,12 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
     head, *rest = tokens
 
     if job.runner == "direct":
+        # The head token is rendered as written (resolved against PATH below)
+        # whatever it is — `scheduling.yaml` is user-owned, and an absolute
+        # `claude` path is a plausible hand-edit given this project's history
+        # of cron PATH failures. Matching it against `profile.cli_bin` would
+        # strip namespacing and the bypass flag off exactly those lines.
         profile = active_harness()
-        if head != profile.cli_bin:
-            # The line names a different harness's binary — resolving it
-            # against PATH would fabricate a command this profile can't run.
-            return job.command
         prompt_flag = profile.prompt_flag
         # Plugin-route installs register skills namespaced (verified: no
         # bare-name aliasing), so `/dream` must render as
