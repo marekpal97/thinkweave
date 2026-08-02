@@ -16,7 +16,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import re
 import sqlite3
 from pathlib import Path
 
@@ -35,22 +34,6 @@ def is_holdout(run_id: str, holdout: int) -> bool:
         return False
     digest = int(hashlib.sha1(run_id.encode("utf-8")).hexdigest(), 16)
     return digest % holdout == 0
-
-
-_LESSONS_RE = re.compile(
-    r"^##\s+Lessons\s*$(?P<txt>.*?)(?=^##\s|\Z)",
-    re.IGNORECASE | re.MULTILINE | re.DOTALL,
-)
-
-
-def extract_lessons(body: str) -> str:
-    """Text under a ``## Lessons`` heading (until the next ``##`` or EOF).
-
-    Returns ``''`` when there is no Lessons section — trajectory notes omit it
-    when a run taught nothing reusable, and those notes carry no prime value.
-    """
-    m = _LESSONS_RE.search(body or "")
-    return m.group("txt").strip() if m else ""
 
 
 def _coerce_builds_on(raw: object) -> list[str]:
@@ -117,14 +100,13 @@ def query_trajectories(
     conn: sqlite3.Connection, concepts: list[str], limit: int, scan_cap: int = 40
 ) -> list[dict]:
     """Read-only: ``[loop-run]`` notes matching ANY concept that carry reusable
-    color — a linked insight note (v2, ``builds_on``) or an inline Lessons
-    section (v1 fallback).
+    color — a linked insight note (``builds_on``).
 
-    Returns ``{id, title, issue, outcome, outcome_label, lessons, insights}``
-    dicts, at most ``limit``. ``insights`` is the resolved list of linked
-    insight-note bodies (``[{id, body}]``); a v1 note has ``insights == []`` and
-    non-empty ``lessons``. Empty ``concepts`` matches nothing. The scan reads up
-    to ``scan_cap`` candidates in recency order, keeps those with reusable color,
+    Returns ``{id, title, issue, outcome, outcome_label, insights}`` dicts, at
+    most ``limit``. ``insights`` is the resolved list of linked insight-note
+    bodies (``[{id, body}]``); a trajectory whose links resolve to nothing is
+    skipped. Empty ``concepts`` matches nothing. The scan reads up to
+    ``scan_cap`` candidates in recency order, keeps those with reusable color,
     then applies the outcome-weighting sort (:data:`_OUTCOME_RANK`) — stable, so
     recency is preserved within a rank and an all-unlabeled set is pure recency —
     before truncating to ``limit``.
@@ -133,7 +115,7 @@ def query_trajectories(
         return []
     placeholders = ",".join("?" * len(concepts))
     rows = conn.execute(
-        f"""SELECT DISTINCT n.id, n.title, n.date, n.frontmatter, n.body_text
+        f"""SELECT DISTINCT n.id, n.title, n.date, n.frontmatter
             FROM notes n
             JOIN note_tags t ON t.note_id = n.id AND t.tag = 'loop-run'
             JOIN note_concepts c ON c.note_id = n.id
@@ -149,17 +131,14 @@ def query_trajectories(
         except json.JSONDecodeError:
             fm = {}
         insights = resolve_insights(conn, _coerce_builds_on(fm.get("builds_on")))
-        lessons = extract_lessons(r["body_text"] or "")
-        if not insights and not lessons:
-            # No reusable color (v2 link resolved nothing AND no inline Lessons).
-            continue
+        if not insights:
+            continue  # No reusable color — the builds_on links resolved nothing.
         out.append({
             "id": r["id"],
             "title": r["title"] or "",
             "issue": fm.get("issue"),
             "outcome": fm.get("outcome", ""),
             "outcome_label": fm.get("outcome_label", ""),
-            "lessons": lessons,
             "insights": insights,
         })
     out.sort(key=lambda t: _outcome_rank(t.get("outcome_label")))
@@ -174,9 +153,8 @@ def render_prime_block(
 
     Each trajectory renders its reusable color first (each capped-in as a whole
     piece until the char budget is spent — at least one always lands if any
-    exist). A v2 trajectory serves the BODIES of the insight notes it builds on
-    (``served`` records the insight ids — that is what the run received); a v1
-    trajectory serves its inline Lessons (``served`` records the trajectory id).
+    exist). A trajectory serves the BODIES of the insight notes it builds on,
+    and ``served`` records the insight ids — that is what the run received.
     ``decisions`` (the decisions_for_file note ids the orchestrator already
     resolved) are appended as an adjacency line so the served log records both
     kinds. ``served`` carries every id actually rendered. Empty input →
@@ -188,19 +166,13 @@ def render_prime_block(
     pieces = ["## Prior trajectories — reusable lessons from similar prior runs\n"]
     served: list[str] = []
     for t in trajectories:
-        head = f"### #{t.get('issue')} — {t.get('title', '')} ({t.get('outcome', '')})".rstrip()
         insights = t.get("insights") or []
-        if insights:
-            body_text = "\n".join(ins["body"] for ins in insights)
-            piece_ids = [ins["id"] for ins in insights]
-        else:
-            body_text = t.get("lessons", "")
-            piece_ids = [t["id"]]
-        piece = f"{head}\n{body_text}\n"
+        head = f"### #{t.get('issue')} — {t.get('title', '')} ({t.get('outcome', '')})".rstrip()
+        piece = f"{head}\n" + "\n".join(ins["body"] for ins in insights) + "\n"
         if served and sum(len(x) for x in pieces) + len(piece) > budget_chars:
             break
         pieces.append(piece)
-        served.extend(piece_ids)
+        served.extend(ins["id"] for ins in insights)
     if decisions:
         pieces.append("Prior decisions for touched files: " + ", ".join(decisions))
         served.extend(decisions)

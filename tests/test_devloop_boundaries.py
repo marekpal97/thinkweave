@@ -32,16 +32,17 @@ def test_index_schema_pin_against_the_real_indexer(vault_factory):
     note_concepts) and the columns devloop reads (id, type, title, date,
     frontmatter, body_text / note_id, tag / note_id, concept)."""
     tv = vault_factory()
+    insight_path = tv.vault.create_note(NoteType.NOTE, "portable lesson",
+                                        body="Insight bodies are served by builds_on.")
+    insight_id = tv.vault.read_note(insight_path).id
     tv.vault.create_note(
         NoteType.NOTE,
         "loop trajectory #94",
-        body="## What\nSplit the rail.\n\n## Lessons\nSlice, don't retype.\n",
+        body="## What\nSplit the rail.\n\n## How it went\nOne fix round.\n",
         tags=["loop-run"],
         extra_frontmatter={"concepts": ["devloop-schema-pin"], "issue": 94,
-                           "outcome": "shipped"},
+                           "outcome": "shipped", "builds_on": [insight_id]},
     )
-    tv.vault.create_note(NoteType.NOTE, "portable lesson",
-                         body="Insight bodies are served by builds_on.")
     tv.indexed()
 
     db_path = index_client.resolve_db_path(None, str(tv.dir))
@@ -51,13 +52,12 @@ def test_index_schema_pin_against_the_real_indexer(vault_factory):
     try:
         hits = prime.query_trajectories(conn, ["devloop-schema-pin"], 3)
         assert [h["title"] for h in hits] == ["loop trajectory #94"]
-        assert hits[0]["lessons"] == "Slice, don't retype."
         assert hits[0]["issue"] == 94 and hits[0]["outcome"] == "shipped"
+        # The builds_on link resolved through the real schema to the insight body.
+        assert [i["id"] for i in hits[0]["insights"]] == [insight_id]
+        assert "served by builds_on" in hits[0]["insights"][0]["body"]
         # resolve_insights' own SQL (the type='note' guard + body_text) over the
         # same real schema.
-        insight_id = conn.execute(
-            "SELECT id FROM notes WHERE title = 'portable lesson'"
-        ).fetchone()["id"]
         resolved = prime.resolve_insights(conn, [insight_id])
         assert [r["id"] for r in resolved] == [insight_id]
         assert "served by builds_on" in resolved[0]["body"]

@@ -102,8 +102,8 @@ python scripts/issue_loop.py claim <N> --run-id <run-id>
 
 **Prime from prior trajectories (claim-time).** Before spawning the
 implementer, fetch the reusable half of prior similar runs — this is the native
-`bd prime`: prior trajectory notes' Lessons for work whose concepts match this
-issue's labels.
+`bd prime`: the insight notes prior trajectories link via `builds_on`, for work
+whose concepts match this issue's labels.
 
 ```bash
 python scripts/issue_loop.py prime <N> --run-id <run-id> \

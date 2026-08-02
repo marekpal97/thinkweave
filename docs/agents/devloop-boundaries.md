@@ -163,7 +163,7 @@ behavior.
 The trajectory note is one primitive with a write face and a read face, and
 **one module owns both** because both faces share one vocabulary: the
 frontmatter keys (`outcome`, `primed`, `served`, `builds_on`, `trace`), the
-`loop-run` tag, the v1-Lessons/v2-insights duality. Split mint from prime into
+`loop-run` tag, the trajectory→insight `builds_on` link. Split mint from prime into
 sibling modules and that vocabulary needs a third home or gets duplicated —
 the exact "retrieval, triage, trajectory composition share a bucket" failure
 inverted. Prime is a *trajectory mechanic*: it reads what mint writes.
@@ -186,8 +186,7 @@ Internal to `mint.py`: the trace normalizers (`_normalize_trace*`,
 to a documented backstop, single-file change. Internal to `prime.py`:
 `is_holdout` (the sha1 holdout — `build_prime_payload` computes it; moved
 off the public list 2026-08-01, it had no external consumer),
-`extract_lessons` + the v1 fallback branch (#98 deletes both, single-file
-change), `_coerce_builds_on`, the outcome-rank table, `render_prime_block`,
+`_coerce_builds_on`, the outcome-rank table, `render_prime_block`,
 and — transitionally, §5 — `query_trajectories` / `resolve_insights`.
 
 Two interface-level invariants, stated on the module:

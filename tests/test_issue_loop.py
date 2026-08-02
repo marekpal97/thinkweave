@@ -769,46 +769,32 @@ def test_is_holdout_deterministic_and_disable():
     assert prime.is_holdout("loop-run-10", -1) is False
 
 
-def test_extract_lessons_section_only():
-    body = (
-        "## What\nBuilt the prime rail.\n\n"
-        "## How it went\nOne fix round on the CHECK constraint.\n\n"
-        "## Lessons\nWiden the CHECK before the migration guard.\nProject from the event log.\n"
-    )
-    assert prime.extract_lessons(body) == (
-        "Widen the CHECK before the migration guard.\nProject from the event log."
-    )
-    # No Lessons section (the uneventful common case) → empty string.
-    assert prime.extract_lessons("## What\nx\n\n## How it went\ny\n") == ""
-    assert prime.extract_lessons("") == ""
-
-
-def test_render_prime_block_splices_lessons_and_lists_served():
+def test_render_prime_block_splices_insight_bodies_and_lists_served():
     trajectories = [
         {"id": "n-aaa111", "title": "prime rail", "issue": 57, "outcome": "shipped",
-         "lessons": "Widen the CHECK first."},
+         "insights": [{"id": "n-ins1", "body": "Widen the CHECK first."}]},
         {"id": "n-bbb222", "title": "trajectory judge", "issue": 60, "outcome": "shipped",
-         "lessons": "Judge from the PR timeline."},
+         "insights": [{"id": "n-ins2", "body": "Judge from the PR timeline."}]},
     ]
     block, served = prime.render_prime_block(trajectories, decisions=["dec-ccc333"])
     assert "Widen the CHECK first." in block
     assert "Judge from the PR timeline." in block
     assert "dec-ccc333" in block  # decisions folded in as adjacency
-    assert served == ["n-aaa111", "n-bbb222", "dec-ccc333"]
+    assert served == ["n-ins1", "n-ins2", "dec-ccc333"]
     # Nothing to serve → clean skip.
     assert prime.render_prime_block([], decisions=[]) == ("", [])
 
 
 def test_render_prime_block_honors_char_budget():
     trajectories = [
-        {"id": "n-1", "title": "t1", "issue": 1, "outcome": "shipped", "lessons": "L" * 400},
-        {"id": "n-2", "title": "t2", "issue": 2, "outcome": "shipped", "lessons": "M" * 400},
-        {"id": "n-3", "title": "t3", "issue": 3, "outcome": "shipped", "lessons": "N" * 400},
+        {"id": f"n-{i}", "title": f"t{i}", "issue": i, "outcome": "shipped",
+         "insights": [{"id": f"n-ins{i}", "body": c * 400}]}
+        for i, c in ((1, "L"), (2, "M"), (3, "N"))
     ]
     block, served = prime.render_prime_block(trajectories, budget_chars=600)
     # First piece always lands; the budget stops further pieces before all three.
-    assert served == ["n-1"]
-    assert "n-2" not in served and "n-3" not in served
+    assert served == ["n-ins1"]
+    assert "n-ins2" not in served and "n-ins3" not in served
 
 
 def test_build_prime_payload_holdout_runs_unprimed():
@@ -859,37 +845,18 @@ def _seed_index_db(path, *, note_id, title, concepts, body, tags=("loop-run",),
     conn.close()
 
 
-def test_build_prime_payload_splices_matching_trajectory(tmp_path):
-    """Acceptance: an issue whose concepts match a prior trajectory gets that
-    trajectory's Lessons text in the block, and the search is issued with the
-    issue's concepts (a note tagged differently / concept-mismatched is not
-    served)."""
+def test_query_trajectories_filters_by_concept_and_linked_insight(tmp_path):
     db = tmp_path / "index.db"
-    _seed_index_db(
-        db, note_id="n-prior1", title="prime rail",
-        concepts=["self-improvement", "retrieval"],
-        body="## What\nx\n\n## Lessons\nProject context_served from the event log.\n",
-    )
-    conn = index_client.open_ro(str(db))
-    try:
-        payload = prime.build_prime_payload(
-            57, "loop-run-0", ["self-improvement"], conn=conn, holdout=5,
-        )
-    finally:
-        conn.close()
-    assert payload["primed"] is True
-    assert payload["served"] == ["n-prior1"]
-    assert "Project context_served from the event log." in payload["block"]
-
-
-def test_query_trajectories_filters_by_concept_and_lessons(tmp_path):
-    db = tmp_path / "index.db"
-    # Note A matches concept + has Lessons; note B matches but has NO Lessons.
+    # Note A matches the concept and links an insight; note B matches the
+    # concept but links nothing — no reusable color, so it is not a candidate.
     _seed_index_db(db, note_id="n-hasl", title="A", concepts=["retrieval"],
-                   body="## What\nx\n\n## Lessons\nreuse me\n")
+                   body="## What\nx\n\n## How it went\ny\n",
+                   frontmatter={"issue": 57, "outcome": "shipped",
+                                "builds_on": ["n-ins1"]})
+    _add_note(db, note_id="n-ins1", title="portable lesson", body="reuse me")
     wconn = sqlite3.connect(str(db))
     wconn.execute("INSERT INTO notes (id, type, title, path, date, frontmatter, body_text)"
-                  " VALUES ('n-nol', 'note', 'B', 'n-nol.md', '2026-07-18', '{}', '## What\nno lessons\n')")
+                  " VALUES ('n-nol', 'note', 'B', 'n-nol.md', '2026-07-18', '{}', '## What\nno links\n')")
     wconn.execute("INSERT INTO note_tags VALUES ('n-nol', 'loop-run')")
     wconn.execute("INSERT INTO note_concepts VALUES ('n-nol', 'retrieval')")
     wconn.commit()
@@ -898,18 +865,18 @@ def test_query_trajectories_filters_by_concept_and_lessons(tmp_path):
     try:
         # Concept miss → nothing.
         assert prime.query_trajectories(conn, ["unrelated-concept"], 3) == []
-        # Concept hit → only the note that actually carries Lessons.
+        # Concept hit → only the note that actually links an insight.
         hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert [h["id"] for h in hits] == ["n-hasl"]
-    assert hits[0]["lessons"] == "reuse me"
+    assert hits[0]["insights"] == [{"id": "n-ins1", "body": "reuse me"}]
 
 
 # ---------------------------------------------------------------------------
 # Prime v2 (issue #85) — serve insight-note bodies by following builds_on links
-# from concept-matched trajectories; fall back to inline Lessons for v1 notes;
-# prefer merged-clean-labeled trajectories over reworked when labels exist.
+# from concept-matched trajectories; prefer merged-clean-labeled trajectories
+# over reworked when labels exist.
 
 
 def _add_note(path, *, note_id, title, body, concepts=(), tags=(),
@@ -936,10 +903,9 @@ def _add_note(path, *, note_id, title, body, concepts=(), tags=(),
 
 
 def test_query_trajectories_follows_builds_on_to_insight_bodies(tmp_path):
-    """A v2 trajectory (no inline Lessons) carrying a builds_on link resolves
-    the linked insight note's BODY — the portable lesson now lives there."""
+    """A trajectory carrying a builds_on link resolves the linked insight note's
+    BODY — the portable lesson's only home since #85."""
     db = tmp_path / "index.db"
-    # Trajectory: loop-run, concept-matched, NO Lessons section, builds_on link.
     _seed_index_db(
         db, note_id="n-traj", title="loop trajectory #85",
         concepts=["retrieval"],
@@ -948,7 +914,7 @@ def test_query_trajectories_follows_builds_on_to_insight_bodies(tmp_path):
                      "builds_on": ["n-ins1"]},
     )
     _add_note(db, note_id="n-ins1", title="portable lesson",
-              body="Follow builds_on before falling back to inline Lessons.")
+              body="Portable lessons live in linked insight notes.")
     conn = index_client.open_ro(str(db))
     try:
         hits = prime.query_trajectories(conn, ["retrieval"], 3)
@@ -956,31 +922,8 @@ def test_query_trajectories_follows_builds_on_to_insight_bodies(tmp_path):
         conn.close()
     assert [h["id"] for h in hits] == ["n-traj"]
     assert hits[0]["insights"] == [
-        {"id": "n-ins1",
-         "body": "Follow builds_on before falling back to inline Lessons."},
+        {"id": "n-ins1", "body": "Portable lessons live in linked insight notes."},
     ]
-    # No inline Lessons on a v2 note.
-    assert hits[0]["lessons"] == ""
-
-
-def test_query_trajectories_v1_inline_lessons_still_served(tmp_path):
-    """Backward compat: a v1 trajectory (inline Lessons, no builds_on) is still
-    a served candidate — its insights list is empty, lessons carries the text."""
-    db = tmp_path / "index.db"
-    _seed_index_db(
-        db, note_id="n-v1", title="v1 trajectory",
-        concepts=["retrieval"],
-        body="## What\nx\n\n## Lessons\nWiden the CHECK before the migration.\n",
-        frontmatter={"issue": 60, "outcome": "shipped"},  # no builds_on
-    )
-    conn = index_client.open_ro(str(db))
-    try:
-        hits = prime.query_trajectories(conn, ["retrieval"], 3)
-    finally:
-        conn.close()
-    assert [h["id"] for h in hits] == ["n-v1"]
-    assert hits[0]["insights"] == []
-    assert hits[0]["lessons"] == "Widen the CHECK before the migration."
 
 
 def test_query_trajectories_prefers_merged_clean_over_reworked(tmp_path):
@@ -990,15 +933,19 @@ def test_query_trajectories_prefers_merged_clean_over_reworked(tmp_path):
     # The reworked note is NEWER (would win on recency); merged-clean is older.
     _seed_index_db(
         db, note_id="n-rew", title="reworked", concepts=["retrieval"],
-        body="## What\nx\n\n## Lessons\nrework lesson\n", date="2026-07-18",
-        frontmatter={"issue": 1, "outcome": "shipped", "outcome_label": "reworked"},
+        body="## What\nx\n\n## How it went\ny\n", date="2026-07-18",
+        frontmatter={"issue": 1, "outcome": "shipped", "outcome_label": "reworked",
+                     "builds_on": ["n-ins-rew"]},
     )
+    _add_note(db, note_id="n-ins-rew", title="lesson", body="rework lesson")
     _add_note(
         db, note_id="n-clean", title="clean", concepts=["retrieval"],
         tags=["loop-run"], date="2026-07-10",
-        body="## What\nx\n\n## Lessons\nclean lesson\n",
-        frontmatter={"issue": 2, "outcome": "shipped", "outcome_label": "merged-clean"},
+        body="## What\nx\n\n## How it went\ny\n",
+        frontmatter={"issue": 2, "outcome": "shipped", "outcome_label": "merged-clean",
+                     "builds_on": ["n-ins-clean"]},
     )
+    _add_note(db, note_id="n-ins-clean", title="lesson", body="clean lesson")
     conn = index_client.open_ro(str(db))
     try:
         hits = prime.query_trajectories(conn, ["retrieval"], 3)
@@ -1013,15 +960,17 @@ def test_query_trajectories_unlabeled_keeps_recency(tmp_path):
     db = tmp_path / "index.db"
     _seed_index_db(
         db, note_id="n-older", title="older", concepts=["retrieval"],
-        body="## What\nx\n\n## Lessons\nold\n", date="2026-07-10",
-        frontmatter={"issue": 1, "outcome": "shipped"},
+        body="## What\nx\n\n## How it went\ny\n", date="2026-07-10",
+        frontmatter={"issue": 1, "outcome": "shipped", "builds_on": ["n-ins-old"]},
     )
+    _add_note(db, note_id="n-ins-old", title="lesson", body="old")
     _add_note(
         db, note_id="n-newer", title="newer", concepts=["retrieval"],
         tags=["loop-run"], date="2026-07-18",
-        body="## What\nx\n\n## Lessons\nnew\n",
-        frontmatter={"issue": 2, "outcome": "shipped"},
+        body="## What\nx\n\n## How it went\ny\n",
+        frontmatter={"issue": 2, "outcome": "shipped", "builds_on": ["n-ins-new"]},
     )
+    _add_note(db, note_id="n-ins-new", title="lesson", body="new")
     conn = index_client.open_ro(str(db))
     try:
         hits = prime.query_trajectories(conn, ["retrieval"], 3)
@@ -1030,36 +979,28 @@ def test_query_trajectories_unlabeled_keeps_recency(tmp_path):
     assert [h["id"] for h in hits] == ["n-newer", "n-older"]
 
 
-def test_render_prime_block_serves_insight_bodies_over_lessons():
-    """render_prime_block serves the linked insight BODIES when a trajectory
-    carries them (served records the INSIGHT ids), and falls back to inline
-    Lessons (served records the TRAJECTORY id) for a v1 trajectory."""
-    trajectories = [
-        {"id": "n-traj", "title": "v2", "issue": 85, "outcome": "shipped",
-         "lessons": "", "insights": [
-             {"id": "n-ins1", "body": "Portable lesson one."},
-             {"id": "n-ins2", "body": "Portable lesson two."}]},
-        {"id": "n-v1", "title": "v1", "issue": 60, "outcome": "shipped",
-         "lessons": "Inline lesson.", "insights": []},
-    ]
-    block, served = prime.render_prime_block(trajectories, decisions=[])
-    assert "Portable lesson one." in block
-    assert "Portable lesson two." in block
-    assert "Inline lesson." in block
-    # v2 serves the insight ids; v1 serves the trajectory id.
-    assert served == ["n-ins1", "n-ins2", "n-v1"]
-
-
-def test_render_prime_block_v1_dicts_without_insights_key_unchanged():
-    """Byte-stable: a pre-#85 trajectory dict with no 'insights' key renders
-    exactly as before (inline Lessons, served = trajectory id)."""
-    trajectories = [
-        {"id": "n-aaa111", "title": "prime rail", "issue": 57,
-         "outcome": "shipped", "lessons": "Widen the CHECK first."},
-    ]
-    block, served = prime.render_prime_block(trajectories, decisions=[])
-    assert "Widen the CHECK first." in block
-    assert served == ["n-aaa111"]
+def test_render_prime_block_v2_rendering_is_byte_stable():
+    """AC2 pin: the served block for a v2 trajectory is byte-identical to the
+    pre-#98 rendering. The expected string is hand-built from the documented
+    format (heading, then ``### #<issue> — <title> (<outcome>)`` + the insight
+    bodies, then the decisions adjacency line), never recomputed by the
+    renderer."""
+    block, served = prime.render_prime_block(
+        [{"id": "n-traj", "title": "prime rail", "issue": 57, "outcome": "shipped",
+          "insights": [{"id": "n-ins1", "body": "Portable lesson one."},
+                       {"id": "n-ins2", "body": "Portable lesson two."}]}],
+        decisions=["dec-ccc333"],
+    )
+    assert block == (
+        "## Prior trajectories — reusable lessons from similar prior runs\n"
+        "\n"
+        "### #57 — prime rail (shipped)\n"
+        "Portable lesson one.\n"
+        "Portable lesson two.\n"
+        "\n"
+        "Prior decisions for touched files: dec-ccc333\n"
+    )
+    assert served == ["n-ins1", "n-ins2", "dec-ccc333"]
 
 
 def test_build_prime_payload_serves_insight_bodies_end_to_end(tmp_path):
@@ -1107,10 +1048,10 @@ def test_build_trajectory_trace_lines_delta_non_int_is_zero():
 def test_resolve_insights_only_serves_note_type(tmp_path):
     """builds_on could name a decision or session id; prime must NOT serve a
     non-note body as color — only `type='note'` insight notes are served, and a
-    decision id resolves to nothing (falls back to inline Lessons upstream)."""
+    decision id resolves to nothing."""
     db = tmp_path / "index.db"
     _seed_index_db(db, note_id="n-seed", title="seed", concepts=["x"],
-                   body="## Lessons\ny\n")
+                   body="y")
     _add_note(db, note_id="dec-1", title="a decision", body="decision body",
               note_type="decision")
     _add_note(db, note_id="ses-1", title="a session", body="session body",
@@ -1140,32 +1081,13 @@ def test_coerce_builds_on_forms():
     assert f(None) == []
 
 
-def test_query_trajectories_dangling_builds_on_falls_back_to_lessons(tmp_path):
-    """A builds_on link that resolves to nothing (missing / non-note id) must
-    fall through to the inline Lessons — the v1 fallback chain, pinned."""
+def test_query_trajectories_dangling_builds_on_filtered(tmp_path):
+    """A builds_on link that resolves to nothing (missing / non-note id) leaves
+    the trajectory with no reusable color → filtered out, never a crash."""
     db = tmp_path / "index.db"
     _seed_index_db(
         db, note_id="n-traj", title="t", concepts=["retrieval"],
-        body="## What\nx\n\n## Lessons\nfallback lesson\n",
-        frontmatter={"issue": 1, "outcome": "shipped", "builds_on": ["n-missing"]},
-    )
-    conn = index_client.open_ro(str(db))
-    try:
-        hits = prime.query_trajectories(conn, ["retrieval"], 3)
-    finally:
-        conn.close()
-    assert [h["id"] for h in hits] == ["n-traj"]
-    assert hits[0]["insights"] == []
-    assert hits[0]["lessons"] == "fallback lesson"
-
-
-def test_query_trajectories_dangling_builds_on_no_lessons_filtered(tmp_path):
-    """A dangling builds_on with NO inline Lessons has no reusable color at all
-    → the trajectory is filtered out (not served), never crashes."""
-    db = tmp_path / "index.db"
-    _seed_index_db(
-        db, note_id="n-traj", title="t", concepts=["retrieval"],
-        body="## What\nx\n\n## How it went\ny\n",  # no Lessons
+        body="## What\nx\n\n## How it went\ny\n",
         frontmatter={"issue": 1, "outcome": "shipped", "builds_on": ["n-missing"]},
     )
     conn = index_client.open_ro(str(db))
@@ -1182,7 +1104,10 @@ def test_prime_writes_loop_prime_served_event_to_buffer(tmp_path):
     ids — mirroring the prompt-time serving surface."""
     db = tmp_path / "index.db"
     _seed_index_db(db, note_id="n-prior1", title="t", concepts=["retrieval"],
-                   body="## Lessons\nreuse\n")
+                   body="## What\nx\n\n## How it went\ny\n",
+                   frontmatter={"issue": 57, "outcome": "shipped",
+                                "builds_on": ["n-ins1"]})
+    _add_note(db, note_id="n-ins1", title="portable lesson", body="reuse")
     buf = tmp_path / "buffer" / "ses-loop123.jsonl"
     rc = cli.main([
         "prime", "57", "--run-id", "loop-run-0",
@@ -1194,7 +1119,7 @@ def test_prime_writes_loop_prime_served_event_to_buffer(tmp_path):
     assert len(lines) == 1
     ev = json.loads(lines[0])
     assert ev["type"] == "retrieval" and ev["tool"] == "loop_prime"
-    assert ev["returned_ids"] == ["n-prior1"]
+    assert ev["returned_ids"] == ["n-ins1"]  # the insight served, not the trajectory
     assert ev["args"]["run_id"] == "loop-run-0" and ev["args"]["issue"] == 57
 
 
