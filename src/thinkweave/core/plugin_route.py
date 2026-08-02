@@ -11,11 +11,11 @@ Anything that *renders* a skill invocation into a deterministic surface — the
 cron block (``scheduling/registry.resolve_command``), flow stages
 (``flows._build_argv``), and the manual-rejudge shell-out
 (``surfaces/cli/judge._rejudge_argv``) — must therefore pick the name by route
-at render time. Keep that list in sync: a new hand-built ``claude -p
-"/skill"`` that skips ``namespace_prompt`` is broken on the plugin route.
-LLM-read surfaces (the skill markdown files) instead carry a prose fallback
-rule ("if the bare name doesn't resolve, retry with the ``thinkweave:``
-prefix").
+at render time, via ``HarnessProfile.namespaced()``. Keep that list in sync: a
+new hand-built headless ``"/skill"`` that skips it is broken on the plugin
+route. LLM-read surfaces (the skill markdown files) instead carry a prose
+fallback rule ("if the bare name doesn't resolve, retry with the
+``thinkweave:`` prefix").
 
 The plugin route has **two install shapes**, both namespaced:
 
@@ -25,6 +25,12 @@ The plugin route has **two install shapes**, both namespaced:
   that Claude Code auto-loads as the ``thinkweave@skills-dir`` plugin. It is
   **not** written into ``installed_plugins.json``, so it is detected by the
   symlink itself. Missing both ⇒ a project-scope clone (bare names only).
+
+*Where* those two files live is per-harness and therefore not this module's
+business — :func:`plugin_namespace` is handed both paths. The front door is
+``HarnessProfile.namespace()`` in :mod:`thinkweave.core.harness`, which probes
+the active profile's locations; this module stays a pure detector so
+``harness`` can import it without a cycle.
 """
 
 from __future__ import annotations
@@ -35,37 +41,27 @@ from pathlib import Path
 
 PLUGIN_NAME = "thinkweave"
 
-_INSTALLED_PLUGINS = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-
-# The `weave dev-link` symlink. Its mere existence (Claude Code auto-loads the
-# checkout as the `thinkweave@skills-dir` plugin) means skills are namespaced.
-_DEV_LINK = Path.home() / ".claude" / "skills" / PLUGIN_NAME
-
 # A bare skill token: leading slash + kebab name. Already-namespaced tokens
 # (`/thinkweave:dream`) and filesystem paths (`/home/...`) don't match.
 _SKILL_TOKEN = re.compile(r"^/(?P<name>[a-z][a-z0-9-]*)$")
 
 
-def plugin_namespace(
-    *, manifest: Path | None = None, dev_link: Path | None = None
-) -> str | None:
+def plugin_namespace(*, manifest: Path, dev_link: Path) -> str | None:
     """Return ``'thinkweave'`` when the plugin route is active, else None.
 
     Active = either install shape that registers skills namespaced (no bare
-    alias): the ``weave dev-link`` symlink, or a marketplace entry in
-    ``installed_plugins.json``. ``manifest`` / ``dev_link`` override the
-    default probe locations (tests).
+    alias): the ``weave dev-link`` symlink at ``dev_link``, or a marketplace
+    entry in the ``installed_plugins.json`` at ``manifest``.
     """
     # dev-link route: the skills-dir symlink auto-loads as a namespaced plugin
     # without ever touching installed_plugins.json — check the symlink itself.
-    link = dev_link or _DEV_LINK
     try:
-        if link.is_symlink():
+        if dev_link.is_symlink():
             return PLUGIN_NAME
     except OSError:
         pass
 
-    path = manifest or _INSTALLED_PLUGINS
+    path = manifest
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

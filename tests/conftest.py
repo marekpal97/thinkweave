@@ -1,13 +1,22 @@
 """Suite-wide fixtures.
 
-The plugin-route detector (``core.plugin_route.plugin_namespace``) reads real
-machine state — ``~/.claude/plugins/installed_plugins.json`` (marketplace) and
-the ``~/.claude/skills/thinkweave`` symlink (dev-link). Point both probes at
+The plugin-route detector reads real machine state through the active harness
+profile — ``~/.claude/plugins/installed_plugins.json`` (marketplace) and the
+``~/.claude/skills/thinkweave`` symlink (dev-link). Point both probes at
 nonexistent paths for every test so rendered commands (cron lines, flow
 invocations) don't depend on whether the dev box happens to have the plugin
 installed or dev-linked. Tests that exercise the plugin route override
-explicitly via the ``manifest=`` / ``dev_link=`` kwargs or by patching
-``plugin_namespace`` at the import site.
+explicitly — via ``use_profile`` below, the ``manifest=`` / ``dev_link=``
+kwargs of ``plugin_namespace``, or by patching at the import site.
+
+Harness-profile overrides
+-------------------------
+``use_profile(monkeypatch, **fields)`` swaps the process-wide active
+:class:`~thinkweave.core.harness.HarnessProfile` for a copy with ``fields``
+replaced. It is how a test sandboxes any harness touchpoint (``mcp_config``,
+``instructions_file``, ``pause_marker``, …) without reaching into the consumer
+module that reads it — the consumers hold no path constants to patch. Calls
+compose: each one replaces fields on whatever profile is currently active.
 
 Test-vault lifecycle
 --------------------
@@ -42,13 +51,14 @@ shadow these transparently, so the migration is safe to do one file at a time.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
-from thinkweave.core import plugin_route
+from thinkweave.core import harness
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
@@ -56,13 +66,21 @@ from thinkweave.core.vault import VaultManager
 from thinkweave.retrieval.search import Search
 
 
+def use_profile(
+    monkeypatch: pytest.MonkeyPatch, **fields: Any
+) -> harness.HarnessProfile:
+    """Replace the active harness profile with a copy carrying ``fields``."""
+    profile = dataclasses.replace(harness.active(), **fields)
+    monkeypatch.setattr(harness, "_OVERRIDE", profile)
+    return profile
+
+
 @pytest.fixture(autouse=True)
 def _no_plugin_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(
-        plugin_route, "_INSTALLED_PLUGINS", tmp_path / "absent-installed_plugins.json"
-    )
-    monkeypatch.setattr(
-        plugin_route, "_DEV_LINK", tmp_path / "absent-skills-thinkweave"
+    use_profile(
+        monkeypatch,
+        installed_plugins=tmp_path / "absent-installed_plugins.json",
+        skills_dir=tmp_path / "absent-skills",
     )
 
 

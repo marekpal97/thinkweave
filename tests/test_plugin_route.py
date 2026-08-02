@@ -72,28 +72,28 @@ class TestPluginNamespace:
             tmp_path / "installed_plugins.json",
             {"thinkweave@marekpal97": [{"scope": "user"}]},
         )
-        assert plugin_namespace(manifest=m) == "thinkweave"
+        assert plugin_namespace(manifest=m, dev_link=tmp_path / "absent-link") == "thinkweave"
 
     def test_detects_bare_key(self, tmp_path: Path):
         m = _write_manifest(
             tmp_path / "installed_plugins.json", {"thinkweave": []}
         )
-        assert plugin_namespace(manifest=m) == "thinkweave"
+        assert plugin_namespace(manifest=m, dev_link=tmp_path / "absent-link") == "thinkweave"
 
     def test_other_plugins_do_not_match(self, tmp_path: Path):
         m = _write_manifest(
             tmp_path / "installed_plugins.json",
             {"claude-mem@thedotmack": [], "linear@official": []},
         )
-        assert plugin_namespace(manifest=m) is None
+        assert plugin_namespace(manifest=m, dev_link=tmp_path / "absent-link") is None
 
     def test_missing_file_means_not_plugin_route(self, tmp_path: Path):
-        assert plugin_namespace(manifest=tmp_path / "absent.json") is None
+        assert plugin_namespace(manifest=tmp_path / "absent.json", dev_link=tmp_path / "absent-link") is None
 
     def test_corrupt_file_means_not_plugin_route(self, tmp_path: Path):
         bad = tmp_path / "installed_plugins.json"
         bad.write_text("{not json", encoding="utf-8")
-        assert plugin_namespace(manifest=bad) is None
+        assert plugin_namespace(manifest=bad, dev_link=tmp_path / "absent-link") is None
 
 
 class TestDevLinkRoute:
