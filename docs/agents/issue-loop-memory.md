@@ -124,17 +124,17 @@ context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
 
 **Prime v2 (issue #85): serve insight bodies via links, weighted by outcome.**
 For each concept-matched trajectory, prime follows its `builds_on` links to the
-linked **insight notes** and serves *their bodies* (the portable lesson's new
-home); a v1 trajectory with no links falls back to its inline `## Lessons`
-section, so the 13 pre-#85 notes still serve. When the matched set carries
+linked **insight notes** and serves *their bodies* (the portable lesson's only
+home). A trajectory whose links resolve to nothing carries no reusable color and
+is skipped — issue #98 migrated the 13 pre-#85 notes to linked insight notes and
+deleted the inline-`## Lessons` fallback with its last consumer. When the matched set carries
 `outcome_label`s (from #60's judge), prime stably orders merged-clean/stable
 trajectories ahead of reworked/closed ones before the budget cap — a
 deterministic sort tweak, not a scoring framework; an all-unlabeled set keeps
-pure recency. Served ids are the *insight* ids for a v2 trajectory (that is what
-the run received) and the *trajectory* id for a v1 fallback.
+pure recency. Served ids are the *insight* ids — that is what the run received.
 
 - **Served-context logging.** The prime emits the `served` note ids (insight
-  notes / trajectory Lessons + decisions_for_file, capped top-`limit` per kind).
+  notes + decisions_for_file, capped top-`limit` per kind).
   The orchestrator
   mirrors `primed` + `served` into the trajectory note frontmatter (§3), and —
   when passed the session buffer via `--buffer` — the rail writes a `loop_prime`
