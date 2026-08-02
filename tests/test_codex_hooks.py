@@ -828,3 +828,111 @@ class TestHeadlessHookTrust:
     def test_claude_code_argv_unchanged(self, tmp_path: Path):
         argv = harness.active().headless_argv("/dream", bypass=True)
         assert argv == ["claude", "-p", "/dream", "--dangerously-skip-permissions"]
+
+
+class TestRetrievalGateUnderCodex:
+    """Explicit acceptance criterion: "the RLVR retrieval-served PostToolUse
+    gate fires on `weave_*` tool calls or its absence is documented as a known
+    gap". It fires — Codex namespaces MCP tools `mcp__<server>__<tool>`, the
+    same strings `RETRIEVAL_TOOLS` already holds, so the closed set needs no
+    Codex entries. Driven here with a Codex-shaped envelope rather than left
+    as an inference from the naming convention.
+    """
+
+    def test_weave_search_lands_in_the_buffer(self, tmp_path: Path, monkeypatch):
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        VaultManager(config=cfg).ensure_dirs()
+
+        handler_mod._handle_post(
+            "mcp__thinkweave__weave_search",
+            {
+                "session_id": CODEX_SESSION_ID,
+                "turn_id": "019fc43a-b08f-7083-b857-3b81968fbbf5",
+                "cwd": "/tmp/cx/work",
+                "hook_event_name": "PostToolUse",
+                "tool_name": "mcp__thinkweave__weave_search",
+                "tool_use_id": "call_r1",
+                "tool_input": {"query": "codex hooks"},
+                "tool_response": {"output": "- [[notes/n-abc123|n-abc123]] Hooks"},
+            },
+        )
+
+        events = handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID)
+        retrieval = [e for e in events if e.get("type") == "retrieval"]
+        assert retrieval, "the retrieval gate must capture a Codex weave_* call"
+        assert retrieval[0]["tool"] == "mcp__thinkweave__weave_search"
+        assert "n-abc123" in retrieval[0]["returned_ids"]
+
+    def test_non_retrieval_mcp_tool_is_still_ignored(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """`RETRIEVAL_TOOLS` is a closed set on purpose — mutation tools must
+        not pollute the log just because they share the namespace."""
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        VaultManager(config=cfg).ensure_dirs()
+
+        handler_mod._handle_post(
+            "mcp__thinkweave__weave_create",
+            {
+                "session_id": CODEX_SESSION_ID,
+                "tool_name": "mcp__thinkweave__weave_create",
+                "tool_input": {"title": "x"},
+                "tool_response": {"output": "created"},
+            },
+        )
+        assert handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID) == []
+
+    def test_nested_mcp_content_shape_still_yields_ids(self):
+        """`tool_response` is typed "any JSON" in the 0.146.0 schema, so there
+        is no key list to hardcode. A nested MCP-style payload must still
+        expose its note ids rather than logging an empty retrieval."""
+        text = handler_mod._extract_tool_output_text(
+            {"tool_response": {"content": [{"type": "text", "text": "[[n-abc123]]"}]}}
+        )
+        assert "n-abc123" in text
+
+    def test_flag_only_dict_still_yields_empty(self):
+        """Claude Code's Bash response with no output is genuinely textless —
+        that contract must not drift into emitting `{"interrupted": false}`."""
+        assert handler_mod._extract_tool_output_text(
+            {"tool_response": {"interrupted": False, "isImage": False}}
+        ) == ""
+
+
+class TestHooksCliTakesHarness:
+    """`weave hooks install` became harness-relevant only with this issue —
+    before it, Claude Code was the sole harness with hooks, so `hooks` was
+    left off the `--harness` list. The doctor's own fix hint now tells users
+    to run `weave hooks install --scope user --harness codex`, so the flag has
+    to exist or the remedy is broken advice."""
+
+    @pytest.mark.parametrize("action", ["install", "uninstall"])
+    def test_flag_parses(self, action: str):
+        from thinkweave.surfaces.cli.parser import build_parser
+
+        args = build_parser().parse_args(
+            ["hooks", action, "--scope", "user", "--harness", "codex"]
+        )
+        assert args.harness == "codex"
+
+    def test_install_targets_the_named_harness(self, tmp_path: Path, capsys):
+        """End-to-end through the CLI entry point: the flag must actually pin
+        the profile, not merely parse."""
+        from thinkweave.surfaces.cli import main
+
+        home = tmp_path / "cx"
+        home.mkdir()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("CODEX_HOME", str(home / ".codex"))
+            mp.setattr(harness, "_OVERRIDE", None)
+            mp.setattr(
+                "sys.argv",
+                ["weave", "hooks", "install", "--scope", "user",
+                 "--harness", "codex"],
+            )
+            main()
+
+        assert (home / ".codex" / "hooks.json").exists()
+        assert "trust" in capsys.readouterr().out.lower()

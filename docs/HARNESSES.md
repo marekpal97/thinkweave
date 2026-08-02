@@ -193,7 +193,13 @@ Codex's own `--strict-config` accepts, hooks observed firing pre-auth, and the
 handler driven end-to-end on real captured envelopes into a tmp vault
 (`tests/test_codex_hooks.py`). The end-to-end claim itself is untested.
 
-Likewise the RLVR retrieval-served `PostToolUse` gate on `weave_*` calls is
-unobserved: no MCP tool ran in a credential-less session. Its matcher
-(`mcp__thinkweave__.*`) is documented-correct for Codex's namespacing, but that
-it fires is inferred, not measured.
+The RLVR retrieval-served `PostToolUse` gate is a partial exception. Codex
+namespaces MCP tools with the same `mcp__thinkweave__weave_search` strings the
+closed `RETRIEVAL_TOOLS` set already holds, and the handler is tested against a
+Codex-shaped MCP envelope, so the gate is verified at that seam. What is *not*
+measured is Codex's real `tool_response` shape for an MCP call — the 0.146.0
+schema types it "any JSON" `[binary]` and no MCP tool ran in a credential-less
+session. `_extract_tool_output_text` therefore stopped hardcoding a key list
+and recovers text from any shape; if a live run shows Codex wrapping results in
+something that still defeats note-id extraction, the symptom will be retrieval
+rows with an empty `returned_ids`, and that is where to look.

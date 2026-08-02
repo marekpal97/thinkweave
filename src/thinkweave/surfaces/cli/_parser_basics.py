@@ -385,7 +385,7 @@ def add_admin_subparsers(sub) -> None:
     )
     p_config_set.add_argument("path", help="Vault directory to persist as vault_root.")
 
-    p_hooks = sub.add_parser("hooks", help="Manage Claude Code hooks")
+    p_hooks = sub.add_parser("hooks", help="Manage agent-harness lifecycle hooks")
     hooks_sub = p_hooks.add_subparsers(dest="hooks_action")
     p_install = hooks_sub.add_parser("install", help="Install hooks")
     p_install.add_argument("--project", "-p", default="")
@@ -394,8 +394,9 @@ def add_admin_subparsers(sub) -> None:
         choices=("project", "user"),
         default="project",
         help=(
-            "project (default): write to <project>/.claude/settings.local.json; "
-            "user: write to ~/.claude/settings.json (fires in every CC session)"
+            "project (default): write to the harness's project-scope settings "
+            "file; user: write to its machine-scope one (fires in every "
+            "session). Some harnesses only honour user scope."
         ),
     )
     p_install.add_argument(
@@ -416,6 +417,11 @@ def add_admin_subparsers(sub) -> None:
         action="store_true",
         help="Print the planned settings.json diff without writing.",
     )
+    # `hooks` joined this list in #107: until Codex grew a hooks adapter,
+    # Claude Code was the only harness with hooks at all, so there was nothing
+    # to target. `status` reads the vault's own log, not a harness, so it
+    # stays out.
+    _add_harness_flag(p_install, p_uninstall)
     p_hooks_status = hooks_sub.add_parser("status", help="Show recent hook errors")
     p_hooks_status.add_argument("--limit", "-n", type=int, default=20, help="Number of lines to show")
 

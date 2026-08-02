@@ -583,7 +583,26 @@ def _extract_tool_output_text(hook_input: dict) -> str:
             stderr = str(stderr)
         if stdout and stderr:
             return stdout + "\n" + stderr
-        return stdout or stderr or ""
+        if stdout or stderr:
+            return stdout or stderr
+
+        # Neither key present — an unknown response shape. Codex's MCP tool
+        # responses are not `stdout`/`stderr` dicts, and the schema embedded in
+        # the 0.146.0 binary types `tool_response` as "any JSON", so there is
+        # no key list to hardcode. Recover whatever text the object carries
+        # instead: top-level strings, else a JSON dump so nested payloads (the
+        # MCP `{"content": [{"text": …}]}` shape) still expose their note ids
+        # to the regex scanners. Without this the retrieval log records Codex
+        # `weave_*` calls with an empty `returned_ids` — captured, but useless
+        # to the RLVR export, and silently so (#107).
+        strings = [v for v in raw.values() if isinstance(v, str) and v]
+        if strings:
+            return "\n".join(strings)
+        # A dict of only scalars (Claude Code's `{"interrupted": false,
+        # "isImage": false}`) genuinely carries no text.
+        if any(isinstance(v, (dict, list)) for v in raw.values()):
+            return json.dumps(raw)
+        return ""
     return ""
 
 
