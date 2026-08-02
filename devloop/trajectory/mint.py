@@ -7,11 +7,13 @@ from __future__ import annotations
 
 
 def _normalize_skill(entry: dict) -> dict:
-    """Project one dispatch record down to the invocation-trajectory shape.
+    """Project one stage-dispatch record down to its stored shape.
 
     A stage skill is effectively a gate/subagent the loop already dispatches
-    (implementer, acceptance judge, reviewer, and future ponytail/tdd), so we
-    keep only the four fields that make the invocation first-class:
+    (implementer, acceptance judge, reviewer, and future ponytail/tdd) — that
+    is the whole scope: generic capture of *every* Skill invocation is parked
+    with its unpark trigger in issue-loop-memory.md (#99). So we keep only the
+    four fields that make the dispatch first-class:
     ``id`` (which skill), ``role`` (its stage role), ``outcome`` (how the
     invocation resolved), and ``fix_rounds_attributed`` (how many fix rounds
     this skill/gate caused — the explicit attribution). Extra keys the

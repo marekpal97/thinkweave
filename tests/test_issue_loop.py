@@ -2594,3 +2594,23 @@ def test_validate_schemas_match_the_enums_the_command_doc_advertises():
         encoding="utf-8")
     for value in gates.ACCEPTANCE_VERDICTS + gates.REVIEW_SEVERITIES + gates.SIMPLIFY_OUTCOMES:
         assert f'"{value}"' in section, value
+
+
+def test_skills_scope_is_settled_as_stage_dispatch_with_an_unpark_trigger():
+    """AC3 (#99): `skills[]` is the loop's STAGE-dispatch log, not a generic
+    capture of every Skill invocation in the run. The generalization is parked
+    with an explicit unpark trigger, stated in the doc that owns the contract,
+    so the next reader neither builds it speculatively nor assumes it exists.
+    """
+    memory = (cli.REPO_ROOT / "docs" / "agents" / "issue-loop-memory.md").read_text(
+        encoding="utf-8")
+    start = memory.index("**Invocation-trajectory extension")
+    para = " ".join(memory[start:memory.index("\n\n**", start + 1)].split())
+    assert "parked" in para.lower() and "unpark trigger" in para.lower()
+    assert "every Skill invocation" in para  # names what it is NOT
+    # The projection agrees: it is documented as the stage-dispatch shape.
+    assert "stage" in mint._normalize_skill.__doc__
+    # And it still projects exactly the four contracted fields — the parking
+    # decision changes the prose, never the shipped shape.
+    assert set(mint._normalize_skill({"id": "x", "extra": 1})) == {
+        "id", "role", "outcome", "fix_rounds_attributed"}

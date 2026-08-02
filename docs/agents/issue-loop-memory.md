@@ -70,6 +70,16 @@ skill invocation (SkillOpt raw material, #64), `--skill-centric` adds the
 `skill-invocation` tag alongside `loop-run`, so
 `weave_search(tags=[skill-invocation], concepts=[…])` returns
 skill-attributed records.
+*Scope, settled 2026-08-02 (issue #99): stage dispatches only.* `skills[]`
+records the stage skills **this loop dispatched**; it is deliberately not a
+generic capture of every Skill invocation in the run. That generalization is
+**parked** — capture-all needs a new mechanism (a Skill-tool hook or transcript
+scraping) and has no live reader today, and a capability ships with its consumer
+or not at all. *Unpark trigger:* a consumer that needs invocations the loop did
+not itself dispatch — concretely #64's SkillOpt, asking which invocations
+correlate with rework. Until then nothing implies capture-all exists:
+`--skills-json` is the orchestrator's stage log and `_normalize_skill` projects
+exactly its four fields.
 
 **Semantic execution trace + Lessons retirement (issue #85).** Two register
 collisions closed at once. (1) The trajectory's `## Lessons` section duplicated
