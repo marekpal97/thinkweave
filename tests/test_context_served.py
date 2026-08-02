@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from devloop.trajectory import LOOP_PRIME_TOOL
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
@@ -192,13 +193,13 @@ class TestLoopPrimeProjection:
     def test_loop_prime_event_projects_distinct_source(
         self, config: Config, vault: VaultManager
     ):
-        """A claim-time prime served-context event (issue_loop.py writes a
+        """A claim-time prime served-context event (devloop.trajectory writes a
         retrieval event tagged tool='loop_prime') projects to
         context_served(source='loop-prime') — distinct from agent-pulled
         onthefly — so served ids are recoverable per run from the index."""
         sess_id, _ = _seed_session(vault, [
             {"ts": "2026-07-18T00:30:00Z", "type": "retrieval",
-             "tool": "loop_prime",
+             "tool": LOOP_PRIME_TOOL,
              "args": {"run_id": "loop-20260718-abcd", "issue": 57},
              "returned_ids": ["n-prior111", "dec-abc222"]},
             {"ts": "2026-07-18T00:31:00Z", "type": "retrieval",
@@ -225,7 +226,7 @@ class TestLoopPrimeProjection:
         (SQLite can't ALTER a CHECK), so the loop-prime projection succeeds
         instead of raising IntegrityError."""
         sess_id, sess_path = _seed_session(vault, [
-            {"type": "retrieval", "tool": "loop_prime", "returned_ids": ["n-p1"]},
+            {"type": "retrieval", "tool": LOOP_PRIME_TOOL, "returned_ids": ["n-p1"]},
         ])
         # Simulate the legacy schema: narrow CHECK without 'loop-prime'.
         idx0 = Indexer(config=config)

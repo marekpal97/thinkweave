@@ -87,6 +87,7 @@ ignore = ["E741"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "perf: performance regression assertion (may be skipped on slow CI hosts)",
 ]

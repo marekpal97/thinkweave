@@ -4,21 +4,13 @@ Everything here is pure: parsing and frontier computation take plain dicts
 and strings — no gh, no git, no network.
 """
 
-import importlib.util
 import json
 import sqlite3
-import sys
-from pathlib import Path
 
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "issue_loop", Path(__file__).resolve().parent.parent / "scripts" / "issue_loop.py"
-)
-issue_loop = importlib.util.module_from_spec(_SPEC)
-sys.modules["issue_loop"] = issue_loop
-_SPEC.loader.exec_module(issue_loop)
-
+from devloop import cli, dag, gates, index_client, triage
+from devloop.trajectory import mint, prime
 
 # ---------------------------------------------------------------------------
 # parse_blockers — both serializations
@@ -26,40 +18,40 @@ _SPEC.loader.exec_module(issue_loop)
 
 def test_header_form_single_blocker():
     body = "Track: A-ontology | Wave: 2 | Blocked-by: #16 | Parallel-safe: yes | Epic: #11"
-    assert issue_loop.parse_blockers(body) == [16]
+    assert dag.parse_blockers(body) == [16]
 
 
 def test_header_form_epic_ref_is_not_a_blocker():
     body = "Track: B-core | Wave: 1 | Blocked-by: — | Parallel-safe: yes | Epic: #11"
-    assert issue_loop.parse_blockers(body) == []
+    assert dag.parse_blockers(body) == []
 
 
 def test_header_form_multiple_blockers():
     body = "Wave: 3 | Blocked-by: #16, #17 | Epic: #11"
-    assert issue_loop.parse_blockers(body) == [16, 17]
+    assert dag.parse_blockers(body) == [16, 17]
 
 
 def test_section_form():
     body = "## What to build\nStuff referencing #5.\n\n## Blocked by\n\n- #12\n- #14\n\n## Acceptance criteria\n- [ ] done"
-    assert issue_loop.parse_blockers(body) == [12, 14]
+    assert dag.parse_blockers(body) == [12, 14]
 
 
 def test_section_form_none():
     body = "## What to build\nStuff.\n\n## Blocked by\n\nNone - can start immediately\n"
-    assert issue_loop.parse_blockers(body) == []
+    assert dag.parse_blockers(body) == []
 
 
 def test_no_blocked_by_anywhere():
-    assert issue_loop.parse_blockers("Fix the thing in #33's shadow.") == []
-    assert issue_loop.parse_blockers("") == []
+    assert dag.parse_blockers("Fix the thing in #33's shadow.") == []
+    assert dag.parse_blockers("") == []
 
 
 def test_wave_and_parallel_safe():
     body = "Track: A | Wave: 2 | Blocked-by: — | Parallel-safe: no | Epic: #11"
-    assert issue_loop.parse_wave(body) == 2
-    assert issue_loop.parse_parallel_safe(body) is False
-    assert issue_loop.parse_wave("no header") is None
-    assert issue_loop.parse_parallel_safe("no header") is True  # default: don't serialize the loop
+    assert dag.parse_wave(body) == 2
+    assert dag.parse_parallel_safe(body) is False
+    assert dag.parse_wave("no header") is None
+    assert dag.parse_parallel_safe("no header") is True  # default: don't serialize the loop
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +81,7 @@ def test_frontier_requires_closed_blockers():
         _issue(2, body="Blocked-by: #1"),
         _issue(3, body="Blocked-by: #2"),
     ]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [2]
     assert [e["number"] for e in result["blocked"]] == [3]
     assert result["blocked"][0]["open_blockers"] == [2]
@@ -101,7 +93,7 @@ def test_frontier_excludes_unlabeled_and_claimed():
         _issue(2, labels=("ready-for-agent", "agent-claimed")),
         _issue(3),
     ]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [3]
     assert [e["number"] for e in result["claimed"]] == [2]
 
@@ -111,7 +103,7 @@ def test_assignee_is_a_claim():
         _issue(1, assignees=[{"login": "marekpal97"}]),
         _issue(2),
     ]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [2]
     assert result["claimed"][0]["assignees"] == ["marekpal97"]
 
@@ -119,7 +111,7 @@ def test_assignee_is_a_claim():
 def test_native_dependencies_gate_frontier():
     # native count gates even without the edge list
     issues = [_issue(2, native_blocked_count=1)]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert result["frontier"] == []
     assert "native" in result["blocked"][0]["open_blockers_note"]
     # with the edge list, blockers are named and closure unblocks
@@ -129,7 +121,7 @@ def test_native_dependencies_gate_frontier():
         _issue(3, native_blocked_count=1, native_blockers=[4]),
         _issue(4),
     ]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [2, 4]
     assert result["blocked"][0]["open_blockers"] == [4]
 
@@ -140,7 +132,7 @@ def test_union_of_native_and_body_edges():
         _issue(5),
         _issue(6),
     ]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     blocked = result["blocked"][0]
     assert blocked["blockers"] == [5, 6]
     assert blocked["open_blockers"] == [5, 6]
@@ -154,11 +146,11 @@ def test_components_split_unrelated_dags():
         _issue(11, native_blockers=[10], native_blocked_count=1),
         _issue(20),  # isolated
     ]
-    comp = issue_loop.compute_components(issues)
+    comp = dag.compute_components(issues)
     assert comp[1] == comp[2] == 1
     assert comp[10] == comp[11] == 10
     assert comp[20] == 20
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     by_num = {e["number"]: e for e in result["frontier"]}
     assert by_num[1]["component"] == 1 and by_num[10]["component"] == 10
     assert by_num[20]["component"] == 20
@@ -170,7 +162,7 @@ def test_components_ignore_closed_issues():
         _issue(2, body="Blocked-by: #1"),
         _issue(3, body="Blocked-by: #1"),
     ]
-    comp = issue_loop.compute_components(issues)
+    comp = dag.compute_components(issues)
     # 2 and 3 only share a CLOSED blocker — no open edge between them
     assert comp[2] != comp[3]
 
@@ -182,22 +174,22 @@ def test_frontier_wave_ordering_and_limit():
         _issue(7),  # no wave → sorts last
         _issue(8, body="Wave: 1 | Blocked-by: —"),
     ]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [6, 8, 5, 7]
-    limited = issue_loop.compute_frontier(issues, CFG, limit=2)
+    limited = dag.compute_frontier(issues, CFG, limit=2)
     assert [e["number"] for e in limited["frontier"]] == [6, 8]
 
 
 def test_frontier_missing_blocker_is_satisfied_but_warned():
     issues = [_issue(2, body="Blocked-by: #999")]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [2]
     assert any("#999" in w for w in result["warnings"])
 
 
 def test_closed_issues_never_in_frontier():
     issues = [_issue(1, state="CLOSED")]
-    result = issue_loop.compute_frontier(issues, CFG)
+    result = dag.compute_frontier(issues, CFG)
     assert result["frontier"] == [] and result["blocked"] == []
 
 
@@ -208,22 +200,35 @@ def test_closed_issues_never_in_frontier():
 def test_diff_gate_forbidden_path():
     gate = {"id": "g", "forbidden_paths": [".github/workflows/"], "max_changed_lines": 100}
     numstat = "3\t1\tsrc/thinkweave/core/config.py\n2\t0\t.github/workflows/ci.yml\n"
-    result = issue_loop.evaluate_diff_gate(gate, numstat)
+    result = gates.evaluate_diff_gate(gate, numstat)
     assert result["passed"] is False
     assert ".github/workflows/ci.yml" in result["summary"]
+
+
+def test_diff_gate_forbidden_paths_use_the_three_form_convention():
+    """Issue #94's one unification: forbidden_paths goes through paths.match,
+    so it ADOPTS the convention triage already used. Trailing-slash entries (all
+    the shipped ones) are byte-identical startswith; a bare name now matches
+    that basename at any depth instead of only at the repo root."""
+    gate = {"id": "g", "forbidden_paths": ["dist/", "secrets.env"]}
+    # dir prefix: unchanged semantics.
+    assert gates.evaluate_diff_gate(gate, "1\t0\tdist/bundle.js\n")["passed"] is False
+    # bare basename: matches at depth, and a prefix-sharing sibling does not.
+    assert gates.evaluate_diff_gate(gate, "1\t0\tops/secrets.env\n")["passed"] is False
+    assert gates.evaluate_diff_gate(gate, "1\t0\tops/secrets.env.example\n")["passed"] is True
 
 
 def test_diff_gate_max_lines():
     gate = {"id": "g", "forbidden_paths": [], "max_changed_lines": 5}
     numstat = "4\t3\tsrc/a.py\n"
-    result = issue_loop.evaluate_diff_gate(gate, numstat)
+    result = gates.evaluate_diff_gate(gate, numstat)
     assert result["passed"] is False and "7 changed lines" in result["summary"]
 
 
 def test_diff_gate_passes_and_handles_binary():
     gate = {"id": "g", "forbidden_paths": ["vault/"], "max_changed_lines": 100}
     numstat = "4\t3\tsrc/a.py\n-\t-\tassets/logo.png\n"
-    result = issue_loop.evaluate_diff_gate(gate, numstat)
+    result = gates.evaluate_diff_gate(gate, numstat)
     assert result["passed"] is True
 
 
@@ -232,7 +237,7 @@ def test_diff_gate_passes_and_handles_binary():
 
 
 def test_load_config_defaults_when_missing(tmp_path):
-    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    cfg = cli.load_config(tmp_path / "nope.toml")
     assert cfg["loop"]["max_issues_per_run"] == 3
     assert cfg["loop"]["require_green_baseline"] is True
     assert cfg["loop"]["claim_mode"] == "assign"
@@ -245,7 +250,7 @@ def test_load_config_defaults_when_missing(tmp_path):
 def test_load_config_tdd_override(tmp_path):
     p = tmp_path / "loop.toml"
     p.write_text('[tdd]\nmode = "never"\n', encoding="utf-8")
-    assert issue_loop.load_config(p)["tdd"]["mode"] == "never"
+    assert cli.load_config(p)["tdd"]["mode"] == "never"
 
 
 def test_load_config_merges_file(tmp_path):
@@ -254,14 +259,14 @@ def test_load_config_merges_file(tmp_path):
         '[loop]\nmax_issues_per_run = 5\n\n[[gates]]\nid = "tests"\nkind = "command"\ncmd = "pytest"\n',
         encoding="utf-8",
     )
-    cfg = issue_loop.load_config(p)
+    cfg = cli.load_config(p)
     assert cfg["loop"]["max_issues_per_run"] == 5
     assert cfg["loop"]["max_fix_rounds"] == 2  # default survives partial override
     assert cfg["gates"][0]["id"] == "tests"
 
 
 def test_repo_loop_toml_parses_and_gate_ids_unique():
-    cfg = issue_loop.load_config()
+    cfg = cli.load_config()
     ids = [g["id"] for g in cfg["gates"]]
     assert len(ids) == len(set(ids)) and len(ids) >= 4
     assert all(g["kind"] in {"command", "diff", "acceptance", "review", "simplify"}
@@ -276,7 +281,7 @@ def test_gate_pipeline_order_is_pinned():
     """The full pipeline order is a contract: diff-guard → tests → acceptance
     → review → simplify. simplify runs LAST, after review, so it only ever
     shrinks an already-verified diff."""
-    cfg = issue_loop.load_config()
+    cfg = cli.load_config()
     ids = [g["id"] for g in cfg["gates"]]
     assert ids == ["diff-guard", "tests", "acceptance", "review", "simplify"]
 
@@ -286,7 +291,7 @@ def test_simplify_gate_shape():
     'failure' mode is a revert (never a pipeline block): it re-runs the
     verification gates on the simplified diff and, if either goes red, ships
     the pre-simplify diff with the revert note."""
-    cfg = issue_loop.load_config()
+    cfg = cli.load_config()
     gate = next(g for g in cfg["gates"] if g["id"] == "simplify")
     assert gate["kind"] == "simplify"
     # required=false: simplify can never fail the pipeline — its failure ships
@@ -307,7 +312,7 @@ def test_check_rejects_simplify_as_orchestrator_kind(tmp_path, capsys):
     the loader. Regression guard: the config loader does not hard-validate
     kinds, so a new orchestrator gate parses and surfaces without a code change
     to the rail."""
-    rc = issue_loop.main(["check", "--gate", "simplify", "--cwd", str(tmp_path)])
+    rc = cli.main(["check", "--gate", "simplify", "--cwd", str(tmp_path)])
     assert rc == 2
     err = json.loads(capsys.readouterr().out)
     assert "LLM-judged" in err["error"]
@@ -318,7 +323,7 @@ def test_committed_hooks_carry_no_ponytail_entries():
     The committed hook manifest must contain no ponytail UserPromptSubmit /
     PreToolUse entry (ponytail's plugin would collide with weave's own
     UserPromptSubmit hook)."""
-    hooks = (issue_loop.REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    hooks = (cli.REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
     assert "ponytail" not in hooks.lower()
 
 
@@ -327,7 +332,7 @@ def test_vendored_ponytail_review_skill_present_with_provenance():
     with pinned-upstream provenance (sha + source repo) and the machine-local
     symlink wiring documented in-header (symlinks into .claude/commands/ are
     not committed — mirrors how issue-loop.command.md is wired)."""
-    vendored = issue_loop.REPO_ROOT / "docs" / "agents" / "ponytail-review.command.md"
+    vendored = cli.REPO_ROOT / "docs" / "agents" / "ponytail-review.command.md"
     assert vendored.exists()
     text = vendored.read_text(encoding="utf-8")
     # Provenance: the canonical upstream repo and the pinned commit sha.
@@ -348,7 +353,7 @@ def test_vendored_ponytail_review_skill_present_with_provenance():
 
 
 def _plan_distill_doc() -> str:
-    doc = issue_loop.REPO_ROOT / "docs" / "agents" / "plan-distill.command.md"
+    doc = cli.REPO_ROOT / "docs" / "agents" / "plan-distill.command.md"
     assert doc.exists(), "plan-distill.command.md must ship under docs/agents/"
     return doc.read_text(encoding="utf-8")
 
@@ -484,8 +489,8 @@ def test_plan_distill_fallback_parses_through_real_weave_argparse():
     scalar string '[pending]' (not a list) — _parse_fm_token JSON-probes the
     leading '[', fails, and falls through to the string branch. Catches schema
     drift in either the parser or the doc's flag shape."""
-    from thinkweave.surfaces.cli.parser import build_parser
     from thinkweave.surfaces.cli.notes import _parse_fm_token
+    from thinkweave.surfaces.cli.parser import build_parser
 
     ns = build_parser().parse_args(
         ["add", "t", "--type", "decision", "-f", "plan_ref=[pending]"]
@@ -521,7 +526,7 @@ def test_plan_distill_symlink_is_not_committed():
 
     out = subprocess.run(
         ["git", "ls-files", ".claude/commands/"],
-        cwd=issue_loop.REPO_ROOT, capture_output=True, text=True,
+        cwd=cli.REPO_ROOT, capture_output=True, text=True,
     ).stdout
     assert "plan-distill" not in out
 
@@ -537,7 +542,7 @@ def test_build_trajectory_payload():
         "html_url": "https://github.com/x/y/issues/26",
         "labels": [{"name": "ready-for-agent"}, {"name": "track:D-acquisition"}],
     }
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         issue,
         branch="loop/issue-26",
         commits=["abc fix", "def test"],
@@ -565,7 +570,7 @@ def test_build_trajectory_defaults_to_empty_skills():
     """Existing callers pass no skills data (backward compat): frontmatter
     carries an empty skills[] and the record stays a plain [loop-run] note —
     no [skill-invocation] tag."""
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         {"number": 1, "title": "x", "labels": []},
         branch="b", commits=[], numstat="", gates=[],
         fix_rounds=0, outcome="shipped",
@@ -588,7 +593,7 @@ def test_build_trajectory_skills_shape():
          "fix_rounds_attributed": 2},
         {"id": "code-reviewer", "role": "reviewer", "outcome": "passed"},  # no count → 0
     ]
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         issue, branch="loop/dag-54", commits=["a"], numstat="1\t0\tx.py\n",
         gates=[{"id": "acceptance", "kind": "acceptance", "passed": True, "summary": ""}],
         fix_rounds=2, outcome="shipped", skills=skills_log, skill_centric=True,
@@ -608,14 +613,14 @@ def test_trajectory_argparse_contract():
     """The trajectory subcommand exposes --skills-json (optional, default
     None) and --skill-centric (store_true, default False), so the
     orchestrator can pass its dispatch log and mark skill-centric records."""
-    ns = issue_loop.build_arg_parser().parse_args([
+    ns = cli.build_arg_parser().parse_args([
         "trajectory", "56", "--gates-json", "g.json",
         "--skills-json", "s.json", "--skill-centric",
         "--outcome", "shipped",
     ])
     assert ns.skills_json == "s.json"
     assert ns.skill_centric is True
-    ns2 = issue_loop.build_arg_parser().parse_args([
+    ns2 = cli.build_arg_parser().parse_args([
         "trajectory", "56", "--gates-json", "g.json", "--outcome", "shipped",
     ])
     assert ns2.skills_json is None
@@ -626,7 +631,7 @@ def test_build_trajectory_mirrors_primed_and_served():
     """The frontmatter mirrors the prime verdict: primed:true + the served ids
     when the run was primed; primed:false + empty served when held out."""
     issue = {"number": 57, "title": "prime the implementer", "labels": []}
-    primed = issue_loop.build_trajectory(
+    primed = mint.build_trajectory(
         issue, branch="loop/dag-54", commits=["a"], numstat="1\t0\tx.py\n",
         gates=[], fix_rounds=0, outcome="shipped",
         primed=True, served=["n-prior1", "dec-abc222"],
@@ -634,7 +639,7 @@ def test_build_trajectory_mirrors_primed_and_served():
     assert primed["frontmatter"]["primed"] is True
     assert primed["frontmatter"]["served"] == ["n-prior1", "dec-abc222"]
 
-    held = issue_loop.build_trajectory(
+    held = mint.build_trajectory(
         issue, branch="b", commits=[], numstat="", gates=[],
         fix_rounds=0, outcome="shipped", primed=False,
     )
@@ -645,7 +650,7 @@ def test_build_trajectory_mirrors_primed_and_served():
 def test_build_trajectory_omits_prime_keys_when_unknown():
     """Backward compat: callers that pass no prime data (primed=None) get a
     note with no primed/served keys — the pre-#57 shape is unchanged."""
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         {"number": 1, "title": "x", "labels": []},
         branch="b", commits=[], numstat="", gates=[],
         fix_rounds=0, outcome="shipped",
@@ -657,17 +662,17 @@ def test_build_trajectory_omits_prime_keys_when_unknown():
 def test_trajectory_prime_argparse_contract():
     """--primed/--no-primed (default None) + --served-json (default None) let
     the orchestrator mirror the prime verdict into the trajectory note."""
-    ns = issue_loop.build_arg_parser().parse_args([
+    ns = cli.build_arg_parser().parse_args([
         "trajectory", "57", "--gates-json", "g.json", "--outcome", "shipped",
         "--primed", "--served-json", "served.json",
     ])
     assert ns.primed is True and ns.served_json == "served.json"
-    ns_held = issue_loop.build_arg_parser().parse_args([
+    ns_held = cli.build_arg_parser().parse_args([
         "trajectory", "57", "--gates-json", "g.json", "--outcome", "routed-to-human",
         "--no-primed",
     ])
     assert ns_held.primed is False
-    ns_default = issue_loop.build_arg_parser().parse_args([
+    ns_default = cli.build_arg_parser().parse_args([
         "trajectory", "57", "--gates-json", "g.json", "--outcome", "shipped",
     ])
     assert ns_default.primed is None and ns_default.served_json is None
@@ -684,16 +689,16 @@ def test_scope_to_dag_keeps_component_and_closed_issues():
         _issue(3, body="Blocked-by: #2"),   # component 2
         _issue(10),                          # unrelated component
     ]
-    scoped = issue_loop.scope_to_dag(issues, 3)
+    scoped = dag.scope_to_dag(issues, 3)
     nums = sorted(i["number"] for i in scoped)
     assert nums == [1, 2, 3]  # closed #1 kept for blocker checks, #10 dropped
 
 
 def test_scope_to_dag_rejects_closed_or_missing_root():
     with pytest.raises(ValueError):
-        issue_loop.scope_to_dag([_issue(1, state="CLOSED")], 1)
+        dag.scope_to_dag([_issue(1, state="CLOSED")], 1)
     with pytest.raises(ValueError):
-        issue_loop.scope_to_dag([_issue(1)], 99)
+        dag.scope_to_dag([_issue(1)], 99)
 
 
 def test_assume_done_unblocks_dependents():
@@ -702,16 +707,16 @@ def test_assume_done_unblocks_dependents():
         _issue(21, body="Blocked-by: #16"),
         _issue(22, native_blockers=[16], native_blocked_count=1),
     ]
-    before = issue_loop.compute_frontier(issues, CFG)
+    before = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in before["frontier"]] == [16]
-    after = issue_loop.compute_frontier(
-        issue_loop.apply_assume_done(issues, {16}), CFG)
+    after = dag.compute_frontier(
+        dag.apply_assume_done(issues, {16}), CFG)
     assert [e["number"] for e in after["frontier"]] == [21, 22]
 
 
 def test_assume_done_does_not_mutate_input():
     issues = [_issue(16)]
-    issue_loop.apply_assume_done(issues, {16})
+    dag.apply_assume_done(issues, {16})
     assert issues[0]["state"] == "OPEN"
 
 
@@ -720,51 +725,51 @@ def test_assume_done_does_not_mutate_input():
 
 
 def test_parse_override_section_defaults_to_loop():
-    assert issue_loop.parse_override("delivery=stacked") == ("loop", "delivery", "stacked")
+    assert cli.parse_override("delivery=stacked") == ("loop", "delivery", "stacked")
 
 
 def test_parse_override_toml_scalars():
-    assert issue_loop.parse_override("max_issues_per_run=6") == ("loop", "max_issues_per_run", 6)
-    assert issue_loop.parse_override("training_mode=false") == ("loop", "training_mode", False)
-    assert issue_loop.parse_override('tdd.mode="never"') == ("tdd", "mode", "never")
-    assert issue_loop.parse_override("labels.runnable=agent-go") == ("labels", "runnable", "agent-go")
+    assert cli.parse_override("max_issues_per_run=6") == ("loop", "max_issues_per_run", 6)
+    assert cli.parse_override("training_mode=false") == ("loop", "training_mode", False)
+    assert cli.parse_override('tdd.mode="never"') == ("tdd", "mode", "never")
+    assert cli.parse_override("labels.runnable=agent-go") == ("labels", "runnable", "agent-go")
 
 
 def test_parse_override_malformed():
     for bad in ("delivery", "=stacked", "delivery=", ""):
         with pytest.raises(ValueError):
-            issue_loop.parse_override(bad)
+            cli.parse_override(bad)
 
 
 def test_apply_overrides_wins_over_file(tmp_path):
     p = tmp_path / "loop.toml"
     p.write_text('[loop]\ndelivery = "pr-per-issue"\nmax_issues_per_run = 3\n', encoding="utf-8")
-    cfg = issue_loop.apply_overrides(
-        issue_loop.load_config(p), ["delivery=stacked", "max_issues_per_run=6"]
+    cfg = cli.apply_overrides(
+        cli.load_config(p), ["delivery=stacked", "max_issues_per_run=6"]
     )
     assert cfg["loop"]["delivery"] == "stacked"
     assert cfg["loop"]["max_issues_per_run"] == 6
 
 
 def test_apply_overrides_rejects_unknown_key_and_section(tmp_path):
-    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    cfg = cli.load_config(tmp_path / "nope.toml")
     with pytest.raises(ValueError, match="unknown key"):
-        issue_loop.apply_overrides(cfg, ["deliverey=stacked"])  # typo protection
+        cli.apply_overrides(cfg, ["deliverey=stacked"])  # typo protection
     with pytest.raises(ValueError, match="not overridable"):
-        issue_loop.apply_overrides(cfg, ["gates.tests=off"])  # gates are file-only
+        cli.apply_overrides(cfg, ["gates.tests=off"])  # gates are file-only
 
 
 def test_apply_overrides_noop_without_specs(tmp_path):
-    cfg = issue_loop.load_config(tmp_path / "nope.toml")
-    assert issue_loop.apply_overrides(cfg, []) is cfg
+    cfg = cli.load_config(tmp_path / "nope.toml")
+    assert cli.apply_overrides(cfg, []) is cfg
 
 
 def test_prime_holdout_is_an_overridable_loop_knob(tmp_path):
     """prime_holdout ships as a [loop] default and is --set-overridable via the
     existing mechanism (so `--set prime_holdout=0` disables holdout for a run)."""
-    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    cfg = cli.load_config(tmp_path / "nope.toml")
     assert cfg["loop"]["prime_holdout"] == 5
-    overridden = issue_loop.apply_overrides(cfg, ["prime_holdout=0"])
+    overridden = cli.apply_overrides(cfg, ["prime_holdout=0"])
     assert overridden["loop"]["prime_holdout"] == 0
 
 
@@ -776,13 +781,13 @@ def test_is_holdout_deterministic_and_disable():
     # Expected values independently computed from sha1(run_id) mod N:
     #   printf 'loop-run-10' | sha1sum  → 7a31...  int mod 5 == 0  → held out
     #   printf 'loop-run-0'  | sha1sum  → 47eb...  int mod 5 == 1  → NOT held out
-    assert issue_loop.is_holdout("loop-run-10", 5) is True
-    assert issue_loop.is_holdout("loop-run-0", 5) is False
+    assert prime.is_holdout("loop-run-10", 5) is True
+    assert prime.is_holdout("loop-run-0", 5) is False
     # Same run-id, same verdict across calls (no PYTHONHASHSEED dependence).
-    assert issue_loop.is_holdout("loop-run-10", 5) is True
+    assert prime.is_holdout("loop-run-10", 5) is True
     # holdout <= 0 disables holdout entirely.
-    assert issue_loop.is_holdout("loop-run-10", 0) is False
-    assert issue_loop.is_holdout("loop-run-10", -1) is False
+    assert prime.is_holdout("loop-run-10", 0) is False
+    assert prime.is_holdout("loop-run-10", -1) is False
 
 
 def test_extract_lessons_section_only():
@@ -791,12 +796,12 @@ def test_extract_lessons_section_only():
         "## How it went\nOne fix round on the CHECK constraint.\n\n"
         "## Lessons\nWiden the CHECK before the migration guard.\nProject from the event log.\n"
     )
-    assert issue_loop.extract_lessons(body) == (
+    assert prime.extract_lessons(body) == (
         "Widen the CHECK before the migration guard.\nProject from the event log."
     )
     # No Lessons section (the uneventful common case) → empty string.
-    assert issue_loop.extract_lessons("## What\nx\n\n## How it went\ny\n") == ""
-    assert issue_loop.extract_lessons("") == ""
+    assert prime.extract_lessons("## What\nx\n\n## How it went\ny\n") == ""
+    assert prime.extract_lessons("") == ""
 
 
 def test_render_prime_block_splices_lessons_and_lists_served():
@@ -806,13 +811,13 @@ def test_render_prime_block_splices_lessons_and_lists_served():
         {"id": "n-bbb222", "title": "trajectory judge", "issue": 60, "outcome": "shipped",
          "lessons": "Judge from the PR timeline."},
     ]
-    block, served = issue_loop.render_prime_block(trajectories, decisions=["dec-ccc333"])
+    block, served = prime.render_prime_block(trajectories, decisions=["dec-ccc333"])
     assert "Widen the CHECK first." in block
     assert "Judge from the PR timeline." in block
     assert "dec-ccc333" in block  # decisions folded in as adjacency
     assert served == ["n-aaa111", "n-bbb222", "dec-ccc333"]
     # Nothing to serve → clean skip.
-    assert issue_loop.render_prime_block([], decisions=[]) == ("", [])
+    assert prime.render_prime_block([], decisions=[]) == ("", [])
 
 
 def test_render_prime_block_honors_char_budget():
@@ -821,14 +826,14 @@ def test_render_prime_block_honors_char_budget():
         {"id": "n-2", "title": "t2", "issue": 2, "outcome": "shipped", "lessons": "M" * 400},
         {"id": "n-3", "title": "t3", "issue": 3, "outcome": "shipped", "lessons": "N" * 400},
     ]
-    block, served = issue_loop.render_prime_block(trajectories, budget_chars=600)
+    block, served = prime.render_prime_block(trajectories, budget_chars=600)
     # First piece always lands; the budget stops further pieces before all three.
     assert served == ["n-1"]
     assert "n-2" not in served and "n-3" not in served
 
 
 def test_build_prime_payload_holdout_runs_unprimed():
-    payload = issue_loop.build_prime_payload(
+    payload = prime.build_prime_payload(
         57, "loop-run-10", ["self-improvement"], conn=None, holdout=5,
     )
     assert payload["holdout"] is True
@@ -840,7 +845,7 @@ def test_build_prime_payload_holdout_runs_unprimed():
 
 def test_build_prime_payload_no_index_is_a_clean_noop():
     # No conn (index absent) and not held out → empty, no crash, loop unchanged.
-    payload = issue_loop.build_prime_payload(
+    payload = prime.build_prime_payload(
         57, "loop-run-0", ["self-improvement"], conn=None, holdout=5,
     )
     assert payload["holdout"] is False
@@ -886,9 +891,9 @@ def test_build_prime_payload_splices_matching_trajectory(tmp_path):
         concepts=["self-improvement", "retrieval"],
         body="## What\nx\n\n## Lessons\nProject context_served from the event log.\n",
     )
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        payload = issue_loop.build_prime_payload(
+        payload = prime.build_prime_payload(
             57, "loop-run-0", ["self-improvement"], conn=conn, holdout=5,
         )
     finally:
@@ -910,12 +915,12 @@ def test_query_trajectories_filters_by_concept_and_lessons(tmp_path):
     wconn.execute("INSERT INTO note_concepts VALUES ('n-nol', 'retrieval')")
     wconn.commit()
     wconn.close()
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
         # Concept miss → nothing.
-        assert issue_loop.query_trajectories(conn, ["unrelated-concept"], 3) == []
+        assert prime.query_trajectories(conn, ["unrelated-concept"], 3) == []
         # Concept hit → only the note that actually carries Lessons.
-        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+        hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert [h["id"] for h in hits] == ["n-hasl"]
@@ -965,9 +970,9 @@ def test_query_trajectories_follows_builds_on_to_insight_bodies(tmp_path):
     )
     _add_note(db, note_id="n-ins1", title="portable lesson",
               body="Follow builds_on before falling back to inline Lessons.")
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+        hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert [h["id"] for h in hits] == ["n-traj"]
@@ -989,9 +994,9 @@ def test_query_trajectories_v1_inline_lessons_still_served(tmp_path):
         body="## What\nx\n\n## Lessons\nWiden the CHECK before the migration.\n",
         frontmatter={"issue": 60, "outcome": "shipped"},  # no builds_on
     )
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+        hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert [h["id"] for h in hits] == ["n-v1"]
@@ -1015,9 +1020,9 @@ def test_query_trajectories_prefers_merged_clean_over_reworked(tmp_path):
         body="## What\nx\n\n## Lessons\nclean lesson\n",
         frontmatter={"issue": 2, "outcome": "shipped", "outcome_label": "merged-clean"},
     )
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+        hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert [h["id"] for h in hits] == ["n-clean", "n-rew"]
@@ -1038,9 +1043,9 @@ def test_query_trajectories_unlabeled_keeps_recency(tmp_path):
         body="## What\nx\n\n## Lessons\nnew\n",
         frontmatter={"issue": 2, "outcome": "shipped"},
     )
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+        hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert [h["id"] for h in hits] == ["n-newer", "n-older"]
@@ -1058,7 +1063,7 @@ def test_render_prime_block_serves_insight_bodies_over_lessons():
         {"id": "n-v1", "title": "v1", "issue": 60, "outcome": "shipped",
          "lessons": "Inline lesson.", "insights": []},
     ]
-    block, served = issue_loop.render_prime_block(trajectories, decisions=[])
+    block, served = prime.render_prime_block(trajectories, decisions=[])
     assert "Portable lesson one." in block
     assert "Portable lesson two." in block
     assert "Inline lesson." in block
@@ -1073,7 +1078,7 @@ def test_render_prime_block_v1_dicts_without_insights_key_unchanged():
         {"id": "n-aaa111", "title": "prime rail", "issue": 57,
          "outcome": "shipped", "lessons": "Widen the CHECK first."},
     ]
-    block, served = issue_loop.render_prime_block(trajectories, decisions=[])
+    block, served = prime.render_prime_block(trajectories, decisions=[])
     assert "Widen the CHECK first." in block
     assert served == ["n-aaa111"]
 
@@ -1090,9 +1095,9 @@ def test_build_prime_payload_serves_insight_bodies_end_to_end(tmp_path):
     )
     _add_note(db, note_id="n-ins1", title="portable lesson",
               body="Serve insight bodies via builds_on links.")
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        payload = issue_loop.build_prime_payload(
+        payload = prime.build_prime_payload(
             85, "loop-run-0", ["self-improvement"], conn=conn, holdout=5,
         )
     finally:
@@ -1110,7 +1115,7 @@ def test_build_trajectory_trace_lines_delta_non_int_is_zero():
     not escape as a TypeError — an uncaught TypeError would crash the trajectory
     command (rc-1) instead of the clean ValueError rc-2 path. It is a count, so
     the same coercion as every other filter/join key applies."""
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         {"number": 1, "title": "x", "labels": []},
         branch="b", commits=[], numstat="", gates=[], fix_rounds=0,
         outcome="shipped",
@@ -1132,11 +1137,11 @@ def test_resolve_insights_only_serves_note_type(tmp_path):
     _add_note(db, note_id="ses-1", title="a session", body="session body",
               note_type="session")
     _add_note(db, note_id="n-ins", title="insight", body="insight body")
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
         # A decision/session id in builds_on resolves to nothing; only the note
         # is served, preserving builds_on order.
-        assert issue_loop.resolve_insights(conn, ["dec-1", "n-ins", "ses-1"]) == [
+        assert prime.resolve_insights(conn, ["dec-1", "n-ins", "ses-1"]) == [
             {"id": "n-ins", "body": "insight body"},
         ]
     finally:
@@ -1147,7 +1152,7 @@ def test_coerce_builds_on_forms():
     """Regression pin for the builds_on coercion: plain ids pass through,
     path-based wikilinks (`[[path|id]]`) strip to the trailing id, whitespace is
     trimmed, non-string elements are dropped, and a non-list is empty."""
-    f = issue_loop._coerce_builds_on
+    f = prime._coerce_builds_on
     assert f(["n-plain"]) == ["n-plain"]
     assert f(["[[projects/x/note.md|n-wiki]]"]) == ["n-wiki"]
     assert f(["  n-space  "]) == ["n-space"]
@@ -1165,9 +1170,9 @@ def test_query_trajectories_dangling_builds_on_falls_back_to_lessons(tmp_path):
         body="## What\nx\n\n## Lessons\nfallback lesson\n",
         frontmatter={"issue": 1, "outcome": "shipped", "builds_on": ["n-missing"]},
     )
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+        hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert [h["id"] for h in hits] == ["n-traj"]
@@ -1184,9 +1189,9 @@ def test_query_trajectories_dangling_builds_on_no_lessons_filtered(tmp_path):
         body="## What\nx\n\n## How it went\ny\n",  # no Lessons
         frontmatter={"issue": 1, "outcome": "shipped", "builds_on": ["n-missing"]},
     )
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        hits = issue_loop.query_trajectories(conn, ["retrieval"], 3)
+        hits = prime.query_trajectories(conn, ["retrieval"], 3)
     finally:
         conn.close()
     assert hits == []
@@ -1200,7 +1205,7 @@ def test_prime_writes_loop_prime_served_event_to_buffer(tmp_path):
     _seed_index_db(db, note_id="n-prior1", title="t", concepts=["retrieval"],
                    body="## Lessons\nreuse\n")
     buf = tmp_path / "buffer" / "ses-loop123.jsonl"
-    rc = issue_loop.main([
+    rc = cli.main([
         "prime", "57", "--run-id", "loop-run-0",
         "--concepts", "retrieval", "--db", str(db),
         "--buffer", str(buf), "--session-id", "ses-loop123",
@@ -1218,7 +1223,7 @@ def test_prime_holdout_writes_no_buffer_event(tmp_path):
     """A held-out run is unprimed: no served ids, no buffer event even if
     --buffer is supplied."""
     buf = tmp_path / "buffer" / "ses-loop123.jsonl"
-    rc = issue_loop.main([
+    rc = cli.main([
         "prime", "57", "--run-id", "loop-run-10",  # sha1 mod 5 == 0 → held out
         "--concepts", "retrieval", "--buffer", str(buf),
     ])
@@ -1232,7 +1237,7 @@ def test_prime_degrades_on_corrupt_index(tmp_path, capsys):
     past main's connect guard). Regression: rc 0 + unprimed payload."""
     db = tmp_path / "index.db"
     db.write_bytes(b"GIF89a this is definitely not a sqlite database\n" * 8)
-    rc = issue_loop.main([
+    rc = cli.main([
         "prime", "57", "--run-id", "loop-run-0",
         "--concepts", "retrieval", "--db", str(db),
     ])
@@ -1252,7 +1257,7 @@ def test_prime_degrades_on_schema_drift_index(tmp_path, capsys):
     wconn.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT)")  # no join tables
     wconn.commit()
     wconn.close()
-    rc = issue_loop.main([
+    rc = cli.main([
         "prime", "57", "--run-id", "loop-run-0",
         "--concepts", "retrieval", "--db", str(db),
     ])
@@ -1270,9 +1275,9 @@ def test_build_prime_payload_index_error_notes_degradation(tmp_path):
     wconn.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT)")
     wconn.commit()
     wconn.close()
-    conn = issue_loop._open_index_ro(str(db))
+    conn = index_client.open_ro(str(db))
     try:
-        payload = issue_loop.build_prime_payload(
+        payload = prime.build_prime_payload(
             57, "loop-run-0", ["retrieval"], conn=conn, holdout=5,
         )
     finally:
@@ -1288,13 +1293,13 @@ def test_build_trajectory_rejects_non_list_or_non_string_served():
     issue = {"number": 1, "title": "x", "labels": []}
     for bad in ({"issue": 57, "served": ["n-a"]}, "n-abc", 42):
         with pytest.raises((ValueError, TypeError)):
-            issue_loop.build_trajectory(
+            mint.build_trajectory(
                 issue, branch="b", commits=[], numstat="", gates=[],
                 fix_rounds=0, outcome="shipped", primed=True, served=bad,
             )
     # A list with a non-string element is rejected too.
     with pytest.raises((ValueError, TypeError)):
-        issue_loop.build_trajectory(
+        mint.build_trajectory(
             issue, branch="b", commits=[], numstat="", gates=[],
             fix_rounds=0, outcome="shipped", primed=True, served=["n-ok", 123],
         )
@@ -1340,7 +1345,7 @@ def test_build_trajectory_round_trips_semantic_trace():
     frontmatter['trace'] as prose-valued structured envelopes; prose survives
     verbatim, counts stay ints, flipped_by_round is int-or-null."""
     issue = {"number": 85, "title": "Trajectory v2", "labels": []}
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         issue, branch="loop/dag-54", commits=["a"], numstat="1\t0\tx.py\n",
         gates=[], fix_rounds=1, outcome="shipped", trace=_sample_trace(),
     )
@@ -1371,7 +1376,7 @@ def test_build_trajectory_round_trips_semantic_trace():
 def test_build_trajectory_omits_trace_when_absent():
     """Backward compat / byte-stability: a caller that passes no trace gets a
     payload with NO trace key — the pre-#85 frontmatter is unchanged."""
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         {"number": 1, "title": "x", "labels": []},
         branch="b", commits=[], numstat="", gates=[],
         fix_rounds=0, outcome="shipped",
@@ -1382,7 +1387,7 @@ def test_build_trajectory_omits_trace_when_absent():
 def test_build_trajectory_trace_only_includes_provided_top_level_keys():
     """A partial trace (only the fields a run actually had) yields only those
     envelopes — absent sections are omitted, not emitted empty."""
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         {"number": 2, "title": "x", "labels": []},
         branch="b", commits=[], numstat="", gates=[],
         fix_rounds=0, outcome="shipped",
@@ -1398,7 +1403,7 @@ def test_build_trajectory_rejects_non_dict_trace():
     issue = {"number": 3, "title": "x", "labels": []}
     for bad in ([{"gate": "review"}], "review: minor", 7):
         with pytest.raises((ValueError, TypeError)):
-            issue_loop.build_trajectory(
+            mint.build_trajectory(
                 issue, branch="b", commits=[], numstat="", gates=[],
                 fix_rounds=0, outcome="shipped", trace=bad,
             )
@@ -1407,12 +1412,12 @@ def test_build_trajectory_rejects_non_dict_trace():
 def test_trajectory_trace_argparse_contract():
     """The trajectory subcommand exposes --trace-json (optional, default None),
     a sibling of --skills-json / --served-json."""
-    ns = issue_loop.build_arg_parser().parse_args([
+    ns = cli.build_arg_parser().parse_args([
         "trajectory", "85", "--gates-json", "g.json",
         "--trace-json", "trace.json", "--outcome", "shipped",
     ])
     assert ns.trace_json == "trace.json"
-    ns2 = issue_loop.build_arg_parser().parse_args([
+    ns2 = cli.build_arg_parser().parse_args([
         "trajectory", "85", "--gates-json", "g.json", "--outcome", "shipped",
     ])
     assert ns2.trace_json is None
@@ -1459,7 +1464,7 @@ def test_command_doc_section3_trace_cli_example_is_executable():
     argparse — not a drifted or hand-waved flag."""
     sec = _command_doc_subsection("## 3.")
     assert "--trace-json" in sec
-    ns = issue_loop.build_arg_parser().parse_args([
+    ns = cli.build_arg_parser().parse_args([
         "trajectory", "85", "--cwd", "wt", "--gates-json", "g.json",
         "--trace-json", "trace.json", "--fix-rounds", "1",
         "--outcome", "shipped", "--pr-url", "u", "--run-id", "r",
@@ -1491,7 +1496,7 @@ def test_resolve_index_db_honors_weave_dir_override(tmp_path):
     weave.mkdir(parents=True)
     (vault / "config" / "config.toml").write_text(
         f'weave_dir = "{weave}"\n', encoding="utf-8")
-    assert issue_loop._resolve_index_db(None, str(vault)) == str(weave / "index.db")
+    assert index_client.resolve_db_path(None, str(vault)) == str(weave / "index.db")
 
 
 def test_resolve_index_db_relative_weave_dir_anchors_at_vault(tmp_path):
@@ -1499,7 +1504,7 @@ def test_resolve_index_db_relative_weave_dir_anchors_at_vault(tmp_path):
     (vault / "config").mkdir(parents=True)
     (vault / "config" / "config.toml").write_text(
         'weave_dir = "derived/weave"\n', encoding="utf-8")
-    assert issue_loop._resolve_index_db(None, str(vault)) == str(
+    assert index_client.resolve_db_path(None, str(vault)) == str(
         vault / "derived" / "weave" / "index.db")
 
 
@@ -1507,7 +1512,7 @@ def test_resolve_index_db_falls_back_to_legacy_weave_layout(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()
     # No config.toml at all → legacy <vault>/.weave/index.db.
-    assert issue_loop._resolve_index_db(None, str(vault)) == str(
+    assert index_client.resolve_db_path(None, str(vault)) == str(
         vault / ".weave" / "index.db")
 
 
@@ -1517,7 +1522,7 @@ def test_resolve_index_db_malformed_config_falls_back(tmp_path):
     (vault / "config" / "config.toml").write_text(
         "this is = not valid toml = at all\n", encoding="utf-8")
     # Malformed config must not crash — degrade to the legacy layout.
-    assert issue_loop._resolve_index_db(None, str(vault)) == str(
+    assert index_client.resolve_db_path(None, str(vault)) == str(
         vault / ".weave" / "index.db")
 
 
@@ -1526,11 +1531,11 @@ def test_resolve_index_db_explicit_db_wins_over_vault(tmp_path):
     (vault / "config").mkdir(parents=True)
     (vault / "config" / "config.toml").write_text(
         f'weave_dir = "{tmp_path / "elsewhere"}"\n', encoding="utf-8")
-    assert issue_loop._resolve_index_db("/explicit/index.db", str(vault)) == "/explicit/index.db"
+    assert index_client.resolve_db_path("/explicit/index.db", str(vault)) == "/explicit/index.db"
 
 
 def test_prime_argparse_contract():
-    ns = issue_loop.build_arg_parser().parse_args([
+    ns = cli.build_arg_parser().parse_args([
         "prime", "57", "--run-id", "loop-x", "--labels", "a,b",
         "--concepts", "c1,c2", "--db", "i.db", "--limit", "2",
         "--budget-chars", "800", "--decisions", "dec-1", "--buffer", "b.jsonl",
@@ -1539,7 +1544,7 @@ def test_prime_argparse_contract():
     assert ns.labels == "a,b" and ns.concepts == "c1,c2"
     assert ns.limit == 2 and ns.budget_chars == 800
     # Sensible defaults when omitted.
-    ns2 = issue_loop.build_arg_parser().parse_args(["prime", "1", "--run-id", "r"])
+    ns2 = cli.build_arg_parser().parse_args(["prime", "1", "--run-id", "r"])
     assert ns2.labels is None and ns2.concepts is None and ns2.db is None
     assert ns2.limit == 3 and ns2.budget_chars == 1200 and ns2.buffer is None
 
@@ -1585,7 +1590,7 @@ def _signals(**kw):
 
 
 def test_classify_green_when_enabled():
-    r = issue_loop.classify_pr(_signals(), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(), TRIAGE_CFG)
     assert r["lane"] == "green"
     assert r["label"] == "auto-merge-ok"
     assert r["reasons"] == []
@@ -1595,14 +1600,14 @@ def test_classify_green_disabled_downgrades_to_review_light():
     # Acceptance criterion 2, second half: the same green archetype is
     # review-light (not auto-merge-ok) when green is disabled — the repo default.
     cfg = {**TRIAGE_CFG, "green_enabled": False}
-    r = issue_loop.classify_pr(_signals(), cfg)
+    r = triage.classify_pr(_signals(), cfg)
     assert r["lane"] == "yellow" and r["label"] == "review-light"
     assert any("disabled" in x for x in r["reasons"])
 
 
 def test_minor_and_none_review_are_green_eligible():
-    assert issue_loop.classify_pr(_signals(review_severity="none"), TRIAGE_CFG)["lane"] == "green"
-    assert issue_loop.classify_pr(_signals(review_severity="minor"), TRIAGE_CFG)["lane"] == "green"
+    assert triage.classify_pr(_signals(review_severity="none"), TRIAGE_CFG)["lane"] == "green"
+    assert triage.classify_pr(_signals(review_severity="minor"), TRIAGE_CFG)["lane"] == "green"
 
 
 # --- red lane ---------------------------------------------------------------
@@ -1611,19 +1616,19 @@ def test_minor_and_none_review_are_green_eligible():
 def test_classify_hooks_path_always_red():
     # Acceptance criterion 1: hooks/ is red regardless of size / first-try /
     # coverage / review — the whole green archetype except the touched file.
-    r = issue_loop.classify_pr(_signals(files_touched=["hooks/hooks.json"]), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(files_touched=["hooks/hooks.json"]), TRIAGE_CFG)
     assert r["lane"] == "red" and r["label"] == "ready-for-human"
     assert any("hooks/hooks.json" in x for x in r["reasons"])
 
 
 def test_classify_dir_prefix_matches_mcp_surface():
-    r = issue_loop.classify_pr(
+    r = triage.classify_pr(
         _signals(files_touched=["src/thinkweave/surfaces/mcp/server.py"]), TRIAGE_CFG)
     assert r["lane"] == "red"
 
 
 def test_classify_glob_pattern_matches_schema_basename():
-    r = issue_loop.classify_pr(
+    r = triage.classify_pr(
         _signals(files_touched=["src/thinkweave/core/schemas.py"]), TRIAGE_CFG)
     assert r["lane"] == "red"
 
@@ -1631,38 +1636,38 @@ def test_classify_glob_pattern_matches_schema_basename():
 def test_classify_bare_filename_matches_basename_only():
     # ontology.yaml at any depth is sensitive; a file that merely shares the
     # stem as a prefix (different basename) is not.
-    hit = issue_loop.classify_pr(
+    hit = triage.classify_pr(
         _signals(files_touched=["src/thinkweave/vault_templates/config/ontology.yaml"]),
         TRIAGE_CFG)
     assert hit["lane"] == "red"
-    miss = issue_loop.classify_pr(
+    miss = triage.classify_pr(
         _signals(files_touched=["src/thinkweave/core/ontology_helpers.py"]), TRIAGE_CFG)
     assert miss["lane"] != "red"
 
 
 def test_classify_big_diff_red():
-    r = issue_loop.classify_pr(_signals(diff_lines=900), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(diff_lines=900), TRIAGE_CFG)
     assert r["lane"] == "red"
     assert any("900" in x for x in r["reasons"])
 
 
 def test_classify_degraded_baseline_red():
-    assert issue_loop.classify_pr(_signals(baseline_green=False), TRIAGE_CFG)["lane"] == "red"
+    assert triage.classify_pr(_signals(baseline_green=False), TRIAGE_CFG)["lane"] == "red"
 
 
 def test_classify_major_and_critical_review_red():
-    assert issue_loop.classify_pr(_signals(review_severity="major"), TRIAGE_CFG)["lane"] == "red"
-    assert issue_loop.classify_pr(_signals(review_severity="critical"), TRIAGE_CFG)["lane"] == "red"
+    assert triage.classify_pr(_signals(review_severity="major"), TRIAGE_CFG)["lane"] == "red"
+    assert triage.classify_pr(_signals(review_severity="critical"), TRIAGE_CFG)["lane"] == "red"
 
 
 def test_classify_uncertain_acceptance_red():
-    assert issue_loop.classify_pr(_signals(acceptance="uncertain"), TRIAGE_CFG)["lane"] == "red"
-    assert issue_loop.classify_pr(_signals(acceptance="not-met"), TRIAGE_CFG)["lane"] == "red"
+    assert triage.classify_pr(_signals(acceptance="uncertain"), TRIAGE_CFG)["lane"] == "red"
+    assert triage.classify_pr(_signals(acceptance="not-met"), TRIAGE_CFG)["lane"] == "red"
 
 
 def test_red_lists_every_triggered_rule():
     # Short-circuit reasons: not just the first — every red rule that fired.
-    r = issue_loop.classify_pr(
+    r = triage.classify_pr(
         _signals(files_touched=["hooks/x.json"], diff_lines=900,
                  baseline_green=False, review_severity="critical"),
         TRIAGE_CFG)
@@ -1677,32 +1682,32 @@ def test_red_lists_every_triggered_rule():
 
 
 def test_classify_fix_rounds_yellow():
-    r = issue_loop.classify_pr(_signals(fix_rounds=1), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(fix_rounds=1), TRIAGE_CFG)
     assert r["lane"] == "yellow" and r["label"] == "review-light"
     assert any("fix round" in x for x in r["reasons"])
 
 
 def test_classify_medium_diff_yellow():
     # >= green_max_diff_lines (150) but < red_min_diff_lines (800).
-    r = issue_loop.classify_pr(_signals(diff_lines=300), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(diff_lines=300), TRIAGE_CFG)
     assert r["lane"] == "yellow"
     assert any("300" in x for x in r["reasons"])
 
 
 def test_classify_watched_path_yellow():
-    r = issue_loop.classify_pr(_signals(files_touched=["docs/agents/loop.toml"]), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(files_touched=["docs/agents/loop.toml"]), TRIAGE_CFG)
     assert r["lane"] == "yellow"
     assert any("watched" in x for x in r["reasons"])
 
 
 def test_classify_no_test_coverage_yellow():
-    r = issue_loop.classify_pr(_signals(tests_touched=False), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(tests_touched=False), TRIAGE_CFG)
     assert r["lane"] == "yellow"
 
 
 def test_green_requires_first_try_knob_off_allows_fix_rounds():
     cfg = {**TRIAGE_CFG, "green_requires_first_try": False}
-    assert issue_loop.classify_pr(_signals(fix_rounds=3), cfg)["lane"] == "green"
+    assert triage.classify_pr(_signals(fix_rounds=3), cfg)["lane"] == "green"
 
 
 # --- thresholds are config, not hardcoded (acceptance criterion 3) ----------
@@ -1712,15 +1717,15 @@ def test_thresholds_read_from_config():
     sig = _signals(diff_lines=200)
     lenient = {**TRIAGE_CFG, "red_min_diff_lines": 800}
     strict = {**TRIAGE_CFG, "red_min_diff_lines": 100}
-    assert issue_loop.classify_pr(sig, lenient)["lane"] == "yellow"
-    assert issue_loop.classify_pr(sig, strict)["lane"] == "red"
+    assert triage.classify_pr(sig, lenient)["lane"] == "yellow"
+    assert triage.classify_pr(sig, strict)["lane"] == "red"
 
 
 # --- config plumbing --------------------------------------------------------
 
 
 def test_load_config_triage_defaults(tmp_path):
-    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    cfg = cli.load_config(tmp_path / "nope.toml")
     t = cfg["triage"]
     assert t["green_enabled"] is False   # ship conservative
     assert "hooks/" in t["sensitive_paths"]
@@ -1732,7 +1737,7 @@ def test_load_config_triage_defaults(tmp_path):
 
 
 def test_repo_loop_toml_has_triage_section():
-    cfg = issue_loop.load_config()
+    cfg = cli.load_config()
     assert cfg["triage"]["green_enabled"] is False
     # sensitive-path defaults translated to THIS repo's layout.
     sp = cfg["triage"]["sensitive_paths"]
@@ -1740,8 +1745,8 @@ def test_repo_loop_toml_has_triage_section():
 
 
 def test_triage_override_via_set(tmp_path):
-    cfg = issue_loop.apply_overrides(
-        issue_loop.load_config(tmp_path / "nope.toml"),
+    cfg = cli.apply_overrides(
+        cli.load_config(tmp_path / "nope.toml"),
         ["triage.green_max_diff_lines=200", "triage.green_enabled=true"],
     )
     assert cfg["triage"]["green_max_diff_lines"] == 200
@@ -1749,20 +1754,20 @@ def test_triage_override_via_set(tmp_path):
 
 
 def test_triage_override_rejects_unknown_key(tmp_path):
-    cfg = issue_loop.load_config(tmp_path / "nope.toml")
+    cfg = cli.load_config(tmp_path / "nope.toml")
     with pytest.raises(ValueError, match="unknown key"):
-        issue_loop.apply_overrides(cfg, ["triage.green_max_diff=200"])
+        cli.apply_overrides(cfg, ["triage.green_max_diff=200"])
 
 
 # --- CLI contract -----------------------------------------------------------
 
 
 def test_triage_argparse_contract():
-    ns = issue_loop.build_arg_parser().parse_args(
+    ns = cli.build_arg_parser().parse_args(
         ["triage", "59", "--signals-json", "s.json"])
     assert ns.cmd == "triage" and ns.number == 59 and ns.signals_json == "s.json"
     # The issue number is optional context (signals already carry it).
-    ns2 = issue_loop.build_arg_parser().parse_args(["triage", "--signals-json", "s.json"])
+    ns2 = cli.build_arg_parser().parse_args(["triage", "--signals-json", "s.json"])
     assert ns2.number is None
 
 
@@ -1772,7 +1777,7 @@ def test_triage_cli_red_via_default_config(tmp_path, capsys):
         "fix_rounds": 0, "diff_lines": 10, "files_touched": ["hooks/hooks.json"],
         "tests_touched": True, "review_severity": "minor", "baseline_green": True,
     }), encoding="utf-8")
-    rc = issue_loop.main(["triage", "59", "--signals-json", str(sig)])
+    rc = cli.main(["triage", "59", "--signals-json", str(sig)])
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert out["lane"] == "red" and out["label"] == "ready-for-human"
@@ -1788,10 +1793,10 @@ def test_triage_cli_green_needs_enable_override(tmp_path, capsys):
         "acceptance": "met",
     }), encoding="utf-8")
     # Default config → green disabled → review-light.
-    issue_loop.main(["triage", "--signals-json", str(sig)])
+    cli.main(["triage", "--signals-json", str(sig)])
     assert json.loads(capsys.readouterr().out)["label"] == "review-light"
     # Enable green for this run → auto-merge-ok.
-    issue_loop.main(["triage", "--signals-json", str(sig), "--set", "triage.green_enabled=true"])
+    cli.main(["triage", "--signals-json", str(sig), "--set", "triage.green_enabled=true"])
     assert json.loads(capsys.readouterr().out)["label"] == "auto-merge-ok"
 
 
@@ -1811,25 +1816,25 @@ def _signals_no(*drop, **kw):
 
 
 def test_unrecognized_review_severity_is_red():
-    r = issue_loop.classify_pr(_signals(review_severity="high"), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(review_severity="high"), TRIAGE_CFG)
     assert r["lane"] == "red"
     assert any("high" in x for x in r["reasons"])
 
 
 def test_unrecognized_acceptance_is_red():
-    r = issue_loop.classify_pr(_signals(acceptance="partial"), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(acceptance="partial"), TRIAGE_CFG)
     assert r["lane"] == "red"
     assert any("partial" in x for x in r["reasons"])
 
 
 def test_missing_review_severity_is_red():
-    r = issue_loop.classify_pr(_signals_no("review_severity"), TRIAGE_CFG)
+    r = triage.classify_pr(_signals_no("review_severity"), TRIAGE_CFG)
     assert r["lane"] == "red"
     assert any("review_severity" in x for x in r["reasons"])
 
 
 def test_missing_baseline_green_is_red():
-    r = issue_loop.classify_pr(_signals_no("baseline_green"), TRIAGE_CFG)
+    r = triage.classify_pr(_signals_no("baseline_green"), TRIAGE_CFG)
     assert r["lane"] == "red"
     assert any("baseline_green" in x for x in r["reasons"])
 
@@ -1837,19 +1842,19 @@ def test_missing_baseline_green_is_red():
 def test_non_bool_baseline_green_is_red():
     # baseline_green: "false" (string) is truthy — it must NOT pass green.
     # Same enum-drift class: a non-bool value fails closed to red.
-    r = issue_loop.classify_pr(_signals(baseline_green="false"), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(baseline_green="false"), TRIAGE_CFG)
     assert r["lane"] == "red"
     assert any("baseline_green" in x for x in r["reasons"])
 
 
 def test_missing_acceptance_is_red():
-    r = issue_loop.classify_pr(_signals_no("acceptance"), TRIAGE_CFG)
+    r = triage.classify_pr(_signals_no("acceptance"), TRIAGE_CFG)
     assert r["lane"] == "red"
     assert any("acceptance" in x for x in r["reasons"])
 
 
 def test_empty_signals_is_red_on_all_three_safety_keys():
-    r = issue_loop.classify_pr({}, TRIAGE_CFG)
+    r = triage.classify_pr({}, TRIAGE_CFG)
     assert r["lane"] == "red"
     joined = " | ".join(r["reasons"])
     assert "baseline_green" in joined and "acceptance" in joined and "review_severity" in joined
@@ -1860,7 +1865,7 @@ def test_benign_absence_does_not_trip_red():
     # with the three safety keys present and clean, the PR is still green.
     sig = {"tests_touched": True, "review_severity": "minor",
            "baseline_green": True, "acceptance": "met"}
-    r = issue_loop.classify_pr(sig, TRIAGE_CFG)
+    r = triage.classify_pr(sig, TRIAGE_CFG)
     assert r["lane"] == "green"
 
 
@@ -1868,26 +1873,26 @@ def test_red_label_sourced_from_on_gate_failure(tmp_path, capsys):
     # classify_pr's red label is overridable (default 'ready-for-human'); the
     # CLI feeds it from labels.on_gate_failure so remapping that label moves the
     # triage-red label with it — no duplicate source of truth.
-    assert issue_loop.classify_pr(
+    assert triage.classify_pr(
         _signals(baseline_green=False), TRIAGE_CFG,
         red_label="needs-a-human")["label"] == "needs-a-human"
     sig = tmp_path / "sig.json"
     sig.write_text(json.dumps(_signals(files_touched=["hooks/x.json"])), encoding="utf-8")
-    issue_loop.main(["triage", "--signals-json", str(sig),
+    cli.main(["triage", "--signals-json", str(sig),
                      "--set", "labels.on_gate_failure=escalate-me"])
     assert json.loads(capsys.readouterr().out)["label"] == "escalate-me"
 
 
 def test_schema_glob_is_case_insensitive():
     # docs/SCHEMA.md (uppercase) must be caught by the *schema* pattern.
-    r = issue_loop.classify_pr(_signals(files_touched=["docs/SCHEMA.md"]), TRIAGE_CFG)
+    r = triage.classify_pr(_signals(files_touched=["docs/SCHEMA.md"]), TRIAGE_CFG)
     assert r["lane"] == "red"
 
 
 def test_triage_cli_non_object_signals_clean_error(tmp_path, capsys):
     sig = tmp_path / "sig.json"
     sig.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
-    rc = issue_loop.main(["triage", "--signals-json", str(sig)])
+    rc = cli.main(["triage", "--signals-json", str(sig)])
     assert rc == 2
     assert "error" in json.loads(capsys.readouterr().out)
 
@@ -1904,7 +1909,7 @@ def test_vendored_ponytail_audit_skill_present_with_provenance():
     ponytail-review vendoring (sha + source repo + MIT notice), and the
     machine-local symlink wiring documented in-header (symlinks into
     .claude/commands/ are not committed)."""
-    vendored = issue_loop.REPO_ROOT / "docs" / "agents" / "ponytail-audit.command.md"
+    vendored = cli.REPO_ROOT / "docs" / "agents" / "ponytail-audit.command.md"
     assert vendored.exists()
     text = vendored.read_text(encoding="utf-8")
     # Provenance: canonical upstream repo + the pinned commit sha (same as #58).
@@ -1932,12 +1937,12 @@ def test_vendored_ponytail_audit_installs_no_hooks():
     ponytail hooks — the committed hook manifest carries no ponytail entry
     (ponytail's plugin installer would collide with weave's own
     UserPromptSubmit hook, which is why we vendor SKILL TEXT ONLY)."""
-    hooks = (issue_loop.REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    hooks = (cli.REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
     assert "ponytail" not in hooks.lower()
 
 
 def _arch_proposal_doc() -> str:
-    return (issue_loop.REPO_ROOT / "docs" / "agents" / "arch-proposal.command.md").read_text(
+    return (cli.REPO_ROOT / "docs" / "agents" / "arch-proposal.command.md").read_text(
         encoding="utf-8"
     )
 
@@ -2045,7 +2050,7 @@ def test_arch_proposal_documents_headless_symlink_gotcha():
 def test_arch_proposal_label_documented_in_triage_labels():
     """The arch-proposal label is documented in the tracker's label vocabulary
     so the slow loop's output label is a known role, not an ad-hoc string."""
-    labels = (issue_loop.REPO_ROOT / "docs" / "agents" / "triage-labels.md").read_text(
+    labels = (cli.REPO_ROOT / "docs" / "agents" / "triage-labels.md").read_text(
         encoding="utf-8"
     )
     assert "arch-proposal" in labels
@@ -2136,10 +2141,10 @@ def test_extension_points_do_not_claim_the_rail_runs_judgment_kinds():
 def test_dispatch_persona_knob_defaults_on():
     """[dispatch] persona = true is the default AND file-backed in loop.toml
     (3-edit config pattern: file entry + DEFAULT_CONFIG + override path)."""
-    cfg = issue_loop.load_config()
+    cfg = cli.load_config()
     assert cfg["dispatch"]["persona"] is True
-    assert issue_loop.DEFAULT_CONFIG["dispatch"]["persona"] is True
-    toml_text = (issue_loop.REPO_ROOT / "docs" / "agents" / "loop.toml").read_text(
+    assert cli.DEFAULT_CONFIG["dispatch"]["persona"] is True
+    toml_text = (cli.REPO_ROOT / "docs" / "agents" / "loop.toml").read_text(
         encoding="utf-8"
     )
     assert "[dispatch]" in toml_text
@@ -2149,10 +2154,10 @@ def test_dispatch_persona_knob_defaults_on():
 def test_dispatch_persona_overridable_per_run():
     """--set dispatch.persona=false flips the knob for one run; an unknown key
     in [dispatch] stays a hard error (typo protection, same as every section)."""
-    cfg = issue_loop.apply_overrides(issue_loop.load_config(), ["dispatch.persona=false"])
+    cfg = cli.apply_overrides(cli.load_config(), ["dispatch.persona=false"])
     assert cfg["dispatch"]["persona"] is False
     with pytest.raises(ValueError):
-        issue_loop.apply_overrides(issue_loop.load_config(), ["dispatch.personna=false"])
+        cli.apply_overrides(cli.load_config(), ["dispatch.personna=false"])
 
 
 def test_vendored_ponytail_persona_present_with_provenance():
@@ -2160,7 +2165,7 @@ def test_vendored_ponytail_persona_present_with_provenance():
     SAME pinned-upstream provenance as the #58/#61 vendorings (source repo +
     pinned sha + MIT notice). It is a dispatch splice source, not a slash
     command — the command doc references this file, never duplicates it."""
-    vendored = issue_loop.REPO_ROOT / "docs" / "agents" / "ponytail-persona.md"
+    vendored = cli.REPO_ROOT / "docs" / "agents" / "ponytail-persona.md"
     assert vendored.exists()
     text = vendored.read_text(encoding="utf-8")
     # Provenance: canonical upstream repo + pinned sha; the upstream path is
@@ -2175,7 +2180,7 @@ def test_vendored_ponytail_persona_present_with_provenance():
 
 
 def _issue_loop_doc() -> str:
-    return (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
+    return (cli.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
         encoding="utf-8"
     )
 
@@ -2223,7 +2228,7 @@ def test_issue_loop_doc_gates_splice_on_dispatch_persona_knob():
 def _command_doc_subsection(marker: str) -> str:
     """Extract one `### 1x.` subsection of issue-loop.command.md — from the
     heading that starts with ``marker`` to the next heading of any level."""
-    doc = issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md"
+    doc = cli.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md"
     assert doc.exists(), "issue-loop.command.md must ship under docs/agents/"
     lines = doc.read_text(encoding="utf-8").splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.startswith(marker))
@@ -2283,7 +2288,7 @@ def test_build_trajectory_shapes_stack_simplify_like_slice_simplify():
     run-end `stack_simplify`; the latter is shaped through the same projection
     (outcome/lines_delta/cuts/kept, bookkeeping keys dropped). Expected value
     hand-written from the #85 envelope schema."""
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         {"number": 90, "title": "stack-tip simplify", "labels": []},
         branch="loop/dag-88", commits=["a"], numstat="1\t0\tx.py\n",
         gates=[], fix_rounds=0, outcome="shipped",
@@ -2317,7 +2322,7 @@ def test_build_trajectory_shapes_stack_simplify_like_slice_simplify():
 def test_build_trajectory_omits_stack_simplify_when_absent():
     """pr-per-issue runs (and stacked runs whose tip pass said lean/never ran)
     pass no stack_simplify — the key is omitted, never emitted empty."""
-    payload = issue_loop.build_trajectory(
+    payload = mint.build_trajectory(
         {"number": 91, "title": "x", "labels": []},
         branch="b", commits=[], numstat="", gates=[],
         fix_rounds=0, outcome="shipped",
