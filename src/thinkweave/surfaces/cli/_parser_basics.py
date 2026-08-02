@@ -243,9 +243,9 @@ def add_index_subparsers(sub) -> None:
         action="store_true",
         help=(
             "Synthesise previously-materialized sessions into "
-            "decisions/insights (does not re-materialize). The pending set is "
-            "harness-agnostic: it is every imported-but-unsynthesised session "
-            "note, whichever source is named on this command line."
+            "decisions/insights (does not re-materialize). Scoped to the "
+            "source named on this command line — it never drains another "
+            "harness's imported sessions."
         ),
     )
     p_import.add_argument(

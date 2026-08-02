@@ -255,6 +255,12 @@ def extract_session(
     # dump, so it never touches a live `/wrap` session. This is the one
     # place the import body-shape transform lives — keeping both backends
     # byte-for-byte identical.
+    #
+    # Not scoped to a harness, and deliberately so: this is a body-shape
+    # transform on the note it was handed, not a selection gate. Per-harness
+    # scoping happens upstream in `find_pending_sessions`; the other caller
+    # (the `weave_extract` MCP tool, which /wrap and /seed-enrich both use)
+    # is handed a session id with no notion of an import source at all.
     if (
         session_note.frontmatter.get("imported_from")
         and "## Transcript" in session_note.body

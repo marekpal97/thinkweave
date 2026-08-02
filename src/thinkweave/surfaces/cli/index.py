@@ -283,7 +283,9 @@ def cmd_import(args: argparse.Namespace) -> None:
 
     # claude-code and codex are the two session-transcript harnesses: separate
     # walkers, one downstream `--enrich` pass (it consumes the session note,
-    # not the transcript format) and one stats/print shape.
+    # not the transcript format) and one stats/print shape. `--enrich` is
+    # per-harness end-to-end — `source` scopes the pending set, so neither
+    # invocation ever drains the other's imported sessions.
     if args.source in ("claude-code", "codex"):
         if getattr(args, "enrich", False):
             from thinkweave.onboarding.enrich_batch import (
@@ -296,13 +298,20 @@ def cmd_import(args: argparse.Namespace) -> None:
             # parses it); route selection only governs real execution.
             if args.dry_run:
                 run_enrichment_batch(
-                    cfg, project_filter=args.project, limit=args.enrich_limit, dry_run=True
+                    cfg,
+                    source=args.source,
+                    project_filter=args.project,
+                    limit=args.enrich_limit,
+                    dry_run=True,
                 )
                 return
 
             n_pending = len(
                 find_pending_sessions(
-                    cfg, project_filter=args.project, limit=args.enrich_limit
+                    cfg,
+                    source=args.source,
+                    project_filter=args.project,
+                    limit=args.enrich_limit,
                 )
             )
             if n_pending == 0:
@@ -322,6 +331,7 @@ def cmd_import(args: argparse.Namespace) -> None:
 
             run_enrichment_batch(
                 cfg,
+                source=args.source,
                 project_filter=args.project,
                 model=args.enrich_model or None,
                 limit=args.enrich_limit,

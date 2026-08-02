@@ -592,20 +592,83 @@ def test_note_shape_matches_a_claude_code_import(vault_cfg: Config, tmp_path: Pa
         assert section in cc_body, section
 
 
-# ── --enrich picks up codex sessions ───────────────────────────────────
+# ── --enrich selection is scoped per harness ───────────────────────────
 
 
-def test_enrich_finds_imported_codex_sessions(vault_cfg: Config, codex_root: Path):
-    """The dual-route ``--enrich`` pass consumes the session note, not the
-    transcript format — so an imported codex session is pending synthesis on
-    exactly the same terms as a CC one."""
-    from thinkweave.onboarding.enrich_batch import find_pending_sessions
+def _seed_both_harnesses(cfg: Config, codex_root: Path, tmp_path: Path) -> None:
+    """Materialise exactly one codex-imported and one CC-imported session
+    into the same vault — the two-harness vault the scoping contract governs.
+    Both land unprocessed, so the only thing separating them is
+    ``imported_from``."""
+    from thinkweave.onboarding.claude_code_seed import import_claude_code
 
     _write_rollout(codex_root, _simple_events())
-    import_codex(vault_cfg, sessions_root=codex_root)
+    import_codex(cfg, sessions_root=codex_root)
 
-    pending = find_pending_sessions(vault_cfg)
+    cc_root = tmp_path / "cc" / "projects" / "-home-u-projects-thinkmesh"
+    cc_root.mkdir(parents=True)
+    cc_lines = [
+        {
+            "type": "user",
+            "timestamp": "2025-12-04T16:54:00.000Z",
+            "cwd": "/home/u/projects/thinkmesh",
+            "gitBranch": "feature/geo",
+            "message": {"content": "Why does the z-score threshold not change the count?"},
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2025-12-04T16:55:10.000Z",
+            "cwd": "/home/u/projects/thinkmesh",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "The threshold is read before the events are added."}
+                ]
+            },
+        },
+    ]
+    with (cc_root / "11111111-2222-3333-4444-555555555555.jsonl").open(
+        "w", encoding="utf-8"
+    ) as fh:
+        for ev in cc_lines:
+            fh.write(json.dumps(ev) + "\n")
+    import_claude_code(cfg, claude_projects_root=cc_root.parent)
+    # Guard the guard: both harnesses really are present and unprocessed, so a
+    # scoping assertion below can't pass by finding nothing to exclude.
+    assert len(_session_notes(cfg)) == 2
 
-    assert len(pending) == 1
+
+def _imported_from(pending) -> list[str]:
+    return [
+        parse_frontmatter(p.note_path.read_text(encoding="utf-8"))[0]["imported_from"]
+        for p in pending
+    ]
+
+
+def test_enrich_finds_imported_codex_sessions(
+    vault_cfg: Config, codex_root: Path, tmp_path: Path
+):
+    """``weave import codex --enrich`` selects the codex-imported session and
+    leaves the CC-imported one alone."""
+    from thinkweave.onboarding.enrich_batch import find_pending_sessions
+
+    _seed_both_harnesses(vault_cfg, codex_root, tmp_path)
+
+    pending = find_pending_sessions(vault_cfg, source="codex")
+
+    assert _imported_from(pending) == ["codex"]
     assert pending[0].project == "thinkmesh"
     assert "## Transcript" in pending[0].transcript
+
+
+def test_claude_code_enrich_does_not_drain_codex_sessions(
+    vault_cfg: Config, codex_root: Path, tmp_path: Path
+):
+    """The mirror of the above, and the behaviour the owner review rejected a
+    shared queue for: a codex-pending session is invisible to the CC enrich."""
+    from thinkweave.onboarding.enrich_batch import find_pending_sessions
+
+    _seed_both_harnesses(vault_cfg, codex_root, tmp_path)
+
+    pending = find_pending_sessions(vault_cfg, source="claude-code")
+
+    assert _imported_from(pending) == ["claude-code"]

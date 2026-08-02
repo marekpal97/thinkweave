@@ -19,7 +19,9 @@ that falls straight through to ``completion.provider`` — there is **no**
 hardcoded provider. Set an ``overrides.claude_code_enrich`` block only to
 pin a different provider/model for this op specifically.
 
-Triggered by ``weave import claude-code --enrich [--via batch]``.
+Triggered by ``weave import {claude-code|codex} --enrich [--via batch]``. The
+pending set is scoped to the harness named on that command line — see
+:func:`find_pending_sessions`.
 """
 
 from __future__ import annotations
@@ -44,22 +46,23 @@ class PendingSession:
 def find_pending_sessions(
     cfg: Config,
     *,
+    source: str,
     project_filter: str = "",
     limit: int = 0,
 ) -> list[PendingSession]:
     """Scan on-disk session notes for imported-but-not-yet-synthesised ones.
 
-    The gate is ``imported_from`` set AND not ``processed`` — ``processed:
-    true`` is the canonical "synthesised" marker (stamped by
+    The gate is ``imported_from == source`` AND not ``processed`` —
+    ``processed: true`` is the canonical "synthesised" marker (stamped by
     ``extract_session``), identical to a live-wrapped session. The legacy
     ``enrichment_status: pending`` discriminator was retired with the
     transcript→companion move.
 
-    Deliberately harness-agnostic: any importer that materialises a session
-    note holding a raw transcript (claude-code, codex) is pending on the same
-    terms, so ``--enrich`` needs no per-harness branch. Importers that write
-    *already-synthesised* sessions (claude-mem) stamp ``processed: true`` at
-    creation and are excluded by the second half of the gate.
+    ``source`` is the harness named on the invocation (``claude-code``,
+    ``codex``) and is **required**: selection is per-harness end-to-end, so
+    ``weave import claude-code --enrich`` never drains a codex-imported
+    session and vice versa. There is no shared pending queue. Only selection
+    is scoped — the synthesis downstream stays harness-agnostic.
 
     Walks the disk (not the index) because the discriminator is frontmatter;
     transcript is read from the ``transcript.md`` companion if it's already
@@ -92,7 +95,7 @@ def find_pending_sessions(
                 fm, body = parse_frontmatter(session_md.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if not fm.get("imported_from"):
+            if fm.get("imported_from") != source:
                 continue
             if fm.get("processed"):
                 continue
@@ -200,6 +203,7 @@ def fanout_plan(cfg: Config, n_pending: int) -> dict:
 def run_enrichment_batch(
     cfg: Config,
     *,
+    source: str,
     project_filter: str = "",
     model: str | None = None,
     max_tokens: int = 2048,
@@ -210,8 +214,8 @@ def run_enrichment_batch(
 ) -> dict:
     """Synthesise pending imported sessions via the wrapper's async fan-out.
 
-    Lifecycle: find pending → build prompts → ``batch_completions_sync`` →
-    per result: ``extract_session`` writeback.
+    Lifecycle: find pending (scoped to ``source``) → build prompts →
+    ``batch_completions_sync`` → per result: ``extract_session`` writeback.
 
     Provider / model: when ``model`` is ``None`` (typical), reads
     ``api.yaml`` via ``resolve_for_op(..., "claude_code_enrich")``, which
@@ -220,7 +224,9 @@ def run_enrichment_batch(
     """
     del poll_interval  # back-compat only; no polling under the wrapper path
 
-    pending = find_pending_sessions(cfg, project_filter=project_filter, limit=limit)
+    pending = find_pending_sessions(
+        cfg, source=source, project_filter=project_filter, limit=limit
+    )
     stats: dict = {
         "pending": len(pending),
         "submitted": 0,
@@ -231,7 +237,7 @@ def run_enrichment_batch(
         "errors": [],
     }
     if not pending:
-        print("No pending claude-code sessions found. Nothing to synthesise.")
+        print(f"No pending {source} sessions found. Nothing to synthesise.")
         return stats
 
     from thinkweave.core.api_config import load_api_config, resolve_for_op

@@ -55,7 +55,7 @@ weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic 
 weave steering {evidence [--module PATH] | gate --proposals-json FILE} [--json]  # evidence-gated steering: per-module signals + drop-no-evidence/budget-cap gate the slow loop #61 calls
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
 weave import {claude-code|codex|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
-                                              # --enrich drains ALL imported-but-unsynthesised sessions (harness-agnostic), not just the named source
+                                              # --enrich synthesises pending sessions imported by the named source only — no cross-harness draining
 weave intake {enumerate|archive}              # drop-folder helpers for /substack and friends
 weave discover [--project X]                  # cross-project research gap analysis
 weave show <id>                               # render a single note
