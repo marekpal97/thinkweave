@@ -2090,11 +2090,11 @@ def test_gate_split_stated_exactly_once_where_gates_are_introduced():
     simplify are orchestrator-dispatched and only recognised there) is stated
     ONCE, in the gate-pipeline section of the command doc — never duplicated
     across the loop docs."""
-    docs = sorted((issue_loop.REPO_ROOT / "docs" / "agents").glob("*.md"))
+    docs = sorted((cli.REPO_ROOT / "docs" / "agents").glob("*.md"))
     hits = [p for p in docs if _GATE_SPLIT_MARKER in p.read_text(encoding="utf-8")]
     assert [p.name for p in hits] == ["issue-loop.command.md"]
 
-    text = (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
+    text = (cli.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
         encoding="utf-8"
     )
     # It lives inside §1c — where gates are introduced — not somewhere else.
@@ -2111,7 +2111,7 @@ def test_gate_split_stated_exactly_once_where_gates_are_introduced():
     # (Moves with the message when #94 relocates `check` out of the script.)
     refusal = "is LLM-judged — run it from the /issue-loop command, not the script"
     assert refusal in " ".join(section.split())  # the doc wraps it across lines
-    assert refusal in (issue_loop.REPO_ROOT / "scripts" / "issue_loop.py").read_text(
+    assert refusal in (cli.REPO_ROOT / "devloop" / "cli.py").read_text(
         encoding="utf-8"
     )
 
@@ -2121,7 +2121,7 @@ def test_extension_points_do_not_claim_the_rail_runs_judgment_kinds():
     judgment kind (rail line ~1321), it does not run it as a command. The
     semantics doc must not say otherwise, and must point at the one statement
     of the split instead of restating it."""
-    text = (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.md").read_text(
+    text = (cli.REPO_ROOT / "docs" / "agents" / "issue-loop.md").read_text(
         encoding="utf-8"
     )
     assert "reports them as command-run" not in text
