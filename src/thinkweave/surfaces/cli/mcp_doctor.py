@@ -206,11 +206,20 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
         scopes.append(("plugin", path, entry))
 
     if not scopes:
+        # The fix has to name the harness it applies to: `weave install`
+        # defaults to Claude Code, so handing a Codex user the bare command
+        # would write the registration into the wrong home.
+        harness_flag = (
+            "" if _profile().id == "claude-code" else f" --harness {_profile().id}"
+        )
         return CheckResult(
             name="registration scopes",
             passed=False,
             detail="thinkweave is not registered in any scope",
-            fix="run `weave install --yes` (machine) or install the plugin",
+            fix=(
+                f"run `weave install --yes{harness_flag}` (machine) "
+                "or install the plugin"
+            ),
         )
 
     if len(scopes) == 1:
@@ -229,7 +238,7 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
             passed=False,
             detail=(
                 f"{len(scopes)} scopes declare thinkweave with DIFFERENT "
-                f"invocations: {summary} — Claude Code will pick one and warn"
+                f"invocations: {summary} — {_profile().id} will pick one and warn"
             ),
             fix=(
                 "reconcile to a single shape (re-run `weave install --yes` and "
@@ -240,6 +249,71 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
         name="registration scopes",
         passed=True,
         detail=f"{len(scopes)} scopes declare thinkweave identically ({summary})",
+    )
+
+
+def _repo_local_hook_files(cwd: Path) -> list[Path]:
+    """Repo-local files that declare hooks, for a harness that never fires
+    them from there.
+
+    Codex accepts hooks in TWO representations per config layer — a
+    ``hooks.json`` and an inline ``[hooks]`` table in the sibling
+    ``config.toml`` — so checking only one leaves half the failure
+    undiagnosed. The ``config.toml`` in that directory is also where #106
+    writes ``[mcp_servers]``, which is a different concern; only a ``hooks``
+    key counts.
+    """
+    hooks_rel = _profile().project_settings_relpath
+    found: list[Path] = []
+
+    hooks_file = cwd / hooks_rel
+    data = _safe_load_json(hooks_file)
+    if data and data.get("hooks"):
+        found.append(hooks_file)
+
+    toml_file = cwd / hooks_rel.parent / "config.toml"
+    if toml_file.exists():
+        try:
+            import tomllib
+
+            if tomllib.loads(toml_file.read_text(encoding="utf-8")).get("hooks"):
+                found.append(toml_file)
+        except (OSError, ValueError):
+            # Someone else's syntax error is not this check's business.
+            pass
+    return found
+
+
+def check_hook_scope(cwd: Path) -> CheckResult:
+    """FAIL when hooks are declared where this harness will never run them.
+
+    Only meaningful for a ``hooks_global_only`` harness. On Codex a repo-local
+    entry parses cleanly and then simply never fires (openai/codex#17532; the
+    manual additionally gates project ``.codex/`` layers on the project being
+    trusted) — silently-inert config, which is the failure class this project
+    keeps getting bitten by, so it gets a named check rather than a footnote.
+    """
+    stray = _repo_local_hook_files(cwd)
+    if not stray:
+        return CheckResult(
+            name="hook scope",
+            passed=True,
+            detail="no repo-local hook declarations",
+        )
+    listed = ", ".join(str(p) for p in stray)
+    return CheckResult(
+        name="hook scope",
+        passed=False,
+        detail=(
+            f"hooks declared repo-local in {listed} — {_profile().id} accepts "
+            "these and then never fires them"
+        ),
+        fix=(
+            "move them to the machine scope: "
+            f"`weave hooks install --scope user --harness {_profile().id}` "
+            f"(writes {_profile().user_settings}), then delete the repo-local "
+            "hook entries"
+        ),
     )
 
 
@@ -445,6 +519,10 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # Launcher probe is only meaningful if at least one scope registers.
     if result.checks[-1].passed and "not registered" not in result.checks[-1].detail:
         result.checks.append(check_launcher_resolves(cwd))
+    # Only harnesses that ignore repo-local hooks get this row, so a Claude
+    # Code report is unchanged.
+    if _profile().hooks_global_only:
+        result.checks.append(check_hook_scope(cwd))
     result.checks.append(check_vault_env())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)

@@ -683,3 +683,121 @@ class TestContextServedProjection:
             )
         finally:
             idx.close()
+
+
+# ---------------------------------------------------------------------------
+# `weave doctor --mcp` — the repo-local hook warning
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorHookScope:
+    """Silently-inert config is this repo's canonical failure class, and a
+    repo-local Codex hook entry is exactly that: the parser accepts it, then
+    nothing fires (openai/codex#17532, and the manual additionally gates
+    project `.codex/` layers on the project being trusted). Verified on
+    0.146.0 — a hooks.json in an untrusted/repo-local position produced no
+    hook invocations at all, with no message.
+
+    Codex reads hooks from BOTH `.codex/hooks.json` and an inline `[hooks]`
+    table in `.codex/config.toml`, so the doctor has to look in both or it
+    leaves half the failure undiagnosed.
+    """
+
+    def _run(self, cwd: Path):
+        from thinkweave.surfaces.cli import mcp_doctor
+
+        return mcp_doctor.check_hook_scope(cwd)
+
+    def test_clean_repo_passes(self, codex_home: Path, tmp_path: Path):
+        project = tmp_path / "clean"
+        project.mkdir()
+        assert self._run(project).passed is True
+
+    def test_repo_local_hooks_json_is_flagged(
+        self, codex_home: Path, tmp_path: Path
+    ):
+        project = tmp_path / "repo"
+        (project / ".codex").mkdir(parents=True)
+        (project / ".codex" / "hooks.json").write_text(
+            json.dumps({"hooks": {"SessionStart": [{"hooks": []}]}})
+        )
+        check = self._run(project)
+        assert check.passed is False
+        assert ".codex/hooks.json" in check.detail.replace("\\", "/")
+        assert "--scope user" in check.fix
+
+    def test_repo_local_inline_toml_hooks_are_flagged(
+        self, codex_home: Path, tmp_path: Path
+    ):
+        project = tmp_path / "repo"
+        (project / ".codex").mkdir(parents=True)
+        (project / ".codex" / "config.toml").write_text(
+            '[[hooks.SessionStart]]\nmatcher = ""\n'
+        )
+        check = self._run(project)
+        assert check.passed is False
+        assert "config.toml" in check.detail
+
+    def test_mcp_only_project_config_is_not_flagged(
+        self, codex_home: Path, tmp_path: Path
+    ):
+        """#106 writes `[mcp_servers]` into a project config.toml. That is a
+        different concern and must not trip the hook warning."""
+        project = tmp_path / "repo"
+        (project / ".codex").mkdir(parents=True)
+        (project / ".codex" / "config.toml").write_text(
+            '[mcp_servers.thinkweave]\ncommand = "uv"\n'
+        )
+        assert self._run(project).passed is True
+
+    def test_check_runs_only_for_global_only_harnesses(self, tmp_path: Path):
+        """Claude Code honours project-scope hooks, so its doctor report is
+        unchanged — the row is not emitted at all."""
+        from thinkweave.surfaces.cli import mcp_doctor
+
+        project = tmp_path / "cc"
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "settings.local.json").write_text(
+            json.dumps({"hooks": {"SessionStart": []}})
+        )
+        result = mcp_doctor.run_mcp_doctor(project)
+        assert not any(c.name == "hook scope" for c in result.checks)
+
+
+class TestDoctorHarnessAwareMessages:
+    """Slice-1/2 follow-ups: two doctor strings assumed Claude Code."""
+
+    def test_absent_registration_fix_names_the_harness(
+        self, codex_home: Path, tmp_path: Path
+    ):
+        from thinkweave.surfaces.cli import mcp_doctor
+
+        check = mcp_doctor.check_registration_scopes(tmp_path / "nowhere")
+        assert check.passed is False
+        assert "--harness codex" in check.fix
+
+    def test_claude_code_fix_stays_unqualified(self, tmp_path: Path):
+        from thinkweave.surfaces.cli import mcp_doctor
+
+        check = mcp_doctor.check_registration_scopes(tmp_path / "nowhere")
+        assert "--harness" not in check.fix
+
+    def test_divergent_scope_message_names_the_active_harness(
+        self, codex_home: Path, tmp_path: Path, monkeypatch
+    ):
+        from thinkweave.surfaces.cli import mcp_doctor
+
+        monkeypatch.setattr(
+            mcp_doctor,
+            "_entry_from_claude_json",
+            lambda: (Path("/m"), {"command": "uv", "args": ["a"]}),
+        )
+        monkeypatch.setattr(
+            mcp_doctor,
+            "_entry_from_project_mcp_json",
+            lambda cwd: (Path("/p"), {"command": "uv", "args": ["b"]}),
+        )
+        check = mcp_doctor.check_registration_scopes(tmp_path)
+        assert check.passed is False
+        assert "Claude Code" not in check.detail
+        assert "codex" in check.detail
