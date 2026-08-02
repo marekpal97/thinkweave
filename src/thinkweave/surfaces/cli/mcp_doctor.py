@@ -20,15 +20,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-CLAUDE_JSON = Path.home() / ".claude.json"
+from thinkweave.core.harness import active as active_harness
+
 SERVER_NAME = "thinkweave"
-# HOME-scoped plugin install locations. A marketplace install copies the plugin
-# to ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/; `weave dev-link`
+
+# The three harness-scoped locations the doctor inspects, all read from the
+# active profile: the machine-scope MCP config, plus the two HOME-scoped plugin
+# install locations. A marketplace install copies the plugin to
+# ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/; `weave dev-link`
 # symlinks the checkout to ~/.claude/skills/<name>/. The plugin manifest there
 # declares the MCP server, so the doctor must scan these to recognise a clean
-# plugin-only install (no raw ~/.claude.json entry). Module-level for monkeypatch.
-PLUGINS_CACHE = Path.home() / ".claude" / "plugins" / "cache"
-SKILLS_DIR = Path.home() / ".claude" / "skills"
+# plugin-only install (no raw entry in the harness's own MCP config).
+_profile = active_harness
 
 # ---------- result types ----------
 
@@ -56,7 +59,7 @@ class DoctorResult:
 def _safe_load_json(path: Path) -> dict[str, Any] | None:
     """Return the parsed JSON body of ``path`` or ``None`` on miss / error.
 
-    A malformed ``~/.claude.json`` is a real failure case the user should
+    A malformed harness MCP config is a real failure case the user should
     see, but for plugin manifests we silently skip — they're optional.
     """
     if not path.exists():
@@ -68,10 +71,12 @@ def _safe_load_json(path: Path) -> dict[str, Any] | None:
 
 
 def _entry_from_claude_json() -> tuple[Path, dict | None]:
-    data = _safe_load_json(CLAUDE_JSON)
+    """The machine-scope MCP registration, read from the harness's own config."""
+    path = _profile().mcp_config
+    data = _safe_load_json(path)
     if data is None:
-        return CLAUDE_JSON, None
-    return CLAUDE_JSON, data.get("mcpServers", {}).get(SERVER_NAME)
+        return path, None
+    return path, data.get("mcpServers", {}).get(SERVER_NAME)
 
 
 def _entry_from_project_mcp_json(cwd: Path) -> tuple[Path, dict | None]:
@@ -107,12 +112,13 @@ def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
                 candidates.append(manifest)
 
     # HOME-scoped installs — where plugins actually live for real users.
-    if PLUGINS_CACHE.exists():
+    profile = _profile()
+    if profile.plugins_cache.exists():
         # cache/<marketplace>/<plugin>/<version>/.claude-plugin/plugin.json
-        candidates.extend(PLUGINS_CACHE.glob("*/*/*/.claude-plugin/plugin.json"))
-    if SKILLS_DIR.exists():
+        candidates.extend(profile.plugins_cache.glob("*/*/*/.claude-plugin/plugin.json"))
+    if profile.skills_dir.exists():
         # <name>/.claude-plugin/plugin.json (dev-link / @skills-dir)
-        candidates.extend(SKILLS_DIR.glob("*/.claude-plugin/plugin.json"))
+        candidates.extend(profile.skills_dir.glob("*/.claude-plugin/plugin.json"))
 
     entries: list[tuple[Path, dict]] = []
     seen: set[Path] = set()
@@ -179,7 +185,7 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
     scopes: list[tuple[str, Path, dict]] = []
     _, machine_entry = _entry_from_claude_json()
     if machine_entry is not None:
-        scopes.append(("machine", CLAUDE_JSON, machine_entry))
+        scopes.append(("machine", _profile().mcp_config, machine_entry))
     project_path, project_entry = _entry_from_project_mcp_json(cwd)
     if project_entry is not None:
         scopes.append(("project", project_path, project_entry))
@@ -240,7 +246,7 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
     source: str
     plugin_root: Path | None = None
     if machine_entry is not None:
-        entry, source = machine_entry, str(CLAUDE_JSON)
+        entry, source = machine_entry, str(_profile().mcp_config)
     elif project_entry is not None:
         entry, source = project_entry, str(project_path)
     elif plugin_entries:

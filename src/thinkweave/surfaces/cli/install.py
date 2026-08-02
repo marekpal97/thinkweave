@@ -27,14 +27,46 @@ import sysconfig
 from pathlib import Path
 from typing import Any, NamedTuple
 
-CLAUDE_JSON = Path.home() / ".claude.json"
-CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
-MARKER = Path.home() / ".claude" / "thinkweave_paused.json"
-PLUGINS_ROOT = Path.home() / ".claude" / "plugins"
-SKILLS_DIR = Path.home() / ".claude" / "skills"
+from thinkweave.core.harness import active as active_harness
+
 SERVER_NAME = "thinkweave"
-DEV_LINK = SKILLS_DIR / SERVER_NAME  # ~/.claude/skills/thinkweave (weave dev-link target)
 REQUIRED_SCRIPTS = ("weave", "weave-hook", "weave-mcp")
+
+# Every harness touchpoint this module reads or writes — the MCP config, the
+# instructions file, the plugins root, the dev-link target, the pause marker —
+# comes from the active profile. `_profile()` is the single read point, so a
+# `--harness` flag (#106) has exactly one place to interpose; the accessors
+# below just spell the individual fields at their call sites.
+_profile = active_harness
+
+
+def _mcp_config() -> Path:
+    """Where the harness reads its MCP server registrations from."""
+    return _profile().mcp_config
+
+
+def _instructions() -> Path:
+    """The always-loaded user-global instructions file we splice a block into."""
+    return _profile().instructions_file
+
+
+def _marker() -> Path:
+    """The `weave pause` marker."""
+    return _profile().pause_marker
+
+
+def _plugins_root() -> Path:
+    return _profile().plugins_root
+
+
+def _skills_dir() -> Path:
+    return _profile().skills_dir
+
+
+def _dev_link() -> Path:
+    """The `weave dev-link` symlink target inside the harness's skills dir."""
+    return _profile().dev_link
+
 
 CLAUDE_MD_BLOCK_START = "<!-- thinkweave:start -->"
 CLAUDE_MD_BLOCK_END = "<!-- thinkweave:end -->"
@@ -251,9 +283,9 @@ def _plugin_provides_mcp() -> Path | None:
     Corrupt or unreadable manifests are silently skipped rather than
     aborting the install; a broken plugin shouldn't block ``weave install``.
     """
-    if not PLUGINS_ROOT.exists():
+    if not _plugins_root().exists():
         return None
-    for manifest in PLUGINS_ROOT.glob("*/.claude-plugin/plugin.json"):
+    for manifest in _plugins_root().glob("*/.claude-plugin/plugin.json"):
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -321,7 +353,7 @@ def _install_claude_md_block(yes: bool) -> None:
 
     new_block = _render_claude_md_block()
 
-    if not CLAUDE_MD.exists():
+    if not _instructions().exists():
         print()
         print("~/.claude/CLAUDE.md does not exist. `weave install` will create it")
         print("with a small thinkweave block (loaded into every Claude Code session):")
@@ -332,21 +364,21 @@ def _install_claude_md_block(yes: bool) -> None:
             print()
             print("Re-run with --yes to write, or --no-claude-md to skip.")
             sys.exit(1)
-        CLAUDE_MD.parent.mkdir(parents=True, exist_ok=True)
-        CLAUDE_MD.write_text(new_block + "\n", encoding="utf-8")
+        _instructions().parent.mkdir(parents=True, exist_ok=True)
+        _instructions().write_text(new_block + "\n", encoding="utf-8")
         print()
-        print(f"Wrote {CLAUDE_MD} with thinkweave block.")
+        print(f"Wrote {_instructions()} with thinkweave block.")
         return
 
-    text = CLAUDE_MD.read_text(encoding="utf-8")
+    text = _instructions().read_text(encoding="utf-8")
     existing = _extract_claude_md_block(text)
     if existing == new_block:
-        print(f"thinkweave block already present in {CLAUDE_MD} (no change).")
+        print(f"thinkweave block already present in {_instructions()} (no change).")
         return
 
     action = "Update" if existing is not None else "Append to"
     print()
-    print(f"{action} {CLAUDE_MD} (user-global, loaded into every Claude Code session) with:")
+    print(f"{action} {_instructions()} (user-global, loaded into every Claude Code session) with:")
     print()
     for line in new_block.splitlines():
         print(f"  {line}")
@@ -356,25 +388,25 @@ def _install_claude_md_block(yes: bool) -> None:
         sys.exit(1)
 
     new_text = _splice_claude_md_block(text, new_block)
-    tmp = CLAUDE_MD.with_suffix(CLAUDE_MD.suffix + ".tmp")
+    tmp = _instructions().with_suffix(_instructions().suffix + ".tmp")
     tmp.write_text(new_text, encoding="utf-8")
-    os.replace(tmp, CLAUDE_MD)
+    os.replace(tmp, _instructions())
     print()
     verb = "Updated" if existing is not None else "Appended"
-    print(f"{verb} thinkweave block in {CLAUDE_MD}.")
+    print(f"{verb} thinkweave block in {_instructions()}.")
 
 
 def _remove_mcp_entry() -> bool:
     """Remove the thinkweave MCP entry from ``~/.claude.json``. Other
     servers and top-level keys survive. Returns False if nothing to do."""
-    if not CLAUDE_JSON.exists():
+    if not _mcp_config().exists():
         return False
-    cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+    cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
     servers = cfg.get("mcpServers", {})
     if SERVER_NAME not in servers:
         return False
     servers.pop(SERVER_NAME)
-    _atomic_write_json(CLAUDE_JSON, cfg)
+    _atomic_write_json(_mcp_config(), cfg)
     return True
 
 
@@ -382,18 +414,18 @@ def _restore_mcp_entry() -> None:
     """Re-register the thinkweave MCP entry. Used by ``weave resume``."""
     entry = _build_server_entry(_detect_project_root(), vault_root=None)
     cfg: dict = {}
-    if CLAUDE_JSON.exists():
-        cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+    if _mcp_config().exists():
+        cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
     cfg.setdefault("mcpServers", {})[SERVER_NAME] = entry
-    _atomic_write_json(CLAUDE_JSON, cfg)
+    _atomic_write_json(_mcp_config(), cfg)
 
 
 def _remove_claude_md_block() -> bool:
     """Strip the sentinel-wrapped block (plus surrounding blank lines)
     from ``~/.claude/CLAUDE.md``. Returns False if no block present."""
-    if not CLAUDE_MD.exists():
+    if not _instructions().exists():
         return False
-    text = CLAUDE_MD.read_text(encoding="utf-8")
+    text = _instructions().read_text(encoding="utf-8")
     pattern = re.compile(
         r"\n*" + re.escape(CLAUDE_MD_BLOCK_START)
         + r".*?" + re.escape(CLAUDE_MD_BLOCK_END) + r"\n*",
@@ -402,7 +434,7 @@ def _remove_claude_md_block() -> bool:
     new_text, n = pattern.subn("\n", text, count=1)
     if n == 0:
         return False
-    CLAUDE_MD.write_text(new_text.lstrip("\n"), encoding="utf-8")
+    _instructions().write_text(new_text.lstrip("\n"), encoding="utf-8")
     return True
 
 
@@ -414,20 +446,20 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
     a divergent entry); the middle two are idempotent / write-through. Exits
     the process when consent is needed but not granted.
     """
-    if not CLAUDE_JSON.exists():
+    if not _mcp_config().exists():
         if not args.yes:
             print("~/.claude.json does not exist. `weave install` will create it.")
             print("Re-run with --yes to proceed.")
             sys.exit(1)
         cfg: dict[str, Any] = {"mcpServers": {SERVER_NAME: new_entry}}
-        CLAUDE_JSON.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-        print(f"Wrote {CLAUDE_JSON} with thinkweave MCP entry.")
+        _mcp_config().write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote {_mcp_config()} with thinkweave MCP entry.")
         return
 
     try:
-        cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+        cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        print(f"error: {CLAUDE_JSON} is not valid JSON: {e}", file=sys.stderr)
+        print(f"error: {_mcp_config()} is not valid JSON: {e}", file=sys.stderr)
         sys.exit(1)
 
     servers = cfg.setdefault("mcpServers", {})
@@ -435,15 +467,15 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
 
     if existing is None:
         servers[SERVER_NAME] = new_entry
-        _atomic_write_json(CLAUDE_JSON, cfg)
-        print(f"Registered thinkweave MCP server in {CLAUDE_JSON}.")
+        _atomic_write_json(_mcp_config(), cfg)
+        print(f"Registered thinkweave MCP server in {_mcp_config()}.")
         return
 
     if _entries_equal(existing, new_entry):
         print("thinkweave MCP server already registered (no change).")
         return
 
-    print(f"thinkweave MCP server already in {CLAUDE_JSON} but differs:")
+    print(f"thinkweave MCP server already in {_mcp_config()} but differs:")
     for line in _diff_lines(existing, new_entry):
         print(line)
     print()
@@ -451,8 +483,8 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
         print("Re-run with --yes to overwrite, or edit ~/.claude.json by hand.")
         sys.exit(1)
     servers[SERVER_NAME] = new_entry
-    _atomic_write_json(CLAUDE_JSON, cfg)
-    print(f"Updated thinkweave MCP entry in {CLAUDE_JSON}.")
+    _atomic_write_json(_mcp_config(), cfg)
+    print(f"Updated thinkweave MCP entry in {_mcp_config()}.")
 
 
 def cmd_install(args: argparse.Namespace) -> None:
@@ -509,24 +541,24 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
     and any leftover pause marker. Vault, hooks, plugin manifest, and cron
     jobs are out of scope (they have their own owners)."""
     md_block_present = (
-        CLAUDE_MD.exists()
-        and CLAUDE_MD_BLOCK_START in CLAUDE_MD.read_text(encoding="utf-8")
+        _instructions().exists()
+        and CLAUDE_MD_BLOCK_START in _instructions().read_text(encoding="utf-8")
     )
     mcp_present = False
-    if CLAUDE_JSON.exists():
+    if _mcp_config().exists():
         try:
-            cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+            cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
             mcp_present = SERVER_NAME in cfg.get("mcpServers", {})
         except json.JSONDecodeError:
             pass
 
     to_remove: list[str] = []
     if mcp_present:
-        to_remove.append(f"thinkweave MCP entry in {CLAUDE_JSON}")
+        to_remove.append(f"thinkweave MCP entry in {_mcp_config()}")
     if md_block_present:
-        to_remove.append(f"thinkweave block in {CLAUDE_MD}")
-    if MARKER.exists():
-        to_remove.append(f"pause marker {MARKER}")
+        to_remove.append(f"thinkweave block in {_instructions()}")
+    if _marker().exists():
+        to_remove.append(f"pause marker {_marker()}")
 
     if not to_remove:
         print("Nothing to remove — `weave install` has not touched this machine.")
@@ -545,12 +577,12 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     if _remove_mcp_entry():
-        print(f"Removed MCP entry from {CLAUDE_JSON}.")
+        print(f"Removed MCP entry from {_mcp_config()}.")
     if _remove_claude_md_block():
-        print(f"Removed thinkweave block from {CLAUDE_MD}.")
-    if MARKER.exists():
-        MARKER.unlink()
-        print(f"Removed pause marker {MARKER}.")
+        print(f"Removed thinkweave block from {_instructions()}.")
+    if _marker().exists():
+        _marker().unlink()
+        print(f"Removed pause marker {_marker()}.")
     print()
     print("Done. Restart Claude Code so the MCP server is no longer launched.")
 
@@ -581,10 +613,10 @@ def _raw_mcp_entry_present() -> bool:
     (the ``weave install`` escape hatch). dev-link uses this to warn: the
     plugin manifest already declares the server, so a leftover raw entry
     would make Claude Code spawn ``thinkweave`` twice."""
-    if not CLAUDE_JSON.exists():
+    if not _mcp_config().exists():
         return False
     try:
-        cfg = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
+        cfg = json.loads(_mcp_config().read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return False
     return SERVER_NAME in cfg.get("mcpServers", {})
@@ -644,47 +676,47 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
 
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    _skills_dir().mkdir(parents=True, exist_ok=True)
 
-    if DEV_LINK.is_symlink():
-        if DEV_LINK.resolve() == repo.resolve():
-            print(f"Already dev-linked: {DEV_LINK} → {repo}")
+    if _dev_link().is_symlink():
+        if _dev_link().resolve() == repo.resolve():
+            print(f"Already dev-linked: {_dev_link()} → {repo}")
             _print_dev_link_next_steps()
             return
         if not getattr(args, "force", False):
             print(
-                f"error: {DEV_LINK} already points at {DEV_LINK.resolve()}.\n"
+                f"error: {_dev_link()} already points at {_dev_link().resolve()}.\n"
                 f"Re-run with --force to repoint it at {repo}.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        DEV_LINK.unlink()
-    elif DEV_LINK.exists():
+        _dev_link().unlink()
+    elif _dev_link().exists():
         print(
-            f"error: {DEV_LINK} exists and is not a symlink (a real plugin\n"
+            f"error: {_dev_link()} exists and is not a symlink (a real plugin\n"
             "dir?). Remove it by hand if you mean to dev-link this checkout.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    DEV_LINK.symlink_to(repo)
-    print(f"Dev-linked {DEV_LINK} → {repo}")
+    _dev_link().symlink_to(repo)
+    print(f"Dev-linked {_dev_link()} → {repo}")
     _print_dev_link_next_steps()
 
 
 def cmd_dev_unlink(args: argparse.Namespace) -> None:
     """Reverse ``weave dev-link`` — remove the ``~/.claude/skills/thinkweave``
     symlink. A real (non-symlink) install at that path is left untouched."""
-    if DEV_LINK.is_symlink():
-        target = DEV_LINK.resolve()
-        DEV_LINK.unlink()
-        print(f"Removed dev-link {DEV_LINK} (was → {target}).")
+    if _dev_link().is_symlink():
+        target = _dev_link().resolve()
+        _dev_link().unlink()
+        print(f"Removed dev-link {_dev_link()} (was → {target}).")
         print("Restart Claude Code to drop the /thinkweave:* commands.")
         return
-    if DEV_LINK.exists():
+    if _dev_link().exists():
         print(
-            f"note: {DEV_LINK} is not a symlink (real install?) — left untouched.",
+            f"note: {_dev_link()} is not a symlink (real install?) — left untouched.",
             file=sys.stderr,
         )
         return
-    print(f"No dev-link at {DEV_LINK} (nothing to remove).")
+    print(f"No dev-link at {_dev_link()} (nothing to remove).")

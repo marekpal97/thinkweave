@@ -246,20 +246,22 @@ def stub_install_validators(monkeypatch):
 
 
 @pytest.fixture
-def fake_claude_home(tmp_path, monkeypatch):
-    """Sandbox the four install touchpoints (CLAUDE_JSON, CLAUDE_MD,
-    MARKER, PLUGINS_ROOT) so the cmd_* tests never reach the real
-    ``~/.claude``."""
+def fake_claude_home(tmp_path, use_profile):
+    """Aim the four install touchpoints (MCP config, instructions file, pause
+    marker, plugins root) at a sandbox dir, and hand the tests the resulting
+    paths to assert against."""
     fake = tmp_path / "claude_home"
     fake.mkdir()
     claude_json = fake / ".claude.json"
     claude_md = fake / ".claude" / "CLAUDE.md"
     marker = fake / ".claude" / "thinkweave_paused.json"
     plugins_root = fake / ".claude" / "plugins"
-    monkeypatch.setattr(install_mod, "CLAUDE_JSON", claude_json)
-    monkeypatch.setattr(install_mod, "CLAUDE_MD", claude_md)
-    monkeypatch.setattr(install_mod, "MARKER", marker)
-    monkeypatch.setattr(install_mod, "PLUGINS_ROOT", plugins_root)
+    use_profile(
+        mcp_config=claude_json,
+        instructions_file=claude_md,
+        pause_marker=marker,
+        plugins_root=plugins_root,
+    )
     return {
         "claude_json": claude_json,
         "claude_md": claude_md,
@@ -704,10 +706,11 @@ class TestDevLink:
     MCP entry that would double-register the server."""
 
     @pytest.fixture
-    def dev_link_env(self, fake_claude_home, tmp_path, monkeypatch):
+    def dev_link_env(self, fake_claude_home, tmp_path, monkeypatch, use_profile):
         """Sandbox the dev-link touchpoints on top of fake_claude_home: a
-        fake checkout carrying a plugin manifest, plus SKILLS_DIR / DEV_LINK
-        under tmp, and a stubbed _detect_project_root pointing at it."""
+        fake checkout carrying a plugin manifest, the profile's skills dir (and
+        therefore its dev-link target) under tmp, and a stubbed
+        _detect_project_root pointing at it."""
         checkout = tmp_path / "checkout"
         (checkout / ".claude-plugin").mkdir(parents=True)
         (checkout / ".claude-plugin" / "plugin.json").write_text(
@@ -715,8 +718,7 @@ class TestDevLink:
         )
         skills_dir = tmp_path / "skills"
         dev_link = skills_dir / SERVER_NAME
-        monkeypatch.setattr(install_mod, "SKILLS_DIR", skills_dir)
-        monkeypatch.setattr(install_mod, "DEV_LINK", dev_link)
+        use_profile(skills_dir=skills_dir)
         monkeypatch.setattr(install_mod, "_detect_project_root", lambda: checkout)
         return {
             **fake_claude_home,

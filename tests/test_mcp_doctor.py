@@ -16,13 +16,15 @@ from thinkweave.surfaces.cli import mcp_doctor as md
 
 
 @pytest.fixture(autouse=True)
-def _sandbox_home_plugin_dirs(tmp_path, monkeypatch):
+def _sandbox_home_plugin_dirs(tmp_path, use_profile):
     """Point the doctor's HOME-scoped plugin scan at empty dirs so it never
     reads the developer's real ~/.claude/plugins or ~/.claude/skills. Tests
-    that want a plugin scope present re-point PLUGINS_CACHE/SKILLS_DIR
-    themselves (their setattr runs after this fixture)."""
-    monkeypatch.setattr(md, "PLUGINS_CACHE", tmp_path / "_home_plugins_cache")
-    monkeypatch.setattr(md, "SKILLS_DIR", tmp_path / "_home_skills")
+    that want a plugin scope present re-point the profile themselves (their
+    ``use_profile`` call runs after this fixture)."""
+    use_profile(
+        plugins_cache=tmp_path / "_home_plugins_cache",
+        skills_dir=tmp_path / "_home_skills",
+    )
 
 
 # ---------- helpers ----------
@@ -73,34 +75,34 @@ def _make_fake_launcher(root: Path) -> Path:
 
 
 class TestRegistrationScopes:
-    def test_empty_claude_json_reports_unregistered(self, tmp_path, monkeypatch):
+    def test_empty_claude_json_reports_unregistered(self, tmp_path, monkeypatch, use_profile):
         # No ~/.claude.json, no .mcp.json, no plugin manifests.
-        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "claude.json")
+        use_profile(mcp_config=tmp_path / "claude.json")
         result = md.check_registration_scopes(tmp_path)
         assert not result.passed
         assert "not registered" in result.detail
         assert "weave install" in result.fix
 
-    def test_machine_only_is_pass(self, tmp_path, monkeypatch):
+    def test_machine_only_is_pass(self, tmp_path, monkeypatch, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         result = md.check_registration_scopes(tmp_path)
         assert result.passed
         assert "1 scope" in result.detail
 
-    def test_machine_plus_project_identical_is_pass(self, tmp_path, monkeypatch):
+    def test_machine_plus_project_identical_is_pass(self, tmp_path, monkeypatch, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         _write_mcp_json(tmp_path, CANONICAL_ENTRY)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         result = md.check_registration_scopes(tmp_path)
         assert result.passed, result.detail
         assert "identically" in result.detail
 
     def test_machine_plus_project_with_divergent_invocations_is_fail(
         self, tmp_path, monkeypatch
-    ):
+    , use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         divergent = {
@@ -110,19 +112,19 @@ class TestRegistrationScopes:
             "env": {},
         }
         _write_mcp_json(tmp_path, divergent)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         result = md.check_registration_scopes(tmp_path)
         assert not result.passed
         assert "DIFFERENT invocations" in result.detail
 
-    def test_plugin_only_install_is_pass(self, tmp_path, monkeypatch):
+    def test_plugin_only_install_is_pass(self, tmp_path, monkeypatch, use_profile):
         """A clean plugin-only install — manifest in the marketplace cache,
         no machine/project entry — must PASS. This is the false-negative a
         real plugin-route user hit: the doctor used to scan only cwd-relative
         dirs and report 'not registered'."""
-        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        use_profile(mcp_config=tmp_path / "absent.json")
         cache = tmp_path / "cache"
-        monkeypatch.setattr(md, "PLUGINS_CACHE", cache)
+        use_profile(plugins_cache=cache)
         manifest_dir = (
             cache / "thinkweave" / "thinkweave" / "0.1.0" / ".claude-plugin"
         )
@@ -150,12 +152,12 @@ class TestRegistrationScopes:
         assert result.passed, result.detail
         assert "plugin" in result.detail
 
-    def test_dev_link_install_is_pass(self, tmp_path, monkeypatch):
+    def test_dev_link_install_is_pass(self, tmp_path, monkeypatch, use_profile):
         """The dev-link (@skills-dir) equivalent: manifest under
         ~/.claude/skills/<name>/.claude-plugin/, no machine/project entry."""
-        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        use_profile(mcp_config=tmp_path / "absent.json")
         skills = tmp_path / "skills"
-        monkeypatch.setattr(md, "SKILLS_DIR", skills)
+        use_profile(skills_dir=skills)
         manifest_dir = skills / "thinkweave" / ".claude-plugin"
         manifest_dir.mkdir(parents=True)
         (manifest_dir / "plugin.json").write_text(
@@ -181,7 +183,7 @@ class TestRegistrationScopes:
 
     def test_project_path_variants_normalise_to_same_invocation(
         self, tmp_path, monkeypatch
-    ):
+    , use_profile):
         """`.` vs absolute vs ${CLAUDE_PLUGIN_ROOT} for --project must
         be treated as the same invocation shape."""
         claude_json = tmp_path / "claude.json"
@@ -196,21 +198,21 @@ class TestRegistrationScopes:
         ]
         _write_claude_json(claude_json, machine_entry)
         _write_mcp_json(tmp_path, CANONICAL_ENTRY)  # uses "."
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         result = md.check_registration_scopes(tmp_path)
         assert result.passed, result.detail
 
 
     def test_machine_uv_plus_project_launcher_is_equivalent(
         self, tmp_path, monkeypatch
-    ):
+    , use_profile):
         """The portable launcher IS the uv-run invocation (#52): a machine
         scope written by `weave install` (uv run shape) plus the committed
         .mcp.json (launcher shape) must NOT read as conflicting scopes."""
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         result = md.check_registration_scopes(tmp_path)
         assert result.passed, result.detail
         assert "identically" in result.detail
@@ -220,10 +222,10 @@ class TestRegistrationScopes:
 
 
 class TestRunMcpDoctor:
-    def test_passed_when_all_pass(self, tmp_path, monkeypatch, capsys):
+    def test_passed_when_all_pass(self, tmp_path, monkeypatch, capsys, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
 
@@ -239,10 +241,10 @@ class TestRunMcpDoctor:
         out = capsys.readouterr().out
         assert "overall: PASS" in out
 
-    def test_fails_when_vault_dir_missing(self, tmp_path, monkeypatch, capsys):
+    def test_fails_when_vault_dir_missing(self, tmp_path, monkeypatch, capsys, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         monkeypatch.setenv("MCP_DOCTOR_FAKE_VAULT", "/definitely/not/real")
 
         def fake_run(*args, **kwargs):
@@ -255,9 +257,9 @@ class TestRunMcpDoctor:
         names = [c.name for c in result.checks if not c.passed]
         assert "THINKWEAVE_VAULT" in names
 
-    def test_fails_when_no_scope_registered(self, tmp_path, monkeypatch, capsys):
+    def test_fails_when_no_scope_registered(self, tmp_path, monkeypatch, capsys, use_profile):
         # ~/.claude.json doesn't exist, no .mcp.json, no plugins.
-        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        use_profile(mcp_config=tmp_path / "absent.json")
         monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
         result = md.run_mcp_doctor(cwd=tmp_path)
@@ -265,7 +267,7 @@ class TestRunMcpDoctor:
         out = capsys.readouterr().out
         assert "overall: FAIL" in out
 
-    def test_fails_when_scopes_conflict(self, tmp_path, monkeypatch, capsys):
+    def test_fails_when_scopes_conflict(self, tmp_path, monkeypatch, capsys, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
         divergent = {
@@ -275,7 +277,7 @@ class TestRunMcpDoctor:
             "env": {},
         }
         _write_mcp_json(tmp_path, divergent)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
         monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
         monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
 
@@ -289,12 +291,12 @@ class TestRunMcpDoctor:
 
 
 class TestLauncherResolves:
-    def test_succeeds_on_timeout(self, tmp_path, monkeypatch):
+    def test_succeeds_on_timeout(self, tmp_path, monkeypatch, use_profile):
         """An MCP server idling on stdin reads as ``TimeoutExpired`` —
         the doctor treats that as success ("process is up")."""
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
 
         def fake_run(*args, **kwargs):
             raise subprocess.TimeoutExpired(cmd="uv", timeout=5.0)
@@ -304,10 +306,10 @@ class TestLauncherResolves:
         assert result.passed
         assert "spawned a process" in result.detail
 
-    def test_fails_on_nonzero_exit(self, tmp_path, monkeypatch):
+    def test_fails_on_nonzero_exit(self, tmp_path, monkeypatch, use_profile):
         claude_json = tmp_path / "claude.json"
         _write_claude_json(claude_json, CANONICAL_ENTRY)
-        monkeypatch.setattr(md, "CLAUDE_JSON", claude_json)
+        use_profile(mcp_config=claude_json)
 
         class FakeProc:
             returncode = 2
@@ -323,11 +325,11 @@ class TestLauncherResolves:
 
     def test_relative_launcher_command_resolves_against_project_dir(
         self, tmp_path, monkeypatch
-    ):
+    , use_profile):
         """.mcp.json's `bin/weave-mcp-launch` is relative to the PROJECT
         dir (Claude Code spawns project-scope servers with cwd = project),
         not to wherever the doctor process happens to run."""
-        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        use_profile(mcp_config=tmp_path / "absent.json")
         _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
         _make_fake_launcher(tmp_path)
         elsewhere = tmp_path / "elsewhere"
@@ -340,12 +342,12 @@ class TestLauncherResolves:
 
     def test_plugin_launcher_command_expands_claude_plugin_root(
         self, tmp_path, monkeypatch
-    ):
+    , use_profile):
         """The plugin manifest's command embeds ${CLAUDE_PLUGIN_ROOT};
         the probe must expand it to the manifest's own plugin root."""
-        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+        use_profile(mcp_config=tmp_path / "absent.json")
         skills = tmp_path / "skills"
-        monkeypatch.setattr(md, "SKILLS_DIR", skills)
+        use_profile(skills_dir=skills)
         plugin_root = skills / "thinkweave"
         manifest_dir = plugin_root / ".claude-plugin"
         manifest_dir.mkdir(parents=True)
@@ -377,8 +379,8 @@ class TestLauncherResolves:
 
     def test_missing_relative_launcher_fails_with_resolved_path(
         self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(md, "CLAUDE_JSON", tmp_path / "absent.json")
+    , use_profile):
+        use_profile(mcp_config=tmp_path / "absent.json")
         _write_mcp_json(tmp_path, LAUNCHER_ENTRY)  # no launcher on disk
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()

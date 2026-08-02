@@ -18,19 +18,18 @@ from thinkweave.surfaces.cli import pause as pause_mod
 
 
 @pytest.fixture
-def fake_claude_home(tmp_path, monkeypatch):
-    """Point all install/pause path constants at a sandbox tmp dir."""
+def fake_claude_home(tmp_path, use_profile):
+    """Aim every install/pause touchpoint at a sandbox tmp dir. Both modules
+    read them through the active harness profile, so one override covers
+    both."""
     fake_home = tmp_path / "claude_home"
     fake_home.mkdir()
     claude_json = fake_home / ".claude.json"
     claude_md = fake_home / ".claude" / "CLAUDE.md"
     marker = fake_home / ".claude" / "thinkweave_paused.json"
-    monkeypatch.setattr(install_mod, "CLAUDE_JSON", claude_json)
-    monkeypatch.setattr(install_mod, "CLAUDE_MD", claude_md)
-    monkeypatch.setattr(install_mod, "MARKER", marker)
-    # pause_mod imports MARKER by name, so its bound copy needs patching too;
-    # other constants are read through install_mod at call time and don't.
-    monkeypatch.setattr(pause_mod, "MARKER", marker)
+    use_profile(
+        mcp_config=claude_json, instructions_file=claude_md, pause_marker=marker
+    )
     return {"claude_json": claude_json, "claude_md": claude_md, "marker": marker}
 
 

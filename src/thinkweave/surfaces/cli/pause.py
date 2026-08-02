@@ -22,8 +22,8 @@ import sys
 from datetime import datetime, timezone
 
 from thinkweave.surfaces.cli.install import (
-    MARKER,
     _install_claude_md_block,
+    _marker,
     _remove_claude_md_block,
     _remove_mcp_entry,
     _restore_mcp_entry,
@@ -33,17 +33,17 @@ from thinkweave.surfaces.hooks.install import install_hooks, uninstall_hooks
 
 def cmd_pause(args: argparse.Namespace) -> None:
     if args.status:
-        if MARKER.exists():
-            data = json.loads(MARKER.read_text(encoding="utf-8"))
+        if _marker().exists():
+            data = json.loads(_marker().read_text(encoding="utf-8"))
             print(f"thinkweave is PAUSED (since {data.get('paused_at', '?')}).")
             print(f"  removed: {', '.join(data.get('removed', [])) or '(nothing)'}")
-            print(f"  marker:  {MARKER}")
+            print(f"  marker:  {_marker()}")
             print("  resume:  weave resume")
         else:
             print("thinkweave is active (no pause marker).")
         return
 
-    if MARKER.exists():
+    if _marker().exists():
         print("thinkweave is already paused. Run `weave resume` first.")
         sys.exit(1)
 
@@ -55,8 +55,8 @@ def cmd_pause(args: argparse.Namespace) -> None:
     if _remove_claude_md_block():
         removed.append("CLAUDE.md block")
 
-    MARKER.parent.mkdir(parents=True, exist_ok=True)
-    MARKER.write_text(
+    _marker().parent.mkdir(parents=True, exist_ok=True)
+    _marker().write_text(
         json.dumps(
             {
                 "paused_at": datetime.now(timezone.utc).isoformat(),
@@ -71,7 +71,7 @@ def cmd_pause(args: argparse.Namespace) -> None:
     print("Paused thinkweave:")
     for item in removed:
         print(f"  - {item}: removed")
-    print(f"  - marker: {MARKER}")
+    print(f"  - marker: {_marker()}")
     print()
     print("Restart Claude Code for changes to take effect. `weave resume` to undo.")
     print("Note: project-scope hooks (in <repo>/.claude/settings.local.json) survive —")
@@ -79,10 +79,10 @@ def cmd_pause(args: argparse.Namespace) -> None:
 
 
 def cmd_resume(args: argparse.Namespace) -> None:
-    if not MARKER.exists():
+    if not _marker().exists():
         print("thinkweave is not paused (no marker found).")
         return
-    data = json.loads(MARKER.read_text(encoding="utf-8"))
+    data = json.loads(_marker().read_text(encoding="utf-8"))
     removed = data.get("removed", [])
 
     if "user-scope hooks" in removed:
@@ -92,6 +92,6 @@ def cmd_resume(args: argparse.Namespace) -> None:
     if "CLAUDE.md block" in removed:
         _install_claude_md_block(yes=True)
 
-    MARKER.unlink()
+    _marker().unlink()
     print()
     print("Resumed thinkweave. Restart Claude Code for changes to take effect.")
