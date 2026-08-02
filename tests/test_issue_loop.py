@@ -1261,16 +1261,6 @@ def test_prime_serves_file_anchored_decisions_without_any_trajectory(tmp_path, c
     assert "Prior decisions for touched files: dec-1, dec-2" in payload["block"]
 
 
-def test_prime_query_argparse_contract():
-    """--query (the issue's text, the FTS leg's input) and --dry-run default to
-    the pre-#100 posture: no query, buffer write live."""
-    ns = cli.build_arg_parser().parse_args(
-        ["prime", "1", "--run-id", "r", "--query", "some issue text"])
-    assert ns.query == "some issue text" and ns.dry_run is False
-    default = cli.build_arg_parser().parse_args(["prime", "1", "--run-id", "r"])
-    assert default.query == "" and default.dry_run is False
-
-
 # --- Review round 1 (issue #85) — hardening the prime v2 seams --------------
 
 

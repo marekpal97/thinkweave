@@ -80,30 +80,30 @@ _CANDIDATE_COLS = "n.id, n.title, n.date, n.frontmatter"
 _FTS_TERM = re.compile(r"[0-9A-Za-z_-]{3,}")
 
 
-def _fts_match_expr(text: str, max_terms: int = 24) -> str:
+def _fts_match_expr(text: str) -> str:
     """Encode free text (an issue title/body) as an OR-of-terms fts5 MATCH.
 
     The query is user-shaped, so nothing but indexable terms survives: keeping
     only tokenizer-legal runs of 3+ chars makes fts5 operator soup (``*``,
     ``NEAR``, unbalanced quotes) structurally unreachable rather than caught
     after the fact. Each term is quoted so a leading ``-`` stays a literal.
-    Terms dedupe (order-preserving) and cap at ``max_terms`` — a long issue body
-    must not become an unbounded query. No terms → ``''``, the caller's signal
-    to skip the leg entirely (``MATCH ''`` is itself a syntax error).
+    Terms dedupe (order-preserving) and cap at 24 — a long issue body must not
+    become an unbounded query. No terms → ``''``, the caller's signal to skip
+    the leg entirely (``MATCH ''`` is itself a syntax error).
 
     ponytail: no stopword filter, so common issue-prose words ("the", "with")
     are real OR terms and the leg can touch most of the index — ~100ms at 6k
     notes, paid once at claim time. Upgrade path when it stops being cheap:
     drop terms whose document frequency exceeds a threshold.
     """
-    terms = list(dict.fromkeys(_FTS_TERM.findall(text)))[:max_terms]
+    terms = list(dict.fromkeys(_FTS_TERM.findall(text)))[:24]
     return " OR ".join(f'"{t}"' for t in terms)
 
 
 def _by_concepts(conn: sqlite3.Connection, concepts: list[str], scan_cap: int) -> list[dict]:
     """Leg 1: ``[loop-run]`` notes carrying ANY of the concepts, recency first."""
     placeholders = ",".join("?" * len(concepts))
-    rows = conn.execute(
+    return [dict(r) for r in conn.execute(
         f"""SELECT DISTINCT {_CANDIDATE_COLS}
             FROM notes n
             JOIN note_tags t ON t.note_id = n.id AND t.tag = 'loop-run'
@@ -112,13 +112,12 @@ def _by_concepts(conn: sqlite3.Connection, concepts: list[str], scan_cap: int) -
             ORDER BY n.date DESC, n.id DESC
             LIMIT ?""",
         [*concepts, scan_cap],
-    ).fetchall()
-    return [dict(r) for r in rows]
+    )]
 
 
 def _by_fts(conn: sqlite3.Connection, match: str, scan_cap: int) -> list[dict]:
     """Leg 2: ``[loop-run]`` notes matching the text, fts5 relevance order."""
-    rows = conn.execute(
+    return [dict(r) for r in conn.execute(
         f"""SELECT {_CANDIDATE_COLS}
             FROM notes_fts f
             JOIN notes n ON n.rowid = f.rowid
@@ -128,8 +127,7 @@ def _by_fts(conn: sqlite3.Connection, match: str, scan_cap: int) -> list[dict]:
             ORDER BY f.rank
             LIMIT ?""",
         [match, scan_cap],
-    ).fetchall()
-    return [dict(r) for r in rows]
+    )]
 
 
 def _rrf(rankings: list[list[dict]]) -> list[dict]:
@@ -155,14 +153,10 @@ def trajectory_candidates(
     """Read-only: ``[loop-run]`` note rows for the concept and text legs, fused.
 
     Returns ``[{id, title, date, frontmatter}]`` in fused rank order, at most
-    ``scan_cap`` per leg. Either input may be empty — an empty ``concepts``
-    degrades to FTS-only, an empty ``query`` to concept-only, both empty to
-    ``[]``.
-
-    The FTS leg is best-effort only while the other leg is carrying: a broken
-    ``notes_fts`` with nothing else retrieved raises, so the caller's
-    degrade-to-unprimed guard reports an index problem instead of a benign
-    empty match. FTS is load-bearing now — its failure must be visible.
+    ``scan_cap`` per leg. Empty ``concepts`` degrades to FTS-only, empty
+    ``query`` to concept-only, both empty to ``[]``. The FTS leg is best-effort
+    only while the other leg is carrying: a broken ``notes_fts`` with nothing
+    else retrieved raises to the caller's degrade-to-unprimed guard.
     """
     rankings = []
     if concepts:

@@ -114,15 +114,12 @@ python scripts/issue_loop.py prime <N> --run-id <run-id> \
 
 **You resolve the three signals; the rail fuses them.**
 
-1. **`--concepts` — ontology terms, never GitHub labels.** The write side tags
-   trajectories with concepts from `ontology.yaml` (the strict gate shunts
-   everything else to `proposed_concepts`), so labels like `enhancement` or
-   `track:E-devloop` match zero notes. You hold `weave_concepts` — map the
-   issue to 2–3 ontology terms at claim time. `--labels` still works and still
-   defaults `--concepts` to the label set, but on its own that join is dead —
-   so a labels-only call with no `--query` comes back with a warning stamped in
-   the payload's `note` instead of a benign-looking empty match. If you see
-   that note, the run was effectively unprimed: fix the call, don't shrug.
+1. **`--concepts` — ontology terms, never GitHub labels** (labels match zero
+   trajectory notes; the dead-join diagnosis lives in issue-loop-memory.md's
+   Prime v3 note). Map the issue to 2–3 ontology terms via `weave_concepts`
+   at claim time. A labels-only call with no `--query` comes back with a
+   warning stamped in the payload's `note` — if you see it, the run was
+   effectively unprimed: fix the call, don't shrug.
 2. **`--query` — the issue's own text.** Title, or title + body. This is the
    full-text leg; it is what makes priming land when your concept guess misses.
 3. **`--decisions` — file-anchored ids, resolved by you at claim time.** Walk a
