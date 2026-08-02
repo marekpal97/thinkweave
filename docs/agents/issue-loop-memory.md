@@ -95,9 +95,13 @@ trace:
 ```
 
 The orchestrator condenses these envelopes **from the gate agents' own reports —
-no new model call** (`--trace-json`, §3); the rail (`_normalize_trace`) only
-accepts and shapes them (strict on type — a non-dict trace is rejected; lenient
-on keys — unknowns dropped, each item projected). Counts (`lines_delta`,
+no new model call** (`--trace-json`, §3). Since issue #99 they are schema-checked
+where the subagent returns them — `issue_loop.py validate --gate <id>` rejects a
+malformed return with per-field reasons so the orchestrator re-asks — and
+`_normalize_trace` is a **documented backstop only**: it still shapes what
+arrives (strict on type — a non-dict trace is rejected; lenient on keys —
+unknowns dropped, each item projected), but for legacy/degraded input, not as a
+second enforcement point. Counts (`lines_delta`,
 `flipped_by_round`) are filter/join keys, not signal. The `trace` is the
 **machine-readable half of the tracker's gate evidence, not a second prose
 owner** — it duplicates neither the tracker's prose nor the trajectory body. It

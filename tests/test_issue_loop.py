@@ -2555,3 +2555,42 @@ def test_check_still_refuses_to_execute_judgment_kinds(tmp_path, capsys):
         assert cli.main(["check", "--gate", gate_id, "--cwd", str(tmp_path)]) == 2
         err = json.loads(capsys.readouterr().out)["error"]
         assert err.endswith("is LLM-judged — run it from the /issue-loop command, not the script")
+
+
+def test_normalize_trace_is_documented_as_a_backstop_not_the_validation_seam():
+    """#99 moved gate-return enforcement to the rail's `validate` verb. mint's
+    normalizer survives only to backstop legacy / degraded input — and says so,
+    so the next reader adds enforcement at the seam instead of here."""
+    doc = " ".join(mint._normalize_trace.__doc__.split())
+    assert "backstop" in doc
+    assert "validate" in doc  # names the verb that owns enforcement
+    memory = (cli.REPO_ROOT / "docs" / "agents" / "issue-loop-memory.md").read_text(
+        encoding="utf-8")
+    assert "backstop" in memory and "validate" in memory
+
+
+def test_command_doc_wires_the_validate_verb_into_the_gate_pipeline():
+    """The judgment-gate return contract is asserted in exactly one place — the
+    §1c gate-pipeline section, next to the gate split it completes — and quotes
+    the rail's ACTUAL invocation and exit codes."""
+    text = (cli.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
+        encoding="utf-8")
+    start = text.index("### 1c. Gate pipeline")
+    section = " ".join(text[start:text.index("\n### ", start + 1)].split())
+    assert "issue_loop.py validate --gate" in section
+    assert "--return-json" in section
+    # The three-way exit convention the orchestrator branches on.
+    assert "re-ask" in section and "reasons" in section
+    # Each judgment kind's schema is stated where its gate is.
+    assert '"criteria"' in section and '"findings"' in section
+    for enum_value in ("not-met", "critical", "nit"):
+        assert enum_value in section
+
+
+def test_validate_schemas_match_the_enums_the_command_doc_advertises():
+    """Doc-vs-code pin: the enums the orchestrator prompts its subagents with
+    are the enums the rail accepts. Drift here is a silent re-ask loop."""
+    section = (cli.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
+        encoding="utf-8")
+    for value in gates.ACCEPTANCE_VERDICTS + gates.REVIEW_SEVERITIES + gates.SIMPLIFY_OUTCOMES:
+        assert f'"{value}"' in section, value

@@ -107,6 +107,15 @@ def _normalize_trace_simplify(section: dict) -> dict:
 def _normalize_trace(raw: object) -> dict:
     """Shape an incoming semantic-trace object into its stored envelope.
 
+    **A backstop, not the enforcement seam (issue #99).** Judgment-gate
+    returns are schema-checked where the subagent returns them — the rail's
+    ``validate`` verb (:mod:`devloop.gates`), which rejects a malformed return
+    with per-field reasons so the orchestrator re-asks. What arrives here is
+    therefore already validated; this projection only backstops the legacy
+    (pre-#99) and degraded paths, where dropping a stray key beats crashing
+    the trajectory write at the end of a shipped run. It never repairs a field
+    a caller should have been re-asked for.
+
     Strict on type: a non-dict ``raw`` raises ``ValueError`` (a list or bare
     string pasted by mistake must not silently corrupt the run-bound trace).
     Lenient on keys: unknown top-level keys are dropped and each section is
