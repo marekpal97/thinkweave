@@ -1,18 +1,34 @@
 """``weave install`` — machine-scope setup.
 
 Verifies the thinkweave console scripts are reachable on PATH and
-idempotently registers the thinkweave MCP server entry in
-``~/.claude.json`` so Claude Code can launch it. Additionally appends a
-small sentinel-wrapped block to ``~/.claude/CLAUDE.md`` (the user-global
-instructions file Claude Code loads every turn) — a persistent nudge so
+idempotently registers the thinkweave MCP server in the active harness's
+own config (``~/.claude.json`` for Claude Code, ``$CODEX_HOME/config.toml``
+for Codex — ``--harness`` picks). Additionally appends a small
+sentinel-wrapped block to that harness's always-loaded instructions file
+(``~/.claude/CLAUDE.md``, ``$CODEX_HOME/AGENTS.md``) — a persistent nudge so
 the model reaches for ``weave_*`` tools instead of filesystem search even
 in long sessions where the SessionStart context payload has been
 compacted away. Pass ``--no-claude-md`` to skip that touch. Run once
-per machine after ``pip install`` / ``pipx install``.
+per machine per harness after ``pip install`` / ``pipx install``.
+
+Every path comes from the :class:`~thinkweave.core.harness.HarnessProfile`
+and every read/write of the MCP config goes through
+:mod:`thinkweave.core.mcp_config`, which knows that harness's file format.
 
 Scope boundary: this command never touches a vault or a project's
-``.claude/settings.json``. ``weave init`` owns the vault; ``weave hooks
-install`` (invoked by ``/onboard``) owns project-side hook registration.
+settings file. ``weave init`` owns the vault; ``weave hooks install``
+(invoked by ``/onboard``) owns project-side hook registration.
+
+Who owns what, on Codex
+-----------------------
+ChatGPT desktop's Settings→Import can populate a Codex install from an
+existing Claude Code one — it brings companion *skills* across, and it may
+pre-create an ``[mcp_servers.thinkweave]`` entry of its own. ``weave
+install`` owns the MCP registration, the instructions block, and (once
+#107 lands) hooks; it finds that entry by key rather than by any marker of
+ours, so an imported one is adopted and converged rather than duplicated.
+Re-running the command over a drifted or hand-edited entry is the
+supported way to converge it, and it prints what changed first.
 """
 
 from __future__ import annotations
@@ -68,14 +84,11 @@ def _dev_link() -> Path:
     return _profile().dev_link
 
 
+# The sentinels are harness-independent — an HTML comment is inert in every
+# markdown instructions file — so only the body between them comes from the
+# profile.
 CLAUDE_MD_BLOCK_START = "<!-- thinkweave:start -->"
 CLAUDE_MD_BLOCK_END = "<!-- thinkweave:end -->"
-CLAUDE_MD_BLOCK_BODY = (
-    "If `weave_*` MCP tools are available, thinkweave (Obsidian-native memory "
-    "layer) is your durable memory for this session. Prefer `weave_search` / "
-    "`weave_context` / `weave_graph` over filesystem search, and run `/wrap` "
-    "before `/clear`."
-)
 
 
 def _detect_uv_path() -> str:
@@ -320,7 +333,8 @@ def _diff_lines(old: dict, new: dict) -> list[str]:
 
 def _render_claude_md_block() -> str:
     """The exact bytes we want between the sentinels (no trailing newline)."""
-    return f"{CLAUDE_MD_BLOCK_START}\n{CLAUDE_MD_BLOCK_BODY}\n{CLAUDE_MD_BLOCK_END}"
+    body = _profile().instructions_block_body
+    return f"{CLAUDE_MD_BLOCK_START}\n{body}\n{CLAUDE_MD_BLOCK_END}"
 
 
 def _extract_claude_md_block(text: str) -> str | None:

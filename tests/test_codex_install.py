@@ -485,3 +485,53 @@ class TestMcpDoctorCodexScopes:
 
         (codex_home / "config.toml").write_text("[[[nope\n", encoding="utf-8")
         assert not check_registration_scopes(codex_home).passed
+
+
+# --------------------------------------------------------------------------- #
+# 4. the AGENTS.md instructions block
+# --------------------------------------------------------------------------- #
+
+
+class TestAgentsMdBlock:
+    """Codex's always-loaded user-global instructions file is
+    ``$CODEX_HOME/AGENTS.md``. Same sentinel-wrapped splice as the CLAUDE.md
+    block; the content is what has to change."""
+
+    def test_block_lands_in_agents_md(self, codex_home: Path, installable):
+        _install(no_claude_md=False)
+        text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
+        assert install_mod.CLAUDE_MD_BLOCK_START in text
+        assert install_mod.CLAUDE_MD_BLOCK_END in text
+        assert "weave_search" in text
+
+    @pytest.mark.parametrize("token", ["/wrap", "/clear", "Claude"])
+    def test_body_names_nothing_claude_code_specific(
+        self, codex_home: Path, token: str
+    ):
+        # Codex resolves no slash commands and is not Claude Code — a nudge
+        # naming either is an instruction the model cannot act on.
+        assert token not in harness.active().instructions_block_body
+
+    def test_body_spells_out_the_missing_session_end_hook(self, codex_home: Path):
+        """The epic's anti-goal is a silently faked capability. Codex has no
+        Stop hook wired (#107), so the block has to name the explicit call that
+        replaces it rather than promising automatic extraction."""
+        assert "weave_extract" in harness.active().instructions_block_body
+
+    def test_splice_preserves_the_users_own_agents_md(
+        self, codex_home: Path, installable
+    ):
+        (codex_home / "AGENTS.md").write_text(
+            "# My global instructions\n\nAlways use tabs.\n", encoding="utf-8"
+        )
+        _install(no_claude_md=False)
+        text = (codex_home / "AGENTS.md").read_text(encoding="utf-8")
+        assert "Always use tabs.\n" in text
+        assert text.count(install_mod.CLAUDE_MD_BLOCK_START) == 1
+
+    def test_uninstall_strips_it_again(self, codex_home: Path, installable):
+        _install(no_claude_md=False)
+        install_mod.cmd_uninstall(argparse.Namespace(yes=True))
+        assert install_mod.CLAUDE_MD_BLOCK_START not in (
+            codex_home / "AGENTS.md"
+        ).read_text(encoding="utf-8")

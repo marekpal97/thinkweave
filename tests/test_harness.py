@@ -49,6 +49,7 @@ def _probe_profile(home: Path) -> harness.HarnessProfile:
         native_memory=False,
         headless_slash=False,
         instructions_file=home / "AGENTS.md",
+        instructions_block_body="probe nudge",
         mcp_config=home / "config.toml",
         skills_dir=home / "prompts",
         plugins_root=home / "ext",

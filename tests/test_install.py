@@ -22,9 +22,9 @@ from pathlib import Path
 
 import pytest
 
+from thinkweave.core import harness
 from thinkweave.surfaces.cli import install as install_mod
 from thinkweave.surfaces.cli.install import (
-    CLAUDE_MD_BLOCK_BODY,
     CLAUDE_MD_BLOCK_END,
     CLAUDE_MD_BLOCK_START,
     REQUIRED_SCRIPTS,
@@ -158,7 +158,9 @@ class TestClaudeMdBlock:
         rendered = _render_claude_md_block()
         assert rendered.startswith(CLAUDE_MD_BLOCK_START)
         assert rendered.endswith(CLAUDE_MD_BLOCK_END)
-        assert CLAUDE_MD_BLOCK_BODY in rendered
+        # The body between the sentinels is per-harness (#106) — the
+        # sentinels themselves are not.
+        assert harness.active().instructions_block_body in rendered
 
     def test_extract_returns_none_when_absent(self):
         assert _extract_claude_md_block("# my notes\n\nsome content") is None

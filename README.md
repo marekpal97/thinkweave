@@ -222,6 +222,30 @@ the plugin route above for the full Claude Code experience.
 
 </details>
 
+<details><summary>Other harnesses: <code>weave install --harness codex</code></summary>
+
+The engine is harness-agnostic; only the install topology differs. `weave
+install --harness codex` writes `[mcp_servers.thinkweave]` into
+`$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) and splices the
+instructions block into `$CODEX_HOME/AGENTS.md`. `weave doctor --mcp --harness
+codex`, `weave pause`/`resume --harness codex`, and `weave uninstall --harness
+codex` all follow. `$THINKWEAVE_HARNESS` sets the default if you'd rather not
+pass the flag each time.
+
+What Codex gets: the `weave_*` MCP tools and the instructions nudge. What it
+doesn't get yet: lifecycle hooks and the slash-command skills — so run
+`weave_extract` explicitly before ending a session instead of relying on a Stop
+hook, which is what the installed AGENTS.md block tells the model to do.
+
+If you populated Codex via ChatGPT desktop's **Settings→Import**, that feature
+brings companion *skills* across and may have pre-created a `thinkweave` MCP
+entry. `weave install` finds that entry by key rather than by any marker of its
+own, so it adopts and converges it instead of adding a second registration —
+re-running the command over a drifted or hand-edited entry is the supported way
+to bring it back to the managed shape, and it prints the diff before writing.
+
+</details>
+
 ### Recommended companion plugin — Explanatory output style
 
 Thinkweave pairs well with the **Explanatory** output style, which adds short

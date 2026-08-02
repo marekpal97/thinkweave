@@ -24,6 +24,12 @@ from typing import Callable
 
 from thinkweave.core.plugin_route import PLUGIN_NAME, namespace_prompt, plugin_namespace
 
+_NUDGE = (
+    "If `weave_*` MCP tools are available, thinkweave (Obsidian-native memory "
+    "layer) is your durable memory for this session. Prefer `weave_search` / "
+    "`weave_context` / `weave_graph` over filesystem search"
+)
+
 
 @dataclass(frozen=True)
 class HarnessProfile:
@@ -54,6 +60,15 @@ class HarnessProfile:
     instructions_file: Path
     """The always-loaded user-global instructions file we splice a
     sentinel-wrapped block into (``~/.claude/CLAUDE.md``)."""
+
+    instructions_block_body: str
+    """What goes between the sentinels there.
+
+    Per-harness because the nudge has to name things the harness actually has.
+    A Claude Code block ends "run ``/wrap`` before ``/clear``"; on a harness
+    with no slash commands and no session-end hook that is an instruction the
+    model cannot follow, so its block names the explicit ``weave_extract`` call
+    instead — the epic's "documented degradation, not a broken promise"."""
 
     mcp_config: Path
     """Where an MCP server registration is read from / written to. The *format*
@@ -179,6 +194,7 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         native_memory=True,
         headless_slash=True,
         instructions_file=cc / "CLAUDE.md",
+        instructions_block_body=f"{_NUDGE}, and run `/wrap` before `/clear`.",
         mcp_config=h / ".claude.json",
         skills_dir=cc / "skills",
         plugins_root=cc / "plugins",
@@ -237,6 +253,11 @@ def codex(home: Path | None = None) -> HarnessProfile:
         # `codex exec` resolves no slash commands; skill tokens stay bare.
         headless_slash=False,
         instructions_file=cx / "AGENTS.md",
+        instructions_block_body=(
+            f"{_NUDGE}. This harness fires no session-end hook, so call "
+            "`weave_extract` yourself before you finish — it is what persists "
+            "the session's insights and decisions into the vault."
+        ),
         mcp_config=cx / "config.toml",
         skills_dir=cx / "skills",
         # Codex has its own plugin/marketplace system, but thinkweave ships no
