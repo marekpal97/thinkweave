@@ -37,6 +37,7 @@ dir, and the suite-wide ``_sandbox_harness_home`` fixture is the backstop.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import tomllib
@@ -276,7 +277,10 @@ class TestConfigTomlWriter:
         """`codex mcp add` writes none, and `codex exec --strict-config` errors
         with `unknown configuration field mcp_servers.thinkweave.type`."""
         _install()
-        assert "type" not in (codex_home / "config.toml").read_text(encoding="utf-8")
+        entry = tomllib.loads(
+            (codex_home / "config.toml").read_text(encoding="utf-8")
+        )["mcp_servers"]["thinkweave"]
+        assert "type" not in entry
 
     def test_existing_user_config_survives_byte_for_byte(
         self, codex_home: Path, installable
@@ -298,7 +302,7 @@ class TestConfigTomlWriter:
         assert text.endswith(EXPECTED_CONFIG_TOML)
 
     def test_a_foreign_entry_is_adopted_not_duplicated(
-        self, codex_home: Path, installable, capsys
+        self, codex_home: Path, installable
     ):
         """ChatGPT desktop's Settings→Import can pre-create a `thinkweave`
         entry carrying no sentinel of ours. Detection is key-scoped, so we
@@ -377,14 +381,117 @@ class TestConfigTomlWriter:
         assert doc["mcp_servers"]["other"] == {"command": "npx"}
 
     def test_malformed_config_is_refused_not_clobbered(
-        self, codex_home: Path, installable
+        self, codex_home: Path, installable, capsys
     ):
+        from thinkweave.surfaces.cli import main as cli_main
+
         (codex_home / "config.toml").write_text("this is [ not toml\n", encoding="utf-8")
-        with pytest.raises(SystemExit):
-            _install()
+        with pytest.raises(SystemExit) as exc:
+            cli_main(["install", "--harness", "codex", "--yes", "--no-claude-md"])
+        assert exc.value.code != 0
+        assert "not valid toml" in capsys.readouterr().err.lower()
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
             "this is [ not toml\n"
         )
+
+    def test_a_comment_documenting_the_next_server_survives(
+        self, codex_home: Path, installable
+    ):
+        """A comment sitting directly above a header documents *that* header.
+        Ours is the table above it, so replacing ours must hand it back rather
+        than swallow it — the parse-based verify cannot see this, because
+        comments do not survive `tomllib.loads` on either side.
+        """
+        (codex_home / "config.toml").write_text(
+            "[mcp_servers.thinkweave]\n"
+            'command = "old"\n'
+            "\n"
+            "# my notes about the next server\n"
+            "[mcp_servers.other]\n"
+            'command = "x"\n',
+            encoding="utf-8",
+        )
+
+        _install()
+
+        text = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert "# my notes about the next server\n[mcp_servers.other]\n" in text
+        # …and the blank line separating our table from that comment.
+        assert "\n\n# my notes" in text
+
+    def test_a_comment_inside_our_table_goes_with_it(
+        self, codex_home: Path, installable
+    ):
+        """The mirror case: a comment followed by one of our own keys documents
+        *our* table, so it leaves with the table it belonged to."""
+        (codex_home / "config.toml").write_text(
+            "[mcp_servers.thinkweave]\n"
+            "# this documents the command below\n"
+            'command = "old"\n',
+            encoding="utf-8",
+        )
+        _install()
+        assert "documents the command below" not in (
+            codex_home / "config.toml"
+        ).read_text(encoding="utf-8")
+
+    def test_removal_hands_back_the_next_servers_comment_too(
+        self, codex_home: Path, installable
+    ):
+        (codex_home / "config.toml").write_text(
+            "[mcp_servers.thinkweave]\n"
+            'command = "old"\n'
+            "\n"
+            "# keep me\n"
+            "[mcp_servers.other]\n"
+            'command = "x"\n',
+            encoding="utf-8",
+        )
+        assert install_mod._remove_mcp_entry()
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
+            "# keep me\n[mcp_servers.other]\ncommand = \"x\"\n"
+        )
+
+    def test_an_unspliceable_config_exits_cleanly_with_the_remedy(
+        self, codex_home: Path, installable, capsys
+    ):
+        """The inline-table spelling — a plausible hand-written or Import shape
+        — cannot be replaced by a line-oriented writer. Refusing is the
+        documented ceiling; dying on a traceback is not.
+        """
+        from thinkweave.surfaces.cli import main as cli_main
+
+        prior = (
+            "[mcp_servers]\n"
+            'thinkweave = { command = "uvx", args = ["x"] }\n'
+        )
+        (codex_home / "config.toml").write_text(prior, encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            cli_main(["install", "--harness", "codex", "--yes", "--no-claude-md"])
+        assert exc.value.code != 0
+        err = capsys.readouterr().err
+        assert "edit the [mcp_servers.thinkweave] table by hand" in err
+        # …and the file it could not edit is exactly as it was.
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == prior
+
+    def test_the_file_mode_is_preserved(self, codex_home: Path, installable):
+        """Codex creates config.toml 0600 and it can carry env secrets —
+        rewriting it must not widen that to the umask default."""
+        cfg = codex_home / "config.toml"
+        cfg.write_text('[mcp_servers.other]\ncommand = "npx"\n', encoding="utf-8")
+        cfg.chmod(0o600)
+        _install()
+        assert cfg.stat().st_mode & 0o777 == 0o600
+
+    def test_a_non_bmp_vault_path_round_trips(self, codex_home: Path, installable):
+        """TOML forbids the surrogate-pair escapes `json.dumps` emits by
+        default, so an emoji in a path would produce a file Codex cannot read."""
+        _install(vault="/srv/\N{ROCKET}/vault")
+        doc = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
+        assert doc["mcp_servers"]["thinkweave"]["env"] == {
+            "THINKWEAVE_VAULT": "/srv/\N{ROCKET}/vault"
+        }
 
     @needs_codex
     def test_codex_itself_reads_back_what_we_wrote(
@@ -395,7 +502,7 @@ class TestConfigTomlWriter:
         _install(vault="/srv/vault")
         proc = subprocess.run(
             ["codex", "mcp", "get", "thinkweave"],
-            env={**dict(__import__("os").environ), "CODEX_HOME": str(codex_home)},
+            env={**os.environ, "CODEX_HOME": str(codex_home)},
             capture_output=True,
             text=True,
             timeout=60,
@@ -418,6 +525,8 @@ class TestUninstallAndPauseRoundTrip:
         assert tomllib.loads(text)["mcp_servers"] == {"other": {"command": "npx"}}
 
     def test_pause_resume_round_trips(self, codex_home: Path, installable):
+        """Byte-identical here because a fresh install leaves our table last.
+        Position is not preserved in general — see the test below."""
         from thinkweave.surfaces.cli import pause as pause_mod
 
         _install()
@@ -432,6 +541,38 @@ class TestUninstallAndPauseRoundTrip:
         pause_mod.cmd_resume(argparse.Namespace())
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == before
         assert not (codex_home / "thinkweave_paused.json").exists()
+
+    def test_resume_restores_the_entry_but_not_its_position(
+        self, codex_home: Path, installable
+    ):
+        """`weave resume` re-runs the idempotent installer rather than
+        restoring saved bytes (so an upgrade mid-pause doesn't strand stale
+        config), which means our table comes back at the end of the file. The
+        config is equivalent — TOML tables are unordered — and the user's own
+        content is untouched, but the bytes are not identical.
+        """
+        from thinkweave.surfaces.cli import pause as pause_mod
+
+        _install()
+        (codex_home / "config.toml").write_text(
+            (codex_home / "config.toml").read_text(encoding="utf-8")
+            + "\n# a server I added later\n[mcp_servers.other]\ncommand = \"npx\"\n",
+            encoding="utf-8",
+        )
+        before = tomllib.loads(
+            (codex_home / "config.toml").read_text(encoding="utf-8")
+        )
+
+        pause_mod.cmd_pause(argparse.Namespace(status=False))
+        # The removal leaves no blank residue at the top of the file.
+        assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
+            '# a server I added later\n[mcp_servers.other]\ncommand = "npx"\n'
+        )
+
+        pause_mod.cmd_resume(argparse.Namespace())
+        text = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert tomllib.loads(text) == before
+        assert "# a server I added later" in text
 
     def test_pause_names_the_file_it_actually_edited(
         self, codex_home: Path, installable, capsys

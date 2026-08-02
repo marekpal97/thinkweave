@@ -313,14 +313,19 @@ def _plugin_provides_mcp() -> Path | None:
 
 
 def _entries_equal(a: dict, b: dict) -> bool:
-    """Compare two MCP-server blocks ignoring key order."""
-    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+    """Compare two MCP-server blocks ignoring key order — which `dict.__eq__`
+    already does, without choking on a TOML value JSON has no encoding for."""
+    return a == b
 
 
 def _diff_lines(old: dict, new: dict) -> list[str]:
-    """Render a minimal human-readable diff between two MCP-server blocks."""
-    old_str = json.dumps(old, indent=2, sort_keys=True).splitlines()
-    new_str = json.dumps(new, indent=2, sort_keys=True).splitlines()
+    """Render a minimal human-readable diff between two MCP-server blocks.
+
+    Display only, so `default=str` is the right answer for a TOML-native value
+    (a date) that JSON cannot encode.
+    """
+    old_str = json.dumps(old, indent=2, sort_keys=True, default=str).splitlines()
+    new_str = json.dumps(new, indent=2, sort_keys=True, default=str).splitlines()
     out: list[str] = []
     for line in old_str:
         if line not in new_str:
@@ -467,11 +472,9 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
         print(f"Wrote {path} with thinkweave MCP entry.")
         return
 
-    try:
-        existing = mcp_config.read_entry(path, SERVER_NAME)
-    except mcp_config.MalformedConfig as e:
-        print(f"error: {e}", file=sys.stderr)
-        sys.exit(1)
+    # A MalformedConfig from here (or from either write below) carries its own
+    # remedy and is turned into a clean exit by the CLI's error boundary.
+    existing = mcp_config.read_entry(path, SERVER_NAME)
 
     if existing is None:
         mcp_config.write_entry(path, SERVER_NAME, new_entry)

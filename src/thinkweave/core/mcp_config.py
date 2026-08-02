@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -121,9 +122,16 @@ def remove_entry(path: Path, name: str) -> bool:
 
 def _atomic_write(path: Path, text: str) -> None:
     """tempfile + os.replace, so an interrupted write cannot leave the user's
-    harness config truncated."""
+    harness config truncated.
+
+    The replacement inherits the original's permissions: Codex creates
+    ``config.toml`` 0600 and it can carry env secrets, so falling back to the
+    umask default would quietly widen it.
+    """
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
+    if path.exists():
+        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
     os.replace(tmp, path)
 
 
@@ -134,6 +142,7 @@ def _json_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
         servers.pop(name, None)
     else:
         servers[name] = entry
+    path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, json.dumps(doc, indent=2) + "\n")
 
 
@@ -158,15 +167,20 @@ def _toml_scalar(value: Any) -> str:
 
     ``json.dumps`` handles strings: JSON's escape set is a subset of TOML's
     basic-string escapes, so a Windows path's backslashes come out correct.
+    ``ensure_ascii=False`` is required, not cosmetic — the default escapes a
+    non-BMP character (an emoji in a vault path) as a surrogate pair, which
+    TOML rejects as "not a Unicode scalar value".
     """
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, list):
         return "[" + ", ".join(_toml_scalar(v) for v in value) + "]"
     if isinstance(value, dict):
-        inner = ", ".join(f"{json.dumps(k)} = {_toml_scalar(v)}" for k, v in value.items())
+        inner = ", ".join(
+            f"{_toml_scalar(k)} = {_toml_scalar(v)}" for k, v in value.items()
+        )
         return "{ " + inner + " }"
-    return json.dumps(value)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _toml_table(name: str, entry: dict[str, Any]) -> str:
@@ -184,15 +198,40 @@ def _splice(text: str, name: str, block: str | None) -> str:
     Sections are cut at header lines, so every byte of every *other* section —
     comments, spacing, key order — survives untouched.
     """
-    lines = text.splitlines(keepends=True)
     out: list[str] = []
     tail: list[str] = []  # trailing blank lines of the section before ours
+
+    def keep(line: str) -> None:
+        """Emit a line we do not own, holding blanks back: on a removal they
+        belong to the gap we are closing, not to the section above."""
+        nonlocal tail
+        if line.strip() == "":
+            # A blank with nothing above it separates nothing, which happens
+            # only once our table has gone from the very top of the file. A
+            # user's own leading whitespace survives: `replaced` is still False
+            # until we reach our table.
+            if out or not replaced:
+                tail.append(line)
+            return
+        out.extend(tail)
+        tail = []
+        out.append(line)
+
     ours = False
     replaced = False
-    for line in lines:
+    trailing: list[str] = []  # blank/comment run at the end of our table
+    for line in text.splitlines(keepends=True):
         header = _HEADER.match(line)
         if header:
-            ours = _owns(header.group("key"), name)
+            was_ours, ours = ours, _owns(header.group("key"), name)
+            if was_ours and not ours:
+                # A comment sitting directly above a header documents *that*
+                # header, so the run trailing our table is not ours to delete.
+                # Replaying it through `keep` rather than appending it verbatim
+                # is what collapses the gap correctly on a removal.
+                for held in trailing:
+                    keep(held)
+            trailing = []
             if ours and not replaced:
                 # Our table's turn: emit the replacement once, here, so the
                 # entry keeps its position in the user's file.
@@ -203,15 +242,17 @@ def _splice(text: str, name: str, block: str | None) -> str:
                 replaced = True
                 continue
         if ours:
+            # A comment followed by one of our own keys documents our table and
+            # leaves with it; only an unbroken run up to the next header is held.
+            trailing = (
+                [*trailing, line]
+                if line.strip() == "" or line.lstrip().startswith("#")
+                else []
+            )
             continue
-        # Hold trailing blanks back: on a removal they belong to the gap we are
-        # closing, not to the section above.
-        if line.strip() == "":
-            tail.append(line)
-        else:
-            out.extend(tail)
-            tail = []
-            out.append(line)
+        keep(line)
+    for held in trailing:
+        keep(held)
     out.extend(tail)
 
     if not replaced and block is not None:
