@@ -76,6 +76,29 @@ def _log_info(hook_type: str, message: str) -> None:
         pass  # Last resort: silent failure on logging itself
 
 
+def _hook_harness() -> str:
+    """Which harness fired this hook, from our own argv.
+
+    ``weave hooks install`` appends ``--harness <id>`` for every harness but
+    Claude Code; why argv rather than ``harness.active()`` is
+    docs/HARNESSES.md § "Why the handler reads argv, not the profile". Empty
+    string means the Claude Code default, which keeps its buffer bytes
+    identical to every session written before #107.
+
+    The value is unvalidated on purpose and that is safe: it is only ever
+    stamped onto the buffer as ``surface``, and its one consumer looks it up
+    in the closed ``indexer._STARTUP_SOURCES`` map, where anything unrecognised
+    falls back to plain ``'startup'``. An argv nobody but this repo's installer
+    writes therefore cannot reach the ``context_served`` CHECK constraint.
+    """
+    argv = sys.argv
+    if "--harness" in argv:
+        i = argv.index("--harness")
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return ""
+
+
 def main() -> None:
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
@@ -140,19 +163,13 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
     """
     from thinkweave.operations.retrieval_log import RETRIEVAL_TOOLS
 
-    is_action_tool = tool_name in ("Write", "Edit", "Bash")
+    is_action_tool = tool_name in ACTION_TOOLS
     is_retrieval_tool = tool_name in RETRIEVAL_TOOLS
     if not (is_action_tool or is_retrieval_tool):
         _output()
         return
 
     tool_input = hook_input.get("tool_input", {})
-    # Claude Code's PostToolUse payload uses ``tool_response`` (newer, an
-    # object with stdout/stderr) or ``tool_output`` (older string form).
-    # _extract_tool_output_text normalises both to a single string so
-    # downstream parsers (_parse_commit_from_output, build_retrieval_event,
-    # etc.) don't need provider-version awareness.
-    tool_output = _extract_tool_output_text(hook_input)
 
     try:
         from thinkweave.core.config import load_config
@@ -166,13 +183,29 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         # events are kept in the same buffer file — the Stop-time finalizer
         # partitions them into events.jsonl vs retrieval_log.jsonl.
         if is_action_tool:
-            event = _build_event(tool_name, tool_input, tool_output, now)
+            # Claude Code's PostToolUse payload uses ``tool_response`` (newer,
+            # an object with stdout/stderr) or ``tool_output`` (older string
+            # form); _extract_tool_output_text normalises both so the parsers
+            # (_parse_commit_from_output, _extract_insight_blocks) don't need
+            # provider-version awareness. Only recognised text shapes survive
+            # it — see its docstring.
+            events = _build_events(
+                tool_name, tool_input, _extract_tool_output_text(hook_input), now
+            )
         else:
             from thinkweave.operations.retrieval_log import build_retrieval_event
 
-            event = build_retrieval_event(tool_name, tool_input, tool_output, now)
-        if event:
-            _buffer_event(cfg.weave_dir, session_id, event)
+            # Raw, not normalised: a retrieval response IS the rendered answer,
+            # whatever shape the harness wraps it in, and `build_retrieval_event`
+            # mines the whole object for note ids (#107).
+            events = [
+                build_retrieval_event(
+                    tool_name, tool_input, _raw_tool_response(hook_input), now
+                )
+            ]
+        for event in events:
+            if event:
+                _buffer_event(cfg.weave_dir, session_id, event)
 
         # Action-tool path materialises the session note (so MCP tools can
         # discover it mid-conversation). Retrieval path defers — Stop hook
@@ -476,13 +509,36 @@ def _detect_project(hook_input: dict) -> str:
     return cwd_path.name
 
 
+# Directory markers — matched anywhere in the path, since every file under
+# one is the harness's own furniture.
+_INTERNAL_DIRS = (".claude/", ".codex/", ".weave/")
+# Whole-filename markers. `settings.json` stays here for the bare-root case;
+# `.claude/settings.json` is already covered above.
+_INTERNAL_FILES = frozenset(
+    {"claude.md", "claude.local.md", "agents.md", "settings.json"}
+)
+
+
 def _is_internal(path: str) -> bool:
-    """Check if a path is an internal/config file we should ignore."""
-    p = path.lower()
-    return any(
-        x in p
-        for x in (".claude/", "claude.md", "claude.local.md", ".weave/", "settings.json")
-    )
+    """Check if a path is an internal/config file we should ignore.
+
+    A union of both harnesses' furniture (Claude Code's ``.claude/`` +
+    ``CLAUDE.md``, Codex's ``.codex/`` + ``AGENTS.md``) rather than profile
+    data — see docs/HARNESSES.md § "Why the handler reads argv, not the
+    profile" (#107).
+
+    Note ``hooks.json`` is deliberately absent: thinkweave's own canonical
+    ``hooks/hooks.json`` is project work. ``.codex/`` already covers both the
+    repo-local and the ``$CODEX_HOME`` copies of Codex's.
+
+    Filenames match as a whole path component, not as a substring: the latter
+    read ``docs/subagents.md`` and ``multi-agents.md`` as Codex's ``AGENTS.md``
+    and dropped them from ``files_touched`` silently.
+    """
+    p = path.lower().replace("\\", "/")
+    if any(d in p for d in _INTERNAL_DIRS):
+        return True
+    return p.rsplit("/", 1)[-1] in _INTERNAL_FILES
 
 
 # ---------------------------------------------------------------------------
@@ -531,9 +587,7 @@ def _extract_tool_output_text(hook_input: dict) -> str:
     subfield was never written. Empirically 0/405 native hook-emitted
     sessions ever carried ``commits[]``. Audit item A1.
     """
-    raw = hook_input.get("tool_response")
-    if raw is None:
-        raw = hook_input.get("tool_output", "")
+    raw = _raw_tool_response(hook_input)
     if isinstance(raw, str):
         return raw
     if isinstance(raw, dict):
@@ -545,8 +599,87 @@ def _extract_tool_output_text(hook_input: dict) -> str:
             stderr = str(stderr)
         if stdout and stderr:
             return stdout + "\n" + stderr
-        return stdout or stderr or ""
+        if stdout or stderr:
+            return stdout or stderr
+
+        # Any other dict shape is deliberately *not* mined for text. Write's
+        # and Edit's `tool_response` echo back what was written (`content`,
+        # `originalFile`), which is the edited file, not tool output — harvest
+        # it and `_extract_insight_blocks` re-captures every ★ Insight block
+        # living in the source on every touch. Unknown-shape recovery belongs
+        # to the retrieval path, where the payload really is a rendered answer;
+        # see `retrieval_log.response_text` (#107).
+        return ""
     return ""
+
+
+def _raw_tool_response(hook_input: dict):
+    """The tool result exactly as the harness sent it, un-normalised.
+
+    Same key preference as :func:`_extract_tool_output_text` — that helper
+    flattens for the action path, the retrieval path wants the object.
+    """
+    raw = hook_input.get("tool_response")
+    return hook_input.get("tool_output", "") if raw is None else raw
+
+
+# Every tool name that counts as file/command activity, across both
+# harnesses. Claude Code edits files as `Write`/`Edit`; Codex routes every
+# edit through a single `apply_patch` call and reports that as the tool name
+# (`Edit`/`Write` are matcher aliases only — they never appear in the
+# payload). Union rather than profile data, for the reason in `_is_internal`.
+ACTION_TOOLS = ("Write", "Edit", "Bash", "apply_patch")
+
+# Codex's apply_patch envelope. Markers transcribed from the codex-cli 0.146.0
+# binary: `*** Add File: `, `*** Update File:`, `*** Delete File: `,
+# `*** Move to: `. Note `Move to` carries no `File` keyword.
+_PATCH_OP_RE = re.compile(
+    r"^\*\*\* (Add|Update|Delete|Move to)(?: File)?: (.+?)\s*$",
+    re.MULTILINE,
+)
+
+# Which buffer-vocabulary verb each patch operation becomes. Downstream
+# consumers (`core/events.py`, `_summarize_events`) match on
+# `tool in ("Edit", "Write")`; normalising here — at the one wire boundary —
+# keeps them harness-agnostic instead of teaching each a second vocabulary.
+# Codex documents `Edit`/`Write` as its own aliases for `apply_patch`, so this
+# is its mapping, not ours.
+_PATCH_OP_TOOL = {
+    "Add": "Write",
+    "Move to": "Write",
+    "Update": "Edit",
+    "Delete": "Edit",
+}
+
+
+def _build_events(
+    tool_name: str, tool_input: dict, tool_output, now: str
+) -> list[dict]:
+    """Structured buffer events for one PostToolUse call.
+
+    A list because Codex's ``apply_patch`` can touch several files in one
+    call, where Claude Code would have fired one ``Write``/``Edit`` per file.
+    Every other tool yields at most one event.
+    """
+    if tool_name != "apply_patch":
+        event = _build_event(tool_name, tool_input, tool_output, now)
+        return [event] if event else []
+
+    # ★ Insight blocks are not scanned here: apply_patch's output is a list of
+    # touched files, never model prose. Bash keeps that enrichment.
+    events = []
+    for op, path in _PATCH_OP_RE.findall(tool_input.get("command", "")):
+        if _is_internal(path):
+            continue
+        events.append(
+            {
+                "ts": now,
+                "tool": _PATCH_OP_TOOL[op],
+                "file": path,
+                "context": f" — apply_patch ({op.lower()})",
+            }
+        )
+    return events
 
 
 def _build_event(tool_name: str, tool_input: dict, tool_output, now: str) -> dict | None:
@@ -985,13 +1118,16 @@ def _handle_session_start(hook_input: dict) -> None:
     """
     try:
         from thinkweave.core.config import load_config
+        from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
         from thinkweave.retrieval.context import build_project_context
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
         cfg = load_config()
         project = _detect_project(hook_input)
-        payload = build_project_context(cfg, project, budget_tokens=10000)
+        payload = build_project_context(
+            cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
+        )
 
         # Served note ids — computed once, reused for the RLVR startup event
         # AND the memory-seam guard. (Parsed from the payload *before* the
@@ -1028,6 +1164,12 @@ def _handle_session_start(hook_input: dict) -> None:
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
                 }
+                # Which harness served it. The indexer projects this to its
+                # own `context_served.source`; why that split exists is on the
+                # CHECK in core/indexer.py's SCHEMA_SQL.
+                surface = _hook_harness()
+                if surface:
+                    event["surface"] = surface
                 _buffer_event(cfg.weave_dir, session_id, event)
         except Exception as e:
             # Capture is best-effort; never block the payload injection.

@@ -47,7 +47,7 @@ from typing import Literal
 import yaml
 
 from thinkweave.core.config import Config, resolve_config_file
-from thinkweave.core.plugin_route import namespace_prompt, plugin_namespace
+from thinkweave.core.harness import active as active_harness
 
 Runner = Literal["direct", "uv"]
 
@@ -131,8 +131,8 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
     since #50 it derives fire-time ``uv run --project`` commands from
     hooks/hooks.json instead.)
 
-    - ``runner='direct'`` (``claude -p …``): swap the leading ``claude``
-      token for ``shutil.which('claude')`` when found.
+    - ``runner='direct'`` (a headless harness invocation): swap the leading
+      harness-binary token for its ``shutil.which`` resolution when found.
     - ``runner='uv'`` (``weave …``): if ``weave`` is a resolvable console
       script, swap the leading ``weave`` for its absolute path; otherwise
       fall back to ``uv run --project <repo_root> weave …`` (the dev-checkout
@@ -141,6 +141,11 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
     ``repo_root`` is only consulted for the ``uv`` fallback; when omitted
     and ``weave`` is unresolved, ``uv run weave …`` is emitted (relies on the
     scheduler's working directory).
+
+    Every harness-shaped token — the binary, the prompt flag, the
+    permission-bypass flag, the skill-namespace rule — comes from the active
+    :class:`~thinkweave.core.harness.HarnessProfile`, so a job line written for
+    one harness is not silently rendered for another.
     """
     tokens = job.command.split()
     if not tokens:
@@ -149,21 +154,31 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
     head, *rest = tokens
 
     if job.runner == "direct":
+        # The head token is rendered as written (resolved against PATH below)
+        # whatever it is — `scheduling.yaml` is user-owned, and an absolute
+        # `claude` path is a plausible hand-edit given this project's history
+        # of cron PATH failures. Matching it against `profile.cli_bin` would
+        # strip namespacing and the bypass flag off exactly those lines.
+        profile = active_harness()
+        # The token that says "this line is a headless prompt": the prompt flag
+        # where the harness has one, the one-shot subcommand where it doesn't
+        # (`codex exec <prompt>`). The prompt itself follows it.
+        marker = profile.prompt_flag or profile.exec_subcommand
         # Plugin-route installs register skills namespaced (verified: no
         # bare-name aliasing), so `/dream` must render as
-        # `/thinkweave:dream` in the scheduled line. The token after a
-        # `-p` flag is the skill invocation.
-        ns = plugin_namespace()
-        if ns:
-            for i, tok in enumerate(rest[:-1]):
-                if tok == "-p":
-                    rest[i + 1] = namespace_prompt(rest[i + 1], ns)
-        # Headless `claude -p` runs unattended with no TTY to approve tool use,
+        # `/thinkweave:dream` in the scheduled line. `namespaced` is a no-op on
+        # a harness that can't resolve slash commands headlessly.
+        for i, tok in enumerate(rest[:-1]):
+            if tok == marker:
+                rest[i + 1] = profile.namespaced(rest[i + 1])
+        # A headless prompt runs unattended with no TTY to approve tool use,
         # so the skill's `weave …` Bash calls are denied under the default
         # permission mode (the cron silently no-ops at its first tool call).
-        # Grant unattended tool use explicitly for `-p` invocations.
-        if "-p" in rest and "--dangerously-skip-permissions" not in rest:
-            rest.append("--dangerously-skip-permissions")
+        # Grant unattended tool use explicitly — where the harness has a flag
+        # for it; where it doesn't, nothing is appended.
+        bypass = profile.bypass_permissions_flag
+        if bypass and marker in rest and bypass not in rest:
+            rest.append(bypass)
         resolved = shutil.which(head)
         if resolved:
             return " ".join([_quote(resolved), *rest])

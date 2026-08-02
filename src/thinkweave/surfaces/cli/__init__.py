@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 
+from thinkweave.core import harness, mcp_config
 from thinkweave.surfaces.cli.concepts import cmd_concepts
 from thinkweave.surfaces.cli.drain import cmd_discover, cmd_drain
 from thinkweave.surfaces.cli.dream import cmd_dream
@@ -166,7 +167,21 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    _DISPATCH[args.command](args)
+    # `--harness` (machine-scope commands only) pins the profile for the rest
+    # of the process — one interpose point, so no handler reads the flag.
+    if getattr(args, "harness", None):
+        harness.select(args.harness)
+
+    try:
+        _DISPATCH[args.command](args)
+    except mcp_config.MalformedConfig as exc:
+        # "your harness config is in a shape we will not edit" — raised from
+        # both the read and the write side, by install/uninstall/pause/resume/
+        # doctor alike. It always carries its own remedy, and the answer is
+        # always the same, so it is caught once here rather than at each of the
+        # call sites (which would guarantee the next one forgets).
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 __all__ = [

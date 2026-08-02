@@ -226,7 +226,10 @@ EDGE_BASELINE: frozenset[tuple[str, str]] = frozenset(
         ("thinkweave.scheduling", "thinkweave.core.config"),
         ("thinkweave.scheduling.cron", "thinkweave.core.config"),
         ("thinkweave.scheduling.registry", "thinkweave.core.config"),
-        ("thinkweave.scheduling.registry", "thinkweave.core.plugin_route"),
+        # #104 retargeted this line, it did not add one: the cron renderer used
+        # to import core.plugin_route and now imports core.harness instead
+        # (the profile owns the namespace rule). Same count, same package.
+        ("thinkweave.scheduling.registry", "thinkweave.core.harness"),
         ("thinkweave.scheduling.taskscheduler", "thinkweave.core.config"),
         ("thinkweave.surfaces.cli.index", "thinkweave.onboarding.claude_code_seed"),
         ("thinkweave.surfaces.cli.index", "thinkweave.onboarding.enrich_batch"),

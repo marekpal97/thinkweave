@@ -62,11 +62,7 @@ from pathlib import Path
 import yaml
 
 from thinkweave.core.config import Config
-
-# CC auto-memory lives per-project under ~/.claude/projects/<slug>/memory/
-# plus an (often empty) global ~/.claude/memory.
-CC_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
-CC_GLOBAL_DIR = Path.home() / ".claude" / "memory"
+from thinkweave.core.harness import active as active_harness
 
 # Durable map (state) + rendered lens. Both vault-internal, never indexed.
 STATE_RELPATH = Path(".weave") / "memory_seam.json"
@@ -145,23 +141,32 @@ def _build_query(fm: dict, body: str) -> str:
 
 
 def collect_cc_facts() -> list[dict]:
-    """Walk every CC memory dir into fact records.
+    """Walk every harness memory dir into fact records.
 
     Each record carries the incremental keys (``content_hash`` over the raw
     file, ``mtime``) plus the fields the worker judges from (``description``,
     ``query``, ``weave_type``). ``key`` is ``<dir_slug>::<slug>`` — slugs can
     repeat across project dirs, so the dir qualifies them.
 
-    Pure filesystem walk over ``~/.claude`` — NOT a vault crawl (the
+    **Capability-gated** (dec-0535e46b): the seam reconciles a corpus the
+    harness itself maintains, so a profile without ``native_memory`` yields no
+    facts — the downstream state map and report then correctly render an empty
+    seam rather than a fabricated one.
+
+    Pure filesystem walk over the harness's own dirs — NOT a vault crawl (the
     operational no-crawl rule is about the vault index, which this never
     touches). ``MEMORY.md`` indexes are skipped (they hold no fact).
     """
+    profile = active_harness()
+    if not profile.native_memory:
+        return []
+
     facts: list[dict] = []
     dirs: list[tuple[str, Path]] = []
-    if CC_GLOBAL_DIR.is_dir():
-        dirs.append(("__global__", CC_GLOBAL_DIR))
-    if CC_PROJECTS_ROOT.is_dir():
-        for d in sorted(CC_PROJECTS_ROOT.iterdir()):
+    if profile.memory_global_dir.is_dir():
+        dirs.append(("__global__", profile.memory_global_dir))
+    if profile.memory_projects_root.is_dir():
+        for d in sorted(profile.memory_projects_root.iterdir()):
             weave = d / "memory"
             if weave.is_dir():
                 dirs.append((d.name, weave))
@@ -540,7 +545,7 @@ def flagged_twin_index(state: dict) -> dict[str, list[dict]]:
 
 
 def _fact_file_path(fact: dict) -> Path | None:
-    """Reconstruct the on-disk CC memory file for a state fact.
+    """Reconstruct the on-disk harness memory file for a state fact.
 
     ``key`` is ``<dir_slug>::<slug>``; combined with ``scope`` + ``file`` it
     locates the source file so a served fact's hash can be re-checked live.
@@ -549,10 +554,11 @@ def _fact_file_path(fact: dict) -> Path | None:
     file = fact.get("file") or ""
     if "::" not in key or not file:
         return None
+    profile = active_harness()
     dir_slug = key.rsplit("::", 1)[0]
     if fact.get("scope") == "global" or dir_slug == "__global__":
-        return CC_GLOBAL_DIR / file
-    return CC_PROJECTS_ROOT / dir_slug / "memory" / file
+        return profile.memory_global_dir / file
+    return profile.memory_projects_root / dir_slug / "memory" / file
 
 
 def recompute_fact_hash(fact: dict) -> str | None:

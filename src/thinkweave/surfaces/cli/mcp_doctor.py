@@ -16,19 +16,23 @@ import json
 import os
 import shutil
 import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-CLAUDE_JSON = Path.home() / ".claude.json"
+from thinkweave.core import mcp_config
+from thinkweave.core.harness import active as _profile
+
 SERVER_NAME = "thinkweave"
-# HOME-scoped plugin install locations. A marketplace install copies the plugin
-# to ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/; `weave dev-link`
+
+# The three harness-scoped locations the doctor inspects, all read from the
+# active profile: the machine-scope MCP config, plus the two HOME-scoped plugin
+# install locations. A marketplace install copies the plugin to
+# ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/; `weave dev-link`
 # symlinks the checkout to ~/.claude/skills/<name>/. The plugin manifest there
 # declares the MCP server, so the doctor must scan these to recognise a clean
-# plugin-only install (no raw ~/.claude.json entry). Module-level for monkeypatch.
-PLUGINS_CACHE = Path.home() / ".claude" / "plugins" / "cache"
-SKILLS_DIR = Path.home() / ".claude" / "skills"
+# plugin-only install (no raw entry in the harness's own MCP config).
 
 # ---------- result types ----------
 
@@ -56,7 +60,7 @@ class DoctorResult:
 def _safe_load_json(path: Path) -> dict[str, Any] | None:
     """Return the parsed JSON body of ``path`` or ``None`` on miss / error.
 
-    A malformed ``~/.claude.json`` is a real failure case the user should
+    A malformed harness MCP config is a real failure case the user should
     see, but for plugin manifests we silently skip — they're optional.
     """
     if not path.exists():
@@ -67,19 +71,26 @@ def _safe_load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _safe_read_entry(path: Path) -> dict | None:
+    """The thinkweave block from a harness MCP config, in whatever format that
+    harness uses (JSON for Claude Code, TOML for Codex). A malformed file reads
+    as "absent" — the doctor reports the missing registration rather than
+    aborting on someone else's syntax error."""
+    try:
+        return mcp_config.read_entry(path, SERVER_NAME)
+    except mcp_config.MalformedConfig:
+        return None
+
+
 def _entry_from_claude_json() -> tuple[Path, dict | None]:
-    data = _safe_load_json(CLAUDE_JSON)
-    if data is None:
-        return CLAUDE_JSON, None
-    return CLAUDE_JSON, data.get("mcpServers", {}).get(SERVER_NAME)
+    """The machine-scope MCP registration, read from the harness's own config."""
+    path = _profile().mcp_config
+    return path, _safe_read_entry(path)
 
 
 def _entry_from_project_mcp_json(cwd: Path) -> tuple[Path, dict | None]:
-    path = cwd / ".mcp.json"
-    data = _safe_load_json(path)
-    if data is None:
-        return path, None
-    return path, data.get("mcpServers", {}).get(SERVER_NAME)
+    path = cwd / _profile().project_mcp_config_relpath
+    return path, _safe_read_entry(path)
 
 
 def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
@@ -93,26 +104,29 @@ def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
     (no raw ``~/.claude.json`` entry) — without it, a plugin-route user running
     from an arbitrary cwd sees a false "not registered" FAIL.
     """
+    profile = _profile()
+    manifest_rel = profile.plugin_manifest_relpath
+
     candidates: list[Path] = []
-    root_manifest = cwd / ".claude-plugin" / "plugin.json"
+    root_manifest = cwd / manifest_rel
     if root_manifest.exists():
         candidates.append(root_manifest)
-    plugins_dir = cwd / ".claude" / "plugins"
+    plugins_dir = cwd / profile.project_plugins_relpath
     if plugins_dir.exists():
         for plugin_dir in plugins_dir.iterdir():
             if not plugin_dir.is_dir():
                 continue
-            manifest = plugin_dir / ".claude-plugin" / "plugin.json"
+            manifest = plugin_dir / manifest_rel
             if manifest.exists():
                 candidates.append(manifest)
 
-    # HOME-scoped installs — where plugins actually live for real users.
-    if PLUGINS_CACHE.exists():
-        # cache/<marketplace>/<plugin>/<version>/.claude-plugin/plugin.json
-        candidates.extend(PLUGINS_CACHE.glob("*/*/*/.claude-plugin/plugin.json"))
-    if SKILLS_DIR.exists():
-        # <name>/.claude-plugin/plugin.json (dev-link / @skills-dir)
-        candidates.extend(SKILLS_DIR.glob("*/.claude-plugin/plugin.json"))
+    # HOME-scoped installs — where plugins actually live for real users. The
+    # leading wildcards are this harness's nesting depth for each location:
+    # cache/<marketplace>/<plugin>/<version>/… and skills/<name>/….
+    if profile.plugins_cache.exists():
+        candidates.extend(profile.plugins_cache.glob(f"*/*/*/{manifest_rel.as_posix()}"))
+    if profile.skills_dir.exists():
+        candidates.extend(profile.skills_dir.glob(f"*/{manifest_rel.as_posix()}"))
 
     entries: list[tuple[Path, dict]] = []
     seen: set[Path] = set()
@@ -179,19 +193,34 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
     scopes: list[tuple[str, Path, dict]] = []
     _, machine_entry = _entry_from_claude_json()
     if machine_entry is not None:
-        scopes.append(("machine", CLAUDE_JSON, machine_entry))
+        scopes.append(("machine", _profile().mcp_config, machine_entry))
     project_path, project_entry = _entry_from_project_mcp_json(cwd)
     if project_entry is not None:
-        scopes.append(("project", project_path, project_entry))
+        # Some harnesses only honour a project-scope registration under a
+        # condition of their own (Codex: the project must be trusted). Saying
+        # "registered" without that would read as the doctor lying when the
+        # tools don't show up.
+        caveat = _profile().project_mcp_caveat
+        scopes.append((f"project ({caveat})" if caveat else "project",
+                       project_path, project_entry))
     for path, entry in _entries_from_plugin_manifests(cwd):
         scopes.append(("plugin", path, entry))
 
     if not scopes:
+        # The fix has to name the harness it applies to: `weave install`
+        # defaults to Claude Code, so handing a Codex user the bare command
+        # would write the registration into the wrong home.
+        harness_flag = (
+            "" if _profile().id == "claude-code" else f" --harness {_profile().id}"
+        )
         return CheckResult(
             name="registration scopes",
             passed=False,
             detail="thinkweave is not registered in any scope",
-            fix="run `weave install --yes` (machine) or install the plugin",
+            fix=(
+                f"run `weave install --yes{harness_flag}` (machine) "
+                "or install the plugin"
+            ),
         )
 
     if len(scopes) == 1:
@@ -210,7 +239,8 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
             passed=False,
             detail=(
                 f"{len(scopes)} scopes declare thinkweave with DIFFERENT "
-                f"invocations: {summary} — Claude Code will pick one and warn"
+                f"invocations: {summary} — {_profile().display_name} will pick "
+                "one and warn"
             ),
             fix=(
                 "reconcile to a single shape (re-run `weave install --yes` and "
@@ -221,6 +251,69 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
         name="registration scopes",
         passed=True,
         detail=f"{len(scopes)} scopes declare thinkweave identically ({summary})",
+    )
+
+
+def _repo_local_hook_files(cwd: Path) -> list[Path]:
+    """Repo-local files that declare hooks, for a harness that never fires
+    them from there.
+
+    Codex accepts hooks in TWO representations per config layer — a
+    ``hooks.json`` and an inline ``[hooks]`` table in the sibling
+    ``config.toml`` — so checking only one leaves half the failure
+    undiagnosed. The ``config.toml`` in that directory is also where #106
+    writes ``[mcp_servers]``, which is a different concern; only a ``hooks``
+    key counts.
+    """
+    hooks_rel = _profile().project_settings_relpath
+    found: list[Path] = []
+
+    hooks_file = cwd / hooks_rel
+    data = _safe_load_json(hooks_file)
+    if data and data.get("hooks"):
+        found.append(hooks_file)
+
+    toml_file = cwd / hooks_rel.parent / "config.toml"
+    if toml_file.exists():
+        try:
+            if tomllib.loads(toml_file.read_text(encoding="utf-8")).get("hooks"):
+                found.append(toml_file)
+        except (OSError, ValueError):
+            # Someone else's syntax error is not this check's business.
+            pass
+    return found
+
+
+def check_hook_scope(cwd: Path) -> CheckResult:
+    """FAIL when hooks are declared where this harness will never run them.
+
+    Only meaningful for a ``hooks_global_only`` harness. On Codex a repo-local
+    entry parses cleanly and then simply never fires (openai/codex#17532; the
+    manual additionally gates project ``.codex/`` layers on the project being
+    trusted) — silently-inert config, which is the failure class this project
+    keeps getting bitten by, so it gets a named check rather than a footnote.
+    """
+    stray = _repo_local_hook_files(cwd)
+    if not stray:
+        return CheckResult(
+            name="hook scope",
+            passed=True,
+            detail="no repo-local hook declarations",
+        )
+    listed = ", ".join(str(p) for p in stray)
+    return CheckResult(
+        name="hook scope",
+        passed=False,
+        detail=(
+            f"hooks declared repo-local in {listed} — {_profile().id} accepts "
+            "these and then never fires them"
+        ),
+        fix=(
+            "move them to the machine scope: "
+            f"`weave hooks install --scope user --harness {_profile().id}` "
+            f"(writes {_profile().user_settings}), then delete the repo-local "
+            "hook entries"
+        ),
     )
 
 
@@ -240,7 +333,7 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
     source: str
     plugin_root: Path | None = None
     if machine_entry is not None:
-        entry, source = machine_entry, str(CLAUDE_JSON)
+        entry, source = machine_entry, str(_profile().mcp_config)
     elif project_entry is not None:
         entry, source = project_entry, str(project_path)
     elif plugin_entries:
@@ -426,6 +519,10 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # Launcher probe is only meaningful if at least one scope registers.
     if result.checks[-1].passed and "not registered" not in result.checks[-1].detail:
         result.checks.append(check_launcher_resolves(cwd))
+    # Only harnesses that ignore repo-local hooks get this row, so a Claude
+    # Code report is unchanged.
+    if _profile().hooks_global_only:
+        result.checks.append(check_hook_scope(cwd))
     result.checks.append(check_vault_env())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)

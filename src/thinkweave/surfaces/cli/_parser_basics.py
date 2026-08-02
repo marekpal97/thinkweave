@@ -8,7 +8,27 @@ shared ``sub = parser.add_subparsers(dest='command')`` so the
 
 from __future__ import annotations
 
+from thinkweave.core.harness import PROFILES
 from thinkweave.core.schemas import EdgeType, NoteType
+
+
+def _add_harness_flag(*parsers) -> None:
+    """Let the machine-scope commands target a harness other than the active
+    one, without exporting ``$THINKWEAVE_HARNESS`` first (#106).
+
+    Only the commands that read or write a harness's own install topology take
+    it — everything else in the CLI is harness-agnostic.
+    """
+    for p in parsers:
+        p.add_argument(
+            "--harness",
+            choices=sorted(PROFILES),
+            default=None,
+            help=(
+                "Which agent harness to install into / inspect "
+                "(default: $THINKWEAVE_HARNESS, else claude-code)."
+            ),
+        )
 
 
 def add_note_subparsers(sub) -> None:
@@ -209,6 +229,7 @@ def add_index_subparsers(sub) -> None:
         action="store_true",
         help="Run vault coherence + MCP diagnostics together.",
     )
+    _add_harness_flag(p_doctor)
     p_doctor.add_argument(
         "--isolation",
         action="store_true",
@@ -364,7 +385,7 @@ def add_admin_subparsers(sub) -> None:
     )
     p_config_set.add_argument("path", help="Vault directory to persist as vault_root.")
 
-    p_hooks = sub.add_parser("hooks", help="Manage Claude Code hooks")
+    p_hooks = sub.add_parser("hooks", help="Manage agent-harness lifecycle hooks")
     hooks_sub = p_hooks.add_subparsers(dest="hooks_action")
     p_install = hooks_sub.add_parser("install", help="Install hooks")
     p_install.add_argument("--project", "-p", default="")
@@ -373,8 +394,9 @@ def add_admin_subparsers(sub) -> None:
         choices=("project", "user"),
         default="project",
         help=(
-            "project (default): write to <project>/.claude/settings.local.json; "
-            "user: write to ~/.claude/settings.json (fires in every CC session)"
+            "project (default): write to the harness's project-scope settings "
+            "file; user: write to its machine-scope one (fires in every "
+            "session). Some harnesses only honour user scope."
         ),
     )
     p_install.add_argument(
@@ -395,6 +417,11 @@ def add_admin_subparsers(sub) -> None:
         action="store_true",
         help="Print the planned settings.json diff without writing.",
     )
+    # `hooks` joined this list in #107: until Codex grew a hooks adapter,
+    # Claude Code was the only harness with hooks at all, so there was nothing
+    # to target. `status` reads the vault's own log, not a harness, so it
+    # stays out.
+    _add_harness_flag(p_install, p_uninstall)
     p_hooks_status = hooks_sub.add_parser("status", help="Show recent hook errors")
     p_hooks_status.add_argument("--limit", "-n", type=int, default=20, help="Number of lines to show")
 
@@ -494,10 +521,12 @@ def add_admin_subparsers(sub) -> None:
         help="Report whether thinkweave is currently paused and exit.",
     )
 
-    sub.add_parser(
+    p_resume = sub.add_parser(
         "resume",
         help="Restore thinkweave touchpoints removed by `weave pause`.",
     )
+
+    _add_harness_flag(p_install, p_uninstall, p_pause, p_resume)
 
     sub.add_parser("init", help="Initialize a new vault")
 

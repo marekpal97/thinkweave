@@ -1,13 +1,16 @@
 """Suite-wide fixtures.
 
-The plugin-route detector (``core.plugin_route.plugin_namespace``) reads real
-machine state — ``~/.claude/plugins/installed_plugins.json`` (marketplace) and
-the ``~/.claude/skills/thinkweave`` symlink (dev-link). Point both probes at
+The plugin-route detector reads real machine state through the active harness
+profile — ``~/.claude/plugins/installed_plugins.json`` (marketplace) and the
+``~/.claude/skills/thinkweave`` symlink (dev-link). Point both probes at
 nonexistent paths for every test so rendered commands (cron lines, flow
 invocations) don't depend on whether the dev box happens to have the plugin
 installed or dev-linked. Tests that exercise the plugin route override
-explicitly via the ``manifest=`` / ``dev_link=`` kwargs or by patching
-``plugin_namespace`` at the import site.
+explicitly — via ``use_profile`` below, the ``manifest=`` / ``dev_link=``
+kwargs of ``plugin_namespace``, or by patching at the import site.
+
+Harness touchpoints (``mcp_config``, ``instructions_file``, …) are sandboxed by
+the autouse ``_sandbox_harness_home`` fixture and aimed by ``use_profile``.
 
 Test-vault lifecycle
 --------------------
@@ -42,13 +45,14 @@ shadow these transparently, so the migration is safe to do one file at a time.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
-from thinkweave.core import plugin_route
+from thinkweave.core import harness
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
@@ -56,13 +60,80 @@ from thinkweave.core.vault import VaultManager
 from thinkweave.retrieval.search import Search
 
 
+@pytest.fixture
+def use_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[..., harness.HarnessProfile]:
+    """``use_profile(mcp_config=…, pause_marker=…)`` — swap the active harness
+    profile for a copy with those fields replaced. Calls compose."""
+
+    def _use(**fields: Any) -> harness.HarnessProfile:
+        profile = dataclasses.replace(harness.active(), **fields)
+        monkeypatch.setattr(harness, "_OVERRIDE", profile)
+        return profile
+
+    return _use
+
+
+@pytest.fixture
+def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Activate the ``codex`` profile against a throwaway ``$CODEX_HOME``.
+
+    Returns the ``.codex`` dir itself: everything Codex owns lives under that
+    one root, so it is the path assertions want. Selection goes through the env
+    var rather than ``_OVERRIDE`` so ``active()`` resolves the profile the way
+    a real run does — which means clearing ``_sandbox_harness_home``'s override
+    first.
+    """
+    home = tmp_path / "codex-home" / ".codex"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
+    monkeypatch.setattr(harness, "_OVERRIDE", None)
+    return home
+
+
+@pytest.fixture
+def stub_install_validators(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the three install-time validators (``_check_uv_available``,
+    ``_check_pyproject_reachable``, ``_uv_sync``) so ``cmd_install`` tests
+    don't require uv on PATH, a real pyproject in the sandbox, or pay sync
+    time. Tests that specifically validate these helpers don't use this."""
+    from thinkweave.surfaces.cli import install as inst
+
+    monkeypatch.setattr(inst, "_check_uv_available", lambda: None)
+    monkeypatch.setattr(inst, "_check_pyproject_reachable", lambda root: None)
+    monkeypatch.setattr(inst, "_uv_sync", lambda root: None)
+
+
+@pytest.fixture
+def scheduled_job() -> Callable[..., Any]:
+    """``scheduled_job("codex exec /dream")`` — one direct-runner job for the
+    cron-rendering suites, whose name and cadence are never what's asserted."""
+    from thinkweave.scheduling.registry import ScheduledJob
+
+    def _job(command: str, cadence: str = "0 3 * * *") -> Any:
+        return ScheduledJob(
+            name="j", cadence=cadence, command=command, runner="direct"
+        )
+
+    return _job
+
+
 @pytest.fixture(autouse=True)
-def _no_plugin_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _sandbox_harness_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Derive the active profile from a tmp home for *every* test.
+
+    Two jobs in one. It keeps rendered commands (cron lines, flow
+    invocations) independent of whether the dev box happens to have the plugin
+    installed or dev-linked — nothing exists under the tmp home, so
+    ``namespace()`` is None unless a test says otherwise. And it makes the
+    suite hermetic: no test can read or write the developer's real
+    ``~/.claude`` (a hook-installer test writing the real
+    ``~/.claude/settings.json`` is the concrete accident this prevents).
+    """
     monkeypatch.setattr(
-        plugin_route, "_INSTALLED_PLUGINS", tmp_path / "absent-installed_plugins.json"
-    )
-    monkeypatch.setattr(
-        plugin_route, "_DEV_LINK", tmp_path / "absent-skills-thinkweave"
+        harness, "_OVERRIDE", harness.claude_code(home=tmp_path / "harness-home")
     )
 
 

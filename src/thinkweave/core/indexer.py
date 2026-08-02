@@ -36,6 +36,14 @@ log = logging.getLogger(__name__)
 # the graph and FTS results.
 SOURCE_COMPANION_FILENAMES = {"raw.md", "raw.txt", "snapshot.md"}
 
+# `context_served.source` for a SessionStart payload, keyed by the harness
+# stamped onto the buffered `startup` event (see surfaces/hooks/handler.py:
+# _hook_harness); why Codex gets its own value is on the CHECK in SCHEMA_SQL
+# below. Closed, because the CHECK constraint is: an unrecognised harness falls
+# back to plain 'startup'. Claude Code is unstamped and hits that fallback,
+# which keeps every pre-#107 log projecting identically.
+_STARTUP_SOURCES = {"codex": "codex-startup"}
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS notes (
     id           TEXT PRIMARY KEY,
@@ -124,11 +132,16 @@ CREATE INDEX IF NOT EXISTS idx_ch_ancestor ON concept_hierarchy(ancestor);
 -- prior-trajectory Lessons served into the implementer prompt). Keeping each
 -- push source distinct from agent-pulled onthefly preserves the agent-judgment
 -- signal in the RLVR export. Feeds the RLVR decision-context export.
+-- 'codex-startup' is the Codex SessionStart payload (#107): the same builder,
+-- but delivered under different guarantees — Codex renders it as a *visible*
+-- developer message, spills it to a temp file above additionalContextLimit,
+-- and drops it entirely until the hook is trusted — so it must not be weighed
+-- as Claude Code's 'startup'.
 -- Rebuildable from retrieval_log.jsonl — markdown stays truth.
 CREATE TABLE IF NOT EXISTS context_served (
     session_id TEXT NOT NULL,
     note_id    TEXT NOT NULL,
-    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime', 'loop-prime')),
+    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime', 'loop-prime', 'codex-startup')),
     ts         TEXT,
     PRIMARY KEY (session_id, note_id, source)
 );
@@ -343,21 +356,29 @@ class Indexer:
             self.db.commit()
 
         # context_served's `source` CHECK has widened over time (R2 added
-        # 'prompttime'; #57 added 'loop-prime'). Older vaults created the table
-        # with a narrower CHECK that rejects the new-source INSERTs. SQLite
-        # can't ALTER a CHECK, but the table is 100% derived from
-        # retrieval_log.jsonl — drop and let SCHEMA_SQL recreate it with the
-        # current constraint; the next _rebuild_context_served (same rebuild)
-        # repopulates it. Gate on the newest token: any table lacking
-        # 'loop-prime' predates the current schema.
+        # 'prompttime'; #57 added 'loop-prime'; #107 added 'codex-startup').
+        # Older vaults created the table with a narrower CHECK that rejects the
+        # new-source INSERTs. SQLite can't ALTER a CHECK, but the table is 100%
+        # derived from retrieval_log.jsonl — drop, let SCHEMA_SQL recreate it
+        # with the current constraint, and re-project every session right here.
+        # Gate on the newest token: any table lacking 'codex-startup' predates
+        # the current schema.
+        #
+        # The re-projection is not deferred to the caller's rebuild: only
+        # `rebuild(full=True)` walks every session, so an incremental rebuild
+        # (what an ordinary first-open-after-upgrade runs) would leave the
+        # table empty until the nightly full pass — with the co_served edges
+        # projected from it left dangling meanwhile. Costs one all-sessions
+        # walk, once per upgrade, since the gate then stops matching.
         cs_sql_row = self.db.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type='table' AND name='context_served'"
         ).fetchone()
         cs_sql = cs_sql_row[0] if cs_sql_row else None
-        if cs_sql and "loop-prime" not in cs_sql:
+        if cs_sql and "codex-startup" not in cs_sql:
             self.db.execute("DROP TABLE context_served")
             self.db.executescript(SCHEMA_SQL)
+            self._rebuild_context_served()
             self.db.commit()
 
     def close(self) -> None:
@@ -1445,7 +1466,7 @@ class Indexer:
                     continue
                 etype = ev.get("type", "")
                 if etype == "startup":
-                    src = "startup"
+                    src = _STARTUP_SOURCES.get(ev.get("surface", ""), "startup")
                 elif etype == "retrieval":
                     # Retrieval events carry a source distinction by their tool
                     # sentinel: system-pushed enrichment (prompt-time R2, or

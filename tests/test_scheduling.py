@@ -254,20 +254,18 @@ class TestResolveCommand:
         assert out == "uv run --project /repo weave index --embed"
 
     def test_direct_namespaces_skill_under_plugin_route(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, use_profile, tmp_path
     ):
         # Plugin route active → the `-p` skill token renders namespaced
         # (plugin commands have no bare-name aliasing).
         import json
-
-        from thinkweave.core import plugin_route
 
         manifest = tmp_path / "installed_plugins.json"
         manifest.write_text(
             json.dumps({"version": 2, "plugins": {"thinkweave@mp": []}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
+        use_profile(installed_plugins=manifest)
         monkeypatch.setattr(
             "thinkweave.scheduling.registry.shutil.which",
             lambda name: "/abs/claude" if name == "claude" else None,
@@ -284,17 +282,17 @@ class TestResolveCommand:
             " --dangerously-skip-permissions"
         )
 
-    def test_uv_jobs_unaffected_by_plugin_route(self, monkeypatch, tmp_path):
+    def test_uv_jobs_unaffected_by_plugin_route(
+        self, monkeypatch, use_profile, tmp_path
+    ):
         import json
-
-        from thinkweave.core import plugin_route
 
         manifest = tmp_path / "installed_plugins.json"
         manifest.write_text(
             json.dumps({"version": 2, "plugins": {"thinkweave@mp": []}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(plugin_route, "_INSTALLED_PLUGINS", manifest)
+        use_profile(installed_plugins=manifest)
         monkeypatch.setattr(
             "thinkweave.scheduling.registry.shutil.which",
             lambda name: "/abs/weave" if name == "weave" else None,

@@ -16,8 +16,9 @@ Design constraints — kept narrow on purpose:
 - ``stage.run`` is a literal argument string passed to ``claude -p``.
 - ``sleep`` between stages is an integer of seconds.
 - ``on_error`` is ``continue`` (default) or ``abort``.
-- The harness model is hardcoded to ``sonnet`` and the flag set matches
-  the existing cron entries (``--dangerously-skip-permissions``).
+- The model and the unattended-tool-use flag both come from the active
+  harness profile (``sonnet`` + ``--dangerously-skip-permissions`` on
+  Claude Code, matching the existing cron entries).
 
 When this surface needs to grow (parallel branches, conditionals on
 return code, templating), prefer adding a separate primitive over
@@ -35,7 +36,7 @@ from pathlib import Path
 from typing import Literal
 
 from thinkweave.core.config import Config
-from thinkweave.core.plugin_route import namespace_prompt, plugin_namespace
+from thinkweave.core.harness import active as active_harness
 
 
 OnError = Literal["continue", "abort"]
@@ -144,19 +145,22 @@ def _build_argv(run_arg: str) -> list[str]:
     Building the argv directly (rather than a shell string parsed by
     ``shlex.split``) keeps execution correct on every OS — the prompt may
     contain spaces, quotes, or backslashes (Windows paths) that POSIX
-    shell-splitting would mangle. Hardcodes the Claude Code flags the cron
-    entries use.
+    shell-splitting would mangle. The binary and its flags come from the
+    active harness profile.
     """
     # PERSONAL_MEM_CLAUDE_BIN: pre-rename migration fallback (→ thinkweave 2026-06-13).
-    bin_path = (
-        os.environ.get("THINKWEAVE_CLAUDE_BIN")
-        or os.environ.get("PERSONAL_MEM_CLAUDE_BIN")
-        or "claude"
+    bin_path = os.environ.get("THINKWEAVE_CLAUDE_BIN") or os.environ.get(
+        "PERSONAL_MEM_CLAUDE_BIN"
     )
+    profile = active_harness()
     # Plugin-route installs register skills namespaced (`/thinkweave:dream`),
     # with no bare-name aliasing — rewrite the stage's skill token to match.
-    run_arg = namespace_prompt(run_arg, plugin_namespace())
-    return [bin_path, "--model", "sonnet", "-p", run_arg, "--dangerously-skip-permissions"]
+    return profile.headless_argv(
+        profile.namespaced(run_arg),
+        model=profile.headless_model or None,
+        bypass=True,
+        bin=bin_path,
+    )
 
 
 def _build_command(run_arg: str) -> str:

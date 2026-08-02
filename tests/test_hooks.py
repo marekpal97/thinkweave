@@ -584,15 +584,15 @@ class TestHookInstaller:
         assert "hooks" not in settings
 
     def test_install_user_scope_writes_to_home(
-        self, tmp_path: Path, monkeypatch, capsys
+        self, tmp_path: Path, use_profile, capsys
     ):
         """``scope='user'`` targets ``~/.claude/settings.json`` (note: NOT the
-        ``.local`` variant — the per-user file). Redirect ``Path.home`` so
-        the test never touches the real home directory.
+        ``.local`` variant — the per-user file). Aim the harness profile at a
+        tmp home so the test never touches the real home directory.
         """
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        use_profile(user_settings=fake_home / ".claude" / "settings.json")
 
         from thinkweave.surfaces.hooks.install import install_hooks
 
@@ -656,15 +656,13 @@ class TestHookInstaller:
         with pytest.raises(ValueError, match="unknown scope"):
             install_hooks(scope="garbage", project_dir=str(tmp_path))
 
-    def test_install_user_scope_idempotent(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_install_user_scope_idempotent(self, tmp_path: Path, use_profile):
         """Running ``install_hooks(scope='user')`` twice converges — second
         call produces no net change. Pins the same idempotency contract
         as the project-scope path."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        use_profile(user_settings=fake_home / ".claude" / "settings.json")
 
         from thinkweave.surfaces.hooks.install import install_hooks
 
@@ -822,6 +820,37 @@ class TestExtractToolOutputText:
         assert _extract_tool_output_text(
             {"tool_response": {"interrupted": False, "isImage": False}}
         ) == ""
+
+    @pytest.mark.parametrize(
+        "tool_response",
+        [
+            # Write: `content` is the file just written.
+            {
+                "type": "create",
+                "filePath": "/repo/notes.py",
+                "content": "# ★ Insight ─────\n# Key point here.\n",
+                "structuredPatch": [],
+                "userModified": False,
+            },
+            # Edit: `originalFile` is the whole file, pre-edit.
+            {
+                "filePath": "/repo/a.py",
+                "oldString": "x",
+                "newString": "y",
+                "originalFile": "# ★ Insight ─────\n# Key point here.\n",
+                "structuredPatch": [{"lines": ["-x", "+y"]}],
+                "userModified": False,
+            },
+        ],
+        ids=["write", "edit"],
+    )
+    def test_file_echo_response_is_not_text(self, tool_response: dict):
+        """Claude Code's Write/Edit ``tool_response`` echoes the file it just
+        wrote. It is not tool *output* — treating it as such feeds the whole
+        file back to ``_extract_insight_blocks``, so any ★ Insight block living
+        in the source re-captures on every single touch (#107).
+        """
+        assert _extract_tool_output_text({"tool_response": tool_response}) == ""
 
 
 class TestHandlePostCommitCapture:
