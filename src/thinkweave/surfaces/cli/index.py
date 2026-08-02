@@ -315,7 +315,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                 )
             )
             if n_pending == 0:
-                print("No pending imported sessions found. Nothing to synthesise.")
+                print(f"No pending {args.source} sessions found. Nothing to synthesise.")
                 return
 
             decision = choose_route(via=getattr(args, "via", None), n_items=n_pending)

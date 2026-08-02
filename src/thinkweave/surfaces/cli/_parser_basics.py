@@ -253,9 +253,9 @@ def add_index_subparsers(sub) -> None:
         choices=["inline", "batch"],
         default=None,
         help=(
-            "Execution route for claude-code --enrich and chatgpt imports. "
-            "'batch' = wrapper async fan-out; 'inline' = CC skill "
-            "(/seed-enrich for claude-code-enrich, /import-chatgpt for "
+            "Execution route for claude-code/codex --enrich and chatgpt "
+            "imports. 'batch' = wrapper async fan-out; 'inline' = CC skill "
+            "(/seed-enrich for either --enrich lane, /import-chatgpt for "
             "chatgpt). Default: auto via choose_route()."
         ),
     )
