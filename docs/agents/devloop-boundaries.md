@@ -184,8 +184,10 @@ internal):
   outcome, ...) -> dict` — pure; emits the weave_create-shaped payload.
   (mint face)
 - `build_prime_payload(issue_number, run_id, concepts, *, conn, holdout,
-  limit, budget_chars, decisions) -> dict` — the claim-time payload.
-  (prime face)
+  limit, budget_chars, decisions, query) -> dict` — the claim-time payload.
+  `concepts` (ontology terms) and `query` (the issue's text) are the two
+  retrieval legs; `decisions` are the file-anchored ids the orchestrator
+  resolved. (prime face)
 - `append_served_event(buffer_path, run_id, issue_number, served, session_id)`
   + `LOOP_PRIME_TOOL` — the served-context write-through to the session
   buffer JSONL.
@@ -197,8 +199,8 @@ skill projection is scoped to *stage dispatches*, with generic capture-all
 parked in `issue-loop-memory.md`. Internal to `prime.py`:
 `is_holdout` (the sha1 holdout — `build_prime_payload` computes it; moved
 off the public list 2026-08-01, it had no external consumer),
-`_coerce_builds_on`, the outcome-rank table, `render_prime_block`,
-and — transitionally, §5 — `query_trajectories` / `resolve_insights`.
+`_coerce_builds_on`, the outcome-rank table, `render_prime_block`, and the two
+composition helpers over the seam (`query_trajectories`, `resolve_insights`).
 
 Two interface-level invariants, stated on the module:
 
@@ -215,7 +217,7 @@ Two interface-level invariants, stated on the module:
 `index_client.py` is the package's **single seam into the derived SQLite
 index** — stdlib-only, read-only, never imports `thinkweave`.
 
-Interface now (#94):
+Interface (#94, completed by #100):
 
 - `resolve_db_path(db: str | None, vault: str | None) -> str | None` — `--db`
   wins; else the vault's `weave_dir` override from `config/config.toml` /
@@ -225,21 +227,22 @@ Interface now (#94):
 - `Error = sqlite3.Error`, `Connection = sqlite3.Connection` — aliases so no
   other module ever imports `sqlite3` (cli's degrade guard now, prime's
   annotations post-#100), keeping the importer-allowlist seam tight.
+- `trajectory_candidates(conn, concepts, query, scan_cap, rrf_k) -> list[dict]`
+  — the retrieval surface. Two legs (concept match; fts5 match over
+  `notes_fts`) fused by RRF at `RRF_K = 60`, the retrieval doctrine's constant
+  (the main package's knob is `retrieval.rrf_k`). Either leg's input may be
+  empty; the FTS leg is best-effort, so a vault with no `notes_fts` still
+  primes on concepts.
+- `note_bodies(conn, ids) -> dict[str, str]` — ids → body text, `type='note'`
+  only (a `builds_on` id may name a decision or session; those never serve).
 
-End state (**#100 completes it**): every SQL string in `devloop` lives in
-`index_client`; its query surface is *index-vocabulary-shaped* (tags,
-concepts, FTS match, ids → bodies), returning plain dicts with frontmatter
-already JSON-parsed — schema knowledge inside, domain knowledge outside.
-Trajectory-domain judgment (which tag is `loop-run`, outcome ranking, color
-filtering, budgeting) stays in `trajectory/prime.py`, composing over the seam.
-
-Transitional state (#94 is move-only): `query_trajectories` and
-`resolve_insights` move to `prime.py` **unchanged** — splitting their SQL from
-their domain filtering is a real refactor and #94 may not do it. The seam
-finishes forming at the natural redesign point: #100 rewrites the retrieval
-query anyway (FTS+concept fusion), and writes the new query *in*
-`index_client`, deleting prime's inline SQL as it goes. This spec is the
-notice; #100's implementer should treat the SQL migration as in-scope.
+End state reached (#100): every SQL string in `devloop` lives here, and the
+query surface is *index-vocabulary-shaped* (tags, concepts, FTS match, ids →
+bodies), returning plain dicts — schema knowledge inside, domain knowledge
+outside. Trajectory-domain judgment (which tag is `loop-run`, outcome ranking,
+color filtering, budgeting) stays in `trajectory/prime.py`, composing over the
+seam. The fusion sits *inside* the seam because both legs are retrievers over
+the index; prime never sees a rank list, only fused candidates.
 
 Two enforcing seams (both land in #94; prose alone is banned by the epic):
 
@@ -253,9 +256,9 @@ Two enforcing seams (both land in #94; prose alone is banned by the epic):
    `test_issue_loop.py` remain as fast unit checks; the pin test is the
    contract's anchor because *both sides* of the seam appear in it.
 2. **Importer-allowlist test** — asserts which devloop modules import
-   `sqlite3`: `{index_client, trajectory.prime}` after #94, tightened to
-   `{index_client}` by #100. Five lines, and the transition is enforced
-   rather than remembered.
+   `sqlite3`: `{index_client, trajectory.prime}` after #94, tightened to the
+   `{index_client}` singleton by #100. Five lines, and the transition is
+   enforced rather than remembered.
 
 ## 6. Leaf-util doctrine
 
@@ -300,7 +303,7 @@ Function → destination, exhaustive; everything is a pure move unless marked:
 | `_VALID_*`, `_RED_*`, `TRIAGE_LABELS`, `classify_pr` | `triage.py` |
 | `_path_matches`, `_path_hits` | `paths.py` as `match`, `hits` (**the one unification**: diff gate's inline `startswith` loop → `paths` call) |
 | `_normalize_skill`, `_as_int_or_none`, `_normalize_trace*`, `build_trajectory` | `trajectory/mint.py` |
-| `is_holdout`, `_LESSONS_RE`, `extract_lessons`, `_coerce_builds_on`, `resolve_insights`, `_OUTCOME_RANK`, `_outcome_rank`, `query_trajectories`, `render_prime_block`, `build_prime_payload`, `LOOP_PRIME_TOOL`, `_append_served_event` | `trajectory/prime.py` (SQL pair migrates onward in #100) |
+| `is_holdout`, `_LESSONS_RE`, `extract_lessons`, `_coerce_builds_on`, `resolve_insights`, `_OUTCOME_RANK`, `_outcome_rank`, `query_trajectories`, `render_prime_block`, `build_prime_payload`, `LOOP_PRIME_TOOL`, `_append_served_event` | `trajectory/prime.py` (the SQL pair's queries migrated onward to `index_client` in #100; the two functions stayed as composition) |
 | `_open_index_ro`, `_read_weave_dir_override`, `_resolve_index_db` | `index_client.py` as `open_ro`, `resolve_db_path` (+ private helper) |
 | `_gh`, `fetch_issues`, `_fetch_labels` | `github.py` as `run`, `fetch_issues`, `fetch_labels` |
 | `_split_csv`, `build_arg_parser`, `main` | `cli.py` |

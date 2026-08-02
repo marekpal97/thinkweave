@@ -103,27 +103,48 @@ python scripts/issue_loop.py claim <N> --run-id <run-id>
 **Prime from prior trajectories (claim-time).** Before spawning the
 implementer, fetch the reusable half of prior similar runs — this is the native
 `bd prime`: the insight notes prior trajectories link via `builds_on`, for work
-whose concepts match this issue's labels.
+similar to this issue.
 
 ```bash
 python scripts/issue_loop.py prime <N> --run-id <run-id> \
-  --labels "<comma-separated issue labels>" --vault <vault-root> \
+  --concepts "<2-3 ontology terms>" --query "<the issue's title (+ body)>" \
+  [--decisions "<comma-separated note ids>"] --vault <vault-root> \
   [--buffer <weave_dir>/buffer/<this-session-id>.jsonl] <set-flags>
 ```
 
-The rail reads the derived index read-only, matches `[loop-run]` notes by the
-issue's concepts (labels), and emits JSON: `block` (markdown to splice),
-`primed`, `holdout`, `served` (the note ids surfaced). **Splice `block`
-verbatim into the implementer prompt, adjacent to the `decisions_for_file`
-standing order below** — it is the same class of context (prior decisions for
-touched files + prior lessons for similar work). When `block` is empty (a
-deliberate holdout — every `prime_holdout`th run runs unprimed for the
-served-context regression — or simply no matching trajectories), splice
-nothing and dispatch unchanged; the loop runs identically. Record `primed` and
-`served` for §3. When you pass `--buffer` (the loop session's buffer JSONL),
-the rail also logs the served ids as a `loop_prime` event that the indexer
-projects to `context_served(source='loop-prime')`, making served context
-recoverable per run from the index.
+**You resolve the three signals; the rail fuses them.**
+
+1. **`--concepts` — ontology terms, never GitHub labels.** The write side tags
+   trajectories with concepts from `ontology.yaml` (the strict gate shunts
+   everything else to `proposed_concepts`), so labels like `enhancement` or
+   `track:E-devloop` match zero notes. You hold `weave_concepts` — map the
+   issue to 2–3 ontology terms at claim time. `--labels` still works and still
+   defaults `--concepts` to the label set, but on its own that join is dead.
+2. **`--query` — the issue's own text.** Title, or title + body. This is the
+   full-text leg; it is what makes priming land when your concept guess misses.
+3. **`--decisions` — file-anchored ids, resolved by you at claim time.** Walk a
+   granularity ladder and stop at the first rung that returns anything:
+   files named in the issue body → `weave_graph(file_path=…,
+   filter='decisions_for_file')`; nothing named or nothing found → the same
+   walk for the module/dir those files live in; still nothing → let the
+   concept+`--query` fusion above carry the retrieval alone.
+
+The rail reads the derived index read-only, retrieves `[loop-run]` notes by
+concept match and full-text match fused with RRF, weights them by outcome, and
+emits JSON: `block` (markdown to splice), `primed`, `holdout`, `served` (the
+note ids surfaced — insight bodies plus the decision ids you passed). **Splice
+`block` verbatim into the implementer prompt, adjacent to the
+`decisions_for_file` standing order below** — it is the same class of context
+(prior decisions for touched files + prior lessons for similar work). When
+`block` is empty (a deliberate holdout — `prime_holdout` samples one run in N
+in expectation to run unprimed for the served-context regression — or simply no
+matching trajectories), splice nothing and dispatch unchanged; the loop runs
+identically. Record `primed` and `served` for §3. When you pass `--buffer` (the
+loop session's buffer JSONL), the rail also logs the served ids as a
+`loop_prime` event that the indexer projects to
+`context_served(source='loop-prime')`, making served context recoverable per
+run from the index. Add `--dry-run` to see what a call would serve without
+logging it as served (payload prints, buffer write suppressed).
 
 **Dispatch blocks (issue #89) — write-time simplification pressure.** When
 `dispatch.persona` is on (loop.toml `[dispatch] persona = true`, the default),
