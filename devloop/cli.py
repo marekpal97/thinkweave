@@ -2,9 +2,10 @@
 
 The issue tracker IS the DAG: blocking edges live as GitHub-native issue
 dependencies (what /to-tickets and /wayfinder publish since Pocock skills
-v1.1.0), with issue-body text (``Blocked-by: #16`` header form, or a
-``## Blocked by`` section) as the fallback serialization — the rail gates on
-the union of both. The graph advances through GitHub's own state machine —
+v1.1.0) and nowhere else — #95 retired the ``Blocked-by:`` issue-body
+serializations once the existing edges were backfilled natively. ``Wave:``
+and ``Parallel-safe:`` have no native field, so they stay body metadata.
+The graph advances through GitHub's own state machine —
 a merged PR closes its issue via ``Closes #N``, which unblocks dependents on
 the next run. This script never stores state; it re-reads the tracker and
 computes the current frontier, plus the weakly-connected components that
