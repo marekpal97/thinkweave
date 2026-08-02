@@ -1,10 +1,8 @@
 """Tracker-as-DAG math over GitHub-native issue dependencies.
 
 Pure over issue-snapshot dicts (shape owned by ``devloop.github``). Blocker
-edges come from the snapshot's native dependency fields only — the
-``Blocked-by:`` body grammar was deleted in #95. ``Wave:`` and
-``Parallel-safe:`` have no native counterpart, so they stay body metadata and
-keep their parsers here.
+edges come from the snapshot's native dependency fields; ``Wave:`` and
+``Parallel-safe:`` stay body metadata.
 """
 
 from __future__ import annotations
@@ -12,7 +10,7 @@ from __future__ import annotations
 import re
 
 # ---------------------------------------------------------------------------
-# Body metadata — the fields with no native GitHub field to migrate to
+# Body metadata — no native GitHub field for these
 
 _WAVE_RE = re.compile(r"Wave:\s*(\d+)", re.IGNORECASE)
 _PARALLEL_RE = re.compile(r"Parallel[- ]safe:\s*(yes|no)", re.IGNORECASE)
@@ -34,11 +32,7 @@ def parse_parallel_safe(body: str) -> bool:
 
 
 def blockers(issue: dict) -> list[int]:
-    """The issue's native ``blocked_by`` edges, as fetched into the snapshot.
-
-    Absent key = no edge list (either no blockers, or the fetch failed and
-    ``native_blocked_count`` is carrying the gate on its own).
-    """
+    """The issue's native ``blocked_by`` edges, deduped and sorted."""
     return sorted(set(issue.get("native_blockers") or []))
 
 
@@ -138,7 +132,7 @@ def compute_frontier(issues: list[dict], cfg: dict, limit: int | None = None) ->
         # native_blocked_count is GitHub's own open-blocker count — it gates
         # even when the edge list wasn't fetched (list is enrichment only).
         if open_blockers or (issue.get("native_blocked_count", 0) > 0 and not entry["blockers"]):
-            entry["open_blockers"] = sorted(set(open_blockers))
+            entry["open_blockers"] = open_blockers
             if not open_blockers:
                 entry["open_blockers_note"] = "native blocked_by count > 0 (edge list not fetched)"
             blocked.append(entry)

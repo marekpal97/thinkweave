@@ -73,12 +73,10 @@ resolution-and-override is run-posture, exercised only at the entry point;
 **`dag.py`** — `parse_wave`, `parse_parallel_safe`, `blockers`,
 `compute_components`, `scope_to_dag`, `apply_assume_done`, `compute_frontier`.
 Pure over issue-snapshot dicts (shape owned by `github`, § below). Edges come
-from the snapshot's native dependency keys only — #95 deleted the
-`Blocked-by:` body grammar (`_HEADER_RE`, `_SECTION_RE`, `parse_blockers`) and
-the union that `all_blockers` used to compute, leaving `blockers` as the read
-of `native_blockers`. The two `Wave:` / `Parallel-safe:` regexes stay: they
-are **domain grammar, not generic parsing** — body metadata with no native
-GitHub field, living beside the frontier math that consumes them.
+from the snapshot's native dependency keys only. The two `Wave:` /
+`Parallel-safe:` regexes stay: they are **domain grammar, not generic
+parsing** — body metadata with no native GitHub field, living beside the
+frontier math that consumes them.
 
 **`gates.py`** — the Gate protocol (§3) plus `run_command_gate`,
 `evaluate_diff_gate` (pure), `run_diff_gate`. Runs its own `git diff`
@@ -271,7 +269,7 @@ The boundary placement is justified by what it localizes:
 
 | Issue | Change | Touches |
 |---|---|---|
-| #95 | delete body-regex DAG grammar (native deps) — **landed** | `dag.py` only (`cli.py`'s module docstring restated the union; prose, not a second implementation) |
+| #95 | delete body-regex DAG grammar (native deps) | `dag.py` only |
 | #98 | delete v1 Lessons fallback | `trajectory/prime.py` only |
 | #99 | judgment-gate validators + normalize-to-backstop | `gates.py` (introduces the `JUDGMENT` validator registry + its tests), `trajectory/mint.py` |
 | #100 | prime v3 retrieval (FTS+concept via the seam) | `index_client.py`, `trajectory/prime.py` |
@@ -287,7 +285,7 @@ Function → destination, exhaustive; everything is a pure move unless marked:
 | Today (`scripts/issue_loop.py`) | Destination |
 |---|---|
 | `DEFAULT_CONFIG`, `load_config`, `parse_override`, `apply_overrides` | `cli.py` |
-| `_HEADER_RE` … `_PARALLEL_RE`, `parse_blockers`, `parse_wave`, `parse_parallel_safe`, `all_blockers`, `compute_components`, `scope_to_dag`, `apply_assume_done`, `compute_frontier` | `dag.py` (#95 has since deleted `_HEADER_RE`, `_SECTION_RE`, `parse_blockers`, and renamed `all_blockers` → `blockers`) |
+| `_HEADER_RE` … `_PARALLEL_RE`, `parse_blockers`, `parse_wave`, `parse_parallel_safe`, `all_blockers`, `compute_components`, `scope_to_dag`, `apply_assume_done`, `compute_frontier` | `dag.py` |
 | `run_command_gate`, `evaluate_diff_gate`, `run_diff_gate` | `gates.py` (+ the `DETERMINISTIC` registry; `check` dispatch via registry, byte-identical output) |
 | `_VALID_*`, `_RED_*`, `TRIAGE_LABELS`, `classify_pr` | `triage.py` |
 | `_path_matches`, `_path_hits` | `paths.py` as `match`, `hits` (**the one unification**: diff gate's inline `startswith` loop → `paths` call) |

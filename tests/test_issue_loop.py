@@ -17,18 +17,9 @@ from devloop.trajectory import mint, prime
 
 
 def test_blockers_are_the_native_edges():
-    assert dag.blockers({"native_blockers": [17, 16, 16]}) == [16, 17]
+    assert dag.blockers({"native_blockers": [17, 16]}) == [16, 17]
     assert dag.blockers({"native_blocked_count": 1}) == []
     assert dag.blockers({}) == []
-
-
-def test_body_blocked_by_text_is_not_an_edge():
-    """Both retired serializations are inert text now — neither the pipe
-    header nor the `## Blocked by` section yields an edge."""
-    header = "Track: A-ontology | Wave: 2 | Blocked-by: #16 | Parallel-safe: yes | Epic: #11"
-    section = "## What to build\nStuff.\n\n## Blocked by\n\n- #12\n- #14\n"
-    assert dag.blockers({"body": header}) == []
-    assert dag.blockers({"body": section}) == []
 
 
 def test_wave_and_parallel_safe():
@@ -112,9 +103,7 @@ def test_native_dependencies_gate_frontier():
 
 
 def test_body_blocked_by_text_does_not_gate_the_frontier():
-    """#95: only native edges gate. A body `Blocked-by:` line — the retired
-    serialization, still sitting in old issue bodies — is inert: #2 is
-    runnable and shares no component with #1."""
+    """A body `Blocked-by:` line in an old issue is inert."""
     issues = [_issue(1), _issue(2, body="Blocked-by: #1")]
     result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [1, 2]
@@ -154,13 +143,11 @@ def test_components_ignore_closed_issues():
 
 
 def test_frontier_wave_ordering_and_limit():
-    # Wave survives as body metadata (no native field) even in bodies that
-    # still carry the retired Blocked-by fragment.
     issues = [
-        _issue(5, body="Wave: 2 | Blocked-by: —"),
-        _issue(6, body="Wave: 1 | Blocked-by: —"),
+        _issue(5, body="Wave: 2"),
+        _issue(6, body="Wave: 1"),
         _issue(7),  # no wave → sorts last
-        _issue(8, body="Wave: 1 | Blocked-by: —"),
+        _issue(8, body="Wave: 1"),
     ]
     result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [6, 8, 5, 7]

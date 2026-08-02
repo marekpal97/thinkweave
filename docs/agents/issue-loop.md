@@ -28,10 +28,7 @@ Surfaces:
 **The tracker is the DAG.** Since Pocock skills v1.1.0, `/to-tickets` and
 `/wayfinder` publish blocking as **GitHub-native issue dependencies** — the
 canonical, UI-visible representation — and since #95 that is the *only*
-representation the rail reads. The old `Blocked-by:` body serializations (the
-pipe-header form and the template's `## Blocked by` section) were backfilled
-to native edges and their parsers deleted; a `Blocked-by:` line left in an old
-body is now inert text. The rest of the pipe header survives, because no
+representation the rail reads. The rest of the pipe header survives, because no
 native field expresses it: `Track: … | Wave: 2 | Parallel-safe: yes | Epic:
 #11`. Nothing else stores the graph; there is no plan file to rot. GitHub even
 maintains the live gate for us: `issue_dependencies_summary.blocked_by`
