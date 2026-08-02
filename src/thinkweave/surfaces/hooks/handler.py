@@ -140,7 +140,7 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
     """
     from thinkweave.operations.retrieval_log import RETRIEVAL_TOOLS
 
-    is_action_tool = tool_name in ("Write", "Edit", "Bash")
+    is_action_tool = tool_name in ACTION_TOOLS
     is_retrieval_tool = tool_name in RETRIEVAL_TOOLS
     if not (is_action_tool or is_retrieval_tool):
         _output()
@@ -166,13 +166,14 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         # events are kept in the same buffer file — the Stop-time finalizer
         # partitions them into events.jsonl vs retrieval_log.jsonl.
         if is_action_tool:
-            event = _build_event(tool_name, tool_input, tool_output, now)
+            events = _build_events(tool_name, tool_input, tool_output, now)
         else:
             from thinkweave.operations.retrieval_log import build_retrieval_event
 
-            event = build_retrieval_event(tool_name, tool_input, tool_output, now)
-        if event:
-            _buffer_event(cfg.weave_dir, session_id, event)
+            events = [build_retrieval_event(tool_name, tool_input, tool_output, now)]
+        for event in events:
+            if event:
+                _buffer_event(cfg.weave_dir, session_id, event)
 
         # Action-tool path materialises the session note (so MCP tools can
         # discover it mid-conversation). Retrieval path defers — Stop hook
@@ -477,11 +478,32 @@ def _detect_project(hook_input: dict) -> str:
 
 
 def _is_internal(path: str) -> bool:
-    """Check if a path is an internal/config file we should ignore."""
+    """Check if a path is an internal/config file we should ignore.
+
+    Covers both harnesses' own furniture at once (Claude Code's ``.claude/``
+    + ``CLAUDE.md``, Codex's ``.codex/`` + ``AGENTS.md``) rather than reading
+    the list off the active :class:`~thinkweave.core.harness.HarnessProfile`.
+    The installed hook command carries no ``$THINKWEAVE_HARNESS``, so
+    ``harness.active()`` inside a hook fired by Codex reports ``claude-code``
+    and would pick the wrong list; the two vocabularies never collide, so
+    matching both is correct under either harness and needs no plumbing (#107).
+
+    Note ``hooks.json`` is deliberately absent: thinkweave's own canonical
+    ``hooks/hooks.json`` is project work. ``.codex/`` already covers both the
+    repo-local and the ``$CODEX_HOME`` copies of Codex's.
+    """
     p = path.lower()
     return any(
         x in p
-        for x in (".claude/", "claude.md", "claude.local.md", ".weave/", "settings.json")
+        for x in (
+            ".claude/",
+            "claude.md",
+            "claude.local.md",
+            ".codex/",
+            "agents.md",
+            ".weave/",
+            "settings.json",
+        )
     )
 
 
@@ -547,6 +569,66 @@ def _extract_tool_output_text(hook_input: dict) -> str:
             return stdout + "\n" + stderr
         return stdout or stderr or ""
     return ""
+
+
+# Every tool name that counts as file/command activity, across both
+# harnesses. Claude Code edits files as `Write`/`Edit`; Codex routes every
+# edit through a single `apply_patch` call and reports that as the tool name
+# (`Edit`/`Write` are matcher aliases only — they never appear in the
+# payload). Union rather than profile data, for the reason in `_is_internal`.
+ACTION_TOOLS = ("Write", "Edit", "Bash", "apply_patch")
+
+# Codex's apply_patch envelope. Markers transcribed from the codex-cli 0.146.0
+# binary: `*** Add File: `, `*** Update File:`, `*** Delete File: `,
+# `*** Move to: `. Note `Move to` carries no `File` keyword.
+_PATCH_OP_RE = re.compile(
+    r"^\*\*\* (?:(Add|Update|Delete) File|(Move to)): (.+?)\s*$",
+    re.MULTILINE,
+)
+
+# Which buffer-vocabulary verb each patch operation becomes. Downstream
+# consumers (`core/events.py`, `_summarize_events`) match on
+# `tool in ("Edit", "Write")`; normalising here — at the one wire boundary —
+# keeps them harness-agnostic instead of teaching each a second vocabulary.
+# Codex documents `Edit`/`Write` as its own aliases for `apply_patch`, so this
+# is its mapping, not ours.
+_PATCH_OP_TOOL = {
+    "Add": "Write",
+    "Move to": "Write",
+    "Update": "Edit",
+    "Delete": "Edit",
+}
+
+
+def _build_events(
+    tool_name: str, tool_input: dict, tool_output, now: str
+) -> list[dict]:
+    """Structured buffer events for one PostToolUse call.
+
+    A list because Codex's ``apply_patch`` can touch several files in one
+    call, where Claude Code would have fired one ``Write``/``Edit`` per file.
+    Every other tool yields at most one event.
+    """
+    if tool_name != "apply_patch":
+        event = _build_event(tool_name, tool_input, tool_output, now)
+        return [event] if event else []
+
+    # ★ Insight blocks are not scanned here: apply_patch's output is a list of
+    # touched files, never model prose. Bash keeps that enrichment.
+    events = []
+    for add, move, path in _PATCH_OP_RE.findall(tool_input.get("command", "")):
+        if _is_internal(path):
+            continue
+        op = add or move
+        events.append(
+            {
+                "ts": now,
+                "tool": _PATCH_OP_TOOL[op],
+                "file": path,
+                "context": f" — apply_patch ({op.lower()})",
+            }
+        )
+    return events
 
 
 def _build_event(tool_name: str, tool_input: dict, tool_output, now: str) -> dict | None:
