@@ -90,6 +90,11 @@ def _fts_match_expr(text: str, max_terms: int = 24) -> str:
     Terms dedupe (order-preserving) and cap at ``max_terms`` — a long issue body
     must not become an unbounded query. No terms → ``''``, the caller's signal
     to skip the leg entirely (``MATCH ''`` is itself a syntax error).
+
+    ponytail: no stopword filter, so common issue-prose words ("the", "with")
+    are real OR terms and the leg can touch most of the index — ~100ms at 6k
+    notes, paid once at claim time. Upgrade path when it stops being cheap:
+    drop terms whose document frequency exceeds a threshold.
     """
     terms = list(dict.fromkeys(_FTS_TERM.findall(text)))[:max_terms]
     return " OR ".join(f'"{t}"' for t in terms)
@@ -127,8 +132,8 @@ def _by_fts(conn: sqlite3.Connection, match: str, scan_cap: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _rrf(rankings: list[list[dict]], k: int) -> list[dict]:
-    """Reciprocal rank fusion: ``score[id] = Σ 1/(k + rank_i)``, 1-indexed.
+def _rrf(rankings: list[list[dict]]) -> list[dict]:
+    """Reciprocal rank fusion: ``score[id] = Σ 1/(RRF_K + rank_i)``, 1-indexed.
 
     Ties keep first-seen order (dict insertion + a stable sort), so a single
     ranking fuses to itself byte-for-byte — concept-only retrieval is unchanged
@@ -138,23 +143,26 @@ def _rrf(rankings: list[list[dict]], k: int) -> list[dict]:
     rows: dict[str, dict] = {}
     for ranking in rankings:
         for rank, row in enumerate(ranking, start=1):
-            scores[row["id"]] = scores.get(row["id"], 0.0) + 1.0 / (k + rank)
+            scores[row["id"]] = scores.get(row["id"], 0.0) + 1.0 / (RRF_K + rank)
             rows.setdefault(row["id"], row)
     return sorted(rows.values(), key=lambda r: -scores[r["id"]])
 
 
 def trajectory_candidates(
     conn: sqlite3.Connection, concepts: list[str], query: str = "",
-    scan_cap: int = 40, rrf_k: int = RRF_K,
+    scan_cap: int = 40,
 ) -> list[dict]:
     """Read-only: ``[loop-run]`` note rows for the concept and text legs, fused.
 
     Returns ``[{id, title, date, frontmatter}]`` in fused rank order, at most
     ``scan_cap`` per leg. Either input may be empty — an empty ``concepts``
     degrades to FTS-only, an empty ``query`` to concept-only, both empty to
-    ``[]``. The FTS leg is best-effort: a vault whose ``notes_fts`` is missing
-    or unbuilt still primes on concepts, so only the concept leg's errors reach
-    the caller's degrade-to-unprimed guard.
+    ``[]``.
+
+    The FTS leg is best-effort only while the other leg is carrying: a broken
+    ``notes_fts`` with nothing else retrieved raises, so the caller's
+    degrade-to-unprimed guard reports an index problem instead of a benign
+    empty match. FTS is load-bearing now — its failure must be visible.
     """
     rankings = []
     if concepts:
@@ -164,8 +172,9 @@ def trajectory_candidates(
         try:
             rankings.append(_by_fts(conn, match, scan_cap))
         except sqlite3.Error:
-            pass
-    return _rrf(rankings, rrf_k)
+            if not any(rankings):
+                raise
+    return _rrf(rankings)
 
 
 def note_bodies(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:

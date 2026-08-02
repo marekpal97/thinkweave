@@ -227,12 +227,15 @@ Interface (#94, completed by #100):
 - `Error = sqlite3.Error`, `Connection = sqlite3.Connection` — aliases so no
   other module ever imports `sqlite3` (cli's degrade guard now, prime's
   annotations post-#100), keeping the importer-allowlist seam tight.
-- `trajectory_candidates(conn, concepts, query, scan_cap, rrf_k) -> list[dict]`
-  — the retrieval surface. Two legs (concept match; fts5 match over
-  `notes_fts`) fused by RRF at `RRF_K = 60`, the retrieval doctrine's constant
-  (the main package's knob is `retrieval.rrf_k`). Either leg's input may be
-  empty; the FTS leg is best-effort, so a vault with no `notes_fts` still
-  primes on concepts.
+- `trajectory_candidates(conn, concepts, query, scan_cap) -> list[dict]` — the
+  retrieval surface. Two legs (concept match; fts5 match over `notes_fts`)
+  fused by RRF at `RRF_K = 60`, the retrieval doctrine's constant (the main
+  package's knob is `retrieval.rrf_k`; the rail reads no vault config, so it is
+  a constant here rather than a parameter nobody passes). Either leg's input
+  may be empty. The FTS leg is best-effort *only while the other leg is
+  carrying*: a vault with no `notes_fts` still primes on concepts, but a broken
+  FTS with nothing else retrieved raises into the degrade guard — FTS is
+  load-bearing, so its failure must not read as a clean empty match.
 - `note_bodies(conn, ids) -> dict[str, str]` — ids → body text, `type='note'`
   only (a `builds_on` id may name a decision or session; those never serve).
 

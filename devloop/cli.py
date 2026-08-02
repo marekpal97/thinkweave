@@ -44,6 +44,18 @@ from devloop.gates import DETERMINISTIC, JUDGMENT, reject, validate
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "docs" / "agents" / "loop.toml"
 
+# Stamped on a prime payload built the pre-#100 way (labels as concepts, no
+# text leg). That is the join #100 fixed — GitHub labels are never written as
+# concepts, so the retrieval is dead by vocabulary and reports a benign-looking
+# empty match. The flags stay backward-compatible, so this note is what keeps
+# an inert rail visible instead of plausible. Prime itself has no notion of a
+# GitHub label; the fallback lives here, so the warning does too.
+DEAD_VOCAB_NOTE = (
+    "called with GH labels as concepts and no --query — prime v3 retrieval is "
+    "likely dead by vocabulary; pass ontology --concepts and/or --query "
+    "(docs/agents/issue-loop.command.md §1b)"
+)
+
 DEFAULT_CONFIG: dict = {
     "loop": {
         "max_issues_per_run": 3,
@@ -366,9 +378,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 2 if result["reasons"] else (0 if result["passed"] else 1)
     elif args.cmd == "prime":
-        labels = (_split_csv(args.labels) if args.labels is not None
-                  else github.fetch_labels(args.number))
-        concepts = _split_csv(args.concepts) if args.concepts is not None else labels
+        if args.concepts is not None:
+            concepts = _split_csv(args.concepts)
+        else:
+            # Label fallback (the pre-#100 convention). Only reached when the
+            # caller gave no concepts, so the recommended invocation pays no
+            # `gh` round-trip.
+            concepts = (_split_csv(args.labels) if args.labels is not None
+                        else github.fetch_labels(args.number))
         holdout = cfg["loop"].get("prime_holdout", 5)
         conn = None
         db_path = index_client.resolve_db_path(args.db, args.vault)
@@ -387,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if conn is not None:
                 conn.close()
+        if args.concepts is None and not args.query:
+            payload["note"] = "; ".join(filter(None, [payload["note"], DEAD_VOCAB_NOTE]))
         if args.buffer and not args.dry_run and payload["primed"] and payload["served"]:
             trajectory.append_served_event(args.buffer, args.run_id, args.number,
                                            payload["served"], args.session_id)

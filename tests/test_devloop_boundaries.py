@@ -120,7 +120,7 @@ def _imports_sqlite3(tree: ast.AST) -> bool:
     return False
 
 
-def test_only_the_index_seam_and_prime_import_sqlite3():
+def test_index_client_is_the_only_sqlite3_importer():
     pkg_root = Path(devloop.__file__).resolve().parent
     importers = set()
     for py in pkg_root.rglob("*.py"):

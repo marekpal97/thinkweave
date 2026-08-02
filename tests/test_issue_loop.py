@@ -1186,6 +1186,64 @@ def test_prime_dry_run_prints_the_block_and_writes_no_buffer(tmp_path, capsys):
     assert not buf.exists()  # suppressed despite --buffer
 
 
+def test_prime_flags_the_pre_v3_labels_only_invocation(tmp_path, capsys):
+    """The pre-#100 call shape (`--labels`, no `--query`) reaches exactly the
+    dead concept-only join #100 fixed — GitHub labels are never written as
+    concepts, so it matches nothing. It must not report as a benign empty
+    match: the note names the calling convention, so an inert rail on the live
+    loop is visible rather than plausible. The v3 shape is not flagged."""
+    absent = str(tmp_path / "absent.db")
+    assert cli.main(["prime", "100", "--run-id", "loop-run-0", "--db", absent,
+                     "--labels", "enhancement,ready-for-agent"]) == 0
+    flagged = json.loads(capsys.readouterr().out)
+    assert flagged["primed"] is False
+    assert "--query" in flagged["note"] and "ontology" in flagged["note"]
+    # The degradation reason survives alongside the convention warning.
+    assert "no matching prior trajectories" in flagged["note"]
+
+    assert cli.main(["prime", "100", "--run-id", "loop-run-0", "--db", absent,
+                     "--concepts", "agent-harness"]) == 0
+    assert "--query" not in json.loads(capsys.readouterr().out)["note"]
+    # A labels call that DOES pass the text leg is the fixed shape, not the
+    # dead one — the FTS leg carries retrieval, so no warning.
+    assert cli.main(["prime", "100", "--run-id", "loop-run-0", "--db", absent,
+                     "--labels", "enhancement", "--query", "some issue text"]) == 0
+    assert "--query" not in json.loads(capsys.readouterr().out)["note"]
+
+
+def test_prime_erroring_fts_does_not_read_as_a_clean_empty_match(tmp_path):
+    """FTS is load-bearing now, so a *broken* notes_fts must not hide behind
+    "no matching prior trajectories". An absent table stays best-effort (an old
+    index still primes on concepts), but a table that errors with nothing else
+    retrieved degrades with the index-error note. Never a crash either way."""
+    db = tmp_path / "index.db"
+    _seed_index_db(db, note_id="n-x", title="x", concepts=["retrieval"],
+                   body="## What\nfuse the retrieval legs.\n",
+                   frontmatter={"issue": 1, "outcome": "shipped",
+                                "builds_on": ["n-ins-x"]})
+    _add_note(db, note_id="n-ins-x", title="lesson", body="lesson X")
+    # A plain table where fts5 is expected: MATCH raises OperationalError.
+    wconn = sqlite3.connect(str(db))
+    wconn.execute("CREATE TABLE notes_fts (id TEXT, title TEXT, body_text TEXT)")
+    wconn.commit()
+    wconn.close()
+    conn = index_client.open_ro(str(db))
+    try:
+        # Concept leg retrieved something → the broken FTS leg stays silent.
+        served = prime.build_prime_payload(
+            1, "loop-run-0", ["retrieval"], conn=conn, holdout=5,
+            query="fuse the retrieval legs")
+        # Nothing retrieved at all → the FTS failure reaches the note.
+        empty = prime.build_prime_payload(
+            1, "loop-run-0", ["no-such-concept"], conn=conn, holdout=5,
+            query="fuse the retrieval legs")
+    finally:
+        conn.close()
+    assert served["primed"] is True and served["served"] == ["n-ins-x"]
+    assert empty["primed"] is False
+    assert "unread" in empty["note"].lower()
+
+
 def test_prime_serves_file_anchored_decisions_without_any_trajectory(tmp_path, capsys):
     """AC7: the orchestrator-resolved --decisions ids (the file-anchored rung of
     the granularity ladder) still land in `served` and in the block, and they
