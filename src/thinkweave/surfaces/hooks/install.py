@@ -40,6 +40,12 @@ HOOK_MARKERS = (
     "thinkweave.hooks.handler",  # legacy (pre-restructure)
 )
 
+# The events whose handler can return `hookSpecificOutput.additionalContext`
+# (`_handle_session_start`, `_handle_user_prompt_submit`). Only these carry a
+# harness's `additional_context_limit`: Codex reports a configuration warning
+# when the key rides an event that cannot produce additional context.
+CONTEXT_EMITTING_EVENTS = ("SessionStart", "UserPromptSubmit")
+
 
 def _canonical_hooks_path() -> Path:
     """Locate the canonical ``hooks/hooks.json`` shipped at the repo root.
@@ -115,6 +121,16 @@ def _settings_path_for_scope(scope: str, project_dir: str = "") -> Path:
     to mirror what the plugin manifest provides for free.
     """
     if scope == "project":
+        profile = active_harness()
+        if profile.hooks_global_only:
+            print(
+                f"error: the {profile.id!r} harness only fires hooks declared in its\n"
+                f"machine-scope file ({profile.user_settings}). A repo-local entry is\n"
+                "accepted by the config parser and then silently never runs.\n"
+                "Install with `--scope user` instead.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         return _settings_path(project_dir)
     if scope == "user":
         return active_harness().user_settings
@@ -145,6 +161,7 @@ def _build_installed_settings(
     hooks = settings.setdefault("hooks", {})
     canonical = _load_canonical_hooks(hooks_json)
     root = _repo_root()
+    limit = active_harness().additional_context_limit
 
     for event, canonical_entries in canonical.items():
         entries = hooks.setdefault(event, [])
@@ -161,6 +178,9 @@ def _build_installed_settings(
                 _localize_command(c_hook["command"], root),
                 slot=matcher if multi else None,
                 timeout=c_hook.get("timeout"),
+                context_limit=(
+                    limit if event in CONTEXT_EMITTING_EVENTS else None
+                ),
             )
 
     # Retired phases: strip thinkweave entries from any event the
@@ -277,7 +297,8 @@ def install_hooks(
     print(
         f"Hooks installed at {settings_path} (scope={scope})\n"
         "  SessionStart hook will inject ~7–10k tokens of project context "
-        "on the next Claude Code session."
+        "on the next session."
+        + profile.hooks_install_caveat
     )
 
 
@@ -353,6 +374,7 @@ def _ensure_hook(
     *,
     slot: str | None = None,
     timeout: int | None = None,
+    context_limit: int | None = None,
 ) -> None:
     """Add a hook entry, or rewrite any existing thinkweave hook in place.
 
@@ -391,10 +413,18 @@ def _ensure_hook(
                     hook.pop("timeout", None)
                 else:
                     hook["timeout"] = timeout
+                # Same snap-to-canonical rule: a limit left behind by an
+                # install under a different harness must not survive.
+                if context_limit is None:
+                    hook.pop("additionalContextLimit", None)
+                else:
+                    hook["additionalContextLimit"] = context_limit
                 entry["matcher"] = matcher
                 return
 
     fresh: dict = {"type": "command", "command": command}
     if timeout is not None:
         fresh["timeout"] = timeout
+    if context_limit is not None:
+        fresh["additionalContextLimit"] = context_limit
     entries.append({"matcher": matcher, "hooks": [fresh]})

@@ -124,6 +124,21 @@ class HarnessProfile:
     """Condition under which the harness ignores a project-scope registration,
     for ``weave doctor --mcp`` to pass on. Empty when it always honours one."""
 
+    hooks_global_only: bool = False
+    """The harness only honours hooks from its machine-scope file, so
+    ``weave hooks install --scope project`` is refused rather than writing a
+    file that never fires (#107; openai/codex#17532)."""
+
+    additional_context_limit: int | None = None
+    """Per-handler cap the harness needs to be told before it will pass a
+    large ``additionalContext`` through to the model. ``None`` ⇒ the harness
+    has no such knob and the installer writes nothing."""
+
+    hooks_install_caveat: str = ""
+    """Anything standing between "the file is written" and "the hooks fire",
+    appended to the install confirmation. Empty when writing the file is the
+    whole story (Claude Code)."""
+
     @property
     def dev_link(self) -> Path:
         """Where ``weave dev-link`` symlinks a checkout so the harness loads it
@@ -231,11 +246,30 @@ def codex(home: Path | None = None) -> HarnessProfile:
     )
     return HarnessProfile(
         id="codex",
-        # Codex 0.146 does expose lifecycle hooks, but nothing here knows how to
-        # write them yet — #107 (W2b) owns that adapter and flips this flag.
-        # Until then the honest answer is "no hooks": `weave hooks install`
-        # refuses and the user drives extraction explicitly.
-        hooks=False,
+        hooks=True,
+        # Repo-local `.codex/` hook entries do not fire in interactive sessions
+        # (openai/codex#17532) and the manual gates them on the project being
+        # *trusted* besides — two ways to be silently inert, so only the
+        # machine-scope file is offered (#107).
+        hooks_global_only=True,
+        # Codex spills any hook `additionalContext` over ~2500 tokens to a temp
+        # file and shows the model a head-and-tail preview instead. The
+        # SessionStart payload is built with budget_tokens=10000, so it needs an
+        # explicit limit or the context silently never arrives. Headroom over
+        # the budget covers the drift between our chars//4 estimate and Codex's
+        # real tokenizer; the payload is hard-capped upstream, so this is a
+        # bounded promise, not the "limit = 0" the manual warns against.
+        additional_context_limit=12000,
+        # Codex records trust against a hash of each hook definition and skips
+        # any it has not seen approved. Writing the file is therefore only half
+        # the install — without this line the user gets a success message and
+        # hooks that never run.
+        hooks_install_caveat=(
+            "\n  Codex will not run these until you trust them: open a Codex "
+            "session,\n  run `/hooks`, and trust the thinkweave entries. "
+            "Re-trust after every\n  `weave hooks install` — trust is keyed to "
+            "the exact hook definition."
+        ),
         # No verified Task-tool equivalent driving thinkweave's /drain and
         # /dream fan-out. W3's executor route is the planned answer; claiming
         # the capability before it is wired would be a broken promise.
@@ -261,10 +295,14 @@ def codex(home: Path | None = None) -> HarnessProfile:
         plugins_cache=cx / "plugins" / "cache",
         installed_plugins=cx / "plugins" / "installed_plugins.json",
         plugin_manifest_relpath=Path(".codex-plugin") / "plugin.json",
-        # Codex hook config lives in config.toml; #107 owns its format. Gated
-        # off by `hooks=False` until then.
-        user_settings=cx / "config.toml",
-        project_settings_relpath=Path(".codex") / "config.toml",
+        # Codex reads hooks from a `hooks.json` OR an inline `[hooks]` table in
+        # a config.toml sitting in the same layer — and warns when one layer
+        # carries both. #106 already owns this layer's config.toml for
+        # `[mcp_servers]`, so hooks take the sibling file: one representation
+        # per layer, same `{"hooks": {…}}` shape Claude Code nests in its
+        # settings.json, so the installer needs no second writer.
+        user_settings=cx / "hooks.json",
+        project_settings_relpath=Path(".codex") / "hooks.json",
         project_mcp_config_relpath=Path(".codex") / "config.toml",
         project_mcp_caveat="honoured for trusted projects only",
         project_plugins_relpath=Path(".codex") / "plugins",
