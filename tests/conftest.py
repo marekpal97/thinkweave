@@ -11,12 +11,14 @@ kwargs of ``plugin_namespace``, or by patching at the import site.
 
 Harness-profile overrides
 -------------------------
-``use_profile(monkeypatch, **fields)`` swaps the process-wide active
+The autouse ``_sandbox_harness_home`` fixture already points the whole active
+profile at a tmp home, so no test touches the real ``~/.claude``. The
+``use_profile(**fields)`` fixture layers on top: it swaps the active
 :class:`~thinkweave.core.harness.HarnessProfile` for a copy with ``fields``
-replaced. It is how a test sandboxes any harness touchpoint (``mcp_config``,
-``instructions_file``, ``pause_marker``, …) without reaching into the consumer
-module that reads it — the consumers hold no path constants to patch. Calls
-compose: each one replaces fields on whatever profile is currently active.
+replaced. That is how a test aims a specific harness touchpoint (``mcp_config``,
+``instructions_file``, ``pause_marker``, …) at a path it wants to assert
+against — the consumers hold no path constants to patch. Calls compose: each
+one replaces fields on whatever profile is currently active.
 
 Test-vault lifecycle
 --------------------
@@ -88,11 +90,19 @@ def use_profile(
 
 
 @pytest.fixture(autouse=True)
-def _no_plugin_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _replace_profile(
-        monkeypatch,
-        installed_plugins=tmp_path / "absent-installed_plugins.json",
-        skills_dir=tmp_path / "absent-skills",
+def _sandbox_harness_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Derive the active profile from a tmp home for *every* test.
+
+    Two jobs in one. It keeps rendered commands (cron lines, flow
+    invocations) independent of whether the dev box happens to have the plugin
+    installed or dev-linked — nothing exists under the tmp home, so
+    ``namespace()`` is None unless a test says otherwise. And it makes the
+    suite hermetic: no test can read or write the developer's real
+    ``~/.claude`` (a hook-installer test writing the real
+    ``~/.claude/settings.json`` is the concrete accident this prevents).
+    """
+    monkeypatch.setattr(
+        harness, "_OVERRIDE", harness.claude_code(home=tmp_path / "harness-home")
     )
 
 

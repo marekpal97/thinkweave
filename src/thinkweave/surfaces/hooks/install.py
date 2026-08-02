@@ -15,7 +15,10 @@ from __future__ import annotations
 import copy
 import difflib
 import json
+import sys
 from pathlib import Path
+
+from thinkweave.core.harness import active as active_harness
 
 # Substrings that identify a thinkweave hook command in settings,
 # across every historical form this project has written. On reinstall,
@@ -94,31 +97,49 @@ def _localize_command(command: str, root: Path) -> str:
 
 
 def _settings_path(project_dir: str = "") -> Path:
-    """Find the settings.local.json path."""
-    if project_dir:
-        return Path(project_dir) / ".claude" / "settings.local.json"
-    # Default: current working directory
-    return Path.cwd() / ".claude" / "settings.local.json"
+    """Find the project-scope settings file."""
+    root = Path(project_dir) if project_dir else Path.cwd()
+    return root / active_harness().project_settings_relpath
 
 
 def _settings_path_for_scope(scope: str, project_dir: str = "") -> Path:
-    """Dispatch the settings.json target by install scope.
+    """Dispatch the settings file target by install scope.
 
-    ``project`` — the legacy default. Writes to ``<cwd or project_dir>/.claude/
-    settings.local.json``. Fires only inside that project tree.
+    ``project`` — the legacy default. Writes to the harness's project-scope
+    settings file under ``<cwd or project_dir>`` (``.claude/settings.local.json``
+    on Claude Code). Fires only inside that project tree.
 
-    ``user`` — machine-scope. Writes to ``~/.claude/settings.json`` (note:
-    non-local, the per-user file). Fires in every Claude Code session on
-    this machine. Used by the legacy `/onboard` install path to mirror
-    what the plugin manifest provides for free.
+    ``user`` — machine-scope. Writes the harness's per-user settings file
+    (``~/.claude/settings.json`` on Claude Code — note: non-local). Fires in
+    every session on this machine. Used by the legacy `/onboard` install path
+    to mirror what the plugin manifest provides for free.
     """
     if scope == "project":
         return _settings_path(project_dir)
     if scope == "user":
-        return Path.home() / ".claude" / "settings.json"
+        return active_harness().user_settings
     raise ValueError(
         f"unknown scope {scope!r}; expected one of: 'project', 'user'"
     )
+
+
+def _require_hooks_capability(action: str) -> None:
+    """Refuse to (un)install on a harness that cannot run our hooks.
+
+    The documented degradation from the epic's anti-goals: a harness without
+    hook support gets an explicit pointer at manual ``/wrap``-style invocation,
+    not a settings file it will never read.
+    """
+    profile = active_harness()
+    if profile.hooks:
+        return
+    print(
+        f"error: the {profile.id!r} harness has no lifecycle hooks, so there is\n"
+        f"nothing to {action}. Run `/wrap` explicitly at the end of a session\n"
+        "instead — it does the same extraction the Stop hook would trigger.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _build_installed_settings(
@@ -237,6 +258,7 @@ def install_hooks(
     ``hooks_json`` overrides the canonical-definitions source (contract
     tests only); defaults to the repo's ``hooks/hooks.json``.
     """
+    _require_hooks_capability("install")
     settings_path = _settings_path_for_scope(scope, project_dir)
 
     # Read existing settings (no parent mkdir yet — dry-run must not
@@ -272,7 +294,8 @@ def uninstall_hooks(
     scope: str = "project",
     dry_run: bool = False,
 ) -> None:
-    """Remove thinkweave hooks from the scoped Claude Code settings file."""
+    """Remove thinkweave hooks from the scoped harness settings file."""
+    _require_hooks_capability("uninstall")
     settings_path = _settings_path_for_scope(scope, project_dir)
     if not settings_path.exists():
         print("No settings file found.")

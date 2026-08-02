@@ -38,7 +38,7 @@ def _write_fact(
 
 
 @pytest.fixture
-def cc_tree(tmp_path: Path, monkeypatch):
+def cc_tree(tmp_path: Path, use_profile):
     """A fake ~/.claude/projects/<proj>/memory tree with two facts."""
     projects = tmp_path / "projects"
     proj_mem = projects / "-home-x-python-projects-demo" / "memory"
@@ -48,8 +48,7 @@ def cc_tree(tmp_path: Path, monkeypatch):
                 desc="14 tools as of April")
     # A MEMORY.md index that must be ignored.
     (proj_mem / "MEMORY.md").write_text("# index\n- pointer", encoding="utf-8")
-    monkeypatch.setattr(ms, "CC_PROJECTS_ROOT", projects)
-    monkeypatch.setattr(ms, "CC_GLOBAL_DIR", tmp_path / "no-global")
+    use_profile(memory_projects_root=projects, memory_global_dir=tmp_path / "no-global")
     return proj_mem
 
 

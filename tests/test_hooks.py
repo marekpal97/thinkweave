@@ -584,15 +584,15 @@ class TestHookInstaller:
         assert "hooks" not in settings
 
     def test_install_user_scope_writes_to_home(
-        self, tmp_path: Path, monkeypatch, capsys
+        self, tmp_path: Path, use_profile, capsys
     ):
         """``scope='user'`` targets ``~/.claude/settings.json`` (note: NOT the
-        ``.local`` variant — the per-user file). Redirect ``Path.home`` so
-        the test never touches the real home directory.
+        ``.local`` variant — the per-user file). Aim the harness profile at a
+        tmp home so the test never touches the real home directory.
         """
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        use_profile(user_settings=fake_home / ".claude" / "settings.json")
 
         from thinkweave.surfaces.hooks.install import install_hooks
 
@@ -656,15 +656,13 @@ class TestHookInstaller:
         with pytest.raises(ValueError, match="unknown scope"):
             install_hooks(scope="garbage", project_dir=str(tmp_path))
 
-    def test_install_user_scope_idempotent(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_install_user_scope_idempotent(self, tmp_path: Path, use_profile):
         """Running ``install_hooks(scope='user')`` twice converges — second
         call produces no net change. Pins the same idempotency contract
         as the project-scope path."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        use_profile(user_settings=fake_home / ".claude" / "settings.json")
 
         from thinkweave.surfaces.hooks.install import install_hooks
 
