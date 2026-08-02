@@ -1,6 +1,8 @@
-"""Tracker-as-DAG math + the issue-body grammar that serializes its edges.
+"""Tracker-as-DAG math over GitHub-native issue dependencies.
 
-Pure over issue-snapshot dicts (shape owned by ``devloop.github``).
+Pure over issue-snapshot dicts (shape owned by ``devloop.github``). Blocker
+edges come from the snapshot's native dependency fields; ``Wave:`` and
+``Parallel-safe:`` stay body metadata.
 """
 
 from __future__ import annotations
@@ -8,34 +10,10 @@ from __future__ import annotations
 import re
 
 # ---------------------------------------------------------------------------
-# DAG parsing — pure functions over issue bodies
+# Body metadata — no native GitHub field for these
 
-_HEADER_RE = re.compile(r"Blocked[- ]by:\s*(?P<refs>[^|\n]*)", re.IGNORECASE)
-_SECTION_RE = re.compile(
-    r"^##\s*Blocked\s*by\s*$(?P<refs>.*?)(?=^##\s|\Z)",
-    re.IGNORECASE | re.MULTILINE | re.DOTALL,
-)
 _WAVE_RE = re.compile(r"Wave:\s*(\d+)", re.IGNORECASE)
 _PARALLEL_RE = re.compile(r"Parallel[- ]safe:\s*(yes|no)", re.IGNORECASE)
-
-
-def parse_blockers(body: str) -> list[int]:
-    """Extract blocking issue numbers from either serialization.
-
-    Only the Blocked-by fragment is scanned for ``#N`` refs, so ``Epic: #11``
-    or refs elsewhere in the body never count as blockers.
-    """
-    fragment = None
-    m = _HEADER_RE.search(body or "")
-    if m:
-        fragment = m.group("refs")
-    else:
-        m = _SECTION_RE.search(body or "")
-        if m:
-            fragment = m.group("refs")
-    if not fragment:
-        return []
-    return sorted({int(n) for n in re.findall(r"#(\d+)", fragment)})
 
 
 def parse_wave(body: str) -> int | None:
@@ -53,9 +31,9 @@ def parse_parallel_safe(body: str) -> bool:
 # Frontier computation — pure functions over an issue snapshot
 
 
-def all_blockers(issue: dict) -> list[int]:
-    """Union of native dependency edges and body-parsed blockers."""
-    return sorted(set(parse_blockers(issue.get("body", ""))) | set(issue.get("native_blockers", [])))
+def blockers(issue: dict) -> list[int]:
+    """The issue's native ``blocked_by`` edges, deduped and sorted."""
+    return sorted(set(issue.get("native_blockers") or []))
 
 
 def compute_components(issues: list[dict]) -> dict[int, int]:
@@ -80,7 +58,7 @@ def compute_components(issues: list[dict]) -> dict[int, int]:
         n = issue["number"]
         if n not in open_numbers:
             continue
-        for ref in all_blockers(issue):
+        for ref in blockers(issue):
             if ref in open_numbers:
                 ra, rb = find(n), find(ref)
                 if ra != rb:
@@ -112,11 +90,11 @@ def compute_frontier(issues: list[dict], cfg: dict, limit: int | None = None) ->
 
     An issue is runnable when it is OPEN, carries the runnable label, is not
     claimed (an assignee IS a claim — wayfinder convention — and the legacy
-    claim label still counts), and has no open blocker. Blocking gates on
-    the union of native dependencies (``native_blocked_count`` /
-    ``native_blockers``, attached by fetch_issues) and body-parsed refs.
-    Body refs missing from the snapshot are treated as satisfied but flagged
-    (deleted or cross-repo).
+    claim label still counts), and has no open blocker. Blocking gates on the
+    native dependencies attached by fetch_issues (``native_blockers``, or
+    ``native_blocked_count`` alone when the edge list wasn't fetched). A
+    blocker missing from the snapshot is cross-repo or deleted: GitHub counted
+    it as blocking, so it keeps blocking, and the plan says why.
     """
     runnable_label = cfg["labels"]["runnable"]
     claimed_label = cfg["labels"]["claimed"]
@@ -133,7 +111,7 @@ def compute_frontier(issues: list[dict], cfg: dict, limit: int | None = None) ->
         entry = {
             "number": issue["number"],
             "title": issue.get("title", ""),
-            "blockers": all_blockers(issue),
+            "blockers": blockers(issue),
             "wave": parse_wave(issue.get("body", "")),
             "parallel_safe": parse_parallel_safe(issue.get("body", "")),
             "component": component[issue["number"]],
@@ -144,18 +122,17 @@ def compute_frontier(issues: list[dict], cfg: dict, limit: int | None = None) ->
             claimed.append(entry)
             continue
         open_blockers = []
-        for ref in set(entry["blockers"]) - set(issue.get("native_blockers", [])):
+        for ref in entry["blockers"]:
             blocker = by_number.get(ref)
             if blocker is None:
-                warnings.append(f"#{issue['number']}: blocker #{ref} not in snapshot; treated as satisfied")
-            elif blocker["state"].upper() == "OPEN":
+                warnings.append(f"#{issue['number']}: blocker #{ref} not in snapshot "
+                                "(cross-repo or deleted); treated as blocking")
+            if blocker is None or blocker["state"].upper() == "OPEN":
                 open_blockers.append(ref)
         # native_blocked_count is GitHub's own open-blocker count — it gates
         # even when the edge list wasn't fetched (list is enrichment only).
-        open_blockers += [r for r in issue.get("native_blockers", [])
-                          if by_number.get(r, {}).get("state", "OPEN").upper() == "OPEN"]
-        if open_blockers or (issue.get("native_blocked_count", 0) > 0 and not issue.get("native_blockers")):
-            entry["open_blockers"] = sorted(set(open_blockers))
+        if open_blockers or (issue.get("native_blocked_count", 0) > 0 and not entry["blockers"]):
+            entry["open_blockers"] = open_blockers
             if not open_blockers:
                 entry["open_blockers_note"] = "native blocked_by count > 0 (edge list not fetched)"
             blocked.append(entry)

@@ -70,14 +70,13 @@ resolution-and-override is run-posture, exercised only at the entry point;
 (branch, log, numstat) and file-argument loading happen here, feeding the pure
 `build_trajectory` — subprocess git is argument-gathering, not a module.
 
-**`dag.py`** — `parse_blockers`, `parse_wave`, `parse_parallel_safe`,
-`all_blockers`, `compute_components`, `scope_to_dag`, `apply_assume_done`,
-`compute_frontier`. Pure over issue-snapshot dicts (shape owned by `github`,
-§ below). The `Blocked-by:` regexes are **domain grammar, not generic
-parsing** — they are the serialization of DAG edges and live beside the
-frontier math that consumes them. #95 deletes the grammar half in this one
-file; the native-edge path (`native_blockers` keys on the snapshot) already
-flows through unchanged.
+**`dag.py`** — `parse_wave`, `parse_parallel_safe`, `blockers`,
+`compute_components`, `scope_to_dag`, `apply_assume_done`, `compute_frontier`.
+Pure over issue-snapshot dicts (shape owned by `github`, § below). Edges come
+from the snapshot's native dependency keys only. The two `Wave:` /
+`Parallel-safe:` regexes stay: they are **domain grammar, not generic
+parsing** — body metadata with no native GitHub field, living beside the
+frontier math that consumes them.
 
 **`gates.py`** — the Gate protocol (§3) plus `run_command_gate`,
 `evaluate_diff_gate` (pure), `run_diff_gate`. Runs its own `git diff`

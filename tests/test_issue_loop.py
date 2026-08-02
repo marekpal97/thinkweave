@@ -13,37 +13,13 @@ from devloop import cli, dag, gates, index_client, triage
 from devloop.trajectory import mint, prime
 
 # ---------------------------------------------------------------------------
-# parse_blockers — both serializations
+# blockers — native dependency edges only (#95: the body grammar is gone)
 
 
-def test_header_form_single_blocker():
-    body = "Track: A-ontology | Wave: 2 | Blocked-by: #16 | Parallel-safe: yes | Epic: #11"
-    assert dag.parse_blockers(body) == [16]
-
-
-def test_header_form_epic_ref_is_not_a_blocker():
-    body = "Track: B-core | Wave: 1 | Blocked-by: — | Parallel-safe: yes | Epic: #11"
-    assert dag.parse_blockers(body) == []
-
-
-def test_header_form_multiple_blockers():
-    body = "Wave: 3 | Blocked-by: #16, #17 | Epic: #11"
-    assert dag.parse_blockers(body) == [16, 17]
-
-
-def test_section_form():
-    body = "## What to build\nStuff referencing #5.\n\n## Blocked by\n\n- #12\n- #14\n\n## Acceptance criteria\n- [ ] done"
-    assert dag.parse_blockers(body) == [12, 14]
-
-
-def test_section_form_none():
-    body = "## What to build\nStuff.\n\n## Blocked by\n\nNone - can start immediately\n"
-    assert dag.parse_blockers(body) == []
-
-
-def test_no_blocked_by_anywhere():
-    assert dag.parse_blockers("Fix the thing in #33's shadow.") == []
-    assert dag.parse_blockers("") == []
+def test_blockers_are_the_native_edges():
+    assert dag.blockers({"native_blockers": [17, 16]}) == [16, 17]
+    assert dag.blockers({"native_blocked_count": 1}) == []
+    assert dag.blockers({}) == []
 
 
 def test_wave_and_parallel_safe():
@@ -78,8 +54,8 @@ def _issue(number, state="OPEN", labels=("ready-for-agent",), body="", **extra):
 def test_frontier_requires_closed_blockers():
     issues = [
         _issue(1, state="CLOSED"),
-        _issue(2, body="Blocked-by: #1"),
-        _issue(3, body="Blocked-by: #2"),
+        _issue(2, native_blockers=[1], native_blocked_count=0),
+        _issue(3, native_blockers=[2], native_blocked_count=1),
     ]
     result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [2]
@@ -126,22 +102,21 @@ def test_native_dependencies_gate_frontier():
     assert result["blocked"][0]["open_blockers"] == [4]
 
 
-def test_union_of_native_and_body_edges():
-    issues = [
-        _issue(2, body="Blocked-by: #5", native_blockers=[6], native_blocked_count=1),
-        _issue(5),
-        _issue(6),
-    ]
+def test_body_blocked_by_text_does_not_gate_the_frontier():
+    """A body `Blocked-by:` line in an old issue is inert."""
+    issues = [_issue(1), _issue(2, body="Blocked-by: #1")]
     result = dag.compute_frontier(issues, CFG)
-    blocked = result["blocked"][0]
-    assert blocked["blockers"] == [5, 6]
-    assert blocked["open_blockers"] == [5, 6]
+    assert [e["number"] for e in result["frontier"]] == [1, 2]
+    assert result["blocked"] == []
+    assert result["frontier"][1]["blockers"] == []
+    comp = dag.compute_components(issues)
+    assert comp[1] != comp[2]
 
 
 def test_components_split_unrelated_dags():
     issues = [
         _issue(1),
-        _issue(2, body="Blocked-by: #1"),
+        _issue(2, native_blockers=[1], native_blocked_count=1),
         _issue(10),
         _issue(11, native_blockers=[10], native_blocked_count=1),
         _issue(20),  # isolated
@@ -159,8 +134,8 @@ def test_components_split_unrelated_dags():
 def test_components_ignore_closed_issues():
     issues = [
         _issue(1, state="CLOSED"),
-        _issue(2, body="Blocked-by: #1"),
-        _issue(3, body="Blocked-by: #1"),
+        _issue(2, native_blockers=[1], native_blocked_count=0),
+        _issue(3, native_blockers=[1], native_blocked_count=0),
     ]
     comp = dag.compute_components(issues)
     # 2 and 3 only share a CLOSED blocker — no open edge between them
@@ -169,10 +144,10 @@ def test_components_ignore_closed_issues():
 
 def test_frontier_wave_ordering_and_limit():
     issues = [
-        _issue(5, body="Wave: 2 | Blocked-by: —"),
-        _issue(6, body="Wave: 1 | Blocked-by: —"),
+        _issue(5, body="Wave: 2"),
+        _issue(6, body="Wave: 1"),
         _issue(7),  # no wave → sorts last
-        _issue(8, body="Wave: 1 | Blocked-by: —"),
+        _issue(8, body="Wave: 1"),
     ]
     result = dag.compute_frontier(issues, CFG)
     assert [e["number"] for e in result["frontier"]] == [6, 8, 5, 7]
@@ -180,10 +155,14 @@ def test_frontier_wave_ordering_and_limit():
     assert [e["number"] for e in limited["frontier"]] == [6, 8]
 
 
-def test_frontier_missing_blocker_is_satisfied_but_warned():
-    issues = [_issue(2, body="Blocked-by: #999")]
+def test_frontier_native_blocker_missing_from_snapshot_blocks_and_warns():
+    """A native edge can point outside this repo's snapshot (cross-repo, or a
+    deleted issue). GitHub counted it as blocking, so the rail must too —
+    and say why, rather than silently holding the issue back."""
+    issues = [_issue(2, native_blockers=[999], native_blocked_count=1)]
     result = dag.compute_frontier(issues, CFG)
-    assert [e["number"] for e in result["frontier"]] == [2]
+    assert result["frontier"] == []
+    assert result["blocked"][0]["open_blockers"] == [999]
     assert any("#999" in w for w in result["warnings"])
 
 
@@ -685,8 +664,8 @@ def test_trajectory_prime_argparse_contract():
 def test_scope_to_dag_keeps_component_and_closed_issues():
     issues = [
         _issue(1, state="CLOSED"),
-        _issue(2, body="Blocked-by: #1"),   # component 2 (edge to 1 is closed)
-        _issue(3, body="Blocked-by: #2"),   # component 2
+        _issue(2, native_blockers=[1], native_blocked_count=0),  # comp 2 (edge to 1 is closed)
+        _issue(3, native_blockers=[2], native_blocked_count=1),  # comp 2
         _issue(10),                          # unrelated component
     ]
     scoped = dag.scope_to_dag(issues, 3)
@@ -704,7 +683,7 @@ def test_scope_to_dag_rejects_closed_or_missing_root():
 def test_assume_done_unblocks_dependents():
     issues = [
         _issue(16),
-        _issue(21, body="Blocked-by: #16"),
+        _issue(21, native_blockers=[16], native_blocked_count=1),
         _issue(22, native_blockers=[16], native_blocked_count=1),
     ]
     before = dag.compute_frontier(issues, CFG)

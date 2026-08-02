@@ -27,13 +27,13 @@ Surfaces:
 
 **The tracker is the DAG.** Since Pocock skills v1.1.0, `/to-tickets` and
 `/wayfinder` publish blocking as **GitHub-native issue dependencies** — the
-canonical, UI-visible representation — with body text as fallback: the
-pipe-header form (`Track: … | Wave: 2 | Blocked-by: #16 | Parallel-safe:
-yes | Epic: #11`) or the template's `## Blocked by` section. The rail gates
-on the **union** of native and body edges, so old and new corpora both work.
-Nothing else stores the graph; there is no plan file to rot. GitHub even
+canonical, UI-visible representation — and since #95 that is the *only*
+representation the rail reads. The rest of the pipe header survives, because no
+native field expresses it: `Track: … | Wave: 2 | Parallel-safe: yes | Epic:
+#11`. Nothing else stores the graph; there is no plan file to rot. GitHub even
 maintains the live gate for us: `issue_dependencies_summary.blocked_by`
-counts open blockers natively.
+counts open blockers natively, so an edge to a blocker outside this repo's
+snapshot still blocks (the plan warns which).
 
 **The script computes only the frontier.** `issue_loop.py plan` re-reads all
 issues each run and partitions the `ready-for-agent` set into:
