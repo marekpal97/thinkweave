@@ -125,12 +125,6 @@ class HarnessProfile:
     for ``weave doctor --mcp`` to pass on. Empty when it always honours one."""
 
     @property
-    def headless_marker(self) -> str:
-        """The token that identifies a hand-written scheduler line as a
-        headless prompt invocation for this harness (``-p`` / ``exec``)."""
-        return self.prompt_flag or self.exec_subcommand
-
-    @property
     def dev_link(self) -> Path:
         """Where ``weave dev-link`` symlinks a checkout so the harness loads it
         as a plugin."""
@@ -316,11 +310,10 @@ def _build(name: str, source: str) -> HarnessProfile:
     return factory()
 
 
-def select(name: str) -> HarnessProfile:
+def select(name: str) -> None:
     """Pin the active profile for this process — what ``--harness`` calls."""
     global _OVERRIDE
     _OVERRIDE = _build(name, "--harness")
-    return _OVERRIDE
 
 
 def active() -> HarnessProfile:

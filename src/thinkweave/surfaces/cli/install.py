@@ -19,16 +19,11 @@ Scope boundary: this command never touches a vault or a project's
 settings file. ``weave init`` owns the vault; ``weave hooks install``
 (invoked by ``/onboard``) owns project-side hook registration.
 
-Who owns what, on Codex
------------------------
-ChatGPT desktop's Settings→Import can populate a Codex install from an
-existing Claude Code one — it brings companion *skills* across, and it may
-pre-create an ``[mcp_servers.thinkweave]`` entry of its own. ``weave
-install`` owns the MCP registration, the instructions block, and (once
-#107 lands) hooks; it finds that entry by key rather than by any marker of
-ours, so an imported one is adopted and converged rather than duplicated.
-Re-running the command over a drifted or hand-edited entry is the
-supported way to converge it, and it prints what changed first.
+``weave install`` owns the MCP registration, the instructions block, and
+(once #107 lands) hooks. It finds an existing entry by key rather than by any
+marker of ours, so one written by a hand-edit or by ChatGPT desktop's
+Settings→Import is adopted and converged rather than duplicated — see
+README.md "Other harnesses" for that interplay.
 """
 
 from __future__ import annotations
@@ -312,12 +307,6 @@ def _plugin_provides_mcp() -> Path | None:
     return None
 
 
-def _entries_equal(a: dict, b: dict) -> bool:
-    """Compare two MCP-server blocks ignoring key order — which `dict.__eq__`
-    already does, without choking on a TOML value JSON has no encoding for."""
-    return a == b
-
-
 def _diff_lines(old: dict, new: dict) -> list[str]:
     """Render a minimal human-readable diff between two MCP-server blocks.
 
@@ -481,7 +470,7 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
         print(f"Registered thinkweave MCP server in {path}.")
         return
 
-    if _entries_equal(existing, new_entry):
+    if existing == new_entry:
         print("thinkweave MCP server already registered (no change).")
         return
 

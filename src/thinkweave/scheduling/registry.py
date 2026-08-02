@@ -163,7 +163,7 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
         # The token that says "this line is a headless prompt": the prompt flag
         # where the harness has one, the one-shot subcommand where it doesn't
         # (`codex exec <prompt>`). The prompt itself follows it.
-        marker = profile.headless_marker
+        marker = profile.prompt_flag or profile.exec_subcommand
         # Plugin-route installs register skills namespaced (verified: no
         # bare-name aliasing), so `/dream` must render as
         # `/thinkweave:dream` in the scheduled line. `namespaced` is a no-op on

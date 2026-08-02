@@ -109,8 +109,6 @@ def write_entry(path: Path, name: str, entry: dict[str, Any]) -> None:
 
 def remove_entry(path: Path, name: str) -> bool:
     """Drop the named server. Returns False when there was nothing to remove."""
-    if not path.exists():
-        return False
     if read_entry(path, name) is None:
         return False
     if _is_toml(path):
@@ -171,8 +169,6 @@ def _toml_scalar(value: Any) -> str:
     non-BMP character (an emoji in a vault path) as a surrogate pair, which
     TOML rejects as "not a Unicode scalar value".
     """
-    if isinstance(value, bool):
-        return "true" if value else "false"
     if isinstance(value, list):
         return "[" + ", ".join(_toml_scalar(v) for v in value) + "]"
     if isinstance(value, dict):

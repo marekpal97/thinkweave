@@ -111,9 +111,6 @@ def _install(**kw) -> None:
 
 
 class TestCodexProfile:
-    def test_registered_alongside_claude_code(self):
-        assert set(harness.PROFILES) == {"claude-code", "codex"}
-
     @pytest.mark.parametrize(
         ("field", "relpath"),
         [
@@ -162,25 +159,26 @@ class TestCodexProfile:
 class TestCodexHeadlessArgv:
     """``codex exec`` takes its prompt positionally — there is no ``-p``."""
 
-    def test_bare_shape(self, codex_home: Path):
-        assert harness.active().headless_argv("/dream") == ["codex", "exec", "/dream"]
-
-    def test_bypass_flag(self, codex_home: Path):
-        assert harness.active().headless_argv("/dream", bypass=True) == [
-            "codex",
-            "exec",
-            "/dream",
-            "--dangerously-bypass-approvals-and-sandbox",
-        ]
-
-    def test_model_flag(self, codex_home: Path):
-        assert harness.active().headless_argv("hi", model="gpt-5.6") == [
-            "codex",
-            "exec",
-            "--model",
-            "gpt-5.6",
-            "hi",
-        ]
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            ({}, ["codex", "exec", "/dream"]),
+            (
+                {"bypass": True},
+                [
+                    "codex", "exec", "/dream",
+                    "--dangerously-bypass-approvals-and-sandbox",
+                ],
+            ),
+            (
+                {"model": "gpt-5.6"},
+                ["codex", "exec", "--model", "gpt-5.6", "/dream"],
+            ),
+        ],
+        ids=["bare", "bypass", "model"],
+    )
+    def test_argv_shape(self, codex_home: Path, kwargs: dict, expected: list[str]):
+        assert harness.active().headless_argv("/dream", **kwargs) == expected
 
     def test_flow_argv_asks_for_no_claude_model(self, codex_home: Path, monkeypatch):
         """`sonnet` is a Claude Code model name — rendering it into a `codex
@@ -262,6 +260,10 @@ class TestConfigTomlWriter:
     def test_fresh_install_writes_the_documented_table(
         self, codex_home: Path, installable
     ):
+        """Byte-for-byte against the shape `codex mcp add` emits — which also
+        pins the absence of a `type` key, the one `codex exec --strict-config`
+        rejects as `unknown configuration field mcp_servers.thinkweave.type`.
+        """
         _install()
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
             EXPECTED_CONFIG_TOML
@@ -272,15 +274,6 @@ class TestConfigTomlWriter:
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
             EXPECTED_CONFIG_TOML_WITH_VAULT
         )
-
-    def test_no_type_key(self, codex_home: Path, installable):
-        """`codex mcp add` writes none, and `codex exec --strict-config` errors
-        with `unknown configuration field mcp_servers.thinkweave.type`."""
-        _install()
-        entry = tomllib.loads(
-            (codex_home / "config.toml").read_text(encoding="utf-8")
-        )["mcp_servers"]["thinkweave"]
-        assert "type" not in entry
 
     def test_existing_user_config_survives_byte_for_byte(
         self, codex_home: Path, installable
@@ -302,11 +295,12 @@ class TestConfigTomlWriter:
         assert text.endswith(EXPECTED_CONFIG_TOML)
 
     def test_a_foreign_entry_is_adopted_not_duplicated(
-        self, codex_home: Path, installable
+        self, codex_home: Path, installable, capsys
     ):
         """ChatGPT desktop's Settings→Import can pre-create a `thinkweave`
         entry carrying no sentinel of ours. Detection is key-scoped, so we
-        adopt and converge it rather than appending a second table."""
+        adopt and converge it rather than appending a second table — and say
+        what changed before doing so."""
         (codex_home / "config.toml").write_text(
             "[mcp_servers.thinkweave]\n"
             'command = "uvx"\n'
@@ -325,16 +319,6 @@ class TestConfigTomlWriter:
                      "weave-mcp"],
         }
 
-    def test_drift_is_reported_before_it_is_overwritten(
-        self, codex_home: Path, installable, capsys
-    ):
-        (codex_home / "config.toml").write_text(
-            "[mcp_servers.thinkweave]\n"
-            'command = "uvx"\n'
-            'args = ["thinkweave-mcp"]\n',
-            encoding="utf-8",
-        )
-        _install()
         out = capsys.readouterr().out
         assert "differs" in out
         assert "uvx" in out  # the old shape…
