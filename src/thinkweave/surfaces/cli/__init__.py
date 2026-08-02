@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 
+from thinkweave.core import harness
 from thinkweave.surfaces.cli.concepts import cmd_concepts
 from thinkweave.surfaces.cli.drain import cmd_discover, cmd_drain
 from thinkweave.surfaces.cli.dream import cmd_dream
@@ -165,6 +166,11 @@ def main(argv: list[str] | None = None) -> None:
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    # `--harness` (machine-scope commands only) pins the profile for the rest
+    # of the process — one interpose point, so no handler reads the flag.
+    if getattr(args, "harness", None):
+        harness.select(args.harness)
 
     _DISPATCH[args.command](args)
 

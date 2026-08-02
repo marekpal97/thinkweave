@@ -89,9 +89,27 @@ class HarnessProfile:
     cli_bin: str
     model_flag: str
     prompt_flag: str
+    """Flag introducing the prompt. Empty when the harness takes it
+    positionally (``codex exec <prompt>``)."""
+
     bypass_permissions_flag: str
     """Flag granting unattended tool use. Empty when the harness has none —
     the renderers then append nothing."""
+
+    exec_subcommand: str = ""
+    """Subcommand that puts the harness in one-shot mode, inserted right after
+    the binary. Empty when a flag alone does it (``claude -p``)."""
+
+    headless_model: str = ""
+    """Model our own headless flows ask this harness for. Model names are
+    per-vendor, so a shared literal cannot exist; empty means "don't pass
+    ``model_flag`` at all — let the harness use its configured default"."""
+
+    @property
+    def headless_marker(self) -> str:
+        """The token that identifies a hand-written scheduler line as a
+        headless prompt invocation for this harness (``-p`` / ``exec``)."""
+        return self.prompt_flag or self.exec_subcommand
 
     @property
     def dev_link(self) -> Path:
@@ -131,9 +149,11 @@ class HarnessProfile:
         ``THINKWEAVE_CLAUDE_BIN`` escape hatch).
         """
         argv = [bin or self.cli_bin]
+        if self.exec_subcommand:
+            argv.append(self.exec_subcommand)
         if model:
             argv += [self.model_flag, model]
-        argv += [self.prompt_flag, prompt]
+        argv += [self.prompt_flag, prompt] if self.prompt_flag else [prompt]
         if bypass and self.bypass_permissions_flag:
             argv.append(self.bypass_permissions_flag)
         return argv
@@ -172,33 +192,115 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         model_flag="--model",
         prompt_flag="-p",
         bypass_permissions_flag="--dangerously-skip-permissions",
+        headless_model="sonnet",
     )
 
 
-PROFILES: dict[str, Callable[[], HarnessProfile]] = {"claude-code": claude_code}
+def codex(home: Path | None = None) -> HarnessProfile:
+    """OpenAI Codex CLI's install topology and invocation shape (#106).
+
+    Everything Codex owns lives under one root — ``$CODEX_HOME``, defaulting to
+    ``~/.codex`` — so unlike Claude Code there is no config file stranded beside
+    the directory. An explicit ``home`` wins over ``$CODEX_HOME`` so a caller
+    that sandboxes the home (the test suite) cannot be pulled back out to the
+    developer's real Codex install by a stray env var.
+
+    Verified against codex-cli 0.146.0 on 2026-08-02: ``codex mcp add`` writes
+    ``[mcp_servers.<name>]`` with ``command``/``args``/``env`` and *no* ``type``
+    key (``codex exec --strict-config`` rejects one), and ``codex exec`` takes
+    its prompt positionally.
+    """
+    cx = (
+        home / ".codex"
+        if home is not None
+        else Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    )
+    return HarnessProfile(
+        id="codex",
+        # Codex 0.146 does expose lifecycle hooks, but nothing here knows how to
+        # write them yet — #107 (W2b) owns that adapter and flips this flag.
+        # Until then the honest answer is "no hooks": `weave hooks install`
+        # refuses and the user drives extraction explicitly.
+        hooks=False,
+        # No verified Task-tool equivalent driving thinkweave's /drain and
+        # /dream fan-out. W3's executor route is the planned answer; claiming
+        # the capability before it is wired would be a broken promise.
+        subagents=False,
+        # Codex keeps sessions (imported by acquisition/importers/codex.py) and
+        # a memories sqlite, but no markdown auto-memory corpus of the shape the
+        # seam reconciles — so the seam walk correctly yields nothing.
+        native_memory=False,
+        # `codex exec` resolves no slash commands; skill tokens stay bare.
+        headless_slash=False,
+        instructions_file=cx / "AGENTS.md",
+        mcp_config=cx / "config.toml",
+        skills_dir=cx / "skills",
+        # Codex has its own plugin/marketplace system, but thinkweave ships no
+        # Codex plugin (W3 owns the Agent-Skills export). Nothing on disk
+        # matches these, so every plugin scan correctly finds nothing.
+        plugins_root=cx / "plugins",
+        plugins_cache=cx / "plugins" / "cache",
+        installed_plugins=cx / "plugins" / "installed_plugins.json",
+        plugin_manifest_relpath=Path(".codex-plugin") / "plugin.json",
+        # Codex hook config lives in config.toml; #107 owns its format. Gated
+        # off by `hooks=False` until then.
+        user_settings=cx / "config.toml",
+        project_settings_relpath=Path(".codex") / "config.toml",
+        project_mcp_config_relpath=Path(".codex") / "config.toml",
+        project_plugins_relpath=Path(".codex") / "plugins",
+        pause_marker=cx / "thinkweave_paused.json",
+        memory_projects_root=cx / "projects",
+        memory_global_dir=cx / "memory",
+        cli_bin="codex",
+        model_flag="--model",
+        prompt_flag="",
+        exec_subcommand="exec",
+        # Upstream codex#24135: headless MCP tool approval currently requires
+        # the full bypass, so an unattended run has no narrower option.
+        bypass_permissions_flag="--dangerously-bypass-approvals-and-sandbox",
+    )
+
+
+PROFILES: dict[str, Callable[[], HarnessProfile]] = {
+    "claude-code": claude_code,
+    "codex": codex,
+}
 
 #: In-process override. ``None`` means "derive from the environment".
 _OVERRIDE: HarnessProfile | None = None
 
 
-def active() -> HarnessProfile:
-    """The profile every consumer reads.
+def _build(name: str, source: str) -> HarnessProfile:
+    """Look the profile up, or exit naming the valid ones.
 
-    An unknown ``$THINKWEAVE_HARNESS`` exits rather than falling back to Claude
-    Code — a mis-set harness must not quietly write into the wrong home. It
-    exits with a named remedy rather than raising, because every consumer calls
-    this: a typo would otherwise surface as a bare traceback from whichever
-    module happened to look first.
+    An unknown name exits rather than falling back to Claude Code — a mis-set
+    harness must not quietly write into the wrong home. It exits with a named
+    remedy rather than raising, because every consumer calls :func:`active`: a
+    typo would otherwise surface as a bare traceback from whichever module
+    happened to look first.
     """
-    if _OVERRIDE is not None:
-        return _OVERRIDE
-    name = os.environ.get("THINKWEAVE_HARNESS") or "claude-code"
     factory = PROFILES.get(name)
     if factory is None:
         print(
-            f"error: unknown harness {name!r} in $THINKWEAVE_HARNESS.\n"
+            f"error: unknown harness {name!r} in {source}.\n"
             f"Registered profiles: {', '.join(sorted(PROFILES))}.",
             file=sys.stderr,
         )
         sys.exit(1)
     return factory()
+
+
+def select(name: str) -> HarnessProfile:
+    """Pin the active profile for this process — what ``--harness`` calls."""
+    global _OVERRIDE
+    _OVERRIDE = _build(name, "--harness")
+    return _OVERRIDE
+
+
+def active() -> HarnessProfile:
+    """The profile every consumer reads."""
+    if _OVERRIDE is not None:
+        return _OVERRIDE
+    return _build(
+        os.environ.get("THINKWEAVE_HARNESS") or "claude-code", "$THINKWEAVE_HARNESS"
+    )

@@ -16,8 +16,9 @@ Design constraints — kept narrow on purpose:
 - ``stage.run`` is a literal argument string passed to ``claude -p``.
 - ``sleep`` between stages is an integer of seconds.
 - ``on_error`` is ``continue`` (default) or ``abort``.
-- The harness model is hardcoded to ``sonnet`` and the flag set matches
-  the existing cron entries (``--dangerously-skip-permissions``).
+- The model and the unattended-tool-use flag both come from the active
+  harness profile (``sonnet`` + ``--dangerously-skip-permissions`` on
+  Claude Code, matching the existing cron entries).
 
 When this surface needs to grow (parallel branches, conditionals on
 return code, templating), prefer adding a separate primitive over
@@ -155,7 +156,10 @@ def _build_argv(run_arg: str) -> list[str]:
     # Plugin-route installs register skills namespaced (`/thinkweave:dream`),
     # with no bare-name aliasing — rewrite the stage's skill token to match.
     return profile.headless_argv(
-        profile.namespaced(run_arg), model="sonnet", bypass=True, bin=bin_path
+        profile.namespaced(run_arg),
+        model=profile.headless_model or None,
+        bypass=True,
+        bin=bin_path,
     )
 
 

@@ -160,14 +160,16 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
         # of cron PATH failures. Matching it against `profile.cli_bin` would
         # strip namespacing and the bypass flag off exactly those lines.
         profile = active_harness()
-        prompt_flag = profile.prompt_flag
+        # The token that says "this line is a headless prompt": the prompt flag
+        # where the harness has one, the one-shot subcommand where it doesn't
+        # (`codex exec <prompt>`). The prompt itself follows it.
+        marker = profile.headless_marker
         # Plugin-route installs register skills namespaced (verified: no
         # bare-name aliasing), so `/dream` must render as
-        # `/thinkweave:dream` in the scheduled line. The token after the
-        # prompt flag is the skill invocation. `namespaced` is a no-op on a
-        # harness that can't resolve slash commands headlessly.
+        # `/thinkweave:dream` in the scheduled line. `namespaced` is a no-op on
+        # a harness that can't resolve slash commands headlessly.
         for i, tok in enumerate(rest[:-1]):
-            if tok == prompt_flag:
+            if tok == marker:
                 rest[i + 1] = profile.namespaced(rest[i + 1])
         # A headless prompt runs unattended with no TTY to approve tool use,
         # so the skill's `weave …` Bash calls are denied under the default
@@ -175,7 +177,7 @@ def resolve_command(job: ScheduledJob, *, repo_root: Path | None = None) -> str:
         # Grant unattended tool use explicitly — where the harness has a flag
         # for it; where it doesn't, nothing is appended.
         bypass = profile.bypass_permissions_flag
-        if bypass and prompt_flag in rest and bypass not in rest:
+        if bypass and marker in rest and bypass not in rest:
             rest.append(bypass)
         resolved = shutil.which(head)
         if resolved:

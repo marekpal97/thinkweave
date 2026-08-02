@@ -8,7 +8,27 @@ shared ``sub = parser.add_subparsers(dest='command')`` so the
 
 from __future__ import annotations
 
+from thinkweave.core.harness import PROFILES
 from thinkweave.core.schemas import EdgeType, NoteType
+
+
+def _add_harness_flag(*parsers) -> None:
+    """Let the machine-scope commands target a harness other than the active
+    one, without exporting ``$THINKWEAVE_HARNESS`` first (#106).
+
+    Only the commands that read or write a harness's own install topology take
+    it — everything else in the CLI is harness-agnostic.
+    """
+    for p in parsers:
+        p.add_argument(
+            "--harness",
+            choices=sorted(PROFILES),
+            default=None,
+            help=(
+                "Which agent harness to install into / inspect "
+                "(default: $THINKWEAVE_HARNESS, else claude-code)."
+            ),
+        )
 
 
 def add_note_subparsers(sub) -> None:
@@ -209,6 +229,7 @@ def add_index_subparsers(sub) -> None:
         action="store_true",
         help="Run vault coherence + MCP diagnostics together.",
     )
+    _add_harness_flag(p_doctor)
     p_doctor.add_argument(
         "--isolation",
         action="store_true",
@@ -494,10 +515,12 @@ def add_admin_subparsers(sub) -> None:
         help="Report whether thinkweave is currently paused and exit.",
     )
 
-    sub.add_parser(
+    p_resume = sub.add_parser(
         "resume",
         help="Restore thinkweave touchpoints removed by `weave pause`.",
     )
+
+    _add_harness_flag(p_install, p_uninstall, p_pause, p_resume)
 
     sub.add_parser("init", help="Initialize a new vault")
 

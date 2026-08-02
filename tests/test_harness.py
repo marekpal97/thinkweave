@@ -66,6 +66,7 @@ def _probe_profile(home: Path) -> harness.HarnessProfile:
         model_flag="-m",
         prompt_flag="--exec",
         bypass_permissions_flag="",
+        headless_model="probe-model",
     )
 
 
@@ -75,10 +76,10 @@ def _probe_profile(home: Path) -> harness.HarnessProfile:
 
 
 class TestRegistry:
-    def test_claude_code_is_the_sole_registered_profile(self):
-        # W1a is refactor-only: `claude-code` is the only profile until the
-        # Codex wave (#106/#107) registers its own.
-        assert set(harness.PROFILES) == {"claude-code"}
+    def test_registered_profiles(self):
+        # W1a shipped `claude-code` alone; the Codex wave (#106) added the
+        # second entry — the rule-of-two the profile seam was extracted from.
+        assert set(harness.PROFILES) == {"claude-code", "codex"}
 
     def test_active_defaults_to_claude_code(self, fake_home: Path):
         assert harness.active().id == "claude-code"
@@ -360,10 +361,12 @@ class TestNewProfileNeedsNoConsumerEdits:
 
         monkeypatch.delenv("THINKWEAVE_CLAUDE_BIN", raising=False)
         monkeypatch.delenv("PERSONAL_MEM_CLAUDE_BIN", raising=False)
+        # The model is the profile's too — `sonnet` is a Claude Code name, and
+        # rendering it for another vendor's binary produces a broken command.
         assert flows._build_argv("/dream") == [
             "probe-cli",
             "-m",
-            "sonnet",
+            "probe-model",
             "--exec",
             "/dream",
         ]
