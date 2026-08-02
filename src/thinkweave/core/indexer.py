@@ -38,9 +38,10 @@ SOURCE_COMPANION_FILENAMES = {"raw.md", "raw.txt", "snapshot.md"}
 
 # `context_served.source` for a SessionStart payload, keyed by the harness
 # stamped onto the buffered `startup` event (see surfaces/hooks/handler.py:
-# _hook_harness). Closed, because the CHECK constraint is: an unrecognised
-# harness falls back to plain 'startup'. Claude Code is unstamped and hits
-# that fallback, which keeps every pre-#107 log projecting identically.
+# _hook_harness); why Codex gets its own value is on the CHECK in SCHEMA_SQL
+# below. Closed, because the CHECK constraint is: an unrecognised harness falls
+# back to plain 'startup'. Claude Code is unstamped and hits that fallback,
+# which keeps every pre-#107 log projecting identically.
 _STARTUP_SOURCES = {"codex": "codex-startup"}
 
 SCHEMA_SQL = """

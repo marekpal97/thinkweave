@@ -216,15 +216,8 @@ class TestSeamGateConsultsNativeMemory:
 
 
 class TestCronRendererConsultsCapabilities:
-    def _job(self, command: str):
-        from thinkweave.scheduling.registry import ScheduledJob
-
-        return ScheduledJob(
-            name="j", cadence="0 3 * * *", command=command, runner="direct"
-        )
-
     def test_headless_slash_off_leaves_the_skill_token_bare(
-        self, fake_home: Path, use_profile
+        self, fake_home: Path, use_profile, scheduled_job
     ):
         from thinkweave.scheduling import registry
 
@@ -233,30 +226,35 @@ class TestCronRendererConsultsCapabilities:
         (fake_home / ".claude" / "skills" / "thinkweave").symlink_to(fake_home)
 
         assert "/thinkweave:dream" in registry.resolve_command(
-            self._job("claude -p /dream")
+            scheduled_job("claude -p /dream")
         )
 
         use_profile(headless_slash=False)
-        without = registry.resolve_command(self._job("claude -p /dream"))
+        without = registry.resolve_command(scheduled_job("claude -p /dream"))
         assert "/thinkweave:dream" not in without
         assert "-p /dream" in without
 
-    def test_bypass_flag_comes_from_the_profile(self, fake_home: Path, use_profile):
+    def test_bypass_flag_comes_from_the_profile(
+        self, fake_home: Path, use_profile, scheduled_job
+    ):
         from thinkweave.scheduling import registry
 
         use_profile(bypass_permissions_flag="--yolo")
-        assert registry.resolve_command(self._job("claude -p /dream")).endswith("--yolo")
+        rendered = registry.resolve_command(scheduled_job("claude -p /dream"))
+        assert rendered.endswith("--yolo")
 
-    def test_no_bypass_flag_means_none_is_appended(self, fake_home: Path, use_profile):
+    def test_no_bypass_flag_means_none_is_appended(
+        self, fake_home: Path, use_profile, scheduled_job
+    ):
         from thinkweave.scheduling import registry
 
         use_profile(bypass_permissions_flag="")
-        assert registry.resolve_command(self._job("claude -p /dream")).endswith(
+        assert registry.resolve_command(scheduled_job("claude -p /dream")).endswith(
             "-p /dream"
         )
 
     def test_absolute_path_head_still_gets_namespacing_and_bypass(
-        self, fake_home: Path
+        self, fake_home: Path, scheduled_job
     ):
         """A hand-edited job naming the binary by absolute path is rendered
         exactly like the bare-token form.
@@ -272,7 +270,7 @@ class TestCronRendererConsultsCapabilities:
         (fake_home / ".claude" / "skills").mkdir(parents=True)
         (fake_home / ".claude" / "skills" / "thinkweave").symlink_to(fake_home)
 
-        rendered = registry.resolve_command(self._job("/opt/bin/claude -p /dream"))
+        rendered = registry.resolve_command(scheduled_job("/opt/bin/claude -p /dream"))
         assert rendered == (
             "/opt/bin/claude -p /thinkweave:dream --dangerously-skip-permissions"
         )

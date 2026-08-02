@@ -361,8 +361,6 @@ def _install_claude_md_block(yes: bool) -> None:
     what would change, require ``--yes`` to actually write. Skip path is
     ``--no-claude-md`` on the parser (see ``cmd_install``).
     """
-    import os
-
     new_block = _render_claude_md_block()
 
     if not _instructions().exists():
@@ -399,10 +397,7 @@ def _install_claude_md_block(yes: bool) -> None:
         print("Re-run with --yes to apply, or --no-claude-md to skip.")
         sys.exit(1)
 
-    new_text = _splice_claude_md_block(text, new_block)
-    tmp = _instructions().with_suffix(_instructions().suffix + ".tmp")
-    tmp.write_text(new_text, encoding="utf-8")
-    os.replace(tmp, _instructions())
+    mcp_config._atomic_write(_instructions(), _splice_claude_md_block(text, new_block))
     print()
     verb = "Updated" if existing is not None else "Appended"
     print(f"{verb} thinkweave block in {_instructions()}.")

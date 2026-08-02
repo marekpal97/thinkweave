@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -275,8 +276,6 @@ def _repo_local_hook_files(cwd: Path) -> list[Path]:
     toml_file = cwd / hooks_rel.parent / "config.toml"
     if toml_file.exists():
         try:
-            import tomllib
-
             if tomllib.loads(toml_file.read_text(encoding="utf-8")).get("hooks"):
                 found.append(toml_file)
         except (OSError, ValueError):

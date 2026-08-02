@@ -232,10 +232,13 @@ codex`, `weave pause`/`resume --harness codex`, and `weave uninstall --harness
 codex` all follow. `$THINKWEAVE_HARNESS` sets the default if you'd rather not
 pass the flag each time.
 
-What Codex gets: the `weave_*` MCP tools and the instructions nudge. What it
-doesn't get yet: lifecycle hooks and the slash-command skills — so run
-`weave_extract` explicitly before ending a session instead of relying on a Stop
-hook, which is what the installed AGENTS.md block tells the model to do.
+What Codex gets: the `weave_*` MCP tools, the instructions nudge, and — via
+`weave hooks install --scope user --harness codex` — the same four lifecycle
+hooks Claude Code runs. Codex gates hooks on trust, so open a session and trust
+the entries via `/hooks` after installing, and re-trust after every reinstall.
+Until you do, nothing fires: the installed AGENTS.md block therefore still
+tells the model to run `weave_extract` explicitly before ending a session. What
+Codex does not get yet is the slash-command skills.
 
 If you populated Codex via ChatGPT desktop's **Settings→Import**, that feature
 brings companion *skills* across and may have pre-created a `thinkweave` MCP

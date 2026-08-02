@@ -306,10 +306,14 @@ def codex(home: Path | None = None) -> HarnessProfile:
         # `codex exec` resolves no slash commands; skill tokens stay bare.
         headless_slash=False,
         instructions_file=cx / "AGENTS.md",
+        # #107 gave this harness hooks, but they are trust-gated and off until
+        # installed *and* trusted, so the model still cannot assume a Stop hook
+        # captured anything.
         instructions_block_body=(
-            f"{_NUDGE}. This harness fires no session-end hook, so call "
-            "`weave_extract` yourself before you finish — it is what persists "
-            "the session's insights and decisions into the vault."
+            f"{_NUDGE}. This harness only fires a session-end hook once its "
+            "hooks are installed and trusted, so call `weave_extract` yourself "
+            "before you finish — it is what persists the session's insights "
+            "and decisions into the vault."
         ),
         mcp_config=cx / "config.toml",
         skills_dir=cx / "skills",

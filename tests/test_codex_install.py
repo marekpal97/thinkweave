@@ -69,28 +69,15 @@ needs_codex = pytest.mark.skipif(
 
 
 @pytest.fixture
-def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Select the ``codex`` profile against a throwaway ``$CODEX_HOME``."""
-    home = tmp_path / "codex-home"
-    home.mkdir()
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setattr(harness, "_OVERRIDE", None)
-    monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
-    return home
-
-
-@pytest.fixture
-def installable(monkeypatch: pytest.MonkeyPatch) -> None:
+def installable(monkeypatch: pytest.MonkeyPatch, stub_install_validators) -> None:
     """Neutralise the environment-probing half of ``cmd_install`` and pin the
-    two machine-dependent values, so the written bytes are fully determined."""
+    two machine-dependent values, so the written bytes are fully determined.
+    The three validators come from the shared ``stub_install_validators``."""
     monkeypatch.setattr(
         install_mod,
         "_check_scripts",
         lambda: install_mod.ScriptsCheck("ok", [], Path("/unused")),
     )
-    monkeypatch.setattr(install_mod, "_check_uv_available", lambda: None)
-    monkeypatch.setattr(install_mod, "_check_pyproject_reachable", lambda root: None)
-    monkeypatch.setattr(install_mod, "_uv_sync", lambda root: None)
     monkeypatch.setattr(install_mod, "_detect_uv_path", lambda: "/usr/bin/uv")
     monkeypatch.setattr(
         install_mod, "_detect_project_root", lambda: Path("/srv/thinkweave")
@@ -199,19 +186,12 @@ class TestCodexHeadlessArgv:
 
 
 class TestCodexCronRendering:
-    def _job(self, command: str):
-        from thinkweave.scheduling.registry import ScheduledJob
-
-        return ScheduledJob(
-            name="j", cadence="30 0 * * *", command=command, runner="direct"
-        )
-
     def test_scheduling_yaml_job_renders_a_valid_codex_exec_line(
-        self, codex_home: Path
+        self, codex_home: Path, scheduled_job
     ):
         from thinkweave.scheduling import registry
 
-        rendered = registry.resolve_command(self._job("codex exec /dream"))
+        rendered = registry.resolve_command(scheduled_job("codex exec /dream"))
         # The bypass flag is what makes an unattended run able to use tools at
         # all (upstream codex#24135: headless MCP tool approval needs it).
         assert rendered.endswith(
@@ -221,12 +201,14 @@ class TestCodexCronRendering:
         assert "/thinkweave:dream" not in rendered
 
     def test_bypass_flag_is_not_duplicated_on_a_hand_written_line(
-        self, codex_home: Path
+        self, codex_home: Path, scheduled_job
     ):
         from thinkweave.scheduling import registry
 
         rendered = registry.resolve_command(
-            self._job("codex exec /dream --dangerously-bypass-approvals-and-sandbox")
+            scheduled_job(
+                "codex exec /dream --dangerously-bypass-approvals-and-sandbox"
+            )
         )
         assert rendered.count("--dangerously-bypass-approvals-and-sandbox") == 1
 

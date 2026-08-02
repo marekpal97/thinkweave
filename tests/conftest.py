@@ -75,6 +75,51 @@ def use_profile(
     return _use
 
 
+@pytest.fixture
+def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Activate the ``codex`` profile against a throwaway ``$CODEX_HOME``.
+
+    Returns the ``.codex`` dir itself: everything Codex owns lives under that
+    one root, so it is the path assertions want. Selection goes through the env
+    var rather than ``_OVERRIDE`` so ``active()`` resolves the profile the way
+    a real run does — which means clearing ``_sandbox_harness_home``'s override
+    first.
+    """
+    home = tmp_path / "codex-home" / ".codex"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
+    monkeypatch.setattr(harness, "_OVERRIDE", None)
+    return home
+
+
+@pytest.fixture
+def stub_install_validators(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the three install-time validators (``_check_uv_available``,
+    ``_check_pyproject_reachable``, ``_uv_sync``) so ``cmd_install`` tests
+    don't require uv on PATH, a real pyproject in the sandbox, or pay sync
+    time. Tests that specifically validate these helpers don't use this."""
+    from thinkweave.surfaces.cli import install as inst
+
+    monkeypatch.setattr(inst, "_check_uv_available", lambda: None)
+    monkeypatch.setattr(inst, "_check_pyproject_reachable", lambda root: None)
+    monkeypatch.setattr(inst, "_uv_sync", lambda root: None)
+
+
+@pytest.fixture
+def scheduled_job() -> Callable[..., Any]:
+    """``scheduled_job("codex exec /dream")`` — one direct-runner job for the
+    cron-rendering suites, whose name and cadence are never what's asserted."""
+    from thinkweave.scheduling.registry import ScheduledJob
+
+    def _job(command: str, cadence: str = "0 3 * * *") -> Any:
+        return ScheduledJob(
+            name="j", cadence=cadence, command=command, runner="direct"
+        )
+
+    return _job
+
+
 @pytest.fixture(autouse=True)
 def _sandbox_harness_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Derive the active profile from a tmp home for *every* test.

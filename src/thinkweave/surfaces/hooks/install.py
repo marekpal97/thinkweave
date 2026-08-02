@@ -42,8 +42,9 @@ HOOK_MARKERS = (
 
 # The events whose handler can return `hookSpecificOutput.additionalContext`
 # (`_handle_session_start`, `_handle_user_prompt_submit`). Only these carry a
-# harness's `additional_context_limit`: Codex reports a configuration warning
-# when the key rides an event that cannot produce additional context.
+# harness's `additional_context_limit` (see that field on `HarnessProfile` for
+# what the limit is derived from): Codex reports a configuration warning when
+# the key rides an event that cannot produce additional context.
 CONTEXT_EMITTING_EVENTS = ("SessionStart", "UserPromptSubmit")
 
 
@@ -106,11 +107,9 @@ def _stamp_harness(command: str, profile) -> str:
     """Second per-route transformation: tell the handler which harness fired
     it, by appending ``--harness <id>``.
 
-    The handler cannot read that off :func:`thinkweave.core.harness.active` —
-    the hook command carries no ``$THINKWEAVE_HARNESS``, so a hook fired by
-    Codex would resolve the Claude Code profile. It *can* read its own argv,
-    and the argv is ours: this installer writes it. ``bin/weave-hook-launch``
-    forwards ``"$@"`` untouched.
+    Why argv and not :func:`thinkweave.core.harness.active` is
+    docs/HARNESSES.md § "Why the handler reads argv, not the profile".
+    ``bin/weave-hook-launch`` forwards ``"$@"`` untouched.
 
     Claude Code is the shape ``hooks/hooks.json`` is authored in, so its
     command is left byte-identical and the plugin route (which loads that file

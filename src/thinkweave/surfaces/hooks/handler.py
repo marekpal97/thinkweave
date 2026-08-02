@@ -80,9 +80,10 @@ def _hook_harness() -> str:
     """Which harness fired this hook, from our own argv.
 
     ``weave hooks install`` appends ``--harness <id>`` for every harness but
-    Claude Code (see ``install._stamp_harness`` for why argv and not
-    ``harness.active()``). Empty string means the Claude Code default, which
-    keeps its buffer bytes identical to every session written before #107.
+    Claude Code; why argv rather than ``harness.active()`` is
+    docs/HARNESSES.md § "Why the handler reads argv, not the profile". Empty
+    string means the Claude Code default, which keeps its buffer bytes
+    identical to every session written before #107.
 
     The value is unvalidated on purpose and that is safe: it is only ever
     stamped onto the buffer as ``surface``, and its one consumer looks it up
@@ -521,13 +522,10 @@ _INTERNAL_FILES = frozenset(
 def _is_internal(path: str) -> bool:
     """Check if a path is an internal/config file we should ignore.
 
-    Covers both harnesses' own furniture at once (Claude Code's ``.claude/``
-    + ``CLAUDE.md``, Codex's ``.codex/`` + ``AGENTS.md``) rather than reading
-    the list off the active :class:`~thinkweave.core.harness.HarnessProfile`.
-    The installed hook command carries no ``$THINKWEAVE_HARNESS``, so
-    ``harness.active()`` inside a hook fired by Codex reports ``claude-code``
-    and would pick the wrong list; the two vocabularies never collide, so
-    matching both is correct under either harness and needs no plumbing (#107).
+    A union of both harnesses' furniture (Claude Code's ``.claude/`` +
+    ``CLAUDE.md``, Codex's ``.codex/`` + ``AGENTS.md``) rather than profile
+    data — see docs/HARNESSES.md § "Why the handler reads argv, not the
+    profile" (#107).
 
     Note ``hooks.json`` is deliberately absent: thinkweave's own canonical
     ``hooks/hooks.json`` is project work. ``.codex/`` already covers both the
@@ -1166,11 +1164,9 @@ def _handle_session_start(hook_input: dict) -> None:
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
                 }
-                # Which harness served it. The indexer projects this to its own
-                # `context_served.source` — Codex delivers `additionalContext`
-                # under different guarantees (visible developer message, spill
-                # above the limit, trust-gated), so the RLVR export must not
-                # weigh it as Claude Code's startup payload.
+                # Which harness served it. The indexer projects this to its
+                # own `context_served.source`; why that split exists is on the
+                # CHECK in core/indexer.py's SCHEMA_SQL.
                 surface = _hook_harness()
                 if surface:
                     event["surface"] = surface

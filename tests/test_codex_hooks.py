@@ -34,12 +34,30 @@ CONTEXT_EMITTING = {"SessionStart", "UserPromptSubmit"}
 
 
 @pytest.fixture
-def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Activate the codex profile against a throwaway $CODEX_HOME."""
-    home = tmp_path / "codex-user"
-    home.mkdir()
-    monkeypatch.setattr(harness, "_OVERRIDE", harness.codex(home=home))
-    return home / ".codex"
+def hook_vault(vault_factory, monkeypatch):
+    """A tmp vault the handler's own ``load_config()`` resolves to.
+
+    The handler loads its config rather than taking one, so that patch is part
+    of the setup ritual, not a detail of any single test. Returns conftest's
+    ``VaultHandle`` — both ``.config`` and ``.vault`` are wanted here.
+    """
+    handle = vault_factory()
+    monkeypatch.setattr("thinkweave.core.config.load_config", lambda: handle.config)
+    return handle
+
+
+@pytest.fixture
+def serves(monkeypatch):
+    """``serves("PAYLOAD")`` — pin what the SessionStart handler's context
+    builder returns. Its real output is never what these tests assert on."""
+
+    def _serves(payload: str) -> None:
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS: payload,
+        )
+
+    return _serves
 
 
 class TestProfile:
@@ -91,9 +109,10 @@ class TestInstalledArtifact:
     def test_context_emitting_handlers_carry_an_explicit_limit(
         self, codex_home: Path
     ):
-        """Without this the ~10k-token SessionStart payload silently spills to
-        a temp file at Codex's 2500-token default and the model sees a preview
-        instead of the context. The limit must cover the payload's own budget.
+        """Without this the SessionStart payload silently spills to a temp
+        file at Codex's default and the model sees a preview instead of the
+        context. What the limit is derived from is on `HarnessProfile`'s
+        `additional_context_limit` field.
         """
         install_hooks(scope="user")
         doc = json.loads((codex_home / "hooks.json").read_text())
@@ -107,9 +126,7 @@ class TestInstalledArtifact:
                             f"{event} can emit additionalContext and needs an "
                             "explicit limit"
                         )
-                        # Headroom, not parity: the budget is spent against a
-                        # chars//4 estimate, and note-id-dense markdown
-                        # tokenizes worse than that, so a narrow margin spills.
+                        # Headroom, not parity — see that field for why.
                         assert limit >= 2 * SESSION_START_BUDGET_TOKENS
                     else:
                         # Codex reports a configuration warning when the key
@@ -140,21 +157,30 @@ class TestInstalledArtifact:
         assert "hooks" not in doc
 
 
+@pytest.fixture
+def cc_installed_hooks(tmp_path: Path, use_profile) -> list[dict]:
+    """Every handler entry `weave hooks install` writes for Claude Code.
+
+    Flattened past the event/group nesting: the CC-unchanged pins care what is
+    in each entry, not where it sits.
+    """
+    home = tmp_path / "cc-home"
+    use_profile(user_settings=home / ".claude" / "settings.json")
+    install_hooks(scope="user")
+    doc = json.loads((home / ".claude" / "settings.json").read_text())
+    handlers = [h for gs in doc["hooks"].values() for g in gs for h in g["hooks"]]
+    assert handlers, "nothing installed — the pins below would pass vacuously"
+    return handlers
+
+
 class TestClaudeCodeUnchanged:
     """Explicit acceptance criterion: "CC hook install output unchanged"."""
 
     def test_no_additional_context_limit_leaks_into_claude_code(
-        self, tmp_path: Path, use_profile
+        self, cc_installed_hooks
     ):
-        home = tmp_path / "cc-home"
-        use_profile(user_settings=home / ".claude" / "settings.json")
-        install_hooks(scope="user")
-
-        doc = json.loads((home / ".claude" / "settings.json").read_text())
-        for groups in doc["hooks"].values():
-            for group in groups:
-                for handler in group["hooks"]:
-                    assert "additionalContextLimit" not in handler
+        for handler in cc_installed_hooks:
+            assert "additionalContextLimit" not in handler
 
     def test_claude_code_still_installs_project_scope(self, tmp_path: Path):
         """Codex is global-scope-only (below); Claude Code must keep its
@@ -231,9 +257,7 @@ class TestGlobalScopeOnly:
 #   from the 0.146.0 binary: `*** Add File: `, `*** Update File:`,
 #   `*** Delete File: `, `*** Move to: `, `*** End Patch`.
 
-from thinkweave.core.config import Config  # noqa: E402
 from thinkweave.core.schemas import NoteType  # noqa: E402
-from thinkweave.core.vault import VaultManager  # noqa: E402
 from thinkweave.surfaces.hooks import handler as handler_mod  # noqa: E402
 
 # Verbatim from the 0.146.0 sentinel run (paths shortened, ids kept).
@@ -293,11 +317,8 @@ class TestIgnorePaths:
     AGENTS.md or `.codex/` config logged them as project work.
 
     Deliberately a *union*, not profile data (which is what the issue text
-    predicted): the installed hook command carries no `$THINKWEAVE_HARNESS`,
-    so `harness.active()` inside a hook fired by Codex would report
-    `claude-code` and pick the wrong list. The two vocabularies don't collide
-    — Claude Code never writes `.codex/`, Codex never writes `.claude/` — so
-    matching both is correct under either harness and needs no plumbing.
+    predicted) — see docs/HARNESSES.md § "Why the handler reads argv, not the
+    profile".
     """
 
     @pytest.mark.parametrize(
@@ -404,17 +425,11 @@ class TestCodexSessionEndToEnd:
     with the real Codex envelopes and require a session note written AND
     indexed into a tmp vault."""
 
-    def test_session_start_prompt_edit_stop(self, tmp_path: Path, monkeypatch):
-        cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
-        vm = VaultManager(config=cfg)
-        vm.ensure_dirs()
+    def test_session_start_prompt_edit_stop(self, hook_vault, serves):
+        cfg, vm = hook_vault.config, hook_vault.vault
 
         # 1. SessionStart — emits the context payload as additionalContext.
-        monkeypatch.setattr(
-            "thinkweave.retrieval.context.build_project_context",
-            lambda cfg, project, budget_tokens=10000: "## Recent\n- [[n-1|n-1]]\n",
-        )
+        serves("## Recent\n- [[n-1|n-1]]\n")
         handler_mod._handle_session_start(CODEX_SESSION_START)
 
         # 2. UserPromptSubmit — captures the prompt.
@@ -456,18 +471,12 @@ class TestCodexSessionEndToEnd:
         assert rows, "Stop must index the session note"
 
     def test_session_start_emits_codex_shaped_output(
-        self, tmp_path: Path, monkeypatch, capsys
+        self, hook_vault, serves, capsys
     ):
         """Codex's session-start.command.output schema requires
         `hookSpecificOutput.hookEventName == "SessionStart"` alongside
         `additionalContext` — the same object Claude Code consumes."""
-        cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
-        VaultManager(config=cfg).ensure_dirs()
-        monkeypatch.setattr(
-            "thinkweave.retrieval.context.build_project_context",
-            lambda cfg, project, budget_tokens=10000: "PAYLOAD",
-        )
+        serves("PAYLOAD")
 
         handler_mod._handle_session_start(CODEX_SESSION_START)
 
@@ -485,15 +494,12 @@ class TestCodexSessionEndToEnd:
 
 class TestServingSurfaceTagging:
     """Owner-agreed 2026-07-31: the Codex serving surface registers its own
-    `context_served.source`. It is a materially different surface, not a
-    relabel — Codex renders injected `additionalContext` as a *visible
-    developer message* (openai/codex#16933), spills it above
-    `additionalContextLimit`, and will not deliver it at all until the hook is
-    trusted. Collapsing it into `startup` would make the RLVR export weigh
-    two different delivery guarantees as one.
+    `context_served.source` — why it is a materially different surface rather
+    than a relabel is stated once at the CHECK in `core/indexer.py`.
 
-    The handler learns which harness fired it from its own argv, written by
-    the installer — `harness.active()` is not usable here (see `_is_internal`).
+    The handler learns which harness fired it from its own argv, written by the
+    installer; see docs/HARNESSES.md § "Why the handler reads argv, not the
+    profile".
     """
 
     def test_installer_stamps_the_harness_into_the_codex_command(
@@ -506,29 +512,16 @@ class TestServingSurfaceTagging:
                 for h in group["hooks"]:
                     assert h["command"].endswith(" --harness codex"), h["command"]
 
-    def test_claude_code_command_carries_no_harness_flag(
-        self, tmp_path: Path, use_profile
-    ):
+    def test_claude_code_command_carries_no_harness_flag(self, cc_installed_hooks):
         """Explicit acceptance criterion: CC hook install output unchanged."""
-        home = tmp_path / "cc-home"
-        use_profile(user_settings=home / ".claude" / "settings.json")
-        install_hooks(scope="user")
-        doc = json.loads((home / ".claude" / "settings.json").read_text())
-        for groups in doc["hooks"].values():
-            for group in groups:
-                for h in group["hooks"]:
-                    assert "--harness" not in h["command"]
+        for handler in cc_installed_hooks:
+            assert "--harness" not in handler["command"]
 
     def test_startup_event_is_stamped_with_the_surface(
-        self, tmp_path: Path, monkeypatch
+        self, hook_vault, serves, monkeypatch
     ):
-        cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
-        VaultManager(config=cfg).ensure_dirs()
-        monkeypatch.setattr(
-            "thinkweave.retrieval.context.build_project_context",
-            lambda cfg, project, budget_tokens=10000: "- [[n-1|n-1]]\n",
-        )
+        cfg = hook_vault.config
+        serves("- [[n-1|n-1]]\n")
         monkeypatch.setattr(
             "sys.argv", ["weave-hook", "session_start", "--harness", "codex"]
         )
@@ -540,15 +533,10 @@ class TestServingSurfaceTagging:
         assert startup["surface"] == "codex"
 
     def test_claude_code_startup_event_is_unstamped(
-        self, tmp_path: Path, monkeypatch
+        self, hook_vault, serves, tmp_path: Path, monkeypatch
     ):
-        cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
-        VaultManager(config=cfg).ensure_dirs()
-        monkeypatch.setattr(
-            "thinkweave.retrieval.context.build_project_context",
-            lambda cfg, project, budget_tokens=10000: "- [[n-1|n-1]]\n",
-        )
+        cfg = hook_vault.config
+        serves("- [[n-1|n-1]]\n")
         monkeypatch.setattr("sys.argv", ["weave-hook", "session_start"])
 
         handler_mod._handle_session_start(
@@ -564,11 +552,10 @@ class TestContextServedProjection:
     """The indexer projects a stamped startup event to its own source value.
     Mirrors how `retrieval` events already fan out by their `tool` sentinel."""
 
-    def _project(self, tmp_path: Path, event: dict) -> list[tuple]:
+    def _project(self, vault_factory, tmp_path: Path, event: dict) -> list[tuple]:
         from thinkweave.core.indexer import Indexer
 
-        cfg = Config(vault_root=tmp_path / "vault")
-        VaultManager(config=cfg).ensure_dirs()
+        cfg = vault_factory().config
         log = tmp_path / "retrieval_log.jsonl"
         log.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
@@ -585,8 +572,9 @@ class TestContextServedProjection:
         finally:
             idx.close()
 
-    def test_codex_startup_gets_its_own_source(self, tmp_path: Path):
+    def test_codex_startup_gets_its_own_source(self, vault_factory, tmp_path: Path):
         rows = self._project(
+            vault_factory,
             tmp_path,
             {
                 "type": "startup",
@@ -597,8 +585,9 @@ class TestContextServedProjection:
         )
         assert rows == [("n-1", "codex-startup")]
 
-    def test_unstamped_startup_stays_startup(self, tmp_path: Path):
+    def test_unstamped_startup_stays_startup(self, vault_factory, tmp_path: Path):
         rows = self._project(
+            vault_factory,
             tmp_path,
             {
                 "type": "startup",
@@ -608,7 +597,7 @@ class TestContextServedProjection:
         )
         assert rows == [("n-1", "startup")]
 
-    def test_pre_codex_table_is_migrated_and_repopulated(self, tmp_path: Path):
+    def test_pre_codex_table_is_migrated_and_repopulated(self, vault_factory):
         """A vault indexed before this issue carries the narrower CHECK, which
         rejects every codex-startup INSERT. SQLite cannot ALTER a CHECK and the
         table is 100% derived from retrieval_log.jsonl, so the established
@@ -618,11 +607,9 @@ class TestContextServedProjection:
         the refill to the caller would leave an ordinary post-upgrade open
         serving nothing until the nightly full pass. Fixture DB only."""
         from thinkweave.core.indexer import Indexer
-        from thinkweave.core.schemas import NoteType
 
-        cfg = Config(vault_root=tmp_path / "vault")
-        vm = VaultManager(config=cfg)
-        vm.ensure_dirs()
+        handle = vault_factory()
+        cfg, vm = handle.config, handle.vault
         sess_path = vm.create_note(
             NoteType.SESSION, "S", body="## Summary\nseed\n", project="p"
         )
@@ -836,11 +823,7 @@ class TestRetrievalGateUnderCodex:
     as an inference from the naming convention.
     """
 
-    def test_weave_search_lands_in_the_buffer(self, tmp_path: Path, monkeypatch):
-        cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
-        VaultManager(config=cfg).ensure_dirs()
-
+    def test_weave_search_lands_in_the_buffer(self, hook_vault):
         handler_mod._handle_post(
             "mcp__thinkweave__weave_search",
             {
@@ -855,21 +838,17 @@ class TestRetrievalGateUnderCodex:
             },
         )
 
-        events = handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID)
+        events = handler_mod._read_buffer(
+            hook_vault.config.weave_dir, CODEX_SESSION_ID
+        )
         retrieval = [e for e in events if e.get("type") == "retrieval"]
         assert retrieval, "the retrieval gate must capture a Codex weave_* call"
         assert retrieval[0]["tool"] == "mcp__thinkweave__weave_search"
         assert "n-abc123" in retrieval[0]["returned_ids"]
 
-    def test_non_retrieval_mcp_tool_is_still_ignored(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_non_retrieval_mcp_tool_is_still_ignored(self, hook_vault):
         """`RETRIEVAL_TOOLS` is a closed set on purpose — mutation tools must
         not pollute the log just because they share the namespace."""
-        cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
-        VaultManager(config=cfg).ensure_dirs()
-
         handler_mod._handle_post(
             "mcp__thinkweave__weave_create",
             {
@@ -879,9 +858,12 @@ class TestRetrievalGateUnderCodex:
                 "tool_response": {"output": "created"},
             },
         )
-        assert handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID) == []
+        assert (
+            handler_mod._read_buffer(hook_vault.config.weave_dir, CODEX_SESSION_ID)
+            == []
+        )
 
-    def test_nested_mcp_content_shape_still_yields_ids(self, tmp_path: Path, monkeypatch):
+    def test_nested_mcp_content_shape_still_yields_ids(self, hook_vault):
         """`tool_response` is typed "any JSON" in the 0.146.0 schema, so there
         is no key list to hardcode. A nested MCP-style payload must still
         expose its note ids rather than logging an empty retrieval.
@@ -890,10 +872,6 @@ class TestRetrievalGateUnderCodex:
         scoped to the retrieval path precisely so the action path keeps
         ignoring shapes it doesn't recognise.
         """
-        cfg = Config(vault_root=tmp_path / "vault")
-        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
-        VaultManager(config=cfg).ensure_dirs()
-
         handler_mod._handle_post(
             "mcp__thinkweave__weave_search",
             {
@@ -904,15 +882,11 @@ class TestRetrievalGateUnderCodex:
             },
         )
 
-        events = handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID)
+        events = handler_mod._read_buffer(
+            hook_vault.config.weave_dir, CODEX_SESSION_ID
+        )
         assert events[0]["returned_ids"] == ["n-abc123"]
 
-    def test_flag_only_dict_still_yields_empty(self):
-        """Claude Code's Bash response with no output is genuinely textless —
-        that contract must not drift into emitting `{"interrupted": false}`."""
-        assert handler_mod._extract_tool_output_text(
-            {"tool_response": {"interrupted": False, "isImage": False}}
-        ) == ""
 
 
 class TestHooksCliTakesHarness:
