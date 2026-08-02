@@ -684,6 +684,55 @@ class TestContextServedProjection:
         finally:
             idx.close()
 
+    def test_dropped_table_is_repopulated_without_a_full_rebuild(
+        self, tmp_path: Path
+    ):
+        """The drop empties a table the co_served edges project from, and only
+        `rebuild(full=True)` re-walks every session — so deferring the refill
+        to the caller leaves an ordinary post-upgrade open serving nothing
+        until the nightly full pass."""
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.schemas import NoteType
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        sess_path = vm.create_note(
+            NoteType.SESSION, "S", body="## Summary\nseed\n", project="p"
+        )
+        (sess_path.parent / "retrieval_log.jsonl").write_text(
+            json.dumps({
+                "ts": "2026-08-02T00:00:00Z",
+                "type": "startup",
+                "returned_ids": ["n-seeded"],
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        idx = Indexer(config=cfg)
+        idx.rebuild(full=True)
+        # Hand-downgrade to the pre-#107 CHECK, rows and all.
+        idx.db.execute("DROP TABLE context_served")
+        idx.db.execute(
+            "CREATE TABLE context_served ("
+            " session_id TEXT NOT NULL, note_id TEXT NOT NULL,"
+            " source TEXT NOT NULL CHECK(source IN ('startup', 'onthefly')),"
+            " ts TEXT, PRIMARY KEY (session_id, note_id, source))"
+        )
+        idx.db.commit()
+        idx.close()
+
+        idx = Indexer(config=cfg)
+        try:
+            idx._init_schema()
+            rows = [
+                r["note_id"]
+                for r in idx.db.execute("SELECT note_id FROM context_served")
+            ]
+            assert rows == ["n-seeded"]
+        finally:
+            idx.close()
+
 
 # ---------------------------------------------------------------------------
 # `weave doctor --mcp` — the repo-local hook warning

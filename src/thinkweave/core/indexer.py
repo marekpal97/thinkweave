@@ -358,10 +358,17 @@ class Indexer:
         # 'prompttime'; #57 added 'loop-prime'; #107 added 'codex-startup').
         # Older vaults created the table with a narrower CHECK that rejects the
         # new-source INSERTs. SQLite can't ALTER a CHECK, but the table is 100%
-        # derived from retrieval_log.jsonl — drop and let SCHEMA_SQL recreate
-        # it with the current constraint; the next _rebuild_context_served
-        # (same rebuild) repopulates it. Gate on the newest token: any table
-        # lacking 'codex-startup' predates the current schema.
+        # derived from retrieval_log.jsonl — drop, let SCHEMA_SQL recreate it
+        # with the current constraint, and re-project every session right here.
+        # Gate on the newest token: any table lacking 'codex-startup' predates
+        # the current schema.
+        #
+        # The re-projection is not deferred to the caller's rebuild: only
+        # `rebuild(full=True)` walks every session, so an incremental rebuild
+        # (what an ordinary first-open-after-upgrade runs) would leave the
+        # table empty until the nightly full pass — with the co_served edges
+        # projected from it left dangling meanwhile. Costs one all-sessions
+        # walk, once per upgrade, since the gate then stops matching.
         cs_sql_row = self.db.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type='table' AND name='context_served'"
@@ -370,6 +377,7 @@ class Indexer:
         if cs_sql and "codex-startup" not in cs_sql:
             self.db.execute("DROP TABLE context_served")
             self.db.executescript(SCHEMA_SQL)
+            self._rebuild_context_served()
             self.db.commit()
 
     def close(self) -> None:
