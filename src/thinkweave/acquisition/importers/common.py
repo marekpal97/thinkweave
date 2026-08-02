@@ -19,6 +19,8 @@ Two concerns live here so the importers don't each hand-roll them:
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 from thinkweave.core.config import Config
@@ -45,12 +47,28 @@ class ImportManifest:
     def load(
         cls, weave_dir: Path, filename: str, id_field: str = "imported_ids"
     ) -> ImportManifest:
-        """Load the manifest at ``weave_dir/filename`` (empty if absent)."""
+        """Load the manifest at ``weave_dir/filename`` (empty if absent).
+
+        A corrupt or unreadable ledger degrades to empty with a warning rather
+        than aborting the import: the failure mode is re-importing content
+        (duplicate notes, visible and fixable) instead of a traceback that
+        leaves the user with no way to run the importer at all.
+        """
         path = weave_dir / filename
+        data: dict = {"version": 1, id_field: {}}
         if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-        else:
-            data = {"version": 1, id_field: {}}
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                print(
+                    f"warning: import manifest {path} is unreadable ({e}); "
+                    f"treating as empty — already-imported items may be "
+                    f"re-imported.",
+                    file=sys.stderr,
+                )
+            else:
+                if isinstance(loaded, dict):
+                    data = loaded
         return cls(path, id_field=id_field, data=data)
 
     @property
@@ -70,8 +88,13 @@ class ImportManifest:
         self.data.update(kwargs)
 
     def save(self) -> None:
+        """Persist atomically — importers save mid-run, so a crash or a full
+        disk mid-write must not leave a half-written ledger that then fails to
+        load and re-imports everything."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+        os.replace(tmp, self.path)
 
 
 def index_imported_notes(config: Config, paths: list[Path]) -> dict:

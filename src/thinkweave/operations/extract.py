@@ -245,18 +245,24 @@ def extract_session(
         )
         return outcome
 
-    # Generation-is-synthesis for imported sessions. An imported Claude Code
-    # session is materialised holding its verbatim transcript; the first time
-    # it's synthesised (here, via either the batch or the inline backend —
-    # both reach extract_session) that transcript is archived to a
-    # `transcript.md` companion so the note body reads as the synthesis, not
-    # the raw feed. Tightly gated: only fires for a not-yet-processed
-    # `imported_from: claude-code` note that still carries the `## Transcript`
+    # Generation-is-synthesis for imported sessions. An imported coding-agent
+    # session (claude-code, codex) is materialised holding its verbatim
+    # transcript; the first time it's synthesised (here, via either the batch
+    # or the inline backend — both reach extract_session) that transcript is
+    # archived to a `transcript.md` companion so the note body reads as the
+    # synthesis, not the raw feed. Tightly gated: only fires for a
+    # not-yet-processed imported note that still carries the `## Transcript`
     # dump, so it never touches a live `/wrap` session. This is the one
     # place the import body-shape transform lives — keeping both backends
     # byte-for-byte identical.
+    #
+    # Not scoped to a harness, and deliberately so: this is a body-shape
+    # transform on the note it was handed, not a selection gate. Per-harness
+    # scoping happens upstream in `find_pending_sessions`; the other caller
+    # (the `weave_extract` MCP tool, which /wrap and /seed-enrich both use)
+    # is handed a session id with no notion of an import source at all.
     if (
-        session_note.frontmatter.get("imported_from") == "claude-code"
+        session_note.frontmatter.get("imported_from")
         and "## Transcript" in session_note.body
     ):
         from thinkweave.synthesis.session_synthesis import archive_transcript

@@ -17,12 +17,14 @@ from __future__ import annotations
 import os
 import platform
 import tempfile
+import re
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 _DEFAULT_VAULT = Path.home() / "vault"
+UNSCOPED_PROJECT = "_unscoped"
 
 
 def _is_windows() -> bool:
@@ -726,3 +728,50 @@ def normalize_project_name(name: str) -> str:
     if not name:
         return ""
     return name.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def normalize_project(cwd: str) -> str:
+    """Derive a vault project name from a coding-agent session's cwd.
+
+    Shared by every session importer (Claude Code, Codex) so a repo worked on
+    from more than one harness lands in a single vault project. Three steps:
+
+    1. Strip a trailing ``.claude/worktrees/<branch>`` (worktree sessions; we
+       want the repo root, not the branch name).
+    2. Drop sessions whose cwd is the homedir or ``~/.claude`` itself —
+       they map to ``_unscoped``.
+    3. Take basename → lowercase → ``-`` → ``_``.
+    """
+    if not cwd:
+        return UNSCOPED_PROJECT
+
+    # Normalize separators up front so a Windows cwd (``C:\\Users\\x\\repo``)
+    # and a POSIX cwd parse identically, regardless of which OS runs the
+    # import. PurePosixPath then gives consistent ``.parts`` semantics on
+    # the normalized string (a drive like ``C:`` becomes a leading part).
+    parts = list(PurePosixPath(cwd.replace("\\", "/").rstrip("/")).parts)
+
+    # Strip a trailing ``.claude/worktrees/<branch>[/...]`` — we want the
+    # repo root, not the worktree branch dir.
+    for i in range(len(parts) - 1):
+        if parts[i] == ".claude" and parts[i + 1] == "worktrees":
+            parts = parts[:i]
+            break
+
+    # Drop sessions whose cwd is the homedir, ``~/.claude``, or the root.
+    home_parts = PurePosixPath(str(Path.home()).replace("\\", "/")).parts
+    if (
+        not parts
+        or tuple(parts) == home_parts
+        or tuple(parts) == home_parts + (".claude",)
+    ):
+        return UNSCOPED_PROJECT
+
+    name = parts[-1]
+    # Guard a bare drive root (``C:``) and dotfile dirs.
+    if not name or name.startswith(".") or name.endswith(":"):
+        return UNSCOPED_PROJECT
+
+    name = name.lower().replace("-", "_")
+    name = re.sub(r"_{2,}", "_", name).strip("_")
+    return name or UNSCOPED_PROJECT

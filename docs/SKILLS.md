@@ -32,20 +32,20 @@ Generated from `commands/*.md` frontmatter. Re-run `weave skill list` to regener
 | `/onboard` | project_bootstrap | — | bootstrap | First-run flow: mandatory historical Claude Code import (always step 1), ontology bootstrap from imported `proposed_concepts:`, focus + source-type configuration, per-project hooks, first landing docs. Idempotent — re-running only does what's still missing. **Not** for vault init (`weave init`) or machine setup (`weave install`). |
 | `/source-fit` | source_diagnosis | — | — | Read-only: classify a free-form input description against existing source types. Returns covered / adapt / scaffold. Vault-scope. |
 | `/source-scaffold` | source_scaffold | — | — | Generative: create a new source type via vault overlay + machine-global skill file (`~/.claude/commands/<slug>.md`). Vault-scope. |
-| `/seed-enrich` | session_synthesis_inline | — | import | Inline session backfill — synthesise imported Claude Code sessions into wrap-shaped notes (summary + insights + decisions) via the running model, then a single batch finalize (index + landing). The `weave import claude-code --enrich --via inline` route; small backlogs run in-process, large ones deterministically fan out `seed-enrich-worker` subagents (`[enrich]` knobs). Pairs with `--via batch` (wrapper async fan-out). |
+| `/seed-enrich` | session_synthesis_inline | — | import | Inline session backfill — synthesise imported coding-agent sessions into wrap-shaped notes (summary + insights + decisions) via the running model, then a single batch finalize (index + landing). The `weave import {claude-code\|codex} --enrich --via inline` route, walked as two per-source lanes (selection is scoped to the named harness; the lanes never merge); small backlogs run in-process, large ones deterministically fan out `seed-enrich-worker` subagents (`[enrich]` knobs). Pairs with `--via batch` (wrapper async fan-out). |
 | `/import-chatgpt` | chatgpt_import_inline | — | import | Inline ChatGPT-export import. The `weave import chatgpt --via inline` route; pairs with `--via batch` (wrapper async fan-out). |
 | `/hubs-link` | hubs_linkage_inline | — | — | Inline temporal-DAG linkage for concept hubs. The `weave hubs link --via inline` route; pairs with `--via batch`. |
 | `/judge-prediction` | prediction_judging | — | — | Predicted-outcome judge — the running session IS the judge (no API call). Invoked live by `/wrap` on supersession, headlessly by `dream-judge-worker`, or manually via `weave judge --rejudge`. See [Lifecycles §Decision](LIFECYCLES.md#predicted-outcome-rlvr-substrate). |
 
 ## Dual-route convention
 
-Three CLI subcommands take `--via {inline,batch}`: `weave import claude-code --enrich`, `weave import chatgpt`, `weave hubs link`. `inline` = the corresponding CC skill above runs the work via the running model (no provider key required); `batch` = the wrapper (`core/agent_client.batch_completions_sync`) fans out N async completions to the configured provider (provider+model from `vault/config/api.yaml::overrides.<op>`). When `--via` is omitted, `operations/_backfill_route.choose_route` picks: explicit flag > size threshold + key presence > inline.
+Three CLI subcommands take `--via {inline,batch}`: `weave import {claude-code|codex} --enrich`, `weave import chatgpt`, `weave hubs link`. `inline` = the corresponding CC skill above runs the work via the running model (no provider key required); `batch` = the wrapper (`core/agent_client.batch_completions_sync`) fans out N async completions to the configured provider (provider+model from `vault/config/api.yaml::overrides.<op>`). When `--via` is omitted, `operations/_backfill_route.choose_route` picks: explicit flag > size threshold + key presence > inline.
 
 | CLI subcommand | inline route (CC skill) | batch route (wrapper fan-out) |
 |---|---|---|
 | `weave import chatgpt` | `/import-chatgpt` | wrapper async fan-out |
 | `weave hubs link` | `/hubs-link` | wrapper async fan-out |
-| `weave import claude-code --enrich` | `/seed-enrich` | wrapper async fan-out |
+| `weave import {claude-code\|codex} --enrich` | `/seed-enrich` | wrapper async fan-out |
 
 ## Subagent workers
 
@@ -93,4 +93,4 @@ The subagent workers live in `agents/*.md` (one `.claude/agents/<worker>.md` fil
 
 | Worker | What it does |
 |---|---|
-| `seed-enrich-worker` | Synthesise a batch of imported Claude Code sessions from their transcripts into wrap-shaped notes via `weave_extract` (keyless, runs on the session model). Spawned by `/seed-enrich` above the `[enrich] fanout_threshold`; does **not** finalize — the orchestrator runs one batch index + landing after all workers return. |
+| `seed-enrich-worker` | Synthesise a batch of imported coding-agent sessions from their transcripts into wrap-shaped notes via `weave_extract` (keyless, runs on the session model). Spawned by `/seed-enrich` above the `[enrich] fanout_threshold`; does **not** finalize — the orchestrator runs one batch index + landing after all workers return. |

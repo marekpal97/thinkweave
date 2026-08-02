@@ -173,7 +173,7 @@ def test_run_enrichment_batch_empty_short_circuits(tmp_path: Path, monkeypatch):
 
     # No vault/projects/ → no pending sessions.
     cfg = Config(vault_root=tmp_path)
-    stats = run_enrichment_batch(cfg)
+    stats = run_enrichment_batch(cfg, source="claude-code")
     assert stats["pending"] == 0
     assert stats["synthesized"] == 0
 
@@ -230,7 +230,7 @@ def test_run_enrichment_batch_resolves_provider_from_api_yaml(
     from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
     cfg = Config(vault_root=tmp_path)
-    stats = run_enrichment_batch(cfg)
+    stats = run_enrichment_batch(cfg, source="claude-code")
     assert captured["provider"] == "openai"
     assert captured["model"] == "gpt-5-mini"
     assert stats["submitted"] == 1
@@ -264,7 +264,7 @@ def test_run_enrichment_batch_dry_run_does_not_call_wrapper(
     from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
     cfg = Config(vault_root=tmp_path)
-    stats = run_enrichment_batch(cfg, dry_run=True)
+    stats = run_enrichment_batch(cfg, source="claude-code", dry_run=True)
     assert called["n"] == 0
     assert stats["synthesized"] == 0
 
@@ -303,7 +303,7 @@ def test_run_enrichment_batch_handles_exception_per_item(
     from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
     cfg = Config(vault_root=tmp_path)
-    stats = run_enrichment_batch(cfg)
+    stats = run_enrichment_batch(cfg, source="claude-code")
     assert stats["synthesized"] == 2
     assert len(stats["errors"]) == 1
     assert "ses-1" in stats["errors"][0]

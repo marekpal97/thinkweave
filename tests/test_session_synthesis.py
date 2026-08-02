@@ -163,8 +163,8 @@ def test_run_enrichment_batch_end_to_end(config: Config, vault: VaultManager, mo
 
     from thinkweave.onboarding.enrich_batch import find_pending_sessions, run_enrichment_batch
 
-    assert len(find_pending_sessions(config)) == 1  # pending before
-    stats = run_enrichment_batch(config)
+    assert len(find_pending_sessions(config, source="claude-code")) == 1  # pending before
+    stats = run_enrichment_batch(config, source="claude-code")
 
     assert stats["synthesized"] == 1
     assert stats["decisions_created"] == 1
@@ -200,7 +200,7 @@ def test_run_enrichment_batch_end_to_end(config: Config, vault: VaultManager, mo
     )
 
     # No longer pending.
-    assert len(find_pending_sessions(config)) == 0
+    assert len(find_pending_sessions(config, source="claude-code")) == 0
 
 
 def test_fanout_plan_respects_threshold_and_knobs():
@@ -230,7 +230,7 @@ def test_dry_run_emits_fanout_plan_and_pending_lines(
 
     from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
-    run_enrichment_batch(config, dry_run=True)
+    run_enrichment_batch(config, source="claude-code", dry_run=True)
     lines = capsys.readouterr().out.splitlines()
 
     fanout = [ln for ln in lines if ln.startswith("FANOUT\t")]
@@ -267,12 +267,12 @@ def test_run_enrichment_batch_finalize_is_toggleable(
 
     _materialize_one_session(config, vault, uuid="cc-1")
     Indexer(config=config).rebuild(full=True)
-    run_enrichment_batch(config, finalize=False)
+    run_enrichment_batch(config, source="claude-code", finalize=False)
     assert landed == []  # tail skipped
 
     _materialize_one_session(config, vault, uuid="cc-2")
     Indexer(config=config).rebuild(full=True)
-    run_enrichment_batch(config)  # finalize defaults True
+    run_enrichment_batch(config, source="claude-code")  # finalize defaults True
     assert landed == ["proj"]  # landing refreshed for the touched project
 
 
@@ -342,5 +342,5 @@ def test_provider_defaults_to_completion_no_anthropic_imposition(
 
     from thinkweave.onboarding.enrich_batch import run_enrichment_batch
 
-    run_enrichment_batch(config)
+    run_enrichment_batch(config, source="claude-code")
     assert captured["provider"] == "openai"
