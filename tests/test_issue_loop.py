@@ -2330,3 +2330,228 @@ def test_build_trajectory_omits_stack_simplify_when_absent():
                             "cuts": [], "kept": []}},
     )
     assert "stack_simplify" not in payload["frontmatter"]["trace"]
+
+
+# ---------------------------------------------------------------------------
+# Judgment-gate validators (issue #99) — the rail never EXECUTES acceptance /
+# review / simplify; it validates what the orchestrator's subagent returned,
+# rejecting a schema-violating return with per-field reasons so the
+# orchestrator re-asks instead of str()-coercing garbage downstream.
+
+
+def _gate(gate_id):
+    return next(g for g in cli.load_config()["gates"] if g["id"] == gate_id)
+
+
+def test_gate_registries_are_disjoint_and_cover_the_pipeline():
+    """Every kind has exactly one verb (boundary spec §3): a kind is either
+    executed by the rail or validated by it, never both, and the shipped gate
+    pipeline names no kind outside the two registries."""
+    assert not (set(gates.DETERMINISTIC) & set(gates.JUDGMENT))
+    kinds = {g["kind"] for g in cli.load_config()["gates"]}
+    assert kinds <= set(gates.DETERMINISTIC) | set(gates.JUDGMENT)
+    assert set(gates.JUDGMENT) == {"acceptance", "review", "simplify"}
+
+
+def test_validate_acceptance_all_met_passes():
+    """threshold=all: every criterion met → the gate passes, GateResult-shaped
+    with no rejection reasons."""
+    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+        {"id": "AC1", "verdict": "met", "evidence": "test_x covers it"},
+        {"id": "AC2", "verdict": "met", "evidence": "test_y covers it"},
+    ]})
+    assert set(result) == {"id", "kind", "passed", "summary", "detail", "reasons"}
+    assert result["id"] == "acceptance" and result["kind"] == "acceptance"
+    assert result["passed"] is True
+    assert result["reasons"] == []
+    assert "2/2" in result["summary"]
+
+
+def test_validate_acceptance_one_not_met_fails_the_gate_without_rejecting():
+    """A gate verdict of `not-met` is a FIX ROUND, not a schema rejection —
+    passed=False with empty reasons (rc 1, not rc 2)."""
+    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+        {"id": "AC1", "verdict": "met", "evidence": "e"},
+        {"id": "AC2", "verdict": "not-met", "evidence": "no test at the seam"},
+    ]})
+    assert result["passed"] is False
+    assert result["reasons"] == []
+
+
+def test_validate_acceptance_majority_threshold():
+    """threshold=majority: strictly more than half met."""
+    gate = {**_gate("acceptance"), "threshold": "majority"}
+    payload = {"criteria": [
+        {"id": "AC1", "verdict": "met", "evidence": "e"},
+        {"id": "AC2", "verdict": "met", "evidence": "e"},
+        {"id": "AC3", "verdict": "not-met", "evidence": "e"},
+    ]}
+    assert gates.JUDGMENT["acceptance"](gate, payload)["passed"] is True
+    payload["criteria"][1]["verdict"] = "not-met"
+    assert gates.JUDGMENT["acceptance"](gate, payload)["passed"] is False
+
+
+def test_validate_acceptance_rejects_unknown_verdict_naming_field_and_value():
+    """An enum the judge invented is REJECTED (not coerced), and the reason
+    names the offending field path and the value — that is what makes the
+    re-ask actionable."""
+    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+        {"id": "AC1", "verdict": "met", "evidence": "e"},
+        {"id": "AC2", "verdict": "probably", "evidence": "e"},
+    ]})
+    assert result["passed"] is False
+    assert len(result["reasons"]) == 1
+    reason = result["reasons"][0]
+    assert "criteria[1].verdict" in reason
+    assert "probably" in reason and "met" in reason and "not-met" in reason
+
+
+def test_validate_acceptance_rejects_empty_evidence_and_empty_criteria():
+    """Evidence is the judge's whole contribution: a blank string is a schema
+    violation, and so is a return with no criteria at all."""
+    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+        {"id": "AC1", "verdict": "met", "evidence": "   "},
+    ]})
+    assert result["passed"] is False
+    assert any("criteria[0].evidence" in r for r in result["reasons"])
+
+    empty = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": []})
+    assert empty["passed"] is False
+    assert any(r.startswith("criteria:") for r in empty["reasons"])
+
+
+def test_validate_rejects_non_object_payload_naming_the_payload():
+    """A bare string / list pasted by mistake is rejected at the top level for
+    every judgment kind — nothing downstream ever sees it."""
+    for kind in ("acceptance", "review", "simplify"):
+        result = gates.JUDGMENT[kind](_gate(kind), ["not", "an", "object"])
+        assert result["passed"] is False
+        assert any(r.startswith("payload:") for r in result["reasons"])
+
+
+def test_validate_review_empty_findings_is_a_clean_pass():
+    """No findings = a clean review. An empty list is valid (unlike acceptance's
+    criteria, where zero criteria means the judge answered nothing)."""
+    result = gates.JUDGMENT["review"](_gate("review"), {"findings": []})
+    assert result["passed"] is True and result["reasons"] == []
+
+
+def test_validate_review_blocks_on_configured_severities():
+    """The gate fails iff a finding's severity is in the gate's block_on."""
+    gate = _gate("review")
+    assert gate["block_on"] == ["critical", "major"]
+    blocked = gates.JUDGMENT["review"](gate, {"findings": [
+        {"severity": "nit", "finding": "naming"},
+        {"severity": "major", "finding": "unguarded index read"},
+    ]})
+    assert blocked["passed"] is False and blocked["reasons"] == []
+    clean = gates.JUDGMENT["review"](gate, {"findings": [
+        {"severity": "minor", "finding": "naming"},
+    ]})
+    assert clean["passed"] is True
+
+
+def test_validate_review_rejects_unknown_severity():
+    """`high` is the realistic enum drift (the triage signals doc names the same
+    trap) — rejected with the field path and the allowed set."""
+    result = gates.JUDGMENT["review"](_gate("review"), {"findings": [
+        {"severity": "high", "finding": "x"},
+    ]})
+    assert result["passed"] is False
+    assert any("findings[0].severity" in r and "high" in r for r in result["reasons"])
+
+
+def test_validate_simplify_accepts_the_trace_envelope():
+    """The simplify subagent returns the SAME envelope the trace stores
+    (`{outcome, cuts, kept, lines_delta}`) — one shape, validated at the seam
+    and carried into the trajectory unchanged."""
+    result = gates.JUDGMENT["simplify"](_gate("simplify"), {
+        "outcome": "applied", "lines_delta": -12,
+        "cuts": [{"what": "wrapper", "why": "one call site"}],
+        "kept": [{"what": "guard", "why": "trust boundary"}],
+    })
+    assert result["passed"] is True and result["reasons"] == []
+    assert "-12" in result["summary"]
+
+
+def test_validate_simplify_rejects_bad_outcome_and_non_int_lines_delta():
+    result = gates.JUDGMENT["simplify"](_gate("simplify"), {
+        "outcome": "shrunk", "lines_delta": "-12", "cuts": [], "kept": [],
+    })
+    assert result["passed"] is False
+    assert any("outcome" in r and "shrunk" in r for r in result["reasons"])
+    assert any("lines_delta" in r for r in result["reasons"])
+
+
+def test_validate_simplify_rejects_malformed_cut_entry():
+    result = gates.JUDGMENT["simplify"](_gate("simplify"), {
+        "outcome": "applied", "lines_delta": -3,
+        "cuts": [{"what": "wrapper"}], "kept": [],
+    })
+    assert result["passed"] is False
+    assert any("cuts[0].why" in r for r in result["reasons"])
+
+
+# --- the CLI seam -----------------------------------------------------------
+
+
+def _write_json(tmp_path, payload):
+    p = tmp_path / "return.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    return str(p)
+
+
+def test_validate_cli_exit_codes_mirror_check(tmp_path, capsys):
+    """rc 0 = gate passed, rc 1 = gate failed (fix round), rc 2 = schema
+    rejection (re-ask) — the same three-way convention `check` already uses."""
+    ok = _write_json(tmp_path, {"criteria": [
+        {"id": "AC1", "verdict": "met", "evidence": "e"}]})
+    assert cli.main(["validate", "--gate", "acceptance", "--return-json", ok]) == 0
+    assert json.loads(capsys.readouterr().out)["passed"] is True
+
+    failed = _write_json(tmp_path, {"criteria": [
+        {"id": "AC1", "verdict": "not-met", "evidence": "e"}]})
+    assert cli.main(["validate", "--gate", "acceptance", "--return-json", failed]) == 1
+    capsys.readouterr()
+
+    rejected = _write_json(tmp_path, {"criteria": [
+        {"id": "AC1", "verdict": "nope", "evidence": "e"}]})
+    assert cli.main(["validate", "--gate", "acceptance", "--return-json", rejected]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert any("criteria[0].verdict" in r for r in out["reasons"])
+
+
+def test_validate_cli_rejects_unparseable_json_as_a_re_ask(tmp_path, capsys):
+    """A return that is not even JSON is the first thing worth re-asking for —
+    rc 2 with a reason, not a traceback."""
+    p = tmp_path / "return.json"
+    p.write_text("Lean already. Ship.", encoding="utf-8")
+    rc = cli.main(["validate", "--gate", "simplify", "--return-json", str(p)])
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["reasons"] and "JSON" in out["reasons"][0]
+
+
+def test_validate_cli_refuses_deterministic_kinds(tmp_path, capsys):
+    """The mirror of `check`'s refusal: validate is for judgment kinds only,
+    and points the caller at the other verb."""
+    ok = _write_json(tmp_path, {"criteria": []})
+    rc = cli.main(["validate", "--gate", "tests", "--return-json", ok])
+    assert rc == 2
+    assert "check" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_validate_cli_unknown_gate_id(tmp_path, capsys):
+    ok = _write_json(tmp_path, {"criteria": []})
+    rc = cli.main(["validate", "--gate", "nope", "--return-json", ok])
+    assert rc == 2
+    assert "no gate" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_check_still_refuses_to_execute_judgment_kinds(tmp_path, capsys):
+    """#99 adds the validate verb; it does NOT give `check` a way to run a
+    judgment kind. The refusal is byte-identical."""
+    for gate_id in ("acceptance", "review", "simplify"):
+        assert cli.main(["check", "--gate", gate_id, "--cwd", str(tmp_path)]) == 2
+        err = json.loads(capsys.readouterr().out)["error"]
+        assert err.endswith("is LLM-judged — run it from the /issue-loop command, not the script")

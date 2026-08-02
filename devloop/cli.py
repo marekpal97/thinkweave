@@ -19,6 +19,8 @@ Subcommands:
   release  — drop the claim
   config     — print resolved loop config (defaults merged with loop.toml)
   check      — run one deterministic gate (kind: command | diff) and emit JSON
+  validate   — validate a judgment gate's subagent return (kind: acceptance |
+               review | simplify) against its schema; rejects for a re-ask
   prime      — assemble prior-trajectory prime context for an issue at claim
                time (reads the derived index read-only; holdout-aware)
   trajectory — assemble a per-issue trajectory payload for the memory feed
@@ -39,7 +41,7 @@ from devloop import dag, github, index_client, trajectory, triage
 
 # Imported by name: `main` binds a local `gates` in the trajectory branch,
 # which would shadow a module of that name for the whole function.
-from devloop.gates import DETERMINISTIC
+from devloop.gates import DETERMINISTIC, JUDGMENT, reject
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "docs" / "agents" / "loop.toml"
@@ -205,6 +207,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--cwd", default=".")
     p_check.add_argument("--base-ref", default="origin/main")
 
+    p_validate = sub.add_parser(
+        "validate", help="validate a judgment gate's subagent return", parents=[common])
+    p_validate.add_argument("--gate", required=True)
+    p_validate.add_argument("--return-json", required=True,
+                            help="file with the subagent's JSON return (schema per "
+                                 "kind: acceptance {criteria[]}, review {findings[]}, "
+                                 "simplify {outcome, lines_delta, cuts[], kept[]})")
+
     p_prime = sub.add_parser("prime", help="assemble prior-trajectory prime context for an issue", parents=[common])
     p_prime.add_argument("number", type=int)
     p_prime.add_argument("--run-id", required=True)
@@ -332,6 +342,27 @@ def main(argv: list[str] | None = None) -> int:
         result = execute(gate, cwd, args.base_ref)
         print(json.dumps(result, indent=2))
         return 0 if result["passed"] else 1
+    elif args.cmd == "validate":
+        gate = next((g for g in cfg["gates"] if g["id"] == args.gate), None)
+        if gate is None:
+            print(json.dumps({"error": f"no gate '{args.gate}' in config"}))
+            return 2
+        validate = JUDGMENT.get(gate["kind"])
+        if validate is None:
+            print(json.dumps({"error": f"gate kind '{gate['kind']}' is deterministic — run it with `check`, not `validate`"}))
+            return 2
+        try:
+            raw = json.loads(Path(args.return_json).read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            # A return that is not even JSON is the first thing worth re-asking
+            # for, so it takes the same rejection path as a schema violation.
+            result = reject(gate, [f"payload: not valid JSON ({e})"])
+        else:
+            result = validate(gate, raw)
+        print(json.dumps(result, indent=2))
+        # Same three-way convention as `check`, with rejection joining the
+        # error rung: 0 passed, 1 gate verdict failed (fix round), 2 re-ask.
+        return 2 if result["reasons"] else (0 if result["passed"] else 1)
     elif args.cmd == "prime":
         labels = (_split_csv(args.labels) if args.labels is not None
                   else github.fetch_labels(args.number))
