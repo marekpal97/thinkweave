@@ -56,7 +56,9 @@ DEFAULT_CONFIG: dict = {
         "claim_mode": "assign",  # assign: assignee IS the claim (wayfinder) | label
         "run_mode": "pass",      # pass: one frontier pass | exhaust: re-plan until dry
         "delivery": "pr-per-issue",  # pr-per-issue | stacked (one branch, one final PR)
-        "prime_holdout": 5,      # every Nth run dispatches unprimed (0 = never hold out)
+        # stateless 1-in-N-in-expectation sampling (sha1(run_id) % N == 0), not
+        # a counter over runs; 0 = never hold out
+        "prime_holdout": 5,
     },
     "tdd": {
         "mode": "auto",  # auto: enforced iff the baseline probe is green
@@ -219,7 +221,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_prime.add_argument("--labels", default=None,
                          help="comma-separated issue label names; omit to fetch via gh")
     p_prime.add_argument("--concepts", default=None,
-                         help="comma-separated match concepts; omit to derive from --labels")
+                         help="comma-separated ONTOLOGY concepts to match (what the "
+                              "write side tags trajectories with); omit to derive "
+                              "from --labels")
+    p_prime.add_argument("--query", default="",
+                         help="the issue's own text (title, or title + body) — the "
+                              "full-text retrieval leg, fused with --concepts")
     p_prime.add_argument("--db", default=None, help="index db path (opened read-only)")
     p_prime.add_argument("--vault", default=None,
                          help="vault root; resolves the index under the vault's "
@@ -235,6 +242,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          help="session buffer JSONL to append the loop_prime served-context event to")
     p_prime.add_argument("--session-id", default="",
                          help="loop session id, stamped into the served-context event")
+    p_prime.add_argument("--dry-run", action="store_true",
+                         help="print the payload and suppress the buffer write even "
+                              "with --buffer — inspect what prime would serve "
+                              "without logging it as served")
 
     p_triage = sub.add_parser("triage", help="classify a shipped PR into a risk lane", parents=[common])
     p_triage.add_argument("number", type=int, nargs="?", default=None,
@@ -371,11 +382,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.number, args.run_id, concepts, conn=conn, holdout=holdout,
                 limit=args.limit, budget_chars=args.budget_chars,
                 decisions=_split_csv(args.decisions) if args.decisions else None,
+                query=args.query,
             )
         finally:
             if conn is not None:
                 conn.close()
-        if args.buffer and payload["primed"] and payload["served"]:
+        if args.buffer and not args.dry_run and payload["primed"] and payload["served"]:
             trajectory.append_served_event(args.buffer, args.run_id, args.number,
                                            payload["served"], args.session_id)
         print(json.dumps(payload, indent=2))
