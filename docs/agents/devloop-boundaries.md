@@ -26,8 +26,8 @@ The loop is two planes with one seam between them:
   `thinkweave`, no LLM calls.
 
 The seam between the planes is the **CLI subcommand surface** (JSON on stdout,
-exit codes): `config · plan · claim · release · check · prime · triage ·
-trajectory`. That surface is the package's one external interface — the
+exit codes): `config · plan · claim · release · check · validate · prime ·
+triage · trajectory`. That surface is the package's one external interface — the
 orchestrator knows nothing else. #94 keeps it byte-compatible;
 `scripts/issue_loop.py` survives as a thin shim (§8).
 
@@ -135,22 +135,31 @@ detail}` — already what both executors emit and what the trajectory
 frontmatter stores; the shape is shared by both verbs so downstream consumers
 (`--gates-json`, the PR evidence table) never care which plane produced it.
 
-Structurally, `gates.py` carries the deterministic registry:
+Structurally, `gates.py` carries one registry per verb:
 
 ```python
 DETERMINISTIC = {"command": run_command_gate, "diff": run_diff_gate}
+JUDGMENT = {"acceptance": validate_acceptance, "review": validate_review,
+            "simplify": validate_simplify}
 ```
 
 The `check` subcommand dispatches **only** through `DETERMINISTIC`; any other
 kind — judgment-side or typo — gets the existing "LLM-judged — run it from
 the /issue-loop command" error (previously an `else` branch; the registry
 promotes it from error-message prose to structure, byte-identical output).
-Judgment kinds get **no rail-side artifact until #99**: the validator
-registry arrives with its validators and a `validate` dispatch, plus the
-disjointness/coverage tests that only then become falsifiable.
+The `validate` subcommand (#99) dispatches **only** through `JUDGMENT`, and
+the two registries are pinned disjoint + covering the shipped pipeline.
+
+A judgment result is `GateResult` plus `reasons`, and that key carries the
+whole execute-vs-validate difference: **empty `reasons` = a verdict**
+(`passed: false` is a fix round), **non-empty `reasons` = the return never
+became a verdict** — each entry names an offending field path and value, and
+the orchestrator re-asks the same subagent. `validate` maps this onto
+`check`'s exit codes with rejection on the error rung: `0` passed, `1` failed,
+`2` re-ask.
 
 *(Amended 2026-08-01, owner ruling during #94: the original draft shipped
-`JUDGMENT` as a data-only set now. Both the review and simplify gates
+`JUDGMENT` as a data-only set at #94 time. Both the review and simplify gates
 independently flagged that as the epic's own half-mechanism shape, and the
 owner sided with the anti-goal over the draft.)*
 
@@ -182,8 +191,10 @@ internal):
   buffer JSONL.
 
 Internal to `mint.py`: the trace normalizers (`_normalize_trace*`,
-`_as_int_or_none`) and the skill projection — #99 shrinks `_normalize_trace`
-to a documented backstop, single-file change. Internal to `prime.py`:
+`_as_int_or_none`) and the skill projection — since #99 `_normalize_trace` is
+a documented backstop (enforcement moved to the `validate` seam, §3) and the
+skill projection is scoped to *stage dispatches*, with generic capture-all
+parked in `issue-loop-memory.md`. Internal to `prime.py`:
 `is_holdout` (the sha1 holdout — `build_prime_payload` computes it; moved
 off the public list 2026-08-01, it had no external consumer),
 `_coerce_builds_on`, the outcome-rank table, `render_prime_block`,

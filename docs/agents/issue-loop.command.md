@@ -190,6 +190,32 @@ kind or typo alike — with `gate kind '<k>' is LLM-judged — run it from the
 shared `GateResult` shape, execute-vs-validate:
 `docs/agents/devloop-boundaries.md` §3.
 
+**A judgment gate's return is schema-checked before it becomes a verdict.**
+Each judgment kind has a JSON schema (in its bullet below). For `acceptance`
+and `review`, ask the subagent for exactly that object as its return. For
+`simplify` the **vendored** skill owns its output format (a prose delete-list),
+so you condense its delete-list + tally into the envelope yourself — the same
+one §3's `trace` stores. Either way, write the JSON to a file and hand it to
+the rail before acting on it:
+
+```bash
+python scripts/issue_loop.py validate --gate <id> --return-json <return-file>
+```
+
+The rail emits the same `GateResult` the deterministic gates emit, plus
+`reasons`, and exits:
+
+- `0` — schema-valid and the gate **passed**.
+- `1` — schema-valid and the gate **failed**: a real verdict, so run a fix
+  round per the failure flow below.
+- `2` — **schema-rejected**: `reasons` names each offending field path and
+  value (`criteria[1].verdict: 'probably' is not one of met | not-met`).
+  SendMessage those reasons back to the same subagent and **re-ask** — never
+  hand-fix its return, never read a verdict out of a rejected one, and never
+  pass it on to `--gates-json` / `--trace-json`. If the re-ask still comes back
+  rejected, treat the gate as failed and route to human with the reasons as
+  the evidence.
+
 - `kind: command` / `kind: diff` — deterministic, via the rail:
   ```bash
   python scripts/issue_loop.py check --gate <id> --cwd <worktree> --base-ref origin/main
@@ -198,13 +224,16 @@ shared `GateResult` shape, execute-vs-validate:
   context). Give it: the issue's acceptance criteria, `git diff
   origin/main...HEAD` from the worktree, the test output, and — when
   `dispatch.persona` is on — the **north-star block only** (§1b; it judges
-  against the goal, not the persona). It returns one
-  verdict per criterion (`met` / `not-met` + one-line evidence). The gate
-  passes per its `threshold` (`all` or `majority`).
+  against the goal, not the persona). It returns one verdict per criterion,
+  as `{"criteria": [{"id": "AC1", "verdict": "met", "evidence": "<one line>"}]}`
+  — `verdict` is `"met"` or `"not-met"`, `evidence` is never blank. `validate`
+  applies the gate's `threshold` (`all` or `majority`) to compute the verdict.
 - `kind: review` — dispatch a **fresh reviewer subagent** (code-reviewer
   type) on the diff, with — when `dispatch.persona` is on — the
-  **north-star block only** (§1b). It returns findings with severities
-  (critical/major/minor/nit). The gate fails if any finding's severity is in
+  **north-star block only** (§1b). It returns
+  `{"findings": [{"severity": "minor", "finding": "<prose>"}]}` — `severity` is
+  one of `"critical"` / `"major"` / `"minor"` / `"nit"`, and an empty list is a
+  clean review. The gate fails if any finding's severity is in
   `block_on`. With `smells_baseline = true`, the reviewer also checks the
   Fowler smell baseline (mysterious name, duplicated code, feature envy,
   data clumps, primitive obsession, repeated switches, shotgun surgery,
@@ -229,8 +258,13 @@ shared `GateResult` shape, execute-vs-validate:
    `git diff origin/main...HEAD`; in stacked mode
    `git diff <tip-before-this-issue>...HEAD`, per §1e's scoped-diffs bullet.
    It returns a delete-list (one line per cut) and a
-   `net: -<N> lines possible` tally. If it says `Lean already. Ship.`, skip the
-   rest — note "simplify: lean already" in the PR body and move on.
+   `net: -<N> lines possible` tally, in the vendored skill's own format.
+   Condense that into the gate's envelope — `{"outcome": "applied",
+   "lines_delta": -<N>, "cuts": [{"what": …, "why": …}], "kept": [{…}]}`, the
+   same one §3's `trace` stores — and `validate` it. `outcome` is `"lean"` when
+   the subagent said `Lean already. Ship.` (skip the rest — note "simplify:
+   lean already" in the PR body and move on); `"applied"` when you apply the
+   delete-list; `"reverted"` is step 5's terminal value after a red re-verify.
 3. **Apply.** Apply the delete-list as a single commit on the branch.
 4. **Re-verify.** Re-run the gates named in the gate's `rerun` key (`tests`,
    then `acceptance`) on the shrunk diff, in order — `tests` via the rail

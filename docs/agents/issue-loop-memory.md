@@ -70,6 +70,16 @@ skill invocation (SkillOpt raw material, #64), `--skill-centric` adds the
 `skill-invocation` tag alongside `loop-run`, so
 `weave_search(tags=[skill-invocation], concepts=[…])` returns
 skill-attributed records.
+*Scope, settled 2026-08-02 (issue #99): stage dispatches only.* `skills[]`
+records the stage skills **this loop dispatched**; it is deliberately not a
+generic capture of every Skill invocation in the run. That generalization is
+**parked** — capture-all needs a new mechanism (a Skill-tool hook or transcript
+scraping) and has no live reader today, and a capability ships with its consumer
+or not at all. *Unpark trigger:* a consumer that needs invocations the loop did
+not itself dispatch — concretely #64's SkillOpt, asking which invocations
+correlate with rework. Until then nothing implies capture-all exists:
+`--skills-json` is the orchestrator's stage log and `_normalize_skill` projects
+exactly its four fields.
 
 **Semantic execution trace + Lessons retirement (issue #85).** Two register
 collisions closed at once. (1) The trajectory's `## Lessons` section duplicated
@@ -95,9 +105,13 @@ trace:
 ```
 
 The orchestrator condenses these envelopes **from the gate agents' own reports —
-no new model call** (`--trace-json`, §3); the rail (`_normalize_trace`) only
-accepts and shapes them (strict on type — a non-dict trace is rejected; lenient
-on keys — unknowns dropped, each item projected). Counts (`lines_delta`,
+no new model call** (`--trace-json`, §3). Since issue #99 they are schema-checked
+where the subagent returns them — `issue_loop.py validate --gate <id>` rejects a
+malformed return with per-field reasons so the orchestrator re-asks — and
+`_normalize_trace` is a **documented backstop only**: it still shapes what
+arrives (strict on type — a non-dict trace is rejected; lenient on keys —
+unknowns dropped, each item projected), but for legacy/degraded input, not as a
+second enforcement point. Counts (`lines_delta`,
 `flipped_by_round`) are filter/join keys, not signal. The `trace` is the
 **machine-readable half of the tracker's gate evidence, not a second prose
 owner** — it duplicates neither the tracker's prose nor the trajectory body. It
