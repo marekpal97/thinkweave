@@ -433,6 +433,33 @@ class TestUninstallAndPauseRoundTrip:
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == before
         assert not (codex_home / "thinkweave_paused.json").exists()
 
+    def test_pause_names_the_file_it_actually_edited(
+        self, codex_home: Path, installable, capsys
+    ):
+        from thinkweave.surfaces.cli import pause as pause_mod
+
+        _install(no_claude_md=False)
+        pause_mod.cmd_pause(argparse.Namespace(status=False))
+        assert "CLAUDE.md" not in capsys.readouterr().out
+
+    def test_resume_honours_a_marker_written_before_the_rename(
+        self, codex_home: Path, installable
+    ):
+        """Machines paused by an older version have `CLAUDE.md block` sitting
+        in their marker — resuming must still restore the block."""
+        import json
+
+        from thinkweave.surfaces.cli import pause as pause_mod
+
+        (codex_home / "thinkweave_paused.json").write_text(
+            json.dumps({"paused_at": "2026-01-01", "removed": ["CLAUDE.md block"]}),
+            encoding="utf-8",
+        )
+        pause_mod.cmd_resume(argparse.Namespace())
+        assert install_mod.CLAUDE_MD_BLOCK_START in (
+            codex_home / "AGENTS.md"
+        ).read_text(encoding="utf-8")
+
 
 # --------------------------------------------------------------------------- #
 # 3. mcp-doctor

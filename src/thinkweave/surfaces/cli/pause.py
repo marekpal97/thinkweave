@@ -31,6 +31,10 @@ from thinkweave.surfaces.cli.install import (
 )
 from thinkweave.surfaces.hooks.install import install_hooks, uninstall_hooks
 
+#: How the marker names the instructions-file block. Harness-neutral, because
+#: the file it lives in is per-harness (CLAUDE.md / AGENTS.md).
+INSTRUCTIONS_BLOCK = "instructions block"
+
 
 def cmd_pause(args: argparse.Namespace) -> None:
     if args.status:
@@ -59,7 +63,7 @@ def cmd_pause(args: argparse.Namespace) -> None:
     if _remove_mcp_entry():
         removed.append("MCP entry")
     if _remove_claude_md_block():
-        removed.append("CLAUDE.md block")
+        removed.append(INSTRUCTIONS_BLOCK)
 
     _marker().parent.mkdir(parents=True, exist_ok=True)
     _marker().write_text(
@@ -97,7 +101,9 @@ def cmd_resume(args: argparse.Namespace) -> None:
         install_hooks(project_dir="", scope="user", dry_run=False)
     if "MCP entry" in removed:
         _restore_mcp_entry()
-    if "CLAUDE.md block" in removed:
+    # "CLAUDE.md block" is the pre-#106 spelling — markers written by an
+    # older version are still on disk on paused machines.
+    if {INSTRUCTIONS_BLOCK, "CLAUDE.md block"} & set(removed):
         _install_claude_md_block(yes=True)
 
     _marker().unlink()

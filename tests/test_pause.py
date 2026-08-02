@@ -137,7 +137,9 @@ class TestPauseResumeRoundTrip:
         data = json.loads(fake_claude_home["marker"].read_text())
         assert "user-scope hooks" in data["removed"]
         assert "MCP entry" in data["removed"]
-        assert "CLAUDE.md block" in data["removed"]
+        # Harness-neutral since #106 — the file behind it is CLAUDE.md on
+        # Claude Code and AGENTS.md on Codex.
+        assert pause_mod.INSTRUCTIONS_BLOCK in data["removed"]
 
         pause_mod.cmd_pause(_ns(status=True))
         out = capsys.readouterr().out
