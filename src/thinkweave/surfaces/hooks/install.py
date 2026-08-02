@@ -140,16 +140,6 @@ def _settings_path_for_scope(scope: str, project_dir: str = "") -> Path:
     to mirror what the plugin manifest provides for free.
     """
     if scope == "project":
-        profile = active_harness()
-        if profile.hooks_global_only:
-            print(
-                f"error: the {profile.id!r} harness only fires hooks declared in its\n"
-                f"machine-scope file ({profile.user_settings}). A repo-local entry is\n"
-                "accepted by the config parser and then silently never runs.\n"
-                "Install with `--scope user` instead.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
         return _settings_path(project_dir)
     if scope == "user":
         return active_harness().user_settings
@@ -287,6 +277,20 @@ def install_hooks(
             f"error: the {profile.id!r} harness has no lifecycle hooks, so there is\n"
             "nothing to install. Run `/wrap` explicitly at the end of a session\n"
             "instead — it does the same extraction the Stop hook would trigger.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Same "never write a file that can't fire" rule, one scope down. Refused
+    # on the install side only: `uninstall --scope project` is exactly how a
+    # user clears the stray repo-local entries `weave doctor --mcp` flags, so
+    # refusing there would block the remedy with install-phrased advice.
+    if scope == "project" and profile.hooks_global_only:
+        print(
+            f"error: the {profile.id!r} harness only fires hooks declared in its\n"
+            f"machine-scope file ({profile.user_settings}). A repo-local entry is\n"
+            "accepted by the config parser and then silently never runs.\n"
+            "Install with `--scope user` instead.",
             file=sys.stderr,
         )
         sys.exit(1)

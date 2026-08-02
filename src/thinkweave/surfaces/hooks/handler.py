@@ -502,6 +502,16 @@ def _detect_project(hook_input: dict) -> str:
     return cwd_path.name
 
 
+# Directory markers — matched anywhere in the path, since every file under
+# one is the harness's own furniture.
+_INTERNAL_DIRS = (".claude/", ".codex/", ".weave/")
+# Whole-filename markers. `settings.json` stays here for the bare-root case;
+# `.claude/settings.json` is already covered above.
+_INTERNAL_FILES = frozenset(
+    {"claude.md", "claude.local.md", "agents.md", "settings.json"}
+)
+
+
 def _is_internal(path: str) -> bool:
     """Check if a path is an internal/config file we should ignore.
 
@@ -516,20 +526,15 @@ def _is_internal(path: str) -> bool:
     Note ``hooks.json`` is deliberately absent: thinkweave's own canonical
     ``hooks/hooks.json`` is project work. ``.codex/`` already covers both the
     repo-local and the ``$CODEX_HOME`` copies of Codex's.
+
+    Filenames match as a whole path component, not as a substring: the latter
+    read ``docs/subagents.md`` and ``multi-agents.md`` as Codex's ``AGENTS.md``
+    and dropped them from ``files_touched`` silently.
     """
-    p = path.lower()
-    return any(
-        x in p
-        for x in (
-            ".claude/",
-            "claude.md",
-            "claude.local.md",
-            ".codex/",
-            "agents.md",
-            ".weave/",
-            "settings.json",
-        )
-    )
+    p = path.lower().replace("\\", "/")
+    if any(d in p for d in _INTERNAL_DIRS):
+        return True
+    return p.rsplit("/", 1)[-1] in _INTERNAL_FILES
 
 
 # ---------------------------------------------------------------------------

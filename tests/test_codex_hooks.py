@@ -233,6 +233,38 @@ class TestGlobalScopeOnly:
         err = capsys.readouterr().err
         assert "--scope user" in err
 
+    def test_uninstall_at_project_scope_is_not_refused(
+        self, codex_home: Path, tmp_path: Path, capsys
+    ):
+        """`weave doctor --mcp` flags stray repo-local `.codex/hooks.json`
+        entries; project-scope uninstall is the command that clears them, so
+        the install-side refusal must not block it."""
+        from thinkweave.surfaces.hooks.install import uninstall_hooks
+
+        project = tmp_path / "project"
+        (project / ".codex").mkdir(parents=True)
+        (project / ".codex" / "hooks.json").write_text(
+            json.dumps({
+                "hooks": {
+                    "Stop": [{
+                        "matcher": "*",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "uv run -m thinkweave.surfaces.hooks.handler stop",
+                        }],
+                    }]
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        uninstall_hooks(scope="project", project_dir=str(project))
+
+        left = json.loads(
+            (project / ".codex" / "hooks.json").read_text(encoding="utf-8")
+        )
+        assert not left.get("hooks", {}).get("Stop")
+
 
 # ---------------------------------------------------------------------------
 # The envelope: driving the (harness-agnostic) handler with Codex payloads
@@ -341,6 +373,9 @@ class TestIgnorePaths:
             "src/thinkweave/core/harness.py",
             "docs/HARNESSES.md",
             "tests/test_codex_hooks.py",
+            # A substring match read these as Codex's own AGENTS.md.
+            "docs/subagents.md",
+            "multi-agents.md",
         ],
     )
     def test_project_work_is_not_internal(self, path: str):
