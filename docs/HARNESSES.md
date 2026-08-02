@@ -45,7 +45,9 @@ refused). `[manual]` project `.codex/` layers load only for *trusted* projects;
 openai/codex#17532 additionally reports repo-local hooks not firing in
 interactive sessions. Two ways to end up with config that parses and never
 runs. `weave doctor --mcp` gains a `hook scope` check that flags hooks found in
-either repo-local representation.
+either repo-local representation. The refusal is install-side only —
+`weave hooks uninstall --scope project` is how you clear what that check
+flags.
 
 **Event names.** `[manual]``[binary]` Identical to Claude Code's:
 `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PreCompact`, `PostCompact`,
@@ -199,7 +201,15 @@ closed `RETRIEVAL_TOOLS` set already holds, and the handler is tested against a
 Codex-shaped MCP envelope, so the gate is verified at that seam. What is *not*
 measured is Codex's real `tool_response` shape for an MCP call — the 0.146.0
 schema types it "any JSON" `[binary]` and no MCP tool ran in a credential-less
-session. `_extract_tool_output_text` therefore stopped hardcoding a key list
-and recovers text from any shape; if a live run shows Codex wrapping results in
-something that still defeats note-id extraction, the symptom will be retrieval
-rows with an empty `returned_ids`, and that is where to look.
+session. `retrieval_log.response_text` therefore hardcodes no key list and
+harvests every string in the object, whatever its shape; if a live run shows
+Codex wrapping results in something that still defeats note-id extraction, the
+symptom will be retrieval rows with an empty `returned_ids`, and that is where
+to look.
+
+That recovery is scoped to the retrieval path only. The action path keeps
+`_extract_tool_output_text`, which recognises `stdout`/`stderr` and returns `""`
+for anything else — Claude Code's `Write`/`Edit` `tool_response` echoes back the
+file just written (`content`, `originalFile`), so mining it for text would feed
+whole files to `_extract_insight_blocks` and re-capture any `★ Insight` block
+living in the source on every single touch.
