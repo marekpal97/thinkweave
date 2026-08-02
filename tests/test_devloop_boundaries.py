@@ -8,8 +8,8 @@ Two contracts the spec states in prose and this file makes falsifiable:
    seam appear in one test; the hand-built-schema tests in test_issue_loop.py
    stay as fast unit checks.
 2. **Importer allowlist** — which devloop modules may import ``sqlite3``:
-   ``{index_client, trajectory.prime}`` after #94, tightened to
-   ``{index_client}`` by #100, so the transition is enforced not remembered.
+   ``{index_client}`` since #100 moved prime's SQL into the seam, so the
+   singleton is enforced not remembered.
 """
 
 from __future__ import annotations
@@ -65,6 +65,47 @@ def test_index_schema_pin_against_the_real_indexer(vault_factory):
         conn.close()
 
 
+def test_fts_query_serves_when_the_concepts_are_dead_vocabulary(vault_factory):
+    """#100's dead-join fix, pinned against an index the real indexer built.
+
+    The diagnosed failure (owner, 2026-08-01): the write side speaks ontology,
+    the read side was handed GitHub labels, so ``query_trajectories([labels])``
+    matched 0 of 20 live trajectory notes. Prime v3 fuses an FTS leg over
+    ``notes_fts``, so the issue's own text finds the trajectory the dead
+    concepts miss — this also pins the fts5 table + the ``rank`` ordering the
+    fusion leg reads.
+    """
+    tv = vault_factory()
+    insight_path = tv.vault.create_note(NoteType.NOTE, "portable lesson",
+                                        body="Fuse the FTS leg with concepts.")
+    insight_id = tv.vault.read_note(insight_path).id
+    traj_path = tv.vault.create_note(
+        NoteType.NOTE,
+        "loop trajectory #100",
+        body="## What\nPrime v3 fuses FTS with concept match.\n",
+        tags=["loop-run"],
+        extra_frontmatter={"concepts": ["devloop-schema-pin"], "issue": 100,
+                           "outcome": "shipped", "builds_on": [insight_id]},
+    )
+    traj_id = tv.vault.read_note(traj_path).id
+    tv.indexed()
+
+    conn = index_client.open_ro(index_client.resolve_db_path(None, str(tv.dir)))
+    try:
+        labels = ["enhancement", "ready-for-agent", "track:E-devloop"]
+        # The dead join: GH labels as concepts match nothing (they were never
+        # written as concepts — the strict gate shunts them to proposed).
+        assert prime.query_trajectories(conn, labels, 3) == []
+        # Same dead concepts + the issue's text as the FTS query → serves.
+        hits = prime.query_trajectories(
+            conn, labels, 3, query="W4a: prime v3 — fuse FTS with concept match")
+        assert [h["id"] for h in hits] == [traj_id]
+        assert [i["id"] for i in hits[0]["insights"]] == [insight_id]
+        assert "Fuse the FTS leg with concepts." in hits[0]["insights"][0]["body"]
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # 2. Importer allowlist — the sqlite3 blast radius, enforced
 
@@ -79,12 +120,12 @@ def _imports_sqlite3(tree: ast.AST) -> bool:
     return False
 
 
-def test_only_the_index_seam_and_prime_import_sqlite3():
+def test_index_client_is_the_only_sqlite3_importer():
     pkg_root = Path(devloop.__file__).resolve().parent
     importers = set()
     for py in pkg_root.rglob("*.py"):
         if _imports_sqlite3(ast.parse(py.read_text(encoding="utf-8"))):
             rel = py.relative_to(pkg_root.parent).with_suffix("")
             importers.add(".".join(p for p in rel.parts if p != "__init__"))
-    # #100 moves prime's SQL into index_client and tightens this to a singleton.
-    assert importers == {"devloop.index_client", "devloop.trajectory.prime"}
+    # #100 moved prime's SQL into index_client — the seam is a singleton.
+    assert importers == {"devloop.index_client"}

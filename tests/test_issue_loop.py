@@ -827,7 +827,7 @@ def _seed_index_db(path, *, note_id, title, concepts, body, tags=("loop-run",),
     conn = _sqlite3.connect(path)
     conn.executescript(
         "CREATE TABLE notes (id TEXT PRIMARY KEY, type TEXT, title TEXT, path TEXT,"
-        " date TEXT, frontmatter TEXT, body_text TEXT);"
+        " date TEXT, frontmatter TEXT, body_text TEXT, tags TEXT);"
         "CREATE TABLE note_tags (note_id TEXT, tag TEXT);"
         "CREATE TABLE note_concepts (note_id TEXT, concept TEXT);"
     )
@@ -1025,6 +1025,240 @@ def test_build_prime_payload_serves_insight_bodies_end_to_end(tmp_path):
     assert payload["primed"] is True
     assert payload["served"] == ["n-ins1"]
     assert "Serve insight bodies via builds_on links." in payload["block"]
+
+
+# ---------------------------------------------------------------------------
+# Prime v3 (issue #100) — FTS+concept fusion through the index_client seam.
+# The write side speaks ontology, the orchestrator held GitHub labels, so the
+# concept-only join was dead by construction; an FTS leg over the issue's own
+# text is the second retriever, fused by RRF (k=60, the retrieval doctrine's
+# constant).
+
+
+def _build_fts(path):
+    """Mirror the real index's ``notes_fts`` (src/thinkweave/core/indexer.py:215
+    — fts5, external content over ``notes``) onto a hand-seeded db, then fill it
+    from the rows already inserted. The FTS leg has nothing to MATCH without it."""
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(path)
+    conn.executescript(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5("
+        " id UNINDEXED, title, body_text, tags, content='notes',"
+        " content_rowid='rowid', tokenize=\"unicode61 remove_diacritics 2"
+        " tokenchars '-_'\");"
+    )
+    conn.execute("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')")
+    conn.commit()
+    conn.close()
+
+
+def _fusion_db(tmp_path):
+    """Two concept-matched trajectories (A newer than B, so concept-only order is
+    [A, B]) plus C, which carries neither the concept nor a linked insight of its
+    own — only the FTS query reaches it."""
+    db = tmp_path / "index.db"
+    _seed_index_db(db, note_id="n-a", title="alpha rail", concepts=["retrieval"],
+                   body="## What\nunrelated wording.\n", date="2026-07-18",
+                   frontmatter={"issue": 1, "outcome": "shipped",
+                                "builds_on": ["n-ins-a"]})
+    _add_note(db, note_id="n-ins-a", title="lesson", body="lesson A")
+    _add_note(db, note_id="n-b", title="beta rail", concepts=["retrieval"],
+              tags=["loop-run"], date="2026-07-10",
+              body="## What\nfuse the retrieval legs.\n",
+              frontmatter={"issue": 2, "outcome": "shipped",
+                           "builds_on": ["n-ins-b"]})
+    _add_note(db, note_id="n-ins-b", title="lesson", body="lesson B")
+    _add_note(db, note_id="n-c", title="gamma rail", tags=["loop-run"],
+              date="2026-07-09", body="## What\nfuse the retrieval legs too.\n",
+              frontmatter={"issue": 3, "outcome": "shipped",
+                           "builds_on": ["n-ins-c"]})
+    _add_note(db, note_id="n-ins-c", title="lesson", body="lesson C")
+    _build_fts(db)
+    return db
+
+
+def test_query_trajectories_rrf_fusion_reorders_the_concept_leg(tmp_path):
+    """A note both legs return outranks a note only the concept leg returns,
+    even when the latter tops the concept leg on recency.
+
+    Hand-computed from RRF (k=60, 1-indexed ranks): A is concept rank 1 and
+    absent from the FTS leg → 1/61 = 0.016393. B is concept rank 2 and present
+    in the FTS leg at some rank r → 1/62 + 1/(60+r) ≥ 0.016129 + 0.000264 for
+    any r a 3-row index can produce, so B > A. Concept-only order is [A, B]."""
+    db = _fusion_db(tmp_path)
+    conn = index_client.open_ro(str(db))
+    try:
+        assert [h["id"] for h in prime.query_trajectories(conn, ["retrieval"], 3)] \
+            == ["n-a", "n-b"]
+        fused = prime.query_trajectories(conn, ["retrieval"], 3,
+                                         query="fuse the retrieval legs")
+        assert [h["id"] for h in fused] == ["n-b", "n-a", "n-c"]
+    finally:
+        conn.close()
+
+
+def test_query_trajectories_degrades_each_leg_independently(tmp_path):
+    """Empty query → concept-only. Empty concepts + query → FTS-only (the
+    GH-label-only path the orchestrator hits). Both empty → nothing at all."""
+    db = _fusion_db(tmp_path)
+    conn = index_client.open_ro(str(db))
+    try:
+        assert [h["id"] for h in prime.query_trajectories(conn, ["retrieval"], 3,
+                                                          query="")] == ["n-a", "n-b"]
+        fts_only = prime.query_trajectories(conn, [], 3,
+                                            query="fuse the retrieval legs")
+        assert {h["id"] for h in fts_only} == {"n-b", "n-c"}  # n-a has no match
+        assert prime.query_trajectories(conn, [], 3, query="") == []
+    finally:
+        conn.close()
+
+
+def test_query_trajectories_fts_leg_never_crashes_the_concept_leg(tmp_path):
+    """The query is user-shaped (an issue title/body). fts5 operator soup and a
+    query with no indexable terms must degrade to concept-only, and so must an
+    index whose notes_fts is missing entirely (older/partial vault)."""
+    db = _fusion_db(tmp_path)
+    conn = index_client.open_ro(str(db))
+    try:
+        for hostile in ('"" AND (NEAR', "*", "^ ~ !", "   "):
+            assert [h["id"] for h in prime.query_trajectories(
+                conn, ["retrieval"], 3, query=hostile)] == ["n-a", "n-b"]
+    finally:
+        conn.close()
+    no_fts = tmp_path / "no-fts.db"
+    _seed_index_db(no_fts, note_id="n-a", title="alpha", concepts=["retrieval"],
+                   body="## What\nfuse the retrieval legs.\n",
+                   frontmatter={"issue": 1, "outcome": "shipped",
+                                "builds_on": ["n-ins-a"]})
+    _add_note(no_fts, note_id="n-ins-a", title="lesson", body="lesson A")
+    conn = index_client.open_ro(str(no_fts))
+    try:
+        hits = prime.query_trajectories(conn, ["retrieval"], 3,
+                                        query="fuse the retrieval legs")
+        assert [h["id"] for h in hits] == ["n-a"]
+    finally:
+        conn.close()
+
+
+def test_query_trajectories_outcome_rank_wins_over_the_fused_order(tmp_path):
+    """AC3: fusion decides candidate order, the outcome weighting still decides
+    final order — a merged-clean trajectory sorts above a reworked one that the
+    fused ranking put first."""
+    db = tmp_path / "index.db"
+    _seed_index_db(db, note_id="n-rew", title="reworked", concepts=["retrieval"],
+                   body="## What\nfuse the retrieval legs.\n", date="2026-07-18",
+                   frontmatter={"issue": 1, "outcome": "shipped",
+                                "outcome_label": "reworked",
+                                "builds_on": ["n-ins-rew"]})
+    _add_note(db, note_id="n-ins-rew", title="lesson", body="rework lesson")
+    _add_note(db, note_id="n-clean", title="clean", concepts=["retrieval"],
+              tags=["loop-run"], date="2026-07-10", body="## What\nplain.\n",
+              frontmatter={"issue": 2, "outcome": "shipped",
+                           "outcome_label": "merged-clean",
+                           "builds_on": ["n-ins-clean"]})
+    _add_note(db, note_id="n-ins-clean", title="lesson", body="clean lesson")
+    _build_fts(db)
+    conn = index_client.open_ro(str(db))
+    try:
+        hits = prime.query_trajectories(conn, ["retrieval"], 3,
+                                        query="fuse the retrieval legs")
+    finally:
+        conn.close()
+    assert [h["id"] for h in hits] == ["n-clean", "n-rew"]
+
+
+def test_prime_dry_run_prints_the_block_and_writes_no_buffer(tmp_path, capsys):
+    """AC6: --dry-run is the mechanic's proof mode — the full payload (block
+    included) prints, and the buffer write is suppressed regardless of
+    --buffer, so a dry run against a live index leaves zero side effects."""
+    db = _fusion_db(tmp_path)
+    buf = tmp_path / "buffer" / "ses-loop123.jsonl"
+    rc = cli.main([
+        "prime", "57", "--run-id", "loop-run-0", "--concepts", "retrieval",
+        "--query", "fuse the retrieval legs", "--db", str(db),
+        "--buffer", str(buf), "--dry-run",
+    ])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["primed"] is True
+    assert payload["query"] == "fuse the retrieval legs"
+    assert "lesson B" in payload["block"]
+    assert not buf.exists()  # suppressed despite --buffer
+
+
+def test_prime_flags_the_pre_v3_labels_only_invocation(tmp_path, capsys):
+    """The pre-#100 call shape (`--labels`, no `--query`) reaches exactly the
+    dead concept-only join #100 fixed — GitHub labels are never written as
+    concepts, so it matches nothing. It must not report as a benign empty
+    match: the note names the calling convention, so an inert rail on the live
+    loop is visible rather than plausible. The v3 shape is not flagged."""
+    absent = str(tmp_path / "absent.db")
+    assert cli.main(["prime", "100", "--run-id", "loop-run-0", "--db", absent,
+                     "--labels", "enhancement,ready-for-agent"]) == 0
+    flagged = json.loads(capsys.readouterr().out)
+    assert flagged["primed"] is False
+    assert "--query" in flagged["note"] and "ontology" in flagged["note"]
+    # The degradation reason survives alongside the convention warning.
+    assert "no matching prior trajectories" in flagged["note"]
+
+    assert cli.main(["prime", "100", "--run-id", "loop-run-0", "--db", absent,
+                     "--concepts", "agent-harness"]) == 0
+    assert "--query" not in json.loads(capsys.readouterr().out)["note"]
+    # A labels call that DOES pass the text leg is the fixed shape, not the
+    # dead one — the FTS leg carries retrieval, so no warning.
+    assert cli.main(["prime", "100", "--run-id", "loop-run-0", "--db", absent,
+                     "--labels", "enhancement", "--query", "some issue text"]) == 0
+    assert "--query" not in json.loads(capsys.readouterr().out)["note"]
+
+
+def test_prime_erroring_fts_does_not_read_as_a_clean_empty_match(tmp_path):
+    """FTS is load-bearing now, so a *broken* notes_fts must not hide behind
+    "no matching prior trajectories". An absent table stays best-effort (an old
+    index still primes on concepts), but a table that errors with nothing else
+    retrieved degrades with the index-error note. Never a crash either way."""
+    db = tmp_path / "index.db"
+    _seed_index_db(db, note_id="n-x", title="x", concepts=["retrieval"],
+                   body="## What\nfuse the retrieval legs.\n",
+                   frontmatter={"issue": 1, "outcome": "shipped",
+                                "builds_on": ["n-ins-x"]})
+    _add_note(db, note_id="n-ins-x", title="lesson", body="lesson X")
+    # A plain table where fts5 is expected: MATCH raises OperationalError.
+    wconn = sqlite3.connect(str(db))
+    wconn.execute("CREATE TABLE notes_fts (id TEXT, title TEXT, body_text TEXT)")
+    wconn.commit()
+    wconn.close()
+    conn = index_client.open_ro(str(db))
+    try:
+        # Concept leg retrieved something → the broken FTS leg stays silent.
+        served = prime.build_prime_payload(
+            1, "loop-run-0", ["retrieval"], conn=conn, holdout=5,
+            query="fuse the retrieval legs")
+        # Nothing retrieved at all → the FTS failure reaches the note.
+        empty = prime.build_prime_payload(
+            1, "loop-run-0", ["no-such-concept"], conn=conn, holdout=5,
+            query="fuse the retrieval legs")
+    finally:
+        conn.close()
+    assert served["primed"] is True and served["served"] == ["n-ins-x"]
+    assert empty["primed"] is False
+    assert "unread" in empty["note"].lower()
+
+
+def test_prime_serves_file_anchored_decisions_without_any_trajectory(tmp_path, capsys):
+    """AC7: the orchestrator-resolved --decisions ids (the file-anchored rung of
+    the granularity ladder) still land in `served` and in the block, and they
+    prime a run on their own — the retrieval legs finding nothing does not
+    discard them."""
+    rc = cli.main([
+        "prime", "100", "--run-id", "loop-run-0", "--concepts", "retrieval",
+        "--query", "some issue text", "--decisions", "dec-1,dec-2",
+        "--db", str(tmp_path / "absent.db"),
+    ])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["primed"] is True
+    assert payload["served"] == ["dec-1", "dec-2"]
+    assert "Prior decisions for touched files: dec-1, dec-2" in payload["block"]
 
 
 # --- Review round 1 (issue #85) — hardening the prime v2 seams --------------

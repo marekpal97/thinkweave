@@ -130,14 +130,24 @@ without committing to its schema now.
 **Serving trajectories back into the implementer (epic #54 / #57).** Capture
 without serving is a dead end. Claim-time priming is thinkweave's native
 `bd prime`: before dispatching issue N's implementer, `issue_loop.py prime <N>
---run-id <id> --labels …` reads the derived index read-only, matches
-`[loop-run]` trajectory notes by the issue's concepts, and emits a
-budget-capped block of their **reusable color** that the orchestrator splices
+--run-id <id> --concepts <ontology terms> --query "<the issue's text>"` reads
+the derived index read-only, retrieves `[loop-run]` trajectory notes, and emits
+a budget-capped block of their **reusable color** that the orchestrator splices
 into the implementer prompt, adjacent to the standing `decisions_for_file`
 context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
 
+**Prime v3 (issue #100): two retrieval legs, fused.** Retrieval is concept
+match *and* full-text match over the issue's own words, fused by RRF (k=60) in
+`devloop/index_client.py`. Concept-only was dead by construction — the write
+side tags trajectories with ontology concepts while the rail was handed GitHub
+labels, so the join matched 0 of 20 live trajectory notes and every run before
+#100 was effectively unprimed. The orchestrator maps the issue to ontology
+terms and passes the issue text; a labels-only call with no `--query` is
+stamped with a warning in the payload's `note` rather than reported as a benign
+empty match.
+
 **Prime v2 (issue #85): serve insight bodies via links, weighted by outcome.**
-For each concept-matched trajectory, prime follows its `builds_on` links to the
+For each matched trajectory, prime follows its `builds_on` links to the
 linked **insight notes** and serves *their bodies* (the portable lesson's only
 home). A trajectory whose links resolve to nothing carries no reusable color and
 is skipped. When the matched set carries
@@ -156,10 +166,12 @@ pure recency. Served ids are the *insight* ids — that is what the run received
   prompt-time retrieval uses; context_served stays a pure projection of
   `retrieval_log.jsonl`). Served ids are recoverable per run from the index by
   both routes.
-- **Deliberate holdout.** Every `prime_holdout`th run (default 5th; `loop.toml`
-  knob, `--set`-overridable) dispatches **unprimed**, marked `primed: false`
-  with no served ids. The holdout is deterministic per run-id
-  (`sha1(run_id) mod N == 0`, not random). Loop runs are numerous, comparable,
+- **Deliberate holdout.** Some runs dispatch **unprimed**, marked
+  `primed: false` with no served ids. Selection is stateless
+  1-in-`prime_holdout`-in-expectation sampling (`sha1(run_id) % N == 0`;
+  `loop.toml` knob, default 5, `--set`-overridable) — deterministic per run-id
+  and date/random-free, but a sample, NOT a counter that fires on literally
+  every Nth run. Loop runs are numerous, comparable,
   and gate-scored, so regressing #60's `outcome` against `primed`/served
   context separates "context helped" from "easy issue".
 

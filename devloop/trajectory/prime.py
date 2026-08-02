@@ -7,8 +7,8 @@ Two interface-level invariants (boundary spec §4):
 - **Prime writes nothing to the index.** Its only side effect is the
   served-event append to the session buffer JSONL.
 
-The two inline SQL queries here are transitional — #100 rewrites the
-retrieval query and moves it into ``devloop.index_client``.
+All SQL lives in ``devloop.index_client`` (#100 completed that seam); this
+file is composition, rendering and policy only.
 """
 
 from __future__ import annotations
@@ -16,19 +16,22 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import sqlite3
 from pathlib import Path
+
+from devloop.index_client import Connection, Error, note_bodies, trajectory_candidates
 
 
 def is_holdout(run_id: str, holdout: int) -> bool:
-    """Deterministic per-run holdout: every Nth run dispatches unprimed.
+    """Stateless 1-in-N-in-expectation holdout: some runs dispatch unprimed.
 
     Loop runs are numerous, comparable, and gate-scored (#60's ``outcome``),
     so periodically withholding prime context lets the outcome regression
     separate "context helped" from "easy issue". The decision is
-    ``sha1(run_id) mod N == 0`` — stable across processes (no PYTHONHASHSEED
-    dependence, unlike ``hash()``) and date/random-free, so it is
-    hand-computable and testable. ``holdout <= 0`` disables holdout entirely.
+    ``sha1(run_id) mod N == 0`` — sampling, not a counter: it holds out one run
+    in N *in expectation*, never literally every Nth run. It is stable across
+    processes (no PYTHONHASHSEED dependence, unlike ``hash()``) and
+    date/random-free, so it is hand-computable and testable. ``holdout <= 0``
+    disables holdout entirely.
     """
     if holdout <= 0:
         return False
@@ -60,24 +63,14 @@ def _coerce_builds_on(raw: object) -> list[str]:
     return out
 
 
-def resolve_insights(conn: sqlite3.Connection, ids: list[str]) -> list[dict]:
-    """Read-only: fetch the bodies of the insight notes a trajectory builds on.
+def resolve_insights(conn: Connection, ids: list[str]) -> list[dict]:
+    """The bodies of the insight notes a trajectory builds on.
 
     Returns ``[{id, body}]`` in ``builds_on`` order, skipping ids that don't
     resolve to a note or resolve to an empty body. The index already holds these
-    notes (they are ordinary notes minted at ship time); prime reads their
-    ``body_text`` via the same sqlite path it uses for trajectories.
+    notes (they are ordinary notes minted at ship time).
     """
-    if not ids:
-        return []
-    placeholders = ",".join("?" * len(ids))
-    # type='note' guard: builds_on may name a decision/session id; prime must
-    # never serve a non-note body as color — only insight notes are served.
-    rows = conn.execute(
-        f"SELECT id, body_text FROM notes WHERE type = 'note' AND id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    by_id = {r["id"]: (r["body_text"] or "").strip() for r in rows}
+    by_id = note_bodies(conn, ids)
     return [{"id": i, "body": by_id[i]} for i in ids if by_id.get(i)]
 
 
@@ -97,35 +90,27 @@ def _outcome_rank(label: object) -> int:
 
 
 def query_trajectories(
-    conn: sqlite3.Connection, concepts: list[str], limit: int, scan_cap: int = 40
+    conn: Connection, concepts: list[str], limit: int, scan_cap: int = 40,
+    query: str = "",
 ) -> list[dict]:
-    """Read-only: ``[loop-run]`` notes matching ANY concept that carry reusable
-    color — a linked insight note (``builds_on``).
+    """``[loop-run]`` notes matching this issue that carry reusable color — a
+    linked insight note (``builds_on``).
+
+    Retrieval is the seam's fused concept+FTS candidate list
+    (:func:`devloop.index_client.trajectory_candidates`): ``concepts`` are
+    ontology terms, ``query`` is the issue's own text. Either may be empty (one
+    leg then carries the retrieval); both empty matches nothing.
 
     Returns ``{id, title, issue, outcome, outcome_label, insights}`` dicts, at
     most ``limit``. ``insights`` is the resolved list of linked insight-note
     bodies (``[{id, body}]``); a trajectory whose links resolve to nothing is
-    skipped. Empty ``concepts`` matches nothing. The scan reads up to
-    ``scan_cap`` candidates in recency order, keeps those with reusable color,
-    then applies the outcome-weighting sort (:data:`_OUTCOME_RANK`) — stable, so
-    recency is preserved within a rank and an all-unlabeled set is pure recency —
-    before truncating to ``limit``.
+    skipped. Up to ``scan_cap`` candidates per leg are scanned; the survivors
+    take the outcome-weighting sort (:data:`_OUTCOME_RANK`) — stable, so the
+    fused rank order is preserved within an outcome rank and an all-unlabeled
+    set keeps the fused order untouched — before truncating to ``limit``.
     """
-    if not concepts:
-        return []
-    placeholders = ",".join("?" * len(concepts))
-    rows = conn.execute(
-        f"""SELECT DISTINCT n.id, n.title, n.date, n.frontmatter
-            FROM notes n
-            JOIN note_tags t ON t.note_id = n.id AND t.tag = 'loop-run'
-            JOIN note_concepts c ON c.note_id = n.id
-            WHERE c.concept IN ({placeholders})
-            ORDER BY n.date DESC, n.id DESC
-            LIMIT ?""",
-        [*concepts, scan_cap],
-    ).fetchall()
     out: list[dict] = []
-    for r in rows:
+    for r in trajectory_candidates(conn, concepts, query, scan_cap):
         try:
             fm = json.loads(r["frontmatter"] or "{}")
         except json.JSONDecodeError:
@@ -181,10 +166,15 @@ def render_prime_block(
 
 def build_prime_payload(
     issue_number: int, run_id: str, concepts: list[str], *,
-    conn: sqlite3.Connection | None = None, holdout: int = 5,
+    conn: Connection | None = None, holdout: int = 5,
     limit: int = 3, budget_chars: int = 1200, decisions: list[str] | None = None,
+    query: str = "",
 ) -> dict:
     """Assemble the claim-time prime payload the orchestrator splices verbatim.
+
+    ``concepts`` (ontology terms) and ``query`` (the issue's text) are the two
+    retrieval legs; ``decisions`` are the file-anchored note ids the
+    orchestrator resolved at claim time.
 
     Output keys: ``primed`` (received prime context this run), ``holdout``
     (deliberately withheld), ``served`` (note ids served — trajectory + decisions,
@@ -195,12 +185,13 @@ def build_prime_payload(
     """
     payload = {
         "issue": issue_number, "run_id": run_id, "concepts": list(concepts),
-        "holdout": is_holdout(run_id, holdout), "primed": False,
+        "query": query, "holdout": is_holdout(run_id, holdout), "primed": False,
         "served": [], "block": "", "note": "",
     }
     if payload["holdout"]:
         payload["note"] = (
-            f"held out (every {holdout}th run runs unprimed for the outcome regression)"
+            f"held out (1 run in {holdout} in expectation runs unprimed for the "
+            "outcome regression)"
         )
         return payload
     # The query — not the connect — is where a foreign/corrupt file
@@ -211,8 +202,8 @@ def build_prime_payload(
     trajectories: list[dict] = []
     if conn is not None:
         try:
-            trajectories = query_trajectories(conn, concepts, limit)
-        except sqlite3.Error:
+            trajectories = query_trajectories(conn, concepts, limit, query=query)
+        except Error:
             index_error = True
     decisions = (decisions or [])[:limit]
     block, served = render_prime_block(trajectories, decisions, budget_chars)
