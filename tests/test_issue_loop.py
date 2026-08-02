@@ -1992,9 +1992,10 @@ def test_arch_proposal_command_wires_steering_gate():
 
 
 def test_arch_proposal_command_cites_architecture_and_prior_decisions():
-    """The command reads ARCHITECTURE.md and prior decisions first so it does
-    not re-propose against already-decided work (a skip-list of decided-against
-    directions)."""
+    """The command consults ARCHITECTURE.md (the invariant authority) and prior
+    decisions before proposing, so it does not re-propose against already-decided
+    work (a skip-list of decided-against directions). Input *context* comes from
+    the project snapshot instead — see the thinkweave-native test below."""
     text = _arch_proposal_doc()
     assert "ARCHITECTURE.md" in text
     lowered = text.lower()
@@ -2050,6 +2051,79 @@ def test_arch_proposal_label_documented_in_triage_labels():
     assert "arch-proposal" in labels
     # The human-triage transition it feeds: accept → ready-for-agent.
     assert "ready-for-agent" in labels
+
+
+# ---------------------------------------------------------------------------
+# Doc truth (issue #91): the slow loop reads thinkweave-native state, and the
+# gate split is stated in exactly one place. Doc-grep contracts, same idiom as
+# the #61 block above.
+
+
+def test_arch_proposal_input_context_is_thinkweave_native():
+    """§1's input context comes from a thinkweave-native surface, not a
+    hand-curated doc list: the project snapshot (whose `state` section IS
+    STATE.md), with the CLI parity command as the headless degrade. The choice
+    of surface must be stated, not left implicit."""
+    text = _arch_proposal_doc()
+    start = text.index("\n## 1. ")
+    section = text[start:text.index("\n## 2. ", start)]
+    # The surface lives in §1, named as such rather than left implicit.
+    assert "weave_project_snapshot" in section
+    assert "input-context surface" in section.lower()
+    # Headless degrade: the CLI parity command, then STATE.md on disk.
+    assert "weave project-snapshot" in section
+    assert "STATE.md" in section
+    # The curated-doc-list instruction it replaced must NOT come back.
+    assert "Read `ARCHITECTURE.md` end-to-end" not in text
+
+
+_GATE_SPLIT_MARKER = "**The gate split"
+
+
+def test_gate_split_stated_exactly_once_where_gates_are_introduced():
+    """The gate split (command/diff EXECUTE in the rail; acceptance/review/
+    simplify are orchestrator-dispatched and only recognised there) is stated
+    ONCE, in the gate-pipeline section of the command doc — never duplicated
+    across the loop docs."""
+    docs = sorted((issue_loop.REPO_ROOT / "docs" / "agents").glob("*.md"))
+    hits = [p for p in docs if _GATE_SPLIT_MARKER in p.read_text(encoding="utf-8")]
+    assert [p.name for p in hits] == ["issue-loop.command.md"]
+
+    text = (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.command.md").read_text(
+        encoding="utf-8"
+    )
+    # It lives inside §1c — where gates are introduced — not somewhere else.
+    start = text.index("### 1c. Gate pipeline")
+    end = text.index("\n### ", start + 1)
+    section = text[start:end]
+    assert _GATE_SPLIT_MARKER in section
+    assert "execute in the rail" in section.lower()
+    assert "never" in section.lower() and "executed by the rail" in section.lower()
+    # And it defers to the protocol spec rather than restating it.
+    assert "devloop-boundaries.md" in section
+    # The quoted refusal is the rail's ACTUAL string, not an approximation —
+    # the doc-vs-code pin that caught this doc quoting a truncated error.
+    # (Moves with the message when #94 relocates `check` out of the script.)
+    refusal = "is LLM-judged — run it from the /issue-loop command, not the script"
+    assert refusal in " ".join(section.split())  # the doc wraps it across lines
+    assert refusal in (issue_loop.REPO_ROOT / "scripts" / "issue_loop.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_extension_points_do_not_claim_the_rail_runs_judgment_kinds():
+    """Regression guard on the claim this issue corrected: `check` refuses a
+    judgment kind (rail line ~1321), it does not run it as a command. The
+    semantics doc must not say otherwise, and must point at the one statement
+    of the split instead of restating it."""
+    text = (issue_loop.REPO_ROOT / "docs" / "agents" / "issue-loop.md").read_text(
+        encoding="utf-8"
+    )
+    assert "reports them as command-run" not in text
+    # The pointer that replaced it, anchored to the cross-reference itself —
+    # the bare filename appears elsewhere in this doc, so it proves nothing.
+    assert "gate-split" in text
+    assert "`issue-loop.command.md` §1c" in text
 
 
 # ---------------------------------------------------------------------------

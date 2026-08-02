@@ -169,9 +169,9 @@ implementer worktree — a deterministic baseline probe of origin/main.
 - **New gate kind** (e.g. a benchmark-vs-baseline judge, a docs-drift
   checker) → one dispatch branch in `issue_loop.py` (deterministic) or one
   subsection in the `/issue-loop` command (LLM-judged / orchestrated, like
-  `simplify`). The rail passes unknown kinds through — `config` surfaces
-  them and `check` reports them as command-run, so no rail change is needed
-  for an orchestrated kind.
+  `simplify`). `config` surfaces every configured kind, but `check` executes
+  only the deterministic ones and refuses everything else — see the gate-split
+  note in `issue-loop.command.md` §1c.
 - **Per-track policy** (e.g. stricter review on `track:B-core`) → gates grow
   an optional `only_tracks` / `skip_tracks` filter; deliberately not built
   until a real need shows up.
