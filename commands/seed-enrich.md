@@ -1,12 +1,15 @@
 ---
-description: Inline session synthesis — walk imported-but-unsynthesised Claude Code sessions and compose a summary + insights + decisions via the running model, weave_extract one wrap-shaped session per transcript. Small backlogs run in-process; large ones deterministically fan out subagents. The keyless `--via inline` half of `weave import claude-code --enrich`; pairs with `--via batch` which fans out through the API wrapper.
+description: Inline session synthesis — walk imported-but-unsynthesised coding-agent sessions (Claude Code and Codex, as separate per-source lanes) and compose a summary + insights + decisions via the running model, weave_extract one wrap-shaped session per transcript. Small backlogs run in-process; large ones deterministically fan out subagents. The keyless `--via inline` half of `weave import {claude-code|codex} --enrich`; pairs with `--via batch` which fans out through the API wrapper.
 allowed-tools: Task, Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read, mcp__thinkweave__weave_extract, mcp__thinkweave__weave_update
 ---
 
 # /seed-enrich — Inline session synthesis
 
-Turn imported Claude Code sessions into durable memory **without burning a
-provider key**. An imported session is materialised as a verbatim transcript
+Turn imported coding-agent sessions into durable memory **without burning a
+provider key**. Two harnesses import session transcripts — Claude Code and
+Codex — and each is its own pending set: `--enrich` never drains the other's
+sessions, so this skill walks the two as separate lanes over the same
+synthesis. An imported session is materialised as a verbatim transcript
 dump (`enrichment` deferred); this skill synthesises each one — a summary plus
 derived insight and decision notes — using the running session's model instead
 of `agent_client.batch_completions_sync`.
@@ -25,25 +28,31 @@ The threshold and batch shape are config knobs (`[enrich]` in
 `vault/.weave/config.toml`); you read the decision off the `--dry-run` line —
 you never improvise it.
 
-The user reaches this from `weave import claude-code --enrich --via inline`
-(the CLI prints a hint pointing here) or directly as `/seed-enrich`.
+The user reaches this from `weave import {claude-code|codex} --enrich --via
+inline` (either CLI prints a hint pointing here — this skill then covers both
+lanes regardless of which one sent them) or directly as `/seed-enrich`.
 Headless-safe: `claude -p "/seed-enrich"` works the same as in-session.
 
 ## Steps
 
 1. **Load the ontology.** Call `mcp__thinkweave__weave_concepts(action='list', limit=1000)`. This is the canonical vocabulary; anything proposed outside it is routed to `proposed_concepts:` by the server-side gate (no need to pre-filter — proposing specific terms is encouraged). Hold the list; you pass it to each worker so they don't each re-fetch it.
 
-2. **Read the plan + worklist.** Run:
+2. **Read the plan + worklist — once per source.** `--enrich` selects only the sessions imported by the source named on the command line, so each harness has its own pending set. Run both:
    ```bash
    weave import claude-code --enrich --dry-run
+   weave import codex --enrich --dry-run
    ```
-   Parse two line shapes:
-   - `FANOUT\t<mode>\t<threshold>\t<batch_size>\t<parallelism>` — one line. `<mode>` ∈ {`inline`, `fanout`}, decided by config against the pending count.
+   From **each** invocation's output parse two line shapes:
+   - `FANOUT\t<mode>\t<threshold>\t<batch_size>\t<parallelism>` — one line. `<mode>` ∈ {`inline`, `fanout`}, decided by config against that source's pending count.
    - `PENDING\t<note_id>\t<project>\t<title>` — one per session awaiting synthesis.
 
-   Honor any `--limit` the user passed by capping the PENDING list. If there are no PENDING lines, report "nothing to synthesise" and stop. Dispatch on `<mode>`:
+   Keep the two worklists **separate** — never merge them into one queue, and never hand a lane's sessions to the other lane. A source with nothing pending prints `No pending <source> sessions found.` and emits no `FANOUT`/`PENDING` lines; that lane is skipped.
 
-### Step 3 — Synthesise
+   Honor any `--limit` the user passed by capping each lane's PENDING list. If neither lane has PENDING lines, report "nothing to synthesise" and stop.
+
+### Step 3 — Synthesise, one lane at a time
+
+Run this step once **per source lane that has PENDING lines**, dispatching on that lane's own `<mode>`. The composition spec (§B) and the writeback below are the same for both lanes — only the worklist differs, so a codex session synthesises exactly the way a Claude Code one does.
 
 #### mode = `inline`  (pending ≤ threshold)
 
@@ -94,11 +103,11 @@ The four artifacts, identical to the batch backend and to live `/wrap` §C:
 
 ### Step 4 — Batch finalize (both modes)
 
-`weave_extract` writes the notes but does **not** run the deterministic tail. Run it **once** for the whole backlog (per-session finalize would be quadratic):
+`weave_extract` writes the notes but does **not** run the deterministic tail. Run it **once** for the whole backlog — after *both* lanes are done, not once per lane (per-session or per-lane finalize would be quadratic):
    ```bash
    weave index
    ```
-   then regenerate landing docs for each distinct project in the worklist:
+   then regenerate landing docs for each distinct project across both lanes' worklists:
    ```bash
    weave landing --project <project> --doc all
    ```
@@ -106,7 +115,7 @@ The four artifacts, identical to the batch backend and to live `/wrap` §C:
 
 ### Step 5 — Report
 
-One line: `Synthesised N session(s) [inline | via M worker(s)]; created D decision(s), I insight(s); finalized P project(s).`
+One line per lane that ran: `<source>: synthesised N session(s) [inline | via M worker(s)]; created D decision(s), I insight(s).` Then one closing line: `Finalized P project(s).`
 
 ## Notes
 
@@ -114,4 +123,4 @@ One line: `Synthesised N session(s) [inline | via M worker(s)]; created D decisi
 - **Don't re-embed the transcript.** Only the structured synthesis goes into `weave_extract`; the raw transcript is preserved as the companion, not duplicated into the summary.
 - **Thin sessions are fine.** If a transcript is too sparse to extract anything, pass a one-sentence `summary` with empty `insights`/`decisions` — the session still becomes `processed`.
 - **Tuning the fan-out.** `[enrich] fanout_threshold / batch_size / parallelism` in `vault/.weave/config.toml` govern when fan-out kicks in and its shape. Defaults: 12 / 6 / 3.
-- **Large backlogs with an API key** are also available via `weave import claude-code --enrich --via batch` (provider fan-out instead of subagents). This skill is the no-key route and the small-batch default; the fan-out makes it scale to full-history backfills too.
+- **Large backlogs with an API key** are also available via `weave import {claude-code|codex} --enrich --via batch` (provider fan-out instead of subagents, one invocation per source). This skill is the no-key route and the small-batch default; the fan-out makes it scale to full-history backfills too.

@@ -672,3 +672,37 @@ def test_claude_code_enrich_does_not_drain_codex_sessions(
     pending = find_pending_sessions(vault_cfg, source="claude-code")
 
     assert _imported_from(pending) == ["claude-code"]
+
+
+def test_enrich_dry_run_lists_only_the_named_sources_sessions(
+    cli_vault: Path,
+    codex_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+):
+    """The two per-source lanes ``/seed-enrich`` drives: it runs
+    ``--enrich --dry-run`` once per source and reads each lane's worklist off
+    the PENDING lines. Each invocation must list only its own harness."""
+    from thinkweave.surfaces.cli import main
+
+    cfg = Config(vault_root=cli_vault)
+    _seed_both_harnesses(cfg, codex_root, tmp_path)
+    id_by_source = {
+        fm["imported_from"]: fm["id"]
+        for fm, _ in (
+            parse_frontmatter(p.read_text(encoding="utf-8")) for p in _session_notes(cfg)
+        )
+    }
+
+    main(["import", "claude-code", "--enrich", "--dry-run"])
+    cc_pending = _pending_ids(capsys.readouterr().out)
+    main(["import", "codex", "--enrich", "--dry-run"])
+    codex_pending = _pending_ids(capsys.readouterr().out)
+
+    assert cc_pending == [id_by_source["claude-code"]]
+    assert codex_pending == [id_by_source["codex"]]
+
+
+def _pending_ids(stdout: str) -> list[str]:
+    """`PENDING\tnote_id\tproject\ttitle` — the worklist line /seed-enrich parses."""
+    return [ln.split("\t")[1] for ln in stdout.splitlines() if ln.startswith("PENDING\t")]

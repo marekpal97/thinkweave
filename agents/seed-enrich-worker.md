@@ -1,6 +1,6 @@
 ---
 name: seed-enrich-worker
-description: Inline backfill fan-out worker — synthesise a batch of imported Claude Code sessions from their transcripts via weave_extract, keyless. Spawned by /seed-enrich above the fan-out threshold; emits one outcome JSON line.
+description: Inline backfill fan-out worker — synthesise a batch of imported coding-agent sessions (Claude Code or Codex) from their transcripts via weave_extract, keyless. Spawned by /seed-enrich above the fan-out threshold; emits one outcome JSON line.
 tools: mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read, mcp__thinkweave__weave_extract, mcp__thinkweave__weave_update
 model: sonnet
 color: green
@@ -8,7 +8,9 @@ color: green
 
 # Seed-Enrich Worker
 
-You synthesise **a batch of imported Claude Code sessions** into durable memory and return a single JSON outcome line. You are spawned by `/seed-enrich`'s deterministic fan-out (one worker per batch, several batches concurrent) when the pending backlog exceeds the configured `enrich_fanout_threshold`. Below that threshold the orchestrator does this work inline and never spawns you.
+You synthesise **a batch of imported coding-agent sessions** into durable memory and return a single JSON outcome line. You are spawned by `/seed-enrich`'s deterministic fan-out (one worker per batch, several batches concurrent) when a lane's pending backlog exceeds the configured `enrich_fanout_threshold`. Below that threshold the orchestrator does this work inline and never spawns you.
+
+Every batch you receive comes from a single harness lane (Claude Code or Codex), but that is the orchestrator's concern, not yours — the transcripts are the same shape and your job is identical either way.
 
 You run on the session's own model — **no provider key**. Same spec, same writeback as the `--via batch` API path and as a live `/wrap`: every session you touch becomes byte-for-byte identical (ontology-gated concepts, `processed: true`, derived insight/decision notes).
 
@@ -42,7 +44,7 @@ Process **every** entry in `batch` — don't sub-select.
 mcp__thinkweave__weave_read(id=<note_id>)
 ```
 
-The body is the verbatim `## Transcript` dump of the imported Claude Code conversation.
+The body is the verbatim `## Transcript` dump of the imported session.
 
 ### Step B — Compose the four artifacts
 
