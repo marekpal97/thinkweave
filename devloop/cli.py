@@ -41,7 +41,7 @@ from devloop import dag, github, index_client, trajectory, triage
 
 # Imported by name: `main` binds a local `gates` in the trajectory branch,
 # which would shadow a module of that name for the whole function.
-from devloop.gates import DETERMINISTIC, JUDGMENT, reject
+from devloop.gates import DETERMINISTIC, JUDGMENT, reject, validate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "docs" / "agents" / "loop.toml"
@@ -347,8 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         if gate is None:
             print(json.dumps({"error": f"no gate '{args.gate}' in config"}))
             return 2
-        validate = JUDGMENT.get(gate["kind"])
-        if validate is None:
+        if gate["kind"] not in JUDGMENT:
             print(json.dumps({"error": f"gate kind '{gate['kind']}' is deterministic — run it with `check`, not `validate`"}))
             return 2
         try:

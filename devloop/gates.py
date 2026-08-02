@@ -116,12 +116,9 @@ def _verdict(gate: dict, reasons: list[str], *, passed: bool, summary: str) -> d
              "summary": summary, "detail": "", "reasons": []})
 
 
-def _entries(raw: object, key: str, reasons: list[str],
+def _entries(raw: dict, key: str, reasons: list[str],
              *, allow_empty: bool = False) -> list[tuple[int, dict]]:
     """The list-of-objects unwrap every judgment schema starts with."""
-    if not isinstance(raw, dict):
-        reasons.append(f"payload: expected a JSON object, got {type(raw).__name__}")
-        return []
     value = raw.get(key)
     if not isinstance(value, list):
         reasons.append(f"{key}: expected a list, got {type(value).__name__}")
@@ -149,7 +146,7 @@ def _enum(entry: dict, where: str, key: str, allowed: tuple[str, ...],
     return value
 
 
-def validate_acceptance(gate: dict, raw: object) -> dict:
+def validate_acceptance(gate: dict, raw: dict) -> dict:
     """``{criteria: [{id, verdict: met|not-met, evidence}]}``, one entry per
     acceptance criterion. Passes per the gate's ``threshold``: ``majority``
     needs strictly more than half met, anything else is read as ``all`` (gates
@@ -169,7 +166,7 @@ def validate_acceptance(gate: dict, raw: object) -> dict:
                     summary=f"{met}/{len(verdicts)} criteria met (threshold: {threshold})")
 
 
-def validate_review(gate: dict, raw: object) -> dict:
+def validate_review(gate: dict, raw: dict) -> dict:
     """``{findings: [{severity: critical|major|minor|nit, finding}]}``. An empty
     list is a clean review; the gate fails iff a severity is in ``block_on``."""
     reasons: list[str] = []
@@ -184,25 +181,23 @@ def validate_review(gate: dict, raw: object) -> dict:
                              if severities else "no findings"))
 
 
-def validate_simplify(gate: dict, raw: object) -> dict:
+def validate_simplify(gate: dict, raw: dict) -> dict:
     """``{outcome: applied|reverted|lean, lines_delta, cuts[], kept[]}`` — the
     same envelope the trajectory trace stores, so a validated return carries
     into the note unchanged. Never fails the pipeline (``required = false``):
     a schema-valid return always passes, its "failure" mode being the revert.
     """
     reasons: list[str] = []
-    outcome = ""
-    if isinstance(raw, dict):
-        outcome = _enum(raw, "payload", "outcome", SIMPLIFY_OUTCOMES, reasons)
-        delta = raw.get("lines_delta")
-        if isinstance(delta, bool) or not isinstance(delta, int):
-            reasons.append(f"payload.lines_delta: expected an int, got {delta!r}")
+    outcome = _enum(raw, "payload", "outcome", SIMPLIFY_OUTCOMES, reasons)
+    delta = raw.get("lines_delta")
+    if isinstance(delta, bool) or not isinstance(delta, int):
+        reasons.append(f"payload.lines_delta: expected an int, got {delta!r}")
+        delta = 0
     for key in ("cuts", "kept"):
         for i, entry in _entries(raw, key, reasons, allow_empty=True):
             _text(entry, f"{key}[{i}]", "what", reasons)
             _text(entry, f"{key}[{i}]", "why", reasons)
-    return _verdict(gate, reasons, passed=True,
-                    summary=f"{outcome}: {raw.get('lines_delta') if isinstance(raw, dict) else 0} lines")
+    return _verdict(gate, reasons, passed=True, summary=f"{outcome}: {delta} lines")
 
 
 # The two registries the protocol's structural claim reduces to: every kind has
@@ -212,3 +207,16 @@ def validate_simplify(gate: dict, raw: object) -> dict:
 DETERMINISTIC = {"command": run_command_gate, "diff": run_diff_gate}
 JUDGMENT = {"acceptance": validate_acceptance, "review": validate_review,
             "simplify": validate_simplify}
+
+
+def validate(gate: dict, raw: object) -> dict:
+    """Validate one judgment gate's subagent return (the JUDGMENT dispatch).
+
+    Every schema starts from a JSON object, so that guard lives here once;
+    per-kind validators take it from there. Raises ``KeyError`` for a
+    deterministic or unknown kind — callers check membership first, exactly
+    as ``check`` does against ``DETERMINISTIC``.
+    """
+    if not isinstance(raw, dict):
+        return reject(gate, [f"payload: expected a JSON object, got {type(raw).__name__}"])
+    return JUDGMENT[gate["kind"]](gate, raw)

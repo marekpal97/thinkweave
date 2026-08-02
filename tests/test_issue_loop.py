@@ -2356,7 +2356,7 @@ def test_gate_registries_are_disjoint_and_cover_the_pipeline():
 def test_validate_acceptance_all_met_passes():
     """threshold=all: every criterion met → the gate passes, GateResult-shaped
     with no rejection reasons."""
-    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+    result = gates.validate(_gate("acceptance"), {"criteria": [
         {"id": "AC1", "verdict": "met", "evidence": "test_x covers it"},
         {"id": "AC2", "verdict": "met", "evidence": "test_y covers it"},
     ]})
@@ -2370,7 +2370,7 @@ def test_validate_acceptance_all_met_passes():
 def test_validate_acceptance_one_not_met_fails_the_gate_without_rejecting():
     """A gate verdict of `not-met` is a FIX ROUND, not a schema rejection —
     passed=False with empty reasons (rc 1, not rc 2)."""
-    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+    result = gates.validate(_gate("acceptance"), {"criteria": [
         {"id": "AC1", "verdict": "met", "evidence": "e"},
         {"id": "AC2", "verdict": "not-met", "evidence": "no test at the seam"},
     ]})
@@ -2386,16 +2386,16 @@ def test_validate_acceptance_majority_threshold():
         {"id": "AC2", "verdict": "met", "evidence": "e"},
         {"id": "AC3", "verdict": "not-met", "evidence": "e"},
     ]}
-    assert gates.JUDGMENT["acceptance"](gate, payload)["passed"] is True
+    assert gates.validate(gate, payload)["passed"] is True
     payload["criteria"][1]["verdict"] = "not-met"
-    assert gates.JUDGMENT["acceptance"](gate, payload)["passed"] is False
+    assert gates.validate(gate, payload)["passed"] is False
 
 
 def test_validate_acceptance_rejects_unknown_verdict_naming_field_and_value():
     """An enum the judge invented is REJECTED (not coerced), and the reason
     names the offending field path and the value — that is what makes the
     re-ask actionable."""
-    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+    result = gates.validate(_gate("acceptance"), {"criteria": [
         {"id": "AC1", "verdict": "met", "evidence": "e"},
         {"id": "AC2", "verdict": "probably", "evidence": "e"},
     ]})
@@ -2409,13 +2409,13 @@ def test_validate_acceptance_rejects_unknown_verdict_naming_field_and_value():
 def test_validate_acceptance_rejects_empty_evidence_and_empty_criteria():
     """Evidence is the judge's whole contribution: a blank string is a schema
     violation, and so is a return with no criteria at all."""
-    result = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": [
+    result = gates.validate(_gate("acceptance"), {"criteria": [
         {"id": "AC1", "verdict": "met", "evidence": "   "},
     ]})
     assert result["passed"] is False
     assert any("criteria[0].evidence" in r for r in result["reasons"])
 
-    empty = gates.JUDGMENT["acceptance"](_gate("acceptance"), {"criteria": []})
+    empty = gates.validate(_gate("acceptance"), {"criteria": []})
     assert empty["passed"] is False
     assert any(r.startswith("criteria:") for r in empty["reasons"])
 
@@ -2424,15 +2424,16 @@ def test_validate_rejects_non_object_payload_naming_the_payload():
     """A bare string / list pasted by mistake is rejected at the top level for
     every judgment kind — nothing downstream ever sees it."""
     for kind in ("acceptance", "review", "simplify"):
-        result = gates.JUDGMENT[kind](_gate(kind), ["not", "an", "object"])
+        result = gates.validate(_gate(kind), ["not", "an", "object"])
         assert result["passed"] is False
-        assert any(r.startswith("payload:") for r in result["reasons"])
+        assert result["reasons"] == [
+            "payload: expected a JSON object, got list"]  # reported once, not per section
 
 
 def test_validate_review_empty_findings_is_a_clean_pass():
     """No findings = a clean review. An empty list is valid (unlike acceptance's
     criteria, where zero criteria means the judge answered nothing)."""
-    result = gates.JUDGMENT["review"](_gate("review"), {"findings": []})
+    result = gates.validate(_gate("review"), {"findings": []})
     assert result["passed"] is True and result["reasons"] == []
 
 
@@ -2440,12 +2441,12 @@ def test_validate_review_blocks_on_configured_severities():
     """The gate fails iff a finding's severity is in the gate's block_on."""
     gate = _gate("review")
     assert gate["block_on"] == ["critical", "major"]
-    blocked = gates.JUDGMENT["review"](gate, {"findings": [
+    blocked = gates.validate(gate, {"findings": [
         {"severity": "nit", "finding": "naming"},
         {"severity": "major", "finding": "unguarded index read"},
     ]})
     assert blocked["passed"] is False and blocked["reasons"] == []
-    clean = gates.JUDGMENT["review"](gate, {"findings": [
+    clean = gates.validate(gate, {"findings": [
         {"severity": "minor", "finding": "naming"},
     ]})
     assert clean["passed"] is True
@@ -2454,7 +2455,7 @@ def test_validate_review_blocks_on_configured_severities():
 def test_validate_review_rejects_unknown_severity():
     """`high` is the realistic enum drift (the triage signals doc names the same
     trap) — rejected with the field path and the allowed set."""
-    result = gates.JUDGMENT["review"](_gate("review"), {"findings": [
+    result = gates.validate(_gate("review"), {"findings": [
         {"severity": "high", "finding": "x"},
     ]})
     assert result["passed"] is False
@@ -2465,7 +2466,7 @@ def test_validate_simplify_accepts_the_trace_envelope():
     """The simplify subagent returns the SAME envelope the trace stores
     (`{outcome, cuts, kept, lines_delta}`) — one shape, validated at the seam
     and carried into the trajectory unchanged."""
-    result = gates.JUDGMENT["simplify"](_gate("simplify"), {
+    result = gates.validate(_gate("simplify"), {
         "outcome": "applied", "lines_delta": -12,
         "cuts": [{"what": "wrapper", "why": "one call site"}],
         "kept": [{"what": "guard", "why": "trust boundary"}],
@@ -2475,7 +2476,7 @@ def test_validate_simplify_accepts_the_trace_envelope():
 
 
 def test_validate_simplify_rejects_bad_outcome_and_non_int_lines_delta():
-    result = gates.JUDGMENT["simplify"](_gate("simplify"), {
+    result = gates.validate(_gate("simplify"), {
         "outcome": "shrunk", "lines_delta": "-12", "cuts": [], "kept": [],
     })
     assert result["passed"] is False
@@ -2484,7 +2485,7 @@ def test_validate_simplify_rejects_bad_outcome_and_non_int_lines_delta():
 
 
 def test_validate_simplify_rejects_malformed_cut_entry():
-    result = gates.JUDGMENT["simplify"](_gate("simplify"), {
+    result = gates.validate(_gate("simplify"), {
         "outcome": "applied", "lines_delta": -3,
         "cuts": [{"what": "wrapper"}], "kept": [],
     })
@@ -2614,3 +2615,20 @@ def test_skills_scope_is_settled_as_stage_dispatch_with_an_unpark_trigger():
     # decision changes the prose, never the shipped shape.
     assert set(mint._normalize_skill({"id": "x", "extra": 1})) == {
         "id", "role", "outcome", "fix_rounds_attributed"}
+
+
+def test_boundary_doc_cli_surface_list_matches_the_parser():
+    """§1 of the boundary spec calls the CLI subcommand surface the package's
+    ONE external interface — so that list is a contract, not a summary. Pin it
+    against argparse; #99's `validate` verb widened the surface."""
+    import argparse as _argparse
+    import re
+
+    text = (cli.REPO_ROOT / "docs" / "agents" / "devloop-boundaries.md").read_text(
+        encoding="utf-8")
+    start = text.index("**CLI subcommand surface**")
+    listed = text[text.index("`", start) + 1:text.index("`.", start)]
+    documented = {name.strip() for name in re.split(r"·", listed)}
+    sub = next(a for a in cli.build_arg_parser()._actions
+               if isinstance(a, _argparse._SubParsersAction))
+    assert documented == set(sub.choices)
