@@ -801,3 +801,30 @@ class TestDoctorHarnessAwareMessages:
         assert check.passed is False
         assert "Claude Code" not in check.detail
         assert "codex" in check.detail
+
+
+class TestHeadlessHookTrust:
+    """Spike Q1's consequence. Hooks DO fire under `codex exec` — verified on
+    0.146.0 by a credential-less run whose sentinel hooks recorded
+    SessionStart, UserPromptSubmit and SessionEnd before the 401. But the
+    same run with the trust flag removed fired *nothing, silently*: no
+    warning, no row, no output. An unattended cron cannot answer a `/hooks`
+    trust prompt, so without this flag every Codex cron would quietly lose
+    passive capture — the exact silently-inert failure the doctor check
+    above exists to catch, in the one place a doctor never runs.
+    """
+
+    def test_unattended_codex_run_bypasses_hook_trust(self, codex_home: Path):
+        argv = harness.active().headless_argv("/dream", bypass=True)
+        assert argv[:2] == ["codex", "exec"]
+        assert "--dangerously-bypass-hook-trust" in argv
+
+    def test_attended_run_does_not(self, codex_home: Path):
+        """An interactive user can trust via `/hooks`; nothing should hand
+        out a dangerous flag it did not need."""
+        argv = harness.active().headless_argv("/dream")
+        assert "--dangerously-bypass-hook-trust" not in argv
+
+    def test_claude_code_argv_unchanged(self, tmp_path: Path):
+        argv = harness.active().headless_argv("/dream", bypass=True)
+        assert argv == ["claude", "-p", "/dream", "--dangerously-skip-permissions"]

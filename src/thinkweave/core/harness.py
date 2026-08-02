@@ -139,6 +139,10 @@ class HarnessProfile:
     appended to the install confirmation. Empty when writing the file is the
     whole story (Claude Code)."""
 
+    hooks_bypass_flag: str = ""
+    """Flag an *unattended* run needs before the harness will run installed
+    hooks at all. Empty when nothing gates them (Claude Code)."""
+
     @property
     def dev_link(self) -> Path:
         """Where ``weave dev-link`` symlinks a checkout so the harness loads it
@@ -184,6 +188,12 @@ class HarnessProfile:
         argv += [self.prompt_flag, prompt] if self.prompt_flag else [prompt]
         if bypass and self.bypass_permissions_flag:
             argv.append(self.bypass_permissions_flag)
+        # Hook trust is a separate gate from tool approval: Codex silently
+        # runs ZERO hooks until each definition is trusted via `/hooks`, and
+        # an unattended run has no way to answer that prompt. Without this an
+        # unattended run loses passive capture with no error at all (#107).
+        if bypass and self.hooks and self.hooks_bypass_flag:
+            argv.append(self.hooks_bypass_flag)
         return argv
 
 
@@ -316,6 +326,7 @@ def codex(home: Path | None = None) -> HarnessProfile:
         # Upstream codex#24135: headless MCP tool approval currently requires
         # the full bypass, so an unattended run has no narrower option.
         bypass_permissions_flag="--dangerously-bypass-approvals-and-sandbox",
+        hooks_bypass_flag="--dangerously-bypass-hook-trust",
     )
 
 

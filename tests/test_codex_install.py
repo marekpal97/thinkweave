@@ -165,10 +165,15 @@ class TestCodexHeadlessArgv:
         [
             ({}, ["codex", "exec", "/dream"]),
             (
+                # Two independent gates on an unattended run: tool approval,
+                # and (since #107 turned hooks on) hook trust — Codex runs
+                # zero hooks until each definition is trusted via `/hooks`,
+                # which a cron cannot answer.
                 {"bypass": True},
                 [
                     "codex", "exec", "/dream",
                     "--dangerously-bypass-approvals-and-sandbox",
+                    "--dangerously-bypass-hook-trust",
                 ],
             ),
             (
