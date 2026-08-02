@@ -80,7 +80,7 @@ def _entry_from_claude_json() -> tuple[Path, dict | None]:
 
 
 def _entry_from_project_mcp_json(cwd: Path) -> tuple[Path, dict | None]:
-    path = cwd / ".mcp.json"
+    path = cwd / _profile().project_mcp_config_relpath
     data = _safe_load_json(path)
     if data is None:
         return path, None
@@ -98,27 +98,29 @@ def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
     (no raw ``~/.claude.json`` entry) — without it, a plugin-route user running
     from an arbitrary cwd sees a false "not registered" FAIL.
     """
+    profile = _profile()
+    manifest_rel = profile.plugin_manifest_relpath
+
     candidates: list[Path] = []
-    root_manifest = cwd / ".claude-plugin" / "plugin.json"
+    root_manifest = cwd / manifest_rel
     if root_manifest.exists():
         candidates.append(root_manifest)
-    plugins_dir = cwd / ".claude" / "plugins"
+    plugins_dir = cwd / profile.project_plugins_relpath
     if plugins_dir.exists():
         for plugin_dir in plugins_dir.iterdir():
             if not plugin_dir.is_dir():
                 continue
-            manifest = plugin_dir / ".claude-plugin" / "plugin.json"
+            manifest = plugin_dir / manifest_rel
             if manifest.exists():
                 candidates.append(manifest)
 
-    # HOME-scoped installs — where plugins actually live for real users.
-    profile = _profile()
+    # HOME-scoped installs — where plugins actually live for real users. The
+    # leading wildcards are this harness's nesting depth for each location:
+    # cache/<marketplace>/<plugin>/<version>/… and skills/<name>/….
     if profile.plugins_cache.exists():
-        # cache/<marketplace>/<plugin>/<version>/.claude-plugin/plugin.json
-        candidates.extend(profile.plugins_cache.glob("*/*/*/.claude-plugin/plugin.json"))
+        candidates.extend(profile.plugins_cache.glob(f"*/*/*/{manifest_rel.as_posix()}"))
     if profile.skills_dir.exists():
-        # <name>/.claude-plugin/plugin.json (dev-link / @skills-dir)
-        candidates.extend(profile.skills_dir.glob("*/.claude-plugin/plugin.json"))
+        candidates.extend(profile.skills_dir.glob(f"*/{manifest_rel.as_posix()}"))
 
     entries: list[tuple[Path, dict]] = []
     seen: set[Path] = set()

@@ -92,6 +92,17 @@ class HarnessProfile:
     project_settings_relpath: Path
     """Project-scope hook settings, relative to the repo root."""
 
+    project_mcp_config_relpath: Path
+    """Project-scope MCP registration file, relative to the repo root
+    (``.mcp.json``)."""
+
+    project_plugins_relpath: Path
+    """Where project-local plugins live, relative to the repo root. Each entry
+    inside is a plugin dir carrying a :attr:`plugin_manifest_relpath`."""
+
+    plugin_manifest_relpath: Path
+    """A plugin's manifest, relative to the plugin's own root."""
+
     pause_marker: Path
     memory_projects_root: Path
     memory_global_dir: Path
@@ -173,6 +184,9 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         installed_plugins=cc / "plugins" / "installed_plugins.json",
         user_settings=cc / "settings.json",
         project_settings_relpath=Path(".claude") / "settings.local.json",
+        project_mcp_config_relpath=Path(".mcp.json"),
+        project_plugins_relpath=Path(".claude") / "plugins",
+        plugin_manifest_relpath=Path(".claude-plugin") / "plugin.json",
         pause_marker=cc / "thinkweave_paused.json",
         memory_projects_root=cc / "projects",
         memory_global_dir=cc / "memory",

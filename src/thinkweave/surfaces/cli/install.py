@@ -285,7 +285,8 @@ def _plugin_provides_mcp() -> Path | None:
     """
     if not _plugins_root().exists():
         return None
-    for manifest in _plugins_root().glob("*/.claude-plugin/plugin.json"):
+    manifest_rel = _profile().plugin_manifest_relpath.as_posix()
+    for manifest in _plugins_root().glob(f"*/{manifest_rel}"):
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -448,7 +449,7 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
     """
     if not _mcp_config().exists():
         if not args.yes:
-            print("~/.claude.json does not exist. `weave install` will create it.")
+            print(f"{_mcp_config()} does not exist. `weave install` will create it.")
             print("Re-run with --yes to proceed.")
             sys.exit(1)
         cfg: dict[str, Any] = {"mcpServers": {SERVER_NAME: new_entry}}
@@ -480,7 +481,7 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
         print(line)
     print()
     if not args.yes:
-        print("Re-run with --yes to overwrite, or edit ~/.claude.json by hand.")
+        print(f"Re-run with --yes to overwrite, or edit {_mcp_config()} by hand.")
         sys.exit(1)
     servers[SERVER_NAME] = new_entry
     _atomic_write_json(_mcp_config(), cfg)
@@ -510,7 +511,7 @@ def cmd_install(args: argparse.Namespace) -> None:
         print(
             f"thinkweave MCP entry is provided by plugin manifest:\n"
             f"  {plugin_manifest}\n"
-            f"Skipping ~/.claude.json write (plugin manager owns that registration)."
+            f"Skipping {_mcp_config()} write (plugin manager owns that registration)."
         )
         if args.vault:
             print(
@@ -645,9 +646,10 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
     a leftover raw ``~/.claude.json`` entry would double-register the server.
     """
     repo = _detect_project_root()
-    if not (repo / ".claude-plugin" / "plugin.json").exists():
+    manifest_rel = _profile().plugin_manifest_relpath
+    if not (repo / manifest_rel).exists():
         print(
-            f"error: no .claude-plugin/plugin.json under {repo}.\n"
+            f"error: no {manifest_rel.as_posix()} under {repo}.\n"
             "Run `weave dev-link` from a thinkweave checkout.",
             file=sys.stderr,
         )
@@ -669,7 +671,7 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
     # the user may have wired the raw entry into another host on purpose.
     if _raw_mcp_entry_present():
         print(
-            "warning: a raw thinkweave MCP entry is still in ~/.claude.json.\n"
+            f"warning: a raw thinkweave MCP entry is still in {_mcp_config()}.\n"
             "  Combined with the dev-linked plugin, Claude Code registers the\n"
             "  `thinkweave` server twice. Run `weave uninstall` to drop the raw\n"
             "  entry (the plugin manifest provides the server).",

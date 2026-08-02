@@ -63,6 +63,9 @@ def _probe_profile(home: Path) -> harness.HarnessProfile:
         installed_plugins=home / "ext" / "installed.json",
         user_settings=home / "settings.json",
         project_settings_relpath=Path(".probe/settings.json"),
+        project_mcp_config_relpath=Path("probe.json"),
+        project_plugins_relpath=Path(".probe/ext"),
+        plugin_manifest_relpath=Path(".probe-ext/manifest.json"),
         pause_marker=home / "paused.json",
         memory_projects_root=home / "projects",
         memory_global_dir=home / "memory",
@@ -124,10 +127,17 @@ class TestClaudeCodeProfile:
     def test_dev_link_is_the_skills_dir_entry(self, fake_home: Path):
         assert harness.active().dev_link == fake_home / ".claude/skills/thinkweave"
 
-    def test_project_settings_relpath(self, fake_home: Path):
-        assert harness.active().project_settings_relpath == Path(
-            ".claude/settings.local.json"
-        )
+    @pytest.mark.parametrize(
+        ("field", "relpath"),
+        [
+            ("project_settings_relpath", ".claude/settings.local.json"),
+            ("project_mcp_config_relpath", ".mcp.json"),
+            ("project_plugins_relpath", ".claude/plugins"),
+            ("plugin_manifest_relpath", ".claude-plugin/plugin.json"),
+        ],
+    )
+    def test_project_scoped_relpaths(self, fake_home: Path, field: str, relpath: str):
+        assert getattr(harness.active(), field) == Path(relpath)
 
     def test_headless_invocation_shape(self, fake_home: Path):
         p = harness.active()
@@ -290,10 +300,24 @@ class TestNewProfileNeedsNoConsumerEdits:
         assert inst._profile().instructions_file == probe.instructions_file
         assert inst._profile().dev_link == probe.skills_dir / "thinkweave"
 
-    def test_mcp_doctor_reads_the_profile_mcp_config(self, probe):
+    def test_mcp_doctor_reads_the_profile_mcp_config(self, probe, tmp_path: Path):
         from thinkweave.surfaces.cli import mcp_doctor as md
 
         assert md._entry_from_claude_json()[0] == probe.mcp_config
+        # …and the project scope, whose file name is equally per-harness.
+        assert (
+            md._entry_from_project_mcp_json(tmp_path)[0] == tmp_path / "probe.json"
+        )
+
+    def test_mcp_doctor_finds_the_profiles_project_plugin_manifests(
+        self, probe, tmp_path: Path
+    ):
+        from thinkweave.surfaces.cli import mcp_doctor as md
+
+        manifest = tmp_path / ".probe/ext" / "some-plugin" / ".probe-ext" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('{"mcpServers": {"thinkweave": {"command": "x"}}}')
+        assert [p for p, _ in md._entries_from_plugin_manifests(tmp_path)] == [manifest]
 
     def test_hook_settings_paths(self, probe, tmp_path: Path):
         from thinkweave.surfaces.hooks import install as hooks_install
