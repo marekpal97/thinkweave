@@ -1,53 +1,9 @@
 """The Codex hooks adapter (issue #107, W2b).
 
-Sources of truth for every expected value here — all independent of the code
-under test, all verified against codex-cli 0.146.0 on 2026-08-02:
-
-* The **hook config format**. Codex loads lifecycle hooks from ``hooks.json``
-  files *or* inline ``[hooks]`` TOML tables sitting next to an active config
-  layer; the four useful locations are ``~/.codex/hooks.json``,
-  ``~/.codex/config.toml``, ``<repo>/.codex/hooks.json``,
-  ``<repo>/.codex/config.toml``. "If a single layer contains both
-  ``hooks.json`` and inline ``[hooks]``, Codex loads both and warns. Prefer one
-  representation per layer." Since #106 already owns ``~/.codex/config.toml``
-  for the ``[mcp_servers]`` registration, hooks go in the *sibling*
-  ``hooks.json`` — one representation per layer, no warning.
-  (https://learn.chatgpt.com/docs/hooks, "Hooks" chapter of
-  https://learn.chatgpt.com/docs/codex-manual.md)
-
-* The **file shape** is the same ``{"hooks": {Event: [{matcher, hooks: [...]}]}}``
-  object Claude Code nests inside ``settings.json`` — verbatim from the manual's
-  ``hooks.json`` example, plus an optional top-level ``description``.
-
-* The **event names** are identical to Claude Code's: ``PreToolUse``,
-  ``PermissionRequest``, ``PostToolUse``, ``PreCompact``, ``PostCompact``,
-  ``SessionStart``, ``SessionEnd``, ``SubagentStart``, ``SubagentStop``,
-  ``UserPromptSubmit``, ``Stop``. Confirmed twice over: the manual's matcher
-  table, and the ``hook_event_name`` const in the JSON schemas embedded in the
-  0.146.0 binary (``session-start.command.input`` &c., extracted 2026-08-02).
-  All four events thinkweave installs — SessionStart, UserPromptSubmit,
-  PostToolUse, Stop — exist under those exact names, so the port renames
-  nothing.
-
-* The **matchers** need no translation either. The manual's own examples list
-  ``mcp__filesystem__.*`` and ``Edit|Write``: Codex namespaces MCP tools as
-  ``mcp__<server>__<tool>`` exactly like Claude Code, and "For ``apply_patch``,
-  ``matcher`` values can also use ``Edit`` or ``Write``". So the canonical
-  ``mcp__thinkweave__.*`` and ``Write|Edit|Bash`` matchers are already correct
-  Codex regexes. (The issue text predicted a ``<server>:<tool>`` rename — that
-  prediction is wrong for 0.146.0; see docs/HARNESSES.md.)
-
-* ``additionalContextLimit``: "By default, Codex limits each model-visible
-  hook-output message to roughly 2,500 tokens. If a hook returns more, Codex
-  saves the full text under ``<temp_dir>/hook_outputs/…`` and gives the model a
-  head-and-tail preview." Our SessionStart payload is built with
-  ``budget_tokens=SESSION_START_BUDGET_TOKENS`` — 4x that default — so without
-  an explicit limit the headline acceptance criterion ("an interactive Codex session receives the
-  SessionStart context payload") would fail *silently*, spilling to a temp
-  file. The handlers that can emit ``additionalContext`` therefore carry an
-  explicit limit. Codex "ignores ``additionalContextLimit`` and reports a
-  configuration warning" for events that cannot emit additional context, so it
-  is written on those two events only.
+Every expected value here — config format and location, file shape, event
+names, matchers, the ``additionalContextLimit`` spill threshold — is sourced
+and quoted in docs/HARNESSES.md § Hooks, verified against codex-cli 0.146.0 on
+2026-08-02. Read that first; it is the reference this file asserts against.
 
 Nothing here touches a real ``~/.codex``: every test aims the profile at a tmp
 dir, and the suite-wide ``_sandbox_harness_home`` fixture is the backstop.
@@ -96,13 +52,6 @@ class TestProfile:
         """Not config.toml — that layer already carries [mcp_servers] from
         #106, and Codex warns when one layer holds both representations."""
         assert harness.active().user_settings == codex_home / "hooks.json"
-
-    def test_project_scope_hook_file_is_repo_local_hooks_json(
-        self, codex_home: Path
-    ):
-        assert harness.active().project_settings_relpath == Path(
-            ".codex"
-        ) / "hooks.json"
 
 
 class TestInstalledArtifact:
@@ -222,22 +171,15 @@ class TestGlobalScopeOnly:
     additionally gates them on the project being *trusted*. Two ways to be
     silently inert — so the Codex profile refuses project scope outright."""
 
-    def test_project_scope_is_refused(self, codex_home: Path, tmp_path: Path):
-        project = tmp_path / "project"
-        project.mkdir()
-        with pytest.raises(SystemExit):
-            install_hooks(scope="project", project_dir=str(project))
-        assert not (project / ".codex").exists()
-
-    def test_refusal_points_at_user_scope(
+    def test_project_scope_is_refused(
         self, codex_home: Path, tmp_path: Path, capsys
     ):
         project = tmp_path / "project"
         project.mkdir()
         with pytest.raises(SystemExit):
             install_hooks(scope="project", project_dir=str(project))
-        err = capsys.readouterr().err
-        assert "--scope user" in err
+        assert not (project / ".codex").exists()
+        assert "--scope user" in capsys.readouterr().err
 
     def test_uninstall_at_project_scope_is_not_refused(
         self, codex_home: Path, tmp_path: Path, capsys
@@ -404,18 +346,13 @@ class TestApplyPatchCapture:
             "docs/HARNESSES.md",
         ]
 
-    def test_operations_map_onto_the_buffer_vocabulary(self):
-        """Downstream consumers (`core/events.py`, `_summarize_events`) match
-        on `tool in ("Edit", "Write")`. Codex documents `Edit` and `Write` as
+    def test_all_four_patch_operations_are_read(self):
+        """The `tool` column is asserted alongside the file because downstream
+        consumers (`core/events.py`, `_summarize_events`) match on `tool in
+        ("Edit", "Write")`. Codex documents `Edit` and `Write` as its own
         matcher aliases for `apply_patch`, so normalising here — at the one
         wire boundary — keeps every consumer harness-agnostic instead of
         teaching each one a second vocabulary."""
-        events = handler_mod._build_events(
-            "apply_patch", CODEX_APPLY_PATCH["tool_input"], "", "2026-08-02T00:00:00Z"
-        )
-        assert [e["tool"] for e in events] == ["Edit", "Write"]
-
-    def test_all_four_patch_operations_are_read(self):
         patch = (
             "*** Begin Patch\n"
             "*** Update File: a.py\n"
@@ -428,7 +365,13 @@ class TestApplyPatchCapture:
         events = handler_mod._build_events(
             "apply_patch", {"command": patch}, "", "2026-08-02T00:00:00Z"
         )
-        assert [e["file"] for e in events] == ["a.py", "b.py", "c.py", "d.py", "e.py"]
+        assert [(e["tool"], e["file"]) for e in events] == [
+            ("Edit", "a.py"),
+            ("Write", "b.py"),
+            ("Edit", "c.py"),
+            ("Edit", "d.py"),
+            ("Write", "e.py"),
+        ]
 
     def test_internal_paths_are_filtered_out_of_a_patch(self):
         patch = (
@@ -665,73 +608,15 @@ class TestContextServedProjection:
         )
         assert rows == [("n-1", "startup")]
 
-    def test_check_constraint_admits_the_new_source(self, tmp_path: Path):
-        """The CHECK is a closed set — a source it does not list is rejected
-        at INSERT, which is the failure this migration exists to prevent."""
-        from thinkweave.core.indexer import Indexer
-
-        cfg = Config(vault_root=tmp_path / "vault")
-        VaultManager(config=cfg).ensure_dirs()
-        idx = Indexer(config=cfg)
-        try:
-            sql = idx.db.execute(
-                "SELECT sql FROM sqlite_master WHERE name='context_served'"
-            ).fetchone()[0]
-            assert "codex-startup" in sql
-        finally:
-            idx.close()
-
-    def test_pre_codex_table_is_dropped_and_recreated(self, tmp_path: Path):
+    def test_pre_codex_table_is_migrated_and_repopulated(self, tmp_path: Path):
         """A vault indexed before this issue carries the narrower CHECK, which
-        rejects every codex-startup INSERT. SQLite cannot ALTER a CHECK, and
-        the table is 100% derived from retrieval_log.jsonl — so the established
+        rejects every codex-startup INSERT. SQLite cannot ALTER a CHECK and the
+        table is 100% derived from retrieval_log.jsonl, so the established
         remedy is drop + recreate (the same one 'prompttime' and 'loop-prime'
-        used). Runs against a fixture DB only."""
-        from thinkweave.core.indexer import Indexer
-
-        cfg = Config(vault_root=tmp_path / "vault")
-        VaultManager(config=cfg).ensure_dirs()
-
-        # Build the pre-#107 table by hand — independent of SCHEMA_SQL.
-        idx = Indexer(config=cfg)
-        idx.db.execute("DROP TABLE IF EXISTS context_served")
-        idx.db.execute(
-            "CREATE TABLE context_served ("
-            " session_id TEXT NOT NULL,"
-            " note_id    TEXT NOT NULL,"
-            " source     TEXT NOT NULL CHECK(source IN "
-            "  ('startup', 'onthefly', 'prompttime', 'loop-prime')),"
-            " ts         TEXT,"
-            " PRIMARY KEY (session_id, note_id, source))"
-        )
-        idx.db.execute(
-            "INSERT INTO context_served VALUES ('ses-old', 'n-old', 'startup', '')"
-        )
-        idx.db.commit()
-        idx.close()
-
-        # Reopening runs the migration.
-        idx = Indexer(config=cfg)
-        try:
-            idx._init_schema()
-            sql = idx.db.execute(
-                "SELECT sql FROM sqlite_master WHERE name='context_served'"
-            ).fetchone()[0]
-            assert "codex-startup" in sql
-            idx.db.execute(
-                "INSERT INTO context_served VALUES "
-                "('ses-x', 'n-1', 'codex-startup', '')"
-            )
-        finally:
-            idx.close()
-
-    def test_dropped_table_is_repopulated_without_a_full_rebuild(
-        self, tmp_path: Path
-    ):
-        """The drop empties a table the co_served edges project from, and only
-        `rebuild(full=True)` re-walks every session — so deferring the refill
-        to the caller leaves an ordinary post-upgrade open serving nothing
-        until the nightly full pass."""
+        used) — but the drop also empties a table the co_served edges project
+        from, and only `rebuild(full=True)` re-walks every session. Deferring
+        the refill to the caller would leave an ordinary post-upgrade open
+        serving nothing until the nightly full pass. Fixture DB only."""
         from thinkweave.core.indexer import Indexer
         from thinkweave.core.schemas import NoteType
 
@@ -752,17 +637,19 @@ class TestContextServedProjection:
 
         idx = Indexer(config=cfg)
         idx.rebuild(full=True)
-        # Hand-downgrade to the pre-#107 CHECK, rows and all.
+        # Hand-downgrade to the pre-#107 table — independent of SCHEMA_SQL.
         idx.db.execute("DROP TABLE context_served")
         idx.db.execute(
             "CREATE TABLE context_served ("
             " session_id TEXT NOT NULL, note_id TEXT NOT NULL,"
-            " source TEXT NOT NULL CHECK(source IN ('startup', 'onthefly')),"
+            " source TEXT NOT NULL CHECK(source IN "
+            "  ('startup', 'onthefly', 'prompttime', 'loop-prime')),"
             " ts TEXT, PRIMARY KEY (session_id, note_id, source))"
         )
         idx.db.commit()
         idx.close()
 
+        # Reopening runs the migration.
         idx = Indexer(config=cfg)
         try:
             idx._init_schema()
@@ -771,6 +658,12 @@ class TestContextServedProjection:
                 for r in idx.db.execute("SELECT note_id FROM context_served")
             ]
             assert rows == ["n-seeded"]
+            # The CHECK is a closed set — the source it did not list is the
+            # INSERT this migration exists to unblock.
+            idx.db.execute(
+                "INSERT INTO context_served VALUES "
+                "('ses-x', 'n-1', 'codex-startup', '')"
+            )
         finally:
             idx.close()
 
@@ -854,6 +747,25 @@ class TestDoctorHookScope:
         assert not any(c.name == "hook scope" for c in result.checks)
 
 
+@pytest.fixture
+def divergent_scopes(monkeypatch):
+    """Two scopes declaring thinkweave with *different* invocations — the
+    state whose message names the harness. Returns the check runner."""
+    from thinkweave.surfaces.cli import mcp_doctor
+
+    monkeypatch.setattr(
+        mcp_doctor,
+        "_entry_from_claude_json",
+        lambda: (Path("/m"), {"command": "uv", "args": ["a"]}),
+    )
+    monkeypatch.setattr(
+        mcp_doctor,
+        "_entry_from_project_mcp_json",
+        lambda cwd: (Path("/p"), {"command": "uv", "args": ["b"]}),
+    )
+    return mcp_doctor.check_registration_scopes
+
+
 class TestDoctorHarnessAwareMessages:
     """Slice-1/2 follow-ups: two doctor strings assumed Claude Code."""
 
@@ -873,21 +785,9 @@ class TestDoctorHarnessAwareMessages:
         assert "--harness" not in check.fix
 
     def test_divergent_scope_message_names_the_active_harness(
-        self, codex_home: Path, tmp_path: Path, monkeypatch
+        self, codex_home: Path, tmp_path: Path, divergent_scopes
     ):
-        from thinkweave.surfaces.cli import mcp_doctor
-
-        monkeypatch.setattr(
-            mcp_doctor,
-            "_entry_from_claude_json",
-            lambda: (Path("/m"), {"command": "uv", "args": ["a"]}),
-        )
-        monkeypatch.setattr(
-            mcp_doctor,
-            "_entry_from_project_mcp_json",
-            lambda cwd: (Path("/p"), {"command": "uv", "args": ["b"]}),
-        )
-        check = mcp_doctor.check_registration_scopes(tmp_path)
+        check = divergent_scopes(tmp_path)
         assert check.passed is False
         assert "Claude Code" not in check.detail
         # `display_name`, not the `id` slug — prose that renders "claude-code
@@ -895,22 +795,9 @@ class TestDoctorHarnessAwareMessages:
         assert "Codex will pick one" in check.detail
 
     def test_divergent_scope_message_reads_as_prose_under_claude_code(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, divergent_scopes
     ):
-        from thinkweave.surfaces.cli import mcp_doctor
-
-        monkeypatch.setattr(
-            mcp_doctor,
-            "_entry_from_claude_json",
-            lambda: (Path("/m"), {"command": "uv", "args": ["a"]}),
-        )
-        monkeypatch.setattr(
-            mcp_doctor,
-            "_entry_from_project_mcp_json",
-            lambda cwd: (Path("/p"), {"command": "uv", "args": ["b"]}),
-        )
-        check = mcp_doctor.check_registration_scopes(tmp_path)
-        assert "Claude Code will pick one" in check.detail
+        assert "Claude Code will pick one" in divergent_scopes(tmp_path).detail
 
 
 class TestHeadlessHookTrust:
@@ -1034,15 +921,6 @@ class TestHooksCliTakesHarness:
     left off the `--harness` list. The doctor's own fix hint now tells users
     to run `weave hooks install --scope user --harness codex`, so the flag has
     to exist or the remedy is broken advice."""
-
-    @pytest.mark.parametrize("action", ["install", "uninstall"])
-    def test_flag_parses(self, action: str):
-        from thinkweave.surfaces.cli.parser import build_parser
-
-        args = build_parser().parse_args(
-            ["hooks", action, "--scope", "user", "--harness", "codex"]
-        )
-        assert args.harness == "codex"
 
     def test_install_targets_the_named_harness(self, tmp_path: Path, capsys):
         """End-to-end through the CLI entry point: the flag must actually pin

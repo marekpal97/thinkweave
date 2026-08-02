@@ -821,32 +821,19 @@ class TestExtractToolOutputText:
             {"tool_response": {"interrupted": False, "isImage": False}}
         ) == ""
 
-    def test_write_response_is_not_text(self):
-        """Claude Code's Write/Edit ``tool_response`` echoes the file it just
-        wrote. It is not tool *output* — treating it as such feeds the whole
-        file back to ``_extract_insight_blocks``, so any ★ Insight block
-        living in the source re-captures on every single touch (#107).
-        """
-        payload = {
-            "tool_name": "Write",
-            "tool_input": {"file_path": "notes.py", "content": "x"},
-            "tool_response": {
+    @pytest.mark.parametrize(
+        "tool_response",
+        [
+            # Write: `content` is the file just written.
+            {
                 "type": "create",
                 "filePath": "/repo/notes.py",
                 "content": "# ★ Insight ─────\n# Key point here.\n",
                 "structuredPatch": [],
                 "userModified": False,
             },
-        }
-        assert _extract_tool_output_text(payload) == ""
-
-    def test_edit_response_original_file_is_not_text(self):
-        """Same contract on the Edit shape, whose ``originalFile`` carries the
-        pre-edit contents of the whole file."""
-        payload = {
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "a.py", "old_string": "x", "new_string": "y"},
-            "tool_response": {
+            # Edit: `originalFile` is the whole file, pre-edit.
+            {
                 "filePath": "/repo/a.py",
                 "oldString": "x",
                 "newString": "y",
@@ -854,8 +841,16 @@ class TestExtractToolOutputText:
                 "structuredPatch": [{"lines": ["-x", "+y"]}],
                 "userModified": False,
             },
-        }
-        assert _extract_tool_output_text(payload) == ""
+        ],
+        ids=["write", "edit"],
+    )
+    def test_file_echo_response_is_not_text(self, tool_response: dict):
+        """Claude Code's Write/Edit ``tool_response`` echoes the file it just
+        wrote. It is not tool *output* — treating it as such feeds the whole
+        file back to ``_extract_insight_blocks``, so any ★ Insight block living
+        in the source re-captures on every single touch (#107).
+        """
+        assert _extract_tool_output_text({"tool_response": tool_response}) == ""
 
 
 class TestHandlePostCommitCapture:

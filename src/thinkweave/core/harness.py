@@ -152,12 +152,8 @@ class HarnessProfile:
 
     display_name: str = ""
     """The harness's name as a human writes it ("Claude Code"), for messages
-    that used to hardcode it. Defaults to ``id``, which is a slug and reads as
-    a typo in prose — set it on any profile whose messages reach a user."""
-
-    def __post_init__(self) -> None:
-        if not self.display_name:
-            object.__setattr__(self, "display_name", self.id)
+    that used to hardcode it. Set it on any profile whose messages reach a
+    user — the ``id`` is a slug and reads as a typo in prose."""
 
     @property
     def dev_link(self) -> Path:

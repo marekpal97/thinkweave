@@ -1465,11 +1465,6 @@ class Indexer:
                     continue
                 etype = ev.get("type", "")
                 if etype == "startup":
-                    # Startup events fan out by their `surface` stamp the same
-                    # way `retrieval` events do by their `tool` sentinel. The
-                    # map is closed because the CHECK constraint is: an
-                    # unrecognised harness falls back to plain 'startup'
-                    # rather than failing every INSERT in the log.
                     src = _STARTUP_SOURCES.get(ev.get("surface", ""), "startup")
                 elif etype == "retrieval":
                     # Retrieval events carry a source distinction by their tool

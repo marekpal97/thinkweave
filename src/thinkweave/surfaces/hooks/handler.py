@@ -636,7 +636,7 @@ ACTION_TOOLS = ("Write", "Edit", "Bash", "apply_patch")
 # binary: `*** Add File: `, `*** Update File:`, `*** Delete File: `,
 # `*** Move to: `. Note `Move to` carries no `File` keyword.
 _PATCH_OP_RE = re.compile(
-    r"^\*\*\* (?:(Add|Update|Delete) File|(Move to)): (.+?)\s*$",
+    r"^\*\*\* (Add|Update|Delete|Move to)(?: File)?: (.+?)\s*$",
     re.MULTILINE,
 )
 
@@ -670,10 +670,9 @@ def _build_events(
     # ★ Insight blocks are not scanned here: apply_patch's output is a list of
     # touched files, never model prose. Bash keeps that enrichment.
     events = []
-    for add, move, path in _PATCH_OP_RE.findall(tool_input.get("command", "")):
+    for op, path in _PATCH_OP_RE.findall(tool_input.get("command", "")):
         if _is_internal(path):
             continue
-        op = add or move
         events.append(
             {
                 "ts": now,
