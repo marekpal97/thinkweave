@@ -24,6 +24,13 @@ from typing import Callable
 
 from thinkweave.core.plugin_route import PLUGIN_NAME, namespace_prompt, plugin_namespace
 
+# What the SessionStart hook asks `build_project_context` for. Lives here so a
+# harness that has to be *told* the payload's size (`additional_context_limit`)
+# derives its cap from the same number the handler spends — raising the budget
+# used to leave the cap behind, silently, and the payload spilled to a temp
+# file with no error (#107).
+SESSION_START_BUDGET_TOKENS = 10_000
+
 _NUDGE = (
     "If `weave_*` MCP tools are available, thinkweave (Obsidian-native memory "
     "layer) is your durable memory for this session. Prefer `weave_search` / "
@@ -263,13 +270,14 @@ def codex(home: Path | None = None) -> HarnessProfile:
         # machine-scope file is offered (#107).
         hooks_global_only=True,
         # Codex spills any hook `additionalContext` over ~2500 tokens to a temp
-        # file and shows the model a head-and-tail preview instead. The
-        # SessionStart payload is built with budget_tokens=10000, so it needs an
-        # explicit limit or the context silently never arrives. Headroom over
-        # the budget covers the drift between our chars//4 estimate and Codex's
-        # real tokenizer; the payload is hard-capped upstream, so this is a
-        # bounded promise, not the "limit = 0" the manual warns against.
-        additional_context_limit=12000,
+        # file and shows the model a head-and-tail preview instead, so the
+        # SessionStart payload needs an explicit limit or the context silently
+        # never arrives. Derived from the budget, doubled: our budget is spent
+        # against a chars//4 estimate, and note-id-dense markdown tokenizes far
+        # worse than 4 chars/token, so a narrow margin still spills. The
+        # payload is hard-capped upstream, so this stays a bounded promise, not
+        # the "limit = 0" the manual warns against.
+        additional_context_limit=2 * SESSION_START_BUDGET_TOKENS,
         # Codex records trust against a hash of each hook definition and skips
         # any it has not seen approved. Writing the file is therefore only half
         # the install — without this line the user gets a success message and

@@ -1115,13 +1115,16 @@ def _handle_session_start(hook_input: dict) -> None:
     """
     try:
         from thinkweave.core.config import load_config
+        from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
         from thinkweave.retrieval.context import build_project_context
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
         cfg = load_config()
         project = _detect_project(hook_input)
-        payload = build_project_context(cfg, project, budget_tokens=10000)
+        payload = build_project_context(
+            cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
+        )
 
         # Served note ids — computed once, reused for the RLVR startup event
         # AND the memory-seam guard. (Parsed from the payload *before* the

@@ -41,8 +41,8 @@ under test, all verified against codex-cli 0.146.0 on 2026-08-02:
   hook-output message to roughly 2,500 tokens. If a hook returns more, Codex
   saves the full text under ``<temp_dir>/hook_outputs/…`` and gives the model a
   head-and-tail preview." Our SessionStart payload is built with
-  ``budget_tokens=10000`` — 4x the default — so without an explicit limit the
-  headline acceptance criterion ("an interactive Codex session receives the
+  ``budget_tokens=SESSION_START_BUDGET_TOKENS`` — 4x that default — so without
+  an explicit limit the headline acceptance criterion ("an interactive Codex session receives the
   SessionStart context payload") would fail *silently*, spilling to a temp
   file. The handlers that can emit ``additionalContext`` therefore carry an
   explicit limit. Codex "ignores ``additionalContextLimit`` and reports a
@@ -61,6 +61,7 @@ from pathlib import Path
 import pytest
 
 from thinkweave.core import harness
+from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
 from thinkweave.surfaces.hooks.install import install_hooks, uninstall_hooks
 
 # The events whose thinkweave handler can return
@@ -70,8 +71,10 @@ from thinkweave.surfaces.hooks.install import install_hooks, uninstall_hooks
 # actually decides.
 CONTEXT_EMITTING = {"SessionStart", "UserPromptSubmit"}
 
-# What `build_project_context` is asked for in _handle_session_start.
-SESSION_START_BUDGET_TOKENS = 10000
+# `SESSION_START_BUDGET_TOKENS` (what `build_project_context` is asked for in
+# _handle_session_start) is imported above rather than transcribed: the cap and
+# the budget are one number now, so a raised budget must fail the limit
+# assertion below rather than silently reintroduce the spill.
 
 
 @pytest.fixture
@@ -155,7 +158,10 @@ class TestInstalledArtifact:
                             f"{event} can emit additionalContext and needs an "
                             "explicit limit"
                         )
-                        assert limit >= SESSION_START_BUDGET_TOKENS
+                        # Headroom, not parity: the budget is spent against a
+                        # chars//4 estimate, and note-id-dense markdown
+                        # tokenizes worse than that, so a narrow margin spills.
+                        assert limit >= 2 * SESSION_START_BUDGET_TOKENS
                     else:
                         # Codex reports a configuration warning when the key
                         # rides an event that cannot emit additionalContext.
