@@ -9,16 +9,8 @@ installed or dev-linked. Tests that exercise the plugin route override
 explicitly — via ``use_profile`` below, the ``manifest=`` / ``dev_link=``
 kwargs of ``plugin_namespace``, or by patching at the import site.
 
-Harness-profile overrides
--------------------------
-The autouse ``_sandbox_harness_home`` fixture already points the whole active
-profile at a tmp home, so no test touches the real ``~/.claude``. The
-``use_profile(**fields)`` fixture layers on top: it swaps the active
-:class:`~thinkweave.core.harness.HarnessProfile` for a copy with ``fields``
-replaced. That is how a test aims a specific harness touchpoint (``mcp_config``,
-``instructions_file``, ``pause_marker``, …) at a path it wants to assert
-against — the consumers hold no path constants to patch. Calls compose: each
-one replaces fields on whatever profile is currently active.
+Harness touchpoints (``mcp_config``, ``instructions_file``, …) are sandboxed by
+the autouse ``_sandbox_harness_home`` fixture and aimed by ``use_profile``.
 
 Test-vault lifecycle
 --------------------
@@ -68,23 +60,17 @@ from thinkweave.core.vault import VaultManager
 from thinkweave.retrieval.search import Search
 
 
-def _replace_profile(
-    monkeypatch: pytest.MonkeyPatch, **fields: Any
-) -> harness.HarnessProfile:
-    """Replace the active harness profile with a copy carrying ``fields``."""
-    profile = dataclasses.replace(harness.active(), **fields)
-    monkeypatch.setattr(harness, "_OVERRIDE", profile)
-    return profile
-
-
 @pytest.fixture
 def use_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Callable[..., harness.HarnessProfile]:
-    """``use_profile(mcp_config=…, pause_marker=…)`` — see the module docstring."""
+    """``use_profile(mcp_config=…, pause_marker=…)`` — swap the active harness
+    profile for a copy with those fields replaced. Calls compose."""
 
     def _use(**fields: Any) -> harness.HarnessProfile:
-        return _replace_profile(monkeypatch, **fields)
+        profile = dataclasses.replace(harness.active(), **fields)
+        monkeypatch.setattr(harness, "_OVERRIDE", profile)
+        return profile
 
     return _use
 

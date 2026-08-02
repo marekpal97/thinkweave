@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from thinkweave.core.harness import active as active_harness
+from thinkweave.core.harness import active as _profile
 
 SERVER_NAME = "thinkweave"
 
@@ -31,7 +31,6 @@ SERVER_NAME = "thinkweave"
 # symlinks the checkout to ~/.claude/skills/<name>/. The plugin manifest there
 # declares the MCP server, so the doctor must scan these to recognise a clean
 # plugin-only install (no raw entry in the harness's own MCP config).
-_profile = active_harness
 
 # ---------- result types ----------
 

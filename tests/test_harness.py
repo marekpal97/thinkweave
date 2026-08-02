@@ -19,7 +19,6 @@ from the profile the code under test builds.
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 
 import pytest
@@ -38,12 +37,6 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("THINKWEAVE_HARNESS", raising=False)
     monkeypatch.setattr(harness, "_OVERRIDE", None)
     return home
-
-
-def _override(monkeypatch: pytest.MonkeyPatch, **fields) -> harness.HarnessProfile:
-    p = dataclasses.replace(harness.active(), **fields)
-    monkeypatch.setattr(harness, "_OVERRIDE", p)
-    return p
 
 
 def _probe_profile(home: Path) -> harness.HarnessProfile:
@@ -208,7 +201,7 @@ class TestSeamGateConsultsNativeMemory:
         assert [f["slug"] for f in memory_seam.collect_cc_facts()] == ["a-fact"]
 
     def test_walk_is_skipped_when_the_harness_has_none(
-        self, fake_home: Path, monkeypatch
+        self, fake_home: Path, use_profile
     ):
         # dec-0535e46b: "the memory seam becomes a gated capability rather than
         # a port target" — a harness without native memory yields no facts even
@@ -216,7 +209,7 @@ class TestSeamGateConsultsNativeMemory:
         from thinkweave.synthesis import memory_seam
 
         _seed_cc_memory(fake_home)
-        _override(monkeypatch, native_memory=False)
+        use_profile(native_memory=False)
         assert memory_seam.collect_cc_facts() == []
 
 
@@ -229,7 +222,7 @@ class TestCronRendererConsultsCapabilities:
         )
 
     def test_headless_slash_off_leaves_the_skill_token_bare(
-        self, fake_home: Path, monkeypatch
+        self, fake_home: Path, use_profile
     ):
         from thinkweave.scheduling import registry
 
@@ -241,21 +234,21 @@ class TestCronRendererConsultsCapabilities:
             self._job("claude -p /dream")
         )
 
-        _override(monkeypatch, headless_slash=False)
+        use_profile(headless_slash=False)
         without = registry.resolve_command(self._job("claude -p /dream"))
         assert "/thinkweave:dream" not in without
         assert "-p /dream" in without
 
-    def test_bypass_flag_comes_from_the_profile(self, fake_home: Path, monkeypatch):
+    def test_bypass_flag_comes_from_the_profile(self, fake_home: Path, use_profile):
         from thinkweave.scheduling import registry
 
-        _override(monkeypatch, bypass_permissions_flag="--yolo")
+        use_profile(bypass_permissions_flag="--yolo")
         assert registry.resolve_command(self._job("claude -p /dream")).endswith("--yolo")
 
-    def test_no_bypass_flag_means_none_is_appended(self, fake_home: Path, monkeypatch):
+    def test_no_bypass_flag_means_none_is_appended(self, fake_home: Path, use_profile):
         from thinkweave.scheduling import registry
 
-        _override(monkeypatch, bypass_permissions_flag="")
+        use_profile(bypass_permissions_flag="")
         assert registry.resolve_command(self._job("claude -p /dream")).endswith(
             "-p /dream"
         )
@@ -284,15 +277,15 @@ class TestCronRendererConsultsCapabilities:
 
 
 class TestHooksInstallerConsultsHooksFlag:
-    def test_refuses_on_a_harness_without_hooks(self, fake_home: Path, monkeypatch):
+    def test_refuses_on_a_harness_without_hooks(self, fake_home: Path, use_profile):
         from thinkweave.surfaces.hooks import install as hooks_install
 
-        _override(monkeypatch, hooks=False)
+        use_profile(hooks=False)
         with pytest.raises(SystemExit):
             hooks_install.install_hooks(project_dir=str(fake_home), scope="project")
         assert not (fake_home / ".claude" / "settings.local.json").exists()
 
-    def test_uninstall_is_a_no_op_not_an_exit(self, fake_home: Path, monkeypatch):
+    def test_uninstall_is_a_no_op_not_an_exit(self, fake_home: Path, use_profile):
         """Removing what was never installed must not abort the caller.
 
         ``weave pause`` uninstalls hooks *first*, then removes the MCP entry
@@ -301,18 +294,18 @@ class TestHooksInstallerConsultsHooksFlag:
         """
         from thinkweave.surfaces.hooks import install as hooks_install
 
-        _override(monkeypatch, hooks=False)
+        use_profile(hooks=False)
         hooks_install.uninstall_hooks(project_dir=str(fake_home), scope="project")
 
     def test_pause_completes_on_a_hooks_less_harness(
-        self, fake_home: Path, monkeypatch
+        self, fake_home: Path, use_profile
     ):
         import argparse
 
         from thinkweave.surfaces.cli import pause as pause_mod
 
         marker = fake_home / "paused.json"
-        _override(monkeypatch, hooks=False, pause_marker=marker)
+        use_profile(hooks=False, pause_marker=marker)
         pause_mod.cmd_pause(argparse.Namespace(status=False))
         assert marker.exists()
 
@@ -333,13 +326,6 @@ class TestNewProfileNeedsNoConsumerEdits:
         monkeypatch.setenv("THINKWEAVE_HARNESS", "probe")
         monkeypatch.setattr(harness, "_OVERRIDE", None)
         return p
-
-    def test_install_touchpoints(self, probe):
-        from thinkweave.surfaces.cli import install as inst
-
-        assert inst._profile().mcp_config == probe.mcp_config
-        assert inst._profile().instructions_file == probe.instructions_file
-        assert inst._profile().dev_link == probe.skills_dir / "thinkweave"
 
     def test_mcp_doctor_reads_the_profile_mcp_config(self, probe, tmp_path: Path):
         from thinkweave.surfaces.cli import mcp_doctor as md

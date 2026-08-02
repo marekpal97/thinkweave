@@ -27,7 +27,7 @@ import sysconfig
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from thinkweave.core.harness import active as active_harness
+from thinkweave.core.harness import active as _profile
 
 SERVER_NAME = "thinkweave"
 REQUIRED_SCRIPTS = ("weave", "weave-hook", "weave-mcp")
@@ -37,7 +37,6 @@ REQUIRED_SCRIPTS = ("weave", "weave-hook", "weave-mcp")
 # comes from the active profile. `_profile()` is the single read point, so a
 # `--harness` flag (#106) has exactly one place to interpose; the accessors
 # below just spell the individual fields at their call sites.
-_profile = active_harness
 
 
 def _mcp_config() -> Path:

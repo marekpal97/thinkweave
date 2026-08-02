@@ -8,29 +8,6 @@ its instructions at ``~/.claude/CLAUDE.md`` and is invoked as ``claude -p``".
 A profile collects those facts in one place so a second harness is a data
 entry here, not a fork of every consumer (epic #103, dec-0535e46b).
 
-A profile owns four things:
-
-* **paths** — instructions file, MCP registration target, plugin/skill dirs,
-  hook settings (user scope absolute, project scope relative to a repo),
-  the pause marker, and the native-memory dirs;
-* **invocation shape** — the headless binary and its model / prompt /
-  permission-bypass flags, assembled by :meth:`HarnessProfile.headless_argv`;
-* **the skill-namespace rule** — :meth:`HarnessProfile.namespace`, which
-  drives whether a rendered ``-p /dream`` becomes ``-p /thinkweave:dream``;
-* **capability flags** — ``hooks``, ``subagents``, ``native_memory``,
-  ``headless_slash``. These are *consulted*, not decorative: the memory-seam
-  walk is gated on ``native_memory``, the hooks installer on ``hooks``, and
-  the cron renderer on ``headless_slash``. A harness missing a capability gets
-  a documented degradation, never a silently broken promise.
-
-**Scope (issue #104 scoping guard).** The interface is extracted from Claude
-Code and Codex only — the two near-identical instances in hand. It deliberately
-does *not* generalise: no hook-envelope mapping (that arrives with the second
-instance in #107), no MCP-registration *writer* abstraction beyond naming the
-target file (#106), no flag without a consumer on the horizon. Pi (#114) is
-licensed to rework this shape when it lands; designing for it now is the
-failure mode.
-
 Selection is ``$THINKWEAVE_HARNESS`` (default ``claude-code``). Profiles are
 built per call rather than cached at import so a changed ``$HOME`` — the only
 input — always applies; ``_OVERRIDE`` is the in-process escape hatch tests and
@@ -200,8 +177,6 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
 
 PROFILES: dict[str, Callable[[], HarnessProfile]] = {"claude-code": claude_code}
 
-DEFAULT_PROFILE = "claude-code"
-
 #: In-process override. ``None`` means "derive from the environment".
 _OVERRIDE: HarnessProfile | None = None
 
@@ -217,7 +192,7 @@ def active() -> HarnessProfile:
     """
     if _OVERRIDE is not None:
         return _OVERRIDE
-    name = os.environ.get("THINKWEAVE_HARNESS") or DEFAULT_PROFILE
+    name = os.environ.get("THINKWEAVE_HARNESS") or "claude-code"
     factory = PROFILES.get(name)
     if factory is None:
         print(

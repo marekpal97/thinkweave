@@ -121,9 +121,8 @@ class TestRegistrationScopes:
         no machine/project entry — must PASS. This is the false-negative a
         real plugin-route user hit: the doctor used to scan only cwd-relative
         dirs and report 'not registered'."""
-        use_profile(mcp_config=tmp_path / "absent.json")
         cache = tmp_path / "cache"
-        use_profile(plugins_cache=cache)
+        use_profile(mcp_config=tmp_path / "absent.json", plugins_cache=cache)
         manifest_dir = (
             cache / "thinkweave" / "thinkweave" / "0.1.0" / ".claude-plugin"
         )
@@ -154,9 +153,8 @@ class TestRegistrationScopes:
     def test_dev_link_install_is_pass(self, tmp_path, use_profile):
         """The dev-link (@skills-dir) equivalent: manifest under
         ~/.claude/skills/<name>/.claude-plugin/, no machine/project entry."""
-        use_profile(mcp_config=tmp_path / "absent.json")
         skills = tmp_path / "skills"
-        use_profile(skills_dir=skills)
+        use_profile(mcp_config=tmp_path / "absent.json", skills_dir=skills)
         manifest_dir = skills / "thinkweave" / ".claude-plugin"
         manifest_dir.mkdir(parents=True)
         (manifest_dir / "plugin.json").write_text(
@@ -342,9 +340,8 @@ class TestLauncherResolves:
         self, tmp_path, monkeypatch, use_profile):
         """The plugin manifest's command embeds ${CLAUDE_PLUGIN_ROOT};
         the probe must expand it to the manifest's own plugin root."""
-        use_profile(mcp_config=tmp_path / "absent.json")
         skills = tmp_path / "skills"
-        use_profile(skills_dir=skills)
+        use_profile(mcp_config=tmp_path / "absent.json", skills_dir=skills)
         plugin_root = skills / "thinkweave"
         manifest_dir = plugin_root / ".claude-plugin"
         manifest_dir.mkdir(parents=True)
