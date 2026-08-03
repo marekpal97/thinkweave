@@ -576,9 +576,15 @@ Compose, per issue:
    ```python
    weave_create(type=note, title="<portable lesson title>",
                 body="<the reusable wisdom, prose>",
+                project="<the project>",
                 session_id="<this run's session>",
                 frontmatter={"concepts": ["<ontology-term>", "<ontology-term>"]})
    ```
+
+   `project=` is NOT optional: without it (and when `session_id` doesn't
+   resolve — e.g. headless runs before the session note exists) the writer
+   drops the note as a bare file at the vault's `projects/` root. The
+   2026-08-02 runs shipped stray root-level trajectory notes exactly this way.
 
    Capture each returned insight id.
 
@@ -589,6 +595,7 @@ Compose, per issue:
 
    ```python
    weave_create(type=note, tags=<payload tags>,
+                project="<the project>",
                 session_id="<this run's session>",
                 frontmatter={**<payload frontmatter>, "builds_on": [<insight ids>]})
    ```
