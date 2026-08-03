@@ -34,6 +34,20 @@ description: Drain a per-source-type acquisition queue. Source-type-agnostic —
 
 ---
 
+## Never end on a question (headless safety)
+
+A drain run **never** ends by asking the user anything. You cannot tell from inside the session whether you are interactive or headless, so the rule is unconditional — under cron (`claude -p`) nothing answers an options menu, and a drain that stops to ask is a silent no-op that leaves the whole batch untouched.
+
+When mid-drain you face an open policy decision — the canonical example: queue items from an outlet with a known systemic failure pattern in memory (Google News wrappers, a hard-paywalled outlet) — take the conservative default:
+
+1. **Skip those items this run.** Leave them in the queue untouched; spend no writers on them.
+2. **Note the skip and your recommendation in one line of the final drain summary** — e.g. `skipped: 4 items from news.google.com (known systemic fetch failure) — recommend dropping the outlet from PRIORITIES.yaml::intake.news.outlets`.
+3. **Drain the rest of the batch normally.**
+
+Never present option menus ("How do you want to handle this? 1/2/3"), never wait for an answer. Permanently dropping an outlet is an **operator** decision, made by editing `PRIORITIES.yaml::intake.news.outlets` — once an outlet is dropped there, the existing archive policy (step 2's outcome table) flushes its queued failures as `status=failed`. The drain run's job is only to flag the recommendation, not to make the call.
+
+---
+
 ## 1. Load config + queue
 
 ```
