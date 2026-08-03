@@ -52,7 +52,13 @@ def tool_schemas() -> list:
                     "match_mode": {"type": "string", "enum": ["any", "all"], "default": "any"},
                     "min_matches": {"type": "integer", "default": 0},
                     "project": {"type": "string"},
-                    "type": {},
+                    "type": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Note type filter for action='search'. String or list.",
+                    },
                     "project_concepts": {"type": "boolean", "default": False},
                     "cooccurrence": {"type": "boolean", "default": False},
                     "since": {"type": "string"},

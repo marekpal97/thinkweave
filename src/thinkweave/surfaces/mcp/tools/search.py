@@ -41,7 +41,13 @@ def tool_schemas() -> list:
                         "default": "fts",
                         "description": "fts = keyword, similar = semantic, hybrid = RRF fusion.",
                     },
-                    "type": {"description": "Note type filter. String or list. Valid: note, session, decision, source, theme, digest."},
+                    "type": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Note type filter. String or list. Valid: note, session, decision, source, theme, digest.",
+                    },
                     "project": {"type": "string", "description": "Filter by project name. Empty = cross-project."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter to notes containing ALL of these tags."},
                     "concepts": {
@@ -81,7 +87,13 @@ def tool_schemas() -> list:
                         "items": {"type": "string"},
                         "description": "Concepts to retrieve by. When provided, drives layer 2 directly instead of expanding from FTS hits.",
                     },
-                    "type": {"description": "Filter across all three layers. String or list — e.g. ['note','decision','theme']."},
+                    "type": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Filter across all three layers. String or list — e.g. ['note','decision','theme'].",
+                    },
                     "since": {"type": "string", "description": "Earliest ISO date (YYYY-MM-DD)."},
                     "until": {"type": "string", "description": "Latest ISO date (YYYY-MM-DD)."},
                     "limit": {"type": "integer", "default": 5},
