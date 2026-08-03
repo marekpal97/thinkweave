@@ -55,4 +55,4 @@ When you need depth, go here. CLAUDE.md tells you *how to operate*; these tell y
 | [docs/CLI-AND-MCP.md](docs/CLI-AND-MCP.md) | The `weave` CLI subcommand reference, the 17 MCP tools, the CLI↔MCP surface contract (which audience owns each operation), and the environment variables. |
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Every SQL table the derived index produces — name, purpose, key columns, `CREATE` site — and the rebuild/migration story. Markdown stays truth; SQLite is rebuildable. |
 
-After upgrading Thinkweave, re-run `weave hooks install` to pick up newly-added hooks (e.g. SessionStart).
+For a dev-link upgrade, close every Claude Code session, run `git pull` and `uv sync --extra mcp`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.

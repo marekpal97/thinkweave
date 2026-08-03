@@ -356,6 +356,34 @@ def check_hook_scope(cwd: Path) -> CheckResult:
     )
 
 
+def _git_bash_path(path: Path) -> str:
+    """Translate an absolute Windows path for Git Bash."""
+    value = path.resolve().as_posix()
+    return f"/{value[0].lower()}{value[2:]}"
+
+
+def _launcher_probe_argv(resolved: str, args: list[str]) -> list[str]:
+    """Run POSIX launcher shims through Git Bash on Windows."""
+    argv = [resolved, *args]
+    if os.name != "nt":
+        return argv
+
+    path = Path(resolved)
+    try:
+        is_shell_script = path.is_file() and path.read_bytes()[:2] == b"#!"
+    except OSError:
+        is_shell_script = False
+    if not is_shell_script:
+        return argv
+
+    git = shutil.which("git")
+    if not git:
+        return argv
+    bash = Path(git).resolve().parents[1] / "bin" / "bash.exe"
+    if not bash.is_file():
+        return argv
+    return [str(bash), _git_bash_path(path), *args]
+
 def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
     """Resolve the most-specific entry's command and try a quick launch.
 
@@ -448,8 +476,9 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
             )
 
     try:
+        probe_argv = _launcher_probe_argv(resolved, expanded)
         proc = subprocess.run(
-            [resolved, *expanded],
+            probe_argv,
             timeout=timeout_s,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -467,12 +496,15 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
                 f"(from {source}) spawned a process awaiting stdin"
             ),
         )
-    except FileNotFoundError as exc:
+    except OSError as exc:
         return CheckResult(
             name="launcher resolves",
             passed=False,
             detail=f"could not exec `{resolved}` (from {source}): {exc}",
-            fix="install uv or re-run `weave install --yes`",
+            fix=(
+                "install Git for Windows when the launcher is a POSIX shell "
+                "script, or re-run `weave install --yes`"
+            ),
         )
     # The process actually exited inside the timeout — that's a failure
     # for an MCP stdio server (it should idle on stdin).
