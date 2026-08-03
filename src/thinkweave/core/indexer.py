@@ -1470,10 +1470,11 @@ class Indexer:
                 elif etype == "retrieval":
                     # Retrieval events carry a source distinction by their tool
                     # sentinel: system-pushed enrichment (prompt-time R2, or
-                    # issue-loop claim-time priming #57 — see
-                    # scripts/issue_loop.py:LOOP_PRIME_TOOL) each gets its own
-                    # source so agent-pulled 'onthefly' stays a clean signal for
-                    # the RLVR export.
+                    # issue-loop claim-time priming #57 — the writer is
+                    # LOOP_PRIME_TOOL in the devloop package's
+                    # trajectory/prime.py, which lives in funloops since #151)
+                    # each gets its own source so agent-pulled 'onthefly' stays
+                    # a clean signal for the RLVR export.
                     tool = ev.get("tool")
                     if tool == "prompt_time_retrieval":
                         src = "prompttime"

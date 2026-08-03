@@ -1,6 +1,9 @@
 # Issue-to-PR loop configuration — the DEFAULTS.
 # Read by scripts/issue_loop.py (deterministic rail) and the /issue-loop
-# command (orchestration). Semantics: docs/agents/issue-loop.md.
+# command (orchestration). This file is THIS repo's — the rail itself is the
+# `devloop` package, pinned from funloops (issue #151); its docs, and every
+# `*.command.md` referenced below, live in funloops under
+# packages/devloop/docs/agents/. Semantics: that repo's issue-loop.md.
 #
 # Per-run posture belongs on the command line, not in edits to this file:
 # every knob in [loop]/[labels]/[tdd]/[dispatch]/[triage] can be overridden for one run via
@@ -44,7 +47,7 @@ prime_holdout = 5
 
 [dispatch]
 # Splice ponytail persona + epic north-star into dispatch prompts (issue #89);
-# semantics: issue-loop.command.md §1b. Per-run override: --set dispatch.persona=false.
+# semantics: funloops issue-loop.command.md §1b. Per-run override: --set dispatch.persona=false.
 persona = true
 
 [tdd]
@@ -98,7 +101,7 @@ red_min_diff_lines = 800       # "big diff" → red
 #                 acceptance | review | simplify (LLM-judged / orchestrated,
 #                 run by the command in fresh subagent contexts). Adding
 # another command/diff gate is config-only; a new *kind* needs a DETERMINISTIC
-# entry in devloop/gates.py (deterministic kinds) or a section in the
+# entry in the devloop package's gates.py (deterministic kinds) or a section in the
 # /issue-loop command (orchestrated kinds).
 
 [[gates]]
@@ -106,7 +109,7 @@ id = "diff-guard"
 kind = "diff"
 required = true
 # same three pattern forms as [triage].sensitive_paths above (both go
-# through devloop/paths.py since issue #94).
+# through the devloop package's paths.py since issue #94).
 forbidden_paths = [".github/workflows/", "dist/", "_old/"]
 max_changed_lines = 2000
 
@@ -132,20 +135,21 @@ smells_baseline = true   # report Fowler code smells as judgement calls — neve
 
 # simplify runs LAST, after review, and is safe by construction: it can only
 # SHRINK an already-verified diff and must preserve verified behavior. The
-# orchestrator (issue-loop.command.md §1c-simplify) snapshots the tip, dispatches
-# a subagent with the VENDORED ponytail-review skill on the slice diff, applies
+# orchestrator (funloops issue-loop.command.md §1c-simplify) snapshots the tip,
+# dispatches a subagent with the ponytail-review skill on the slice diff, applies
 # its delete-list as a commit, then re-runs `rerun` (the deterministic + behavioral
 # gates) on the shrunk diff. If either goes red it hard-resets to the pre-simplify
 # tip and ships the original diff with `revert_note` in the PR body — so this gate
 # NEVER fails the pipeline. That is why required=false: its "failure" mode is the
 # revert, not a block. skill names the vendored delete-list source
-# (docs/agents/ponytail-review.command.md; the host /simplify skill is the fallback).
+# (funloops packages/devloop/docs/agents/ponytail-review.command.md; the host
+# /simplify skill is the fallback).
 # Also drives the §1e stack-tip pass (#90): one whole-branch run before PR-open
 # — same rerun/revert_note, no separate gate.
 [[gates]]
 id = "simplify"
 kind = "simplify"
 required = false
-skill = "ponytail-review"          # vendored under docs/agents/; host /simplify is the fallback
+skill = "ponytail-review"          # ships with devloop (funloops); host /simplify is the fallback
 rerun = ["tests", "acceptance"]    # re-verify the shrunk diff against these gate ids, in order
 revert_note = "⚠ simplify-reverted"  # PR-body note when the shrunk diff is discarded

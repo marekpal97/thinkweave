@@ -1,26 +1,96 @@
-"""Enforcing seams for the devloop/ boundary spec (docs/agents/devloop-boundaries.md).
+"""The cross-repo seam: thinkweave as a *consumer* of the devloop package.
 
-Two contracts the spec states in prose and this file makes falsifiable:
+devloop lives in funloops now (``packages/devloop``, issue #151); thinkweave
+pins it as a dev-dependency and keeps only the contracts a host owns. The
+boundary spec itself moved with the code — read it at
+``packages/devloop/docs/agents/devloop-boundaries.md`` in funloops.
+
+Three contracts span the two repos; the first two are enforced here, and only
+thinkweave can enforce them:
 
 1. **Schema pin** — the derived-index tables/columns devloop reads are built
    here by the REAL thinkweave indexer, so indexer schema drift fails a test
-   instead of silently degrading prime to unprimed forever. Both sides of the
-   seam appear in one test; the hand-built-schema tests in test_issue_loop.py
-   stay as fast unit checks.
-2. **Importer allowlist** — which devloop modules may import ``sqlite3``:
-   ``{index_client}`` since #100 moved prime's SQL into the seam, so the
-   singleton is enforced not remembered.
+   instead of silently degrading prime to unprimed forever. funloops cannot
+   run this: it has no thinkweave to import. This is the seam that must go red
+   when *either* side moves.
+2. **Consumption** — devloop is resolved from the installed package (never a
+   directory in this tree), and the ``scripts/issue_loop.py`` shim's resolved
+   config is byte-identical to what it printed before the carve.
+3. **The ``LOOP_PRIME_TOOL`` sentinel** — the literal ``'loop_prime'`` devloop
+   stamps on the retrieval events it buffers, which thinkweave's indexer
+   projects to ``context_served(source='loop-prime')``; a rename on either side
+   silently strands the served-context signal. Enforced in
+   ``tests/test_context_served.py``, which imports the constant from devloop
+   rather than re-typing the string — listed here so the inventory of what
+   crosses the repo boundary is in one place.
+
+Not here any more: the sqlite3 importer allowlist and the boundary-doc pins.
+Those police devloop's own internals, which is funloops' CI's job now
+(``packages/devloop/tests/test_devloop_boundaries.py``).
+
+Pin-update dance — what to do when this file goes red
+-----------------------------------------------------
+The pin is the ``@ <rev>`` in the dev group's ``devloop @ git+…`` direct
+reference in ``pyproject.toml`` (resolved into ``uv.lock``). A red schema-pin
+test means thinkweave's indexer and the pinned devloop's SQL disagree. Two
+legitimate fixes, in preference order:
+
+1. **The indexer changed and devloop should follow** — file the fix against
+   funloops, land it there, then bump ``rev`` here (``uv lock --upgrade-package
+   devloop``) in the SAME PR as the indexer change. Never merge the indexer
+   change with this test skipped or the seam is decorative.
+2. **The indexer changed and devloop should NOT follow** — the columns devloop
+   reads still exist, only the fixture drifted: fix the fixture here, leave the
+   pin alone.
+
+Never "fix" a red by loosening the assertions: the failure mode this seam
+exists to catch (prime silently degrading to unprimed forever) is invisible in
+production, so the test is the only alarm. ``build_prime_payload`` swallows
+``sqlite3.Error`` by design.
+
+One known fragility, stated so it is not mistaken for real drift: the pin
+drives ``prime.query_trajectories`` / ``prime.resolve_insights``, which are
+module-level but NOT in ``devloop.trajectory.__all__``. A pure rename in
+funloops reds this test without any schema having moved. That is a false
+positive on rule 1 — re-point the import, do not bump the pin.
+
+Regenerating the golden: two changes legitimately move it, and both are
+deliberate acts rather than accidents.
+
+1. An *intentional* edit to ``docs/agents/loop.toml`` — this repo's own gate
+   pipeline or knobs.
+2. A new key in the pinned devloop's ``DEFAULT_CONFIG``. This is the likelier
+   one: the resolved config is defaults-merged-with-file, so a knob added
+   upstream in funloops reds the golden on the very next pin bump even though
+   nothing in thinkweave changed. Expected, not a regression — read the diff,
+   confirm it is only the added key, and re-capture.
+
+Either way, re-capture deliberately and say why in the commit:
+``python scripts/issue_loop.py config > tests/devloop_golden_config.json``.
+Any *other* diff is what this test exists to catch.
 """
 
 from __future__ import annotations
 
-import ast
+import json
+import subprocess
+import sys
+from importlib.metadata import distribution
 from pathlib import Path
 
-import devloop
 from devloop import index_client
 from devloop.trajectory import prime
+
 from thinkweave.core.schemas import NoteType
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SHIM = REPO_ROOT / "scripts" / "issue_loop.py"
+GOLDEN = REPO_ROOT / "tests" / "devloop_golden_config.json"
+
+# The full subcommand surface. The issue says "8"; `validate` (#99) made it 9 —
+# pinned by enumeration so a silently dropped verb fails rather than shrinks.
+SUBCOMMANDS = ["plan", "claim", "release", "config", "check", "validate",
+               "prime", "triage", "trajectory"]
 
 # ---------------------------------------------------------------------------
 # 1. Schema pin — devloop's SQL against an index built by the real indexer
@@ -107,25 +177,59 @@ def test_fts_query_serves_when_the_concepts_are_dead_vocabulary(vault_factory):
 
 
 # ---------------------------------------------------------------------------
-# 2. Importer allowlist — the sqlite3 blast radius, enforced
-
-def _imports_sqlite3(tree: ast.AST) -> bool:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import) and any(
-            a.name.split(".")[0] == "sqlite3" for a in node.names
-        ):
-            return True
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "sqlite3":
-            return True
-    return False
+# 2. Consumption — devloop arrives as a dependency, and the shim survives it
 
 
-def test_index_client_is_the_only_sqlite3_importer():
-    pkg_root = Path(devloop.__file__).resolve().parent
-    importers = set()
-    for py in pkg_root.rglob("*.py"):
-        if _imports_sqlite3(ast.parse(py.read_text(encoding="utf-8"))):
-            rel = py.relative_to(pkg_root.parent).with_suffix("")
-            importers.add(".".join(p for p in rel.parts if p != "__init__"))
-    # #100 moved prime's SQL into index_client — the seam is a singleton.
-    assert importers == {"devloop.index_client"}
+def test_devloop_is_an_installed_package_not_a_directory_in_this_tree():
+    """The carve, made falsifiable. A re-vendored ``devloop/`` at the repo root
+    would shadow the pinned package on ``sys.path`` (pytest puts the rootdir
+    first) and every other test here would keep passing against the copy —
+    which is exactly how the pin would rot unnoticed.
+
+    ``direct_url.json`` (PEP 610) is where the *provenance* survives install,
+    so it — not a path prefix — is what says "this came from funloops". It
+    holds for both supported modes: the committed git pin and the documented
+    editable dev override, which differ in scheme but not in origin. (A path
+    check cannot work here: ``.venv/`` lives inside the repo root.)
+    """
+    assert not (REPO_ROOT / "devloop").exists(), "devloop/ is funloops' now — do not re-vendor"
+    origin = json.loads(distribution("devloop").read_text("direct_url.json") or "{}")
+    assert "funloops" in origin.get("url", ""), origin
+
+
+def test_shim_config_is_byte_identical_to_the_pre_carve_capture():
+    """AC2. ``tests/devloop_golden_config.json`` is the independent oracle: it
+    is the literal stdout of this command at thinkweave@de35d9c, captured
+    before the package could resolve from anywhere but the tree.
+
+    Byte-identical, not shape-equal: nothing about *thinkweave's* gate pipeline
+    was supposed to change, so any diff is a regression. (funloops keeps the
+    same bytes as its own carve-out golden but compares only the shape — it
+    legitimately re-configured itself for funloops.)
+
+    Runs the shim in a subprocess from the repo root, so what is under test is
+    the real invocation crons and muscle memory use — including devloop's
+    cwd-upward ``find_config`` walk landing on thinkweave's ``loop.toml``.
+    """
+    out = subprocess.run([sys.executable, str(SHIM), "config"], cwd=REPO_ROOT,
+                         capture_output=True, text=True, check=True)
+    assert out.stdout == GOLDEN.read_text(encoding="utf-8")
+
+
+def test_every_subcommand_dispatches_through_the_shim():
+    """AC2's other half: the shim reaches the whole parser, not just `config`.
+    ``--help`` exits 0 only if the subparser resolved."""
+    for name in SUBCOMMANDS:
+        r = subprocess.run([sys.executable, str(SHIM), name, "--help"], cwd=REPO_ROOT,
+                           capture_output=True, text=True, check=False)
+        assert r.returncode == 0, f"{name}: rc={r.returncode} {r.stderr}"
+
+
+def test_python_m_devloop_reaches_the_same_rail():
+    """The packaged entry point works at thinkweave's repo root. Pre-carve this
+    could not work: the in-tree ``devloop/`` shadowed the package and had no
+    ``__main__``. Byte-equal to the golden (the shim is pinned to it above) —
+    one rail, two front doors."""
+    mod = subprocess.run([sys.executable, "-m", "devloop", "config"], cwd=REPO_ROOT,
+                         capture_output=True, text=True, check=True)
+    assert mod.stdout == GOLDEN.read_text(encoding="utf-8")
