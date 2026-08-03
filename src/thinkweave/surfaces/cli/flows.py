@@ -46,5 +46,33 @@ def cmd_flow(args: argparse.Namespace) -> None:
         if args.name not in flows:
             print(f"Unknown flow: {args.name}")
             sys.exit(1)
-        code = run_flow(flows[args.name], dry_run=args.dry_run)
-        sys.exit(code if not args.dry_run else 0)
+        result = run_flow(flows[args.name], dry_run=args.dry_run)
+        _print_flow_result(result)
+        sys.exit(result.last_code if not args.dry_run else 0)
+
+
+def _print_flow_result(result) -> None:
+    """Render a :class:`FlowRunResult` to stdout.
+
+    Dry-run: the resolved invocation plan. Real run without a log file: the
+    per-stage banners (a log-file run already wrote them to disk, so stdout
+    stays quiet). The operation owns no stdout — this surface does.
+    """
+    if result.dry_run:
+        for s in result.stages:
+            print(f"[{result.name}] stage {s.index}/{s.total}: {s.cmd}")
+            if s.sleep:
+                print(f"[{result.name}]   sleep {s.sleep}s")
+        return
+
+    if result.logged_to_file:
+        return
+
+    for s in result.stages:
+        if not s.ran:
+            continue
+        print(f"\n=== flow {result.name} stage {s.index}/{s.total} ===")
+        print(f"$ {s.cmd}")
+        print(f"=== exit {s.returncode} ===")
+        if s.aborted:
+            print(f"[{result.name}] aborting on stage {s.index} (on_error=abort)")

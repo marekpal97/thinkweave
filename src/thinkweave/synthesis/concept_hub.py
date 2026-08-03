@@ -766,7 +766,7 @@ def parse_llm_response(
         text_val = str(item.get("text", "")).strip()
         if not text_val:
             continue
-        text_val = _strip_inline_wikilinks(text_val)
+        text_val = strip_inline_wikilinks(text_val)
         if not text_val:
             # Entry was entirely a wikilink citation — nothing useful left.
             continue
@@ -800,7 +800,7 @@ _INLINE_WIKILINK_RE = re.compile(
 _EMPTY_PARENS_RE = re.compile(r"\(\s*\)")
 
 
-def _strip_inline_wikilinks(text: str) -> str:
+def strip_inline_wikilinks(text: str) -> str:
     """Remove any `[[...]]` wikilinks the LLM embedded in artifact text.
 
     The render path always appends the citation as a trailing wikilink,
@@ -809,6 +809,10 @@ def _strip_inline_wikilinks(text: str) -> str:
     the `( ... )` and `— ... —` wrappers the LLM sometimes puts around a
     citation, and the empty parens left when the wikilink was the sole
     content of the parens.
+
+    Promoted from ``_strip_inline_wikilinks`` to public when
+    ``operations.hubs_batch.repair_hubs`` became a cross-package consumer
+    (C2 purity sweep) — operations depend on synthesis's public surface.
     """
     cleaned = _INLINE_WIKILINK_RE.sub(" ", text)
     cleaned = _EMPTY_PARENS_RE.sub(" ", cleaned)

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config
+from thinkweave.synthesis.hub import build_id_path_map
 
 
 def _default_landing_filenames() -> dict[str, str]:
@@ -117,30 +118,25 @@ def _extract_summary(frontmatter: dict, body: str) -> str:
     return ""
 
 
-def _id_path_map(db) -> dict[str, str]:
-    """Map note id -> vault-relative path (sans .md) for path-based wikilinks.
-
-    Path links resolve structurally in Obsidian by file location, so they
-    never spawn a phantom stub even on notes that predate the `aliases:`
-    backfill. This is the durable form for every materialised link — the
-    same structural shape concept-hub links use.
-    """
-    out: dict[str, str] = {}
-    for r in db.execute("SELECT id, path FROM notes"):
-        rel = str(r["path"] or "").replace("\\", "/")
-        if rel.endswith(".md"):
-            rel = rel[:-3]
-        if rel:
-            out[r["id"]] = rel
-    return out
-
-
 def _reflink(idmap: dict[str, str], note_id: str, display: str | None = None) -> str:
-    """Path-based wikilink to a note, falling back to the bare id (alias)."""
-    ref = idmap.get(note_id) or note_id
-    if ref == note_id and display is None:
+    """Path-based wikilink to a note, falling back to the bare id (alias).
+
+    Thin adapter over the canonical :func:`thinkweave.synthesis.hub.reflink`
+    (the id->path resolution + ``[[path|alias]]`` rendering lives there and is
+    shared with the catalyst-log surfaces). Landing's historical call shape is
+    ``(idmap, id, display-string)``; ``hub.reflink`` takes an id->title map, so
+    we wrap the single display in a one-entry map. When the id is absent from
+    ``idmap`` (e.g. a dangling parent-theme ref), landing kept the labelled
+    fallback ``[[id|display]]`` rather than dropping the alias, so preserve that.
+    """
+    from thinkweave.synthesis.hub import reflink as _hub_reflink
+
+    if note_id in idmap:
+        title_map = {note_id: display} if display is not None else None
+        return _hub_reflink(note_id, idmap, title_map)
+    if display is None:
         return f"[[{note_id}]]"
-    return f"[[{ref}|{display if display is not None else note_id}]]"
+    return f"[[{note_id}|{display}]]"
 
 
 def _query_decisions(db, project: str) -> list[dict]:
@@ -187,7 +183,7 @@ def decisions_ledger(config: Config, project: str) -> str:
     db = _get_db(config)
     decisions = _query_decisions(db, project)
     edges = _query_edges(db, project)
-    idmap = _id_path_map(db)
+    idmap = build_id_path_map(db)
     db.close()
 
     today = date.today().isoformat()
@@ -366,7 +362,7 @@ def backlog_summary(config: Config, project: str) -> str:
             "reason": reason,
         })
 
-    idmap = _id_path_map(db)
+    idmap = build_id_path_map(db)
     db.close()
 
     today_str = today.isoformat()
@@ -667,7 +663,7 @@ def state_of_play(config: Config, project: str) -> str:
     """
     ctx = _gather_state_context(config, project)
     _db = _get_db(config)
-    idmap = _id_path_map(_db)
+    idmap = build_id_path_map(_db)
     _db.close()
     today = date.today().isoformat()
 
@@ -1045,7 +1041,7 @@ def themes_ledger(config: Config) -> str:
     """
     db = _get_db(config)
     themes = _query_themes(db)
-    idmap = _id_path_map(db)
+    idmap = build_id_path_map(db)
     db.close()
 
     today = date.today().isoformat()

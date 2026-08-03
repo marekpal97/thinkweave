@@ -218,7 +218,7 @@ class TestCLI:
             [
                 sys.executable,
                 "-m",
-                "thinkweave.operations.news_triage",
+                "thinkweave.surfaces.cli.news_triage",
                 "--themes",
                 str(themes),
                 "--dry-run",
@@ -243,7 +243,7 @@ class TestCLI:
             [
                 sys.executable,
                 "-m",
-                "thinkweave.operations.news_triage",
+                "thinkweave.surfaces.cli.news_triage",
                 "--themes",
                 str(tmp_path / "does_not_exist.md"),
                 "--dry-run",

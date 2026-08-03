@@ -103,120 +103,37 @@ def _hubs_status(cfg, args: argparse.Namespace) -> None:
 
 
 def _hubs_repair(cfg, args: argparse.Namespace) -> None:
-    """Retroactive fix: swap backfill dates for source-note dates, strip
-    duplicated inline wikilink citations. No LLM calls.
+    """Thin surface over ``operations.hubs_batch.repair_hubs`` — the heavy
+    lifting (SQL, hub parsing, date-swap + citation-cleanup rewrites) lives in
+    the operation; this only formats the report.
     """
-    from thinkweave.core.indexer import Indexer
-    from thinkweave.synthesis.concept_hub import (
-        _strip_inline_wikilinks,
-        parse_concept_hub,
-        topics_dir,
-        write_concept_hub,
-    )
-    from thinkweave.synthesis.hub import build_id_path_map, build_id_title_map
+    from thinkweave.operations.hubs_batch import repair_hubs
 
-    topics = topics_dir(cfg)
-    if not topics.exists():
-        print(f"No concept-hub topics directory at {topics}.")
+    result = repair_hubs(cfg, concept=args.concept, dry_run=args.dry_run)
+
+    if result.topics_missing:
+        print(f"No concept-hub topics directory at {result.topics_dir}.")
         return
 
-    idx = Indexer(config=cfg)
-    id_to_date: dict[str, str] = {}
-    for row in idx.db.execute("SELECT id, date FROM notes WHERE date IS NOT NULL AND date != ''"):
-        id_to_date[row["id"]] = str(row["date"])[:10]
-    # Path/title maps so the full re-render keeps citations path-based with
-    # title aliases; path->id inverse so the parse recovers ids from those
-    # links (else the entry.citation date lookup silently no-ops).
-    idmap = build_id_path_map(idx.db)
-    title_map = build_id_title_map(idx.db)
-    path_to_id = {path: nid for nid, path in idmap.items()}
-    idx.close()
-
-    hub_files = sorted(topics.glob("*.md"))
-    if args.concept:
-        target = args.concept.lower()
-        hub_files = [p for p in hub_files if p.stem == target]
-
-    changed_hubs = 0
-    changed_entries = 0
-    citation_cleanups = 0
-    date_updates = 0
-
-    for hub_path in hub_files:
-        hub = parse_concept_hub(hub_path, path_to_id=path_to_id)
-        if not hub.log_entries:
-            continue
-        dirty = False
-        for entry in hub.log_entries:
-            new_date = id_to_date.get(entry.citation, entry.date)
-            new_text = _strip_inline_wikilinks(entry.text) if entry.text else entry.text
-            if new_date != entry.date:
-                entry.date = new_date
-                date_updates += 1
-                dirty = True
-            if new_text != entry.text:
-                entry.text = new_text
-                citation_cleanups += 1
-                dirty = True
-        if dirty:
-            changed_hubs += 1
-            changed_entries += sum(
-                1 for e in hub.log_entries
-                if id_to_date.get(e.citation, e.date) == e.date
-            )
-            if args.dry_run:
-                print(f"[dry-run] would rewrite {hub_path.name}")
-            else:
-                write_concept_hub(hub, idmap=idmap, title_map=title_map)
-
+    for name in result.would_rewrite:
+        print(f"[dry-run] would rewrite {name}")
     print(
-        f"Repaired {changed_hubs} hub(s) — "
-        f"{date_updates} date swap(s), {citation_cleanups} citation cleanup(s)."
+        f"Repaired {result.changed_hubs} hub(s) — "
+        f"{result.date_updates} date swap(s), "
+        f"{result.citation_cleanups} citation cleanup(s)."
     )
-    if args.dry_run:
+    if result.dry_run:
         print("(dry-run: no files written)")
         return
 
-    import sqlite3 as _sqlite3
-
-    idx = Indexer(config=cfg)
-    reindex_failures = 0
-    for hub_path in hub_files:
-        if not hub_path.exists():
-            continue
-        try:
-            idx.index_file(hub_path)
-        except _sqlite3.OperationalError as e:
-            reindex_failures += 1
-            if reindex_failures == 1:
-                print(f"  warning: reindex hit SQLite contention ({e}); continuing")
-    idx.close()
-    if reindex_failures:
+    if result.reindex_contention_msg:
         print(
-            f"  {reindex_failures} hub(s) couldn't be reindexed due to DB "
+            f"  warning: reindex hit SQLite contention "
+            f"({result.reindex_contention_msg}); continuing"
+        )
+    if result.reindex_failures:
+        print(
+            f"  {result.reindex_failures} hub(s) couldn't be reindexed due to DB "
             f"contention. Run `uv run weave index` once the contending process "
             f"releases the lock."
         )
-
-
-# Backwards-compatibility shims — these helpers moved to operations/hubs_batch.py
-# (formerly operations/drain.py). Tests still import them under their
-# underscore-prefixed names.
-def _validate_linkage_revision(entry_date: str, flag: str, ref: str, **kwargs):
-    from thinkweave.operations.hubs_batch import validate_linkage_revision
-
-    return validate_linkage_revision(entry_date, flag, ref, **kwargs)
-
-
-def _build_linkage_user_prompt(
-    concept: str, essence: str, entries: list, **kwargs
-) -> str:
-    from thinkweave.operations.hubs_batch import build_linkage_user_prompt
-
-    return build_linkage_user_prompt(concept, essence, entries, **kwargs)
-
-
-def _parse_linkage_response(raw: str) -> list[dict]:
-    from thinkweave.operations.hubs_batch import parse_linkage_response
-
-    return parse_linkage_response(raw)
