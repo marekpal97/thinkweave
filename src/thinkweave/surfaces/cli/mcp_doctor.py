@@ -78,6 +78,18 @@ def _safe_load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _mcp_servers(data: dict[str, Any]) -> dict[str, Any]:
+    """Return the ``mcpServers`` block if it's an inline dict, else ``{}``.
+
+    The plugin manifest schema also allows ``mcpServers`` to be a *string*
+    path to an external file (e.g. Atlassian's ``"./.mcp.json"``) — the
+    doctor only inspects inline blocks, so an external-file reference is
+    treated as declaring nothing here rather than crashing.
+    """
+    servers = data.get("mcpServers", {})
+    return servers if isinstance(servers, dict) else {}
+
+
 def _safe_read_entry(path: Path) -> dict | None:
     """The thinkweave block from a harness MCP config, in whatever format that
     harness uses (JSON for Claude Code, TOML for Codex). A malformed file reads
@@ -151,7 +163,7 @@ def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
         data = _safe_load_json(path)
         if data is None:
             continue
-        entry = data.get("mcpServers", {}).get(SERVER_NAME)
+        entry = _mcp_servers(data).get(SERVER_NAME)
         if entry is not None:
             entries.append((path, entry))
     return entries
