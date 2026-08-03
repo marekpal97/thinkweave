@@ -611,10 +611,10 @@ def _print_next_steps() -> None:
     """Post-install instructions the *active* harness can actually follow.
 
     This used to end with "3. /onboard" unconditionally. On Codex that is a dead
-    end: thinkweave ships no Codex skill bundle, so the command does not exist —
-    and the one screen whose entire job is saying what to do next was naming
-    something unrunnable. Everything ``/onboard`` orchestrates is reachable from
-    the CLI, so the fallback lists those steps rather than apologising.
+    end: the repository's minimal Codex skill bundle is not exported by the
+    installer and still has no onboard skill. Everything ``/onboard``
+    orchestrates is reachable from the CLI, so the fallback lists those steps
+    rather than naming something unrunnable.
     """
     profile = _profile()
     cli = profile.cli_bin
