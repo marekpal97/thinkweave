@@ -214,19 +214,3 @@ def test_wrap_worker_carries_loop_session_scope_clause():
     worker = (_REPO / "agents" / "dream-wrap-worker.md").read_text(encoding="utf-8").lower()
     assert "loop-run" in worker
     assert "cross-issue synthesis only" in worker
-
-
-# ---------------------------------------------------------------------------
-# The command doc §3 stays inside the contract
-
-
-# The two §3 pins that lived here (the command doc instructs exactly one
-# `weave_create(type=note …)`, and never runs `/wrap`) went to funloops with
-# `issue-loop.command.md` in #151 — a host cannot grep another repo's doc.
-# Nothing is left uncovered on thinkweave's side: the rule they enforced is
-# pinned on artifacts that stayed, and more strongly, on code rather than prose
-# — `test_decisions_owned_by_session_not_trajectory` (the contract doc's own
-# partition) and `test_trajectory_note_is_a_note_never_a_decision` /
-# `test_trajectory_frontmatter_carries_no_decision_field` (the payload
-# `build_trajectory` actually emits). What no longer has a home in THIS repo is
-# the narrower claim that the loop's own instructions obey the contract.

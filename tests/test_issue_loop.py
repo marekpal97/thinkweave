@@ -30,7 +30,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def _plan_distill_doc() -> str:
     doc = REPO_ROOT / "docs" / "agents" / "plan-distill.command.md"
-    assert doc.exists(), "plan-distill.command.md must ship under docs/agents/"
     return doc.read_text(encoding="utf-8")
 
 

@@ -204,18 +204,13 @@ def test_every_subcommand_dispatches_through_the_shim():
         r = subprocess.run([sys.executable, str(SHIM), name, "--help"], cwd=REPO_ROOT,
                            capture_output=True, text=True, check=False)
         assert r.returncode == 0, f"{name}: rc={r.returncode} {r.stderr}"
-    # And the surface is exactly this — a new verb must be added deliberately.
-    cfg = json.loads(subprocess.run([sys.executable, str(SHIM), "config"], cwd=REPO_ROOT,
-                                    capture_output=True, text=True, check=True).stdout)
-    assert cfg  # the shim's own happy path, quoted by the golden test above
 
 
 def test_python_m_devloop_reaches_the_same_rail():
     """The packaged entry point works at thinkweave's repo root. Pre-carve this
     could not work: the in-tree ``devloop/`` shadowed the package and had no
-    ``__main__``. Byte-equal to the shim — one rail, two front doors."""
+    ``__main__``. Byte-equal to the golden (the shim is pinned to it above) —
+    one rail, two front doors."""
     mod = subprocess.run([sys.executable, "-m", "devloop", "config"], cwd=REPO_ROOT,
                          capture_output=True, text=True, check=True)
-    shim = subprocess.run([sys.executable, str(SHIM), "config"], cwd=REPO_ROOT,
-                          capture_output=True, text=True, check=True)
-    assert mod.stdout == shim.stdout
+    assert mod.stdout == GOLDEN.read_text(encoding="utf-8")

@@ -158,8 +158,5 @@ dev = [
 # restores the pin, deliberately: the override is a per-session choice, so it
 # can never leak into a green CI run. Re-run the one-liner to re-apply it.
 #
-# Bumping: land the change in funloops first, then
-#   uv lock --upgrade-package devloop
-# and update `rev` to match. See the pin-update dance in
-# tests/test_devloop_boundaries.py.
+# Bumping: see the pin-update dance in tests/test_devloop_boundaries.py.
 devloop = { git = "https://github.com/marekpal97/funloops", subdirectory = "packages/devloop", rev = "b719e58" }
