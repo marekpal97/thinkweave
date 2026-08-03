@@ -200,8 +200,8 @@ class TestWrapFinalizeCLI:
         assert payload["errors"] == []
 
 
-class TestFeedbackStep:
-    """#101 — the deterministic half of the async feedback labeler."""
+class TestVerdictStep:
+    """#101 — the deterministic half of the async prompt labeler."""
 
     def _write_buffer(self, config: Config, session_id: str, rows: list[dict]):
         buf_dir = config.weave_dir / "buffer"
@@ -232,13 +232,13 @@ class TestFeedbackStep:
         ])
         result = finalize_wrap(
             config, session_id="cc-uuid-1", project="t", prune=False,
-            feedback=[
+            verdicts=[
                 {"prompt": "no, that's wrong", "register": "correction"},
                 {"prompt": "looks good", "register": "confirmation"},
             ],
         )
-        assert result.feedback_written == 2
-        assert result.feedback_unmatched == 0
+        assert result.verdicts_written == 2
+        assert result.verdicts_unmatched == 0
         fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
         assert [r["register"] for r in fb] == ["correction", "confirmation"]
         # Frozen schema: exactly the keys the pre-#101 hook labeler wrote,
@@ -246,7 +246,7 @@ class TestFeedbackStep:
         assert set(fb[0]) == {"ts", "type", "register", "session_id", "prompt_ref"}
         assert fb[0]["ts"] == "2026-08-03T10:00:00+00:00"
         assert fb[0]["prompt_ref"].startswith("no, that's wrong")
-        assert "feedback" in result.timings
+        assert "verdicts" in result.timings
 
     def test_rewrap_is_idempotent(self, config: Config, vault: VaultManager):
         f = self._write_buffer(config, "cc-uuid-2", [
@@ -255,11 +255,11 @@ class TestFeedbackStep:
         ])
         verdicts = [{"prompt": "revert that", "register": "correction"}]
         finalize_wrap(config, session_id="cc-uuid-2", project="t",
-                      prune=False, feedback=verdicts)
+                      prune=False, verdicts=verdicts)
         result = finalize_wrap(config, session_id="cc-uuid-2", project="t",
-                               prune=False, feedback=verdicts)
-        assert result.feedback_written == 0
-        assert result.feedback_skipped == 1
+                               prune=False, verdicts=verdicts)
+        assert result.verdicts_written == 0
+        assert result.verdicts_skipped == 1
         fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
@@ -272,13 +272,13 @@ class TestFeedbackStep:
         ])
         result = finalize_wrap(
             config, session_id="cc-uuid-3", project="t", prune=False,
-            feedback=[
+            verdicts=[
                 {"prompt": "never said this", "register": "correction"},
                 {"prompt": "do the thing", "register": "neutral"},
             ],
         )
-        assert result.feedback_written == 0
-        assert result.feedback_unmatched == 1
+        assert result.verdicts_written == 0
+        assert result.verdicts_unmatched == 1
         assert any("invalid register" in e for e in result.errors)
 
     def test_echoed_prompts_yield_one_event(
@@ -293,9 +293,9 @@ class TestFeedbackStep:
         ])
         result = finalize_wrap(
             config, session_id="cc-uuid-4", project="t", prune=False,
-            feedback=[{"prompt": "no, wrong", "register": "correction"}],
+            verdicts=[{"prompt": "no, wrong", "register": "correction"}],
         )
-        assert result.feedback_written == 1
+        assert result.verdicts_written == 1
         fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
@@ -317,9 +317,9 @@ class TestFeedbackStep:
         )
         result = finalize_wrap(
             config, session_id="ses-arch1", project="t", prune=False,
-            feedback=[{"prompt": "actually, undo", "register": "correction"}],
+            verdicts=[{"prompt": "actually, undo", "register": "correction"}],
         )
-        assert result.feedback_written == 1
+        assert result.verdicts_written == 1
         fb = [
             r for r in self._rows(events) if r.get("type") == "feedback"
         ]
@@ -331,8 +331,39 @@ class TestFeedbackStep:
     ):
         result = finalize_wrap(
             config, session_id="cc-none", project="t", prune=False,
-            feedback=[{"prompt": "anything", "register": "correction"}],
+            verdicts=[{"prompt": "anything", "register": "correction"}],
         )
-        assert result.feedback_written == 0
-        assert result.feedback_unmatched == 1
+        assert result.verdicts_written == 0
+        assert result.verdicts_unmatched == 1
         assert any("no events file" in e for e in result.errors)
+
+    def test_probe_verdict_writes_probe_event(
+        self, config: Config, vault: VaultManager
+    ):
+        from thinkweave.core.events import extract_prompts
+
+        f = self._write_buffer(config, "cc-uuid-5", [
+            {"ts": "2026-08-03T10:00:00+00:00", "type": "prompt",
+             "text": "how does the drift judge decide?",
+             "session_id": "cc-uuid-5"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-5", project="t", prune=False,
+            verdicts=[{"prompt": "how does the drift", "register": "probe"}],
+        )
+        assert result.verdicts_written == 1
+        rows = self._rows(f)
+        probe = [r for r in rows if r.get("type") == "probe"]
+        assert len(probe) == 1
+        assert probe[0]["ts"] == "2026-08-03T10:00:00+00:00"
+        assert "register" not in probe[0]
+        # The join seam folds it back onto the prompt.
+        prompts = extract_prompts(f)
+        assert prompts[0].classification == "probe"
+        # Idempotent on re-wrap.
+        again = finalize_wrap(
+            config, session_id="cc-uuid-5", project="t", prune=False,
+            verdicts=[{"prompt": "how does the drift", "register": "probe"}],
+        )
+        assert again.verdicts_written == 0
+        assert again.verdicts_skipped == 1

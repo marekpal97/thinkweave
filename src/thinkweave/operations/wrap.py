@@ -42,11 +42,11 @@ class WrapFinalizeResult:
     verdicts: dict[str, int] = field(default_factory=dict)  # verdict -> count
     landing_written: list[str] = field(default_factory=list)
     drift_text: str = ""
-    feedback_written: int = 0
-    feedback_skipped: int = 0
-    feedback_unmatched: int = 0
+    verdicts_written: int = 0
+    verdicts_skipped: int = 0
+    verdicts_unmatched: int = 0
     errors: list[str] = field(default_factory=list)
-    # Per-step wall time (seconds) — keys: feedback, prune, index, judge,
+    # Per-step wall time (seconds) — keys: verdicts, prune, index, judge,
     # landing, drift. Populated even when a step errors, so a slow failure
     # is visible.
     timings: dict[str, float] = field(default_factory=dict)
@@ -64,18 +64,22 @@ class WrapFinalizeResult:
             "verdicts": self.verdicts,
             "landing_written": self.landing_written,
             "drift_text": self.drift_text,
-            "feedback_written": self.feedback_written,
-            "feedback_skipped": self.feedback_skipped,
-            "feedback_unmatched": self.feedback_unmatched,
+            "verdicts_written": self.verdicts_written,
+            "verdicts_skipped": self.verdicts_skipped,
+            "verdicts_unmatched": self.verdicts_unmatched,
             "errors": self.errors,
             "timings": self.timings,
         }
 
 
-# The two registers the feedback channel accepts. ``neutral`` is not an
-# event — the wrap LLM only lists the non-neutral verdicts, exactly as the
-# old hook-time labeler only wrote non-neutral rows.
-_FEEDBACK_REGISTERS = frozenset({"correction", "confirmation"})
+# The registers the prompt-verdict rail accepts. ``correction`` /
+# ``confirmation`` persist as frozen-shape ``feedback`` events (the human
+# reward channel); ``probe`` persists as a sibling ``probe`` event that
+# ``extract_prompts`` joins back onto the prompt as
+# ``classification="probe"`` (probe pressure, /discover, the prompts
+# projection). ``neutral`` is not an event — the wrap LLM only lists the
+# non-neutral verdicts.
+_VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
 
 def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | None:
@@ -116,30 +120,33 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
     return None
 
 
-def _append_feedback_events(
+def _append_verdict_events(
     cfg: Config,
     session_id: str,
     project: str,
     verdicts: list[dict],
     result: WrapFinalizeResult,
 ) -> None:
-    """Deterministic half of the async feedback labeler (#101).
+    """Deterministic half of the async prompt labeler (#101).
 
     The wrap LLM composes ``[{"prompt": <text-or-prefix>, "register":
-    "correction"|"confirmation"}, ...]``; this matches each verdict against
-    the session's captured prompt events (echo-collapsed) and appends one
-    ``feedback`` event per matched prompt, reusing the prompt event's own
-    ``ts`` so the timestamp-adjacency join downstream is exact. The event
-    schema is frozen (predates #101). Idempotent: a (ts, register) pair
-    that already exists is skipped, so re-wraps never double-write.
+    "correction"|"confirmation"|"probe"}, ...]``; this matches each verdict
+    against the session's captured prompt events (echo-collapsed) and
+    appends one event per matched prompt, reusing the prompt event's own
+    ``ts`` so the join back onto the prompt is exact. ``correction`` /
+    ``confirmation`` write frozen-shape ``feedback`` events (the schema
+    predates #101); ``probe`` writes a sibling ``probe`` event that
+    ``extract_prompts`` folds into ``Prompt.classification``. Idempotent:
+    a (ts, register) pair that already exists is skipped, so re-wraps
+    never double-write.
     """
     from thinkweave.core.events import extract_prompts, feedback_events
 
     events_file = _resolve_events_file(cfg, session_id, project)
     if events_file is None:
-        result.feedback_unmatched = len(verdicts)
+        result.verdicts_unmatched = len(verdicts)
         result.errors.append(
-            f"feedback: no events file found for session {session_id}"
+            f"verdicts: no events file found for session {session_id}"
         )
         return
 
@@ -148,46 +155,48 @@ def _append_feedback_events(
         (r.get("ts", ""), r.get("register", ""))
         for r in feedback_events(events_file)
     }
+    existing.update(
+        (p.ts.isoformat(), "probe")
+        for p in prompts
+        if p.classification == "probe"
+    )
 
     lines: list[str] = []
     for v in verdicts:
         register = str(v.get("register", "")).strip().lower()
         needle = str(v.get("prompt", "")).strip().lower()
-        if register not in _FEEDBACK_REGISTERS:
-            result.errors.append(f"feedback: invalid register {register!r}")
+        if register not in _VERDICT_REGISTERS:
+            result.errors.append(f"verdicts: invalid register {register!r}")
             continue
         if not needle:
-            result.errors.append("feedback: verdict with empty prompt ref")
+            result.errors.append("verdicts: verdict with empty prompt ref")
             continue
         matched = [
             p for p in prompts if p.text.strip().lower().startswith(needle)
         ]
         if not matched:
-            result.feedback_unmatched += 1
+            result.verdicts_unmatched += 1
             continue
         for p in matched:
             ts_iso = p.ts.isoformat()
             if (ts_iso, register) in existing:
-                result.feedback_skipped += 1
+                result.verdicts_skipped += 1
                 continue
             existing.add((ts_iso, register))
-            lines.append(
-                json.dumps(
-                    {
-                        "ts": ts_iso,
-                        "type": "feedback",
-                        "register": register,
-                        "session_id": p.session_id,
-                        "prompt_ref": p.text[:120],
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            event = {
+                "ts": ts_iso,
+                "type": "probe" if register == "probe" else "feedback",
+                "session_id": p.session_id,
+                "prompt_ref": p.text[:120],
+            }
+            if register != "probe":
+                event["register"] = register
+            lines.append(json.dumps(event, ensure_ascii=False))
 
     if lines:
         with events_file.open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
-        result.feedback_written = len(lines)
+        result.verdicts_written = len(lines)
 
 
 def finalize_wrap(
@@ -196,15 +205,16 @@ def finalize_wrap(
     session_id: str,
     project: str = "",
     prune: bool = True,
-    feedback: list[dict] | None = None,
+    verdicts: list[dict] | None = None,
 ) -> WrapFinalizeResult:
     """Run the deterministic post-extraction chain in one process.
 
     Order:
 
-    0. **feedback** — append the wrap LLM's feedback verdicts as frozen-shape
-       ``feedback`` events (:func:`_append_feedback_events`). Runs first so
-       the events land before any archival/indexing the later steps trigger.
+    0. **verdicts** — append the wrap LLM's prompt verdicts (feedback
+       registers + probe labels) as events (:func:`_append_verdict_events`).
+       Runs first so the events land before any archival/indexing the
+       later steps trigger.
     1. **prune** orphan session folders (conservative GC; ``session_id`` is
        protected). Done first so the reindex in step 2 also drops their rows.
     2. **index** — incremental rebuild. Picks up the notes ``weave_extract`` just
@@ -222,15 +232,15 @@ def finalize_wrap(
     """
     result = WrapFinalizeResult(session_id=session_id, project=project)
 
-    # 0. feedback verdicts → events (#101) ---------------------------------
-    if feedback:
+    # 0. prompt verdicts → events (#101) -----------------------------------
+    if verdicts:
         _t = time.perf_counter()
         try:
-            _append_feedback_events(cfg, session_id, project, feedback, result)
+            _append_verdict_events(cfg, session_id, project, verdicts, result)
         except Exception as e:  # noqa: BLE001 — best-effort labeler
-            result.errors.append(f"feedback: {e}")
+            result.errors.append(f"verdicts: {e}")
         finally:
-            result.timings["feedback"] = time.perf_counter() - _t
+            result.timings["verdicts"] = time.perf_counter() - _t
 
     # 1. prune orphan session folders -------------------------------------
     if prune:

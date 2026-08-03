@@ -435,16 +435,17 @@ def _gather_prompt_probes(
 
     Looks at archived per-session ``events.jsonl`` files plus any active
     ``.weave/buffer/<session>.jsonl`` files mapped to this project, lifts
-    prompt events via ``extract.extract_prompts``, runs them through
-    ``extract.classify_probe``, and returns the most recent ``limit``
-    probes (default: config ``landing.open_probes_cap``, 20). Each entry
-    is shaped like a ``probes`` row from the SQL path so the renderer can
-    merge both sources.
+    prompt events via ``extract.extract_prompts`` (which stamps
+    ``classification="probe"`` from persisted probe verdict events, #101),
+    and returns the most recent ``limit`` probes (default: config
+    ``landing.open_probes_cap``, 20). Each entry is shaped like a
+    ``probes`` row from the SQL path so the renderer can merge both
+    sources.
 
     This deliberately does no SQL query — prompt events live in JSONL,
     not the index. Failures (missing dirs, bad JSON) degrade silently.
     """
-    from thinkweave.core.events import classify_probe, extract_prompts
+    from thinkweave.core.events import extract_prompts
 
     if limit is None:
         limit = int(getattr(config, "landing_open_probes_cap", 20) or 20)
@@ -464,19 +465,11 @@ def _gather_prompt_probes(
             if not events_file.exists():
                 continue
             try:
-                events = []
-                for line in events_file.read_text(encoding="utf-8").splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
                 prompts = extract_prompts(events_file)
             except Exception:
                 continue
             for p in prompts:
-                if not classify_probe(p, events):
+                if p.classification != "probe":
                     continue
                 candidates.append((
                     p.ts,
@@ -515,19 +508,11 @@ def _gather_prompt_probes(
                 if session_uuid in session_to_project:
                     continue
             try:
-                events = []
-                for line in buf_file.read_text(encoding="utf-8").splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
                 prompts = extract_prompts(buf_file)
             except Exception:
                 continue
             for p in prompts:
-                if not classify_probe(p, events):
+                if p.classification != "probe":
                     continue
                 candidates.append((
                     p.ts,

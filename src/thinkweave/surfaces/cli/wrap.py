@@ -31,18 +31,18 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    feedback: list[dict] = []
-    if getattr(args, "feedback", ""):
+    verdicts: list[dict] = []
+    if getattr(args, "verdicts", ""):
         try:
-            feedback = json.loads(args.feedback)
+            verdicts = json.loads(args.verdicts)
         except json.JSONDecodeError as e:
-            print(f"error: --feedback is not valid JSON: {e}", file=sys.stderr)
+            print(f"error: --verdicts is not valid JSON: {e}", file=sys.stderr)
             sys.exit(2)
-        if not isinstance(feedback, list) or not all(
-            isinstance(v, dict) for v in feedback
+        if not isinstance(verdicts, list) or not all(
+            isinstance(v, dict) for v in verdicts
         ):
             print(
-                "error: --feedback must be a JSON list of "
+                "error: --verdicts must be a JSON list of "
                 '{"prompt": ..., "register": ...} objects.',
                 file=sys.stderr,
             )
@@ -53,7 +53,7 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         session_id=args.session_id,
         project=project,
         prune=not args.no_prune,
-        feedback=feedback,
+        verdicts=verdicts,
     )
 
     if args.json:
@@ -61,11 +61,11 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         sys.exit(1 if result.errors else 0)
 
     print(f"wrap-finalize · session {result.session_id} · project {project}")
-    if result.feedback_written or result.feedback_skipped or result.feedback_unmatched:
+    if result.verdicts_written or result.verdicts_skipped or result.verdicts_unmatched:
         print(
-            f"  feedback: {result.feedback_written} written, "
-            f"{result.feedback_skipped} already present, "
-            f"{result.feedback_unmatched} unmatched"
+            f"  verdicts: {result.verdicts_written} written, "
+            f"{result.verdicts_skipped} already present, "
+            f"{result.verdicts_unmatched} unmatched"
         )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)
@@ -86,7 +86,7 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     if result.timings:
         parts = " · ".join(
             f"{k} {result.timings[k]:.1f}s"
-            for k in ("feedback", "prune", "index", "judge", "landing", "drift")
+            for k in ("verdicts", "prune", "index", "judge", "landing", "drift")
             if k in result.timings
         )
         if parts:

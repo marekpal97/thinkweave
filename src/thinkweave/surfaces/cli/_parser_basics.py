@@ -573,13 +573,14 @@ def add_admin_subparsers(sub) -> None:
         help="Skip the orphan-prune step",
     )
     p_wrap_finalize.add_argument(
-        "--feedback", default="",
+        "--verdicts", default="",
         help=(
-            "JSON list of feedback verdicts composed by the wrap LLM: "
+            "JSON list of prompt verdicts composed by the wrap LLM: "
             '[{"prompt": "<text or prefix>", "register": '
-            '"correction"|"confirmation"}, ...]. Matched against the '
-            "session's captured prompt events and appended as feedback "
-            "events (idempotent)."
+            '"correction"|"confirmation"|"probe"}, ...]. Matched against '
+            "the session's captured prompt events; feedback registers "
+            "append frozen-shape feedback events, probe appends probe "
+            "classification events (idempotent)."
         ),
     )
 

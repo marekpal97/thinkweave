@@ -314,15 +314,19 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
     :data:`_MULTI_REGISTRATION_WINDOW_S`) collapse to one prompt.
 
     Each returned ``Prompt`` carries a populated ``classification``
-    field: ``"probe"`` when :func:`classify_probe` flags it, ``None``
-    otherwise. The classifier needs the surrounding event stream
-    (to peek at follow-up tool calls), so we read every event row here
-    instead of filtering early.
+    field: ``"probe"`` when a persisted ``probe`` verdict event (written
+    by the wrap LLM via ``weave wrap-finalize --verdicts``, #101) shares
+    the prompt's timestamp, ``None`` otherwise. The pre-#101 hook-era
+    heuristic (``classify_probe``: ``?``-shape + tool lookahead) is gone —
+    the labeler is the model, the JSONL rows are the record.
     """
     if not events_jsonl.exists():
         return []
 
-    events: list[dict] = []
+    # Probe verdicts join on (ts, prompt_ref-prefix). ts alone would be
+    # enough for real capture (one submission, one timestamp) but the ref
+    # guard keeps two prompts sharing a timestamp from cross-labeling.
+    probe_marks: list[tuple[datetime, str]] = []
     out: list[Prompt] = []
     for line in events_jsonl.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -333,7 +337,11 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
             continue
         if not isinstance(row, dict):
             continue
-        events.append(row)
+        if row.get("type") == "probe":
+            t = _parse_ts(row.get("ts", ""))
+            if t != datetime.min:
+                probe_marks.append((t, str(row.get("prompt_ref", ""))))
+            continue
         if row.get("type") != "prompt":
             continue
         text = row.get("text", "")
@@ -355,14 +363,13 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
     )
 
     for prompt in out:
-        if classify_probe(prompt, events):
-            prompt.classification = "probe"
+        for t, ref in probe_marks:
+            if prompt.ts == t and (not ref or prompt.text.startswith(ref)):
+                prompt.classification = "probe"
+                break
 
     return out
 
-
-_PROBE_FOLLOW_LOOKAHEAD = 3
-_UNFAMILIAR_HINTS = ("look at", "look up", "what is", "what's", "explain", "where", "how does")
 
 # Minimum concept-slug length for probe→concept attribution. Defends
 # against the single/2-char garbage pool (2026-06-07 str-iter bug class:
@@ -422,72 +429,6 @@ def match_probe_concepts(text: str, vocabulary: Iterable[str]) -> set[str]:
         elif (" " + " ".join(c_tokens) + " ") in joined:
             out.add(concept)
     return out
-
-
-def classify_probe(prompt: Prompt, events: list[dict]) -> bool:
-    """Conservative heuristic: is this prompt a *probe* (an exploratory
-    user question rather than an instruction)?
-
-    Returns True only when:
-
-    1. Text ends with ``?`` (after trimming), OR contains a probe-style
-       lead phrase ("what is", "how does", "explain", …) AND
-    2. No ``Edit`` / ``Write`` event appears within the next
-       :data:`_PROBE_FOLLOW_LOOKAHEAD` events of the buffer (i.e. the
-       prompt didn't immediately translate into a code change), OR a
-       ``Read`` of an unfamiliar file follows.
-
-    False negatives are preferred over false positives — the state-of-
-    play landing doc's "Open Probes" section is more useful when sparse
-    and accurate. This is a deliberately small heuristic; tuning lives
-    downstream.
-
-    TODO(post-E5): empirically tune the lookahead window + lead-phrase
-    list against real captured prompts once the hook has been live for
-    a few sessions. Current values are an educated first cut.
-    """
-    text = (prompt.text or "").strip()
-    if not text:
-        return False
-
-    looks_like_question = text.rstrip(" .!").endswith("?") or any(
-        hint in text.lower() for hint in _UNFAMILIAR_HINTS
-    )
-    if not looks_like_question:
-        return False
-
-    # Locate the prompt in the event stream. Match by ts + text — the hook
-    # writes a unique (ts, type, text) tuple per submission. Fall back to
-    # the first prompt event with the same text if ts comparison fails.
-    target_iso = prompt.ts.isoformat() if prompt.ts != datetime.min else ""
-    idx: int | None = None
-    for i, ev in enumerate(events):
-        if not isinstance(ev, dict):
-            continue
-        if ev.get("type") != "prompt":
-            continue
-        if ev.get("text") != prompt.text:
-            continue
-        if target_iso and ev.get("ts") != target_iso:
-            continue
-        idx = i
-        break
-
-    if idx is None:
-        # Couldn't locate — fall back to text-shape signal alone. This is
-        # conservative: a question that ends with `?` and never made it
-        # into the buffer log is treated as a probe.
-        return True
-
-    # Look ahead in the buffer for code-modifying tools
-    follow_window = events[idx + 1 : idx + 1 + _PROBE_FOLLOW_LOOKAHEAD]
-    for ev in follow_window:
-        if not isinstance(ev, dict):
-            continue
-        if ev.get("tool") in ("Edit", "Write"):
-            return False
-
-    return True
 
 
 # ---------------------------------------------------------------------------

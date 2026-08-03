@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from thinkweave.core.events import (
@@ -11,7 +10,6 @@ from thinkweave.core.events import (
     Prompt,
     Todo,
     assign_concepts_from_paths,
-    classify_probe,
     extract_deterministic,
     extract_prompts,
     extract_todos,
@@ -202,55 +200,50 @@ class TestExtractPrompts:
         assert extract_prompts(f) == []
 
 
-class TestClassifyProbe:
-    """Phase 4 E2 — conservative probe classifier."""
+class TestProbeVerdictJoin:
+    """#101 — probe classification comes from persisted probe verdict
+    events (written by wrap-finalize), joined by timestamp."""
 
-    def test_question_no_followup_edit_classifies_as_probe(self):
-        ts = datetime(2026, 5, 2, 15, 0, tzinfo=timezone.utc)
-        events = [
-            {"ts": ts.isoformat(), "type": "prompt",
+    def test_probe_event_stamps_classification(self, tmp_path: Path):
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-05-02T15:00:00+00:00", "type": "prompt",
              "text": "What does the indexer skip?", "session_id": "s"},
-            {"ts": "...", "tool": "Bash", "command": "uv run pytest"},
-        ]
-        prompt = Prompt(ts=ts, text="What does the indexer skip?",
-                        session_id="s")
-        assert classify_probe(prompt, events) is True
-
-    def test_question_followed_by_edit_is_not_probe(self):
-        ts = datetime(2026, 5, 2, 15, 0, tzinfo=timezone.utc)
-        events = [
-            {"ts": ts.isoformat(), "type": "prompt",
-             "text": "Should we rename foo?", "session_id": "s"},
-            {"ts": "...", "tool": "Edit", "file": "foo.py"},
-        ]
-        prompt = Prompt(ts=ts, text="Should we rename foo?", session_id="s")
-        assert classify_probe(prompt, events) is False
-
-    def test_non_question_imperative_not_probe(self):
-        ts = datetime(2026, 5, 2, 15, 0, tzinfo=timezone.utc)
-        events = [
-            {"ts": ts.isoformat(), "type": "prompt",
+            {"ts": "2026-05-02T15:10:00+00:00", "type": "prompt",
              "text": "Refactor the indexer module.", "session_id": "s"},
-        ]
-        prompt = Prompt(ts=ts, text="Refactor the indexer module.",
-                        session_id="s")
-        assert classify_probe(prompt, events) is False
+            {"ts": "2026-05-02T15:00:00+00:00", "type": "probe",
+             "session_id": "s", "prompt_ref": "What does the indexer skip?"},
+        ])
+        prompts = extract_prompts(f)
+        assert prompts[0].classification == "probe"
+        assert prompts[1].classification is None
 
-    def test_lead_phrase_classifies_as_probe(self):
-        ts = datetime(2026, 5, 2, 15, 0, tzinfo=timezone.utc)
-        events = [
-            {"ts": ts.isoformat(), "type": "prompt",
-             "text": "Explain how the buffer is archived",
-             "session_id": "s"},
-        ]
-        prompt = Prompt(ts=ts, text="Explain how the buffer is archived",
-                        session_id="s")
-        assert classify_probe(prompt, events) is True
+    def test_no_probe_events_means_no_classification(self, tmp_path: Path):
+        # A question-shaped prompt is NOT auto-labeled — the hook-era
+        # heuristic is gone; only a wrap verdict makes a probe.
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-05-02T15:00:00+00:00", "type": "prompt",
+             "text": "What does the indexer skip?", "session_id": "s"},
+        ])
+        prompts = extract_prompts(f)
+        assert prompts[0].classification is None
 
-    def test_empty_text_not_probe(self):
-        ts = datetime(2026, 5, 2, 15, 0, tzinfo=timezone.utc)
-        prompt = Prompt(ts=ts, text="", session_id="s")
-        assert classify_probe(prompt, []) is False
+    def test_probe_event_survives_prompt_echo_collapse(self, tmp_path: Path):
+        # Echoed prompts collapse to one, and the probe verdict written
+        # against the first echo's ts still lands on the survivor.
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-05-02T15:00:00.010000+00:00", "type": "prompt",
+             "text": "how does the seam work?", "session_id": "s"},
+            {"ts": "2026-05-02T15:00:00.050000+00:00", "type": "prompt",
+             "text": "how does the seam work?", "session_id": "s"},
+            {"ts": "2026-05-02T15:00:00.010000+00:00", "type": "probe",
+             "session_id": "s", "prompt_ref": "how does the seam work?"},
+        ])
+        prompts = extract_prompts(f)
+        assert len(prompts) == 1
+        assert prompts[0].classification == "probe"
 
 
 class TestMultiRegistrationEchoCollapse:

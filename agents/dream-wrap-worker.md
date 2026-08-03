@@ -92,10 +92,10 @@ weave_extract(
 ### Step D — Run `weave wrap-finalize` once per session via Bash
 
 ```bash
-weave wrap-finalize <session_id> --project <project> --json [--feedback '<json>']
+weave wrap-finalize <session_id> --project <project> --json [--verdicts '<json>']
 ```
 
-**Feedback verdicts (#101).** While reading `events.jsonl` in step A, judge the `type: "prompt"` rows: did any *user* prompt clearly push back on agent work (`correction`) or clearly endorse it (`confirmation`)? Precision over recall — task instructions are neutral, hedged endorsements are neutral, and machine-generated prompt text (`<task-notification>`, `<agent-message>`, pasted logs) is **never** feedback; most sessions have zero non-neutral prompts. If any exist, pass `--feedback '[{"prompt": "<opening words, verbatim>", "register": "correction"}, ...]'` — matched as a case-insensitive prefix against the captured prompt events, appended idempotently in the frozen event schema.
+**Prompt verdicts (#101).** While reading `events.jsonl` in step A, judge the `type: "prompt"` rows on three registers: did any *user* prompt clearly push back on agent work (`correction`), clearly endorse it (`confirmation`), or ask a substantive exploratory question (`probe`)? Precision over recall — task instructions are neutral, hedged endorsements are neutral, task-shaped questions are neutral, and machine-generated prompt text (`<task-notification>`, `<agent-message>`, pasted logs) never gets a verdict; most sessions have zero or few non-neutral prompts. If any exist, pass `--verdicts '[{"prompt": "<opening words, verbatim>", "register": "correction"}, ...]'` — matched as a case-insensitive prefix against the captured prompt events, appended idempotently (feedback registers in the frozen schema; `probe` as the classification event powering probe pressure and `/discover`).
 
 Bare `weave` is the committed launcher `bin/weave`, on the Bash PATH via the plugin's `bin/` on the plugin route. If it does not resolve (`command -v weave` empty — dev checkout wired via `.mcp.json`, or a pip install whose venv scripts dir isn't on PATH), invoke the launcher by path instead — `<thinkweave-repo>/bin/weave wrap-finalize …`, where `<thinkweave-repo>` is the `--project` value in the registered thinkweave MCP server entry (`.mcp.json` / `~/.claude.json`). Never depend on the venv's console script being on PATH (#47).
 

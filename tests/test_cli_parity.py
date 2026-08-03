@@ -166,6 +166,11 @@ class TestPrompts:
                 "text": "How does FTS5 tokenize?",
                 "session_id": "cc-1",
                 "ts": "2026-05-02T15:00:00+00:00",
+            }) + "\n" + json.dumps({
+                "type": "probe",
+                "session_id": "cc-1",
+                "ts": "2026-05-02T15:00:00+00:00",
+                "prompt_ref": "How does FTS5 tokenize?",
             }) + "\n",
             encoding="utf-8",
         )
