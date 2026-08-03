@@ -130,15 +130,25 @@ def _append_verdict_events(
     """Deterministic half of the async prompt labeler (#101).
 
     The wrap LLM composes ``[{"prompt": <text-or-prefix>, "register":
-    "correction"|"confirmation"|"probe"}, ...]``; this matches each verdict
-    against the session's captured prompt events (echo-collapsed) and
-    appends one event per matched prompt, reusing the prompt event's own
-    ``ts`` so the join back onto the prompt is exact. ``correction`` /
-    ``confirmation`` write frozen-shape ``feedback`` events (the schema
-    predates #101); ``probe`` writes a sibling ``probe`` event that
-    ``extract_prompts`` folds into ``Prompt.classification``. Idempotent:
-    a (ts, register) pair that already exists is skipped, so re-wraps
-    never double-write.
+    "correction"|"confirmation"|"probe", "about": <referent clause>}, ...]``;
+    this matches each verdict against the session's captured prompt events
+    (echo-collapsed) and appends one event per matched prompt, reusing the
+    prompt event's own ``ts`` so the join back onto the prompt is exact.
+    ``correction`` / ``confirmation`` write ``feedback`` events (the base
+    schema predates #101 and is frozen; ``about`` is an additive optional
+    key); ``probe`` writes a sibling ``probe`` event that
+    ``extract_prompts`` folds into ``Prompt.classification``.
+
+    ``about`` is the grounding clause — WHAT the feedback was about / what
+    the probe sought, composed from full session context — so downstream
+    consumers (RLVR export, probe distillation) get an explicit referent
+    instead of re-inferring one from a 120-char prompt excerpt. The skill
+    rules require grounding-or-discard (a verdict whose referent can't be
+    named should not be emitted at all), so an absent ``about`` is legal
+    but expected to be rare.
+
+    Idempotent: a (ts, register) pair that already exists is skipped, so
+    re-wraps never double-write.
     """
     from thinkweave.core.events import extract_prompts, feedback_events
 
@@ -165,6 +175,7 @@ def _append_verdict_events(
     for v in verdicts:
         register = str(v.get("register", "")).strip().lower()
         needle = str(v.get("prompt", "")).strip().lower()
+        about = str(v.get("about", "")).strip()
         if register not in _VERDICT_REGISTERS:
             result.errors.append(f"verdicts: invalid register {register!r}")
             continue
@@ -191,6 +202,8 @@ def _append_verdict_events(
             }
             if register != "probe":
                 event["register"] = register
+            if about:
+                event["about"] = about[:300]
             lines.append(json.dumps(event, ensure_ascii=False))
 
     if lines:

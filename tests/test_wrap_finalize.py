@@ -367,3 +367,31 @@ class TestVerdictStep:
         )
         assert again.verdicts_written == 0
         assert again.verdicts_skipped == 1
+
+    def test_about_clause_rides_the_event(
+        self, config: Config, vault: VaultManager
+    ):
+        # Grounding (#101): the wrap LLM's `about` referent clause is
+        # carried onto both event types; absent about → no key (base
+        # feedback schema stays frozen).
+        f = self._write_buffer(config, "cc-uuid-6", [
+            {"ts": "2026-08-04T10:00:00+00:00", "type": "prompt",
+             "text": "no, revert the parser change", "session_id": "cc-uuid-6"},
+            {"ts": "2026-08-04T10:05:00+00:00", "type": "prompt",
+             "text": "how does the echo collapse window work?",
+             "session_id": "cc-uuid-6"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-6", project="t", prune=False,
+            verdicts=[
+                {"prompt": "no, revert the parser", "register": "correction",
+                 "about": "rejected the regex-based parser rewrite"},
+                {"prompt": "how does the echo collapse", "register": "probe"},
+            ],
+        )
+        assert result.verdicts_written == 2
+        rows = self._rows(f)
+        fb = [r for r in rows if r.get("type") == "feedback"]
+        assert fb[0]["about"] == "rejected the regex-based parser rewrite"
+        probe = [r for r in rows if r.get("type") == "probe"]
+        assert "about" not in probe[0]

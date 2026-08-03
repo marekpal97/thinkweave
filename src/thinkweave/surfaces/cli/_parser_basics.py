@@ -577,10 +577,12 @@ def add_admin_subparsers(sub) -> None:
         help=(
             "JSON list of prompt verdicts composed by the wrap LLM: "
             '[{"prompt": "<text or prefix>", "register": '
-            '"correction"|"confirmation"|"probe"}, ...]. Matched against '
-            "the session's captured prompt events; feedback registers "
-            "append frozen-shape feedback events, probe appends probe "
-            "classification events (idempotent)."
+            '"correction"|"confirmation"|"probe", "about": "<referent '
+            'clause>"}, ...]. Matched against the session\'s captured '
+            "prompt events; feedback registers append frozen-shape "
+            "feedback events, probe appends probe classification events "
+            "(idempotent). about grounds the verdict in session context "
+            "for downstream consumers."
         ),
     )
 
