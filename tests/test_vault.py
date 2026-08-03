@@ -526,7 +526,7 @@ class TestVaultManager:
             extra_frontmatter={"source_type": "paper", "url": "https://arxiv.org/123"},
         )
         assert "projects" not in str(path)
-        assert "sources/papers" in str(path)
+        assert "sources/papers" in path.as_posix()
         assert path.name == "source.md"
         assert path.parent.name == "ml-paper"
         assert path.exists()
@@ -605,11 +605,11 @@ class TestDirectoryStructure:
 
     def test_note_goes_to_misc_session(self, vault: VaultManager):
         path = vault.create_note(NoteType.NOTE, "My Note", project="proj")
-        assert "/sessions/misc/" in str(path)
+        assert "/sessions/misc/" in path.as_posix()
 
     def test_decision_goes_to_misc_session(self, vault: VaultManager):
         path = vault.create_note(NoteType.DECISION, "My Decision", project="proj")
-        assert "/sessions/misc/" in str(path)
+        assert "/sessions/misc/" in path.as_posix()
 
     def test_output_dir_override(self, vault: VaultManager):
         session_path = vault.create_note(NoteType.SESSION, "Sess", project="proj")
@@ -690,7 +690,7 @@ class TestDirectoryStructure:
         assert path.parent.name == "the-curious-case-of-disappearing-liquidity"
         assert path.parent.parent.name == "citrini-research"
         assert path.parent.parent.parent.name == "substack"
-        assert "sources/substack/citrini-research" in str(path)
+        assert "sources/substack/citrini-research" in path.as_posix()
 
     def test_substack_missing_author_falls_back_flat(self, vault: VaultManager):
         """Substack source without author still works — flat under substack/."""

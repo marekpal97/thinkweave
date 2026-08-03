@@ -1632,8 +1632,11 @@ def test_resolve_index_db_honors_weave_dir_override(tmp_path):
     (vault / "config").mkdir(parents=True)
     weave = tmp_path / "native" / "weave"
     weave.mkdir(parents=True)
+    # Forward slashes: a raw Windows path in a TOML *basic* string would make
+    # `C:\Users\…` an invalid \U escape and the config would fail to parse,
+    # silently exercising the malformed-config fallback instead of the override.
     (vault / "config" / "config.toml").write_text(
-        f'weave_dir = "{weave}"\n', encoding="utf-8")
+        f'weave_dir = "{weave.as_posix()}"\n', encoding="utf-8")
     assert index_client.resolve_db_path(None, str(vault)) == str(weave / "index.db")
 
 
