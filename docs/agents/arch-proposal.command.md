@@ -21,7 +21,7 @@ never invents work.
 
 Config: `[steering]` in the vault `config.toml` (budget + signal weights).
 Gate: `weave steering gate` (rail: `operations/steering.py`; contract:
-`docs/agents/steering.md`). Fast-loop counterpart: `docs/agents/issue-loop.md`.
+`docs/agents/steering.md`). Fast-loop counterpart: `issue-loop.md` in funloops (`packages/devloop/docs/agents/`).
 
 ## Contract in one line
 
@@ -41,7 +41,7 @@ gh label create arch-proposal --force \
   --color 5319e7 --description "Draft architectural proposal from the slow loop; human greenlights → ready-for-agent"
 ```
 
-`arch-proposal` is documented in `docs/agents/triage-labels.md` alongside the
+`arch-proposal` is documented in funloops' `triage-labels.md` alongside the
 canonical triage roles.
 
 ## 1. Load the ground truth first (anti-re-proposal)
@@ -94,7 +94,8 @@ don't cross-contaminate; neither may edit code.
   axis alone — a missing global skill degrades the run, it never fails it.
 - **Simplification axis — vendored `ponytail-audit`.** Dispatch a fresh
   subagent with the text of the **vendored**
-  `docs/agents/ponytail-audit.command.md` skill (whole-repo over-engineering
+  `ponytail-audit.command.md` skill, which ships with devloop in funloops
+  under `packages/devloop/docs/agents/` (whole-repo over-engineering
   audit). It returns a ranked delete/stdlib/native/yagni/shrink list, one line
   per finding with a `[path]` and a `net: -<N> lines, -<M> deps possible` tally.
   (Interactive `/ponytail-audit` is the same skill once symlinked — see §5.)

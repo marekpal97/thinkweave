@@ -56,11 +56,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from importlib.metadata import distribution
 from pathlib import Path
 
-import devloop
 from devloop import index_client
 from devloop.trajectory import prime
+
 from thinkweave.core.schemas import NoteType
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -164,9 +165,17 @@ def test_devloop_is_an_installed_package_not_a_directory_in_this_tree():
     """The carve, made falsifiable. A re-vendored ``devloop/`` at the repo root
     would shadow the pinned package on ``sys.path`` (pytest puts the rootdir
     first) and every other test here would keep passing against the copy —
-    which is exactly how the pin would rot unnoticed."""
+    which is exactly how the pin would rot unnoticed.
+
+    ``direct_url.json`` (PEP 610) is where the *provenance* survives install,
+    so it — not a path prefix — is what says "this came from funloops". It
+    holds for both supported modes: the committed git pin and the documented
+    editable dev override, which differ in scheme but not in origin. (A path
+    check cannot work here: ``.venv/`` lives inside the repo root.)
+    """
     assert not (REPO_ROOT / "devloop").exists(), "devloop/ is funloops' now — do not re-vendor"
-    assert REPO_ROOT not in Path(devloop.__file__).resolve().parents
+    origin = json.loads(distribution("devloop").read_text("direct_url.json") or "{}")
+    assert "funloops" in origin.get("url", ""), origin
 
 
 def test_shim_config_is_byte_identical_to_the_pre_carve_capture():
@@ -193,7 +202,7 @@ def test_every_subcommand_dispatches_through_the_shim():
     ``--help`` exits 0 only if the subparser resolved."""
     for name in SUBCOMMANDS:
         r = subprocess.run([sys.executable, str(SHIM), name, "--help"], cwd=REPO_ROOT,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
         assert r.returncode == 0, f"{name}: rc={r.returncode} {r.stderr}"
     # And the surface is exactly this — a new verb must be added deliberately.
     cfg = json.loads(subprocess.run([sys.executable, str(SHIM), "config"], cwd=REPO_ROOT,

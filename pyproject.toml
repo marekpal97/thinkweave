@@ -136,8 +136,30 @@ replace = "\"version\": \"{new_version}\""
 # ModuleNotFoundError instead of exercising the product's core surface.
 # CI installs the full surface with `uv sync --all-extras` (see the CI note in
 # the PR / docs) so embeddings/news/gemini/youtube paths are covered too.
+# devloop is the /issue-loop deterministic rail, carved out to funloops (#151).
+# Dev-only on purpose: it is developer tooling for THIS repo, never part of the
+# shipped thinkweave wheel — so it belongs here and not in an optional extra.
 dev = [
     "pytest>=9.0.2",
     "bump-my-version>=0.28",
     "mcp>=1.0",
+    "devloop",
 ]
+
+[tool.uv.sources]
+# Git-pinned by rev so CI resolves one exact devloop and the schema-pin test in
+# tests/test_devloop_boundaries.py means something (a moving target cannot pin
+# a schema). uv.lock records the resolved commit; that file is the real pin.
+#
+# Dev-machine override (NOT committed — CI has no sibling checkout): work
+# against a local funloops with
+#   uv pip install -e ../funloops/packages/devloop
+# which replaces the pinned build in-place in .venv. Any later `uv sync`
+# restores the pin, deliberately: the override is a per-session choice, so it
+# can never leak into a green CI run. Re-run the one-liner to re-apply it.
+#
+# Bumping: land the change in funloops first, then
+#   uv lock --upgrade-package devloop
+# and update `rev` to match. See the pin-update dance in
+# tests/test_devloop_boundaries.py.
+devloop = { git = "https://github.com/marekpal97/funloops", subdirectory = "packages/devloop", rev = "b719e58" }

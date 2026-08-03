@@ -14,9 +14,6 @@ This test pins that boundary to executable artifacts:
 * `build_trajectory` (the loop's only vault-write payload) never mints a
   decision — its frontmatter carries no decision-note field and its `type`
   stays `note`;
-* the loop command doc's §3 instructs exactly one `weave_create(type=note …)`
-  and never a decision-mint or a `/wrap` — the loop never auto-mints decisions
-  (they belong to the session-note owner);
 * the contract is referenced from `issue-loop-memory.md`.
 
 Expected owners/fields are hand-written from the issue's division-of-labor
@@ -35,7 +32,6 @@ from devloop.trajectory import build_trajectory
 _REPO = Path(__file__).resolve().parent.parent
 _DOCS = _REPO / "docs" / "agents"
 CONTRACT_DOC = _DOCS / "vault-issue-contract.md"
-COMMAND_DOC = _DOCS / "issue-loop.command.md"
 MEMORY_DOC = _DOCS / "issue-loop-memory.md"
 
 
@@ -68,21 +64,6 @@ DECISION_FIELDS = {
     "superseded_by",
     "file_paths",
 }
-
-
-def _section(doc: str, heading_num: str) -> str:
-    """Return the text of a ``## <heading_num>.`` section up to the next ``## ``."""
-    lines = doc.splitlines()
-    start = next(
-        (i for i, ln in enumerate(lines) if ln.startswith(f"## {heading_num}.")),
-        None,
-    )
-    assert start is not None, f"section '## {heading_num}.' not found"
-    end = next(
-        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
-        len(lines),
-    )
-    return "\n".join(lines[start:end])
 
 
 def _parse_owner_table(doc: str) -> dict[str, set[str]]:
@@ -239,19 +220,13 @@ def test_wrap_worker_carries_loop_session_scope_clause():
 # The command doc §3 stays inside the contract
 
 
-def test_command_doc_section3_writes_one_note_never_a_decision():
-    sec = _section(COMMAND_DOC.read_text(encoding="utf-8"), "3")
-    assert "weave_create(type=note" in sec, (
-        "§3 must instruct exactly one type=note trajectory write"
-    )
-    for mint in ("type=decision", "type: decision", "weave_create(type=decision"):
-        assert mint not in sec, f"§3 must not instruct decision minting ({mint!r})"
-
-
-def test_command_doc_section3_does_not_run_wrap():
-    """The loop never runs /wrap or wrap-finalize itself — session synthesis
-    (and decision promotion) belongs to the session-note owner, reached via the
-    dream-wrap-worker catch-up (see the wrap-coverage section)."""
-    sec = _section(COMMAND_DOC.read_text(encoding="utf-8"), "3").lower()
-    assert "/wrap" not in sec
-    assert "wrap-finalize" not in sec
+# The two §3 pins that lived here (the command doc instructs exactly one
+# `weave_create(type=note …)`, and never runs `/wrap`) went to funloops with
+# `issue-loop.command.md` in #151 — a host cannot grep another repo's doc.
+# Nothing is left uncovered on thinkweave's side: the rule they enforced is
+# pinned on artifacts that stayed, and more strongly, on code rather than prose
+# — `test_decisions_owned_by_session_not_trajectory` (the contract doc's own
+# partition) and `test_trajectory_note_is_a_note_never_a_decision` /
+# `test_trajectory_frontmatter_carries_no_decision_field` (the payload
+# `build_trajectory` actually emits). What no longer has a home in THIS repo is
+# the narrower claim that the loop's own instructions obey the contract.

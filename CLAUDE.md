@@ -56,3 +56,11 @@ When you need depth, go here. CLAUDE.md tells you *how to operate*; these tell y
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Every SQL table the derived index produces — name, purpose, key columns, `CREATE` site — and the rebuild/migration story. Markdown stays truth; SQLite is rebuildable. |
 
 After upgrading Thinkweave, re-run `weave hooks install` to pick up newly-added hooks (e.g. SessionStart).
+
+### The `/issue-loop` dev loop lives in another repo
+
+The loop's deterministic rail is the **`devloop` package**, carved out to [funloops](https://github.com/marekpal97/funloops) in 2026-08 (issue #151). Thinkweave *consumes* it: a git-pinned dev-dependency (`[tool.uv.sources]` in `pyproject.toml`, resolved in `uv.lock`), driven through the unchanged `python scripts/issue_loop.py <subcommand>` shim.
+
+So when you need the loop's own docs — `issue-loop.command.md`, `issue-loop.md`, `issue-tracker.md`, `triage-labels.md`, `devloop-boundaries.md`, or the vendored `ponytail-*` skills — read them from the sibling checkout at **`../funloops/packages/devloop/docs/agents/`**, not from this tree. They are not here any more, and a `/issue-loop` symlink under `.claude/commands/` must point there too (machine-local, never committed).
+
+What stays in `docs/agents/` is what thinkweave *owns*: `loop.toml` (this repo's gate pipeline, which the rail finds by walking up from the working directory), `issue-loop-memory.md` (the host's memory-feed overlay), `vault-issue-contract.md`, plus the thinkweave-native `arch-proposal.command.md`, `plan-distill.command.md`, `domain.md` and `steering.md`. The cross-repo seam — the pin, the shim's byte-compatibility, and the indexer schema pin with its **pin-update dance** — is enforced and documented in `tests/test_devloop_boundaries.py`; read that before changing the indexer schema.
