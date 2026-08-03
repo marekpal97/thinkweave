@@ -6,8 +6,12 @@ manifests under ``.claude-plugin/`` — must all produce equivalent server
 entries so that Claude Code's MCP launcher sees the same invocation
 regardless of how the user installed the package.
 
-"Equivalent" here means: every route converges on the same invocation
-``uv run --project <root> --extra mcp weave-mcp``. The checked-in
+"Equivalent" here means: every route converges on the same invocation,
+``uv run [--no-sync] --project <root> --extra mcp python -m
+thinkweave.surfaces.mcp.server`` — module execution rather than the
+``weave-mcp`` console script, because a lock-interrupted sync on Windows
+deletes the ``.exe`` shim and leaves the script form permanently broken.
+The checked-in
 manifests (``.mcp.json``, ``.claude-plugin/plugin.json``) reach it via
 the portable launcher ``bin/weave-mcp-launch`` — which resolves uv even
 when the harness PATH omits ``~/.local/bin`` and fails loudly otherwise
@@ -122,23 +126,67 @@ class TestMcpInvocationConsistency:
     def test_weave_install_uses_uv_run_shape(self):
         entry = _entry_from_install()
         assert _command_stem(entry["command"]) == "uv"
-        assert entry["args"][:2] == ["run", "--project"]
+        assert entry["args"][:3] == ["run", "--no-sync", "--project"]
         assert "--extra" in entry["args"]
         assert "mcp" in entry["args"]
-        assert entry["args"][-1] == "weave-mcp"
+        assert entry["args"][-3:] == ["python", "-m", "thinkweave.surfaces.mcp.server"]
 
-    def test_launcher_execs_the_same_uv_run_shape_as_weave_install(self):
-        """Cross-route equivalence: the launcher's exec line IS the uv-run
-        invocation ``weave install`` writes to ~/.claude.json."""
+    def test_weave_install_writes_the_module_invocation(self):
+        """The machine-scope entry's exact argv.
+
+        Cross-route equivalence against the POSIX launcher's exec line is not
+        asserted here: that launcher belongs to #156, which lands first and pins
+        its own text. Coupling to it would make this PR's CI depend on the other
+        branch's contents. `_key`-level equivalence IS still asserted below,
+        which is the property that actually matters to the doctor.
+        """
         install_entry = _entry_from_install()
         norm = _normalise_args_for_compare(install_entry["args"], "<PROJECT_PATH>")
         assert norm == [
-            "run", "--project", "<PROJECT_PATH>", "--extra", "mcp", "weave-mcp",
+            "run", "--no-sync", "--project", "<PROJECT_PATH>",
+            "--extra", "mcp", "python", "-m",
+            "thinkweave.surfaces.mcp.server",
         ]
-        launcher_text = self.LAUNCHER.read_text(encoding="utf-8")
-        assert (
-            'exec "$uv_bin" run --project "$root" --extra mcp weave-mcp "$@"'
-            in launcher_text
+
+    def test_the_machine_entry_always_skips_the_sync(self):
+        """``weave install`` has already run ``uv sync`` eagerly, so re-resolving
+        at every session start is pure latency — and on Windows an outright
+        failure, since uv reinstalls the project by replacing
+        ``.venv/Scripts/weave-*.exe`` while a live server holds its own image
+        open (`os error 32`, measured 2026-08-03).
+
+        The launchers make the same choice; that half is #156's, and its own
+        tests pin it. This PR owns only the machine-scope entry and the ``.cmd``
+        siblings below.
+        """
+        assert "--no-sync" in _entry_from_install()["args"]
+
+    def test_windows_launchers_match_the_posix_sync_and_module_policy(self):
+        """The ``.cmd`` siblings must not drift from their POSIX counterparts:
+        same ``--no-sync``, same module execution. A console script would be the
+        drift that matters — a lock-interrupted sync deletes the ``.exe`` shims
+        before failing, and a console-script launcher never recovers."""
+        for launcher in ("weave-mcp-launch.cmd", "weave-hook-launch.cmd"):
+            text = (REPO_ROOT / "bin" / launcher).read_text(encoding="utf-8")
+            invocations = [
+                ln for ln in text.splitlines()
+                if "--extra mcp" in ln and not ln.strip().startswith("rem ")
+            ]
+            assert invocations, f"{launcher} has no uv invocation line"
+            for line in invocations:
+                assert "--no-sync" in line, f"{launcher} re-syncs at launch"
+                assert "python -m thinkweave." in line, (
+                    f"{launcher} invokes a console script: {line.strip()}"
+                )
+
+    def test_the_two_shapes_still_fingerprint_as_one_invocation(self):
+        """...and because of that divergence, ``weave doctor --mcp`` has to
+        normalise the flag away, or every Windows user with both a machine entry
+        and the committed project manifest gets a phantom scope conflict."""
+        from thinkweave.surfaces.cli import mcp_doctor
+
+        assert mcp_doctor._key(_entry_from_install()) == mcp_doctor._key(
+            _entry_from_mcp_json()
         )
 
     def test_no_route_bakes_env_vars(self):
@@ -615,6 +663,93 @@ def subprocess_result(returncode: int):
     r = _R()
     r.returncode = returncode
     return r
+
+
+class TestWindowsLaunchers:
+    """The `.cmd` launchers are a FALLBACK, not a fix for a broken route.
+
+    Measured 2026-08-03: `claude mcp list` reports both committed registrations
+    (project-scope `bin/weave-mcp-launch` and the plugin-route copy) as
+    **Connected** on native Windows, because Claude Code resolves both hook
+    commands and MCP commands through a shell — Git Bash, per
+    `CLAUDE_CODE_GIT_BASH_PATH`. So the committed manifests need no Windows
+    variant and none is added.
+
+    What the `.cmd` siblings buy is an environment where the spawn is shell-less
+    or cmd.exe-only (no Git Bash; possibly Codex on Windows, unverified). Two
+    facts make them reachable without touching any committed config:
+
+    * `cmd.exe` applies PATHEXT even to an explicit path, so the extensionless
+      command in `hooks/hooks.json` resolves to `weave-hook-launch.cmd` there
+      and to the shell script under Git Bash. One authored command, two
+      implementations — and no platform key is needed (nor exists: Claude Code
+      has no `commandWindows`).
+    * A direct `CreateProcess` does NOT apply PATHEXT, so the MCP route cannot
+      rely on that and the `.cmd` must be named explicitly if ever wanted.
+
+    The tests below therefore pin the *pairing and hygiene* of the two
+    implementations, and the extensionless-ness of the committed hook command —
+    not any claim that a POSIX launcher fails on Windows.
+    """
+
+    POSIX_LAUNCHERS = ("weave-mcp-launch", "weave-hook-launch")
+
+    def test_every_posix_launcher_has_a_windows_sibling(self):
+        for name in self.POSIX_LAUNCHERS:
+            posix = REPO_ROOT / "bin" / name
+            windows = REPO_ROOT / "bin" / f"{name}.cmd"
+            assert posix.is_file(), f"{name} missing"
+            assert windows.is_file(), (
+                f"{name} has no .cmd sibling — cmd.exe and a direct "
+                "CreateProcess cannot run a #!/bin/sh script, so this surface "
+                "has no fallback where the spawn does not go through Git Bash"
+            )
+
+    def test_hook_command_stays_extensionless_so_pathext_can_choose(self):
+        """The load-bearing invariant. Committing `…/weave-hook-launch.cmd`
+        here would fix Windows and break every POSIX host at once."""
+        hooks = json.loads(
+            (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        commands = [
+            h["command"]
+            for matchers in hooks["hooks"].values()
+            for matcher in matchers
+            for h in matcher["hooks"]
+        ]
+        assert commands
+        for cmd in commands:
+            assert ".cmd" not in cmd, (
+                f"hook command {cmd!r} names a platform-specific launcher; keep "
+                "it extensionless and let cmd.exe's PATHEXT pick the .cmd while "
+                "Git Bash picks the shell script"
+            )
+
+    def test_windows_launchers_are_crlf_and_quiet(self):
+        for name in self.POSIX_LAUNCHERS:
+            raw = (REPO_ROOT / "bin" / f"{name}.cmd").read_bytes()
+            # A LF-only .cmd mis-parses multi-line `if (…)` blocks under cmd.exe,
+            # and both launchers use one for the uv-resolution ladder.
+            assert b"\r\n" in raw, f"{name}.cmd must use CRLF line endings"
+            assert raw.startswith(b"@echo off"), (
+                f"{name}.cmd must start with `@echo off` — the MCP launcher "
+                "speaks JSON-RPC on stdout, so an echoed command line corrupts "
+                "the first frame"
+            )
+
+    def test_cmd_line_endings_are_pinned(self):
+        """cmd.exe is only reliable on CRLF — a LF-only .cmd mis-parses the
+        multi-line `if (…) else (…)` in the resolution ladder. The POSIX side of
+        the rule (`bin/* text eol=lf`) belongs to #156; this rule must stay more
+        specific than it, since later rules win and `bin/*` matches these too."""
+        rules = [
+            " ".join(line.split())
+            for line in (REPO_ROOT / ".gitattributes")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert "*.cmd text eol=crlf" in rules
 
 
 class TestPluginManifestContract:

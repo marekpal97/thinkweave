@@ -28,6 +28,13 @@ test:
   was on POSIX; the expected *shape* is the invariant, so the paths inside it
   are substituted per platform (see ``EXPECTED_CONFIG_TOML``) — on Windows they
   carry the ``\\\\`` escaping a TOML basic string requires for a backslash.
+
+  One deliberate divergence from that transcript: thinkweave writes
+  ``--no-sync`` into ``args``, which ``codex mcp add`` had no reason to. It is
+  safe because ``weave install`` has already run ``uv sync`` eagerly, and it
+  matters most on Windows, where a re-sync at spawn time can hit a sharing
+  violation trying to rewrite ``weave-mcp.exe`` under a live server. See
+  ``_build_server_entry``.
 * ``codex exec --help`` (0.146.0) for the invocation shape: prompt is
   positional, ``--model``/``-m``, ``--dangerously-bypass-approvals-and-sandbox``.
 * https://learn.chatgpt.com/docs/extend/mcp for ``mcp_servers`` and the
@@ -76,13 +83,13 @@ _VAULT_TOML = r'"C:\\srv\\vault"' if _WINDOWS else '"/srv/vault"'
 EXPECTED_CONFIG_TOML = f"""\
 [mcp_servers.thinkweave]
 command = {_UV_TOML}
-args = ["run", "--project", {_ROOT_TOML}, "--extra", "mcp", "weave-mcp"]
+args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-m", "thinkweave.surfaces.mcp.server"]
 """
 
 EXPECTED_CONFIG_TOML_WITH_VAULT = f"""\
 [mcp_servers.thinkweave]
 command = {_UV_TOML}
-args = ["run", "--project", {_ROOT_TOML}, "--extra", "mcp", "weave-mcp"]
+args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-m", "thinkweave.surfaces.mcp.server"]
 env = {{ "THINKWEAVE_VAULT" = {_VAULT_TOML} }}
 """
 
@@ -163,6 +170,58 @@ class TestCodexProfile:
             False,
             False,
         )
+
+
+class TestNextSteps:
+    """The post-install screen must only name things the active harness can do.
+
+    It ended with "3. /onboard" for every harness. thinkweave ships no Codex
+    skill bundle, so on Codex that command does not exist — the one screen whose
+    entire job is telling the user what to do next was naming something
+    unrunnable.
+    """
+
+    def test_codex_does_not_advertise_the_onboard_skill(
+        self, codex_home: Path, capsys
+    ):
+        install_mod._print_next_steps()
+        out = capsys.readouterr().out
+        assert "/onboard" not in out
+        # …and says what to do instead, via the CLI that does exist.
+        assert "weave init" in out
+        assert "weave hooks install --scope user --harness codex" in out
+        assert "restart codex" in out.lower()
+
+    def test_claude_code_output_is_unchanged(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(harness, "_OVERRIDE", harness.claude_code(home=tmp_path))
+        install_mod._print_next_steps()
+        out = capsys.readouterr().out
+        assert "/onboard" in out
+        assert "weave hooks install" not in out
+
+    def test_the_fallback_names_only_real_subcommands(
+        self, codex_home: Path, capsys
+    ):
+        """A next-step naming a command that does not parse would repeat the
+        original bug in a new spelling, so the advice is checked against the
+        actual CLI parser."""
+        from thinkweave.surfaces.cli import build_parser
+
+        install_mod._print_next_steps()
+        out = capsys.readouterr().out
+
+        parser = build_parser()
+        known: set[str] = set()
+        for action in parser._actions:
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict):
+                known.update(choices)
+        assert known, "could not introspect the CLI subcommands"
+        for line in out.splitlines():
+            stripped = line.strip().lstrip("0123456789. ")
+            if stripped.startswith("weave "):
+                verb = stripped.split()[1]
+                assert verb in known, f"next-step names unknown subcommand: {verb}"
 
 
 class TestCodexHeadlessArgv:
@@ -324,8 +383,9 @@ class TestConfigTomlWriter:
         assert "uvx" not in text
         assert tomllib.loads(text)["mcp_servers"]["thinkweave"] == {
             "command": UV_PATH,
-            "args": ["run", "--project", str(PROJECT_ROOT), "--extra", "mcp",
-                     "weave-mcp"],
+            "args": ["run", "--no-sync", "--project", str(PROJECT_ROOT),
+                     "--extra", "mcp", "python", "-m",
+                     "thinkweave.surfaces.mcp.server"],
         }
 
         out = capsys.readouterr().out
