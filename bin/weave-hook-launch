@@ -43,4 +43,6 @@ else
     exit 127
 fi
 
-exec "$uv_bin" run --project "$root" --extra mcp weave-hook "$@"
+# Hooks are runtime callbacks, never an environment-management surface.
+# Module invocation remains available when weave-hook.exe is stale or absent.
+exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.hooks.handler "$@"

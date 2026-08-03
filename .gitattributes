@@ -1,3 +1,6 @@
+# POSIX launchers are executed by Git Bash on Windows.
+bin/* text eol=lf
+
 # The Windows batch launchers must be CRLF. cmd.exe is only reliable on CRLF —
 # a LF-only .cmd mis-parses the multi-line `if (…) else (…)` block in the
 # uv-resolution ladder — so these are pinned regardless of checkout platform.

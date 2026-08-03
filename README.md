@@ -204,6 +204,13 @@ config are picked up immediately; `hooks/`, `agents/`, or `mcpServers` changes n
 install, warns if a leftover `weave install` entry would double-register the server,
 and is reversed by `weave dev-unlink`.
 
+**Updating a dev-link checkout (especially on Windows):** close every Claude Code
+session, then run `git pull` and `uv sync --extra mcp`, and reopen Claude Code.
+The MCP and hook launchers intentionally use `uv run --no-sync python -m ...` at
+runtime, so a hook can never mutate the environment or replace a live Windows
+executable. If you use the alternative machine-scope hook route, also rerun
+`uv run weave hooks install --scope user` before reopening.
+
 <details><summary>Alternative: <code>weave install</code> (MCP-only, machine-scope)</summary>
 
 If you want only the MCP server registered in `~/.claude.json` *without* the
