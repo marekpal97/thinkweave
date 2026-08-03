@@ -176,10 +176,11 @@ class HarnessProfile:
     this harness, so post-install instructions may tell the user to run one.
 
     False for Codex: it has its own plugin/marketplace system and built-in
-    slash commands like ``/hooks``, but thinkweave ships **no Codex skill
-    bundle** (W3 owns the Agent-Skills export), so ``/onboard`` simply does not
-    exist there. ``weave install`` printed "3. /onboard" to every harness
-    regardless — a next step a Codex user cannot take, on the one screen whose
+    slash commands like ``/hooks``. The repository has a minimal Codex-native
+    bundle under ``skills/``, but ``weave install`` does not export it yet and
+    no Codex ``onboard`` skill exists, so post-install instructions must not
+    claim one does. ``weave install`` printed "3. /onboard" to every harness
+    regardless — a next step a Codex user could not take, on the one screen whose
     whole job is telling them what to do next. Distinct from
     :attr:`headless_slash`, which is about one-shot *invocation* rather than
     whether the skills exist at all; flip this when the export lands."""
