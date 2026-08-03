@@ -30,9 +30,10 @@ Those police devloop's own internals, which is funloops' CI's job now
 
 Pin-update dance — what to do when this file goes red
 -----------------------------------------------------
-The pin is ``[tool.uv.sources] devloop.rev`` in ``pyproject.toml`` (resolved
-into ``uv.lock``). A red schema-pin test means thinkweave's indexer and the
-pinned devloop's SQL disagree. Two legitimate fixes, in preference order:
+The pin is the ``@ <rev>`` in the dev group's ``devloop @ git+…`` direct
+reference in ``pyproject.toml`` (resolved into ``uv.lock``). A red schema-pin
+test means thinkweave's indexer and the pinned devloop's SQL disagree. Two
+legitimate fixes, in preference order:
 
 1. **The indexer changed and devloop should follow** — file the fix against
    funloops, land it there, then bump ``rev`` here (``uv lock --upgrade-package
