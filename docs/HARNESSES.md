@@ -215,3 +215,183 @@ for anything else — Claude Code's `Write`/`Edit` `tool_response` echoes back t
 file just written (`content`, `originalFile`), so mining it for text would feed
 whole files to `_extract_insight_blocks` and re-capture any `★ Insight` block
 living in the source on every single touch.
+
+## Native Windows
+
+Verified on **Windows 11** with **Claude Code (native `claude.exe`, 2026-07-25
+build)** and **uv 0.10.9** on **2026-08-03**. Sources are labelled the same way
+as the Codex section: `[binary]` = strings extracted from the shipped
+`claude.exe`; `[measured]` = observed from a real subprocess run on this host.
+
+This is a *platform* axis, not a harness axis — everything here applies to any
+harness running outside Git Bash / WSL. "Native Windows" throughout means
+cmd.exe / CreateProcess, **not** Git Bash, which runs the POSIX launchers
+unchanged.
+
+### The one finding everything else follows from
+
+**Hooks and MCP servers are spawned by different mechanisms, and only one of
+them consults PATHEXT.**
+
+| Mechanism | PATHEXT applies? |
+|---|---|
+| A command **string** through a shell (cmd.exe) | **Yes** `[measured]` |
+| Direct `CreateProcess`, no shell | **No** `[measured]` |
+
+`[measured]` `cmd /c "<dir>\probe" hello` resolves `probe.cmd`; a shell-less
+`subprocess.run(['./probe'])` raises `WinError 2` for the same file.
+
+**Which mechanism each harness surface uses is a separate question, and the
+answer for Claude Code is "a shell, for both."** `[measured]`
+`claude mcp list` reports BOTH committed registrations — project-scope
+`bin/weave-mcp-launch` and the plugin-route
+`…/skills/thinkweave/bin/weave-mcp-launch` — as **Connected** on native
+Windows. Claude Code resolves an MCP `command` through Git Bash
+(`CLAUDE_CODE_GIT_BASH_PATH`, 6 hits `[binary]`), so the extensionless POSIX
+launcher works as committed and **needs no Windows-specific entry**. An earlier
+draft of this section inferred otherwise from the shell-less `subprocess`
+result above; that was a proxy measurement generalised past what it showed.
+
+`bin/*.cmd` therefore exist as a **fallback for a shell-less or cmd.exe-only
+spawn** (an environment without Git Bash, or a harness that does not shell out),
+not as a repair for a demonstrated Claude Code breakage. What follows is why
+each surface is shaped the way it is:
+
+* **Hooks need no config change at all.** `hooks/hooks.json` fires the
+  extensionless `"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch"`, and cmd.exe
+  resolves that to `weave-hook-launch.cmd` while Git Bash picks the shell
+  script. One authored command, two implementations. `[measured]` end-to-end:
+  that exact command string (with the mixed separators `_localize_command`
+  produces) returns a well-formed SessionStart `additionalContext` payload.
+  `tests/test_install.py::TestWindowsLaunchers` pins the command extensionless —
+  committing `…-launch.cmd` there would fix Windows and break every POSIX host.
+* **MCP entries need no change either, and must not be "fixed".** The
+  committed manifests work as-is (see the measurement above). `weave doctor
+  --mcp` deliberately does **not** reject an extensionless command on Windows: a
+  gate there red-flags a working install, which is strictly worse than the
+  false green it appears to prevent. Re-running `weave install` to obtain a
+  machine-scope `uv.exe` entry is **not** required and would add a third
+  registration beside the two that already work.
+
+  `check_launcher_resolves` used to probe by spawning **without** a shell, so on
+  Windows an extensionless launcher raised an unhandled
+  `OSError: [WinError 193] %1 is not a valid Win32 application` and aborted the
+  whole doctor — a probe artefact reported as a broken install. **#156** fixes
+  that by probing through Git Bash the way the harness does. `claude mcp list`
+  remains the authoritative cross-check.
+
+### `commandWindows`: Codex has it, Claude Code does not
+
+This is a **per-harness** fact, and an earlier revision of this file got it wrong
+by measuring one harness and generalising to both. Both halves are now measured
+separately.
+
+**Codex: yes.** Its hooks documentation states verbatim — *"`commandWindows` is
+an optional Windows-only command override. In TOML, use `command_windows` or
+`commandWindows`."* It is per hook entry and sits beside `command`. thinkweave
+writes `hooks.json`, so it uses the camelCase spelling, and it keeps `command`
+pointing at the POSIX launcher so WSL/Linux is unaffected while
+`commandWindows` names the `.cmd` sibling. Codex does **not** resolve hook
+commands through Git Bash the way Claude Code does, so without this a Windows
+Codex user's hooks hand a `#!/bin/sh` script to cmd.exe.
+
+**Claude Code: no.** `[binary]` `commandWindows` appears **0** times in the
+shipped 2026-07-25 `claude.exe`, against 49 hits for `UserPromptSubmit`. (The
+same grep finds 0 for `additionalContextLimit`, correctly — that key is
+Codex-only — which is what validates the method.) Writing it there would be
+config that parses and never fires, and it is unnecessary anyway: Claude Code
+shells out to Git Bash, so the extensionless command already works.
+
+Hence `HarnessProfile.hook_windows_command_key` rather than a shared constant —
+the key is written only for the harness that documents one. The correction also
+retires the claim that "Codex's hook schema is field-for-field Claude Code's":
+it is *nearly* so, and this is one of the places it is not.
+
+**Method note.** The earlier error was grepping `claude.exe` and treating the
+result as a statement about hooks in general. When a fact is per-harness, a
+measurement of one harness is evidence about that harness only — and Codex could
+not be measured here at all, because the CLI is not installed on the test host
+(see "What is NOT verified"). The documentation was the right fallback, and the
+right one to have consulted first.
+
+### Line endings are load-bearing
+
+`core.autocrlf=true` is the default on a Windows Git install, and the repo had
+**no `.gitattributes`** — so a fresh Windows clone checked the POSIX launchers
+out with CRLF. msys2's bash tolerates a CRLF shebang, which is exactly why this
+hid: the launchers kept working locally while the same clone shared into WSL was
+already broken with `bad interpreter: /bin/sh^M`. It also left
+`bin/weave-{hook,mcp}-launch` permanently dirty in `git status` on every Windows
+checkout. `.gitattributes` now pins the POSIX launchers to `eol=lf` and `*.cmd`
+to `eol=crlf` (a LF-only `.cmd` mis-parses the multi-line `if (…)` block in the
+resolution ladder).
+
+### `--no-sync`, and where it belongs
+
+The machine-scope MCP entry passes `uv run --no-sync`; the launchers deliberately
+do not. `weave install` has already run `uv sync` eagerly, so re-resolving at
+every session start buys nothing — and on Windows it is a real hazard, since uv
+wants to rewrite `.venv\Scripts\weave-mcp.exe` while a previously-spawned server
+still holds that image open. The launchers must keep syncing: on the plugin
+route nothing ever runs `weave install`, so that implicit sync is the route's
+only dependency bootstrap. `mcp_doctor._key` normalises the flag away so the two
+shapes still fingerprint as one invocation.
+
+`[measured]` `--no-sync` coexists with `--extra mcp` (no conflict, uv 0.10.9) and
+is ~2× faster warm (0.27s vs 0.60s).
+
+**Amended 2026-08-03 — the launchers skip it too, and the hazard is no longer
+hypothetical.** Editing `pyproject.toml` with a session running reproduced it
+exactly: the PostToolUse hook fired, its `uv run` reinstalled the project, and
+the sync died with
+
+```
+error: failed to remove file `.venv/Lib/site-packages/../../Scripts/weave-mcp.exe`:
+The process cannot access the file because it is being used by another process. (os error 32)
+```
+
+Two live `weave-mcp` servers held that image open. Every subsequent hook fired
+and failed the same way, so the PostToolUse capture was lost for the rest of the
+session. The launchers therefore pass `--no-sync` unconditionally at runtime — that half
+is **#156**'s ("Runtime MCP/hook launchers use `--no-sync` by design"); this
+section documents the same policy for the machine-scope entry `weave install`
+writes, and for the `.cmd` siblings, which match it.
+
+The same failure produced a second lesson. uv had already deleted
+`weave-hook.exe` before it hit the locked `weave-mcp.exe`, leaving a venv that
+imported perfectly but had **no hook console script** — a state a console-script
+launcher can never recover from on its own. Every launch surface therefore runs
+`python -m thinkweave.surfaces.{mcp.server,hooks.handler}` instead of
+`weave-mcp`/`weave-hook`. Module execution needs only an importable package,
+which is what `uv run` already guarantees. This was Codex's original
+recommendation, initially rejected here as churn on the grounds that the console
+script worked at the time; the lock failure is the case that argument missed.
+
+### A latent bug this surfaced
+
+(This one is fixed here; the launcher and probe items above are #156's, and the
+`mcpServers`-as-string crash is #155's. Kept in one place because the *findings*
+belong together even though the fixes ship separately.)
+
+`mcp_doctor._key` fingerprinted commands with a bare `Path(command).name`. On
+Windows `shutil.which("uv")` returns `C:\…\uv.EXE`, so the machine entry keyed as
+`uv.EXE` while the launcher branch hardcoded `uv` — meaning any Windows install
+carrying **both** a machine entry and the committed `.mcp.json` was reported by
+`weave doctor --mcp` as a cross-scope conflict that did not exist. Latent since
+#52; fixed by `_command_stem`, which strips a Windows executable suffix and
+case-folds (Windows paths are case-insensitive; POSIX names are left alone).
+
+### What is NOT verified here
+
+The `weave doctor --mcp` probe, per the known gap above — it cannot execute an
+extensionless POSIX launcher on Windows, so the doctor's own verdict on that
+entry is unavailable (the harness's verdict, via `claude mcp list`, is
+Connected).
+
+No **Codex on Windows** run at all — the CLI is not installed on the test host
+(`~/.codex/config.toml` carries no `[mcp_servers]`), so every Codex×Windows claim
+above is inherited from the shared installer code plus the test suite, not
+measured. The `.cmd` launchers' resolution ladder *is* measured
+(`tests/test_{hook,mcp}_launcher.py` now run the native implementation on
+Windows), but no native-Windows **MCP server** has been driven end-to-end
+through a real harness session; the hook path has.

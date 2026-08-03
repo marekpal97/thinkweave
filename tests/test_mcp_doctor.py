@@ -44,10 +44,17 @@ def _write_mcp_json(cwd: Path, entry: dict | None) -> None:
     (cwd / ".mcp.json").write_text(json.dumps(body, indent=2), encoding="utf-8")
 
 
+# The machine-scope shape `weave install` writes. Module execution, not the
+# `weave-mcp` console script — a uv sync interrupted by a Windows file lock
+# deletes the .exe shims before failing, which leaves a console-script entry
+# permanently broken. `_key` must fingerprint this identically to the launcher.
 CANONICAL_ENTRY = {
     "type": "stdio",
     "command": "uv",
-    "args": ["run", "--project", ".", "--extra", "mcp", "weave-mcp"],
+    "args": [
+        "run", "--project", ".", "--extra", "mcp",
+        "python", "-m", "thinkweave.surfaces.mcp.server",
+    ],
     "env": {},
 }
 
@@ -190,7 +197,9 @@ class TestRegistrationScopes:
             "/abs/path",
             "--extra",
             "mcp",
-            "weave-mcp",
+            "python",
+            "-m",
+            "thinkweave.surfaces.mcp.server",
         ]
         _write_claude_json(claude_json, machine_entry)
         _write_mcp_json(tmp_path, CANONICAL_ENTRY)  # uses "."
@@ -382,7 +391,6 @@ class TestLauncherResolves:
         result = md.check_launcher_resolves(tmp_path, timeout_s=5.0)
         assert not result.passed
         assert "bin/weave-mcp-launch" in result.detail
-
 
 # ---------- env-var check ----------
 

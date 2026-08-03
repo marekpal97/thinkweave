@@ -44,6 +44,10 @@ from thinkweave.core.harness import active as _profile
 SERVER_NAME = "thinkweave"
 REQUIRED_SCRIPTS = ("weave", "weave-hook", "weave-mcp")
 
+#: The stdio MCP server, addressed as a module. Every launch surface uses this
+#: rather than the ``weave-mcp`` console script — see ``_build_server_entry``.
+MCP_MODULE = "thinkweave.surfaces.mcp.server"
+
 # Every harness touchpoint this module reads or writes — the MCP config, the
 # instructions file, the plugins root, the dev-link target, the pause marker —
 # comes from the active profile. `_profile()` is the single read point, so a
@@ -109,13 +113,42 @@ def _detect_project_root() -> Path:
 def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str, Any]:
     """Construct the canonical thinkweave server block.
 
-    Uses the ``weave-mcp`` console script (stable invocation, layout-
-    independent — see ARCHITECTURE.md §Invocation surface). The result is
+    Runs the server as a **module**, not via the ``weave-mcp`` console script.
+    The script is an ``.exe`` shim on Windows, and a ``uv`` sync interrupted by a
+    file lock deletes the shims before it fails — leaving a venv that imports
+    perfectly but has no ``weave-mcp.exe``, at which point a console-script entry
+    is permanently broken while ``python -m`` still works. Measured on
+    2026-08-03: editing ``pyproject.toml`` with a session running did exactly
+    that. Module execution depends only on the package being importable, which is
+    what ``uv run`` already guarantees. The result is
     normalised to whatever the harness's config *format* stores — Codex's TOML
     carries no ``type`` key — so that a re-read compares equal and a repeat
     install is a genuine no-op.
+
+    ``--no-sync`` is safe *here specifically* because ``cmd_install`` has
+    already run :func:`_uv_sync` eagerly, so the environment this entry launches
+    into is known-good at the moment it is written. Re-resolving at every
+    session start buys nothing and costs two ways: latency on a cold cache, and
+    on Windows a genuine hazard — ``uv run`` wants to rewrite
+    ``.venv\\Scripts\\weave-mcp.exe``, which fails with a sharing violation
+    while a previously-spawned server still holds that image open.
+
+    The portable launchers deliberately do NOT pass it. On the plugin route
+    nothing ever runs ``weave install``, so the launcher's implicit sync is that
+    route's only dependency bootstrap; ``mcp_doctor._key`` normalises the flag
+    away so the two shapes still fingerprint as one invocation.
     """
-    args = ["run", "--project", str(project_root), "--extra", "mcp", "weave-mcp"]
+    args = [
+        "run",
+        "--no-sync",
+        "--project",
+        str(project_root),
+        "--extra",
+        "mcp",
+        "python",
+        "-m",
+        MCP_MODULE,
+    ]
     entry: dict[str, Any] = {
         "type": "stdio",
         "command": _detect_uv_path(),
@@ -575,15 +608,39 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
 
 
 def _print_next_steps() -> None:
-    cli = _profile().cli_bin
+    """Post-install instructions the *active* harness can actually follow.
+
+    This used to end with "3. /onboard" unconditionally. On Codex that is a dead
+    end: thinkweave ships no Codex skill bundle, so the command does not exist —
+    and the one screen whose entire job is saying what to do next was naming
+    something unrunnable. Everything ``/onboard`` orchestrates is reachable from
+    the CLI, so the fallback lists those steps rather than apologising.
+    """
+    profile = _profile()
+    cli = profile.cli_bin
     print()
     print("Next:")
     print(f"  1. Restart {cli}            # MCP server only spawns on session start")
     print(f"  2. cd <repo> && {cli}       # open a project")
-    print("  3. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
+    if profile.ships_skills:
+        print("  3. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
+        print()
+        print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
+        print("MCP server entry now; otherwise `/onboard` will ask and persist it.")
+        return
+
+    # No skills on this harness — spell out the same steps as CLI commands,
+    # without naming the skill: a user reading this cannot run it, so mentioning
+    # it only invites them to try.
+    name = profile.display_name or profile.id
+    print(f"  3. weave init               # vault wiring ({name} has no thinkweave skills)")
+    print(f"  4. weave hooks install --scope user --harness {profile.id}")
+    if profile.hooks_install_caveat:
+        print("     (then trust the hooks — see the note printed by that command)")
+    print(f"  5. weave import {profile.id} --enrich   # backfill prior sessions")
     print()
     print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
-    print("MCP server entry now; otherwise `/onboard` will ask and persist it.")
+    print("MCP server entry now; `weave init` will otherwise ask and persist it.")
 
 
 def _raw_mcp_entry_present() -> bool:

@@ -120,6 +120,26 @@ def _stamp_harness(command: str, profile) -> str:
     return f"{command} --harness {profile.id}"
 
 
+def _windows_command(command: str) -> str:
+    """The same hook command, aimed at the native-Windows launcher.
+
+    The canonical command invokes the extensionless POSIX launcher; its `.cmd`
+    sibling is the Windows implementation, so the override is the identical
+    string with the launcher named explicitly. Everything else — the quoting, the
+    phase argument, any ``--harness`` stamp — is untouched, which keeps the two
+    spellings from drifting.
+
+    Only the launcher token is rewritten, not every occurrence, so a repo path
+    that happens to contain the launcher's name is not mangled.
+    """
+    for launcher in ("weave-hook-launch", "weave-mcp-launch"):
+        if f"{launcher}.cmd" in command:  # already localized
+            return command
+        if launcher in command:
+            return command.replace(launcher, f"{launcher}.cmd", 1)
+    return command
+
+
 def _settings_path(project_dir: str = "") -> Path:
     """Find the project-scope settings file."""
     root = Path(project_dir) if project_dir else Path.cwd()
@@ -181,15 +201,20 @@ def _build_installed_settings(
         for c_entry in canonical_entries:
             matcher = c_entry.get("matcher", "")
             c_hook = c_entry["hooks"][0]
+            command = _stamp_harness(
+                _localize_command(c_hook["command"], root), profile
+            )
             _ensure_hook(
                 entries,
                 matcher,
-                _stamp_harness(_localize_command(c_hook["command"], root), profile),
+                command,
                 slot=matcher if multi else None,
                 timeout=c_hook.get("timeout"),
                 context_limit=(
                     limit if event in CONTEXT_EMITTING_EVENTS else None
                 ),
+                windows_key=profile.hook_windows_command_key,
+                windows_command=_windows_command(command),
             )
 
     # Retired phases: strip thinkweave entries from any event the
@@ -398,6 +423,8 @@ def _ensure_hook(
     slot: str | None = None,
     timeout: int | None = None,
     context_limit: int | None = None,
+    windows_key: str = "",
+    windows_command: str = "",
 ) -> None:
     """Add a hook entry, or rewrite any existing thinkweave hook in place.
 
@@ -442,6 +469,15 @@ def _ensure_hook(
                     hook.pop("additionalContextLimit", None)
                 else:
                     hook["additionalContextLimit"] = context_limit
+                # Same snap-to-canonical rule once more: a Windows override left
+                # behind by an install under a different harness must not
+                # survive, or Codex's key lingers in a Claude Code settings file
+                # that has no idea what it means.
+                for stale in ("commandWindows", "command_windows"):
+                    if stale != windows_key:
+                        hook.pop(stale, None)
+                if windows_key and windows_command:
+                    hook[windows_key] = windows_command
                 entry["matcher"] = matcher
                 return
 
@@ -450,4 +486,6 @@ def _ensure_hook(
         fresh["timeout"] = timeout
     if context_limit is not None:
         fresh["additionalContextLimit"] = context_limit
+    if windows_key and windows_command:
+        fresh[windows_key] = windows_command
     entries.append({"matcher": matcher, "hooks": [fresh]})

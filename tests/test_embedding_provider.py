@@ -142,18 +142,20 @@ def test_openai_provider_empty_texts_is_noop(fake_httpx):
     assert fake_httpx == []
 
 
-def test_openai_provider_missing_key_raises(monkeypatch, fake_httpx):
-    # Strip key + isolate .env lookups.
+def test_openai_provider_missing_key_raises(monkeypatch, fake_httpx, tmp_path):
+    # Strip key + isolate .env lookups. ``tmp_path`` (not
+    # ``tempfile.TemporaryDirectory``) because ``monkeypatch.chdir`` is only
+    # undone at fixture teardown: on Windows the live process CWD keeps an
+    # open handle on the directory, so an eager rmtree inside the test body
+    # fails with WinError 32.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
     from thinkweave.core import api_keys
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        monkeypatch.setattr(api_keys, "_PROJECT_ROOT", Path(td))
-        monkeypatch.chdir(td)
-        p = OpenAIEmbeddingProvider()
-        with pytest.raises(ValueError, match="OPENAI_API_KEY not found"):
-            p.embed(["x"])
+    monkeypatch.setattr(api_keys, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    p = OpenAIEmbeddingProvider()
+    with pytest.raises(ValueError, match="OPENAI_API_KEY not found"):
+        p.embed(["x"])
 
 
 def test_openai_provider_sends_model_and_input(fake_httpx):

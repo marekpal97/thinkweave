@@ -2801,7 +2801,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "readability-lxml", marker = "extra == 'news'", specifier = ">=0.8.1" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15,<0.16" },
     { name = "sentence-transformers", marker = "extra == 'embeddings-local'", specifier = ">=2.5" },
     { name = "thinkweave", extras = ["mcp", "embeddings", "hubs", "news", "gemini", "youtube"], marker = "extra == 'all'" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = ">=1.0" },
