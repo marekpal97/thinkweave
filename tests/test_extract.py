@@ -11,7 +11,6 @@ from thinkweave.core.events import (
     Prompt,
     Todo,
     assign_concepts_from_paths,
-    classify_feedback,
     classify_probe,
     extract_deterministic,
     extract_prompts,
@@ -254,112 +253,70 @@ class TestClassifyProbe:
         assert classify_probe(prompt, []) is False
 
 
-class TestClassifyFeedback:
-    """Issue #70 — deterministic feedback register (correction/confirmation/neutral)."""
+class TestMultiRegistrationEchoCollapse:
+    """#161 mitigation — near-identical rows written by multiply-registered
+    hooks collapse to one at the enumeration seams."""
 
-    def test_leading_no_is_correction(self):
-        assert classify_feedback("no, that's wrong — use a dict instead") == "correction"
+    def test_prompt_echoes_within_window_collapse(self, tmp_path: Path):
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-08-03T21:39:47.044079+00:00", "type": "prompt",
+             "text": "fix the parser", "session_id": "s"},
+            {"ts": "2026-08-03T21:39:47.079433+00:00", "type": "prompt",
+             "text": "fix the parser", "session_id": "s"},
+            {"ts": "2026-08-03T21:39:47.091837+00:00", "type": "prompt",
+             "text": "fix the parser", "session_id": "s"},
+        ])
+        prompts = extract_prompts(f)
+        assert len(prompts) == 1
+        assert prompts[0].text == "fix the parser"
 
-    def test_thats_wrong_phrase_is_correction(self):
-        # No leading marker, but the strong phrase fires anywhere.
-        assert classify_feedback("hmm, that's wrong, revisit the parser") == "correction"
+    def test_genuine_resubmission_survives(self, tmp_path: Path):
+        # Identical text arriving minutes apart is a real resubmission,
+        # not a multi-registration echo.
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-08-03T21:00:00+00:00", "type": "prompt",
+             "text": "run the tests", "session_id": "s"},
+            {"ts": "2026-08-03T21:05:00+00:00", "type": "prompt",
+             "text": "run the tests", "session_id": "s"},
+        ])
+        assert len(extract_prompts(f)) == 2
 
-    def test_actually_lead_is_correction(self):
-        assert classify_feedback("actually, let's revert that change") == "correction"
+    def test_distinct_prompts_within_window_survive(self, tmp_path: Path):
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-08-03T21:00:00.000000+00:00", "type": "prompt",
+             "text": "first", "session_id": "s"},
+            {"ts": "2026-08-03T21:00:00.500000+00:00", "type": "prompt",
+             "text": "second", "session_id": "s"},
+        ])
+        assert [p.text for p in extract_prompts(f)] == ["first", "second"]
 
-    def test_revert_lead_is_correction(self):
-        # Kept as a lead: in a coding-agent session a leading revert/undo is
-        # overwhelmingly corrective of prior agent work.
-        assert classify_feedback("revert the last commit") == "correction"
+    def test_feedback_echoes_collapse(self, tmp_path: Path):
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "2026-08-02T10:00:00.100000+00:00", "type": "feedback",
+             "register": "correction", "session_id": "s",
+             "prompt_ref": "no, wrong"},
+            {"ts": "2026-08-02T10:00:00.150000+00:00", "type": "feedback",
+             "register": "correction", "session_id": "s",
+             "prompt_ref": "no, wrong"},
+        ])
+        evs = feedback_events(f)
+        assert len(evs) == 1
 
-    def test_undo_lead_is_correction(self):
-        assert classify_feedback("undo that change") == "correction"
-
-    def test_correct_imperative_is_neutral(self):
-        # "correct" dropped from confirmation leads — imperative verb, not
-        # endorsement.
-        assert classify_feedback("correct the typo in line 5") == "neutral"
-
-    def test_wait_lead_is_neutral(self):
-        # "wait" dropped from correction leads — too task-common as a lead.
-        assert classify_feedback("wait for the build then run tests") == "neutral"
-
-    def test_dont_forget_lead_is_neutral(self):
-        # "don't" dropped from correction leads.
-        assert classify_feedback("don't forget to update the changelog") == "neutral"
-
-    def test_stop_lead_is_neutral(self):
-        # "stop" dropped from correction leads.
-        assert classify_feedback("stop the server before deploying") == "neutral"
-
-    def test_no_problem_is_neutral(self):
-        # Neutral-override courtesy phrase beats the leading-"no" rule.
-        assert classify_feedback("no problem, take your time") == "neutral"
-
-    def test_no_worries_is_neutral(self):
-        assert classify_feedback("no worries, whenever you get to it") == "neutral"
-
-    def test_no_rush_is_neutral(self):
-        assert classify_feedback("no rush on this one") == "neutral"
-
-    def test_hedged_looks_good_is_neutral(self):
-        # A hedged partial-correction dressed as confirmation is the worst
-        # mislabel for the reward channel — suppress to neutral.
-        assert classify_feedback("looks good, but the naming is off") == "neutral"
-
-    def test_hedged_except_is_neutral(self):
-        assert classify_feedback("that's right except for the edge case") == "neutral"
-
-    def test_hedged_although_is_neutral(self):
-        assert classify_feedback("looks good although I'd rename it") == "neutral"
-
-    def test_hedge_before_signal_still_confirmation(self):
-        # The hedge must FOLLOW the confirming signal to suppress; a leading
-        # hedge that resolves affirmatively stays confirmation.
-        assert classify_feedback("but that looks good overall") == "confirmation"
-
-    def test_emoji_lead_is_confirmation(self):
-        # Leading non-alpha (emoji, whitespace) is skipped before the lead word.
-        assert classify_feedback("👍 yes") == "confirmation"
-
-    def test_punctuation_only_is_neutral(self):
-        assert classify_feedback("!!!") == "neutral"
-        assert classify_feedback("...") == "neutral"
-
-    def test_leading_yes_is_confirmation(self):
-        assert classify_feedback("yes, exactly right") == "confirmation"
-
-    def test_perfect_lead_is_confirmation(self):
-        assert classify_feedback("perfect, keep going") == "confirmation"
-
-    def test_lgtm_is_confirmation(self):
-        assert classify_feedback("lgtm, ship it") == "confirmation"
-
-    def test_looks_good_phrase_is_confirmation(self):
-        assert classify_feedback("that looks good to me") == "confirmation"
-
-    def test_neutral_task_prompt(self):
-        assert classify_feedback(
-            "Add a feedback register to the UserPromptSubmit hook"
-        ) == "neutral"
-
-    def test_neutral_question(self):
-        assert classify_feedback("What does the indexer skip?") == "neutral"
-
-    def test_empty_is_neutral(self):
-        assert classify_feedback("") == "neutral"
-        assert classify_feedback("   ") == "neutral"
-
-    def test_word_boundary_no_false_positive(self):
-        # "yesterday"/"note"/"nothing" must not trip the yes/no leads.
-        assert classify_feedback("yesterday's run finished cleanly") == "neutral"
-        assert classify_feedback("note the failing test in module X") == "neutral"
-        assert classify_feedback("nothing changed in the output") == "neutral"
-
-    def test_correction_wins_over_confirmation(self):
-        # A prompt carrying both signals resolves to correction (stronger
-        # improvement signal). Leading "no" dominates the trailing "perfect".
-        assert classify_feedback("no, the earlier version was perfect") == "correction"
+    def test_unparseable_ts_never_collapses(self, tmp_path: Path):
+        # datetime.min fallback rows must not be swallowed — better a
+        # duplicate than a silently dropped real event.
+        f = tmp_path / "events.jsonl"
+        _write_jsonl(f, [
+            {"ts": "garbage", "type": "prompt",
+             "text": "same", "session_id": "s"},
+            {"ts": "also-garbage", "type": "prompt",
+             "text": "same", "session_id": "s"},
+        ])
+        assert len(extract_prompts(f)) == 2
 
 
 class TestFeedbackEvents:

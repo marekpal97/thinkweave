@@ -31,11 +31,29 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
+    feedback: list[dict] = []
+    if getattr(args, "feedback", ""):
+        try:
+            feedback = json.loads(args.feedback)
+        except json.JSONDecodeError as e:
+            print(f"error: --feedback is not valid JSON: {e}", file=sys.stderr)
+            sys.exit(2)
+        if not isinstance(feedback, list) or not all(
+            isinstance(v, dict) for v in feedback
+        ):
+            print(
+                "error: --feedback must be a JSON list of "
+                '{"prompt": ..., "register": ...} objects.',
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     result = finalize_wrap(
         cfg,
         session_id=args.session_id,
         project=project,
         prune=not args.no_prune,
+        feedback=feedback,
     )
 
     if args.json:
@@ -43,6 +61,12 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         sys.exit(1 if result.errors else 0)
 
     print(f"wrap-finalize · session {result.session_id} · project {project}")
+    if result.feedback_written or result.feedback_skipped or result.feedback_unmatched:
+        print(
+            f"  feedback: {result.feedback_written} written, "
+            f"{result.feedback_skipped} already present, "
+            f"{result.feedback_unmatched} unmatched"
+        )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)
         print(f"  prune:   {result.orphans_pruned} orphan folder(s), {mb:.1f} MB freed")
@@ -62,7 +86,7 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     if result.timings:
         parts = " · ".join(
             f"{k} {result.timings[k]:.1f}s"
-            for k in ("prune", "index", "judge", "landing", "drift")
+            for k in ("feedback", "prune", "index", "judge", "landing", "drift")
             if k in result.timings
         )
         if parts:

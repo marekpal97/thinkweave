@@ -69,8 +69,16 @@ If the session note has a `## Candidate Insights` section (populated when hooks 
 ## 4. Run `weave wrap-finalize` (one Bash call)
 
 ```
-weave wrap-finalize <session_id> --project <project>
+weave wrap-finalize <session_id> --project <project> [--feedback '<json>']
 ```
+
+**Feedback verdicts (#101) — compose them in step 3, pass them here.** You are the feedback labeler: while composing insights/decisions, also judge whether any *user* prompt this session clearly pushed back on agent work (`correction`) or clearly endorsed it (`confirmation`). Apply §C5 below; if any non-neutral verdicts exist, add:
+
+```
+--feedback '[{"prompt": "<the prompt'\''s opening words, verbatim>", "register": "correction"}, ...]'
+```
+
+`prompt` is matched case-insensitively as a prefix against the session's captured prompt events; wrap-finalize appends the frozen-schema `feedback` events idempotently (re-wraps never double-write). No verdicts → omit the flag entirely. In catch-up mode the prompt texts are the `type: "prompt"` rows of `events.jsonl`.
 
 **CLI resolution — PATH-independent by design (#47).** The `weave` above (and in every other Bash call in this skill) is the committed launcher `bin/weave` from the thinkweave checkout: it self-locates the repo and resolves uv via the same ladder as the MCP server's `bin/weave-mcp-launch`, so it works without the venv on PATH. On the plugin route Claude Code puts the plugin's `bin/` on the Bash PATH, so the bare call just resolves. If `command -v weave` comes up empty (dev checkout wired via `.mcp.json`, or a pip install whose venv scripts dir isn't on PATH), invoke the launcher by path — `<thinkweave-repo>/bin/weave wrap-finalize …` — where `<thinkweave-repo>` is the checkout you're working in, or the `--project` value in the registered thinkweave MCP server entry (`.mcp.json` / `~/.claude.json`). Never fall back to hoping the venv's console script is on PATH: that is the asymmetry where the MCP half of `/wrap` works while the finalize half silently fails.
 
@@ -145,3 +153,10 @@ Per decision dict: `title`, `rationale` (the C/D/C prose), `outcome` (`committed
 
 ### C4. Concepts are mandatory
 Every insight and every decision: a `concepts` array, **≥2**, from the vocabulary loaded in C1. Pick concepts that connect this note to *other* notes (thematic, not descriptive). Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`). Test: "would another note about this topic share this concept?" Terms not in the ontology are accepted automatically into `proposed_concepts:` by the server — you don't pre-canonicalise.
+
+### C5. Feedback verdicts — precision over recall
+The reward channel downstream (RLVR export) trusts these labels, so a false non-neutral is worse than a miss:
+- `correction` = the user pushed back on something the agent did or concluded ("no, that's wrong", "revert that", "actually…"-redirections). A new instruction, a scope change, or "carry on" is **neutral**.
+- `confirmation` = the user explicitly endorsed agent work ("looks good", "ship it", "exactly"). A hedged endorsement ("looks good except…") is **neutral**.
+- Machine-generated prompt text is **never** feedback: `<task-notification>`, `<agent-message>`, `<system-reminder>`, pasted logs/output, slash-command boilerplate.
+- Most sessions have zero non-neutral prompts. That's the expected output, not a failure.

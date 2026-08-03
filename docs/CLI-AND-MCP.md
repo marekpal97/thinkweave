@@ -48,7 +48,7 @@ weave schedule {list|install|uninstall}       # render scheduling.yaml onto the 
 weave skill {list|show <name>}                # inspect commands/*.md frontmatter
 weave sources {list|show <slug>}              # inspect source-type registry
 weave prune-orphans [--yes]                   # delete abandoned session folders (used by /wrap)
-weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: prune→index→judge→landing→drift (--json for headless)
+weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: feedback→prune→index→judge→landing→drift (--json for headless; --feedback '<json>' appends the wrap LLM's feedback verdicts as frozen-shape events, #101)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
 weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic issue-loop trajectory outcome judge (phase-2 dream-outcome-worker rail)

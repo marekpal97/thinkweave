@@ -266,31 +266,13 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         # plain (empty) response — never break the user's turn.
         block = _prompt_time_enrichment(cfg, session_id, prompt_text, now)
 
-        # Feedback register (issue #70) — the human reward channel. Rides the
-        # same prompt-capture pass with a pure-string classify (no model call,
-        # no lookahead) that labels corrective / confirming prompts. On a
-        # non-neutral verdict we append a companion ``feedback`` event; a
-        # neutral task prompt produces none. Cost is strictly below the R2
-        # enrichment above, so no latency budget is consumed. Placed after the
-        # capture + enrichment work (maximally non-intrusive) but BEFORE the
-        # emit below so the R2 early-return can't skip it. ``prompt_ref`` is an
-        # excerpt of what the prompt event already stores — timestamp adjacency
-        # is the join key for export consumers.
-        from thinkweave.core.events import classify_feedback
-
-        register = classify_feedback(prompt_text)
-        if register != "neutral":
-            _buffer_event(
-                cfg.weave_dir,
-                session_id,
-                {
-                    "ts": now,
-                    "type": "feedback",
-                    "register": register,
-                    "session_id": session_id,
-                    "prompt_ref": prompt_text[:120],
-                },
-            )
+        # Feedback classification does NOT happen here (#101): hooks capture,
+        # never judge. The raw prompt event above is the whole substrate;
+        # ``feedback`` events are appended asynchronously by the /wrap LLM
+        # pass via ``weave wrap-finalize --feedback`` (catch-up in /dream's
+        # wrap-worker). The old inline lexicon misread machine-generated
+        # prompt text (<task-notification> blobs) as endorsements — a model
+        # judging with conversation context is the labeler, not a regex.
 
         if block:
             _output(

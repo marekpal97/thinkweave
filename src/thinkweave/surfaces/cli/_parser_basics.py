@@ -572,6 +572,16 @@ def add_admin_subparsers(sub) -> None:
         "--no-prune", action="store_true",
         help="Skip the orphan-prune step",
     )
+    p_wrap_finalize.add_argument(
+        "--feedback", default="",
+        help=(
+            "JSON list of feedback verdicts composed by the wrap LLM: "
+            '[{"prompt": "<text or prefix>", "register": '
+            '"correction"|"confirmation"}, ...]. Matched against the '
+            "session's captured prompt events and appended as feedback "
+            "events (idempotent)."
+        ),
+    )
 
     p_judge = sub.add_parser(
         "judge",
