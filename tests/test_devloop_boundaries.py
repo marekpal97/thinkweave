@@ -5,7 +5,8 @@ pins it as a dev-dependency and keeps only the contracts a host owns. The
 boundary spec itself moved with the code — read it at
 ``packages/devloop/docs/agents/devloop-boundaries.md`` in funloops.
 
-Two contracts, both of which only thinkweave can enforce:
+Three contracts span the two repos; the first two are enforced here, and only
+thinkweave can enforce them:
 
 1. **Schema pin** — the derived-index tables/columns devloop reads are built
    here by the REAL thinkweave indexer, so indexer schema drift fails a test
@@ -15,6 +16,13 @@ Two contracts, both of which only thinkweave can enforce:
 2. **Consumption** — devloop is resolved from the installed package (never a
    directory in this tree), and the ``scripts/issue_loop.py`` shim's resolved
    config is byte-identical to what it printed before the carve.
+3. **The ``LOOP_PRIME_TOOL`` sentinel** — the literal ``'loop_prime'`` devloop
+   stamps on the retrieval events it buffers, which thinkweave's indexer
+   projects to ``context_served(source='loop-prime')``; a rename on either side
+   silently strands the served-context signal. Enforced in
+   ``tests/test_context_served.py``, which imports the constant from devloop
+   rather than re-typing the string — listed here so the inventory of what
+   crosses the repo boundary is in one place.
 
 Not here any more: the sqlite3 importer allowlist and the boundary-doc pins.
 Those police devloop's own internals, which is funloops' CI's job now
@@ -45,10 +53,20 @@ module-level but NOT in ``devloop.trajectory.__all__``. A pure rename in
 funloops reds this test without any schema having moved. That is a false
 positive on rule 1 — re-point the import, do not bump the pin.
 
-Regenerating the golden: an *intentional* edit to ``docs/agents/loop.toml``
-changes the resolved config, so re-capture it deliberately —
-``python scripts/issue_loop.py config > tests/devloop_golden_config.json`` —
-and say why in the commit. An *unintentional* change is what it catches.
+Regenerating the golden: two changes legitimately move it, and both are
+deliberate acts rather than accidents.
+
+1. An *intentional* edit to ``docs/agents/loop.toml`` — this repo's own gate
+   pipeline or knobs.
+2. A new key in the pinned devloop's ``DEFAULT_CONFIG``. This is the likelier
+   one: the resolved config is defaults-merged-with-file, so a knob added
+   upstream in funloops reds the golden on the very next pin bump even though
+   nothing in thinkweave changed. Expected, not a regression — read the diff,
+   confirm it is only the added key, and re-capture.
+
+Either way, re-capture deliberately and say why in the commit:
+``python scripts/issue_loop.py config > tests/devloop_golden_config.json``.
+Any *other* diff is what this test exists to catch.
 """
 
 from __future__ import annotations
