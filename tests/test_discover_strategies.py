@@ -8,6 +8,7 @@ spawn LLMs.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -242,7 +243,10 @@ class TestExternalToolRunner:
             "projects": {
                 "trade_ideas": {
                     "external_tool_runner": {
-                        "tools": [["python3", str(script)]],
+                        # sys.executable, not "python3" — the latter is
+                        # not on PATH on Windows, so the tool would be
+                        # silently dropped and the test pass vacuously.
+                        "tools": [[sys.executable, str(script)]],
                     }
                 }
             }
@@ -263,7 +267,7 @@ class TestExternalToolRunner:
             "projects": {
                 "default": {
                     "external_tool_runner": {
-                        "tools": [["python3", str(script)]],
+                        "tools": [[sys.executable, str(script)]],
                     }
                 }
             }
@@ -295,7 +299,13 @@ class TestExternalToolRunner:
             "projects": {
                 "default": {
                     "external_tool_runner": {
-                        "tools": [{"command": f"python3 {script}"}],
+                        # Quoted so the interpreter/script paths survive the
+                        # split even when they contain spaces. On Windows they
+                        # also contain backslashes, which POSIX-mode
+                        # shlex.split would eat — _split_command handles both.
+                        "tools": [
+                            {"command": f'"{sys.executable}" "{script}"'}
+                        ],
                     }
                 }
             }

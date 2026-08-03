@@ -8,7 +8,7 @@ needed.
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -250,8 +250,13 @@ class TestResolveCommand:
             "thinkweave.scheduling.registry.shutil.which", lambda name: None
         )
         job = ScheduledJob("x", "0 3 * * *", "weave index --embed", runner="uv")
-        out = resolve_command(job, repo_root=Path("/repo"))
-        assert out == "uv run --project /repo weave index --embed"
+        # `--project` carries a filesystem path, so it renders with the host
+        # separator (`\repo` on Windows) — correct for the shell that will
+        # run the line. Interpolate rather than hardcoding `/repo` so the
+        # assertion is about the fallback *shape*, not the separator.
+        repo_root = Path("/repo")
+        out = resolve_command(job, repo_root=repo_root)
+        assert out == f"uv run --project {repo_root} weave index --embed"
 
     def test_direct_namespaces_skill_under_plugin_route(
         self, monkeypatch, use_profile, tmp_path
@@ -307,6 +312,14 @@ class TestResolveCommand:
 
 
 class TestCrontabBackend:
+    # A crontab line is a POSIX artifact: every path in it must be
+    # forward-slashed no matter which host rendered it. `render` derives the
+    # log path from `user_cache_dir()`, so these tests patch it with a
+    # `PurePosixPath` — the flavour a POSIX host's `Path` would have — and
+    # then assert the exact crontab text on any host. Patching with `Path`
+    # would make the expected text OS-dependent and the assertion vacuous.
+    POSIX_CACHE = PurePosixPath("/cache/pm")
+
     def _jobs(self):
         return [
             ScheduledJob(
@@ -329,7 +342,7 @@ class TestCrontabBackend:
             lambda name: f"/abs/{name}",
         )
         monkeypatch.setattr(
-            "thinkweave.scheduling.cron.user_cache_dir", lambda: Path("/cache/pm")
+            "thinkweave.scheduling.cron.user_cache_dir", lambda: self.POSIX_CACHE
         )
         block = CrontabBackend(config).render(self._jobs())
         assert block.startswith(FENCE_START)
@@ -358,7 +371,7 @@ class TestCrontabBackend:
             lambda name: "/usr/bin/flock" if name == "flock" else f"/abs/{name}",
         )
         monkeypatch.setattr(
-            "thinkweave.scheduling.cron.user_cache_dir", lambda: Path("/cache/pm")
+            "thinkweave.scheduling.cron.user_cache_dir", lambda: self.POSIX_CACHE
         )
         job = ScheduledJob(
             "dream", "0 3 * * *", "claude -p /dream", runner="direct",

@@ -96,7 +96,7 @@ class TestMcpEntryRemoval:
         cfg = json.loads(fake_claude_home["claude_json"].read_text())
         assert install_mod.SERVER_NAME in cfg["mcpServers"]
         entry = cfg["mcpServers"][install_mod.SERVER_NAME]
-        assert entry["args"][-1] == "weave-mcp"
+        assert entry["args"][-3:] == ["python", "-m", "thinkweave.surfaces.mcp.server"]
 
     def test_restore_preserves_other_servers(self, fake_claude_home):
         cj = fake_claude_home["claude_json"]

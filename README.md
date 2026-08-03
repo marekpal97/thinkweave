@@ -204,6 +204,13 @@ config are picked up immediately; `hooks/`, `agents/`, or `mcpServers` changes n
 install, warns if a leftover `weave install` entry would double-register the server,
 and is reversed by `weave dev-unlink`.
 
+**Updating a dev-link checkout (especially on Windows):** close every Claude Code
+session, then run `git pull` and `uv sync --extra mcp`, and reopen Claude Code.
+The MCP and hook launchers intentionally use `uv run --no-sync python -m ...` at
+runtime, so a hook can never mutate the environment or replace a live Windows
+executable. If you use the alternative machine-scope hook route, also rerun
+`uv run weave hooks install --scope user` before reopening.
+
 <details><summary>Alternative: <code>weave install</code> (MCP-only, machine-scope)</summary>
 
 If you want only the MCP server registered in `~/.claude.json` *without* the
@@ -237,8 +244,12 @@ What Codex gets: the `weave_*` MCP tools, the instructions nudge, and — via
 hooks Claude Code runs. Codex gates hooks on trust, so open a session and trust
 the entries via `/hooks` after installing, and re-trust after every reinstall.
 Until you do, nothing fires: the installed AGENTS.md block therefore still
-tells the model to run `weave_extract` explicitly before ending a session. What
-Codex does not get yet is the slash-command skills.
+tells the model to run `weave_extract` explicitly before ending a session.
+
+The repository also carries a minimal Codex-native bundle under `skills/`:
+`thinkweave-recall`, `thinkweave-capture`, `thinkweave-research`, and
+`thinkweave-wrap`. `weave install --harness codex` does not export these to the
+user skill directory yet; install or link them into `~/.agents/skills/` manually.
 
 If you populated Codex via ChatGPT desktop's **Settings→Import**, that feature
 brings companion *skills* across and may have pre-created a `thinkweave` MCP

@@ -44,10 +44,17 @@ def _write_mcp_json(cwd: Path, entry: dict | None) -> None:
     (cwd / ".mcp.json").write_text(json.dumps(body, indent=2), encoding="utf-8")
 
 
+# The machine-scope shape `weave install` writes. Module execution, not the
+# `weave-mcp` console script — a uv sync interrupted by a Windows file lock
+# deletes the .exe shims before failing, which leaves a console-script entry
+# permanently broken. `_key` must fingerprint this identically to the launcher.
 CANONICAL_ENTRY = {
     "type": "stdio",
     "command": "uv",
-    "args": ["run", "--project", ".", "--extra", "mcp", "weave-mcp"],
+    "args": [
+        "run", "--project", ".", "--extra", "mcp",
+        "python", "-m", "thinkweave.surfaces.mcp.server",
+    ],
     "env": {},
 }
 
@@ -190,7 +197,9 @@ class TestRegistrationScopes:
             "/abs/path",
             "--extra",
             "mcp",
-            "weave-mcp",
+            "python",
+            "-m",
+            "thinkweave.surfaces.mcp.server",
         ]
         _write_claude_json(claude_json, machine_entry)
         _write_mcp_json(tmp_path, CANONICAL_ENTRY)  # uses "."
@@ -211,6 +220,69 @@ class TestRegistrationScopes:
         result = md.check_registration_scopes(tmp_path)
         assert result.passed, result.detail
         assert "identically" in result.detail
+
+    def test_string_valued_mcp_servers_manifest_is_skipped_not_fatal(
+        self, tmp_path, use_profile):
+        """A foreign plugin may point ``mcpServers`` at an external file rather
+        than inlining it (Atlassian ships ``"./.mcp.json"``). The manifest scan
+        used to call ``.get("thinkweave")`` straight on that string and die with
+        AttributeError, taking the whole doctor down. Such a manifest declares
+        nothing the doctor can verify, so it must be skipped silently while
+        thinkweave's own plugin manifest is still found."""
+        skills = tmp_path / "skills"
+        use_profile(mcp_config=tmp_path / "absent.json", skills_dir=skills)
+
+        foreign_dir = skills / "atlassian" / ".claude-plugin"
+        foreign_dir.mkdir(parents=True)
+        (foreign_dir / "plugin.json").write_text(
+            json.dumps({"name": "atlassian", "mcpServers": "./.mcp.json"}),
+            encoding="utf-8",
+        )
+
+        ours_dir = skills / "thinkweave" / ".claude-plugin"
+        ours_dir.mkdir(parents=True)
+        (ours_dir / "plugin.json").write_text(
+            json.dumps({"name": "thinkweave", "mcpServers": {"thinkweave": CANONICAL_ENTRY}}),
+            encoding="utf-8",
+        )
+
+        result = md.check_registration_scopes(tmp_path)
+        assert result.passed, result.detail
+        assert "atlassian" not in result.detail
+
+    def test_string_valued_mcp_servers_alone_reads_as_unregistered(
+        self, tmp_path, use_profile):
+        """The external-file manifest on its own contributes no entry — the
+        doctor reports the missing registration rather than inventing one."""
+        skills = tmp_path / "skills"
+        use_profile(mcp_config=tmp_path / "absent.json", skills_dir=skills)
+        foreign_dir = skills / "atlassian" / ".claude-plugin"
+        foreign_dir.mkdir(parents=True)
+        (foreign_dir / "plugin.json").write_text(
+            json.dumps({"name": "atlassian", "mcpServers": "./.mcp.json"}),
+            encoding="utf-8",
+        )
+        result = md.check_registration_scopes(tmp_path)
+        assert not result.passed
+
+
+class TestMcpServersNarrowing:
+    """``_mcp_servers`` narrows the manifest block to something dict-shaped."""
+
+    def test_inline_dict_passes_through(self):
+        block = {"thinkweave": {"command": "uv"}}
+        assert md._mcp_servers({"mcpServers": block}) == block
+
+    @pytest.mark.parametrize(
+        "value",
+        ["./.mcp.json", [], 7, None],
+        ids=["external-file-string", "list", "int", "null"],
+    )
+    def test_non_dict_becomes_empty(self, value):
+        assert md._mcp_servers({"mcpServers": value}) == {}
+
+    def test_missing_key_becomes_empty(self):
+        assert md._mcp_servers({"name": "x"}) == {}
 
 
 # ---------- top-level driver tests ----------
@@ -382,7 +454,6 @@ class TestLauncherResolves:
         result = md.check_launcher_resolves(tmp_path, timeout_s=5.0)
         assert not result.passed
         assert "bin/weave-mcp-launch" in result.detail
-
 
 # ---------- env-var check ----------
 

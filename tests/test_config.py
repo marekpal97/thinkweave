@@ -16,6 +16,7 @@ owned by the vault-internal ``config.toml``.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
@@ -28,6 +29,19 @@ from thinkweave.core.config import (
     user_config_path,
     write_user_config,
 )
+
+
+def _toml_line(key: str, value) -> str:
+    """One ``key = "<value>"`` TOML line with the value properly escaped.
+
+    Fixtures must not interpolate a path straight into a TOML basic string. On
+    Windows ``C:\\Users\\...`` makes ``\\U`` look like the start of an 8-hex-digit
+    unicode escape, so the fixture writes a file ``tomllib`` refuses; the tier
+    under test then silently falls through to the default vault and the
+    assertion fails for a reason that has nothing to do with the behaviour
+    being tested. Same mechanism as ``core/config.py::write_user_config``.
+    """
+    return f"{key} = {json.dumps(str(value), ensure_ascii=False)}\n"
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +88,10 @@ def test_user_config_path_falls_back_to_home_dot_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    # Pin the platform: this asserts the POSIX ``~/.config`` branch, and on a
+    # real Windows host %APPDATA% correctly wins instead. The Windows branch
+    # has its own test (test_user_config_path_windows_uses_appdata).
+    monkeypatch.setattr("thinkweave.core.config._is_windows", lambda: False)
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
@@ -173,6 +191,41 @@ def test_write_user_config_overwrites_existing(
     assert data == {"vault_root": str(tmp_path / "v2")}
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        r"C:\Users\me\vault",
+        r"C:\temp\notes",
+        "/home/me/vault-\N{ROCKET}",
+    ],
+    ids=["windows-path", "windows-path-tab-escape", "non-bmp-char"],
+)
+def test_write_user_config_survives_paths_needing_escapes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, raw: str
+):
+    """The value is escaped, not interpolated, so the file we write parses.
+
+    A Windows root dropped raw into a TOML basic string breaks two ways:
+    ``C:\\Users`` reads ``\\U`` as an 8-hex-digit unicode escape ("Invalid hex
+    value"), and ``C:\\temp`` reads ``\\t`` as a literal tab — silently wrong
+    rather than loud. ``/onboard`` persists this file, so a corrupt write means
+    nothing can load the vault path back.
+
+    The non-BMP case pins ``ensure_ascii=False``: the json default would emit a
+    surrogate pair, which TOML rejects as not a Unicode scalar value.
+
+    Literal backslashes rather than ``tmp_path`` so this holds on POSIX too.
+    """
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+
+    write_user_config(Path(raw))
+
+    with open(xdg / "thinkweave" / "config.toml", "rb") as f:
+        data = tomllib.load(f)
+    assert data == {"vault_root": str(Path(raw))}
+
+
 # ---------------------------------------------------------------------------
 # load_config precedence
 # ---------------------------------------------------------------------------
@@ -206,7 +259,7 @@ def test_load_config_uses_user_config_when_no_env(
     user_path = _isolate_user_config(monkeypatch, tmp_path)
     chosen = tmp_path / "user-chosen-vault"
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{chosen}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", chosen), encoding="utf-8")
 
     cfg = load_config()
     assert cfg.vault_root == chosen
@@ -219,7 +272,7 @@ def test_load_config_env_overrides_user_config(
     user_path = _isolate_user_config(monkeypatch, tmp_path)
     user_path.parent.mkdir(parents=True)
     user_path.write_text(
-        f'vault_root = "{tmp_path / "user-vault"}"\n', encoding="utf-8"
+        _toml_line("vault_root", tmp_path / "user-vault"), encoding="utf-8"
     )
     env_vault = tmp_path / "env-vault"
     monkeypatch.setenv("THINKWEAVE_VAULT", str(env_vault))
@@ -244,7 +297,7 @@ def test_load_config_user_config_does_not_clobber_vault_internal_embedding(
         '[embeddings]\nmodel = "custom-embed-model"\n', encoding="utf-8"
     )
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", vault), encoding="utf-8")
 
     cfg = load_config()
     assert cfg.vault_root == vault
@@ -280,10 +333,10 @@ def test_load_config_user_config_overrides_vault_internal_vault_root(
     internal_target = tmp_path / "internal-vault"
     (preferred / ".weave").mkdir(parents=True)
     (preferred / ".weave" / "config.toml").write_text(
-        f'vault_root = "{internal_target}"\n', encoding="utf-8"
+        _toml_line("vault_root", internal_target), encoding="utf-8"
     )
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{preferred}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", preferred), encoding="utf-8")
 
     cfg = load_config()
     assert cfg.vault_root == preferred
@@ -455,7 +508,7 @@ def test_load_config_parses_coarsen_and_resolve_knobs(
         encoding="utf-8",
     )
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", vault), encoding="utf-8")
 
     cfg = load_config()
     assert cfg.dream_coarsen_threshold == 0.9
@@ -496,10 +549,10 @@ def test_weave_dir_toml_override_absolute_path(
     (vault / ".weave").mkdir(parents=True)
     fast_disk = tmp_path / "fast-disk" / "weave-state"
     (vault / ".weave" / "config.toml").write_text(
-        f'weave_dir = "{fast_disk}"\n', encoding="utf-8"
+        _toml_line("weave_dir", fast_disk), encoding="utf-8"
     )
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", vault), encoding="utf-8")
 
     cfg = load_config()
     assert cfg.weave_dir == fast_disk
@@ -543,7 +596,7 @@ def test_weave_dir_toml_override_relative_path_anchors_at_vault_root(
         'weave_dir = "../weave-state"\n', encoding="utf-8"
     )
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", vault), encoding="utf-8")
 
     cfg = load_config()
     assert cfg.weave_dir == vault / "../weave-state"
@@ -559,7 +612,12 @@ def test_weave_dir_toml_override_expands_user_home(
     monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
     fake_home = tmp_path / "fake-home"
     fake_home.mkdir()
+    # expanduser() reads the environment, and which variable depends on the
+    # platform: ntpath consults USERPROFILE (then HOMEDRIVE/HOMEPATH) and
+    # ignores HOME entirely, while posixpath uses HOME. Set both so the test
+    # pins the real home on either OS.
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
     user_path = _isolate_user_config(monkeypatch, tmp_path)
     vault = tmp_path / "vault"
     (vault / ".weave").mkdir(parents=True)
@@ -567,7 +625,7 @@ def test_weave_dir_toml_override_expands_user_home(
         'weave_dir = "~/weave-state"\n', encoding="utf-8"
     )
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", vault), encoding="utf-8")
 
     cfg = load_config()
     assert cfg.weave_dir == fake_home / "weave-state"
@@ -582,10 +640,10 @@ def test_weave_dir_env_override_wins_over_toml(
     vault = tmp_path / "vault"
     (vault / ".weave").mkdir(parents=True)
     (vault / ".weave" / "config.toml").write_text(
-        f'weave_dir = "{tmp_path / "toml-weave-state"}"\n', encoding="utf-8"
+        _toml_line("weave_dir", tmp_path / "toml-weave-state"), encoding="utf-8"
     )
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", vault), encoding="utf-8")
     env_weave_dir = tmp_path / "env-weave-state"
     monkeypatch.setenv("THINKWEAVE_WEAVE_DIR", str(env_weave_dir))
 
@@ -601,7 +659,7 @@ def test_weave_dir_env_override_without_toml(
     user_path = _isolate_user_config(monkeypatch, tmp_path)
     vault = tmp_path / "vault"
     user_path.parent.mkdir(parents=True)
-    user_path.write_text(f'vault_root = "{vault}"\n', encoding="utf-8")
+    user_path.write_text(_toml_line("vault_root", vault), encoding="utf-8")
     env_weave_dir = tmp_path / "env-weave-state"
     monkeypatch.setenv("THINKWEAVE_WEAVE_DIR", str(env_weave_dir))
 

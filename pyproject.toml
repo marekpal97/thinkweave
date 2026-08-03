@@ -58,7 +58,12 @@ youtube = [
     "youtube-transcript-api>=1.0",
 ]
 all = ["thinkweave[mcp,embeddings,hubs,news,gemini,youtube]"]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+# ruff is upper-bounded on purpose, in step with the pin in
+# .github/workflows/tests.yml: 0.16 widened the default rule selection and
+# reports 554 findings on this unchanged tree where 0.15.10 reports none. An
+# unbounded `ruff>=0.4` meant a fresh `uv sync` disagreed with CI about what
+# "lint clean" means. Raise both pins together, with the fixes.
+dev = ["pytest>=8.0", "ruff>=0.15,<0.16"]
 
 [project.scripts]
 weave = "thinkweave.surfaces.cli:main"

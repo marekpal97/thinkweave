@@ -150,10 +150,40 @@ class HarnessProfile:
     """Flag an *unattended* run needs before the harness will run installed
     hooks at all. Empty when nothing gates them (Claude Code)."""
 
+    hook_windows_command_key: str = ""
+    """Key carrying a Windows-only override of a hook entry's ``command``, or
+    empty when the harness has no such concept.
+
+    Codex documents one: *"``commandWindows`` is an optional Windows-only command
+    override. In TOML, use ``command_windows`` or ``commandWindows``."* thinkweave
+    writes ``hooks.json``, so the camelCase spelling is the one used. Claude Code
+    has **no** equivalent — verified against the shipped 2026-07-25 ``claude.exe``:
+    zero occurrences of ``commandWindows``, against 49 for ``UserPromptSubmit``.
+    Hence a per-profile field rather than a shared constant; writing the key on a
+    harness that ignores it is the "config that parses and never fires" failure
+    this module exists to prevent.
+
+    The override is per hook entry and sits beside ``command``, so ``command``
+    keeps the POSIX launcher for WSL/Linux and this carries the ``.cmd`` one."""
+
     display_name: str = ""
     """The harness's name as a human writes it ("Claude Code"), for messages
     that used to hardcode it. Set it on any profile whose messages reach a
     user — the ``id`` is a slug and reads as a typo in prose."""
+
+    ships_skills: bool = False
+    """thinkweave ships slash-command skills (``/onboard``, ``/wrap``, …) for
+    this harness, so post-install instructions may tell the user to run one.
+
+    False for Codex: it has its own plugin/marketplace system and built-in
+    slash commands like ``/hooks``. The repository has a minimal Codex-native
+    bundle under ``skills/``, but ``weave install`` does not export it yet and
+    no Codex ``onboard`` skill exists, so post-install instructions must not
+    claim one does. ``weave install`` printed "3. /onboard" to every harness
+    regardless — a next step a Codex user could not take, on the one screen whose
+    whole job is telling them what to do next. Distinct from
+    :attr:`headless_slash`, which is about one-shot *invocation* rather than
+    whether the skills exist at all; flip this when the export lands."""
 
     @property
     def dev_link(self) -> Path:
@@ -245,6 +275,7 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         prompt_flag="-p",
         bypass_permissions_flag="--dangerously-skip-permissions",
         headless_model="sonnet",
+        ships_skills=True,
     )
 
 
@@ -346,6 +377,11 @@ def codex(home: Path | None = None) -> HarnessProfile:
         # the full bypass, so an unattended run has no narrower option.
         bypass_permissions_flag="--dangerously-bypass-approvals-and-sandbox",
         hooks_bypass_flag="--dangerously-bypass-hook-trust",
+        # Codex is the only harness with a Windows command override. Unlike
+        # Claude Code it does not resolve hook commands through Git Bash, so
+        # without this a Windows Codex user's hooks get a `#!/bin/sh` script
+        # handed to cmd.exe.
+        hook_windows_command_key="commandWindows",
     )
 
 

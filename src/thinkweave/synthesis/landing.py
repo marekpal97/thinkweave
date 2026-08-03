@@ -830,7 +830,11 @@ def state_of_play(config: Config, project: str) -> str:
         lines.append("")
         for r in reports:
             rel = Path(r["path"]).relative_to(config.vault_root)
-            lines.append(f"- [{r['run_id']}]({rel})")
+            # as_posix(): markdown link targets are always forward-slashed,
+            # whatever the host separator. str(WindowsPath) would emit
+            # `reports\dream\x.md`, which Obsidian/markdown read as an
+            # escape sequence, not a path — the link would not resolve.
+            lines.append(f"- [{r['run_id']}]({rel.as_posix()})")
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -923,7 +927,9 @@ def state_of_play_context(config: Config, project: str) -> str:
         )
         for r in reports:
             rel = Path(r["path"]).relative_to(config.vault_root)
-            sections.append(f"- [{r['cycle_id']}]({rel})")
+            # Forward slashes in the link target on every host — see the
+            # note in state_of_play above.
+            sections.append(f"- [{r['cycle_id']}]({rel.as_posix()})")
 
     return "\n".join(sections) + "\n"
 
