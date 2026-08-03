@@ -18,6 +18,7 @@ install time into ``~/.claude.json``.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -50,8 +51,11 @@ PROJECT_MCP_JSON = REPO_ROOT / ".mcp.json"
 PLUGIN_MANIFEST_ROOT = REPO_ROOT / ".claude-plugin" / "plugin.json"
 
 
-def _command_basename(cmd: str) -> str:
-    return Path(cmd).name
+def _command_stem(cmd: str) -> str:
+    """The command's bare name — no directory, no platform executable suffix,
+    case-folded. ``shutil.which("uv")`` answers ``C:\\…\\uv.EXE`` on Windows and
+    ``/usr/local/bin/uv`` on POSIX; both name the same program."""
+    return Path(cmd).stem.casefold()
 
 
 def _normalise_args_for_compare(args: list[str], placeholder_for_project: str) -> list[str]:
@@ -117,7 +121,7 @@ class TestMcpInvocationConsistency:
 
     def test_weave_install_uses_uv_run_shape(self):
         entry = _entry_from_install()
-        assert _command_basename(entry["command"]) == "uv"
+        assert _command_stem(entry["command"]) == "uv"
         assert entry["args"][:2] == ["run", "--project"]
         assert "--extra" in entry["args"]
         assert "mcp" in entry["args"]
@@ -729,7 +733,7 @@ class TestDevLink:
             "dev_link": dev_link,
         }
 
-    def test_creates_symlink_to_checkout(self, dev_link_env, capsys):
+    def test_creates_symlink_to_checkout(self, dev_link_env, requires_symlinks, capsys):
         cmd_dev_link(_ns())
         link = dev_link_env["dev_link"]
         assert link.is_symlink()
@@ -751,13 +755,17 @@ class TestDevLink:
         with pytest.raises(SystemExit):
             cmd_dev_link(_ns())
 
-    def test_idempotent_when_already_linked(self, dev_link_env, capsys):
+    def test_idempotent_when_already_linked(
+        self, dev_link_env, requires_symlinks, capsys
+    ):
         cmd_dev_link(_ns())
         capsys.readouterr()
         cmd_dev_link(_ns())
         assert "Already dev-linked" in capsys.readouterr().out
 
-    def test_warns_on_leftover_raw_mcp_entry(self, dev_link_env, capsys):
+    def test_warns_on_leftover_raw_mcp_entry(
+        self, dev_link_env, requires_symlinks, capsys
+    ):
         install_mod._restore_mcp_entry()  # simulate a `weave install` leftover
         cmd_dev_link(_ns())
         err = capsys.readouterr().err
@@ -765,7 +773,7 @@ class TestDevLink:
         # still links despite the warning (non-fatal)
         assert dev_link_env["dev_link"].is_symlink()
 
-    def test_dev_unlink_removes_symlink(self, dev_link_env, capsys):
+    def test_dev_unlink_removes_symlink(self, dev_link_env, requires_symlinks, capsys):
         cmd_dev_link(_ns())
         capsys.readouterr()
         cmd_dev_unlink(_ns())
@@ -777,8 +785,19 @@ class TestDevLink:
         assert "No dev-link" in capsys.readouterr().out
 
 
-def _fake_scripts_dir(tmp_path: Path, names=REQUIRED_SCRIPTS, exe: bool = False) -> Path:
-    """A controlled fake venv scripts dir containing the console scripts."""
+def _fake_scripts_dir(
+    tmp_path: Path, names=REQUIRED_SCRIPTS, exe: bool | None = None
+) -> Path:
+    """A controlled fake venv scripts dir containing the console scripts.
+
+    ``exe`` forces the Windows ``weave.exe`` layout; left at ``None`` it
+    follows the host. That default is not cosmetic: ``shutil.which`` on Windows
+    only resolves names carrying a PATHEXT extension, so an extension-less
+    ``weave`` here is invisible to the very probe ``_check_scripts`` uses — a
+    real venv on Windows always holds ``weave.exe``.
+    """
+    if exe is None:
+        exe = os.name == "nt"
     d = tmp_path / "venv-scripts"
     d.mkdir(exist_ok=True)
     for name in names:
