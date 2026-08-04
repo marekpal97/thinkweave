@@ -50,8 +50,8 @@ class HarnessProfile:
 
     subagents: bool
     """The harness can fan work out to parallel sub-agents (the ``/drain`` and
-    ``/dream`` worker topology). Recorded here for the W2 Codex adapter; no
-    consumer in this wave."""
+    ``/dream`` worker topology). Harness adapters may use different invocation
+    syntax while preserving the shared worker contract."""
 
     native_memory: bool
     """The harness keeps its own durable memory corpus on disk, which the
@@ -175,11 +175,10 @@ class HarnessProfile:
     """thinkweave ships slash-command skills (``/onboard``, ``/wrap``, …) for
     this harness, so post-install instructions may tell the user to run one.
 
-    False for Codex: it has its own plugin/marketplace system and built-in
-    slash commands like ``/hooks``. The repository has a minimal Codex-native
-    bundle under ``skills/``, but ``weave install`` does not export it yet and
-    no Codex ``onboard`` skill exists, so post-install instructions must not
-    claim one does. ``weave install`` printed "3. /onboard" to every harness
+    False for Codex's raw installer route: the full Codex-native bundle lives
+    under ``skills/`` and is discovered through the plugin, while ``weave
+    install`` does not export it. Post-install instructions must not claim a
+    skill was installed. ``weave install`` printed "3. /onboard" to every harness
     regardless — a next step a Codex user could not take, on the one screen whose
     whole job is telling them what to do next. Distinct from
     :attr:`headless_slash`, which is about one-shot *invocation* rather than
@@ -326,10 +325,10 @@ def codex(home: Path | None = None) -> HarnessProfile:
             "Re-trust after every\n  `weave hooks install` — trust is keyed to "
             "the exact hook definition."
         ),
-        # No verified Task-tool equivalent driving thinkweave's /drain and
-        # /dream fan-out. W3's executor route is the planned answer; claiming
-        # the capability before it is wired would be a broken promise.
-        subagents=False,
+        # Interactive skills project their shared worker contracts into
+        # Codex's native spawn_agent/followup_task/wait_agent topology. The
+        # separate headless executor remains #110's concern.
+        subagents=True,
         # Codex keeps sessions (imported by acquisition/importers/codex.py) and
         # a memories sqlite, but no markdown auto-memory corpus of the shape the
         # seam reconciles — so the seam walk correctly yields nothing.

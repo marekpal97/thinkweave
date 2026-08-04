@@ -1,11 +1,11 @@
 ---
-name: thinkweave-capture
-description: "Inline-text ingestion (snippet, quote, brief, fragment) — classify content shape, propose source_type, create a `note` (or `source` when applicable) via `weave_create` with ontology-aligned concepts. Called from `/ingest` for the inline-text shape."
+name: thinkweave-import-chatgpt
+description: "Inline ChatGPT-export import — walk conversations.json, summarize each thread via the running model, and weave_create one note per conversation. The `weave import chatgpt --via inline` path; pairs with `--via batch` which fans out via the API wrapper instead."
 ---
 
-# Codex projection for `/capture`
+# Codex projection for `/import-chatgpt`
 
-Read the [canonical ThinkWeave command contract](../../commands/capture.md) completely, then execute it. The linked file is the
+Read the [canonical ThinkWeave command contract](../../commands/import-chatgpt.md) completely, then execute it. The linked file is the
 semantic source of truth; this file only adapts harness vocabulary.
 
 Use Codex-native equivalents for capabilities named in the canonical

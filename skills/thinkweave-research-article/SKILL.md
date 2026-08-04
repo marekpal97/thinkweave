@@ -1,11 +1,11 @@
 ---
-name: thinkweave-capture
-description: "Inline-text ingestion (snippet, quote, brief, fragment) — classify content shape, propose source_type, create a `note` (or `source` when applicable) via `weave_create` with ontology-aligned concepts. Called from `/ingest` for the inline-text shape."
+name: thinkweave-research-article
+description: "Fetch a web article, extract argument + claims + evidence, write it as a `source_type: article` note. Called from `/research` (router) or `/drain --source-type article`."
 ---
 
-# Codex projection for `/capture`
+# Codex projection for `/research-article`
 
-Read the [canonical ThinkWeave command contract](../../commands/capture.md) completely, then execute it. The linked file is the
+Read the [canonical ThinkWeave command contract](../../commands/research/research-article.md) completely, then execute it. The linked file is the
 semantic source of truth; this file only adapts harness vocabulary.
 
 Use Codex-native equivalents for capabilities named in the canonical

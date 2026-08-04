@@ -52,6 +52,9 @@ def test_codex_worker_projection_uses_native_subagents_and_shared_contracts() ->
         if contract.workers
     ]
     assert worker_backed
+    assert {worker for contract in worker_backed for worker in contract.workers} == {
+        path.stem for path in AGENTS_ROOT.glob("*.md")
+    }
 
     for contract in worker_backed:
         text = (SKILLS_ROOT / codex_skill_name(contract.name) / "SKILL.md").read_text(

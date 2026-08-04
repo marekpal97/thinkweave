@@ -1,7 +1,7 @@
 interface:
   display_name: "ThinkWeave Wrap"
-  short_description: "Persist session insights and decisions"
-  default_prompt: "Use $thinkweave-wrap to extract and finalize this session in ThinkWeave."
+  short_description: "End-of-session memory extraction. Compose insights/decisions inline, call `weave"
+  default_prompt: "Use $thinkweave-wrap to run this ThinkWeave workflow."
 dependencies:
   tools:
     - type: "mcp"

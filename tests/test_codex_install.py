@@ -160,13 +160,12 @@ class TestCodexProfile:
 
     def test_capability_flags(self, codex_home: Path):
         p = harness.active()
-        # Hooks landed in #107 (see tests/test_codex_hooks.py). Codex 0.146
-        # still has no verified Task-tool equivalent for the /drain fan-out,
-        # no markdown auto-memory corpus for the seam, and no headless slash
-        # resolution.
+        # Hooks landed in #107 (see tests/test_codex_hooks.py). Interactive
+        # worker skills now project onto native Codex subagents; Codex still
+        # has no markdown auto-memory corpus or headless slash resolution.
         assert (p.hooks, p.subagents, p.native_memory, p.headless_slash) == (
             True,
-            False,
+            True,
             False,
             False,
         )

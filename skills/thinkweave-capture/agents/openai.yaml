@@ -1,7 +1,7 @@
 interface:
   display_name: "ThinkWeave Capture"
-  short_description: "Save reusable knowledge into ThinkWeave"
-  default_prompt: "Use $thinkweave-capture to preserve this insight in ThinkWeave."
+  short_description: "Inline-text ingestion (snippet, quote, brief, fragment) — classify content shape"
+  default_prompt: "Use $thinkweave-capture to run this ThinkWeave workflow."
 dependencies:
   tools:
     - type: "mcp"

@@ -1,11 +1,11 @@
 ---
-name: thinkweave-capture
-description: "Inline-text ingestion (snippet, quote, brief, fragment) — classify content shape, propose source_type, create a `note` (or `source` when applicable) via `weave_create` with ontology-aligned concepts. Called from `/ingest` for the inline-text shape."
+name: thinkweave-hubs-link
+description: "Inline temporal-DAG linkage for concept hubs — walk hubs lacking agrees/contradicts/extends flags and rewrite via the running model. The `weave hubs link --via inline` path; pairs with `--via batch` which fans out via the API wrapper."
 ---
 
-# Codex projection for `/capture`
+# Codex projection for `/hubs-link`
 
-Read the [canonical ThinkWeave command contract](../../commands/capture.md) completely, then execute it. The linked file is the
+Read the [canonical ThinkWeave command contract](../../commands/hubs-link.md) completely, then execute it. The linked file is the
 semantic source of truth; this file only adapts harness vocabulary.
 
 Use Codex-native equivalents for capabilities named in the canonical

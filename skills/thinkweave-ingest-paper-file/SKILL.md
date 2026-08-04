@@ -1,11 +1,11 @@
 ---
-name: thinkweave-capture
-description: "Inline-text ingestion (snippet, quote, brief, fragment) — classify content shape, propose source_type, create a `note` (or `source` when applicable) via `weave_create` with ontology-aligned concepts. Called from `/ingest` for the inline-text shape."
+name: thinkweave-ingest-paper-file
+description: "Local PDF paper ingestion — extract text, derive title/authors, detect arxiv ID, write a `source_type: paper` note with the PDF and extracted text staged as companions. Called from `/ingest` for the local-PDF file shape."
 ---
 
-# Codex projection for `/capture`
+# Codex projection for `/ingest-paper-file`
 
-Read the [canonical ThinkWeave command contract](../../commands/capture.md) completely, then execute it. The linked file is the
+Read the [canonical ThinkWeave command contract](../../commands/ingest-paper-file.md) completely, then execute it. The linked file is the
 semantic source of truth; this file only adapts harness vocabulary.
 
 Use Codex-native equivalents for capabilities named in the canonical

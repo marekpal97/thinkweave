@@ -1,7 +1,7 @@
 interface:
   display_name: "ThinkWeave Research"
-  short_description: "Research a URL and preserve the result"
-  default_prompt: "Use $thinkweave-research to investigate this URL and save the useful result."
+  short_description: "Router skill — classifies URLs and dispatches to research-paper / research-repo"
+  default_prompt: "Use $thinkweave-research to run this ThinkWeave workflow."
 dependencies:
   tools:
     - type: "mcp"
