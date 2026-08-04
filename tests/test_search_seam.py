@@ -85,24 +85,32 @@ class TestCliSearchShape:
         assert "Alpha SQLite note" in out
         assert "Beta markdown note" not in out
 
-    def test_hybrid_falls_back_to_fts(self, populated, monkeypatch, capsys):
+    def test_hybrid_reports_missing_embeddings(self, populated, monkeypatch, capsys):
         # No embeddings db in a scratch vault → hybrid returns FTS-only.
         monkeypatch.setattr(cli_notes, "load_config", lambda: populated)
-        cli_notes.cmd_search(_args(query="sqlite", project="p1", mode="hybrid"))
-        out = capsys.readouterr().out
-        assert "Alpha SQLite note" in out
+        with pytest.raises(SystemExit) as exc:
+            cli_notes.cmd_search(_args(query="sqlite", project="p1", mode="hybrid"))
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "Semantic retrieval unavailable" in captured.err
+        assert "weave index --embed" in captured.err
+        assert "Alpha SQLite note" not in captured.out
 
     def test_similar_without_embeddings_message(self, populated, monkeypatch, capsys):
         monkeypatch.setattr(cli_notes, "load_config", lambda: populated)
-        cli_notes.cmd_search(_args(query="sqlite", project="p1", mode="similar"))
-        out = capsys.readouterr().out
-        assert "No semantic results" in out
+        with pytest.raises(SystemExit) as exc:
+            cli_notes.cmd_search(_args(query="sqlite", project="p1", mode="similar"))
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "Semantic retrieval unavailable" in captured.err
+        assert "weave index --embed" in captured.err
 
     def test_semantic_flag_aliases_similar(self, populated, monkeypatch, capsys):
         monkeypatch.setattr(cli_notes, "load_config", lambda: populated)
-        cli_notes.cmd_search(_args(query="sqlite", project="p1", semantic=True))
-        out = capsys.readouterr().out
-        assert "No semantic results" in out
+        with pytest.raises(SystemExit) as exc:
+            cli_notes.cmd_search(_args(query="sqlite", project="p1", semantic=True))
+        assert exc.value.code == 1
+        assert "Semantic retrieval unavailable" in capsys.readouterr().err
 
     def test_no_results_message(self, populated, monkeypatch, capsys):
         monkeypatch.setattr(cli_notes, "load_config", lambda: populated)
@@ -124,17 +132,19 @@ class TestMcpSearchShape:
         assert "[note] Alpha SQLite note (" in text
         assert "Beta markdown note" not in text
 
-    def test_hybrid_falls_back_to_fts(self, populated):
+    def test_hybrid_reports_missing_embeddings(self, populated):
         res = mcp_search.handle_search(
             populated, {"query": "sqlite", "project": "p1", "mode": "hybrid"}
         )
-        assert "Alpha SQLite note" in res[0].text
+        assert res[0].text.startswith("Semantic retrieval unavailable")
+        assert "weave index --embed" in res[0].text
+        assert "Alpha SQLite note" not in res[0].text
 
     def test_similar_without_embeddings_message(self, populated):
         res = mcp_search.handle_search(
             populated, {"query": "sqlite", "project": "p1", "mode": "similar"}
         )
-        assert res[0].text.startswith("No semantic results")
+        assert res[0].text.startswith("Semantic retrieval unavailable")
 
     def test_no_results_message(self, populated):
         res = mcp_search.handle_search(
