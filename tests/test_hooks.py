@@ -247,6 +247,21 @@ class TestInstallCanonicalAgreement:
 
 
 class TestHookInstaller:
+    def test_plugin_route_is_the_only_claude_hook_registration_owner(
+        self, tmp_path: Path, use_profile, plugin_route_active, capsys
+    ):
+        settings = tmp_path / ".claude" / "settings.json"
+        manifest = tmp_path / ".claude" / "plugins" / "installed_plugins.json"
+        use_profile(user_settings=settings, installed_plugins=manifest)
+        plugin_route_active()
+
+        install_hooks(scope="user")
+
+        assert not settings.exists()
+        out = capsys.readouterr().out.lower()
+        assert "plugin" in out
+        assert "owns" in out
+
     def test_install_fresh(self, tmp_path: Path):
         project_dir = tmp_path / "project"
         project_dir.mkdir()
@@ -1361,6 +1376,54 @@ class TestHookErrorLogging:
         # Force a failure by making the import path invalid
         with patch.dict("sys.modules", {"thinkweave.core.config": None}):
             _log_error("test", ValueError("err"))  # Should not raise
+
+    def test_prompt_persistence_failure_is_visible_to_the_harness(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        monkeypatch.setattr(
+            handler_mod,
+            "_buffer_event",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                PermissionError("vault is outside the writable sandbox")
+            ),
+        )
+
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-denied", "prompt": "persist me", "cwd": str(tmp_path)}
+        )
+
+        emitted = json.loads(capsys.readouterr().out)
+        message = emitted["systemMessage"]
+        assert "ThinkWeave" in message
+        assert "not persisted" in message
+        assert "PermissionError" in message
+
+    def test_session_start_capture_failure_keeps_context_and_adds_diagnostic(
+        self, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda *args, **kwargs: "STARTUP CONTEXT",
+        )
+        monkeypatch.setattr(
+            handler_mod,
+            "_buffer_event",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                PermissionError("vault write denied")
+            ),
+        )
+
+        handler_mod._handle_session_start(
+            {"session_id": "ses-denied-start", "cwd": "/repo"}
+        )
+
+        emitted = json.loads(capsys.readouterr().out)
+        assert emitted["hookSpecificOutput"]["additionalContext"] == "STARTUP CONTEXT"
+        assert "not persisted" in emitted["systemMessage"]
 
 
 class TestBuildAutoSummary:
