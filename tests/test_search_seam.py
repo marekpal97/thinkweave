@@ -86,7 +86,6 @@ class TestCliSearchShape:
         assert "Beta markdown note" not in out
 
     def test_hybrid_reports_missing_embeddings(self, populated, monkeypatch, capsys):
-        # No embeddings db in a scratch vault → hybrid returns FTS-only.
         monkeypatch.setattr(cli_notes, "load_config", lambda: populated)
         with pytest.raises(SystemExit) as exc:
             cli_notes.cmd_search(_args(query="sqlite", project="p1", mode="hybrid"))

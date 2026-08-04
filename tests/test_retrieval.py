@@ -510,7 +510,6 @@ class TestHybridSearch:
         indexer.rebuild(full=True)
 
         s = Search(config=config)
-        # No OPENAI_API_KEY, no embeddings.db → semantic path soft-fails
         with pytest.raises(retrieval.SemanticSearchUnavailable) as exc:
             s.hybrid_search("retrieval", project="p1")
         assert "weave index --embed" in str(exc.value)

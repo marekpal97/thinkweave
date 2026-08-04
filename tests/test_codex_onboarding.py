@@ -12,6 +12,8 @@ def test_onboard_routes_history_to_the_running_harness():
     assert "weave import codex" in text
     assert "weave import claude-code" in text
     assert "Do not merge the two history lanes" in text
+    assert ".weave/onboarding/claude_code.json" in text
+    assert ".weave/onboarding/codex.json" in text
 
 
 def test_onboard_routes_hook_install_to_codex():

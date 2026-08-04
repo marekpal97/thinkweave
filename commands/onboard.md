@@ -338,7 +338,7 @@ in the eventual wrap-up that other active projects need their own
 
 ---
 
-## Step 3 — Seed from historical Claude Code conversations (mandatory)
+## Step 3 — Seed from historical coding-agent conversations (mandatory)
 
 This is the spine. Everything else in onboarding is configured *on top*
 of the seed — there's no skip, no "later." If the user has prior CC
@@ -346,9 +346,11 @@ history, importing it is what makes weave useful from the first query.
 If they don't, this step short-circuits and Step 4 (ontology) is
 skipped too.
 
-**Idempotency check:** if `weave_search(type=['session'], limit=1)`
-returns ≥1 hit, the vault is already seeded — print one line and
-proceed to Step 4.
+**Idempotency check:** use the active harness's import manifest:
+`<vault>/.weave/onboarding/claude_code.json` or
+`<vault>/.weave/onboarding/codex.json`. A session imported by the other
+harness does not complete this lane. If the active manifest records at least
+one imported session, print one line and proceed to Step 4.
 
 ### 3a. Dry-run the import
 
@@ -1147,7 +1149,8 @@ Verifying everything is wired:
   ✓ Index queryable
   ✓ Hooks firing
   ✓ Sample brief landed   (or INFO line if no /research run yet)
-  · Embedding posture     (INFO — semantic on, or BM25-only + free local path)
+  ✓ Similar retrieval
+  ✓ Hybrid retrieval      (both FTS and semantic legs executed)
 ```
 
 On all PASS, proceed to wrap-up. On any FAIL, print
