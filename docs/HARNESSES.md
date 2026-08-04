@@ -146,13 +146,18 @@ passes the user prompt through **verbatim**. Neither `$sentinel` nor
 So a `$wrap` token is a hint the model must act on by reading the file itself —
 not harness-side expansion the way Claude Code's headless slash resolution
 injects a skill body. `headless_slash=False` on the Codex profile is therefore
-correct. The initial Codex-native bundle now lives under `skills/` and uses
-explicit `thinkweave-*` names. The installer still does not export that bundle,
-and the remaining Claude command/worker workflows have not been ported.
+correct. The complete supported command surface now projects from
+`commands/**/*.md` into `skills/` with explicit `thinkweave-*` names. The
+adapters point back to the canonical command instead of copying its prompt.
+Worker-backed skills read the shared `agents/*.md` contract and pass it in full
+to Codex-native `spawn_agent`; retries and fan-in map to `followup_task` and
+`wait_agent`. The raw `weave install` route still does not export this bundle;
+the Codex plugin owns discovery.
 
-*Incidental:* Codex also discovers skills from `~/.agents/skills/`, not only
-`$CODEX_HOME/skills/`. The full export should target that harness-neutral user
-location.
+`/dream` and `/drain` remain visibly degraded for unattended/headless runs
+until #110 supplies the dedicated executor. Their interactive worker fan-out
+is supported and discoverable; they are not omitted and do not claim cron
+parity.
 
 **Q3 — PostToolUse matcher-semantics parity? Yes, with one asterisk.**
 `[manual]` Same regex-over-tool-name semantics and the same `mcp__server__tool`

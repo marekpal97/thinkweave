@@ -1,9 +1,0 @@
-interface:
-  display_name: "ThinkWeave Research Podcast"
-  short_description: "Resolve a single pasted podcast RSS-feed URL into a queue item for its latest ep"
-  default_prompt: "Use $thinkweave-research-podcast to run this ThinkWeave workflow."
-dependencies:
-  tools:
-    - type: "mcp"
-      value: "thinkweave"
-      description: "ThinkWeave durable-memory tools"

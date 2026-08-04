@@ -1,9 +1,0 @@
-interface:
-  display_name: "ThinkWeave Ingest Paper File"
-  short_description: "Local PDF paper ingestion — extract text, derive title/authors, detect arxiv ID,"
-  default_prompt: "Use $thinkweave-ingest-paper-file to run this ThinkWeave workflow."
-dependencies:
-  tools:
-    - type: "mcp"
-      value: "thinkweave"
-      description: "ThinkWeave durable-memory tools"

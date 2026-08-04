@@ -1,9 +1,0 @@
-interface:
-  display_name: "ThinkWeave Onboard"
-  short_description: "First-run onboarding — pre-flight checks, vault wiring, seed vault from prior Cl"
-  default_prompt: "Use $thinkweave-onboard to run this ThinkWeave workflow."
-dependencies:
-  tools:
-    - type: "mcp"
-      value: "thinkweave"
-      description: "ThinkWeave durable-memory tools"

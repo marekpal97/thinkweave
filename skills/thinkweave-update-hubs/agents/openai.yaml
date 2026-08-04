@@ -1,9 +1,0 @@
-interface:
-  display_name: "ThinkWeave Update Hubs"
-  short_description: "Concept-hub sync — incremental (default) for daily deltas, or `--bulk [inline|ba"
-  default_prompt: "Use $thinkweave-update-hubs to run this ThinkWeave workflow."
-dependencies:
-  tools:
-    - type: "mcp"
-      value: "thinkweave"
-      description: "ThinkWeave durable-memory tools"

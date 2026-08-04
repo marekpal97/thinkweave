@@ -65,7 +65,13 @@ Thinkweave splits cleanly into two layers with a one-way dependency.
 
 Dependency rule: `core/` imports nothing from the rest; `retrieval/` and `synthesis/` import only from `core/` and their neighbors; `operations/` may import any of the above but never from `surfaces/`. Surfaces are thin shells that delegate to `operations/`. If you find yourself wanting to import `surfaces.*` from `core/`, you're mixing concerns.
 
-The Claude Code layer sits on top: hooks feed session events into the knowledge layer via the CLI; skills drive the knowledge layer via MCP tools. Both are clients of the knowledge API; neither is a peer.
+The harness interaction layer sits on top: lifecycle hooks feed session events
+into the knowledge layer via the CLI, while skills drive it through MCP tools.
+Claude Code consumes `commands/**/*.md` and `agents/*.md` directly. Codex
+consumes small generated adapters under `skills/`; those adapters point back to
+the same command and worker contracts and translate only harness vocabulary
+(including native subagent dispatch). Both harnesses are clients of the
+knowledge API; neither is a peer.
 
 The knowledge layer's persisted state is two SQLite files (`index.db`, `embeddings.db`) under `vault/.weave/` — both derived and rebuildable from markdown via `weave index --full`. For the full table-by-table enumeration (name, purpose, key columns, `CREATE` site), see [`docs/SCHEMA.md`](docs/SCHEMA.md).
 
@@ -457,6 +463,7 @@ The framework's *internal* contracts (layer dependencies, operations seam, retri
 | Module entry | `python -m thinkweave.mcp.server` | back-compat shim | external configs that haven't migrated to `weave-mcp` yet |
 | Hook subcommands | `weave-hook {session_start,user_prompt_submit,pre_tool_use,post_tool_use,stop}` | stable | every entry in `.claude/settings.json` written by `weave hooks install` |
 | Skill files | `commands/<name>.md` filenames | stable | `/<name>` invocations and the `.claude/plugins/thinkweave/` symlinks |
+| Codex skill projection | `skills/thinkweave-<name>/SKILL.md` | generated | `$thinkweave-<name>` discovery; regenerate via `python -m thinkweave.core.skill_projection` |
 | YAML keys | `sources.<slug>.{queue,research_skill,drain_strategy,dedup_keys,url_patterns,intake_folder}`, `projects.<name>.{discover_strategies,…}`, `landing_files.{state,backlog,decisions,themes,research_focus}`, `auto_todo_extraction` | stable | every user's `vault/config/sources.yaml` |
 
 The rule: when restructuring internal modules, treat anything in this table as an immovable identifier. Internal layout (`thinkweave/foo/bar.py`) is private; the names here are the contract. If you must rename one, add a back-compat alias for one release before removing.

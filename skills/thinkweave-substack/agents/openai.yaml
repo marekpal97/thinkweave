@@ -1,9 +1,0 @@
-interface:
-  display_name: "ThinkWeave Substack"
-  short_description: "Drain the Substack disk inbox (browser-clipped posts) into the vault. Figure-awa"
-  default_prompt: "Use $thinkweave-substack to run this ThinkWeave workflow."
-dependencies:
-  tools:
-    - type: "mcp"
-      value: "thinkweave"
-      description: "ThinkWeave durable-memory tools"

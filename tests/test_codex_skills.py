@@ -9,7 +9,6 @@ from thinkweave.core import harness
 from thinkweave.core.skill_projection import (
     codex_skill_name,
     iter_command_contracts,
-    render_codex_metadata,
     render_codex_skill,
 )
 from thinkweave.surfaces.mcp.tools import DISPATCH
@@ -34,15 +33,16 @@ def test_every_supported_command_has_a_drift_free_codex_projection() -> None:
     for contract in contracts:
         skill_dir = SKILLS_ROOT / codex_skill_name(contract.name)
         skill_file = skill_dir / "SKILL.md"
-        metadata_file = skill_dir / "agents" / "openai.yaml"
 
         assert skill_file.read_text(encoding="utf-8") == render_codex_skill(contract)
-        assert metadata_file.read_text(encoding="utf-8") == render_codex_metadata(contract)
 
         metadata = _frontmatter(skill_file.read_text(encoding="utf-8"))
         assert metadata.keys() == {"name", "description"}
         assert metadata["name"] == codex_skill_name(contract.name)
         assert metadata["description"].strip()
+        assert "../../docs/CODEX-SKILL-PROJECTION.md" in skill_file.read_text(
+            encoding="utf-8"
+        )
 
 
 def test_codex_worker_projection_uses_native_subagents_and_shared_contracts() -> None:

@@ -246,10 +246,13 @@ the entries via `/hooks` after installing, and re-trust after every reinstall.
 Until you do, nothing fires: the installed AGENTS.md block therefore still
 tells the model to run `weave_extract` explicitly before ending a session.
 
-The repository also carries a minimal Codex-native bundle under `skills/`:
-`thinkweave-recall`, `thinkweave-capture`, `thinkweave-research`, and
-`thinkweave-wrap`. `weave install --harness codex` does not export these to the
-user skill directory yet; install or link them into `~/.agents/skills/` manually.
+The repository carries the complete supported Codex skill surface under
+`skills/`, projected from the same `commands/**/*.md` contracts Claude Code
+uses. Codex invokes them as `$thinkweave-<name>`. Worker-backed skills use
+native Codex subagents while preserving the shared worker contract in
+`agents/*.md`; `/dream` and `/drain` visibly mark unattended/headless execution
+as degraded until #110 lands. The Codex plugin owns skill discovery; the raw
+`weave install --harness codex` route remains MCP + instructions only.
 
 If you populated Codex via ChatGPT desktop's **Settings→Import**, that feature
 brings companion *skills* across and may have pre-created a `thinkweave` MCP

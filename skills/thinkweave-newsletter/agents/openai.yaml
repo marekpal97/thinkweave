@@ -1,9 +1,0 @@
-interface:
-  display_name: "ThinkWeave Newsletter"
-  short_description: "Orchestrator over the email-newsletter intake rails. Probes the Gmail connector,"
-  default_prompt: "Use $thinkweave-newsletter to run this ThinkWeave workflow."
-dependencies:
-  tools:
-    - type: "mcp"
-      value: "thinkweave"
-      description: "ThinkWeave durable-memory tools"

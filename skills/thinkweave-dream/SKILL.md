@@ -5,29 +5,12 @@ description: "Periodic dream cycle — two-phase subagent orchestrator. Phase 1 
 
 # Codex projection for `/dream`
 
-Read the [canonical ThinkWeave command contract](../../commands/dream.md) completely, then execute it. The linked file is the
-semantic source of truth; this file only adapts harness vocabulary.
+Read the [shared Codex adapter](../../docs/CODEX-SKILL-PROJECTION.md)
+and the [canonical ThinkWeave command contract](../../commands/dream.md) completely, then execute the canonical contract through
+that adapter.
 
-Use Codex-native equivalents for capabilities named in the canonical
-contract: filesystem read/search for `Read`/`Grep`, the shell runner for
-`Bash`, `apply_patch` for `Write`/`Edit`, the web tool for
-`WebFetch`/`WebSearch`, and the user-input tool for `AskUserQuestion`.
-When it names another `/skill`, read and follow the sibling
-`../thinkweave-<skill>/SKILL.md` projection; `$thinkweave-<skill>` is
-Codex's user-facing invocation spelling.
-
-## Native subagent projection
-
-Translate every canonical `Task` dispatch to Codex's native
-`spawn_agent` tool. Read the relevant worker contract below in full
-before spawning, and include its complete instructions plus the
-task-specific prompt in `message`; a generic subagent does not inherit
-the contract by name. Normalize the worker name to a valid `task_name`
-by replacing hyphens with underscores. Use `followup_task` for the
-contract's retry path and `wait_agent` for fan-in/dependency waves.
-Do not use or emit Claude Code Task-call syntax.
-
-Shared worker contracts:
+Use the adapter's native `spawn_agent` procedure for these shared
+worker contracts:
 
 - [`dream-digest-worker`](../../agents/dream-digest-worker.md)
 - [`dream-essence-worker`](../../agents/dream-essence-worker.md)
