@@ -583,15 +583,16 @@ class TestCodexSessionEndToEnd:
         ]
         assert len(notes) == 1
         assert notes[0].frontmatter.get("processed") is True
+        session_dir = (cfg.vault_root / notes[0].path).parent
         events = [
             json.loads(line)
-            for line in (notes[0].path.parent / "events.jsonl")
+            for line in (session_dir / "events.jsonl")
             .read_text(encoding="utf-8")
             .splitlines()
         ]
         retrievals = [
             json.loads(line)
-            for line in (notes[0].path.parent / "retrieval_log.jsonl")
+            for line in (session_dir / "retrieval_log.jsonl")
             .read_text(encoding="utf-8")
             .splitlines()
         ]

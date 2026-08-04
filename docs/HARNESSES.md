@@ -40,6 +40,14 @@ representation per layer — and `hooks.json`'s body is the same
 `{"hooks": {Event: [{matcher, hooks: [...]}]}}` object Claude Code nests in its
 `settings.json`, so the existing installer needed no second writer.
 
+**Registration ownership.** Claude Code's active plugin is the sole owner when
+present: it loads the committed `hooks/hooks.json`, and `weave hooks install`
+becomes a no-op instead of adding a second settings-file registration. On the
+MCP-only/manual route the installer owns registration. Codex has no shipped
+ThinkWeave plugin, so its machine-scope `hooks.json` remains installer-owned.
+The handler also deduplicates replayed envelopes by delivery receipt; this is a
+defence against stale registrations or harness retry, not a second registrar.
+
 **Scope.** thinkweave installs **machine scope only** (`--scope project` is
 refused). `[manual]` project `.codex/` layers load only for *trusted* projects;
 openai/codex#17532 additionally reports repo-local hooks not firing in

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from thinkweave.core.harness import active as active_harness
+from thinkweave.core.plugin_route import plugin_namespace
 
 # Substrings that identify a thinkweave hook command in settings,
 # across every historical form this project has written. On reinstall,
@@ -304,6 +305,31 @@ def install_hooks(
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Claude Code loads the canonical hooks file from an active plugin. A
+    # second settings-file registration would deliver every event twice.
+    if profile.id == "claude-code" and plugin_namespace(
+        manifest=profile.installed_plugins,
+        dev_link=profile.dev_link,
+    ):
+        target = _settings_path_for_scope(scope, project_dir)
+        if target.exists():
+            existing = json.loads(target.read_text(encoding="utf-8"))
+            planned = _build_uninstalled_settings(existing)
+            if dry_run:
+                print(f"Would remove stale manual hooks from: {target}")
+                print(_settings_diff(existing, planned, target) or "(no changes)")
+                return
+            if planned != existing:
+                target.write_text(
+                    json.dumps(planned, indent=2) + "\n", encoding="utf-8"
+                )
+        print(
+            "The active thinkweave plugin owns lifecycle registration. Any "
+            "stale manual hooks were removed.\n  Remove the plugin first if "
+            "you want the settings-file route."
+        )
+        return
 
     # Same "never write a file that can't fire" rule, one scope down. Refused
     # on the install side only: `uninstall --scope project` is exactly how a

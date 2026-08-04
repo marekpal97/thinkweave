@@ -14,6 +14,13 @@ The deep-dive reference for every first-class lifecycle in Thinkweave: session, 
 
 ## Session
 
+Lifecycle delivery is replay-safe. Stable receipts collapse duplicate
+SessionStart, UserPromptSubmit, and PostToolUse envelopes, while the processed
+session flag makes Stop idempotent. If Stop cannot archive its buffer, it keeps
+the buffer, restores the unprocessed note, and returns a visible diagnostic;
+`weave_extract` likewise reports a preserved-buffer warning instead of a
+successful empty result.
+
 Hooks accumulate events + insights + commits + tests into a session note. The Stop hook auto-extracts (thin: archive events as `events.jsonl`, mark `processed: true` + `auto_extracted: true`). `/wrap` runs as a single inline pass: compose insights/decisions, call `weave_extract` once, then `weave wrap-finalize` (the deterministic tail — prune → index → judge → landing → drift, zero model turns). Two minor variants — *live* (in-session, conversation is the source) and *catch-up* (headless, working off `events.jsonl` + git). The *catch-up* variant is invoked nightly by `dream-wrap-worker` (phase 2 of `/dream`) for any session that lacks `processed: true` and has a non-empty `events.jsonl` — there is no separate `/wrap` catch-up cron entry. Self-decides what to record; never prompts. For non-code conversations, `weave_extract` auto-creates a session note.
 
 ## Concept

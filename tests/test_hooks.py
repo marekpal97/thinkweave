@@ -262,6 +262,36 @@ class TestHookInstaller:
         assert "plugin" in out
         assert "owns" in out
 
+    def test_plugin_owner_converges_a_stale_manual_registration(
+        self, tmp_path: Path, use_profile, plugin_route_active
+    ):
+        settings = tmp_path / ".claude" / "settings.json"
+        manifest = tmp_path / ".claude" / "plugins" / "installed_plugins.json"
+        use_profile(user_settings=settings, installed_plugins=manifest)
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps({
+                "hooks": {
+                    "Stop": [
+                        {"matcher": "", "hooks": [{"command": "weave-hook stop"}]},
+                        {"matcher": "", "hooks": [{"command": "foreign-hook"}]},
+                    ]
+                }
+            }),
+            encoding="utf-8",
+        )
+        plugin_route_active()
+
+        install_hooks(scope="user")
+
+        saved = json.loads(settings.read_text(encoding="utf-8"))
+        commands = [
+            hook["command"]
+            for entry in saved["hooks"]["Stop"]
+            for hook in entry["hooks"]
+        ]
+        assert commands == ["foreign-hook"]
+
     def test_install_fresh(self, tmp_path: Path):
         project_dir = tmp_path / "project"
         project_dir.mkdir()
@@ -1399,6 +1429,43 @@ class TestHookErrorLogging:
         assert "ThinkWeave" in message
         assert "not persisted" in message
         assert "PermissionError" in message
+
+    def test_archive_failure_is_visible_and_stop_remains_retriable(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        path = vm.create_note(
+            NoteType.SESSION,
+            "Retryable Stop",
+            project="alpha",
+            extra_frontmatter={"source_session": "ses-stop-denied"},
+        )
+        _buffer_event(
+            cfg.weave_dir,
+            "ses-stop-denied",
+            {"type": "prompt", "text": "keep", "ts": "now"},
+        )
+        monkeypatch.setattr(
+            handler_mod,
+            "archive_buffer",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                PermissionError("archive denied")
+            ),
+        )
+
+        handler_mod._handle_stop({"session_id": "ses-stop-denied"})
+
+        emitted = json.loads(capsys.readouterr().out)
+        assert "not persisted" in emitted["systemMessage"]
+        assert vm.read_note(path).frontmatter.get("processed") is not True
+        assert (cfg.weave_dir / "buffer" / "ses-stop-denied.jsonl").exists()
 
     def test_session_start_capture_failure_keeps_context_and_adds_diagnostic(
         self, monkeypatch, capsys

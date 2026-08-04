@@ -6,11 +6,12 @@ calls it directly from settings.local.json with no shell wrapper.
 
 Input: JSON via stdin (tool_name, tool_input, session_id, etc.)
 Output: JSON to stdout following Claude Code hook protocol.
-Exit 0 = success.
+Exit 0 = protocol success. Persistence failures use the visible
+``systemMessage`` response field as well as the best-effort hook log.
 
 SessionStart: Injects ~7–10k tokens of structured project context
   (recent sessions, STATE, backlog, decisions, tool manifest) so Claude
-  wakes up oriented. Never blocks — always exits 0.
+  wakes up oriented. Never blocks the harness; failures remain visible.
 UserPromptSubmit: Captures every user prompt as a structured "prompt"
   event in the JSONL buffer. Promotes user prompts into a first-class
   primitive (`Prompt`) — replaces the heuristic `probe`-tag flow.
@@ -27,6 +28,7 @@ existing settings.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -76,6 +78,15 @@ def _log_info(hook_type: str, message: str) -> None:
         pass  # Last resort: silent failure on logging itself
 
 
+def _failure_message(hook_type: str, error: Exception) -> str:
+    """Return an actionable message on the hook protocol's visible channel."""
+    return (
+        f"ThinkWeave {hook_type} failed; lifecycle data was not persisted "
+        f"({type(error).__name__}: {error}). Check vault access and "
+        "<vault>/.weave/hooks.log."
+    )
+
+
 def _hook_harness() -> str:
     """Which harness fired this hook, from our own argv.
 
@@ -117,7 +128,7 @@ def main() -> None:
             return
     except Exception as e:
         _log_error(hook_type, e)
-        _output()
+        _output(system_message=_failure_message(hook_type, e))
         return
 
     try:
@@ -136,7 +147,7 @@ def main() -> None:
             _output()
     except Exception as e:
         _log_error(hook_type, e)
-        _output()
+        _output(system_message=_failure_message(hook_type, e))
 
 
 def _handle_post(tool_name: str, hook_input: dict) -> None:
@@ -203,21 +214,25 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
                     tool_name, tool_input, _raw_tool_response(hook_input), now
                 )
             ]
-        for event in events:
+        recorded = False
+        for i, event in enumerate(events):
             if event:
-                _buffer_event(cfg.weave_dir, session_id, event)
+                event["delivery_id"] = _delivery_id(
+                    "post_tool_use", hook_input, suffix=str(i)
+                )
+                recorded = _buffer_event(cfg.weave_dir, session_id, event) or recorded
 
         # Action-tool path materialises the session note (so MCP tools can
         # discover it mid-conversation). Retrieval path defers — Stop hook
         # creates one from the buffer if nothing else does. Keeps the
         # retrieval hook latency O(buffer-append) rather than O(vault-scan).
-        if is_action_tool:
+        if is_action_tool and recorded:
             _ensure_session(cfg, session_id, hook_input)
 
         _output()
     except Exception as e:
         _log_error("post_tool_use", e)
-        _output()
+        _output(system_message=_failure_message("post_tool_use", e))
 
 
 def _handle_user_prompt_submit(hook_input: dict) -> None:
@@ -230,8 +245,8 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
 
     Promotes user prompts into a first-class primitive that ``extract.py``
     can lift into ``Prompt`` objects + classify as probes — replacing the
-    older heuristic ``probe`` tag flow. Never blocks Claude Code; failures
-    are logged silently.
+    older heuristic ``probe`` tag flow. Never blocks the harness; persistence
+    failures use its visible diagnostic channel.
     """
     try:
         from thinkweave.core.config import load_config
@@ -254,8 +269,11 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
             "text": prompt_text,
             "session_id": session_id,
             "cwd": cwd,
+            "delivery_id": _delivery_id("user_prompt_submit", hook_input),
         }
-        _buffer_event(cfg.weave_dir, session_id, event)
+        if not _buffer_event(cfg.weave_dir, session_id, event):
+            _output()
+            return
 
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to.
@@ -264,7 +282,10 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
         # live buffer, hard-capped. Any failure here must fall through to a
         # plain (empty) response — never break the user's turn.
-        block = _prompt_time_enrichment(cfg, session_id, prompt_text, now)
+        delivery_id = event["delivery_id"]
+        block = _prompt_time_enrichment(
+            cfg, session_id, prompt_text, now, delivery_id=delivery_id
+        )
 
         # Feedback register (issue #70) — the human reward channel. Rides the
         # same prompt-capture pass with a pure-string classify (no model call,
@@ -289,6 +310,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
                     "register": register,
                     "session_id": session_id,
                     "prompt_ref": prompt_text[:120],
+                    "delivery_id": f"{delivery_id}:feedback",
                 },
             )
 
@@ -302,11 +324,11 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _output()
     except Exception as e:
         _log_error("user_prompt_submit", e)
-        _output()
+        _output(system_message=_failure_message("user_prompt_submit", e))
 
 
 def _prompt_time_enrichment(
-    cfg, session_id: str, prompt_text: str, now: str
+    cfg, session_id: str, prompt_text: str, now: str, *, delivery_id: str = ""
 ) -> str | None:
     """Build the R2 enrichment block and record the outcome to the buffer.
 
@@ -338,7 +360,12 @@ def _prompt_time_enrichment(
             _buffer_event(
                 cfg.weave_dir,
                 session_id,
-                {"ts": now, "type": PROMPT_TIME_MISS, "session_id": session_id},
+                {
+                    "ts": now,
+                    "type": PROMPT_TIME_MISS,
+                    "session_id": session_id,
+                    "delivery_id": f"{delivery_id}:prompt-time-miss",
+                },
             )
             _log_info(
                 "prompt_time_enrichment",
@@ -358,6 +385,7 @@ def _prompt_time_enrichment(
                 "returned_ids": served_ids,
                 "chars": len(block),
                 "token_est": len(block) // 4,
+                "delivery_id": f"{delivery_id}:prompt-time-retrieval",
             },
         )
         return block
@@ -546,12 +574,63 @@ def _is_internal(path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _buffer_event(weave_dir: Path, session_id: str, event: dict) -> None:
-    """Append a single event to the JSONL buffer. Atomic at OS level."""
+def _delivery_id(phase: str, hook_input: dict, *, suffix: str = "") -> str:
+    """Build a stable identity for one harness delivery."""
+    session_id = str(hook_input.get("session_id", ""))
+    wire_id = hook_input.get("tool_use_id") or hook_input.get("turn_id")
+    if phase == "session_start":
+        wire_id = "start"
+    if not wire_id:
+        payload = {
+            key: hook_input.get(key)
+            for key in (
+                "hook_event_name",
+                "prompt",
+                "user_prompt",
+                "tool_name",
+                "tool_input",
+                "transcript_path",
+            )
+            if hook_input.get(key) is not None
+        }
+        transcript = hook_input.get("transcript_path")
+        if transcript:
+            try:
+                payload["transcript_size"] = Path(transcript).stat().st_size
+            except OSError:
+                pass
+        encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        wire_id = hashlib.sha256(encoded).hexdigest()[:20]
+    tail = f":{suffix}" if suffix else ""
+    return f"{phase}:{session_id}:{wire_id}{tail}"
+
+
+def _buffer_event(weave_dir: Path, session_id: str, event: dict) -> bool:
+    """Append one event unless its delivery receipt already exists."""
     buf_dir = weave_dir / "buffer"
     buf_dir.mkdir(parents=True, exist_ok=True)
-    with open(buf_dir / f"{session_id}.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(event) + "\n")
+    receipt: Path | None = None
+    delivery_id = event.get("delivery_id")
+    if delivery_id:
+        receipts = buf_dir / ".receipts" / session_id
+        receipts.mkdir(parents=True, exist_ok=True)
+        receipt = receipts / hashlib.sha256(
+            str(delivery_id).encode("utf-8")
+        ).hexdigest()
+        try:
+            fd = os.open(receipt, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except FileExistsError:
+            return False
+
+    try:
+        with open(buf_dir / f"{session_id}.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        if receipt is not None:
+            receipt.unlink(missing_ok=True)
+        raise
+    return True
 
 
 def _extract_tool_output_text(hook_input: dict) -> str:
@@ -1074,6 +1153,7 @@ def _handle_stop(hook_input: dict) -> None:
             fail_lines = [f"- {fs.title}" for fs in result.failure_signals]
             body_parts.append("## Failure Signals\n" + "\n".join(fail_lines))
 
+        original_text = session_path.read_text(encoding="utf-8")
         session_path.write_text(
             render_frontmatter(fm) + "\n\n"
             + "\n\n".join(body_parts) + "\n",
@@ -1081,24 +1161,34 @@ def _handle_stop(hook_input: dict) -> None:
         )
 
         # Archive buffer → events.jsonl in session folder
-        archive_buffer(cfg.weave_dir, source_session, session_path.parent)
+        try:
+            archive_buffer(cfg.weave_dir, source_session, session_path.parent)
+        except Exception:
+            # Keep Stop retriable: a processed note with a live buffer would
+            # make the next delivery return early and strand the evidence.
+            session_path.write_text(original_text, encoding="utf-8")
+            raise
 
         # Index once
+        diagnostic = ""
         try:
             idx = Indexer(config=cfg)
-            idx.index_file(session_path)
-            idx.close()
+            try:
+                idx.index_file(session_path)
+            finally:
+                idx.close()
         except Exception as e:
             _log_error("stop/index", e)
+            diagnostic = _failure_message("stop/index", e)
 
         # Stop-hook opportunistic embed deleted 2026-06-06 (plan A1,
         # go-back-to-the-scalable-firefly.md). Embeddings are now driven
         # exclusively by the cron path (`weave index --embed --only-new`);
         # query-time similarity retrieval reads the same cache.
-        _output()
+        _output(system_message=diagnostic)
     except Exception as e:
         _log_error("stop", e)
-        _output()
+        _output(system_message=_failure_message("stop", e))
 
 
 def _handle_session_start(hook_input: dict) -> None:
@@ -1106,7 +1196,7 @@ def _handle_session_start(hook_input: dict) -> None:
 
     Emits a ``hookSpecificOutput.additionalContext`` payload (~7–10k tokens)
     built by ``thinkweave.retrieval.context.build_project_context``. Never blocks;
-    all exceptions fall through to an empty response.
+    exceptions produce a valid hook response with an actionable diagnostic.
 
     Also records a single ``type: startup`` event in the session buffer with
     the set of note IDs the payload contains and the token estimate. This
@@ -1140,6 +1230,8 @@ def _handle_session_start(hook_input: dict) -> None:
         # guard ONLY when a note in this session's context is the twin of a
         # durable CC memory flagged stale/diverged. Empty string = inject
         # nothing (the common case). Best-effort; never blocks the payload.
+        capture_error: Exception | None = None
+        recorded = True
         try:
             from thinkweave.synthesis.memory_seam import session_guard_section
 
@@ -1163,6 +1255,7 @@ def _handle_session_start(hook_input: dict) -> None:
                     # Rough token estimate — matches the SessionStart budget
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
+                    "delivery_id": _delivery_id("session_start", hook_input),
                 }
                 # Which harness served it. The indexer projects this to its
                 # own `context_served.source`; why that split exists is on the
@@ -1170,25 +1263,43 @@ def _handle_session_start(hook_input: dict) -> None:
                 surface = _hook_harness()
                 if surface:
                     event["surface"] = surface
-                _buffer_event(cfg.weave_dir, session_id, event)
+                recorded = _buffer_event(cfg.weave_dir, session_id, event)
         except Exception as e:
-            # Capture is best-effort; never block the payload injection.
             _log_error("session_start_capture", e)
+            capture_error = e
+
+        # A second registration receives the same SessionStart envelope. Its
+        # empty reply prevents duplicate context injection as well as duplicate
+        # persistence; the first owner already supplied both.
+        if not recorded:
+            _output()
+            return
 
         if not payload.strip() and not guard:
-            _output()
+            _output(
+                system_message=(
+                    _failure_message("session_start_capture", capture_error)
+                    if capture_error
+                    else ""
+                )
+            )
             return
 
         # Guard rides at the TOP — it's a correctness interrupt on notes the
         # model is about to rely on, so it must be seen before the context.
         full = f"{guard}\n{payload}" if guard else payload
         _output(
+            system_message=(
+                _failure_message("session_start_capture", capture_error)
+                if capture_error
+                else ""
+            ),
             additional_context=full,
             hook_event_name="SessionStart",
         )
     except Exception as e:
         _log_error("session_start", e)
-        _output()
+        _output(system_message=_failure_message("session_start", e))
 
 
 def _read_stdin() -> dict:
