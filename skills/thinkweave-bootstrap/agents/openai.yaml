@@ -1,0 +1,4 @@
+interface:
+  display_name: "ThinkWeave Bootstrap"
+  short_description: "Install and diagnose ThinkWeave for Codex."
+  default_prompt: "Set up ThinkWeave for this Codex environment."

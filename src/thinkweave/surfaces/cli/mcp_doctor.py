@@ -598,6 +598,55 @@ def check_weave_mcp_on_path() -> CheckResult:
     )
 
 
+def check_weave_cli() -> CheckResult:
+    """Verify that bare ``weave`` resolves and imports in this sandbox."""
+    found = shutil.which("weave")
+    if not found:
+        return CheckResult(
+            name="weave CLI",
+            passed=False,
+            detail="`weave` is not on PATH",
+            fix="run `weave install --yes --harness codex` outside the sandbox",
+        )
+    try:
+        proc = subprocess.run(
+            [found, "--help"],
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return CheckResult(
+            name="weave CLI",
+            passed=False,
+            detail=f"`weave` resolves to {found} but cannot execute: {exc}",
+            fix="run `weave install --yes --harness codex` outside the sandbox",
+        )
+    if proc.returncode == 0:
+        return CheckResult(
+            name="weave CLI", passed=True, detail=f"resolves and imports at {found}"
+        )
+    stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+    import_failure = any(
+        marker in stderr.casefold() for marker in ("modulenotfounderror", "importerror")
+    )
+    detail = (
+        f"`weave` resolves to {found} but cannot import under the current sandbox"
+        if import_failure
+        else (
+            f"`weave` resolves to {found} but exits {proc.returncode}: {stderr[-200:] or '<empty>'}"
+        )
+    )
+    return CheckResult(
+        name="weave CLI",
+        passed=False,
+        detail=detail,
+        fix="run `weave install --yes --harness codex` outside the sandbox",
+    )
+
+
 # ---------- top-level driver ----------
 
 
@@ -613,6 +662,7 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # Code report is unchanged.
     if _profile().hooks_global_only:
         result.checks.append(check_hook_scope(cwd))
+        result.checks.append(check_weave_cli())
     result.checks.append(check_vault_env())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)

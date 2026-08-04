@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 from thinkweave.core import harness
@@ -43,6 +45,29 @@ def test_windows_launcher_bypasses_uv_and_editable_pth(tmp_path: Path) -> None:
     assert "-S -m thinkweave %*" in rendered
 
 
+def test_windows_launcher_executes_the_cli_without_sync(tmp_path: Path) -> None:
+    if os.name != "nt":
+        return
+    root = Path(__file__).resolve().parents[1]
+    launcher = tmp_path / "weave.cmd"
+    launcher.write_text(
+        install_mod._render_codex_windows_cli_launcher(
+            project_root=root,
+            base_python=Path(sys._base_executable),
+            purelib=install_mod._venv_purelib(),
+        ),
+        encoding="utf-8",
+        newline="\r\n",
+    )
+
+    result = subprocess.run(
+        [str(launcher), "--help"], capture_output=True, text=True, timeout=10
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage: weave" in result.stdout
+
+
 def test_codex_install_writes_launcher_and_prepends_user_path(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -68,7 +93,9 @@ def test_codex_install_writes_launcher_and_prepends_user_path(
     assert "-S -m thinkweave %*" in launcher.read_text(encoding="utf-8")
 
 
-def test_claude_install_does_not_create_codex_launcher(tmp_path: Path, monkeypatch) -> None:
+def test_claude_install_does_not_create_codex_launcher(
+    tmp_path: Path, monkeypatch
+) -> None:
     profile = harness.claude_code(home=tmp_path)
     monkeypatch.setattr(install_mod, "_profile", lambda: profile)
     monkeypatch.setattr(install_mod.os, "name", "nt")
@@ -120,12 +147,8 @@ def test_codex_install_calls_bootstrap_after_eager_sync(
     )
     monkeypatch.setattr(install_mod, "_print_next_steps", lambda: None)
     monkeypatch.setattr(install_mod.os, "name", "nt")
-    monkeypatch.setattr(
-        install_mod, "_profile", lambda: harness.codex(home=tmp_path)
-    )
+    monkeypatch.setattr(install_mod, "_profile", lambda: harness.codex(home=tmp_path))
 
-    install_mod.cmd_install(
-        argparse.Namespace(yes=True, vault=None, no_claude_md=True)
-    )
+    install_mod.cmd_install(argparse.Namespace(yes=True, vault=None, no_claude_md=True))
 
     assert calls == ["sync", "bootstrap"]

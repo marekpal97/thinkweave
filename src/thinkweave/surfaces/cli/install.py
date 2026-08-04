@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -313,6 +314,77 @@ def _uv_sync(project_root: Path) -> None:
     print("Dependencies synced.")
 
 
+def _venv_purelib() -> Path:
+    """Site-packages belonging to the environment running the installer."""
+    return Path(sysconfig.get_path("purelib"))
+
+
+def _render_codex_windows_cli_launcher(
+    *, project_root: Path, base_python: Path, purelib: Path
+) -> str:
+    """Render a CLI launcher that does not process the editable ``.pth``."""
+    pythonpath = f"{project_root / 'src'};{purelib}"
+    return (
+        "@echo off\n"
+        "setlocal EnableExtensions\n"
+        'set "PYTHONDONTWRITEBYTECODE=1"\n'
+        f'set "PYTHONPATH={pythonpath}"\n'
+        f'"{base_python}" -S -m thinkweave %*\n'
+        "exit /b %ERRORLEVEL%\n"
+    )
+
+
+def _prepend_windows_user_path(directory: Path) -> None:
+    """Prepend ``directory`` to the current and future Windows user PATH."""
+    import winreg
+
+    wanted = str(directory)
+
+    def prepend(value: str) -> str:
+        parts = [part for part in value.split(";") if part]
+        if any(
+            os.path.normcase(os.path.expandvars(part)) == os.path.normcase(wanted)
+            for part in parts
+        ):
+            return value
+        return ";".join([wanted, *parts])
+
+    os.environ["PATH"] = prepend(os.environ.get("PATH", ""))
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER,
+        "Environment",
+        0,
+        winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+    ) as key:
+        try:
+            current, value_type = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            current, value_type = "", winreg.REG_EXPAND_SZ
+        updated = prepend(current)
+        if updated != current:
+            winreg.SetValueEx(key, "Path", 0, value_type, updated)
+
+
+def _install_codex_windows_cli(project_root: Path) -> Path | None:
+    """Install Codex's sandbox-safe bare ``weave`` command on Windows."""
+    if os.name != "nt" or _profile().id != "codex":
+        return None
+    target = _profile().mcp_config.parent / "bin" / "weave.cmd"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        _render_codex_windows_cli_launcher(
+            project_root=project_root,
+            base_python=Path(sys._base_executable),
+            purelib=_venv_purelib(),
+        ),
+        encoding="utf-8",
+        newline="\r\n",
+    )
+    _prepend_windows_user_path(target.parent)
+    print(f"Installed sandbox-safe Codex CLI launcher at {target}.")
+    return target
+
+
 def _plugin_provides_mcp() -> Path | None:
     """Return the path to a plugin manifest that already declares the
     thinkweave MCP server, or None if no installed plugin claims it.
@@ -557,6 +629,7 @@ def cmd_install(args: argparse.Namespace) -> None:
 
     _write_mcp_entry(args, new_entry)
     _uv_sync(project_root)
+    _install_codex_windows_cli(project_root)
     if not getattr(args, "no_claude_md", False):
         _install_claude_md_block(args.yes)
     _print_next_steps()
