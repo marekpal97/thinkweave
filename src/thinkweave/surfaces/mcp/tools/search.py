@@ -158,6 +158,7 @@ def handle_search(cfg: Config, args: dict):
     from mcp.types import TextContent
 
     from thinkweave.operations import search as ops_search
+    from thinkweave.retrieval import SemanticSearchUnavailable
 
     mode = args.get("mode", "fts")
     type_arg = args.get("type") or ""
@@ -165,33 +166,31 @@ def handle_search(cfg: Config, args: dict):
     project = args.get("project", "")
     limit = args.get("limit", 10)
 
-    if mode == "similar":
-        results = ops_search.query_similar(
-            cfg, query, note_type=type_arg, project=project, limit=limit
-        )
-        if not results:
-            msg = (
-                "No semantic results — either the embeddings DB is missing "
-                "(run `weave index --embed` with OPENAI_API_KEY set) or no "
-                "matches above the cosine threshold."
+    try:
+        if mode == "similar":
+            results = ops_search.query_similar(
+                cfg, query, note_type=type_arg, project=project, limit=limit
             )
-            return [TextContent(type="text", text=msg)]
-    elif mode == "hybrid":
-        results = ops_search.query_hybrid(
-            cfg, query, note_type=type_arg, project=project, limit=limit
-        )
-    else:
-        results = ops_search.query_fts(
-            cfg,
-            query,
-            note_type=type_arg,
-            project=project,
-            tags=args.get("tags"),
-            concepts=args.get("concepts"),
-            since=args.get("since", ""),
-            until=args.get("until", ""),
-            limit=limit,
-        )
+        elif mode == "hybrid":
+            results = ops_search.query_hybrid(
+                cfg, query, note_type=type_arg, project=project, limit=limit
+            )
+        else:
+            results = ops_search.query_fts(
+                cfg,
+                query,
+                note_type=type_arg,
+                project=project,
+                tags=args.get("tags"),
+                concepts=args.get("concepts"),
+                since=args.get("since", ""),
+                until=args.get("until", ""),
+                limit=limit,
+            )
+    except SemanticSearchUnavailable as exc:
+        return [
+            TextContent(type="text", text=f"Semantic retrieval unavailable: {exc}")
+        ]
 
     if not results:
         return [TextContent(type="text", text="No results found.")]

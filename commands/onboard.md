@@ -34,6 +34,25 @@ vault-scope (or machine-scope, for hooks). They run once across all
 your projects; the per-project work at the end attaches the *current*
 repo to the seeded vault.
 
+## Harness routing
+
+Run the same flow in Claude Code and Codex, but keep their history and hook
+lanes distinct:
+
+- Claude Code history uses `weave import claude-code`; Codex history uses
+  `weave import codex`. Apply the chosen source to every dry-run, materialise,
+  and enrich command in Step 3. **Do not merge the two history lanes** or use
+  one harness's imported sessions as the other's idempotency signal.
+- Claude Code hook commands stay as written in Step 2. Under Codex, use
+  `weave hooks install --scope user --harness codex` for global capture or
+  `weave hooks install --harness codex` for project capture, then ask the user
+  to review and trust the exact definitions in Codex `/hooks`.
+- Restart the harness running this skill whenever a remediation says to
+  restart Claude Code. Codex skill mentions use `$name`; Claude Code uses
+  `/name`.
+
+Decide the running harness once at the start and retain it for the whole flow.
+
 ## Idempotency — what makes each step skippable
 
 Re-runnable; later passes only do what hasn't been done yet. The skill
@@ -1099,19 +1118,25 @@ the source brief hasn't been generated yet (the user hasn't run
 FAIL: *"Sample URL noted but no source note yet — run `/research
 <sample-url>` to verify the brief generation path."*
 
-### 7e'. Embedding posture (INFO, never FAIL)
+### 7e'. Semantic retrieval (required)
 
 ```bash
 weave doctor 2>/dev/null | sed -n '/^Embedding posture:/,/^$/p'
+weave search --mode similar "onboarding memory" --limit 1
+weave search --mode hybrid "onboarding memory" --limit 1
 ```
 
-Surface the `Embedding posture:` block verbatim. This is **INFO**, never a
-FAIL — keyword search (BM25/FTS) always works, so a vault with no embedding
-key is fully functional, just without semantic/hybrid recall. The block
-already carries the free keyless fallback (local `sentence_transformer`) when
-`OPENAI_API_KEY` is missing on the default OpenAI provider. Don't editorialize
-beyond it; the user picks whether the free local path is worth the extra
-install.
+Surface the `Embedding posture:` block verbatim. Both search commands must run
+without a `Semantic retrieval unavailable` diagnostic. Zero matches are fine;
+an unavailable semantic leg is not. Do not accept FTS-only output as a passing
+hybrid check.
+
+On a trust-chain error, keep TLS verification enabled. Ask the user to install
+their organisation's CA in the Windows Trusted Root store or point
+`SSL_CERT_FILE` at its PEM bundle, restart the harness, run
+`weave index --embed`, then repeat both searches. If embeddings are missing,
+follow the provider-specific remedy from `weave doctor`, run the index command,
+and repeat. HALT onboarding until similarity and hybrid both execute.
 
 ### 7f. Print checklist
 
@@ -1125,7 +1150,7 @@ Verifying everything is wired:
   · Embedding posture     (INFO — semantic on, or BM25-only + free local path)
 ```
 
-On all PASS (or PASS + INFO), proceed to wrap-up. On any FAIL, print
+On all PASS, proceed to wrap-up. On any FAIL, print
 the remediation line above and HALT.
 
 ---

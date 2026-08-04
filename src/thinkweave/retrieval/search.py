@@ -10,6 +10,7 @@ import sqlite3
 from dataclasses import dataclass, field
 
 from thinkweave.core.config import Config, load_config
+from thinkweave.retrieval import SemanticSearchUnavailable
 
 
 @dataclass
@@ -888,27 +889,41 @@ class Search:
         note_type: str | list[str] = "",
         limit: int = 10,
     ) -> list[SearchResult]:
-        """Semantic search via cached embeddings. Soft-fails if embeddings
-        aren't configured (missing API key, missing embeddings db).
+        """Semantic search via cached embeddings.
 
         Returns SearchResult rows enriched from the main notes table so the
-        caller gets titles/paths/etc., not just IDs.
+        caller gets titles/paths/etc., not just IDs. Setup and transport
+        failures raise :class:`SemanticSearchUnavailable`; an empty list means
+        the semantic query ran successfully and found no indexed notes.
         """
         try:
             from thinkweave.core.embeddings import EmbeddingSearch
-        except ImportError:
-            return []
+            from thinkweave.core.embedding_provider import EmbeddingCertificateError
+        except ImportError as exc:
+            raise SemanticSearchUnavailable(
+                "embedding support is not installed; install "
+                "`thinkweave[embeddings]`, then run `weave index --embed`."
+            ) from exc
 
+        if not self.config.embeddings_db.exists():
+            raise SemanticSearchUnavailable(
+                "the embeddings database is missing; run `weave index --embed`."
+            )
+
+        es = EmbeddingSearch(config=self.config)
         try:
-            es = EmbeddingSearch(config=self.config)
-            if not self.config.embeddings_db.exists():
-                return []
             hits = es.search(
                 query, limit=limit, project=project, note_type=note_type
             )
+        except EmbeddingCertificateError as exc:
+            raise SemanticSearchUnavailable(str(exc)) from exc
+        except (FileNotFoundError, ValueError, ImportError) as exc:
+            raise SemanticSearchUnavailable(
+                f"embeddings are not configured: {exc} Run `weave index --embed` "
+                "after correcting the setup."
+            ) from exc
+        finally:
             es.close()
-        except (FileNotFoundError, ValueError, ImportError):
-            return []
 
         if not hits:
             return []
@@ -956,9 +971,9 @@ class Search:
         config ``retrieval.rrf_k`` (60 — the standard constant from the
         original RRF paper; it rarely needs tuning).
 
-        Falls back gracefully: if embeddings are unavailable, returns
-        FTS-only results. If FTS returns nothing (e.g. empty query), returns
-        semantic-only.
+        Both retrieval legs must execute. Semantic setup or transport failures
+        are reported instead of returning an indistinguishable FTS-only result.
+        If either healthy leg has no matches, results from the other are used.
         """
         if rrf_k is None:
             rrf_k = int(getattr(self.config, "retrieval_rrf_k", 60) or 60)
