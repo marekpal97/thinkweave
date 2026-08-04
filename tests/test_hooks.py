@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -1380,6 +1381,24 @@ class TestSummarizeEvents:
 
 
 class TestHookErrorLogging:
+    def test_initialization_access_failure_is_visible(
+        self, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        monkeypatch.setattr(
+            "thinkweave.core.config.is_vault_initialized",
+            lambda cfg: (_ for _ in ()).throw(PermissionError("vault denied")),
+        )
+        monkeypatch.setattr("sys.argv", ["weave-hook", "session_start"])
+        monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+
+        handler_mod.main()
+
+        emitted = json.loads(capsys.readouterr().out)
+        assert "not persisted" in emitted["systemMessage"]
+        assert "PermissionError" in emitted["systemMessage"]
+
     def test_log_error_creates_file(self, tmp_path):
         cfg = Config(vault_root=tmp_path / "vault")
         with patch("thinkweave.core.config.load_config", return_value=cfg):
