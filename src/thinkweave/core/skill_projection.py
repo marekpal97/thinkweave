@@ -8,9 +8,7 @@ only the harness vocabulary needed to execute it with native tools.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
-from fnmatch import fnmatch
 from pathlib import Path
 
 from thinkweave.core.vault import parse_frontmatter
@@ -31,7 +29,14 @@ def codex_skill_name(name: str) -> str:
 def iter_command_contracts(
     commands_root: Path, agents_root: Path
 ) -> tuple[CommandContract, ...]:
-    """Return every supported command and the workers its contract names."""
+    """Return every supported command and the workers its contract declares.
+
+    ``workers:`` in a command's frontmatter is the source of truth: the worker
+    contracts an agent executing that command spawns, either through its own
+    ``Task`` calls or through the drain rail it sequences inline. Prose that
+    merely names a worker (``/tighten`` contrasting itself with the nightly
+    ``dream-merge-worker``) declares nothing.
+    """
     worker_names = {path.stem for path in agents_root.glob("*.md")}
     contracts: list[CommandContract] = []
     for source in sorted(commands_root.rglob("*.md")):
@@ -43,23 +48,21 @@ def iter_command_contracts(
         description = " ".join(str(metadata.get("description") or "").split())
         if not description:
             raise ValueError(f"command has no description: {source}")
-        named_workers = {name for name in worker_names if name in text}
-        for match in re.finditer(r"([a-z0-9-]*)\{([^}]+)\}([a-z0-9-]*)", text):
-            prefix, choices, suffix = match.groups()
-            named_workers.update(
-                candidate
-                for choice in choices.split(",")
-                if (candidate := f"{prefix}{choice.strip()}{suffix}") in worker_names
+        declared = metadata.get("workers") or []
+        if isinstance(declared, str):
+            raise ValueError(f"workers: must be a list: {source}")
+        unknown = sorted(set(declared) - worker_names)
+        if unknown:
+            raise ValueError(
+                f"command names workers without an agents/ contract: "
+                f"{source} -> {unknown}"
             )
-        for pattern in re.findall(r"agents/([a-z0-9*-]+)\.md", text):
-            named_workers.update(name for name in worker_names if fnmatch(name, pattern))
-        workers = tuple(sorted(named_workers))
         contracts.append(
             CommandContract(
                 name=name,
                 description=description,
                 source_relpath=source.relative_to(commands_root.parent),
-                workers=workers,
+                workers=tuple(sorted(set(declared))),
             )
         )
     return tuple(contracts)

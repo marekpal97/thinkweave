@@ -3,6 +3,18 @@ name: dream
 owns_mechanic: vault_synthesis
 consumes: [weave_concepts, weave_search, weave_read, weave_update, weave_link, weave_create, weave_extract]
 produces: [ontology.yaml, vault/themes/*, vault/concepts/topics/*, vault/.weave/maintenance.jsonl, vault/digests/*, vault/reports/dream/*]
+workers:
+  - dream-digest-worker
+  - dream-essence-worker
+  - dream-judge-worker
+  - dream-merge-worker
+  - dream-outcome-worker
+  - dream-priority-worker
+  - dream-promotion-worker
+  - dream-seam-link-worker
+  - dream-seam-worker
+  - dream-theme-worker
+  - dream-wrap-worker
 tools:
   - Read
   - Bash

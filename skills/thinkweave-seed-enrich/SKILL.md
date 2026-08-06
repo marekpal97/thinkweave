@@ -12,5 +12,4 @@ that adapter.
 Use the adapter's native `spawn_agent` procedure for these shared
 worker contracts:
 
-- [`dream-wrap-worker`](../../agents/dream-wrap-worker.md)
 - [`seed-enrich-worker`](../../agents/seed-enrich-worker.md)

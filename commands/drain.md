@@ -4,6 +4,12 @@ owns_mechanic: queue_drain
 capabilities: [acquire]
 consumes: [weave_queue, weave_sources_config, weave_search, weave_concepts, weave_create, weave_read, weave_update, weave_link]
 produces: [vault/sources/**]
+workers:
+  - news-triage-worker
+  - research-news-worker
+  - research-newsletter-worker
+  - research-podcast-worker
+  - research-youtube-worker
 tools:
   - Read
   - Write

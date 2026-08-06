@@ -5,6 +5,8 @@ source_type: news
 capabilities: [import]
 consumes: [weave_concepts, weave_create, weave_link]
 produces: [vault/sources/news/**]
+workers:
+  - research-news-worker
 tools:
   - Read
   - Bash

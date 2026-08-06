@@ -8,9 +8,3 @@ description: "First-run onboarding — pre-flight checks, vault wiring, seed vau
 Read the [shared Codex adapter](../../docs/CODEX-SKILL-PROJECTION.md)
 and the [canonical ThinkWeave command contract](../../commands/onboard.md) completely, then execute the canonical contract through
 that adapter.
-
-Use the adapter's native `spawn_agent` procedure for these shared
-worker contracts:
-
-- [`research-news-worker`](../../agents/research-news-worker.md)
-- [`research-newsletter-worker`](../../agents/research-newsletter-worker.md)

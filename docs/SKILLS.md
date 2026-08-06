@@ -51,6 +51,14 @@ back to its canonical command and translates only tool and invocation
 vocabulary. `thinkweave-recall` is an additional read-only Codex convenience
 skill rather than a second definition of an existing command.
 
+Worker fan-out is **declared, never inferred**: a command that spawns workers
+lists them in a `workers:` frontmatter key, and the projector validates each
+name against `agents/*.md`. Prose that merely names a worker declares nothing —
+`/tighten` contrasts itself with the nightly `dream-merge-worker` and must not
+project a dispatch for it, while `/drain`'s fan-out lives in `sources.yaml`
+(`subagent_type`) and would never be found in the command text at all. Every
+key is otherwise inert; `weave skill list` ignores it.
+
 Regenerate the adapters after changing command frontmatter, names, or worker
 references:
 

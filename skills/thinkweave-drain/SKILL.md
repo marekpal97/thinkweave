@@ -14,6 +14,9 @@ worker contracts:
 
 - [`news-triage-worker`](../../agents/news-triage-worker.md)
 - [`research-news-worker`](../../agents/research-news-worker.md)
+- [`research-newsletter-worker`](../../agents/research-newsletter-worker.md)
+- [`research-podcast-worker`](../../agents/research-podcast-worker.md)
+- [`research-youtube-worker`](../../agents/research-youtube-worker.md)
 
 > **Codex support status:** Interactive worker fan-out is supported
 > through the native subagent projection above. Unattended/headless
