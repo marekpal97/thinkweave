@@ -293,6 +293,95 @@ class TestHookInstaller:
         ]
         assert commands == ["foreign-hook"]
 
+    # --- plugin-owner sweep across scopes (#161 review) -------------------
+
+    STALE = {
+        "hooks": {
+            "Stop": [
+                {"matcher": "", "hooks": [{"command": "weave-hook stop"}]},
+                {"matcher": "", "hooks": [{"command": "foreign-hook"}]},
+            ]
+        }
+    }
+
+    def _both_scopes(self, tmp_path: Path, use_profile) -> tuple[Path, Path, Path]:
+        """Point the profile at a tmp machine scope; return (user, project_dir, project)."""
+        user_settings = tmp_path / "home" / ".claude" / "settings.json"
+        manifest = tmp_path / "home" / ".claude" / "plugins" / "installed_plugins.json"
+        use_profile(user_settings=user_settings, installed_plugins=manifest)
+        project_dir = tmp_path / "project"
+        project_settings = project_dir / ".claude" / "settings.local.json"
+        return user_settings, project_dir, project_settings
+
+    def _write_stale(self, *paths: Path) -> None:
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self.STALE), encoding="utf-8")
+
+    def _stop_commands(self, path: Path) -> list[str]:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        return [
+            hook["command"]
+            for entry in saved.get("hooks", {}).get("Stop", [])
+            for hook in entry["hooks"]
+        ]
+
+    def test_plugin_owner_sweeps_every_scope_not_just_the_named_one(
+        self, tmp_path: Path, use_profile, plugin_route_active, capsys
+    ):
+        """The reported machine had a machine-scope AND a project-local
+        registration; cleaning only the named scope left the other firing."""
+        user_settings, project_dir, project_settings = self._both_scopes(
+            tmp_path, use_profile
+        )
+        self._write_stale(user_settings, project_settings)
+        plugin_route_active()
+
+        install_hooks(project_dir=str(project_dir), scope="project")
+
+        assert self._stop_commands(user_settings) == ["foreign-hook"]
+        assert self._stop_commands(project_settings) == ["foreign-hook"]
+        out = capsys.readouterr().out
+        assert str(user_settings) in out
+        assert str(project_settings) in out
+
+    def test_plugin_owner_reports_nothing_when_nothing_was_stale(
+        self, tmp_path: Path, use_profile, plugin_route_active, capsys
+    ):
+        user_settings, project_dir, _ = self._both_scopes(tmp_path, use_profile)
+        plugin_route_active()
+
+        install_hooks(project_dir=str(project_dir), scope="project")
+
+        out = capsys.readouterr().out
+        assert "No stale manual hooks found" in out
+        assert "Removed" not in out
+        assert not user_settings.exists()
+
+    def test_plugin_owner_dry_run_writes_nothing(
+        self, tmp_path: Path, use_profile, plugin_route_active, capsys
+    ):
+        user_settings, project_dir, project_settings = self._both_scopes(
+            tmp_path, use_profile
+        )
+        self._write_stale(user_settings, project_settings)
+        plugin_route_active()
+
+        install_hooks(project_dir=str(project_dir), scope="project", dry_run=True)
+
+        assert self._stop_commands(user_settings) == [
+            "weave-hook stop",
+            "foreign-hook",
+        ]
+        assert self._stop_commands(project_settings) == [
+            "weave-hook stop",
+            "foreign-hook",
+        ]
+        out = capsys.readouterr().out
+        assert out.count("Would remove stale manual hooks from") == 2
+        assert "Dry run — nothing was written." in out
+        assert "Removed stale manual hooks" not in out
+
     def test_install_fresh(self, tmp_path: Path):
         project_dir = tmp_path / "project"
         project_dir.mkdir()

@@ -168,6 +168,62 @@ def _settings_path_for_scope(scope: str, project_dir: str = "") -> Path:
     )
 
 
+def _settings_targets(project_dir: str = "") -> list[Path]:
+    """Every settings file this module knows how to register hooks in.
+
+    Order-stable and deduped (a harness whose two scopes resolve to one file
+    is swept once).
+    """
+    targets: list[Path] = []
+    for scope in ("user", "project"):
+        path = _settings_path_for_scope(scope, project_dir)
+        if path not in targets:
+            targets.append(path)
+    return targets
+
+
+def _converge_to_plugin_ownership(project_dir: str, dry_run: bool) -> None:
+    """Strip thinkweave hooks from EVERY settings file, plugin route only.
+
+    The plugin manifest already registers the canonical hooks, so any
+    surviving settings-file entry is a second owner and each lifecycle event
+    is delivered once per owner (#161). Sweeping only the scope the caller
+    happened to name is what let that happen: the machine that reported #161
+    carried a machine-scope registration AND a project-local one, and a
+    `--scope project` install cleaned the project one while announcing the
+    job was done.
+
+    Reports what it actually did — the scopes cleaned, or that there was
+    nothing to clean — rather than asserting a cleanup unconditionally.
+    """
+    cleaned: list[Path] = []
+    for target in _settings_targets(project_dir):
+        if not target.exists():
+            continue
+        existing = json.loads(target.read_text(encoding="utf-8"))
+        planned = _build_uninstalled_settings(existing)
+        if planned == existing:
+            continue
+        cleaned.append(target)
+        if dry_run:
+            print(f"Would remove stale manual hooks from: {target}")
+            print(_settings_diff(existing, planned, target), end="")
+        else:
+            target.write_text(
+                json.dumps(planned, indent=2) + "\n", encoding="utf-8"
+            )
+
+    print("The active thinkweave plugin owns lifecycle registration.")
+    if not cleaned:
+        print("  No stale manual hooks found.")
+    elif dry_run:
+        print("  Dry run — nothing was written.")
+    else:
+        for target in cleaned:
+            print(f"  Removed stale manual hooks from {target}")
+    print("  Remove the plugin first if you want the settings-file route.")
+
+
 def _build_installed_settings(
     existing: dict, hooks_json: str | Path = ""
 ) -> dict:
@@ -288,6 +344,11 @@ def install_hooks(
     plugin install path gets global hooks via the plugin manifest; this
     flag is the legacy install path's equivalent.
 
+    When the thinkweave plugin is active it owns registration outright: no
+    settings file is written at any scope, and stale manual hooks are swept
+    out of *every* scope this module can address — see
+    :func:`_converge_to_plugin_ownership`.
+
     ``dry_run=True`` prints the planned unified diff against the current
     settings file and returns without writing.
 
@@ -312,23 +373,7 @@ def install_hooks(
         manifest=profile.installed_plugins,
         dev_link=profile.dev_link,
     ):
-        target = _settings_path_for_scope(scope, project_dir)
-        if target.exists():
-            existing = json.loads(target.read_text(encoding="utf-8"))
-            planned = _build_uninstalled_settings(existing)
-            if dry_run:
-                print(f"Would remove stale manual hooks from: {target}")
-                print(_settings_diff(existing, planned, target) or "(no changes)")
-                return
-            if planned != existing:
-                target.write_text(
-                    json.dumps(planned, indent=2) + "\n", encoding="utf-8"
-                )
-        print(
-            "The active thinkweave plugin owns lifecycle registration. Any "
-            "stale manual hooks were removed.\n  Remove the plugin first if "
-            "you want the settings-file route."
-        )
+        _converge_to_plugin_ownership(project_dir, dry_run)
         return
 
     # Same "never write a file that can't fire" rule, one scope down. Refused

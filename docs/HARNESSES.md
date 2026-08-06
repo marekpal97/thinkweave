@@ -42,11 +42,21 @@ representation per layer — and `hooks.json`'s body is the same
 
 **Registration ownership.** Claude Code's active plugin is the sole owner when
 present: it loads the committed `hooks/hooks.json`, and `weave hooks install`
-becomes a no-op instead of adding a second settings-file registration. On the
+writes no settings file. Instead it sweeps stale thinkweave entries out of
+*every* scope it can address — machine and project both, regardless of the
+`--scope` asked for — because a registration left behind in the other scope
+fires alongside the plugin's and delivers every event twice (#161). On the
 MCP-only/manual route the installer owns registration. Codex has no shipped
 ThinkWeave plugin, so its machine-scope `hooks.json` remains installer-owned.
-The handler also deduplicates replayed envelopes by delivery receipt; this is a
-defence against stale registrations or harness retry, not a second registrar.
+
+The handler deduplicates replayed envelopes by delivery receipt, but only for
+events that carry the harness's own per-delivery id (`tool_use_id`,
+`turn_id`) — that is a defence against harness retry, not a second registrar.
+Claude Code stamps no such id on SessionStart or UserPromptSubmit, and those
+are written unconditionally: nothing on the wire separates a duplicate
+delivery from the user genuinely sending the same prompt twice, or from a
+resume that must re-inject context. Single-owner registration is what keeps
+those from arriving twice.
 
 **Scope.** thinkweave installs **machine scope only** (`--scope project` is
 refused). `[manual]` project `.codex/` layers load only for *trusted* projects;
