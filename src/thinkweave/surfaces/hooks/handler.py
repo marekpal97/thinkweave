@@ -19,6 +19,17 @@ PostToolUse (Write|Edit|Bash): Buffers events to JSONL. Session note
   materialization is deferred to Stop hook.
 Stop: Reconstructs session from buffer, writes summary, indexes once.
 
+Duplicate deliveries (#161): when a lifecycle event arrives carrying a
+  wire id the harness minted for it (``tool_use_id`` / ``turn_id``), the
+  buffer write is guarded by a delivery receipt so two registrations of
+  the same hook persist the event once. Events with NO wire id — Claude
+  Code's UserPromptSubmit, SessionStart, a PostToolUse without a
+  ``tool_use_id`` — are deliberately NOT deduped: nothing on the wire
+  distinguishes "the same delivery twice" from "the user really did send
+  `continue` twice", and guessing via a content hash gets both wrong.
+  Their cure is single-owner registration (`surfaces/hooks/install.py`),
+  not a receipt.
+
 Note: an earlier PreToolUse(Write|Edit) handler injected "Related vault
 notes" before each file edit. It was redundant with SessionStart context
 and the filename-stem heuristic produced noisy hits, so it was removed.
@@ -87,6 +98,47 @@ def _failure_message(hook_type: str, error: Exception) -> str:
     )
 
 
+def _report_failure(hook_type: str, hook_input: dict, error: Exception) -> str:
+    """The visible failure message, at most once per session per hook type.
+
+    A persistent vault problem (a permission denial, a full disk) fails on
+    every delivery — unthrottled, that is a systemMessage on every single tool
+    call for the rest of the session. The first one carries the whole
+    diagnosis; the rest are noise. Every failure still reaches
+    ``<vault>/.weave/hooks.log`` via :func:`_log_error`.
+
+    Returns ``""`` once the session has already been told, which
+    :func:`_output` renders as no ``systemMessage`` at all.
+    """
+    if _first_failure(hook_type, hook_input):
+        return _failure_message(hook_type, error)
+    return ""
+
+
+def _first_failure(hook_type: str, hook_input: dict) -> bool:
+    """True the first time this session reports a failure of ``hook_type``.
+
+    Each hook fires in its own process, so the "already told them" bit is a
+    marker file in the session's buffer-side scratch dir (cleaned with the
+    buffer at Stop). Best-effort in the honest direction: if the marker cannot
+    be written — plausibly the same vault-access failure being reported — the
+    message goes out.
+    """
+    try:
+        from thinkweave.core.config import load_config
+
+        session_id = str(hook_input.get("session_id", "")) or "_unknown"
+        state = session_state_dir(load_config().weave_dir, session_id)
+        state.mkdir(parents=True, exist_ok=True)
+        marker = state / f"failed.{hook_type.replace('/', '-')}"
+        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
 def _hook_harness() -> str:
     """Which harness fired this hook, from our own argv.
 
@@ -128,7 +180,7 @@ def main() -> None:
             return
     except Exception as e:
         _log_error(hook_type, e)
-        _output(system_message=_failure_message(hook_type, e))
+        _output(system_message=_report_failure(hook_type, hook_input, e))
         return
 
     try:
@@ -147,7 +199,7 @@ def main() -> None:
             _output()
     except Exception as e:
         _log_error(hook_type, e)
-        _output(system_message=_failure_message(hook_type, e))
+        _output(system_message=_report_failure(hook_type, hook_input, e))
 
 
 def _handle_post(tool_name: str, hook_input: dict) -> None:
@@ -217,9 +269,11 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         recorded = False
         for i, event in enumerate(events):
             if event:
-                event["delivery_id"] = _delivery_id(
+                delivery_id = _delivery_id(
                     "post_tool_use", hook_input, suffix=str(i)
                 )
+                if delivery_id:
+                    event["delivery_id"] = delivery_id
                 recorded = _buffer_event(cfg.weave_dir, session_id, event) or recorded
 
         # Action-tool path materialises the session note (so MCP tools can
@@ -232,7 +286,7 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
         _output()
     except Exception as e:
         _log_error("post_tool_use", e)
-        _output(system_message=_failure_message("post_tool_use", e))
+        _output(system_message=_report_failure("post_tool_use", hook_input, e))
 
 
 def _handle_user_prompt_submit(hook_input: dict) -> None:
@@ -263,14 +317,20 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
 
         now = datetime.now(timezone.utc).isoformat()
         cwd = hook_input.get("cwd", "")
+        # Claude Code's UserPromptSubmit carries no wire id, so this is ""
+        # there and the prompt is captured unconditionally — sending the same
+        # prompt twice is a real repeat, not a replay. Codex stamps a
+        # ``turn_id``, and there the receipt collapses duplicate deliveries.
+        delivery_id = _delivery_id("user_prompt_submit", hook_input)
         event = {
             "ts": now,
             "type": "prompt",
             "text": prompt_text,
             "session_id": session_id,
             "cwd": cwd,
-            "delivery_id": _delivery_id("user_prompt_submit", hook_input),
         }
+        if delivery_id:
+            event["delivery_id"] = delivery_id
         if not _buffer_event(cfg.weave_dir, session_id, event):
             _output()
             return
@@ -282,7 +342,6 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
         # live buffer, hard-capped. Any failure here must fall through to a
         # plain (empty) response — never break the user's turn.
-        delivery_id = event["delivery_id"]
         block = _prompt_time_enrichment(
             cfg, session_id, prompt_text, now, delivery_id=delivery_id
         )
@@ -301,18 +360,16 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
 
         register = classify_feedback(prompt_text)
         if register != "neutral":
-            _buffer_event(
-                cfg.weave_dir,
-                session_id,
-                {
-                    "ts": now,
-                    "type": "feedback",
-                    "register": register,
-                    "session_id": session_id,
-                    "prompt_ref": prompt_text[:120],
-                    "delivery_id": f"{delivery_id}:feedback",
-                },
-            )
+            feedback = {
+                "ts": now,
+                "type": "feedback",
+                "register": register,
+                "session_id": session_id,
+                "prompt_ref": prompt_text[:120],
+            }
+            if delivery_id:
+                feedback["delivery_id"] = f"{delivery_id}:feedback"
+            _buffer_event(cfg.weave_dir, session_id, feedback)
 
         if block:
             _output(
@@ -324,7 +381,9 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _output()
     except Exception as e:
         _log_error("user_prompt_submit", e)
-        _output(system_message=_failure_message("user_prompt_submit", e))
+        _output(
+            system_message=_report_failure("user_prompt_submit", hook_input, e)
+        )
 
 
 def _prompt_time_enrichment(
@@ -357,16 +416,14 @@ def _prompt_time_enrichment(
         block, served_ids, missed = build_enrichment(cfg, session_id, prompt_text)
 
         if missed:
-            _buffer_event(
-                cfg.weave_dir,
-                session_id,
-                {
-                    "ts": now,
-                    "type": PROMPT_TIME_MISS,
-                    "session_id": session_id,
-                    "delivery_id": f"{delivery_id}:prompt-time-miss",
-                },
-            )
+            miss = {
+                "ts": now,
+                "type": PROMPT_TIME_MISS,
+                "session_id": session_id,
+            }
+            if delivery_id:
+                miss["delivery_id"] = f"{delivery_id}:prompt-time-miss"
+            _buffer_event(cfg.weave_dir, session_id, miss)
             _log_info(
                 "prompt_time_enrichment",
                 f"deadline miss for session {session_id}",
@@ -375,19 +432,17 @@ def _prompt_time_enrichment(
         if not block:
             return None
 
-        _buffer_event(
-            cfg.weave_dir,
-            session_id,
-            {
-                "ts": now,
-                "type": "retrieval",
-                "tool": PROMPT_TIME_TOOL,
-                "returned_ids": served_ids,
-                "chars": len(block),
-                "token_est": len(block) // 4,
-                "delivery_id": f"{delivery_id}:prompt-time-retrieval",
-            },
-        )
+        served = {
+            "ts": now,
+            "type": "retrieval",
+            "tool": PROMPT_TIME_TOOL,
+            "returned_ids": served_ids,
+            "chars": len(block),
+            "token_est": len(block) // 4,
+        }
+        if delivery_id:
+            served["delivery_id"] = f"{delivery_id}:prompt-time-retrieval"
+        _buffer_event(cfg.weave_dir, session_id, served)
         return block
     except Exception as e:
         _log_error("prompt_time_enrichment", e)
@@ -575,44 +630,41 @@ def _is_internal(path: str) -> bool:
 
 
 def _delivery_id(phase: str, hook_input: dict, *, suffix: str = "") -> str:
-    """Build a stable identity for one harness delivery."""
-    session_id = str(hook_input.get("session_id", ""))
+    """Identity of one harness delivery — or ``""`` when the wire has none.
+
+    Only ``tool_use_id`` / ``turn_id`` count: those are minted by the harness
+    per delivery, so two registrations receiving the same envelope agree on
+    the id and the second write can be dropped (#161).
+
+    An event without one gets no identity, and :func:`_buffer_event` then
+    writes it unconditionally. Deriving a surrogate from the payload was tried
+    and reverted: it is wrong in both directions. A content hash collides on
+    genuine repeats (the user sending ``continue`` twice would persist once),
+    and mixing in a volatile discriminator like the transcript's size lets a
+    single byte written between two registrations' deliveries split the hash —
+    reproducing exactly the duplicate #161 reported. Duplicate id-less
+    deliveries are cured upstream, by single-owner registration.
+    """
     wire_id = hook_input.get("tool_use_id") or hook_input.get("turn_id")
-    if phase == "session_start":
-        wire_id = "start"
     if not wire_id:
-        payload = {
-            key: hook_input.get(key)
-            for key in (
-                "hook_event_name",
-                "prompt",
-                "user_prompt",
-                "tool_name",
-                "tool_input",
-                "transcript_path",
-            )
-            if hook_input.get(key) is not None
-        }
-        transcript = hook_input.get("transcript_path")
-        if transcript:
-            try:
-                payload["transcript_size"] = Path(transcript).stat().st_size
-            except OSError:
-                pass
-        encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-        wire_id = hashlib.sha256(encoded).hexdigest()[:20]
+        return ""
+    session_id = str(hook_input.get("session_id", ""))
     tail = f":{suffix}" if suffix else ""
     return f"{phase}:{session_id}:{wire_id}{tail}"
 
 
 def _buffer_event(weave_dir: Path, session_id: str, event: dict) -> bool:
-    """Append one event unless its delivery receipt already exists."""
+    """Append one event unless its delivery receipt already exists.
+
+    Returns True when the line was written. An event with no ``delivery_id``
+    (see :func:`_delivery_id`) is always written.
+    """
     buf_dir = weave_dir / "buffer"
     buf_dir.mkdir(parents=True, exist_ok=True)
     receipt: Path | None = None
     delivery_id = event.get("delivery_id")
     if delivery_id:
-        receipts = buf_dir / ".receipts" / session_id
+        receipts = session_state_dir(weave_dir, session_id)
         receipts.mkdir(parents=True, exist_ok=True)
         receipt = receipts / hashlib.sha256(
             str(delivery_id).encode("utf-8")
@@ -900,7 +952,11 @@ def _build_auto_summary(
 # without crossing the surfaces/ → surfaces/ boundary. Re-exported here so
 # legacy imports (`from thinkweave.surfaces.hooks.handler import ...`)
 # keep working.
-from thinkweave.core.buffer import archive_buffer, cleanup_buffer  # noqa: E402, F401
+from thinkweave.core.buffer import (  # noqa: E402, F401
+    archive_buffer,
+    cleanup_buffer,
+    session_state_dir,
+)
 
 
 def _is_significant_command(command: str) -> bool:
@@ -1179,7 +1235,7 @@ def _handle_stop(hook_input: dict) -> None:
                 idx.close()
         except Exception as e:
             _log_error("stop/index", e)
-            diagnostic = _failure_message("stop/index", e)
+            diagnostic = _report_failure("stop/index", hook_input, e)
 
         # Stop-hook opportunistic embed deleted 2026-06-06 (plan A1,
         # go-back-to-the-scalable-firefly.md). Embeddings are now driven
@@ -1188,7 +1244,7 @@ def _handle_stop(hook_input: dict) -> None:
         _output(system_message=diagnostic)
     except Exception as e:
         _log_error("stop", e)
-        _output(system_message=_failure_message("stop", e))
+        _output(system_message=_report_failure("stop", hook_input, e))
 
 
 def _handle_session_start(hook_input: dict) -> None:
@@ -1231,7 +1287,6 @@ def _handle_session_start(hook_input: dict) -> None:
         # durable CC memory flagged stale/diverged. Empty string = inject
         # nothing (the common case). Best-effort; never blocks the payload.
         capture_error: Exception | None = None
-        recorded = True
         try:
             from thinkweave.synthesis.memory_seam import session_guard_section
 
@@ -1255,7 +1310,6 @@ def _handle_session_start(hook_input: dict) -> None:
                     # Rough token estimate — matches the SessionStart budget
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
-                    "delivery_id": _delivery_id("session_start", hook_input),
                 }
                 # Which harness served it. The indexer projects this to its
                 # own `context_served.source`; why that split exists is on the
@@ -1263,22 +1317,27 @@ def _handle_session_start(hook_input: dict) -> None:
                 surface = _hook_harness()
                 if surface:
                     event["surface"] = surface
-                recorded = _buffer_event(cfg.weave_dir, session_id, event)
+                # Deliberately un-deduped (#161 review). SessionStart carries
+                # no wire id, and every discriminator available here is wrong:
+                # keyed on session_id alone the *second* SessionStart for a
+                # session — a resume, a compact, a /clear — injects nothing,
+                # silently costing the session its context for good (receipts
+                # are never re-opened). Adding `source` only narrows that to
+                # repeated resumes and compacts, which are routine. Duplicate
+                # startup rows are the cheaper failure, and the registration
+                # single-owner sweep in surfaces/hooks/install.py is what
+                # actually stops them being produced.
+                _buffer_event(cfg.weave_dir, session_id, event)
         except Exception as e:
             _log_error("session_start_capture", e)
             capture_error = e
 
-        # A second registration receives the same SessionStart envelope. Its
-        # empty reply prevents duplicate context injection as well as duplicate
-        # persistence; the first owner already supplied both.
-        if not recorded:
-            _output()
-            return
-
         if not payload.strip() and not guard:
             _output(
                 system_message=(
-                    _failure_message("session_start_capture", capture_error)
+                    _report_failure(
+                        "session_start_capture", hook_input, capture_error
+                    )
                     if capture_error
                     else ""
                 )
@@ -1290,7 +1349,9 @@ def _handle_session_start(hook_input: dict) -> None:
         full = f"{guard}\n{payload}" if guard else payload
         _output(
             system_message=(
-                _failure_message("session_start_capture", capture_error)
+                _report_failure(
+                    "session_start_capture", hook_input, capture_error
+                )
                 if capture_error
                 else ""
             ),
@@ -1299,7 +1360,7 @@ def _handle_session_start(hook_input: dict) -> None:
         )
     except Exception as e:
         _log_error("session_start", e)
-        _output(system_message=_failure_message("session_start", e))
+        _output(system_message=_report_failure("session_start", hook_input, e))
 
 
 def _read_stdin() -> dict:

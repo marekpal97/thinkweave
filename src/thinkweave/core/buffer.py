@@ -25,14 +25,40 @@ retrieval-free sessions.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 # Event types that get routed to retrieval_log.jsonl rather than events.jsonl.
 _RETRIEVAL_LOG_TYPES = frozenset({"retrieval", "startup"})
 
 
+def session_state_dir(weave_dir: Path, session_id: str) -> Path:
+    """Per-session scratch beside the buffer, for markers with no place in it.
+
+    Holds the hook handler's delivery receipts (one empty file per persisted
+    ``delivery_id``) and its once-per-session failure markers. Lives here, not
+    in ``surfaces/hooks``, because its lifetime is the buffer's: whoever
+    retires the buffer retires the scratch with it.
+    """
+    return weave_dir / "buffer" / ".state" / session_id
+
+
+def clear_session_state(weave_dir: Path, session_id: str) -> None:
+    """Drop a session's scratch dir. Best-effort — never blocks the caller.
+
+    Receipts are only meaningful while the buffer they guard is live, so
+    leaving them behind would grow ``.weave/buffer`` without bound, one
+    directory per session, forever.
+    """
+    shutil.rmtree(session_state_dir(weave_dir, session_id), ignore_errors=True)
+
+
 def _append_unique_lines(path: Path, lines: list[str]) -> None:
-    """Append archive rows idempotently after a partial prior attempt."""
+    """Append archive rows idempotently after a partial prior attempt.
+
+    Reads the destination in full to do it. Session archives are bounded by
+    one session's events, so the set costs about what the append does.
+    """
     if not lines:
         return
     seen = (
@@ -47,9 +73,10 @@ def _append_unique_lines(path: Path, lines: list[str]) -> None:
 
 
 def cleanup_buffer(weave_dir: Path, session_id: str) -> None:
-    """Delete the buffer file after successful extraction."""
+    """Delete the buffer file, and its scratch dir, after extraction."""
     buf_file = weave_dir / "buffer" / f"{session_id}.jsonl"
     buf_file.unlink(missing_ok=True)
+    clear_session_state(weave_dir, session_id)
 
 
 def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
@@ -64,6 +91,7 @@ def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
     """
     buf_file = weave_dir / "buffer" / f"{session_id}.jsonl"
     if not buf_file.exists():
+        clear_session_state(weave_dir, session_id)
         return
 
     events_dest = session_dir / "events.jsonl"
@@ -97,3 +125,4 @@ def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
         _append_unique_lines(retrieval_dest, retrieval_lines)
 
     buf_file.unlink()
+    clear_session_state(weave_dir, session_id)

@@ -1938,3 +1938,226 @@ class TestPromptTimeEnrichment:
         )
         assert json.loads(capsys.readouterr().out) == {}
         assert (cfg.weave_dir / "buffer" / "ses-r2c.jsonl").exists()
+
+
+# Realistic Claude Code hook envelopes. The distinguishing feature versus the
+# Codex fixtures in tests/test_codex_hooks.py is what is MISSING: Claude Code
+# stamps no per-delivery id on SessionStart or UserPromptSubmit, which is
+# exactly the case the #161 dedup has to leave alone.
+CC_SESSION_ID = "9d1c8a02-4b77-4a1e-8f0d-2c6a5b3e9f11"
+CC_TRANSCRIPT = f"/home/u/.claude/projects/-home-u-proj/{CC_SESSION_ID}.jsonl"
+
+
+def _cc_session_start(source: str) -> dict:
+    return {
+        "session_id": CC_SESSION_ID,
+        "transcript_path": CC_TRANSCRIPT,
+        "cwd": "/home/u/proj",
+        "hook_event_name": "SessionStart",
+        "source": source,
+    }
+
+
+def _cc_prompt(prompt: str) -> dict:
+    return {
+        "session_id": CC_SESSION_ID,
+        "transcript_path": CC_TRANSCRIPT,
+        "cwd": "/home/u/proj",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": prompt,
+    }
+
+
+def _cc_write(tool_use_id: str) -> dict:
+    return {
+        "session_id": CC_SESSION_ID,
+        "transcript_path": CC_TRANSCRIPT,
+        "cwd": "/home/u/proj",
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Write",
+        "tool_use_id": tool_use_id,
+        "tool_input": {
+            "file_path": "/home/u/proj/src/app.py",
+            "content": "def go():\n    return 1\n",
+        },
+        "tool_response": {"filePath": "/home/u/proj/src/app.py", "success": True},
+    }
+
+
+class TestDuplicateDeliveryPolicy:
+    """#161: collapse replayed deliveries, never collapse genuine repeats.
+
+    The receipt is keyed on the harness's own per-delivery id
+    (``tool_use_id`` / ``turn_id``). Events that carry none are written
+    unconditionally — the earlier content-hash surrogate got this wrong in
+    both directions, and the cure for id-less duplicates is single-owner
+    registration (``TestHookInstaller`` below), not a guess here.
+    """
+
+    def _cfg(self, tmp_path: Path, monkeypatch) -> Config:
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            "thinkweave.surfaces.hooks.handler._ensure_session",
+            lambda *a, **k: None,
+        )
+        return cfg
+
+    def _buffered(self, cfg: Config) -> list[dict]:
+        return _read_buffer(cfg.weave_dir, CC_SESSION_ID)
+
+    def test_replayed_post_tool_use_with_same_tool_use_id_persists_once(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+        payload = _cc_write("toolu_01H9kQ7mVn3xJc2pR8sT4bYd")
+
+        handler_mod._handle_post("Write", payload)
+        handler_mod._handle_post("Write", payload)
+        capsys.readouterr()
+
+        edits = [e for e in self._buffered(cfg) if e.get("file")]
+        assert len(edits) == 1, "a replayed tool delivery was persisted twice"
+
+    def test_distinct_tool_use_ids_persist_separately(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+        handler_mod._handle_post("Write", _cc_write("toolu_01AAAAAAAAAAAAAAAAAAAAAA"))
+        handler_mod._handle_post("Write", _cc_write("toolu_01BBBBBBBBBBBBBBBBBBBBBB"))
+        capsys.readouterr()
+
+        assert len([e for e in self._buffered(cfg) if e.get("file")]) == 2
+
+    def test_repeated_identical_prompt_is_captured_twice(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Sending `continue` twice is two prompts, not one delivered twice.
+
+        Claude Code's UserPromptSubmit has no wire id, so there is nothing to
+        tell those apart — and the vault must keep the user's real behaviour.
+        """
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+        handler_mod._handle_user_prompt_submit(_cc_prompt("continue"))
+        handler_mod._handle_user_prompt_submit(_cc_prompt("continue"))
+        capsys.readouterr()
+
+        prompts = [e for e in self._buffered(cfg) if e.get("type") == "prompt"]
+        assert [e["text"] for e in prompts] == ["continue", "continue"]
+
+    def test_resume_and_compact_still_inject_context(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """The blocker: SessionStart dedup made resume a context-less session.
+
+        Receipts are never reopened, so a session id whose ``startup`` was
+        already recorded would have gone permanently un-oriented on every
+        later re-entry.
+        """
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = self._cfg(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda *a, **k: "## Recent\n- [[sessions/s|ses-1]]\n",
+        )
+
+        served = []
+        for source in ("startup", "resume", "compact"):
+            handler_mod._handle_session_start(_cc_session_start(source))
+            emitted = json.loads(capsys.readouterr().out or "{}")
+            served.append(
+                emitted.get("hookSpecificOutput", {}).get("additionalContext", "")
+            )
+
+        assert all("ses-1" in ctx for ctx in served), (
+            "a re-entered session was left without project context"
+        )
+        starts = [e for e in self._buffered(cfg) if e.get("type") == "startup"]
+        assert len(starts) == 3
+
+    def test_receipts_are_cleared_with_the_buffer(self, tmp_path: Path):
+        from thinkweave.core.buffer import session_state_dir
+
+        weave_dir = tmp_path / ".weave"
+        _buffer_event(
+            weave_dir,
+            "ses-arch",
+            {"type": "prompt", "text": "hi", "delivery_id": "user:ses-arch:t1"},
+        )
+        assert any(session_state_dir(weave_dir, "ses-arch").iterdir())
+
+        archive_buffer(weave_dir, "ses-arch", tmp_path / "session")
+        assert not session_state_dir(weave_dir, "ses-arch").exists()
+
+    def test_receipts_are_cleared_by_cleanup(self, tmp_path: Path):
+        from thinkweave.core.buffer import session_state_dir
+
+        weave_dir = tmp_path / ".weave"
+        _buffer_event(
+            weave_dir,
+            "ses-clean",
+            {"type": "prompt", "text": "hi", "delivery_id": "user:ses-clean:t1"},
+        )
+        cleanup_buffer(weave_dir, "ses-clean")
+        assert not session_state_dir(weave_dir, "ses-clean").exists()
+
+
+class TestFailureDiagnosticRateLimit:
+    """A persistent vault fault must not narrate itself on every delivery."""
+
+    def test_repeat_failures_message_once_per_session(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            handler_mod,
+            "_buffer_event",
+            lambda *a, **k: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+
+        messages = []
+        for _ in range(3):
+            handler_mod._handle_user_prompt_submit(_cc_prompt("do the thing"))
+            emitted = json.loads(capsys.readouterr().out or "{}")
+            messages.append(emitted.get("systemMessage", ""))
+
+        assert "not persisted" in messages[0]
+        assert messages[1:] == ["", ""], (
+            "every failed delivery re-announced the same vault problem"
+        )
+        # Still fully recorded where diagnosis actually happens.
+        log = (cfg.weave_dir / "hooks.log").read_text(encoding="utf-8")
+        assert log.count("PermissionError") >= 3
+
+    def test_a_different_hook_type_still_reports(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            handler_mod,
+            "_buffer_event",
+            lambda *a, **k: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        monkeypatch.setattr(
+            handler_mod, "_ensure_session", lambda *a, **k: None
+        )
+
+        handler_mod._handle_user_prompt_submit(_cc_prompt("do the thing"))
+        capsys.readouterr()
+        handler_mod._handle_post("Write", _cc_write("toolu_01CCCCCCCCCCCCCCCCCCCCCC"))
+
+        emitted = json.loads(capsys.readouterr().out or "{}")
+        assert "not persisted" in emitted.get("systemMessage", "")

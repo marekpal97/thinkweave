@@ -556,7 +556,15 @@ class TestCodexSessionEndToEnd:
     def test_duplicate_delivery_persists_each_lifecycle_fact_once(
         self, hook_vault, serves
     ):
-        """Replayed hook envelopes must not duplicate persisted evidence."""
+        """Replayed hook envelopes must not duplicate persisted evidence.
+
+        Scoped to the events that carry a wire id — Codex stamps ``turn_id``
+        on UserPromptSubmit and ``tool_use_id`` on the tool call, so a second
+        registration receiving the same envelope is unambiguously a replay.
+        SessionStart carries neither and is deliberately left un-deduped (a
+        resume must re-inject context); its duplicates are prevented by
+        single-owner registration, not here.
+        """
         cfg, vm = hook_vault.config, hook_vault.vault
         serves("## Recent\n- [[n-1|n-1]]\n")
 
@@ -566,7 +574,6 @@ class TestCodexSessionEndToEnd:
             handler_mod._handle_post("apply_patch", CODEX_APPLY_PATCH)
 
         buffered = handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID)
-        assert len([e for e in buffered if e.get("type") == "startup"]) == 1
         assert len([e for e in buffered if e.get("type") == "prompt"]) == 1
         assert [e.get("file") for e in buffered if e.get("file")] == [
             "src/thinkweave/core/harness.py",
@@ -598,7 +605,7 @@ class TestCodexSessionEndToEnd:
         ]
         assert len([e for e in events if e.get("type") == "prompt"]) == 1
         assert len([e for e in events if e.get("file")]) == 2
-        assert len([e for e in retrievals if e.get("type") == "startup"]) == 1
+        assert [e.get("type") for e in retrievals] == ["startup", "startup"]
 
     def test_session_start_emits_codex_shaped_output(
         self, hook_vault, serves, capsys

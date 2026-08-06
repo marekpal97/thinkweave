@@ -14,12 +14,18 @@ The deep-dive reference for every first-class lifecycle in Thinkweave: session, 
 
 ## Session
 
-Lifecycle delivery is replay-safe. Stable receipts collapse duplicate
-SessionStart, UserPromptSubmit, and PostToolUse envelopes, while the processed
-session flag makes Stop idempotent. If Stop cannot archive its buffer, it keeps
-the buffer, restores the unprocessed note, and returns a visible diagnostic;
-`weave_extract` likewise reports a preserved-buffer warning instead of a
-successful empty result.
+Lifecycle delivery is replay-safe. Deliveries that carry a harness-minted id
+(`tool_use_id` / `turn_id`) are collapsed by a receipt file, so a replayed
+envelope persists once; deliveries without one — Claude Code's SessionStart and
+UserPromptSubmit — are written every time, because a repeat there is
+indistinguishable from a real one (a resume must re-inject context, and the same
+prompt sent twice is two prompts). Receipts live beside the buffer and are
+cleared with it. The processed session flag makes Stop idempotent. If Stop
+cannot archive its buffer, it keeps the buffer, restores the unprocessed note,
+and returns a visible diagnostic; `weave_extract` likewise reports a
+preserved-buffer warning instead of a successful empty result. A persistent
+failure announces itself once per session per hook type — every occurrence still
+lands in `<vault>/.weave/hooks.log`.
 
 Hooks accumulate events + insights + commits + tests into a session note. The Stop hook auto-extracts (thin: archive events as `events.jsonl`, mark `processed: true` + `auto_extracted: true`). `/wrap` runs as a single inline pass: compose insights/decisions, call `weave_extract` once, then `weave wrap-finalize` (the deterministic tail — prune → index → judge → landing → drift, zero model turns). Two minor variants — *live* (in-session, conversation is the source) and *catch-up* (headless, working off `events.jsonl` + git). The *catch-up* variant is invoked nightly by `dream-wrap-worker` (phase 2 of `/dream`) for any session that lacks `processed: true` and has a non-empty `events.jsonl` — there is no separate `/wrap` catch-up cron entry. Self-decides what to record; never prompts. For non-code conversations, `weave_extract` auto-creates a session note.
 
