@@ -146,12 +146,13 @@ passes the user prompt through **verbatim**. Neither `$sentinel` nor
 So a `$wrap` token is a hint the model must act on by reading the file itself —
 not harness-side expansion the way Claude Code's headless slash resolution
 injects a skill body. `headless_slash=False` on the Codex profile is therefore
-correct, and for a sharper reason than "no slash commands": thinkweave also
-ships no Codex skills yet (W3 owns the Agent-Skills export), so today the token
-resolves to nothing at all.
+correct. The initial Codex-native bundle now lives under `skills/` and uses
+explicit `thinkweave-*` names. The installer still does not export that bundle,
+and the remaining Claude command/worker workflows have not been ported.
 
 *Incidental:* Codex also discovers skills from `~/.agents/skills/`, not only
-`$CODEX_HOME/skills/`. Relevant to W3's export target.
+`$CODEX_HOME/skills/`. The full export should target that harness-neutral user
+location.
 
 **Q3 — PostToolUse matcher-semantics parity? Yes, with one asterisk.**
 `[manual]` Same regex-over-tool-name semantics and the same `mcp__server__tool`

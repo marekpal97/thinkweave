@@ -56,3 +56,9 @@ When you need depth, go here. CLAUDE.md tells you *how to operate*; these tell y
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Every SQL table the derived index produces — name, purpose, key columns, `CREATE` site — and the rebuild/migration story. Markdown stays truth; SQLite is rebuildable. |
 
 For a dev-link upgrade, close every Claude Code session, run `git pull` and `uv sync --extra mcp`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.
+
+### The `/issue-loop` dev loop lives in another repo
+
+The loop's deterministic rail is the **`devloop` package**, carved out to [funloops](https://github.com/marekpal97/funloops) in 2026-08 (issue #151). Thinkweave *consumes* it: a git-pinned dev-dependency (`[tool.uv.sources]` in `pyproject.toml`, resolved in `uv.lock`), driven through the unchanged `python scripts/issue_loop.py <subcommand>` shim.
+
+Loop docs live in **`../funloops/packages/devloop/docs/agents/`** (the `/issue-loop` symlink under `.claude/commands/` points there too — machine-local, never committed); what is still in `docs/agents/` is thinkweave's own: `loop.toml` (found by the rail's cwd-upward walk), `issue-loop-memory.md` (the host's memory-feed overlay), `vault-issue-contract.md`, and the native command docs. The cross-repo seam — the pin, the shim's byte-compatibility, and the indexer schema pin with its **pin-update dance** — is enforced and documented in `tests/test_devloop_boundaries.py`; read that before changing the indexer schema.
