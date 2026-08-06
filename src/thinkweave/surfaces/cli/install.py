@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -54,6 +55,16 @@ MCP_MODULE = "thinkweave.surfaces.mcp.server"
 # comes from the active profile. `_profile()` is the single read point, so a
 # `--harness` flag (#106) has exactly one place to interpose; the accessors
 # below just spell the individual fields at their call sites.
+
+
+def _is_windows() -> bool:
+    """The Windows gate, behind a function so tests can flip it.
+
+    Patching ``os.name`` instead would flip it for the whole process —
+    ``pathlib`` then hands out ``WindowsPath`` and every later ``Path(...)``
+    on a POSIX host raises.
+    """
+    return os.name == "nt"
 
 
 def _mcp_config() -> Path:
@@ -319,6 +330,14 @@ def _venv_purelib() -> Path:
     return Path(sysconfig.get_path("purelib"))
 
 
+def _base_python() -> Path:
+    """The interpreter the launcher runs. ``sys._base_executable`` names the
+    real interpreter behind a venv (what we want, since the launcher supplies
+    its own ``PYTHONPATH`` rather than going through the venv), but it is
+    private and absent on some builds — fall back to the running one."""
+    return Path(getattr(sys, "_base_executable", None) or sys.executable)
+
+
 def _render_codex_windows_cli_launcher(
     *, project_root: Path, base_python: Path, purelib: Path
 ) -> str:
@@ -328,28 +347,81 @@ def _render_codex_windows_cli_launcher(
         "@echo off\n"
         "setlocal EnableExtensions\n"
         'set "PYTHONDONTWRITEBYTECODE=1"\n'
-        f'set "PYTHONPATH={pythonpath}"\n'
+        # An `if defined` guard rather than a bare `;%PYTHONPATH%` — an unset
+        # variable expands to nothing in a batch file, and the trailing `;`
+        # that leaves behind is an empty entry, which Python reads as the cwd.
+        f'if defined PYTHONPATH (set "PYTHONPATH={pythonpath};%PYTHONPATH%")'
+        f' else (set "PYTHONPATH={pythonpath}")\n'
         f'"{base_python}" -S -m thinkweave %*\n'
         "exit /b %ERRORLEVEL%\n"
     )
 
 
-def _prepend_windows_user_path(directory: Path) -> None:
-    """Prepend ``directory`` to the current and future Windows user PATH."""
+def _normalize_path_entry(entry: str) -> str:
+    """Comparable form of one Windows PATH entry: ``%VARS%`` expanded, case
+    folded, separators unified, trailing separator dropped — so ``C:\\x\\bin\\``
+    and ``c:/x/bin`` are recognised as the same directory. Windows rules come
+    from ``ntpath`` explicitly, which keeps the comparison testable off
+    Windows."""
+    return ntpath.normcase(ntpath.expandvars(entry)).rstrip("\\")
+
+
+def _prepend_path_value(current: str, wanted: str) -> str:
+    """``current`` with ``wanted`` in front, unchanged if it is already there."""
+    parts = [part for part in current.split(";") if part]
+    target = _normalize_path_entry(wanted)
+    if any(_normalize_path_entry(part) == target for part in parts):
+        return current
+    return ";".join([wanted, *parts])
+
+
+def _remove_path_value(current: str, unwanted: str) -> str:
+    """``current`` with every entry naming ``unwanted`` dropped."""
+    target = _normalize_path_entry(unwanted)
+    return ";".join(
+        part
+        for part in current.split(";")
+        if part and _normalize_path_entry(part) != target
+    )
+
+
+def _broadcast_environment_change() -> None:
+    """Tell running processes to re-read the environment.
+
+    A registry write alone reaches only processes started after the next
+    sign-in: Explorer caches the environment it hands to everything it
+    launches, a restarted Codex included.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        ctypes.windll.user32.SendMessageTimeoutW(
+            0xFFFF,  # HWND_BROADCAST
+            0x1A,  # WM_SETTINGCHANGE
+            0,
+            ctypes.c_wchar_p("Environment"),
+            0x2,  # SMTO_ABORTIFHUNG
+            5000,
+            ctypes.byref(wintypes.DWORD()),
+        )
+    except (AttributeError, OSError) as exc:
+        print(
+            f"note: could not broadcast the PATH change ({exc}). Already-running\n"
+            f"programs keep the old PATH — sign out of Windows and back in once.",
+            file=sys.stderr,
+        )
+
+
+def _edit_windows_user_path(directory: Path, *, remove: bool) -> bool:
+    """Add or drop ``directory`` in the current process's PATH and in the
+    persisted user PATH (``HKCU\\Environment``). Returns whether the persisted
+    value changed."""
     import winreg
 
     wanted = str(directory)
-
-    def prepend(value: str) -> str:
-        parts = [part for part in value.split(";") if part]
-        if any(
-            os.path.normcase(os.path.expandvars(part)) == os.path.normcase(wanted)
-            for part in parts
-        ):
-            return value
-        return ";".join([wanted, *parts])
-
-    os.environ["PATH"] = prepend(os.environ.get("PATH", ""))
+    edit = _remove_path_value if remove else _prepend_path_value
+    os.environ["PATH"] = edit(os.environ.get("PATH", ""), wanted)
     with winreg.CreateKeyEx(
         winreg.HKEY_CURRENT_USER,
         "Environment",
@@ -360,21 +432,39 @@ def _prepend_windows_user_path(directory: Path) -> None:
             current, value_type = winreg.QueryValueEx(key, "Path")
         except FileNotFoundError:
             current, value_type = "", winreg.REG_EXPAND_SZ
-        updated = prepend(current)
-        if updated != current:
-            winreg.SetValueEx(key, "Path", 0, value_type, updated)
+        updated = edit(current, wanted)
+        if updated == current:
+            return False
+        winreg.SetValueEx(key, "Path", 0, value_type, updated)
+    _broadcast_environment_change()
+    return True
+
+
+def _prepend_windows_user_path(directory: Path) -> None:
+    """Prepend ``directory`` to the current and future Windows user PATH."""
+    _edit_windows_user_path(directory, remove=False)
+
+
+def _remove_windows_user_path(directory: Path) -> bool:
+    """Drop ``directory`` from the current and future Windows user PATH."""
+    return _edit_windows_user_path(directory, remove=True)
+
+
+def _codex_windows_launcher() -> Path:
+    """Where the sandbox-safe bare ``weave`` command is installed."""
+    return _profile().mcp_config.parent / "bin" / "weave.cmd"
 
 
 def _install_codex_windows_cli(project_root: Path) -> Path | None:
     """Install Codex's sandbox-safe bare ``weave`` command on Windows."""
-    if os.name != "nt" or _profile().id != "codex":
+    if not _is_windows() or _profile().id != "codex":
         return None
-    target = _profile().mcp_config.parent / "bin" / "weave.cmd"
+    target = _codex_windows_launcher()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         _render_codex_windows_cli_launcher(
             project_root=project_root,
-            base_python=Path(sys._base_executable),
+            base_python=_base_python(),
             purelib=_venv_purelib(),
         ),
         encoding="utf-8",
@@ -644,6 +734,7 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         and CLAUDE_MD_BLOCK_START in _instructions().read_text(encoding="utf-8")
     )
     mcp_present = _raw_mcp_entry_present()
+    launcher = _codex_windows_launcher() if _profile().id == "codex" else None
 
     to_remove: list[str] = []
     if mcp_present:
@@ -652,6 +743,8 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         to_remove.append(f"thinkweave block in {_instructions()}")
     if _marker().exists():
         to_remove.append(f"pause marker {_marker()}")
+    if launcher is not None and launcher.exists():
+        to_remove.append(f"Codex CLI launcher {launcher} (and its user PATH entry)")
 
     if not to_remove:
         print("Nothing to remove — `weave install` has not touched this machine.")
@@ -676,6 +769,11 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
     if _marker().exists():
         _marker().unlink()
         print(f"Removed pause marker {_marker()}.")
+    if launcher is not None and launcher.exists():
+        launcher.unlink()
+        print(f"Removed Codex CLI launcher {launcher}.")
+        if _is_windows() and _remove_windows_user_path(launcher.parent):
+            print(f"Removed {launcher.parent} from the user PATH.")
     print()
     print(f"Done. Restart {_profile().cli_bin} so the MCP server is no longer launched.")
 
