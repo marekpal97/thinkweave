@@ -66,8 +66,9 @@ references:
 python -m thinkweave.core.skill_projection
 ```
 
-`tests/test_codex_skills.py` rejects drift and requires every command and every
-worker contract to remain projected. Interactive Codex worker fan-out uses
+Each adapter is a `SKILL.md` plus an `agents/openai.yaml` sidecar declaring the
+`thinkweave` MCP dependency. `tests/test_codex_skills.py` rejects drift in both
+and requires every command and every worker contract to remain projected. Interactive Codex worker fan-out uses
 native `spawn_agent` / `followup_task` / `wait_agent`. `/dream` and `/drain`
 mark only unattended/headless orchestration as degraded pending #110; the
 skills remain visible and their interactive worker contracts are complete.

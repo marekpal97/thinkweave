@@ -1,0 +1,9 @@
+interface:
+  display_name: "ThinkWeave Seed Enrich"
+  short_description: "Inline session synthesis — walk imported-but-unsynthesised coding-agent sessions"
+  default_prompt: "Use $thinkweave-seed-enrich to run this ThinkWeave workflow."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "thinkweave"
+      description: "ThinkWeave durable-memory tools"

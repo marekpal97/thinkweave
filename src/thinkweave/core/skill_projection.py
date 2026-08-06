@@ -109,15 +109,51 @@ def render_codex_skill(contract: CommandContract) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_codex_metadata(contract: CommandContract) -> str:
+    """Render the Codex `agents/openai.yaml` sidecar for one projection.
+
+    Every projected skill drives the ThinkWeave MCP server, so the dependency
+    block is identical across them; only the interface strings vary.
+    """
+    display_name = "ThinkWeave " + contract.name.replace("-", " ").title()
+    lines = [
+        "interface:",
+        f"  display_name: {_quoted(display_name)}",
+        f"  short_description: {_quoted(contract.description[:80].rstrip())}",
+        "  default_prompt: "
+        + _quoted(
+            f"Use ${codex_skill_name(contract.name)} to run this ThinkWeave workflow."
+        ),
+        "dependencies:",
+        "  tools:",
+        '    - type: "mcp"',
+        '      value: "thinkweave"',
+        '      description: "ThinkWeave durable-memory tools"',
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def write_codex_projections(repo_root: Path) -> None:
     commands_root = repo_root / "commands"
     agents_root = repo_root / "agents"
     skills_root = repo_root / "skills"
+    seen: dict[str, Path] = {}
     for contract in iter_command_contracts(commands_root, agents_root):
-        target = skills_root / codex_skill_name(contract.name)
+        skill_name = codex_skill_name(contract.name)
+        if skill_name in seen:
+            raise ValueError(
+                f"two commands project onto {skill_name}: "
+                f"{seen[skill_name]} and {contract.source_relpath}"
+            )
+        seen[skill_name] = contract.source_relpath
+        target = skills_root / skill_name
         target.mkdir(parents=True, exist_ok=True)
         (target / "SKILL.md").write_text(
             render_codex_skill(contract), encoding="utf-8"
+        )
+        (target / "agents").mkdir(parents=True, exist_ok=True)
+        (target / "agents" / "openai.yaml").write_text(
+            render_codex_metadata(contract), encoding="utf-8"
         )
 
 

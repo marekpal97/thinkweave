@@ -11,7 +11,9 @@ from thinkweave.core import harness
 from thinkweave.core.skill_projection import (
     codex_skill_name,
     iter_command_contracts,
+    render_codex_metadata,
     render_codex_skill,
+    write_codex_projections,
 )
 from thinkweave.surfaces.mcp.tools import DISPATCH
 
@@ -44,6 +46,11 @@ def test_every_supported_command_has_a_drift_free_codex_projection() -> None:
         assert metadata["description"].strip()
         assert "../../docs/CODEX-SKILL-PROJECTION.md" in skill_file.read_text(
             encoding="utf-8"
+        )
+
+        metadata_file = skill_dir / "agents" / "openai.yaml"
+        assert metadata_file.read_text(encoding="utf-8") == render_codex_metadata(
+            contract
         )
 
 
@@ -118,8 +125,16 @@ def test_codex_skills_reference_registered_mcp_tools() -> None:
 
 
 def test_codex_skill_metadata_declares_thinkweave_dependency() -> None:
-    for metadata_file in SKILLS_ROOT.glob("*/agents/openai.yaml"):
+    skill_dirs = sorted(path.parent for path in SKILLS_ROOT.glob("*/SKILL.md"))
+    assert skill_dirs
+    for skill_dir in skill_dirs:
+        # Globbing only the files that exist can't catch an absent sidecar —
+        # every skill directory must carry one.
+        metadata_file = skill_dir / "agents" / "openai.yaml"
+        assert metadata_file.is_file(), f"missing Codex metadata: {metadata_file}"
         metadata = yaml.safe_load(metadata_file.read_text(encoding="utf-8"))
+        assert metadata["interface"]["display_name"].strip()
+        assert metadata["interface"]["short_description"].strip()
         assert metadata["interface"]["default_prompt"].startswith("Use $thinkweave-")
         assert metadata["dependencies"]["tools"] == [
             {
@@ -147,6 +162,21 @@ def test_unknown_worker_reference_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="ghost-worker"):
         iter_command_contracts(tmp_path / "commands", tmp_path / "agents")
+
+
+def test_two_commands_cannot_claim_one_skill_name(tmp_path: Path) -> None:
+    # `name:` need not match the filename, so two files can collide; the second
+    # write would silently overwrite the first projection.
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "commands" / "nested").mkdir(parents=True)
+    _write_command(tmp_path, "stub", "")
+    (tmp_path / "commands" / "nested" / "other.md").write_text(
+        "---\nname: stub\ndescription: A colliding stub.\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="thinkweave-stub"):
+        write_codex_projections(tmp_path)
 
 
 def test_codex_only_recall_skill_remains_valid() -> None:
