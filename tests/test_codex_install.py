@@ -93,8 +93,9 @@ args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python
 env = {{ "THINKWEAVE_VAULT" = {_VAULT_TOML} }}
 """
 
+CODEX_BIN = shutil.which("codex")
 needs_codex = pytest.mark.skipif(
-    shutil.which("codex") is None, reason="Codex CLI not installed on this machine"
+    CODEX_BIN is None, reason="Codex CLI not installed on this machine"
 )
 
 
@@ -110,6 +111,9 @@ def installable(monkeypatch: pytest.MonkeyPatch, stub_install_validators) -> Non
     )
     monkeypatch.setattr(install_mod, "_detect_uv_path", lambda: UV_PATH)
     monkeypatch.setattr(install_mod, "_detect_project_root", lambda: PROJECT_ROOT)
+    # User-PATH persistence is integration-tested by #164's bootstrap suite;
+    # config-writer tests must never touch the developer's registry.
+    monkeypatch.setattr(install_mod, "_prepend_windows_user_path", lambda _path: None)
 
 
 def _install(**kw) -> None:
@@ -565,7 +569,7 @@ class TestConfigTomlWriter:
         to the real Codex CLI and ask it to resolve the server."""
         _install(vault=VAULT_PATH)
         proc = subprocess.run(
-            ["codex", "mcp", "get", "thinkweave"],
+            [CODEX_BIN, "mcp", "get", "thinkweave"],
             env={**os.environ, "CODEX_HOME": str(codex_home)},
             capture_output=True,
             text=True,

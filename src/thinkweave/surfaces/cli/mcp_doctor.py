@@ -18,12 +18,16 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from thinkweave.core import mcp_config
 from thinkweave.core.harness import active as _profile
+
+# Borrowed from the installer so the doctor's Windows gate and the remedy it
+# prints are the same ones the installer acts on.
+from thinkweave.surfaces.cli.install import _detect_project_root, _is_windows
 
 SERVER_NAME = "thinkweave"
 
@@ -598,6 +602,98 @@ def check_weave_mcp_on_path() -> CheckResult:
     )
 
 
+#: How long a `weave --help` probe may take. Generous because the plugin
+#: route's shim is a bare `uv run`, which cold-syncs dependencies on first call.
+_WEAVE_CLI_PROBE_TIMEOUT = 60
+
+
+def _weave_cli_fix() -> str:
+    """The one remedy that does not itself need ``weave`` on PATH."""
+    return (
+        f"run `uv run --project {_detect_project_root()} weave install "
+        f"--yes --harness codex`"
+    )
+
+
+def check_weave_cli() -> CheckResult:
+    """Verify that bare ``weave`` resolves and imports in this sandbox.
+
+    Hard-failing only on Windows, where the installer has a real remedy for a
+    missing ``weave`` (it writes the launcher and edits the user PATH in the
+    registry). On POSIX it has neither — ``_advise_scripts_path`` deliberately
+    declines to persist PATH there — so a failure is reported informationally
+    rather than reddening the whole report over something the fix can't fix.
+    """
+    result = _probe_weave_cli()
+    if result.passed or _is_windows():
+        return result
+    return replace(
+        result,
+        passed=True,
+        detail=f"{result.detail} (informational on this OS)",
+        fix="",
+    )
+
+
+def _probe_weave_cli() -> CheckResult:
+    """Resolve and run bare ``weave``, ignoring how bad a failure is."""
+    found = shutil.which("weave")
+    if not found:
+        return CheckResult(
+            name="weave CLI",
+            passed=False,
+            detail="`weave` is not on PATH",
+            fix=_weave_cli_fix(),
+        )
+    try:
+        proc = subprocess.run(
+            [found, "--help"],
+            timeout=_WEAVE_CLI_PROBE_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        # Slow is not broken: the shim may be resolving dependencies.
+        return CheckResult(
+            name="weave CLI",
+            passed=True,
+            detail=(
+                f"resolves at {found} but `--help` did not finish in "
+                f"{_WEAVE_CLI_PROBE_TIMEOUT}s (may still be syncing dependencies)"
+            ),
+        )
+    except OSError as exc:
+        return CheckResult(
+            name="weave CLI",
+            passed=False,
+            detail=f"`weave` resolves to {found} but cannot execute: {exc}",
+            fix=_weave_cli_fix(),
+        )
+    if proc.returncode == 0:
+        return CheckResult(
+            name="weave CLI", passed=True, detail=f"resolves and imports at {found}"
+        )
+    stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+    import_failure = any(
+        marker in stderr.casefold() for marker in ("modulenotfounderror", "importerror")
+    )
+    detail = (
+        f"`weave` resolves to {found} but cannot import under the current sandbox"
+        if import_failure
+        else (
+            f"`weave` resolves to {found} but exits {proc.returncode}: {stderr[-200:] or '<empty>'}"
+        )
+    )
+    return CheckResult(
+        name="weave CLI",
+        passed=False,
+        detail=detail,
+        fix=_weave_cli_fix(),
+    )
+
+
 # ---------- top-level driver ----------
 
 
@@ -613,6 +709,7 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # Code report is unchanged.
     if _profile().hooks_global_only:
         result.checks.append(check_hook_scope(cwd))
+        result.checks.append(check_weave_cli())
     result.checks.append(check_vault_env())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)

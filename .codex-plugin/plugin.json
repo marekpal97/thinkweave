@@ -1,0 +1,20 @@
+{
+  "name": "thinkweave",
+  "version": "0.1.1",
+  "description": "Obsidian-native durable memory for coding agents",
+  "author": {"name": "Marek Paluch"},
+  "homepage": "https://github.com/marekpal97/thinkweave",
+  "repository": "https://github.com/marekpal97/thinkweave",
+  "license": "MIT",
+  "keywords": ["memory", "obsidian", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ThinkWeave",
+    "shortDescription": "Durable memory for Codex sessions.",
+    "longDescription": "Capture, retrieve, research, and preserve project knowledge in an Obsidian-native vault.",
+    "developerName": "Marek Paluch",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "Set up ThinkWeave for this Codex environment."
+  }
+}
