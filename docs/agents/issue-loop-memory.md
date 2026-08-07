@@ -138,7 +138,7 @@ context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
 
 **Prime v3 (issue #100): two retrieval legs, fused.** Retrieval is concept
 match *and* full-text match over the issue's own words, fused by RRF (k=60) in
-`devloop/index_client.py`. Concept-only was dead by construction — the write
+the devloop package's `index_client.py`. Concept-only was dead by construction — the write
 side tags trajectories with ontology concepts while the rail was handed GitHub
 labels, so the join matched 0 of 20 live trajectory notes and every run before
 #100 was effectively unprimed. The orchestrator maps the issue to ontology

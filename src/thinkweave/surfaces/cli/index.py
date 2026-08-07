@@ -170,8 +170,8 @@ def _embedding_posture_lines(cfg) -> list[str]:
 
     if show_hint:
         lines += [
-            "  ⚠ No OPENAI_API_KEY → semantic/hybrid search is OFF; retrieval falls",
-            "    back to BM25 keyword (FTS), which always works. For free semantic",
+            "  ⚠ No OPENAI_API_KEY → semantic/hybrid search is unavailable.",
+            "    FTS remains available as an explicitly selected mode. For free semantic",
             "    search with no key (local):",
             "      pip install thinkweave[embeddings-local]",
             "      set  embeddings.provider: sentence_transformer  in vault/config/api.yaml",

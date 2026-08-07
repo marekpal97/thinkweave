@@ -92,8 +92,12 @@ weave_extract(
 ### Step D — Run `weave wrap-finalize` once per session via Bash
 
 ```bash
-weave wrap-finalize <session_id> --project <project> --json
+weave wrap-finalize <session_id> --project <project> --json [--verdicts '<json>']
 ```
+
+**Prompt verdicts (#101).** While reading `events.jsonl` in step A, judge the `type: "prompt"` rows on three registers: did any *user* prompt clearly push back on agent work (`correction`), clearly endorse it (`confirmation`), or ask a substantive exploratory question (`probe`)? Precision over recall — task instructions are neutral, hedged endorsements are neutral, task-shaped questions are neutral, and machine-generated prompt text (`<task-notification>`, `<agent-message>`, pasted logs) never gets a verdict; most sessions have zero or few non-neutral prompts. If any exist, pass `--verdicts '[{"prompt": "<opening words, verbatim>", "register": "correction", "about": "<referent clause>"}, ...]'` — matched as a case-insensitive prefix against the captured prompt events, appended idempotently (feedback registers in the frozen schema; `probe` as the classification event powering probe pressure and `/discover`).
+
+**Grounding rule — `about` or discard.** Every verdict carries an `about` clause naming its concrete referent, resolved from the surrounding events (adjacent tool calls, files touched, commit messages): for feedback, *which agent action or conclusion* was corrected/endorsed; for probes, *what the question actually sought*, restated self-contained. The catch-up view is thinner than a live conversation — that tightens the bar, it doesn't lower it: if the events don't let you resolve what "that" referred to, or a reaction is generic courtesy, **emit no verdict for that prompt**. An ungrounded label is noise downstream (an unattributable reward event, an unresearchable probe). Grounded-or-dropped, never padded.
 
 Bare `weave` is the committed launcher `bin/weave`, on the Bash PATH via the plugin's `bin/` on the plugin route. If it does not resolve (`command -v weave` empty — dev checkout wired via `.mcp.json`, or a pip install whose venv scripts dir isn't on PATH), invoke the launcher by path instead — `<thinkweave-repo>/bin/weave wrap-finalize …`, where `<thinkweave-repo>` is the `--project` value in the registered thinkweave MCP server entry (`.mcp.json` / `~/.claude.json`). Never depend on the venv's console script being on PATH (#47).
 

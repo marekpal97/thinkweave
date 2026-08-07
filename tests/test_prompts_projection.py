@@ -52,7 +52,12 @@ def _event(text: str, ts: str = "2026-06-10T10:00:00+00:00") -> dict:
 def _seed_session(
     vault: VaultManager, events: list[dict] | None
 ) -> tuple[str, Path]:
-    """Create a session note + optional events.jsonl in its folder."""
+    """Create a session note + optional events.jsonl in its folder.
+
+    #101: probe classification comes from persisted ``probe`` verdict
+    events, so seed one for each question-shaped prompt (the verdict the
+    wrap LLM would have written).
+    """
     sess_path = vault.create_note(
         NoteType.SESSION,
         "S",
@@ -62,8 +67,17 @@ def _seed_session(
     )
     sess_id = vault.read_note(sess_path).id
     if events is not None:
+        rows = list(events)
+        for e in events:
+            if e.get("type") == "prompt" and e.get("text", "").rstrip().endswith("?"):
+                rows.append({
+                    "type": "probe",
+                    "session_id": e.get("session_id", ""),
+                    "ts": e.get("ts", ""),
+                    "prompt_ref": e.get("text", "")[:120],
+                })
         (sess_path.parent / "events.jsonl").write_text(
-            "\n".join(json.dumps(e) for e in events) + "\n",
+            "\n".join(json.dumps(e) for e in rows) + "\n",
             encoding="utf-8",
         )
     return sess_id, sess_path
@@ -177,6 +191,9 @@ class TestIndexFileProjection:
             events = [
                 _event(INSTRUCTION_TEXT),
                 _event(PROBE_TEXT, ts="2026-06-10T11:00:00+00:00"),
+                {"type": "probe", "session_id": "cc-uuid-1",
+                 "ts": "2026-06-10T11:00:00+00:00",
+                 "prompt_ref": PROBE_TEXT[:120]},
             ]
             (sess_path.parent / "events.jsonl").write_text(
                 "\n".join(json.dumps(e) for e in events) + "\n",
