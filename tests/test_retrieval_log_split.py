@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +28,25 @@ from pathlib import Path
 
 
 class TestArchiveBufferPartition:
+    def test_archive_failure_preserves_the_live_buffer_and_raises(
+        self, tmp_path: Path
+    ):
+        from thinkweave.core.buffer import archive_buffer
+
+        buf_dir = tmp_path / "buffer"
+        buf_dir.mkdir()
+        buf = buf_dir / "ses-fail.jsonl"
+        buf.write_text('{"type":"prompt","text":"keep me"}\n', encoding="utf-8")
+        not_a_directory = tmp_path / "session-target"
+        not_a_directory.write_text("occupied", encoding="utf-8")
+
+        with pytest.raises(OSError):
+            archive_buffer(tmp_path, "ses-fail", not_a_directory)
+
+        assert buf.read_text(encoding="utf-8") == (
+            '{"type":"prompt","text":"keep me"}\n'
+        )
+
     def test_no_retrieval_events_writes_only_events_jsonl(self, tmp_path: Path):
         from thinkweave.core.buffer import archive_buffer
 

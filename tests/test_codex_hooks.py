@@ -553,6 +553,60 @@ class TestCodexSessionEndToEnd:
             ).fetchall()
         assert rows, "Stop must index the session note"
 
+    def test_duplicate_delivery_persists_each_lifecycle_fact_once(
+        self, hook_vault, serves
+    ):
+        """Replayed hook envelopes must not duplicate persisted evidence.
+
+        Scoped to the events that carry a wire id — Codex stamps ``turn_id``
+        on UserPromptSubmit and ``tool_use_id`` on the tool call, so a second
+        registration receiving the same envelope is unambiguously a replay.
+        SessionStart carries neither and is deliberately left un-deduped (a
+        resume must re-inject context); its duplicates are prevented by
+        single-owner registration, not here.
+        """
+        cfg, vm = hook_vault.config, hook_vault.vault
+        serves("## Recent\n- [[n-1|n-1]]\n")
+
+        for _ in range(2):
+            handler_mod._handle_session_start(CODEX_SESSION_START)
+            handler_mod._handle_user_prompt_submit(CODEX_USER_PROMPT_SUBMIT)
+            handler_mod._handle_post("apply_patch", CODEX_APPLY_PATCH)
+
+        buffered = handler_mod._read_buffer(cfg.weave_dir, CODEX_SESSION_ID)
+        assert len([e for e in buffered if e.get("type") == "prompt"]) == 1
+        assert [e.get("file") for e in buffered if e.get("file")] == [
+            "src/thinkweave/core/harness.py",
+            "docs/HARNESSES.md",
+        ]
+
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+
+        notes = [
+            n
+            for n in vm.list_notes(note_type=NoteType.SESSION, limit=10)
+            if n.frontmatter.get("source_session") == CODEX_SESSION_ID
+        ]
+        assert len(notes) == 1
+        assert notes[0].frontmatter.get("processed") is True
+        session_dir = (cfg.vault_root / notes[0].path).parent
+        events = [
+            json.loads(line)
+            for line in (session_dir / "events.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        retrievals = [
+            json.loads(line)
+            for line in (session_dir / "retrieval_log.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert len([e for e in events if e.get("type") == "prompt"]) == 1
+        assert len([e for e in events if e.get("file")]) == 2
+        assert [e.get("type") for e in retrievals] == ["startup", "startup"]
+
     def test_session_start_emits_codex_shaped_output(
         self, hook_vault, serves, capsys
     ):

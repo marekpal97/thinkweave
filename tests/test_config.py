@@ -54,6 +54,24 @@ def test_is_vault_initialized_false_when_sources_yaml_missing(tmp_path: Path):
     assert is_vault_initialized(cfg) is False
 
 
+def test_is_vault_initialized_does_not_hide_permission_denial(
+    tmp_path: Path, monkeypatch
+):
+    cfg = Config(vault_root=tmp_path / "vault")
+    target = cfg.vault_root / "config" / "sources.yaml"
+    original_stat = Path.stat
+
+    def denied(path: Path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("sandbox denied vault access")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+
+    with pytest.raises(PermissionError, match="sandbox denied"):
+        is_vault_initialized(cfg)
+
+
 def test_is_vault_initialized_true_when_sources_yaml_present(tmp_path: Path):
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir(parents=True)

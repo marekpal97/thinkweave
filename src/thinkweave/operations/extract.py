@@ -60,6 +60,7 @@ class ExtractOutcome:
     created_decisions: list[NoteMeta] = field(default_factory=list)
     created_todos: list[NoteMeta] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     processed_at: str = ""
     error: str = ""
     skipped_reason: str = ""
@@ -586,7 +587,10 @@ def extract_session(
     try:
         source_session = session_note.frontmatter.get("source_session", session_id)
         archive_buffer(cfg.weave_dir, source_session, session_path.parent)
-    except Exception:
-        pass
+    except Exception as e:
+        outcome.warnings.append(
+            "Lifecycle event archive failed; the live buffer was preserved for "
+            f"retry ({type(e).__name__}: {e})."
+        )
 
     return outcome

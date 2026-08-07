@@ -458,7 +458,11 @@ def is_vault_initialized(cfg: Config) -> bool:
     ``vault/config/sources.yaml``; the predicate tracks the canonical
     location only — legacy paths are not honoured.
     """
-    return (cfg.vault_root / "config" / "sources.yaml").exists()
+    try:
+        (cfg.vault_root / "config" / "sources.yaml").stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
 
 
 def _load_user_config_vault_root() -> Path | None:

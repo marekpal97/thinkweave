@@ -97,6 +97,38 @@ class TestSessionNoteIdSurfacing:
 
 
 class TestExtractFormatReport:
+    def test_archive_failure_is_reported_and_buffer_is_preserved(
+        self, config: Config, monkeypatch
+    ):
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
+
+        _index(config)
+        session_id = "ses-archive-denied"
+        buf = config.weave_dir / "buffer" / f"{session_id}.jsonl"
+        buf.parent.mkdir(parents=True, exist_ok=True)
+        buf.write_text('{"type":"prompt","text":"keep"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "thinkweave.operations.extract.archive_buffer",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                PermissionError("archive denied")
+            ),
+        )
+
+        out = extract_session(
+            config,
+            session_id=session_id,
+            project="t",
+            summary="captured",
+            insights=[],
+            decisions=[],
+        )
+
+        assert buf.exists()
+        assert out.warnings
+        report = _format_extract_report(out)
+        assert "Warning:" in report
+        assert "buffer was preserved" in report
+
     def test_header_distinguishes_diverged_ids(
         self, config: Config, vault: VaultManager
     ):
