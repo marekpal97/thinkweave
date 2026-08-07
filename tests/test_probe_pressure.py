@@ -55,9 +55,25 @@ class TestMatchProbeConcepts:
 
 
 def _write_events(path: Path, rows: list[dict]) -> None:
+    """Write event rows, seeding a probe verdict for question-shaped prompts.
+
+    #101 removed the read-time probe heuristic — classification comes from
+    persisted ``probe`` events written at wrap time. These fixtures encode
+    probe-ness as question shape, so mint the verdict rows the wrap LLM
+    would have produced (non-question prompts stay unlabeled).
+    """
+    out = list(rows)
+    for r in rows:
+        if r.get("type") == "prompt" and r.get("text", "").rstrip().endswith("?"):
+            out.append({
+                "type": "probe",
+                "session_id": r.get("session_id", ""),
+                "ts": r.get("ts", ""),
+                "prompt_ref": r.get("text", "")[:120],
+            })
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "\n".join(json.dumps(r) for r in rows) + "\n",
+        "\n".join(json.dumps(r) for r in out) + "\n",
         encoding="utf-8",
     )
 

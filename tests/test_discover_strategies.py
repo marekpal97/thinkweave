@@ -320,19 +320,27 @@ class TestExternalToolRunner:
 def _seed_probe_events(
     config: Config, project: str, prompts: list[str]
 ) -> None:
-    """Write a session events.jsonl with the given prompt texts; each is
-    framed as a question so ``classify_probe`` flags it as ``probe``."""
+    """Write a session events.jsonl with the given prompt texts, each paired
+    with the ``probe`` verdict event the wrap LLM would have written
+    (#101 — probe classification is persisted, not heuristic)."""
     import datetime as _dt
     sess_dir = config.vault_root / "projects" / project / "sessions" / "ses-pp"
     sess_dir.mkdir(parents=True, exist_ok=True)
     now = _dt.datetime.now(_dt.timezone.utc)
     rows = []
     for i, text in enumerate(prompts):
+        ts = (now - _dt.timedelta(days=1, minutes=i)).isoformat()
         rows.append({
             "type": "prompt",
             "text": text,
             "session_id": "cc-pp",
-            "ts": (now - _dt.timedelta(days=1, minutes=i)).isoformat(),
+            "ts": ts,
+        })
+        rows.append({
+            "type": "probe",
+            "session_id": "cc-pp",
+            "ts": ts,
+            "prompt_ref": text[:120],
         })
     (sess_dir / "events.jsonl").write_text(
         "\n".join(json.dumps(r) for r in rows) + "\n",

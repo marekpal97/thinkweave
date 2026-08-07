@@ -31,11 +31,29 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
+    verdicts: list[dict] = []
+    if getattr(args, "verdicts", ""):
+        try:
+            verdicts = json.loads(args.verdicts)
+        except json.JSONDecodeError as e:
+            print(f"error: --verdicts is not valid JSON: {e}", file=sys.stderr)
+            sys.exit(2)
+        if not isinstance(verdicts, list) or not all(
+            isinstance(v, dict) for v in verdicts
+        ):
+            print(
+                "error: --verdicts must be a JSON list of "
+                '{"prompt": ..., "register": ...} objects.',
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     result = finalize_wrap(
         cfg,
         session_id=args.session_id,
         project=project,
         prune=not args.no_prune,
+        verdicts=verdicts,
     )
 
     if args.json:
@@ -43,6 +61,12 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         sys.exit(1 if result.errors else 0)
 
     print(f"wrap-finalize · session {result.session_id} · project {project}")
+    if result.verdicts_written or result.verdicts_skipped or result.verdicts_unmatched:
+        print(
+            f"  verdicts: {result.verdicts_written} written, "
+            f"{result.verdicts_skipped} already present, "
+            f"{result.verdicts_unmatched} unmatched"
+        )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)
         print(f"  prune:   {result.orphans_pruned} orphan folder(s), {mb:.1f} MB freed")
@@ -62,7 +86,7 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     if result.timings:
         parts = " · ".join(
             f"{k} {result.timings[k]:.1f}s"
-            for k in ("prune", "index", "judge", "landing", "drift")
+            for k in ("verdicts", "prune", "index", "judge", "landing", "drift")
             if k in result.timings
         )
         if parts:

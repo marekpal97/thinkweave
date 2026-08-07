@@ -192,8 +192,9 @@ CREATE INDEX IF NOT EXISTS idx_hle_date ON hub_log_entries(entry_date);
 -- question stream as a queryable surface. One row per archived prompt
 -- event; ``session_id`` is the vault session note id (ses-…, same key
 -- as context_served), ``seq`` the prompt's position among the session's
--- prompt events, ``classification`` the probe heuristic's verdict
--- ('probe' or NULL) as stamped by core.events.extract_prompts.
+-- prompt events, ``classification`` the wrap LLM's probe verdict
+-- ('probe' or NULL) as stamped by core.events.extract_prompts from
+-- persisted probe verdict events (#101).
 -- ``prompt_concepts`` carries concept attribution for *probe* rows only,
 -- using the same substring rule as the live probe-pressure path
 -- (core.events.match_probe_concepts) — so probes JOIN against

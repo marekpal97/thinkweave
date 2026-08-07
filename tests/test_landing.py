@@ -538,15 +538,22 @@ class TestProbeCapsFromConfig:
         )
         sess_dir.mkdir(parents=True)
         base = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
-        rows = [
-            {
+        rows = []
+        for i in range(5):
+            ts = (base + timedelta(minutes=i)).isoformat()
+            rows.append({
                 "type": "prompt",
                 "text": f"What about thing {i}?",
                 "session_id": "abc",
-                "ts": (base + timedelta(minutes=i)).isoformat(),
-            }
-            for i in range(5)
-        ]
+                "ts": ts,
+            })
+            # #101: probe classification is a persisted verdict event.
+            rows.append({
+                "type": "probe",
+                "session_id": "abc",
+                "ts": ts,
+                "prompt_ref": f"What about thing {i}?",
+            })
         (sess_dir / "events.jsonl").write_text(
             "\n".join(_json.dumps(r) for r in rows) + "\n", encoding="utf-8"
         )
