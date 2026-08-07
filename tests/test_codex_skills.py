@@ -11,6 +11,7 @@ from thinkweave.surfaces.mcp.tools import DISPATCH
 ROOT = Path(__file__).parents[1]
 SKILLS_ROOT = ROOT / "skills"
 EXPECTED = {
+    "thinkweave-bootstrap",
     "thinkweave-capture",
     "thinkweave-recall",
     "thinkweave-research",
