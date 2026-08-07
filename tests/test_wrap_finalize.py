@@ -198,3 +198,200 @@ class TestWrapFinalizeCLI:
         assert payload["session_id"] == session_id
         assert payload["decisions_judged"] == 1
         assert payload["errors"] == []
+
+
+class TestVerdictStep:
+    """#101 — the deterministic half of the async prompt labeler."""
+
+    def _write_buffer(self, config: Config, session_id: str, rows: list[dict]):
+        buf_dir = config.weave_dir / "buffer"
+        buf_dir.mkdir(parents=True, exist_ok=True)
+        f = buf_dir / f"{session_id}.jsonl"
+        f.write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+        )
+        return f
+
+    def _rows(self, f: Path) -> list[dict]:
+        return [
+            json.loads(ln)
+            for ln in f.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+
+    def test_verdicts_append_frozen_shape_events(
+        self, config: Config, vault: VaultManager
+    ):
+        f = self._write_buffer(config, "cc-uuid-1", [
+            {"ts": "2026-08-03T10:00:00+00:00", "type": "prompt",
+             "text": "no, that's wrong — use a dict instead",
+             "session_id": "cc-uuid-1", "cwd": "/p"},
+            {"ts": "2026-08-03T10:05:00+00:00", "type": "prompt",
+             "text": "looks good, ship it", "session_id": "cc-uuid-1",
+             "cwd": "/p"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-1", project="t", prune=False,
+            verdicts=[
+                {"prompt": "no, that's wrong", "register": "correction"},
+                {"prompt": "looks good", "register": "confirmation"},
+            ],
+        )
+        assert result.verdicts_written == 2
+        assert result.verdicts_unmatched == 0
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert [r["register"] for r in fb] == ["correction", "confirmation"]
+        # Frozen schema: exactly the keys the pre-#101 hook labeler wrote,
+        # and ts reuses the prompt event's own timestamp (exact join).
+        assert set(fb[0]) == {"ts", "type", "register", "session_id", "prompt_ref"}
+        assert fb[0]["ts"] == "2026-08-03T10:00:00+00:00"
+        assert fb[0]["prompt_ref"].startswith("no, that's wrong")
+        assert "verdicts" in result.timings
+
+    def test_rewrap_is_idempotent(self, config: Config, vault: VaultManager):
+        f = self._write_buffer(config, "cc-uuid-2", [
+            {"ts": "2026-08-03T10:00:00+00:00", "type": "prompt",
+             "text": "revert that change", "session_id": "cc-uuid-2"},
+        ])
+        verdicts = [{"prompt": "revert that", "register": "correction"}]
+        finalize_wrap(config, session_id="cc-uuid-2", project="t",
+                      prune=False, verdicts=verdicts)
+        result = finalize_wrap(config, session_id="cc-uuid-2", project="t",
+                               prune=False, verdicts=verdicts)
+        assert result.verdicts_written == 0
+        assert result.verdicts_skipped == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+
+    def test_unmatched_and_invalid_verdicts(
+        self, config: Config, vault: VaultManager
+    ):
+        self._write_buffer(config, "cc-uuid-3", [
+            {"ts": "2026-08-03T10:00:00+00:00", "type": "prompt",
+             "text": "do the thing", "session_id": "cc-uuid-3"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-3", project="t", prune=False,
+            verdicts=[
+                {"prompt": "never said this", "register": "correction"},
+                {"prompt": "do the thing", "register": "neutral"},
+            ],
+        )
+        assert result.verdicts_written == 0
+        assert result.verdicts_unmatched == 1
+        assert any("invalid register" in e for e in result.errors)
+
+    def test_echoed_prompts_yield_one_event(
+        self, config: Config, vault: VaultManager
+    ):
+        # Multi-registration triple-write (#161): three echoes of the same
+        # prompt milliseconds apart must produce ONE feedback event.
+        f = self._write_buffer(config, "cc-uuid-4", [
+            {"ts": f"2026-08-03T10:00:00.0{i}0000+00:00", "type": "prompt",
+             "text": "no, wrong approach", "session_id": "cc-uuid-4"}
+            for i in range(3)
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-4", project="t", prune=False,
+            verdicts=[{"prompt": "no, wrong", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+
+    def test_archived_events_jsonl_is_found(
+        self, config: Config, vault: VaultManager
+    ):
+        sess_dir = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / "ses-arch1-2026-08-03"
+        )
+        sess_dir.mkdir(parents=True)
+        events = sess_dir / "events.jsonl"
+        events.write_text(
+            json.dumps({
+                "ts": "2026-08-03T09:00:00+00:00", "type": "prompt",
+                "text": "actually, undo that", "session_id": "ses-arch1",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        result = finalize_wrap(
+            config, session_id="ses-arch1", project="t", prune=False,
+            verdicts=[{"prompt": "actually, undo", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        fb = [
+            r for r in self._rows(events) if r.get("type") == "feedback"
+        ]
+        assert len(fb) == 1
+        assert fb[0]["session_id"] == "ses-arch1"
+
+    def test_no_events_file_reports_error(
+        self, config: Config, vault: VaultManager
+    ):
+        result = finalize_wrap(
+            config, session_id="cc-none", project="t", prune=False,
+            verdicts=[{"prompt": "anything", "register": "correction"}],
+        )
+        assert result.verdicts_written == 0
+        assert result.verdicts_unmatched == 1
+        assert any("no events file" in e for e in result.errors)
+
+    def test_probe_verdict_writes_probe_event(
+        self, config: Config, vault: VaultManager
+    ):
+        from thinkweave.core.events import extract_prompts
+
+        f = self._write_buffer(config, "cc-uuid-5", [
+            {"ts": "2026-08-03T10:00:00+00:00", "type": "prompt",
+             "text": "how does the drift judge decide?",
+             "session_id": "cc-uuid-5"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-5", project="t", prune=False,
+            verdicts=[{"prompt": "how does the drift", "register": "probe"}],
+        )
+        assert result.verdicts_written == 1
+        rows = self._rows(f)
+        probe = [r for r in rows if r.get("type") == "probe"]
+        assert len(probe) == 1
+        assert probe[0]["ts"] == "2026-08-03T10:00:00+00:00"
+        assert "register" not in probe[0]
+        # The join seam folds it back onto the prompt.
+        prompts = extract_prompts(f)
+        assert prompts[0].classification == "probe"
+        # Idempotent on re-wrap.
+        again = finalize_wrap(
+            config, session_id="cc-uuid-5", project="t", prune=False,
+            verdicts=[{"prompt": "how does the drift", "register": "probe"}],
+        )
+        assert again.verdicts_written == 0
+        assert again.verdicts_skipped == 1
+
+    def test_about_clause_rides_the_event(
+        self, config: Config, vault: VaultManager
+    ):
+        # Grounding (#101): the wrap LLM's `about` referent clause is
+        # carried onto both event types; absent about → no key (base
+        # feedback schema stays frozen).
+        f = self._write_buffer(config, "cc-uuid-6", [
+            {"ts": "2026-08-04T10:00:00+00:00", "type": "prompt",
+             "text": "no, revert the parser change", "session_id": "cc-uuid-6"},
+            {"ts": "2026-08-04T10:05:00+00:00", "type": "prompt",
+             "text": "how does the echo collapse window work?",
+             "session_id": "cc-uuid-6"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-6", project="t", prune=False,
+            verdicts=[
+                {"prompt": "no, revert the parser", "register": "correction",
+                 "about": "rejected the regex-based parser rewrite"},
+                {"prompt": "how does the echo collapse", "register": "probe"},
+            ],
+        )
+        assert result.verdicts_written == 2
+        rows = self._rows(f)
+        fb = [r for r in rows if r.get("type") == "feedback"]
+        assert fb[0]["about"] == "rejected the regex-based parser rewrite"
+        probe = [r for r in rows if r.get("type") == "probe"]
+        assert "about" not in probe[0]

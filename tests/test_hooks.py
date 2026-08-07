@@ -1802,50 +1802,21 @@ class TestUserPromptSubmitHook:
             return []
         return [json.loads(ln) for ln in buf_file.read_text().splitlines() if ln.strip()]
 
-    def test_correction_prompt_logs_feedback_event(self, tmp_path: Path, monkeypatch):
+    def test_hook_never_writes_feedback_events(self, tmp_path: Path, monkeypatch):
+        # #101 — hooks capture, never judge. Even an unambiguous correction
+        # produces only the raw prompt event; feedback labeling happens
+        # asynchronously via `weave wrap-finalize --feedback`.
         from thinkweave.core.config import Config
 
         cfg = Config(vault_root=tmp_path / "vault")
-        rows = self._run_prompt(
-            cfg, monkeypatch, "ses-fb-1", "no, that's wrong — use a dict instead"
-        )
-        fb = [r for r in rows if r.get("type") == "feedback"]
-        assert len(fb) == 1
-        assert fb[0]["register"] == "correction"
-        assert fb[0]["session_id"] == "ses-fb-1"
-        assert fb[0]["ts"]  # populated
-        assert fb[0]["prompt_ref"]  # carries a reference to the prompt
-
-    def test_confirmation_prompt_logs_feedback_event(self, tmp_path: Path, monkeypatch):
-        from thinkweave.core.config import Config
-
-        cfg = Config(vault_root=tmp_path / "vault")
-        rows = self._run_prompt(cfg, monkeypatch, "ses-fb-2", "yes, exactly — perfect")
-        fb = [r for r in rows if r.get("type") == "feedback"]
-        assert len(fb) == 1
-        assert fb[0]["register"] == "confirmation"
-
-    def test_neutral_prompt_logs_no_feedback_event(self, tmp_path: Path, monkeypatch):
-        from thinkweave.core.config import Config
-
-        cfg = Config(vault_root=tmp_path / "vault")
-        rows = self._run_prompt(
-            cfg, monkeypatch, "ses-fb-3", "Add a feedback register to the hook"
-        )
-        assert [r for r in rows if r.get("type") == "feedback"] == []
-        # The prompt event itself is still captured.
-        assert [r for r in rows if r.get("type") == "prompt"]
-
-    def test_feedback_prompt_ref_capped_at_120(self, tmp_path: Path, monkeypatch):
-        from thinkweave.core.config import Config
-
-        cfg = Config(vault_root=tmp_path / "vault")
-        long_prompt = "no, that's wrong. " + ("x" * 300)
-        rows = self._run_prompt(cfg, monkeypatch, "ses-fb-4", long_prompt)
-        fb = [r for r in rows if r.get("type") == "feedback"]
-        assert len(fb) == 1
-        assert fb[0]["register"] == "correction"
-        assert len(fb[0]["prompt_ref"]) == 120
+        for sid, prompt in (
+            ("ses-fb-1", "no, that's wrong — use a dict instead"),
+            ("ses-fb-2", "yes, exactly — perfect"),
+            ("ses-fb-3", "Add a feedback register to the hook"),
+        ):
+            rows = self._run_prompt(cfg, monkeypatch, sid, prompt)
+            assert [r for r in rows if r.get("type") == "feedback"] == []
+            assert [r for r in rows if r.get("type") == "prompt"]
 
     def test_install_registers_user_prompt_submit(self, tmp_path: Path):
         project_dir = tmp_path / "project"

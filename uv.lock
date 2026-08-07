@@ -588,6 +588,11 @@ wheels = [
 ]
 
 [[package]]
+name = "devloop"
+version = "0.1.0"
+source = { git = "https://github.com/marekpal97/funloops?subdirectory=packages%2Fdevloop&rev=b719e58#b719e58594d1f4d9d3216158e3bc0a9e7659da0d" }
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2783,6 +2788,7 @@ youtube = [
 [package.dev-dependencies]
 dev = [
     { name = "bump-my-version" },
+    { name = "devloop" },
     { name = "mcp" },
     { name = "pytest" },
 ]
@@ -2811,6 +2817,7 @@ provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm"
 [package.metadata.requires-dev]
 dev = [
     { name = "bump-my-version", specifier = ">=0.28" },
+    { name = "devloop", git = "https://github.com/marekpal97/funloops?subdirectory=packages%2Fdevloop&rev=b719e58" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=9.0.2" },
 ]
