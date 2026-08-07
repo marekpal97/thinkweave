@@ -14,6 +14,7 @@ file at tier 3.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -419,7 +420,16 @@ def write_user_config(vault_root: Path) -> None:
     """
     path = user_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = f'vault_root = "{vault_root}"\n'
+    # The value MUST be escaped, not interpolated. A Windows vault root
+    # (``C:\\Users\\me\\vault``) dropped raw into a TOML *basic* string reads
+    # ``\\U`` as the start of an 8-hex-digit unicode escape, so tomllib rejects
+    # the file we just wrote with "Invalid hex value" — /onboard would persist a
+    # config that nothing can load back. ``json.dumps`` is the same mechanism
+    # ``core/mcp_config.py:_toml_scalar`` already relies on: JSON's escape set
+    # is a subset of TOML's basic-string escapes, and ``ensure_ascii=False``
+    # keeps a non-BMP character (an emoji in a vault path) as a literal rather
+    # than a surrogate pair, which TOML rejects as not a Unicode scalar value.
+    payload = f"vault_root = {json.dumps(str(vault_root), ensure_ascii=False)}\n"
     # Atomic write via tempfile in the same dir (so os.replace is on the
     # same filesystem) + os.replace. Mirrors install.py._atomic_write_json.
     fd, tmp_name = tempfile.mkstemp(

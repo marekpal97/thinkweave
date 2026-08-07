@@ -471,3 +471,52 @@ def test_dispatch_unknown_tool_sentinel():
 
     out = dispatch(None, "_nope", {})
     assert "Unknown tool" in out[0].text
+
+
+# --------------------------------------------------------------------------- #
+# advertised tool schemas
+# --------------------------------------------------------------------------- #
+
+
+def _schema_for(tool_name: str) -> dict:
+    from thinkweave.surfaces.mcp.tools import all_schemas
+
+    for tool in all_schemas():
+        if tool.name == tool_name:
+            return tool.inputSchema
+    raise AssertionError(f"{tool_name} not in all_schemas()")
+
+
+class TestTypeFilterSchema:
+    """The ``type`` filter accepts a bare string or a list of note types.
+
+    The retrieval layer normalises both (``[note_type] if isinstance(note_type,
+    str) else list(note_type)`` in ``retrieval/search.py``), so the advertised
+    schema has to say so machine-readably. It used to say so only in prose —
+    ``weave_concepts`` shipped a bare ``{}`` — which left a validating client
+    nothing to go on.
+    """
+
+    # weave_graph's projection filter is named note_type and is a separate
+    # (string-only) knob, so it is deliberately not in this list.
+    TOOLS = ["weave_search", "weave_context", "weave_concepts"]
+
+    @pytest.mark.parametrize("tool_name", TOOLS)
+    def test_type_declares_string_or_list_union(self, tool_name: str):
+        prop = _schema_for(tool_name)["properties"]["type"]
+        variants = prop.get("anyOf")
+        assert variants, f"{tool_name}.type must declare an anyOf union, got {prop!r}"
+
+        assert {"type": "string"} in variants, f"{tool_name}.type must accept a bare string"
+
+        arrays = [v for v in variants if v.get("type") == "array"]
+        assert arrays, f"{tool_name}.type must accept an array"
+        assert arrays[0].get("items", {}).get("type") == "string", (
+            f"{tool_name}.type array items must be strings"
+        )
+
+    @pytest.mark.parametrize("tool_name", TOOLS)
+    def test_type_is_documented(self, tool_name: str):
+        """A bare ``{}`` passes the union check vacuously; require prose too."""
+        prop = _schema_for(tool_name)["properties"]["type"]
+        assert prop.get("description", "").strip(), f"{tool_name}.type needs a description"

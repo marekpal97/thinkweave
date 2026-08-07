@@ -16,10 +16,10 @@ def tool_schemas() -> list:
                 "**Modality: FTS / similarity / fused (composition).**\n\n"
                 "Retrieval over note bodies. Three modes:\n\n"
                 "- **fts** (default): SQLite FTS5 full-text. Best when you know keywords.\n"
-                "- **similar**: cosine over OpenAI embeddings (requires "
-                "`weave index --embed` + OPENAI_API_KEY). Best when you don't know exact keywords.\n"
+                "- **similar**: cosine over configured embeddings (requires "
+                "`weave index --embed`). Best when you don't know exact keywords.\n"
                 "- **hybrid**: FTS + similarity fused via reciprocal rank fusion "
-                "(k=60). Safe default when uncertain — falls back gracefully.\n\n"
+                "(k=60). Both legs must be available; failures are explicit.\n\n"
                 "List mode: empty `query` returns date-sorted recent notes honouring "
                 "all filters. Useful for 'all notes in project X this week'.\n\n"
                 "Always search FIRST before creating notes (deduplication).\n\n"
@@ -41,7 +41,13 @@ def tool_schemas() -> list:
                         "default": "fts",
                         "description": "fts = keyword, similar = semantic, hybrid = RRF fusion.",
                     },
-                    "type": {"description": "Note type filter. String or list. Valid: note, session, decision, source, theme, digest."},
+                    "type": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Note type filter. String or list. Valid: note, session, decision, source, theme, digest.",
+                    },
                     "project": {"type": "string", "description": "Filter by project name. Empty = cross-project."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter to notes containing ALL of these tags."},
                     "concepts": {
@@ -81,7 +87,13 @@ def tool_schemas() -> list:
                         "items": {"type": "string"},
                         "description": "Concepts to retrieve by. When provided, drives layer 2 directly instead of expanding from FTS hits.",
                     },
-                    "type": {"description": "Filter across all three layers. String or list — e.g. ['note','decision','theme']."},
+                    "type": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Filter across all three layers. String or list — e.g. ['note','decision','theme'].",
+                    },
                     "since": {"type": "string", "description": "Earliest ISO date (YYYY-MM-DD)."},
                     "until": {"type": "string", "description": "Latest ISO date (YYYY-MM-DD)."},
                     "limit": {"type": "integer", "default": 5},
@@ -146,6 +158,7 @@ def handle_search(cfg: Config, args: dict):
     from mcp.types import TextContent
 
     from thinkweave.operations import search as ops_search
+    from thinkweave.retrieval import SemanticSearchUnavailable
 
     mode = args.get("mode", "fts")
     type_arg = args.get("type") or ""
@@ -153,33 +166,31 @@ def handle_search(cfg: Config, args: dict):
     project = args.get("project", "")
     limit = args.get("limit", 10)
 
-    if mode == "similar":
-        results = ops_search.query_similar(
-            cfg, query, note_type=type_arg, project=project, limit=limit
-        )
-        if not results:
-            msg = (
-                "No semantic results — either the embeddings DB is missing "
-                "(run `weave index --embed` with OPENAI_API_KEY set) or no "
-                "matches above the cosine threshold."
+    try:
+        if mode == "similar":
+            results = ops_search.query_similar(
+                cfg, query, note_type=type_arg, project=project, limit=limit
             )
-            return [TextContent(type="text", text=msg)]
-    elif mode == "hybrid":
-        results = ops_search.query_hybrid(
-            cfg, query, note_type=type_arg, project=project, limit=limit
-        )
-    else:
-        results = ops_search.query_fts(
-            cfg,
-            query,
-            note_type=type_arg,
-            project=project,
-            tags=args.get("tags"),
-            concepts=args.get("concepts"),
-            since=args.get("since", ""),
-            until=args.get("until", ""),
-            limit=limit,
-        )
+        elif mode == "hybrid":
+            results = ops_search.query_hybrid(
+                cfg, query, note_type=type_arg, project=project, limit=limit
+            )
+        else:
+            results = ops_search.query_fts(
+                cfg,
+                query,
+                note_type=type_arg,
+                project=project,
+                tags=args.get("tags"),
+                concepts=args.get("concepts"),
+                since=args.get("since", ""),
+                until=args.get("until", ""),
+                limit=limit,
+            )
+    except SemanticSearchUnavailable as exc:
+        return [
+            TextContent(type="text", text=f"Semantic retrieval unavailable: {exc}")
+        ]
 
     if not results:
         return [TextContent(type="text", text="No results found.")]

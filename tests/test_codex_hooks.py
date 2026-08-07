@@ -96,6 +96,40 @@ class TestInstalledArtifact:
                     assert handler["type"] == "command"
                     assert handler["command"]
 
+    def test_every_handler_carries_a_windows_command_override(
+        self, codex_home: Path
+    ):
+        """Codex is the only harness with a Windows command override, and it
+        needs one: unlike Claude Code it does not resolve a hook command through
+        Git Bash, so on Windows the canonical `#!/bin/sh` launcher would be
+        handed to cmd.exe.
+
+        Source: the Codex hooks docs — "`commandWindows` is an optional
+        Windows-only command override. In TOML, use `command_windows` or
+        `commandWindows`." thinkweave writes hooks.json, so the camelCase
+        spelling is the one used. `command` keeps the POSIX launcher, so
+        WSL/Linux is unaffected.
+        """
+        install_hooks(scope="user")
+        doc = json.loads((codex_home / "hooks.json").read_text(encoding="utf-8"))
+
+        seen = 0
+        for groups in doc["hooks"].values():
+            for group in groups:
+                for handler in group["hooks"]:
+                    override = handler.get("commandWindows")
+                    assert override, "every Codex handler needs commandWindows"
+                    assert "weave-hook-launch.cmd" in override
+                    # The POSIX command survives untouched beside it, and the two
+                    # differ ONLY by the launcher's extension — same quoting,
+                    # same phase argument, same --harness stamp.
+                    assert "weave-hook-launch.cmd" not in handler["command"]
+                    assert override == handler["command"].replace(
+                        "weave-hook-launch", "weave-hook-launch.cmd", 1
+                    )
+                    seen += 1
+        assert seen == 5, f"expected 5 handlers, saw {seen}"
+
     def test_matchers_are_carried_over_verbatim(self, codex_home: Path):
         """Codex's regex vocabulary already covers both canonical matchers:
         `Edit`/`Write` match apply_patch, `Bash` matches shell, and MCP tools
@@ -181,6 +215,55 @@ class TestClaudeCodeUnchanged:
     ):
         for handler in cc_installed_hooks:
             assert "additionalContextLimit" not in handler
+
+    def test_no_windows_command_override_leaks_into_claude_code(
+        self, cc_installed_hooks
+    ):
+        """Claude Code has NO such key — verified against the shipped 2026-07-25
+        `claude.exe`: zero occurrences of `commandWindows`, against 49 for
+        `UserPromptSubmit`. Writing it here would be config that parses and never
+        fires, and it is unnecessary besides: Claude Code resolves hook commands
+        through Git Bash on Windows."""
+        for handler in cc_installed_hooks:
+            assert "commandWindows" not in handler
+            assert "command_windows" not in handler
+
+    def test_reinstall_under_claude_code_strips_a_codex_override(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Snap-to-canonical, same rule as the context limit: an override left
+        behind by an install under a different harness must not survive, or
+        Codex's key lingers in a settings file that has no idea what it means."""
+        settings = tmp_path / ".claude" / "settings.local.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "Stop": [
+                            {
+                                "matcher": "",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "/old/bin/weave-hook-launch stop",
+                                        "commandWindows": "/old/bin/weave-hook-launch.cmd stop",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(harness, "_OVERRIDE", harness.claude_code(home=tmp_path))
+
+        install_hooks(scope="project", project_dir=str(tmp_path))
+
+        doc = json.loads(settings.read_text(encoding="utf-8"))
+        for handler in doc["hooks"]["Stop"][0]["hooks"]:
+            assert "commandWindows" not in handler
 
     def test_claude_code_still_installs_project_scope(self, tmp_path: Path):
         """Codex is global-scope-only (below); Claude Code must keep its

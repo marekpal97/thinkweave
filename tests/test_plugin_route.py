@@ -102,7 +102,12 @@ class TestDevLinkRoute:
     *without* an installed_plugins.json entry, so the symlink is the only
     signal."""
 
-    def test_symlink_is_detected_without_manifest(self, tmp_path: Path):
+    def test_symlink_is_detected_without_manifest(
+        self, tmp_path: Path, requires_symlinks
+    ):
+        # A real symlink IS the subject here, so this one cannot be made
+        # portable — it runs wherever the process may create one and skips
+        # (with the remedy named) where the OS withholds the privilege.
         target = tmp_path / "checkout"
         target.mkdir()
         link = tmp_path / "thinkweave"

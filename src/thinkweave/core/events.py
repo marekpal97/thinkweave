@@ -270,24 +270,63 @@ def _parse_ts(raw: str) -> datetime:
         return datetime.min
 
 
+# Multi-registration mitigation (#161): when the same hook script is
+# registered on more than one surface (global settings.json, project-local
+# settings, plugin hooks.json), every event fires N handler processes and
+# the buffer receives N near-identical rows milliseconds apart. Until
+# registration single-ownership lands, the enumeration seams collapse those
+# echoes at read time: same identity with timestamps inside this window is
+# one row. A genuine resubmission of identical text arrives seconds-to-
+# minutes later and survives.
+_MULTI_REGISTRATION_WINDOW_S = 2.0
+
+
+def _collapse_echoes(items: list, identity, ts) -> list:
+    """Drop items whose ``identity`` matches an earlier-kept item with a
+    timestamp inside :data:`_MULTI_REGISTRATION_WINDOW_S`. Unparseable
+    timestamps (``datetime.min``) never collapse — better a duplicate than
+    a silently dropped real event."""
+    kept: list = []
+    last_kept_ts: dict = {}
+    for item in items:
+        key = identity(item)
+        t = ts(item)
+        prev = last_kept_ts.get(key)
+        if (
+            prev is not None
+            and t != datetime.min
+            and prev != datetime.min
+            and abs((t - prev).total_seconds()) <= _MULTI_REGISTRATION_WINDOW_S
+        ):
+            continue
+        kept.append(item)
+        last_kept_ts[key] = t
+    return kept
+
+
 def extract_prompts(events_jsonl: Path) -> list[Prompt]:
     """Read an events JSONL file and return its ``Prompt`` entries.
 
     Filters by ``type == "prompt"``. Skips malformed lines (we never
     abort an extraction over a single bad row — the buffer is append-only
     and can be killed mid-write). Returns an empty list when the file
-    doesn't exist.
+    doesn't exist. Multi-registration echoes (same session + text within
+    :data:`_MULTI_REGISTRATION_WINDOW_S`) collapse to one prompt.
 
     Each returned ``Prompt`` carries a populated ``classification``
-    field: ``"probe"`` when :func:`classify_probe` flags it, ``None``
-    otherwise. The classifier needs the surrounding event stream
-    (to peek at follow-up tool calls), so we read every event row here
-    instead of filtering early.
+    field: ``"probe"`` when a persisted ``probe`` verdict event (written
+    by the wrap LLM via ``weave wrap-finalize --verdicts``, #101) shares
+    the prompt's timestamp, ``None`` otherwise. The pre-#101 hook-era
+    heuristic (``classify_probe``: ``?``-shape + tool lookahead) is gone —
+    the labeler is the model, the JSONL rows are the record.
     """
     if not events_jsonl.exists():
         return []
 
-    events: list[dict] = []
+    # Probe verdicts join on (ts, prompt_ref-prefix). ts alone would be
+    # enough for real capture (one submission, one timestamp) but the ref
+    # guard keeps two prompts sharing a timestamp from cross-labeling.
+    probe_marks: list[tuple[datetime, str]] = []
     out: list[Prompt] = []
     for line in events_jsonl.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -298,7 +337,11 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
             continue
         if not isinstance(row, dict):
             continue
-        events.append(row)
+        if row.get("type") == "probe":
+            t = _parse_ts(row.get("ts", ""))
+            if t != datetime.min:
+                probe_marks.append((t, str(row.get("prompt_ref", ""))))
+            continue
         if row.get("type") != "prompt":
             continue
         text = row.get("text", "")
@@ -315,15 +358,18 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
             )
         )
 
+    out = _collapse_echoes(
+        out, identity=lambda p: (p.session_id, p.text), ts=lambda p: p.ts
+    )
+
     for prompt in out:
-        if classify_probe(prompt, events):
-            prompt.classification = "probe"
+        for t, ref in probe_marks:
+            if prompt.ts == t and (not ref or prompt.text.startswith(ref)):
+                prompt.classification = "probe"
+                break
 
     return out
 
-
-_PROBE_FOLLOW_LOOKAHEAD = 3
-_UNFAMILIAR_HINTS = ("look at", "look up", "what is", "what's", "explain", "where", "how does")
 
 # Minimum concept-slug length for probe→concept attribution. Defends
 # against the single/2-char garbage pool (2026-06-07 str-iter bug class:
@@ -385,185 +431,19 @@ def match_probe_concepts(text: str, vocabulary: Iterable[str]) -> set[str]:
     return out
 
 
-def classify_probe(prompt: Prompt, events: list[dict]) -> bool:
-    """Conservative heuristic: is this prompt a *probe* (an exploratory
-    user question rather than an instruction)?
-
-    Returns True only when:
-
-    1. Text ends with ``?`` (after trimming), OR contains a probe-style
-       lead phrase ("what is", "how does", "explain", …) AND
-    2. No ``Edit`` / ``Write`` event appears within the next
-       :data:`_PROBE_FOLLOW_LOOKAHEAD` events of the buffer (i.e. the
-       prompt didn't immediately translate into a code change), OR a
-       ``Read`` of an unfamiliar file follows.
-
-    False negatives are preferred over false positives — the state-of-
-    play landing doc's "Open Probes" section is more useful when sparse
-    and accurate. This is a deliberately small heuristic; tuning lives
-    downstream.
-
-    TODO(post-E5): empirically tune the lookahead window + lead-phrase
-    list against real captured prompts once the hook has been live for
-    a few sessions. Current values are an educated first cut.
-    """
-    text = (prompt.text or "").strip()
-    if not text:
-        return False
-
-    looks_like_question = text.rstrip(" .!").endswith("?") or any(
-        hint in text.lower() for hint in _UNFAMILIAR_HINTS
-    )
-    if not looks_like_question:
-        return False
-
-    # Locate the prompt in the event stream. Match by ts + text — the hook
-    # writes a unique (ts, type, text) tuple per submission. Fall back to
-    # the first prompt event with the same text if ts comparison fails.
-    target_iso = prompt.ts.isoformat() if prompt.ts != datetime.min else ""
-    idx: int | None = None
-    for i, ev in enumerate(events):
-        if not isinstance(ev, dict):
-            continue
-        if ev.get("type") != "prompt":
-            continue
-        if ev.get("text") != prompt.text:
-            continue
-        if target_iso and ev.get("ts") != target_iso:
-            continue
-        idx = i
-        break
-
-    if idx is None:
-        # Couldn't locate — fall back to text-shape signal alone. This is
-        # conservative: a question that ends with `?` and never made it
-        # into the buffer log is treated as a probe.
-        return True
-
-    # Look ahead in the buffer for code-modifying tools
-    follow_window = events[idx + 1 : idx + 1 + _PROBE_FOLLOW_LOOKAHEAD]
-    for ev in follow_window:
-        if not isinstance(ev, dict):
-            continue
-        if ev.get("tool") in ("Edit", "Write"):
-            return False
-
-    return True
-
-
 # ---------------------------------------------------------------------------
-# Feedback register (issue #70) — the human reward channel
+# Feedback register (issues #70 → #101) — the human reward channel
 # ---------------------------------------------------------------------------
 #
-# A deterministic, text-only classifier that labels a user prompt as a
-# ``correction``, a ``confirmation``, or ``neutral``. This is the reward
-# signal for the self-improvement flywheel: which of our actions the user
-# pushed back on, and which they endorsed. It is deliberately a heuristic
-# with NO model call — the UserPromptSubmit hook runs it inline on every
-# prompt (see ``surfaces/hooks/handler._handle_user_prompt_submit``), so it
-# must be pure regex/string work.
-#
-# Recall is best-effort and FALSE-NEUTRAL is the safe failure mode: a missed
-# correction is lost signal (recoverable — the next turn usually re-states
-# it), whereas a false ``correction``/``confirmation`` injects noise into a
-# reward channel that downstream RLVR consumers trust. So we bias for
-# PRECISION on the two non-neutral registers and let the ambiguous middle
-# fall through to ``neutral``.
-#
-# Detection is two-tier, both anchored to avoid substring collisions:
-#   1. Leading word — the first alphabetic token (skipping leading
-#      punctuation/emoji) matched against a small lexicon. Whole-token match,
-#      so "yesterday"/"note"/"nothing" never trip the "yes"/"no" leads.
-#   2. Strong phrases — matched anywhere, but only unambiguous multi-word
-#      phrases ("that's wrong", "looks good") that don't fire inside a
-#      neutral instruction.
-# Lexicons are module-level tuples so they are documented and testable.
-#
-# Lead-lexicon precision carve-outs (fix round 1, learned from real task
-# prompts that leaked non-neutral):
-#   - ``correct`` is NOT a confirmation lead — "correct the typo in line 5"
-#     is an imperative verb, not an endorsement.
-#   - ``wait`` / ``don't`` / ``stop`` are NOT correction leads — too common as
-#     the head of an ordinary instruction ("wait for the build then run
-#     tests", "don't forget the changelog", "stop the server before deploy").
-#   - ``revert`` / ``undo`` ARE kept as correction leads: in a coding-agent
-#     session a leading "revert"/"undo" is overwhelmingly corrective of prior
-#     agent work, which outweighs the rare neutral use.
-# Two guard sets refine the leads further:
-#   - Neutral overrides — a leading "no <softener>" ("no problem/worries/
-#     rush") is courtesy, not correction; checked before the correction rule.
-#   - Hedge suppression — a confirming signal FOLLOWED by "but/except/
-#     although" is a partial-correction wearing a confirmation mask, the worst
-#     mislabel for the reward channel; downgraded to neutral.
-
-_FEEDBACK_CORRECTION_LEADS = frozenset({
-    "no", "nope", "nah", "wrong", "incorrect", "actually", "revert", "undo",
-})
-_FEEDBACK_CORRECTION_PHRASES = (
-    "that's wrong", "thats wrong", "that is wrong",
-    "that's not right", "thats not right", "that's incorrect",
-    "not what i asked", "not what i wanted", "not what i meant",
-    "don't do that", "that's not what", "you got it wrong",
-)
-_FEEDBACK_CONFIRMATION_LEADS = frozenset({
-    "yes", "yep", "yeah", "yup", "perfect", "great",
-    "exactly", "lgtm", "nice", "awesome", "ty", "thanks",
-})
-_FEEDBACK_CONFIRMATION_PHRASES = (
-    "looks good", "that's right", "thats right", "that's exactly",
-    "that's perfect", "well done", "good job", "ship it",
-    "nailed it", "keep going",
-)
-
-# Leading courtesy phrases whose "no" is not a correction.
-_FEEDBACK_NEUTRAL_OVERRIDES = (
-    "no problem", "no worries", "no worry", "no rush",
-)
-
-_FEEDBACK_LEAD_WORD_RE = re.compile(r"[^a-z]*([a-z']+)")
-# Hedge words that, when they trail a confirming signal, void the confirmation.
-_FEEDBACK_HEDGE_RE = re.compile(r"\b(but|except|although)\b")
-
-
-def classify_feedback(text: str) -> str:
-    """Register a user prompt as ``correction`` | ``confirmation`` | ``neutral``.
-
-    Deterministic, recall-best-effort, false-neutral-safe (see the module
-    section header above). Correction takes precedence over confirmation
-    when a prompt carries both signals — the corrective push-back is the
-    stronger improvement signal.
-    """
-    t = (text or "").strip().lower()
-    if not t:
-        return "neutral"
-
-    # Neutral overrides beat the leading-"no" correction rule.
-    if any(t.startswith(p) for p in _FEEDBACK_NEUTRAL_OVERRIDES):
-        return "neutral"
-
-    m = _FEEDBACK_LEAD_WORD_RE.match(t)
-    first = m.group(1) if m else ""
-
-    if first in _FEEDBACK_CORRECTION_LEADS or any(
-        p in t for p in _FEEDBACK_CORRECTION_PHRASES
-    ):
-        return "correction"
-
-    # Confirmation — but a hedge that FOLLOWS the confirming signal suppresses
-    # it (a hedged partial-correction must not be logged as endorsement).
-    conf_idx = 0 if first in _FEEDBACK_CONFIRMATION_LEADS else -1
-    if conf_idx == -1:
-        for p in _FEEDBACK_CONFIRMATION_PHRASES:
-            i = t.find(p)
-            if i != -1:
-                conf_idx = i
-                break
-    if conf_idx != -1:
-        if _FEEDBACK_HEDGE_RE.search(t, conf_idx):
-            return "neutral"
-        return "confirmation"
-
-    return "neutral"
+# ``feedback`` events label user prompts as ``correction`` or
+# ``confirmation`` — the reward signal for the self-improvement flywheel:
+# which of our actions the user pushed back on, and which they endorsed.
+# Since #101 the labeler is an LLM pass, not a hook-time lexicon: the /wrap
+# LLM (which holds the conversation) composes verdicts and hands them to
+# ``weave wrap-finalize --feedback``, whose deterministic step appends the
+# events (see ``operations.wrap``). Catch-up for unwrapped sessions rides
+# /dream's wrap-worker on the same rail. The event schema is frozen — it
+# predates #101 and downstream consumers (export, projections) key on it.
 
 
 def feedback_events(events_jsonl: Path) -> list[dict]:
@@ -574,8 +454,10 @@ def feedback_events(events_jsonl: Path) -> list[dict]:
     file — both share the append-only JSONL shape — and returns the feedback
     event dicts (``register``, ``ts``, ``session_id``, ``prompt_ref``) in
     file order. Skips malformed rows; returns ``[]`` when the file is absent
-    or carries no feedback rows. No attribution is resolved here: consumers
-    fuzzy-join on timestamp adjacency within the session.
+    or carries no feedback rows. Multi-registration echoes from the
+    pre-#101 hook-time labeler collapse to one row (#161). No attribution
+    is resolved here: consumers fuzzy-join on timestamp adjacency within
+    the session (post-#101 rows reuse the prompt event's exact ``ts``).
     """
     if not events_jsonl.exists():
         return []
@@ -589,7 +471,15 @@ def feedback_events(events_jsonl: Path) -> list[dict]:
             continue
         if isinstance(row, dict) and row.get("type") == "feedback":
             out.append(row)
-    return out
+    return _collapse_echoes(
+        out,
+        identity=lambda r: (
+            r.get("session_id", ""),
+            r.get("register", ""),
+            r.get("prompt_ref", ""),
+        ),
+        ts=lambda r: _parse_ts(r.get("ts", "")),
+    )
 
 
 # ---------------------------------------------------------------------------

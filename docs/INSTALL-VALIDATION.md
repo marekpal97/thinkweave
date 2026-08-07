@@ -25,8 +25,9 @@ Manual setup + script green = the whole install surface is validated.
   Claude Code login** — your normal login. **No `ANTHROPIC_API_KEY` is
   required**; `/dream` runs on the session's model auth, it is not an Anthropic
   API call.
-- Optional: `OPENAI_API_KEY` for similarity retrieval (without it, retrieval is
-  FTS-only — still passes).
+- A working embedding provider for similarity/hybrid retrieval: either
+  `OPENAI_API_KEY` or the local `sentence_transformer` provider. FTS-only does
+  not pass the two-harness functional gate.
 - Marketplace route needs the repo reachable. It is currently **private**, so
   the authenticated owner can install it; an external user needs it public.
 

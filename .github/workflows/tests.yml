@@ -47,8 +47,19 @@ jobs:
     # Required check: the pre-existing findings were cleaned up (F-series
     # fixed, E741 ignored in pyproject with rationale), so a red lint job now
     # means a genuine regression.
+    #
+    # The version is PINNED, and that pin is the whole point. `uvx ruff` resolves
+    # the latest release at job time, so the lint baseline moved on its own the
+    # day ruff 0.16 shipped: 0.15.10 reports zero findings on this tree, 0.16.1
+    # reports 554 (162 UP017, 92 I001, 62 BLE001, …) — rule families outside
+    # ruff's documented default select, on unchanged code. Every open PR went red
+    # simultaneously, which reads as eight broken branches instead of one shared
+    # baseline shift. A linter that fails on a day nobody pushed is telling you
+    # about its own version, not about the diff. Bump this deliberately, in a
+    # commit that also fixes whatever the new version finds; keep it in step with
+    # the `dev` extra in pyproject.toml so local and CI agree.
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: Ruff
-        run: uvx ruff check src tests
+        run: uvx ruff@0.15.10 check src tests

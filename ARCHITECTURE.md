@@ -441,7 +441,7 @@ Since the 2026-06-11 drift-v2 doctrine, dedup-merge for both hub families mutate
 
 **Seam-link invariant: entries never change hubs without a seam-link pass.** A fold (concept or theme merge — and any future hub *split*) produces two disjoint catalyst DAGs in one file; the fold stamps `fold_pending_from`/`fold_pending_dates` and enqueues the winner on `.weave/seam_link_queue.jsonl`. The phase-2 `dream-seam-link-worker` judges cross-parent entry pairs only and writes through `weave hubs apply-linkage` (`validate_linkage_revision`-gated; `--clear-fold` clears the stamps and retires the queue item atomically).
 
-**Embeddings freshness.** Hybrid and similarity retrieval read from `<vault>/.weave/embeddings.db` (rebuildable from markdown). Without an external trigger nothing repopulates it as new content lands, so similarity silently degrades to FTS-only on recent content. The keep-warm contract is a cron line (`weave index --embed --only-new`) that re-embeds only the delta. `weave doctor` flags a stale DB (`embeddings.db` mtime > 7 days) when `OPENAI_API_KEY` is set.
+**Embeddings freshness.** Hybrid and similarity retrieval read from `<vault>/.weave/embeddings.db` (rebuildable from markdown). Missing setup and provider/trust failures are explicit; hybrid never presents FTS-only output as a successful hybrid query. New notes still need embedding, so the keep-warm contract is a cron line (`weave index --embed --only-new`) that embeds the delta. `weave doctor` flags a stale DB (`embeddings.db` mtime > 7 days) when `OPENAI_API_KEY` is set.
 
 ## Invocation surface
 

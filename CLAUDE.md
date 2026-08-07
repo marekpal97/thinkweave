@@ -11,7 +11,7 @@ Thinkweave is an Obsidian-native memory layer: markdown is the source of truth, 
 Three modalities, plus compositions on top.
 
 - **FTS** — `weave_search(query, mode='fts')`. Keyword/phrase. Cheap. Empty `query` returns recent matches honouring filters (list mode).
-- **Similarity** — `weave_search(query, mode='similar')`. Concept-shaped query, no keyword. Soft-fails to FTS when embeddings unavailable.
+- **Similarity** — `weave_search(query, mode='similar')`. Concept-shaped query, no keyword. Reports setup or trust failures explicitly.
 - **Hybrid** — `weave_search(query, mode='hybrid')`. Unsure → RRF fusion (k from `retrieval.rrf_k`, default 60).
 - **Graph** — `weave_graph(id, depth, filter=…)`. Structural walk over typed edges. Filter dispatches the variant: `''` (default — walk from `id`), `'source_lens'`, `'decisions_for_file'`, `'concept_walk'`. The legacy alias tools (`weave_source_lens`, `weave_decisions_for_file`, `weave_concept_search`) were deleted 2026-05-21 — call the canonical name.
 
@@ -55,4 +55,10 @@ When you need depth, go here. CLAUDE.md tells you *how to operate*; these tell y
 | [docs/CLI-AND-MCP.md](docs/CLI-AND-MCP.md) | The `weave` CLI subcommand reference, the 17 MCP tools, the CLI↔MCP surface contract (which audience owns each operation), and the environment variables. |
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Every SQL table the derived index produces — name, purpose, key columns, `CREATE` site — and the rebuild/migration story. Markdown stays truth; SQLite is rebuildable. |
 
-After upgrading Thinkweave, re-run `weave hooks install` to pick up newly-added hooks (e.g. SessionStart).
+For a dev-link upgrade, close every Claude Code session, run `git pull` and `uv sync --extra mcp`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.
+
+### The `/issue-loop` dev loop lives in another repo
+
+The loop's deterministic rail is the **`devloop` package**, carved out to [funloops](https://github.com/marekpal97/funloops) in 2026-08 (issue #151). Thinkweave *consumes* it: a git-pinned dev-dependency (`[tool.uv.sources]` in `pyproject.toml`, resolved in `uv.lock`), driven through the unchanged `python scripts/issue_loop.py <subcommand>` shim.
+
+Loop docs live in **`../funloops/packages/devloop/docs/agents/`** (the `/issue-loop` symlink under `.claude/commands/` points there too — machine-local, never committed); what is still in `docs/agents/` is thinkweave's own: `loop.toml` (found by the rail's cwd-upward walk), `issue-loop-memory.md` (the host's memory-feed overlay), `vault-issue-contract.md`, and the native command docs. The cross-repo seam — the pin, the shim's byte-compatibility, and the indexer schema pin with its **pin-update dance** — is enforced and documented in `tests/test_devloop_boundaries.py`; read that before changing the indexer schema.

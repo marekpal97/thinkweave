@@ -6,8 +6,9 @@ profile — ``~/.claude/plugins/installed_plugins.json`` (marketplace) and the
 nonexistent paths for every test so rendered commands (cron lines, flow
 invocations) don't depend on whether the dev box happens to have the plugin
 installed or dev-linked. Tests that exercise the plugin route override
-explicitly — via ``use_profile`` below, the ``manifest=`` / ``dev_link=``
-kwargs of ``plugin_namespace``, or by patching at the import site.
+explicitly — via ``use_profile`` below, the ``plugin_route_active`` fixture,
+the ``manifest=`` / ``dev_link=`` kwargs of ``plugin_namespace``, or by patching
+at the import site.
 
 Harness touchpoints (``mcp_config``, ``instructions_file``, …) are sandboxed by
 the autouse ``_sandbox_harness_home`` fixture and aimed by ``use_profile``.
@@ -46,6 +47,9 @@ shadow these transparently, so the migration is safe to do one file at a time.
 from __future__ import annotations
 
 import dataclasses
+import functools
+import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -55,9 +59,76 @@ import pytest
 from thinkweave.core import harness
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
+from thinkweave.core.plugin_route import PLUGIN_NAME
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
 from thinkweave.retrieval.search import Search
+
+# ---------------------------------------------------------------------------
+# Symlink capability
+# ---------------------------------------------------------------------------
+
+SYMLINK_SKIP_REASON = (
+    "this process may not create filesystem symlinks (Windows withholds "
+    "SeCreateSymbolicLinkPrivilege: WinError 1314). Enable Windows Developer "
+    "Mode or run the suite elevated to exercise the dev-link tests"
+)
+
+
+@functools.cache
+def symlinks_creatable() -> bool:
+    """Probe *once* whether this process can actually create a symlink.
+
+    Not a platform check: Windows with Developer Mode enabled (or an elevated
+    shell) creates symlinks fine, and those runs must still execute the
+    dev-link tests. So attempt the real syscall in a throwaway dir and cache
+    the answer for the session.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        try:
+            (root / "probe-link").symlink_to(root)
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+    return True
+
+
+@pytest.fixture
+def requires_symlinks() -> None:
+    """Skip the requesting test unless a symlink can genuinely be created.
+
+    Only for tests whose *subject* is the dev-link symlink. A test that merely
+    needs the plugin route to look active should use ``plugin_route_active``
+    instead — that needs no privilege anywhere.
+    """
+    if not symlinks_creatable():
+        pytest.skip(SYMLINK_SKIP_REASON)
+
+
+@pytest.fixture
+def plugin_route_active() -> Callable[..., Path]:
+    """``plugin_route_active()`` — make plugin-route detection answer
+    ``'thinkweave'`` without needing a symlink.
+
+    Writes the *marketplace* shape (a ``thinkweave@…`` key in the profile's
+    ``installed_plugins.json``), which is the other half of
+    ``plugin_route.plugin_namespace``'s ``or``. Tests that only need the route
+    to be detectable — cron rendering, namespacing — want this rather than
+    ``dev_link.symlink_to(...)``: the symlink was always incidental to what
+    they assert, and creating one is a privileged operation on Windows.
+    Pass an explicit path to aim it at a non-active profile's manifest.
+    """
+
+    def _activate(manifest: Path | None = None) -> Path:
+        path = manifest if manifest is not None else harness.active().installed_plugins
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {f"{PLUGIN_NAME}@marketplace": [{"scope": "user"}]}
+        path.write_text(
+            json.dumps({"version": 2, "plugins": entry}), encoding="utf-8"
+        )
+        return path
+
+    return _activate
 
 
 @pytest.fixture

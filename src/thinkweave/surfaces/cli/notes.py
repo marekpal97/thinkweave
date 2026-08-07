@@ -30,6 +30,7 @@ def cmd_add(args: argparse.Namespace) -> None:
 
 def cmd_search(args: argparse.Namespace) -> None:
     from thinkweave.operations import search as ops_search
+    from thinkweave.retrieval import SemanticSearchUnavailable
 
     cfg = load_config()
 
@@ -78,29 +79,27 @@ def cmd_search(args: argparse.Namespace) -> None:
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
 
-    if mode == "similar":
-        results = ops_search.query_similar(
-            cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
-        )
-        if not results:
-            print(
-                "No semantic results. If embeddings aren't set up yet, run "
-                "`weave index --embed` with OPENAI_API_KEY set."
+    try:
+        if mode == "similar":
+            results = ops_search.query_similar(
+                cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
             )
-            return
-    elif mode == "hybrid":
-        results = ops_search.query_hybrid(
-            cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
-        )
-    else:
-        results = ops_search.query_fts(
-            cfg,
-            args.query,
-            note_type=type_arg,
-            project=args.project,
-            tags=tags,
-            limit=args.limit,
-        )
+        elif mode == "hybrid":
+            results = ops_search.query_hybrid(
+                cfg, args.query, note_type=type_arg, project=args.project, limit=args.limit
+            )
+        else:
+            results = ops_search.query_fts(
+                cfg,
+                args.query,
+                note_type=type_arg,
+                project=args.project,
+                tags=tags,
+                limit=args.limit,
+            )
+    except SemanticSearchUnavailable as exc:
+        print(f"Semantic retrieval unavailable: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
     if not results:
         print("No results found.")

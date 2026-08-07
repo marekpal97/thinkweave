@@ -1172,7 +1172,7 @@ class TestIncrementalEdges:
 
         a_id = indexer.db.execute(
             "SELECT id FROM notes WHERE path = ?",
-            (str(a.relative_to(vault.root)),),
+            (a.relative_to(vault.root).as_posix(),),
         ).fetchone()["id"]
         inc_edges_for_a = self._edges_for_sources(indexer, {a_id})
 
@@ -1239,7 +1239,7 @@ class TestIncrementalEdges:
         indexer.rebuild(full=True)
         old_id = indexer.db.execute(
             "SELECT id FROM notes WHERE path = ?",
-            (str(old.relative_to(vault.root)),),
+            (old.relative_to(vault.root).as_posix(),),
         ).fetchone()["id"]
 
         # No edge yet — wikilink target didn't exist.
@@ -1255,7 +1255,7 @@ class TestIncrementalEdges:
         indexer.rebuild(full=False)
         new_id = indexer.db.execute(
             "SELECT id FROM notes WHERE path = ?",
-            (str(new_path.relative_to(vault.root)),),
+            (new_path.relative_to(vault.root).as_posix(),),
         ).fetchone()["id"]
 
         # B6: incremental misses the inbound edge.
@@ -1291,7 +1291,7 @@ class TestIncrementalEdges:
 
         sess_id = indexer.db.execute(
             "SELECT id FROM notes WHERE path = ?",
-            (str(sess_path.relative_to(vault.root)),),
+            (sess_path.relative_to(vault.root).as_posix(),),
         ).fetchone()["id"]
         edge_before = indexer.db.execute(
             "SELECT COUNT(*) AS n FROM edges "

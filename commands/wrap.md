@@ -69,8 +69,16 @@ If the session note has a `## Candidate Insights` section (populated when hooks 
 ## 4. Run `weave wrap-finalize` (one Bash call)
 
 ```
-weave wrap-finalize <session_id> --project <project>
+weave wrap-finalize <session_id> --project <project> [--verdicts '<json>']
 ```
+
+**Prompt verdicts (#101) — compose them in step 3, pass them here.** You are the prompt labeler: while composing insights/decisions, also judge each *user* prompt this session on three registers — did it clearly push back on agent work (`correction`), clearly endorse it (`confirmation`), or ask a substantive exploratory question (`probe`)? Apply §C5 below; if any non-neutral verdicts exist, add:
+
+```
+--verdicts '[{"prompt": "<the prompt'\''s opening words, verbatim>", "register": "correction", "about": "<what it was about — see C5 grounding>"}, ...]'
+```
+
+`prompt` is matched case-insensitively as a prefix against the session's captured prompt events; wrap-finalize appends the events idempotently (re-wraps never double-write) — feedback registers in the frozen `feedback` schema, `probe` as the classification event that powers probe pressure and `/discover`. No verdicts → omit the flag entirely. In catch-up mode the prompt texts are the `type: "prompt"` rows of `events.jsonl`.
 
 **CLI resolution — PATH-independent by design (#47).** The `weave` above (and in every other Bash call in this skill) is the committed launcher `bin/weave` from the thinkweave checkout: it self-locates the repo and resolves uv via the same ladder as the MCP server's `bin/weave-mcp-launch`, so it works without the venv on PATH. On the plugin route Claude Code puts the plugin's `bin/` on the Bash PATH, so the bare call just resolves. If `command -v weave` comes up empty (dev checkout wired via `.mcp.json`, or a pip install whose venv scripts dir isn't on PATH), invoke the launcher by path — `<thinkweave-repo>/bin/weave wrap-finalize …` — where `<thinkweave-repo>` is the checkout you're working in, or the `--project` value in the registered thinkweave MCP server entry (`.mcp.json` / `~/.claude.json`). Never fall back to hoping the venv's console script is on PATH: that is the asymmetry where the MCP half of `/wrap` works while the finalize half silently fails.
 
@@ -145,3 +153,18 @@ Per decision dict: `title`, `rationale` (the C/D/C prose), `outcome` (`committed
 
 ### C4. Concepts are mandatory
 Every insight and every decision: a `concepts` array, **≥2**, from the vocabulary loaded in C1. Pick concepts that connect this note to *other* notes (thematic, not descriptive). Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`). Test: "would another note about this topic share this concept?" Terms not in the ontology are accepted automatically into `proposed_concepts:` by the server — you don't pre-canonicalise.
+
+### C5. Prompt verdicts — grounded, or not at all
+Downstream consumers trust these labels (RLVR export for feedback; probe pressure and `/discover` for probes), so a false non-neutral is worse than a miss. Two channels: **feedback**, whose sign is the register (`correction` = negative, `confirmation` = positive), and **probe**.
+- `correction` = the user pushed back on something the agent did or concluded ("no, that's wrong", "revert that", "actually…"-redirections). A new instruction, a scope change, or "carry on" is **neutral**.
+- `confirmation` = the user explicitly endorsed agent work ("looks good", "ship it", "exactly"). A hedged endorsement ("looks good except…") is **neutral**.
+- `probe` = a substantive exploratory question — the user genuinely wanted to *understand* something ("how does X work?", "why would Y happen?"). Rhetorical questions, task-shaped questions ("can you fix X?"), and clarifying questions about the current task are **neutral**. A probe verdict labels the prompt event; it is independent of whether you also write a `probe`-tagged insight (§C2) for the answer.
+
+**Grounding rule — every verdict carries `about`, or is discarded.** You hold the whole conversation; use it. `about` is one clause naming the concrete referent, resolved from session context, in vault vocabulary where it fits:
+- feedback: *which agent action or conclusion* was corrected/endorsed — "endorsed the verdict-rail design for wrap-finalize", not "user said looks good". Resolve pronouns and deixis: a bare "yes, do that" grounds to whatever "that" was.
+- probe: *what the question actually sought*, restated self-contained — "how drift-v2 cosine gating decides merges", not "asked a question about drift".
+
+If you cannot name the referent from session context — generic courtesy ("thanks!", "sounds good" as conversation lubricant), a reaction whose antecedent is ambiguous, enthusiasm about nothing in particular — **emit no verdict for that prompt**. An ungrounded label is noise downstream: a reward event nobody can attribute, a probe nobody can research. Grounded-or-dropped, never padded.
+
+- Machine-generated prompt text never gets a verdict: `<task-notification>`, `<agent-message>`, `<system-reminder>`, pasted logs/output, slash-command boilerplate.
+- Most sessions have zero or few non-neutral prompts. That's the expected output, not a failure.

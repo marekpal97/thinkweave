@@ -48,7 +48,7 @@ weave schedule {list|install|uninstall}       # render scheduling.yaml onto the 
 weave skill {list|show <name>}                # inspect commands/*.md frontmatter
 weave sources {list|show <slug>}              # inspect source-type registry
 weave prune-orphans [--yes]                   # delete abandoned session folders (used by /wrap)
-weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: prune→index→judge→landing→drift (--json for headless)
+weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: verdicts→prune→index→judge→landing→drift (--json for headless; --verdicts '<json>' appends the wrap LLM's prompt verdicts — feedback registers + probe labels — as events, #101)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
 weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic issue-loop trajectory outcome judge (phase-2 dream-outcome-worker rail)
@@ -134,4 +134,4 @@ Full inventory — 48 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 - `THINKWEAVE_WEAVE_DIR` — relocate the derived-state directory (`index.db`, `embeddings.db`, `buffer/`, logs — everything normally under `vault_root/.weave`) to a different path, independent of `vault_root`. The vault markdown must stay wherever Obsidian points at it, but this directory is derived/rebuildable, so pointing it at fast local disk helps when the vault lives on slow, remote, or virtualized storage (a Windows drive crossed from WSL2, a NAS, a Dropbox mount). `~` is expanded; a relative path resolves against `vault_root`. Same knob is settable as a top-level `weave_dir` key in `vault/config/config.toml` (see the "User configuration layout" section of [ARCHITECTURE.md](../ARCHITECTURE.md)); this env var wins when both are set.
 - `OPENAI_API_KEY` — required by embeddings (`weave index --embed`), the ChatGPT importer, and the hub batch backfill (`weave hubs link --via batch`).
 
-After upgrading Thinkweave, re-run `weave hooks install` to pick up newly-added hooks (e.g. SessionStart).
+For a dev-link upgrade, close every Claude Code session, run `git pull` and `uv sync --extra mcp`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.

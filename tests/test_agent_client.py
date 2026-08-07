@@ -174,22 +174,23 @@ def test_get_completion_unknown_provider_raises(patched_sdk):
         )
 
 
-def test_get_completion_missing_key_raises(patched_sdk, monkeypatch):
+def test_get_completion_missing_key_raises(patched_sdk, monkeypatch, tmp_path):
     # Strip the openai key so the wrapper has nothing to use.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     # Also isolate .env lookup paths so we don't accidentally pick up
-    # the project root's real key.
+    # the project root's real key. ``tmp_path`` (not
+    # ``tempfile.TemporaryDirectory``) because ``monkeypatch.chdir`` is
+    # only undone at fixture teardown: on Windows the live process CWD
+    # keeps an open handle on the directory, so an eager rmtree inside
+    # the test body fails with WinError 32.
     from thinkweave.core import api_keys
-    monkeypatch.setattr(api_keys, "_PROJECT_ROOT", monkeypatch.__class__.__module__)  # placeholder; replaced below
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        monkeypatch.setattr(api_keys, "_PROJECT_ROOT", __import__("pathlib").Path(td))
-        monkeypatch.chdir(td)
-        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
-        with pytest.raises(ProviderError, match="no API key found"):
-            asyncio.run(
-                get_completion("p", provider="openai", model="m")
-            )
+    monkeypatch.setattr(api_keys, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+    with pytest.raises(ProviderError, match="no API key found"):
+        asyncio.run(
+            get_completion("p", provider="openai", model="m")
+        )
 
 
 def test_get_completion_builds_messages_with_system_prompt(patched_sdk):

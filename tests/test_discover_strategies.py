@@ -8,6 +8,7 @@ spawn LLMs.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -242,7 +243,10 @@ class TestExternalToolRunner:
             "projects": {
                 "trade_ideas": {
                     "external_tool_runner": {
-                        "tools": [["python3", str(script)]],
+                        # sys.executable, not "python3" — the latter is
+                        # not on PATH on Windows, so the tool would be
+                        # silently dropped and the test pass vacuously.
+                        "tools": [[sys.executable, str(script)]],
                     }
                 }
             }
@@ -263,7 +267,7 @@ class TestExternalToolRunner:
             "projects": {
                 "default": {
                     "external_tool_runner": {
-                        "tools": [["python3", str(script)]],
+                        "tools": [[sys.executable, str(script)]],
                     }
                 }
             }
@@ -295,7 +299,13 @@ class TestExternalToolRunner:
             "projects": {
                 "default": {
                     "external_tool_runner": {
-                        "tools": [{"command": f"python3 {script}"}],
+                        # Quoted so the interpreter/script paths survive the
+                        # split even when they contain spaces. On Windows they
+                        # also contain backslashes, which POSIX-mode
+                        # shlex.split would eat — _split_command handles both.
+                        "tools": [
+                            {"command": f'"{sys.executable}" "{script}"'}
+                        ],
                     }
                 }
             }
@@ -310,19 +320,27 @@ class TestExternalToolRunner:
 def _seed_probe_events(
     config: Config, project: str, prompts: list[str]
 ) -> None:
-    """Write a session events.jsonl with the given prompt texts; each is
-    framed as a question so ``classify_probe`` flags it as ``probe``."""
+    """Write a session events.jsonl with the given prompt texts, each paired
+    with the ``probe`` verdict event the wrap LLM would have written
+    (#101 — probe classification is persisted, not heuristic)."""
     import datetime as _dt
     sess_dir = config.vault_root / "projects" / project / "sessions" / "ses-pp"
     sess_dir.mkdir(parents=True, exist_ok=True)
     now = _dt.datetime.now(_dt.timezone.utc)
     rows = []
     for i, text in enumerate(prompts):
+        ts = (now - _dt.timedelta(days=1, minutes=i)).isoformat()
         rows.append({
             "type": "prompt",
             "text": text,
             "session_id": "cc-pp",
-            "ts": (now - _dt.timedelta(days=1, minutes=i)).isoformat(),
+            "ts": ts,
+        })
+        rows.append({
+            "type": "probe",
+            "session_id": "cc-pp",
+            "ts": ts,
+            "prompt_ref": text[:120],
         })
     (sess_dir / "events.jsonl").write_text(
         "\n".join(json.dumps(r) for r in rows) + "\n",

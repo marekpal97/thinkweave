@@ -16,15 +16,26 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from thinkweave.core import mcp_config
 from thinkweave.core.harness import active as _profile
 
+# Borrowed from the installer so the doctor's Windows gate and the remedy it
+# prints are the same ones the installer acts on.
+from thinkweave.surfaces.cli.install import _detect_project_root, _is_windows
+
 SERVER_NAME = "thinkweave"
+
+# Extensions a direct CreateProcess can launch on Windows. Deliberately a
+# closed set rather than a read of %PATHEXT%: this decides whether a *shell-less*
+# MCP spawn can run the file, and the entries a user has added to PATHEXT (.py,
+# .ps1) are resolved by the shell, not by CreateProcess.
+_WIN_EXEC_SUFFIXES = frozenset({".cmd", ".bat", ".exe", ".com"})
 
 # The three harness-scoped locations the doctor inspects, all read from the
 # active profile: the machine-scope MCP config, plus the two HOME-scoped plugin
@@ -69,6 +80,18 @@ def _safe_load_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _mcp_servers(data: dict[str, Any]) -> dict[str, Any]:
+    """Return the ``mcpServers`` block if it's an inline dict, else ``{}``.
+
+    The plugin manifest schema also allows ``mcpServers`` to be a *string*
+    path to an external file (e.g. Atlassian's ``"./.mcp.json"``) — the
+    doctor only inspects inline blocks, so an external-file reference is
+    treated as declaring nothing here rather than crashing.
+    """
+    servers = data.get("mcpServers", {})
+    return servers if isinstance(servers, dict) else {}
 
 
 def _safe_read_entry(path: Path) -> dict | None:
@@ -144,13 +167,33 @@ def _entries_from_plugin_manifests(cwd: Path) -> list[tuple[Path, dict]]:
         data = _safe_load_json(path)
         if data is None:
             continue
-        entry = data.get("mcpServers", {}).get(SERVER_NAME)
+        entry = _mcp_servers(data).get(SERVER_NAME)
         if entry is not None:
             entries.append((path, entry))
     return entries
 
 
-# ---------- checks ----------
+def _command_stem(command: str) -> str:
+    """A command's basename, with a Windows executable suffix normalised away.
+
+    ``_detect_uv_path`` stores ``shutil.which("uv")``, which on Windows is
+    ``C:\\…\\uv.EXE`` — uppercase suffix included. A plain basename therefore
+    fingerprinted the machine entry as ``uv.EXE`` while the launcher branch
+    below produced ``uv``, so any Windows install carrying BOTH a machine entry
+    and the committed ``.mcp.json`` was reported as a cross-scope conflict that
+    did not exist.
+
+    Stripping ``.cmd`` is the same normalisation seen from the other side: the
+    ``.cmd`` launcher and its extensionless POSIX sibling are two
+    implementations of one command and must fingerprint alike.
+    """
+    name = Path(command).name
+    suffix = Path(name).suffix.lower()
+    if suffix in _WIN_EXEC_SUFFIXES:
+        name = name[: -len(suffix)]
+    # Windows paths are case-insensitive, so `UV.EXE` and `uv` are one command
+    # there. On POSIX they are genuinely two, and case is left alone.
+    return name.casefold() if sys.platform == "win32" else name
 
 
 def _key(entry: dict) -> tuple:
@@ -160,8 +203,14 @@ def _key(entry: dict) -> tuple:
     normalised to a sentinel — absolute paths, relative ``.``, and
     ``${CLAUDE_PLUGIN_ROOT}`` are all the *same* invocation shape,
     differing only by which scope is launching it.
+
+    ``--no-sync`` is dropped for the same reason: it changes how uv *prepares*
+    the environment, not what gets launched into it. The machine-scope entry
+    passes it (``weave install`` has already synced) and the portable launchers
+    do not (they bootstrap the plugin route), so without this the two would
+    report a phantom cross-scope conflict.
     """
-    cmd = Path(entry.get("command", "")).name
+    cmd = _command_stem(entry.get("command", ""))
     raw_args = list(entry.get("args", []))
     norm: list[str] = []
     i = 0
@@ -170,8 +219,13 @@ def _key(entry: dict) -> tuple:
             norm.extend(["--project", "<scope-specific>"])
             i += 2
             continue
+        if raw_args[i] == "--no-sync":
+            i += 1
+            continue
         norm.append(raw_args[i])
         i += 1
+    # `_command_stem` has already folded the native-Windows `.cmd` launcher onto
+    # its POSIX sibling's name — they are one command, two implementations.
     if cmd == "weave-mcp-launch":
         # The portable launcher (#52) IS the canonical uv-run invocation —
         # it resolves uv and execs `uv run --project <root> --extra mcp
@@ -181,7 +235,8 @@ def _key(entry: dict) -> tuple:
             "uv",
             (
                 "run", "--project", "<scope-specific>",
-                "--extra", "mcp", "weave-mcp",
+                "--extra", "mcp", "python", "-m",
+                "thinkweave.surfaces.mcp.server",
                 *norm,
             ),
         )
@@ -317,6 +372,34 @@ def check_hook_scope(cwd: Path) -> CheckResult:
     )
 
 
+def _git_bash_path(path: Path) -> str:
+    """Translate an absolute Windows path for Git Bash."""
+    value = path.resolve().as_posix()
+    return f"/{value[0].lower()}{value[2:]}"
+
+
+def _launcher_probe_argv(resolved: str, args: list[str]) -> list[str]:
+    """Run POSIX launcher shims through Git Bash on Windows."""
+    argv = [resolved, *args]
+    if os.name != "nt":
+        return argv
+
+    path = Path(resolved)
+    try:
+        is_shell_script = path.is_file() and path.read_bytes()[:2] == b"#!"
+    except OSError:
+        is_shell_script = False
+    if not is_shell_script:
+        return argv
+
+    git = shutil.which("git")
+    if not git:
+        return argv
+    bash = Path(git).resolve().parents[1] / "bin" / "bash.exe"
+    if not bash.is_file():
+        return argv
+    return [str(bash), _git_bash_path(path), *args]
+
 def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
     """Resolve the most-specific entry's command and try a quick launch.
 
@@ -386,6 +469,14 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
                     "the exec bit"
                 ),
             )
+        # NB: do NOT reject an extensionless command on Windows. It is tempting
+        # — a raw CreateProcess cannot spawn a `#!/bin/sh` file, and
+        # `os.access(X_OK)` says yes to any existing file there, so this looks
+        # like a false green. It is not: Claude Code resolves an MCP `command`
+        # through a shell (Git Bash, per CLAUDE_CODE_GIT_BASH_PATH), and
+        # `claude mcp list` reports the committed `bin/weave-mcp-launch` as
+        # Connected on native Windows. A gate here turns a working install into
+        # a red doctor, which is strictly worse than the imagined false green.
         resolved = str(cmd_path)
     else:
         resolved = shutil.which(cmd) or cmd
@@ -401,8 +492,9 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
             )
 
     try:
+        probe_argv = _launcher_probe_argv(resolved, expanded)
         proc = subprocess.run(
-            [resolved, *expanded],
+            probe_argv,
             timeout=timeout_s,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -420,14 +512,16 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
                 f"(from {source}) spawned a process awaiting stdin"
             ),
         )
-    except FileNotFoundError as exc:
+    except OSError as exc:
         return CheckResult(
             name="launcher resolves",
             passed=False,
             detail=f"could not exec `{resolved}` (from {source}): {exc}",
-            fix="install uv or re-run `weave install --yes`",
+            fix=(
+                "install Git for Windows when the launcher is a POSIX shell "
+                "script, or re-run `weave install --yes`"
+            ),
         )
-
     # The process actually exited inside the timeout — that's a failure
     # for an MCP stdio server (it should idle on stdin).
     if proc.returncode == 0:
@@ -508,6 +602,98 @@ def check_weave_mcp_on_path() -> CheckResult:
     )
 
 
+#: How long a `weave --help` probe may take. Generous because the plugin
+#: route's shim is a bare `uv run`, which cold-syncs dependencies on first call.
+_WEAVE_CLI_PROBE_TIMEOUT = 60
+
+
+def _weave_cli_fix() -> str:
+    """The one remedy that does not itself need ``weave`` on PATH."""
+    return (
+        f"run `uv run --project {_detect_project_root()} weave install "
+        f"--yes --harness codex`"
+    )
+
+
+def check_weave_cli() -> CheckResult:
+    """Verify that bare ``weave`` resolves and imports in this sandbox.
+
+    Hard-failing only on Windows, where the installer has a real remedy for a
+    missing ``weave`` (it writes the launcher and edits the user PATH in the
+    registry). On POSIX it has neither — ``_advise_scripts_path`` deliberately
+    declines to persist PATH there — so a failure is reported informationally
+    rather than reddening the whole report over something the fix can't fix.
+    """
+    result = _probe_weave_cli()
+    if result.passed or _is_windows():
+        return result
+    return replace(
+        result,
+        passed=True,
+        detail=f"{result.detail} (informational on this OS)",
+        fix="",
+    )
+
+
+def _probe_weave_cli() -> CheckResult:
+    """Resolve and run bare ``weave``, ignoring how bad a failure is."""
+    found = shutil.which("weave")
+    if not found:
+        return CheckResult(
+            name="weave CLI",
+            passed=False,
+            detail="`weave` is not on PATH",
+            fix=_weave_cli_fix(),
+        )
+    try:
+        proc = subprocess.run(
+            [found, "--help"],
+            timeout=_WEAVE_CLI_PROBE_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        # Slow is not broken: the shim may be resolving dependencies.
+        return CheckResult(
+            name="weave CLI",
+            passed=True,
+            detail=(
+                f"resolves at {found} but `--help` did not finish in "
+                f"{_WEAVE_CLI_PROBE_TIMEOUT}s (may still be syncing dependencies)"
+            ),
+        )
+    except OSError as exc:
+        return CheckResult(
+            name="weave CLI",
+            passed=False,
+            detail=f"`weave` resolves to {found} but cannot execute: {exc}",
+            fix=_weave_cli_fix(),
+        )
+    if proc.returncode == 0:
+        return CheckResult(
+            name="weave CLI", passed=True, detail=f"resolves and imports at {found}"
+        )
+    stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+    import_failure = any(
+        marker in stderr.casefold() for marker in ("modulenotfounderror", "importerror")
+    )
+    detail = (
+        f"`weave` resolves to {found} but cannot import under the current sandbox"
+        if import_failure
+        else (
+            f"`weave` resolves to {found} but exits {proc.returncode}: {stderr[-200:] or '<empty>'}"
+        )
+    )
+    return CheckResult(
+        name="weave CLI",
+        passed=False,
+        detail=detail,
+        fix=_weave_cli_fix(),
+    )
+
+
 # ---------- top-level driver ----------
 
 
@@ -523,6 +709,7 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # Code report is unchanged.
     if _profile().hooks_global_only:
         result.checks.append(check_hook_scope(cwd))
+        result.checks.append(check_weave_cli())
     result.checks.append(check_vault_env())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)

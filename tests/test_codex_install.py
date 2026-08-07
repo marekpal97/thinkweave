@@ -24,7 +24,17 @@ test:
 
   — no ``type`` key, and ``codex exec --strict-config`` *rejects* one
   (``unknown configuration field mcp_servers.thinkweave.type``). The same run
-  confirmed Codex accepts the equivalent inline ``env = { … }`` table.
+  confirmed Codex accepts the equivalent inline ``env = { … }`` table. That run
+  was on POSIX; the expected *shape* is the invariant, so the paths inside it
+  are substituted per platform (see ``EXPECTED_CONFIG_TOML``) — on Windows they
+  carry the ``\\\\`` escaping a TOML basic string requires for a backslash.
+
+  One deliberate divergence from that transcript: thinkweave writes
+  ``--no-sync`` into ``args``, which ``codex mcp add`` had no reason to. It is
+  safe because ``weave install`` has already run ``uv sync`` eagerly, and it
+  matters most on Windows, where a re-sync at spawn time can hit a sharing
+  violation trying to rewrite ``weave-mcp.exe`` under a live server. See
+  ``_build_server_entry``.
 * ``codex exec --help`` (0.146.0) for the invocation shape: prompt is
   positional, ``--model``/``-m``, ``--dangerously-bypass-approvals-and-sandbox``.
 * https://learn.chatgpt.com/docs/extend/mcp for ``mcp_servers`` and the
@@ -37,6 +47,7 @@ dir, and the suite-wide ``_sandbox_harness_home`` fixture is the backstop.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -48,23 +59,43 @@ import pytest
 from thinkweave.core import harness
 from thinkweave.surfaces.cli import install as install_mod
 
+_WINDOWS = os.name == "nt"
+
+# The two machine-dependent values the `installable` fixture pins, and the vault
+# the install bakes in. Platform-shaped: `_detect_project_root` returns a
+# `Path`, which the writer renders via `str()`, so a POSIX literal would come
+# back out of a `WindowsPath` spelt with backslashes. Using a native path per
+# platform keeps the fixture honest about what the product is actually handed.
+UV_PATH = r"C:\tools\uv.exe" if _WINDOWS else "/usr/bin/uv"
+PROJECT_ROOT = Path(r"C:\srv\thinkweave") if _WINDOWS else Path("/srv/thinkweave")
+VAULT_PATH = r"C:\srv\vault" if _WINDOWS else "/srv/vault"
+
+# …and the TOML those spell, written out by hand rather than derived from the
+# writer. Per the TOML spec a literal backslash inside a basic string is `\\`,
+# so the Windows column doubles as the regression pin for path escaping — the
+# thing that would otherwise hand `codex exec --strict-config` an invalid file.
+_UV_TOML = r'"C:\\tools\\uv.exe"' if _WINDOWS else '"/usr/bin/uv"'
+_ROOT_TOML = r'"C:\\srv\\thinkweave"' if _WINDOWS else '"/srv/thinkweave"'
+_VAULT_TOML = r'"C:\\srv\\vault"' if _WINDOWS else '"/srv/vault"'
+
 # The exact table `codex mcp add` emitted, transcribed by hand from that run —
 # `env` inlined, which the same CLI accepted on read-back. No `type` key.
-EXPECTED_CONFIG_TOML = """\
+EXPECTED_CONFIG_TOML = f"""\
 [mcp_servers.thinkweave]
-command = "/usr/bin/uv"
-args = ["run", "--project", "/srv/thinkweave", "--extra", "mcp", "weave-mcp"]
+command = {_UV_TOML}
+args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-m", "thinkweave.surfaces.mcp.server"]
 """
 
-EXPECTED_CONFIG_TOML_WITH_VAULT = """\
+EXPECTED_CONFIG_TOML_WITH_VAULT = f"""\
 [mcp_servers.thinkweave]
-command = "/usr/bin/uv"
-args = ["run", "--project", "/srv/thinkweave", "--extra", "mcp", "weave-mcp"]
-env = { "THINKWEAVE_VAULT" = "/srv/vault" }
+command = {_UV_TOML}
+args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-m", "thinkweave.surfaces.mcp.server"]
+env = {{ "THINKWEAVE_VAULT" = {_VAULT_TOML} }}
 """
 
+CODEX_BIN = shutil.which("codex")
 needs_codex = pytest.mark.skipif(
-    shutil.which("codex") is None, reason="Codex CLI not installed on this machine"
+    CODEX_BIN is None, reason="Codex CLI not installed on this machine"
 )
 
 
@@ -78,10 +109,11 @@ def installable(monkeypatch: pytest.MonkeyPatch, stub_install_validators) -> Non
         "_check_scripts",
         lambda: install_mod.ScriptsCheck("ok", [], Path("/unused")),
     )
-    monkeypatch.setattr(install_mod, "_detect_uv_path", lambda: "/usr/bin/uv")
-    monkeypatch.setattr(
-        install_mod, "_detect_project_root", lambda: Path("/srv/thinkweave")
-    )
+    monkeypatch.setattr(install_mod, "_detect_uv_path", lambda: UV_PATH)
+    monkeypatch.setattr(install_mod, "_detect_project_root", lambda: PROJECT_ROOT)
+    # User-PATH persistence is integration-tested by #164's bootstrap suite;
+    # config-writer tests must never touch the developer's registry.
+    monkeypatch.setattr(install_mod, "_prepend_windows_user_path", lambda _path: None)
 
 
 def _install(**kw) -> None:
@@ -142,6 +174,58 @@ class TestCodexProfile:
             False,
             False,
         )
+
+
+class TestNextSteps:
+    """The post-install screen must only name things the active harness can do.
+
+    It ended with "3. /onboard" for every harness. thinkweave ships no Codex
+    skill bundle, so on Codex that command does not exist — the one screen whose
+    entire job is telling the user what to do next was naming something
+    unrunnable.
+    """
+
+    def test_codex_does_not_advertise_the_onboard_skill(
+        self, codex_home: Path, capsys
+    ):
+        install_mod._print_next_steps()
+        out = capsys.readouterr().out
+        assert "/onboard" not in out
+        # …and says what to do instead, via the CLI that does exist.
+        assert "weave init" in out
+        assert "weave hooks install --scope user --harness codex" in out
+        assert "restart codex" in out.lower()
+
+    def test_claude_code_output_is_unchanged(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(harness, "_OVERRIDE", harness.claude_code(home=tmp_path))
+        install_mod._print_next_steps()
+        out = capsys.readouterr().out
+        assert "/onboard" in out
+        assert "weave hooks install" not in out
+
+    def test_the_fallback_names_only_real_subcommands(
+        self, codex_home: Path, capsys
+    ):
+        """A next-step naming a command that does not parse would repeat the
+        original bug in a new spelling, so the advice is checked against the
+        actual CLI parser."""
+        from thinkweave.surfaces.cli import build_parser
+
+        install_mod._print_next_steps()
+        out = capsys.readouterr().out
+
+        parser = build_parser()
+        known: set[str] = set()
+        for action in parser._actions:
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict):
+                known.update(choices)
+        assert known, "could not introspect the CLI subcommands"
+        for line in out.splitlines():
+            stripped = line.strip().lstrip("0123456789. ")
+            if stripped.startswith("weave "):
+                verb = stripped.split()[1]
+                assert verb in known, f"next-step names unknown subcommand: {verb}"
 
 
 class TestCodexHeadlessArgv:
@@ -258,7 +342,7 @@ class TestConfigTomlWriter:
         )
 
     def test_vault_lands_in_an_env_table(self, codex_home: Path, installable):
-        _install(vault="/srv/vault")
+        _install(vault=VAULT_PATH)
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
             EXPECTED_CONFIG_TOML_WITH_VAULT
         )
@@ -302,15 +386,18 @@ class TestConfigTomlWriter:
         assert text.count("[mcp_servers.thinkweave]") == 1
         assert "uvx" not in text
         assert tomllib.loads(text)["mcp_servers"]["thinkweave"] == {
-            "command": "/usr/bin/uv",
-            "args": ["run", "--project", "/srv/thinkweave", "--extra", "mcp",
-                     "weave-mcp"],
+            "command": UV_PATH,
+            "args": ["run", "--no-sync", "--project", str(PROJECT_ROOT),
+                     "--extra", "mcp", "python", "-m",
+                     "thinkweave.surfaces.mcp.server"],
         }
 
         out = capsys.readouterr().out
         assert "differs" in out
         assert "uvx" in out  # the old shape…
-        assert "/usr/bin/uv" in out  # …and the new one
+        # …and the new one. The drift report renders the entry as JSON, so the
+        # path appears in its JSON spelling — on Windows, backslash-escaped.
+        assert json.dumps(UV_PATH) in out
 
     def test_drifted_install_needs_consent(self, codex_home: Path, installable):
         (codex_home / "config.toml").write_text(
@@ -447,6 +534,15 @@ class TestConfigTomlWriter:
         # …and the file it could not edit is exactly as it was.
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == prior
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason=(
+            "Windows has no POSIX mode bits: os.chmod honours only the "
+            "read-only flag, so `chmod(0o600)` reads back as 0o666 and the "
+            "0600 guarantee is not expressible. The product still performs the "
+            "chmod (harmless on Windows, load-bearing on POSIX)."
+        ),
+    )
     def test_the_file_mode_is_preserved(self, codex_home: Path, installable):
         """Codex creates config.toml 0600 and it can carry env secrets —
         rewriting it must not widen that to the umask default."""
@@ -471,9 +567,9 @@ class TestConfigTomlWriter:
     ):
         """The strongest available check that criterion 1 holds: hand the file
         to the real Codex CLI and ask it to resolve the server."""
-        _install(vault="/srv/vault")
+        _install(vault=VAULT_PATH)
         proc = subprocess.run(
-            ["codex", "mcp", "get", "thinkweave"],
+            [CODEX_BIN, "mcp", "get", "thinkweave"],
             env={**os.environ, "CODEX_HOME": str(codex_home)},
             capture_output=True,
             text=True,
@@ -481,7 +577,7 @@ class TestConfigTomlWriter:
         )
         assert proc.returncode == 0, proc.stderr
         assert "transport: stdio" in proc.stdout
-        assert "command: /usr/bin/uv" in proc.stdout
+        assert f"command: {UV_PATH}" in proc.stdout
 
 
 class TestUninstallAndPauseRoundTrip:
