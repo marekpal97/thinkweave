@@ -9,6 +9,7 @@ import pytest
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
+from thinkweave import retrieval
 from thinkweave.retrieval.search import Search, SearchResult
 from thinkweave.core.vault import VaultManager
 
@@ -496,10 +497,10 @@ class TestDecisionFiles:
 
 
 class TestHybridSearch:
-    def test_hybrid_falls_back_to_fts_when_embeddings_missing(
+    def test_hybrid_reports_when_embeddings_are_missing_instead_of_faking_fts(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        """Without embeddings configured, hybrid_search should return FTS-only."""
+        """A hybrid request must not be indistinguishable from FTS-only."""
         vault.create_note(
             NoteType.NOTE,
             "The retrieval note",
@@ -509,23 +510,22 @@ class TestHybridSearch:
         indexer.rebuild(full=True)
 
         s = Search(config=config)
-        # No OPENAI_API_KEY, no embeddings.db → semantic path soft-fails
-        results = s.hybrid_search("retrieval", project="p1")
-        titles = [r.title for r in results]
-        assert "The retrieval note" in titles
+        with pytest.raises(retrieval.SemanticSearchUnavailable) as exc:
+            s.hybrid_search("retrieval", project="p1")
+        assert "weave index --embed" in str(exc.value)
         s.close()
 
-    def test_similar_soft_fails_without_embeddings(
+    def test_similar_reports_missing_embeddings(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
-        """Search.similar() should return [] instead of raising when embeddings
-        aren't set up — no API key, no embeddings.db."""
+        """Missing setup is different from a valid query with no hits."""
         vault.create_note(NoteType.NOTE, "Something", project="p1")
         indexer.rebuild(full=True)
 
         s = Search(config=config)
-        results = s.similar("anything", project="p1")
-        assert results == []
+        with pytest.raises(retrieval.SemanticSearchUnavailable) as exc:
+            s.similar("anything", project="p1")
+        assert "weave index --embed" in str(exc.value)
         s.close()
 
     def test_rrf_fusion_prefers_intersections(self):

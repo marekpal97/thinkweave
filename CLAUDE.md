@@ -11,7 +11,7 @@ Thinkweave is an Obsidian-native memory layer: markdown is the source of truth, 
 Three modalities, plus compositions on top.
 
 - **FTS** — `weave_search(query, mode='fts')`. Keyword/phrase. Cheap. Empty `query` returns recent matches honouring filters (list mode).
-- **Similarity** — `weave_search(query, mode='similar')`. Concept-shaped query, no keyword. Soft-fails to FTS when embeddings unavailable.
+- **Similarity** — `weave_search(query, mode='similar')`. Concept-shaped query, no keyword. Reports setup or trust failures explicitly.
 - **Hybrid** — `weave_search(query, mode='hybrid')`. Unsure → RRF fusion (k from `retrieval.rrf_k`, default 60).
 - **Graph** — `weave_graph(id, depth, filter=…)`. Structural walk over typed edges. Filter dispatches the variant: `''` (default — walk from `id`), `'source_lens'`, `'decisions_for_file'`, `'concept_walk'`. The legacy alias tools (`weave_source_lens`, `weave_decisions_for_file`, `weave_concept_search`) were deleted 2026-05-21 — call the canonical name.
 

@@ -674,7 +674,7 @@ def _build_footer() -> Section:
     body = (
         "Retrieval is three modalities. Pick by what you have:\n"
         "- **FTS** — keyword/phrase. `weave_search(query, mode='fts')`. Cheap. Empty query = list mode.\n"
-        "- **Similarity** — concept-shaped query, no keyword. `weave_search(query, mode='similar')`. Soft-fails to FTS when embeddings unavailable.\n"
+        "- **Similarity** — concept-shaped query, no keyword. `weave_search(query, mode='similar')`. Setup and trust failures are explicit.\n"
         "- **Hybrid** — unsure → RRF fusion. `weave_search(query, mode='hybrid')`.\n"
         "- **Graph** — structural walk. `weave_graph(id, depth, filter=…)` dispatches the variant: "
         "`''` (walk from id), `'source_lens'`, `'decisions_for_file'`, `'concept_walk'`.\n"
