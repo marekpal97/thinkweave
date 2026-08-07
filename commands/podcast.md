@@ -5,6 +5,8 @@ source_type: podcast-events, podcast-concepts
 capabilities: [acquire]
 consumes: [weave_sources_config, weave_queue]
 produces: [vault/.weave/queues/podcast-events.jsonl, vault/.weave/queues/podcast-concepts.jsonl, vault/sources/podcast-events/**, vault/sources/podcast-concepts/**]
+workers:
+  - research-podcast-worker
 tools:
   - Read
   - Bash

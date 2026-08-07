@@ -1,10 +1,14 @@
 # Thinkweave — Skills & subagent workers
 
-The full catalog of Claude Code skills (`commands/*.md`), the subagent-worker roster (`agents/*.md`), and the dual-route (`--via inline|batch`) convention. The thin operating guide is [CLAUDE.md](../CLAUDE.md); structural narrative is [ARCHITECTURE.md](../ARCHITECTURE.md).
+The full cross-harness skill catalog, the shared subagent-worker roster, and
+the dual-route (`--via inline|batch`) convention. The thin operating guide is
+[CLAUDE.md](../CLAUDE.md); structural narrative is
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Table of contents
 
 - [Skills catalog](#skills-catalog)
+- [Harness projections](#harness-projections)
 - [Dual-route convention](#dual-route-convention)
 - [Subagent workers](#subagent-workers)
 
@@ -37,6 +41,38 @@ Generated from `commands/*.md` frontmatter. Re-run `weave skill list` to regener
 | `/hubs-link` | hubs_linkage_inline | — | — | Inline temporal-DAG linkage for concept hubs. The `weave hubs link --via inline` route; pairs with `--via batch`. |
 | `/judge-prediction` | prediction_judging | — | — | Predicted-outcome judge — the running session IS the judge (no API call). Invoked live by `/wrap` on supersession, headlessly by `dream-judge-worker`, or manually via `weave judge --rejudge`. See [Lifecycles §Decision](LIFECYCLES.md#predicted-outcome-rlvr-substrate). |
 
+## Harness projections
+
+`commands/**/*.md` is the single semantic source for the 27 supported
+interactive workflows. Claude Code consumes those contracts directly as
+`/<name>` (or `/thinkweave:<name>` on the plugin route). Codex discovers the
+generated adapters under `skills/` as `$thinkweave-<name>`; each adapter links
+back to its canonical command and translates only tool and invocation
+vocabulary. `thinkweave-recall` is an additional read-only Codex convenience
+skill rather than a second definition of an existing command.
+
+Worker fan-out is **declared, never inferred**: a command that spawns workers
+lists them in a `workers:` frontmatter key, and the projector validates each
+name against `agents/*.md`. Prose that merely names a worker declares nothing —
+`/tighten` contrasts itself with the nightly `dream-merge-worker` and must not
+project a dispatch for it, while `/drain`'s fan-out lives in `sources.yaml`
+(`subagent_type`) and would never be found in the command text at all. Every
+key is otherwise inert; `weave skill list` ignores it.
+
+Regenerate the adapters after changing command frontmatter, names, or worker
+references:
+
+```bash
+python -m thinkweave.core.skill_projection
+```
+
+Each adapter is a `SKILL.md` plus an `agents/openai.yaml` sidecar declaring the
+`thinkweave` MCP dependency. `tests/test_codex_skills.py` rejects drift in both
+and requires every command and every worker contract to remain projected. Interactive Codex worker fan-out uses
+native `spawn_agent` / `followup_task` / `wait_agent`. `/dream` and `/drain`
+mark only unattended/headless orchestration as degraded pending #110; the
+skills remain visible and their interactive worker contracts are complete.
+
 ## Dual-route convention
 
 Three CLI subcommands take `--via {inline,batch}`: `weave import {claude-code|codex} --enrich`, `weave import chatgpt`, `weave hubs link`. `inline` = the corresponding CC skill above runs the work via the running model (no provider key required); `batch` = the wrapper (`core/agent_client.batch_completions_sync`) fans out N async completions to the configured provider (provider+model from `vault/config/api.yaml::overrides.<op>`). When `--via` is omitted, `operations/_backfill_route.choose_route` picks: explicit flag > size threshold + key presence > inline.
@@ -49,7 +85,14 @@ Three CLI subcommands take `--via {inline,batch}`: `weave import {claude-code|co
 
 ## Subagent workers
 
-The subagent workers live in `agents/*.md` (one `.claude/agents/<worker>.md` file each). They are not user-facing `/` skills — orchestrators (`/dream`, `/drain`, `/seed-enrich`) fan them out via the `Task` tool, each emitting a strict JSON outcome line. New workers plug in via one `DreamTaskSpec` registry entry plus one agent file — see [ARCHITECTURE.md §"Dream orchestrator"](../ARCHITECTURE.md#dream-orchestrator-two-phase-mirrors-drain).
+The subagent workers live in `agents/*.md`. Each file's body is the shared,
+harness-neutral semantic contract; its frontmatter is the Claude Code
+projection. Claude orchestrators dispatch it through `Task`. Codex adapters
+link the same file, read the body in full, and include it in a native
+`spawn_agent` message, so generic Codex subagents do not depend on an implicit
+custom-role install. Each worker still emits the same strict JSON outcome line.
+New dream workers plug in via one `DreamTaskSpec` registry entry plus one agent
+file — see [ARCHITECTURE.md §"Dream orchestrator"](../ARCHITECTURE.md#dream-orchestrator-two-phase-mirrors-drain).
 
 ### Dream phase-1 workers (synthesis — emit plan fragments)
 

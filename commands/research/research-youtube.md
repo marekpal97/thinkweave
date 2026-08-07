@@ -2,6 +2,8 @@
 name: research-youtube
 source_type: youtube-events, youtube-concepts
 capabilities: [import, acquire]
+workers:
+  - research-youtube-worker
 tools:
   - Read
   - Bash

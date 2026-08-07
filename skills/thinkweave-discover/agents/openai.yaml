@@ -1,0 +1,9 @@
+interface:
+  display_name: "ThinkWeave Discover"
+  short_description: "Strategy-driven discovery. Runs the configured strategy list; strategies emit ga"
+  default_prompt: "Use $thinkweave-discover to run this ThinkWeave workflow."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "thinkweave"
+      description: "ThinkWeave durable-memory tools"

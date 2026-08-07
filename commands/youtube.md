@@ -5,6 +5,8 @@ source_type: youtube-events, youtube-concepts
 capabilities: [acquire]
 consumes: [weave_sources_config, weave_queue]
 produces: [vault/.weave/queues/youtube-events.jsonl, vault/.weave/queues/youtube-concepts.jsonl, vault/sources/youtube-events/**, vault/sources/youtube-concepts/**]
+workers:
+  - research-youtube-worker
 tools:
   - Read
   - Bash

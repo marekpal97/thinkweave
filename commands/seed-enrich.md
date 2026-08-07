@@ -1,6 +1,8 @@
 ---
 description: Inline session synthesis — walk imported-but-unsynthesised coding-agent sessions (Claude Code and Codex, as separate per-source lanes) and compose a summary + insights + decisions via the running model, weave_extract one wrap-shaped session per transcript. Small backlogs run in-process; large ones deterministically fan out subagents. The keyless `--via inline` half of `weave import {claude-code|codex} --enrich`; pairs with `--via batch` which fans out through the API wrapper.
 allowed-tools: Task, Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read, mcp__thinkweave__weave_extract, mcp__thinkweave__weave_update
+workers:
+  - seed-enrich-worker
 ---
 
 # /seed-enrich — Inline session synthesis

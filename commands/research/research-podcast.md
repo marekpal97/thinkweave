@@ -2,6 +2,8 @@
 name: research-podcast
 source_type: podcast-events, podcast-concepts
 capabilities: [import, acquire]
+workers:
+  - research-podcast-worker
 tools:
   - Read
   - Bash

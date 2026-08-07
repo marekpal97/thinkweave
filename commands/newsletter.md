@@ -5,6 +5,8 @@ source_type: newsletter-events, newsletter-concepts
 capabilities: [acquire]
 consumes: [weave_sources_config, weave_queue, weave_search, weave_concepts, weave_create, weave_link]
 produces: [vault/.weave/queues/newsletter-events.jsonl, vault/.weave/queues/newsletter-concepts.jsonl, vault/sources/newsletter-events/**, vault/sources/newsletter-concepts/**]
+workers:
+  - research-newsletter-worker
 tools:
   - Read
   - Bash
