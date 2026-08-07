@@ -18,6 +18,7 @@ including that the phase argument survives.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -25,8 +26,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = REPO_ROOT / "bin" / "weave-hook-launch"
 
 # The launcher resolves its project root physically (`cd -P`), so symlinked
-# checkouts (dev-link route) compare against the realpath.
-PROJECT_ROOT_PHYSICAL = Path(os.path.realpath(REPO_ROOT))
+# checkouts (dev-link route) compare against the realpath. Git Bash paths
+# are used on Windows because these committed launchers are POSIX sh scripts.
+def _shell_path(path: Path) -> str:
+    resolved = Path(os.path.realpath(path)).as_posix()
+    if os.name == "nt":
+        return f"/{resolved[0].lower()}{resolved[2:]}"
+    return resolved
+
+PROJECT_ROOT_PHYSICAL = _shell_path(REPO_ROOT)
 
 # The phase argument a real hooks.json command passes; the launcher must
 # forward it verbatim to `weave-hook`.
@@ -35,7 +43,8 @@ PHASE = "session_start"
 # What the launcher must hand to uv — the fire-time-resolution shape, with the
 # root made absolute and the phase passed through.
 EXPECTED_UV_ARGV = (
-    f"run --project {PROJECT_ROOT_PHYSICAL} --extra mcp weave-hook {PHASE}"
+    f"run --no-sync --project {PROJECT_ROOT_PHYSICAL} --extra mcp "
+    f"python -m thinkweave.surfaces.hooks.handler {PHASE}"
 )
 
 # The actionable one-line failure contract.
@@ -59,11 +68,21 @@ def _make_fake_uv(directory: Path) -> Path:
     return fake
 
 
+def _launcher_command(*args: str) -> list[str]:
+    if os.name != "nt":
+        return [str(LAUNCHER), *args]
+    git = shutil.which("git")
+    assert git, "Git Bash is required to exercise POSIX launchers on Windows"
+    bash = Path(git).resolve().parents[1] / "bin" / "bash.exe"
+    assert bash.is_file(), f"Git Bash not found beside {git}"
+    return [str(bash), _shell_path(LAUNCHER), *args]
+
+
 def _run_launcher(
     env: dict[str, str], cwd: Path, *args: str
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [str(LAUNCHER), *args],
+        _launcher_command(*args),
         env=env,
         cwd=cwd,
         capture_output=True,
@@ -86,7 +105,7 @@ class TestUvResolution:
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == f"{fake} {EXPECTED_UV_ARGV}"
+        assert result.stdout.strip() == f"{_shell_path(fake)} {EXPECTED_UV_ARGV}"
 
     def test_uv_resolved_from_home_local_bin_when_not_on_path(self, tmp_path):
         empty_path_dir = tmp_path / "emptypath"
@@ -101,7 +120,7 @@ class TestUvResolution:
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == f"{fake} {EXPECTED_UV_ARGV}"
+        assert result.stdout.strip() == f"{_shell_path(fake)} {EXPECTED_UV_ARGV}"
 
     def test_uv_resolved_from_uv_install_dir_as_last_resort(self, tmp_path):
         empty_path_dir = tmp_path / "emptypath"
@@ -117,14 +136,14 @@ class TestUvResolution:
             {
                 "PATH": str(empty_path_dir),
                 "HOME": str(home),
-                "UV_INSTALL_DIR": str(install_dir),
+                "UV_INSTALL_DIR": _shell_path(install_dir),
             },
             cwd,
             PHASE,
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == f"{fake} {EXPECTED_UV_ARGV}"
+        assert result.stdout.strip() == f"{_shell_path(fake)} {EXPECTED_UV_ARGV}"
 
     def test_path_wins_over_home_local_bin(self, tmp_path):
         path_dir = tmp_path / "fakepath"
@@ -139,7 +158,7 @@ class TestUvResolution:
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == f"{path_fake} {EXPECTED_UV_ARGV}"
+        assert result.stdout.strip() == f"{_shell_path(path_fake)} {EXPECTED_UV_ARGV}"
 
 
 class TestLoudFailure:

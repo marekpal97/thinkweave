@@ -23,6 +23,7 @@ Provider matrix (initial set):
 
 from __future__ import annotations
 
+import ssl
 from typing import Any, Protocol, runtime_checkable
 
 from thinkweave.core.api_keys import get_provider_key
@@ -38,6 +39,10 @@ _KNOWN_DIMS: dict[tuple[str, str], int] = {
     ("sentence_transformer", "all-MiniLM-L6-v2"): 384,
     ("sentence_transformer", "all-mpnet-base-v2"): 768,
 }
+
+
+class EmbeddingCertificateError(RuntimeError):
+    """The embedding endpoint's certificate chain could not be trusted."""
 
 
 @runtime_checkable
@@ -92,18 +97,45 @@ class OpenAIEmbeddingProvider:
                 "project .env)."
             )
 
-        response = httpx.post(
-            self._API_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={"model": self._model, "input": texts},
-            timeout=30.0,
-        )
+        try:
+            response = httpx.post(
+                self._API_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": self._model, "input": texts},
+                timeout=30.0,
+                verify=ssl.create_default_context(),
+            )
+        except Exception as exc:
+            if not _is_certificate_error(exc):
+                raise
+            raise EmbeddingCertificateError(
+                "TLS certificate verification failed for OpenAI embeddings. "
+                "On Windows, add your organisation's CA to the Windows Trusted "
+                "Root store; on any platform, SSL_CERT_FILE may point to a PEM "
+                "CA bundle. Restart the harness after changing trust settings. "
+                "Do not disable TLS verification."
+            ) from exc
         response.raise_for_status()
         data = response.json()
         return [item["embedding"] for item in data["data"]]
+
+
+def _is_certificate_error(exc: BaseException) -> bool:
+    """Recognise direct and httpx-wrapped certificate failures."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        message = str(current).lower()
+        if "certificate_verify_failed" in message or "self-signed certificate" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class SentenceTransformerProvider:

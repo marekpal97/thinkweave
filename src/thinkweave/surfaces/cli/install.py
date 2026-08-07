@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
+import os
 import re
 import shutil
 import subprocess
@@ -44,11 +46,25 @@ from thinkweave.core.harness import active as _profile
 SERVER_NAME = "thinkweave"
 REQUIRED_SCRIPTS = ("weave", "weave-hook", "weave-mcp")
 
+#: The stdio MCP server, addressed as a module. Every launch surface uses this
+#: rather than the ``weave-mcp`` console script — see ``_build_server_entry``.
+MCP_MODULE = "thinkweave.surfaces.mcp.server"
+
 # Every harness touchpoint this module reads or writes — the MCP config, the
 # instructions file, the plugins root, the dev-link target, the pause marker —
 # comes from the active profile. `_profile()` is the single read point, so a
 # `--harness` flag (#106) has exactly one place to interpose; the accessors
 # below just spell the individual fields at their call sites.
+
+
+def _is_windows() -> bool:
+    """The Windows gate, behind a function so tests can flip it.
+
+    Patching ``os.name`` instead would flip it for the whole process —
+    ``pathlib`` then hands out ``WindowsPath`` and every later ``Path(...)``
+    on a POSIX host raises.
+    """
+    return os.name == "nt"
 
 
 def _mcp_config() -> Path:
@@ -109,13 +125,42 @@ def _detect_project_root() -> Path:
 def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str, Any]:
     """Construct the canonical thinkweave server block.
 
-    Uses the ``weave-mcp`` console script (stable invocation, layout-
-    independent — see ARCHITECTURE.md §Invocation surface). The result is
+    Runs the server as a **module**, not via the ``weave-mcp`` console script.
+    The script is an ``.exe`` shim on Windows, and a ``uv`` sync interrupted by a
+    file lock deletes the shims before it fails — leaving a venv that imports
+    perfectly but has no ``weave-mcp.exe``, at which point a console-script entry
+    is permanently broken while ``python -m`` still works. Measured on
+    2026-08-03: editing ``pyproject.toml`` with a session running did exactly
+    that. Module execution depends only on the package being importable, which is
+    what ``uv run`` already guarantees. The result is
     normalised to whatever the harness's config *format* stores — Codex's TOML
     carries no ``type`` key — so that a re-read compares equal and a repeat
     install is a genuine no-op.
+
+    ``--no-sync`` is safe *here specifically* because ``cmd_install`` has
+    already run :func:`_uv_sync` eagerly, so the environment this entry launches
+    into is known-good at the moment it is written. Re-resolving at every
+    session start buys nothing and costs two ways: latency on a cold cache, and
+    on Windows a genuine hazard — ``uv run`` wants to rewrite
+    ``.venv\\Scripts\\weave-mcp.exe``, which fails with a sharing violation
+    while a previously-spawned server still holds that image open.
+
+    The portable launchers deliberately do NOT pass it. On the plugin route
+    nothing ever runs ``weave install``, so the launcher's implicit sync is that
+    route's only dependency bootstrap; ``mcp_doctor._key`` normalises the flag
+    away so the two shapes still fingerprint as one invocation.
     """
-    args = ["run", "--project", str(project_root), "--extra", "mcp", "weave-mcp"]
+    args = [
+        "run",
+        "--no-sync",
+        "--project",
+        str(project_root),
+        "--extra",
+        "mcp",
+        "python",
+        "-m",
+        MCP_MODULE,
+    ]
     entry: dict[str, Any] = {
         "type": "stdio",
         "command": _detect_uv_path(),
@@ -278,6 +323,156 @@ def _uv_sync(project_root: Path) -> None:
         )
         sys.exit(1)
     print("Dependencies synced.")
+
+
+def _venv_purelib() -> Path:
+    """Site-packages belonging to the environment running the installer."""
+    return Path(sysconfig.get_path("purelib"))
+
+
+def _base_python() -> Path:
+    """The interpreter the launcher runs. ``sys._base_executable`` names the
+    real interpreter behind a venv (what we want, since the launcher supplies
+    its own ``PYTHONPATH`` rather than going through the venv), but it is
+    private and absent on some builds — fall back to the running one."""
+    return Path(getattr(sys, "_base_executable", None) or sys.executable)
+
+
+def _render_codex_windows_cli_launcher(
+    *, project_root: Path, base_python: Path, purelib: Path
+) -> str:
+    """Render a CLI launcher that does not process the editable ``.pth``."""
+    pythonpath = f"{project_root / 'src'};{purelib}"
+    return (
+        "@echo off\n"
+        "setlocal EnableExtensions\n"
+        'set "PYTHONDONTWRITEBYTECODE=1"\n'
+        # An `if defined` guard rather than a bare `;%PYTHONPATH%` — an unset
+        # variable expands to nothing in a batch file, and the trailing `;`
+        # that leaves behind is an empty entry, which Python reads as the cwd.
+        f'if defined PYTHONPATH (set "PYTHONPATH={pythonpath};%PYTHONPATH%")'
+        f' else (set "PYTHONPATH={pythonpath}")\n'
+        f'"{base_python}" -S -m thinkweave %*\n'
+        "exit /b %ERRORLEVEL%\n"
+    )
+
+
+def _normalize_path_entry(entry: str) -> str:
+    """Comparable form of one Windows PATH entry: ``%VARS%`` expanded, case
+    folded, separators unified, trailing separator dropped — so ``C:\\x\\bin\\``
+    and ``c:/x/bin`` are recognised as the same directory. Windows rules come
+    from ``ntpath`` explicitly, which keeps the comparison testable off
+    Windows."""
+    return ntpath.normcase(ntpath.expandvars(entry)).rstrip("\\")
+
+
+def _prepend_path_value(current: str, wanted: str) -> str:
+    """``current`` with ``wanted`` in front, unchanged if it is already there."""
+    parts = [part for part in current.split(";") if part]
+    target = _normalize_path_entry(wanted)
+    if any(_normalize_path_entry(part) == target for part in parts):
+        return current
+    return ";".join([wanted, *parts])
+
+
+def _remove_path_value(current: str, unwanted: str) -> str:
+    """``current`` with every entry naming ``unwanted`` dropped."""
+    target = _normalize_path_entry(unwanted)
+    return ";".join(
+        part
+        for part in current.split(";")
+        if part and _normalize_path_entry(part) != target
+    )
+
+
+def _broadcast_environment_change() -> None:
+    """Tell running processes to re-read the environment.
+
+    A registry write alone reaches only processes started after the next
+    sign-in: Explorer caches the environment it hands to everything it
+    launches, a restarted Codex included.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        ctypes.windll.user32.SendMessageTimeoutW(
+            0xFFFF,  # HWND_BROADCAST
+            0x1A,  # WM_SETTINGCHANGE
+            0,
+            ctypes.c_wchar_p("Environment"),
+            0x2,  # SMTO_ABORTIFHUNG
+            5000,
+            ctypes.byref(wintypes.DWORD()),
+        )
+    except (AttributeError, OSError) as exc:
+        print(
+            f"note: could not broadcast the PATH change ({exc}). Already-running\n"
+            f"programs keep the old PATH — sign out of Windows and back in once.",
+            file=sys.stderr,
+        )
+
+
+def _edit_windows_user_path(directory: Path, *, remove: bool) -> bool:
+    """Add or drop ``directory`` in the current process's PATH and in the
+    persisted user PATH (``HKCU\\Environment``). Returns whether the persisted
+    value changed."""
+    import winreg
+
+    wanted = str(directory)
+    edit = _remove_path_value if remove else _prepend_path_value
+    os.environ["PATH"] = edit(os.environ.get("PATH", ""), wanted)
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER,
+        "Environment",
+        0,
+        winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+    ) as key:
+        try:
+            current, value_type = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            current, value_type = "", winreg.REG_EXPAND_SZ
+        updated = edit(current, wanted)
+        if updated == current:
+            return False
+        winreg.SetValueEx(key, "Path", 0, value_type, updated)
+    _broadcast_environment_change()
+    return True
+
+
+def _prepend_windows_user_path(directory: Path) -> None:
+    """Prepend ``directory`` to the current and future Windows user PATH."""
+    _edit_windows_user_path(directory, remove=False)
+
+
+def _remove_windows_user_path(directory: Path) -> bool:
+    """Drop ``directory`` from the current and future Windows user PATH."""
+    return _edit_windows_user_path(directory, remove=True)
+
+
+def _codex_windows_launcher() -> Path:
+    """Where the sandbox-safe bare ``weave`` command is installed."""
+    return _profile().mcp_config.parent / "bin" / "weave.cmd"
+
+
+def _install_codex_windows_cli(project_root: Path) -> Path | None:
+    """Install Codex's sandbox-safe bare ``weave`` command on Windows."""
+    if not _is_windows() or _profile().id != "codex":
+        return None
+    target = _codex_windows_launcher()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        _render_codex_windows_cli_launcher(
+            project_root=project_root,
+            base_python=_base_python(),
+            purelib=_venv_purelib(),
+        ),
+        encoding="utf-8",
+        newline="\r\n",
+    )
+    _prepend_windows_user_path(target.parent)
+    print(f"Installed sandbox-safe Codex CLI launcher at {target}.")
+    return target
 
 
 def _plugin_provides_mcp() -> Path | None:
@@ -524,6 +719,7 @@ def cmd_install(args: argparse.Namespace) -> None:
 
     _write_mcp_entry(args, new_entry)
     _uv_sync(project_root)
+    _install_codex_windows_cli(project_root)
     if not getattr(args, "no_claude_md", False):
         _install_claude_md_block(args.yes)
     _print_next_steps()
@@ -538,6 +734,7 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         and CLAUDE_MD_BLOCK_START in _instructions().read_text(encoding="utf-8")
     )
     mcp_present = _raw_mcp_entry_present()
+    launcher = _codex_windows_launcher() if _profile().id == "codex" else None
 
     to_remove: list[str] = []
     if mcp_present:
@@ -546,6 +743,8 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         to_remove.append(f"thinkweave block in {_instructions()}")
     if _marker().exists():
         to_remove.append(f"pause marker {_marker()}")
+    if launcher is not None and launcher.exists():
+        to_remove.append(f"Codex CLI launcher {launcher} (and its user PATH entry)")
 
     if not to_remove:
         print("Nothing to remove — `weave install` has not touched this machine.")
@@ -570,20 +769,49 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
     if _marker().exists():
         _marker().unlink()
         print(f"Removed pause marker {_marker()}.")
+    if launcher is not None and launcher.exists():
+        launcher.unlink()
+        print(f"Removed Codex CLI launcher {launcher}.")
+        if _is_windows() and _remove_windows_user_path(launcher.parent):
+            print(f"Removed {launcher.parent} from the user PATH.")
     print()
     print(f"Done. Restart {_profile().cli_bin} so the MCP server is no longer launched.")
 
 
 def _print_next_steps() -> None:
-    cli = _profile().cli_bin
+    """Post-install instructions the *active* harness can actually follow.
+
+    This used to end with "3. /onboard" unconditionally. On Codex that is a dead
+    end: the repository's minimal Codex skill bundle is not exported by the
+    installer and still has no onboard skill. Everything ``/onboard``
+    orchestrates is reachable from the CLI, so the fallback lists those steps
+    rather than naming something unrunnable.
+    """
+    profile = _profile()
+    cli = profile.cli_bin
     print()
     print("Next:")
     print(f"  1. Restart {cli}            # MCP server only spawns on session start")
     print(f"  2. cd <repo> && {cli}       # open a project")
-    print("  3. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
+    if profile.ships_skills:
+        print("  3. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
+        print()
+        print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
+        print("MCP server entry now; otherwise `/onboard` will ask and persist it.")
+        return
+
+    # No skills on this harness — spell out the same steps as CLI commands,
+    # without naming the skill: a user reading this cannot run it, so mentioning
+    # it only invites them to try.
+    name = profile.display_name or profile.id
+    print(f"  3. weave init               # vault wiring ({name} has no thinkweave skills)")
+    print(f"  4. weave hooks install --scope user --harness {profile.id}")
+    if profile.hooks_install_caveat:
+        print("     (then trust the hooks — see the note printed by that command)")
+    print(f"  5. weave import {profile.id} --enrich   # backfill prior sessions")
     print()
     print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
-    print("MCP server entry now; otherwise `/onboard` will ask and persist it.")
+    print("MCP server entry now; `weave init` will otherwise ask and persist it.")
 
 
 def _raw_mcp_entry_present() -> bool:

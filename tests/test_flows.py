@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -146,9 +149,19 @@ class TestBuildCommand:
         assert "--dangerously-skip-permissions" in cmd
 
     def test_quoted_arg_with_spaces(self):
-        cmd = _build_command("/discover (gap cap of 10)")
-        # shlex.quote wraps the whole thing in single quotes.
-        assert "'/discover (gap cap of 10)'" in cmd
+        prompt = "/discover (gap cap of 10)"
+        cmd = _build_command(prompt)
+        # The display string quotes with the host's convention — shlex.join
+        # single-quotes on POSIX, subprocess.list2cmdline double-quotes on
+        # Windows. Either way the property is the same: the prompt survives
+        # as ONE quoted token. (Execution never round-trips this string; it
+        # goes through _build_argv.)
+        quoted = (
+            subprocess.list2cmdline([prompt])
+            if os.name == "nt"
+            else shlex.quote(prompt)
+        )
+        assert quoted in cmd
 
     def test_respects_THINKWEAVE_CLAUDE_BIN(self, monkeypatch):
         monkeypatch.setenv("THINKWEAVE_CLAUDE_BIN", "/custom/claude")

@@ -79,7 +79,7 @@ class TestHubParse:
 
     def test_parse_extracts_title_from_h1(self, tmp_path: Path):
         path = tmp_path / "x.md"
-        path.write_text("# My Title\n\n## Essence\n\nWhat it is.\n")
+        path.write_text("# My Title\n\n## Essence\n\nWhat it is.\n", encoding="utf-8")
         hub = Hub.parse(path)
         assert hub.title == "My Title"
         assert hub.essence == "What it is."
@@ -91,7 +91,8 @@ class TestHubParse:
             "## Essence\n\nseed\n\n"
             "## Catalyst log\n\n"
             "- 2026-04-15 · *new* — first — [[n-1]]\n"
-            "- 2026-04-22 · *extends 2026-04-15* — follow up — [[n-2]]\n"
+            "- 2026-04-22 · *extends 2026-04-15* — follow up — [[n-2]]\n",
+            encoding="utf-8",
         )
         hub = Hub.parse(path)
         assert len(hub.log) == 2
@@ -107,7 +108,8 @@ class TestHubParse:
             "# Title\n\n"
             "## Essence\n\n"
             "## Learning log\n\n"
-            "- 2026-04-15 · *new* — legacy entry — [[n-1]]\n"
+            "- 2026-04-15 · *new* — legacy entry — [[n-1]]\n",
+            encoding="utf-8",
         )
         hub = Hub.parse(path)
         assert len(hub.log) == 1
@@ -120,7 +122,8 @@ class TestHubParse:
             "## Essence\n\nseed\n\n"
             "## Catalyst log\n\n"
             "## Open questions\n\n"
-            "What's next?\n"
+            "What's next?\n",
+            encoding="utf-8",
         )
         hub = Hub.parse(path)
         assert "What's next?" in hub.open_questions
@@ -254,10 +257,11 @@ class TestMigrateHubLogHeading:
             "# x\n\n"
             "## Essence\nseed\n\n"
             "## Learning log\n\n"
-            "- 2026-01-01 · *new* — entry — [[n-1]]\n"
+            "- 2026-01-01 · *new* — entry — [[n-1]]\n",
+            encoding="utf-8",
         )
         assert migrate_hub_log_heading(path) is True
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         assert CATALYST_LOG_HEADING in text
         assert LEGACY_LEARNING_LOG_HEADING not in text
         # Content preserved.
@@ -265,24 +269,24 @@ class TestMigrateHubLogHeading:
 
     def test_idempotent_second_run_is_noop(self, tmp_path: Path):
         path = tmp_path / "concept.md"
-        path.write_text("# x\n\n## Essence\n\n## Learning log\n\n")
+        path.write_text("# x\n\n## Essence\n\n## Learning log\n\n", encoding="utf-8")
         first = migrate_hub_log_heading(path)
         second = migrate_hub_log_heading(path)
         assert first is True
         assert second is False
         # File contents stable on the second run.
-        text_after_first = path.read_text()
+        text_after_first = path.read_text(encoding="utf-8")
         migrate_hub_log_heading(path)
-        assert path.read_text() == text_after_first
+        assert path.read_text(encoding="utf-8") == text_after_first
 
     def test_no_op_when_already_canonical(self, tmp_path: Path):
         path = tmp_path / "concept.md"
-        path.write_text("# x\n\n## Essence\n\n## Catalyst log\n\n")
+        path.write_text("# x\n\n## Essence\n\n## Catalyst log\n\n", encoding="utf-8")
         assert migrate_hub_log_heading(path) is False
 
     def test_no_op_when_neither_heading_present(self, tmp_path: Path):
         path = tmp_path / "concept.md"
-        path.write_text("# x\n\n## Essence\n\nseed only.\n")
+        path.write_text("# x\n\n## Essence\n\nseed only.\n", encoding="utf-8")
         assert migrate_hub_log_heading(path) is False
 
     def test_no_op_when_file_missing(self, tmp_path: Path):
@@ -296,10 +300,11 @@ class TestMigrateHubLogHeading:
             "# x\n\n"
             "## Essence\nThe learning log is append-only.\n\n"
             "## Learning log\n\n"
-            "- 2026-01-01 · *new* — body — [[n-1]]\n"
+            "- 2026-01-01 · *new* — body — [[n-1]]\n",
+            encoding="utf-8",
         )
         migrate_hub_log_heading(path)
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         # In-prose mention preserved.
         assert "The learning log is append-only." in text
         # Heading rewritten.
@@ -315,10 +320,11 @@ class TestMigrateHubLogHeading:
             "## Catalyst log\n\n"
             "- 2026-01-01 · *new* — A — [[n-1]]\n\n"
             "## Learning log\n\n"
-            "- 2026-01-02 · *new* — B — [[n-2]]\n"
+            "- 2026-01-02 · *new* — B — [[n-2]]\n",
+            encoding="utf-8",
         )
         assert migrate_hub_log_heading(path) is False
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         # Both still present — no automatic merge.
         assert "## Catalyst log" in text
         assert "## Learning log" in text

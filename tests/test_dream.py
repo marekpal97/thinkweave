@@ -1347,8 +1347,10 @@ class TestDreamCLI:
 
 
 def _seed_probe(config: Config, project: str, text: str) -> None:
-    """Write a single probe-classified prompt event in ``project``'s
-    session JSONL. Uses a recent timestamp so the 14-day window catches it."""
+    """Write a probe-classified prompt event in ``project``'s session
+    JSONL, paired with its ``probe`` verdict event (#101 — classification
+    is persisted, not heuristic). Recent timestamp so the 14-day window
+    catches it."""
     import datetime as _dt
     sess_dir = config.vault_root / "projects" / project / "sessions" / "ses-ps"
     sess_dir.mkdir(parents=True, exist_ok=True)
@@ -1357,6 +1359,9 @@ def _seed_probe(config: Config, project: str, text: str) -> None:
         json.dumps({
             "type": "prompt", "text": text,
             "session_id": "cc-ps", "ts": now.isoformat(),
+        }) + "\n" + json.dumps({
+            "type": "probe", "session_id": "cc-ps",
+            "ts": now.isoformat(), "prompt_ref": text[:120],
         }) + "\n",
         encoding="utf-8",
     )

@@ -192,8 +192,9 @@ CREATE INDEX IF NOT EXISTS idx_hle_date ON hub_log_entries(entry_date);
 -- question stream as a queryable surface. One row per archived prompt
 -- event; ``session_id`` is the vault session note id (ses-…, same key
 -- as context_served), ``seq`` the prompt's position among the session's
--- prompt events, ``classification`` the probe heuristic's verdict
--- ('probe' or NULL) as stamped by core.events.extract_prompts.
+-- prompt events, ``classification`` the wrap LLM's probe verdict
+-- ('probe' or NULL) as stamped by core.events.extract_prompts from
+-- persisted probe verdict events (#101).
 -- ``prompt_concepts`` carries concept attribution for *probe* rows only,
 -- using the same substring rule as the live probe-pressure path
 -- (core.events.match_probe_concepts) — so probes JOIN against
@@ -1470,10 +1471,11 @@ class Indexer:
                 elif etype == "retrieval":
                     # Retrieval events carry a source distinction by their tool
                     # sentinel: system-pushed enrichment (prompt-time R2, or
-                    # issue-loop claim-time priming #57 — see
-                    # scripts/issue_loop.py:LOOP_PRIME_TOOL) each gets its own
-                    # source so agent-pulled 'onthefly' stays a clean signal for
-                    # the RLVR export.
+                    # issue-loop claim-time priming #57 — the writer is
+                    # LOOP_PRIME_TOOL in the devloop package's
+                    # trajectory/prime.py, which lives in funloops since #151)
+                    # each gets its own source so agent-pulled 'onthefly' stays
+                    # a clean signal for the RLVR export.
                     tool = ev.get("tool")
                     if tool == "prompt_time_retrieval":
                         src = "prompttime"

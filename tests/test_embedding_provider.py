@@ -7,12 +7,14 @@ factory-shape assertions.
 
 from __future__ import annotations
 
+import ssl
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from thinkweave.core import embedding_provider
 from thinkweave.core.embedding_provider import (
     LiteLLMEmbeddingProvider,
     OpenAIEmbeddingProvider,
@@ -117,8 +119,10 @@ def fake_httpx(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     calls: list[dict] = []
 
-    def fake_post(url, *, headers, json, timeout):
-        calls.append({"url": url, "headers": headers, "json": json})
+    def fake_post(url, *, headers, json, timeout, verify):
+        calls.append(
+            {"url": url, "headers": headers, "json": json, "verify": verify}
+        )
         # Mirror OpenAI's embedding response shape.
         return _FakeResponse({
             "data": [{"embedding": [0.1, 0.2, 0.3]} for _ in json["input"]],
@@ -142,18 +146,20 @@ def test_openai_provider_empty_texts_is_noop(fake_httpx):
     assert fake_httpx == []
 
 
-def test_openai_provider_missing_key_raises(monkeypatch, fake_httpx):
-    # Strip key + isolate .env lookups.
+def test_openai_provider_missing_key_raises(monkeypatch, fake_httpx, tmp_path):
+    # Strip key + isolate .env lookups. ``tmp_path`` (not
+    # ``tempfile.TemporaryDirectory``) because ``monkeypatch.chdir`` is only
+    # undone at fixture teardown: on Windows the live process CWD keeps an
+    # open handle on the directory, so an eager rmtree inside the test body
+    # fails with WinError 32.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
     from thinkweave.core import api_keys
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        monkeypatch.setattr(api_keys, "_PROJECT_ROOT", Path(td))
-        monkeypatch.chdir(td)
-        p = OpenAIEmbeddingProvider()
-        with pytest.raises(ValueError, match="OPENAI_API_KEY not found"):
-            p.embed(["x"])
+    monkeypatch.setattr(api_keys, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    p = OpenAIEmbeddingProvider()
+    with pytest.raises(ValueError, match="OPENAI_API_KEY not found"):
+        p.embed(["x"])
 
 
 def test_openai_provider_sends_model_and_input(fake_httpx):
@@ -164,6 +170,33 @@ def test_openai_provider_sends_model_and_input(fake_httpx):
         "input": ["hello"],
     }
     assert fake_httpx[0]["headers"]["Authorization"] == "Bearer sk-test"
+
+
+def test_openai_provider_uses_the_platform_trust_store(fake_httpx):
+    OpenAIEmbeddingProvider().embed(["hello"])
+    assert isinstance(fake_httpx[0]["verify"], ssl.SSLContext)
+
+
+def test_openai_provider_diagnoses_a_self_signed_chain(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def fail(*args, **kwargs):
+        raise ssl.SSLCertVerificationError(
+            1,
+            "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate "
+            "in certificate chain",
+        )
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fail)
+    with pytest.raises(embedding_provider.EmbeddingCertificateError) as exc:
+        OpenAIEmbeddingProvider().embed(["hello"])
+
+    message = str(exc.value)
+    assert "certificate" in message.lower()
+    assert "Windows Trusted Root" in message
+    assert "SSL_CERT_FILE" in message
 
 
 # ---------------------------------------------------------------------------

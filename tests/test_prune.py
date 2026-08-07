@@ -54,7 +54,12 @@ def _make_session(
     Returns the session directory path.
     """
     sessions_dir = vault_dir / "projects" / project / "sessions"
-    session_dir = sessions_dir / f"{session_id}-{processed_at}"
+    # Real session folders are ``{session_id}-{YYYY-MM-DD}`` (see
+    # VaultManager._session_dir) — the folder name never carries a time.
+    # Slice the date off ``processed_at`` so callers can pass a full ISO
+    # timestamp for the *frontmatter* without minting a folder name
+    # containing ``:``, which is an illegal character on Windows.
+    session_dir = sessions_dir / f"{session_id}-{processed_at[:10]}"
     session_dir.mkdir(parents=True, exist_ok=True)
 
     fm_lines = [

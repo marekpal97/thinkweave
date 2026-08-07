@@ -35,4 +35,7 @@ else
     exit 127
 fi
 
-exec "$uv_bin" run --project "$root" --extra mcp weave-mcp "$@"
+# Runtime launchers must never mutate the environment they are running from.
+# On Windows, syncing here can try to replace this live MCP process launcher.
+# Module invocation also avoids holding the generated weave-mcp.exe open.
+exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.mcp.server "$@"

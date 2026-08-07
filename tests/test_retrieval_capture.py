@@ -540,7 +540,7 @@ class TestRetrievalPipelineEndToEnd:
             "WHERE session_id = ? ORDER BY source, note_id",
             (idx.db.execute(
                 "SELECT id FROM notes WHERE path = ?",
-                (str(session_path.relative_to(vault)),),
+                (session_path.relative_to(vault).as_posix(),),
             ).fetchone()[0],),
         ).fetchall()
         idx.close()

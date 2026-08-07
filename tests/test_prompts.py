@@ -168,7 +168,10 @@ class TestStateOpenProbes:
                  "text": "How does the indexer detect duplicates?",
                  "session_id": "cc-1",
                  "ts": "2026-05-02T15:00:00+00:00"},
-                # No follow-up Edit/Write → classifies as probe
+                # Probe verdict event (wrap LLM via wrap-finalize, #101)
+                {"type": "probe", "session_id": "cc-1",
+                 "ts": "2026-05-02T15:00:00+00:00",
+                 "prompt_ref": "How does the indexer detect duplicates?"},
             ],
         )
 
@@ -214,23 +217,23 @@ class TestPromptClassification:
         from thinkweave.core.events import extract_prompts
 
         events_file = tmp_path / "events.jsonl"
-        # Lookahead window is 3 events. Probe goes LAST so its lookahead
-        # is empty — that's the canonical "no follow-up code change" shape
-        # the heuristic actually catches.
+        # #101: classification comes from persisted probe verdict events,
+        # not a text-shape heuristic — only the verdicted prompt is a probe.
         _write_events(
             events_file,
             [
-                # Not a probe: instruction (no question mark)
                 {"type": "prompt", "text": "Refactor the indexer",
                  "session_id": "cc-1", "ts": "2026-05-02T15:00:00+00:00"},
-                # Not a probe: question with Edit right after
+                # Question with no verdict: stays unclassified
                 {"type": "prompt", "text": "Why is this slow?",
                  "session_id": "cc-1", "ts": "2026-05-02T15:05:00+00:00"},
                 {"tool": "Edit", "file": "main.py",
                  "ts": "2026-05-02T15:06:00+00:00"},
-                # Probe: question, nothing follows
                 {"type": "prompt", "text": "How does FTS5 tokenize?",
                  "session_id": "cc-1", "ts": "2026-05-02T15:10:00+00:00"},
+                {"type": "probe", "session_id": "cc-1",
+                 "ts": "2026-05-02T15:10:00+00:00",
+                 "prompt_ref": "How does FTS5 tokenize?"},
             ],
         )
 
@@ -251,6 +254,9 @@ class TestPromptClassification:
                  "session_id": "cc-1", "ts": "2026-05-02T15:00:00+00:00"},
                 {"type": "prompt", "text": "Refactor the indexer",
                  "session_id": "cc-1", "ts": "2026-05-02T15:10:00+00:00"},
+                {"type": "probe", "session_id": "cc-1",
+                 "ts": "2026-05-02T15:00:00+00:00",
+                 "prompt_ref": "What does dream do?"},
             ],
         )
 
@@ -270,6 +276,9 @@ class TestPromptClassification:
                  "session_id": "cc-1", "ts": "2026-05-02T15:00:00+00:00"},
                 {"type": "prompt", "text": "Fix the bug",
                  "session_id": "cc-1", "ts": "2026-05-02T15:10:00+00:00"},
+                {"type": "probe", "session_id": "cc-1",
+                 "ts": "2026-05-02T15:00:00+00:00",
+                 "prompt_ref": "What is FTS5?"},
             ],
         )
 

@@ -217,13 +217,14 @@ class TestSeamGateConsultsNativeMemory:
 
 class TestCronRendererConsultsCapabilities:
     def test_headless_slash_off_leaves_the_skill_token_bare(
-        self, fake_home: Path, use_profile, scheduled_job
+        self, fake_home: Path, use_profile, scheduled_job, plugin_route_active
     ):
         from thinkweave.scheduling import registry
 
-        # Make the plugin route detectable so namespacing WOULD fire.
-        (fake_home / ".claude" / "skills").mkdir(parents=True)
-        (fake_home / ".claude" / "skills" / "thinkweave").symlink_to(fake_home)
+        # Make the plugin route detectable so namespacing WOULD fire. Which of
+        # the two install shapes says so is irrelevant here — the marketplace
+        # manifest needs no symlink privilege (see conftest).
+        plugin_route_active()
 
         assert "/thinkweave:dream" in registry.resolve_command(
             scheduled_job("claude -p /dream")
@@ -254,7 +255,7 @@ class TestCronRendererConsultsCapabilities:
         )
 
     def test_absolute_path_head_still_gets_namespacing_and_bypass(
-        self, fake_home: Path, scheduled_job
+        self, fake_home: Path, scheduled_job, plugin_route_active
     ):
         """A hand-edited job naming the binary by absolute path is rendered
         exactly like the bare-token form.
@@ -267,8 +268,7 @@ class TestCronRendererConsultsCapabilities:
         """
         from thinkweave.scheduling import registry
 
-        (fake_home / ".claude" / "skills").mkdir(parents=True)
-        (fake_home / ".claude" / "skills" / "thinkweave").symlink_to(fake_home)
+        plugin_route_active()
 
         rendered = registry.resolve_command(scheduled_job("/opt/bin/claude -p /dream"))
         assert rendered == (
@@ -379,11 +379,12 @@ class TestNewProfileNeedsNoConsumerEdits:
             "/judge-prediction --decision dec-1",
         ]
 
-    def test_namespace_rule_is_per_profile(self, probe):
+    def test_namespace_rule_is_per_profile(self, probe, plugin_route_active):
         from thinkweave.core.plugin_route import plugin_namespace
 
-        probe.skills_dir.mkdir(parents=True)
-        (probe.skills_dir / "thinkweave").symlink_to(probe.skills_dir)
+        # Register the plugin at the *probe's* own location — the point is that
+        # the detector reads the paths it is handed, not any Claude Code default.
+        plugin_route_active(probe.installed_plugins)
         # The probe harness declares no headless slash commands, so it has no
         # namespace regardless of what is on disk…
         assert harness.active().namespace() is None
