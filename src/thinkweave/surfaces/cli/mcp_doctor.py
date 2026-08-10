@@ -6,11 +6,6 @@ plugin manifests under ``.claude/plugins/``) plus a quick subprocess
 liveness probe that confirms the resolved invocation actually starts a
 process.
 
-The lane has since become the dev-environment lane more broadly: alongside
-registration it checks the wiring around it that fails *silently* in a repo
-checkout — hook scope, ``weave`` on PATH, and dangling machine-local
-slash-command symlinks.
-
 Returns a structured ``DoctorResult`` so callers (the CLI dispatcher,
 tests) can branch on ``passed`` without parsing stdout.
 """
@@ -389,39 +384,24 @@ _COMMAND_LINK_REPOINT = {
 }
 
 
-def _dangling_command_links(cwd: Path) -> list[tuple[str, str]]:
-    """``(link name, stale target)`` for each unresolvable symlink under the
-    checkout's ``.claude/commands/``.
+def check_command_symlinks(cwd: Path) -> CheckResult:
+    """FAIL when a machine-local slash-command symlink no longer resolves —
+    the harness silently drops the command from its menu (#172).
 
-    Windows-safe by construction: a checkout on a filesystem without symlink
-    support simply has none to find, and an absent or unreadable directory
-    reads as "nothing to report" rather than raising.
+    Report-only: the repair is machine-local, so the doctor names the
+    command rather than running it. A checkout without symlink support
+    simply has none to find; an absent or unreadable directory reads as
+    "nothing to report" rather than raising.
     """
     try:
         entries = sorted((cwd / ".claude" / "commands").iterdir())
     except OSError:
-        return []
-    dangling: list[tuple[str, str]] = []
-    for entry in entries:
-        try:
-            if entry.is_symlink() and not entry.exists():
-                dangling.append((entry.name, os.readlink(entry)))
-        except OSError:
-            continue
-    return dangling
-
-
-def check_command_symlinks(cwd: Path) -> CheckResult:
-    """FAIL when a machine-local slash-command symlink no longer resolves.
-
-    The failure is silent by nature: the harness lists the commands it can
-    resolve and says nothing about the one it dropped. PR #160 moved the
-    ``/issue-loop`` command doc to the funloops checkout and the post-merge
-    repoint never happened, so the link dangled for a week with nothing
-    surfacing it (#172). Report-only — the repair is machine-local, so the
-    doctor names the command rather than running it.
-    """
-    dangling = _dangling_command_links(cwd)
+        entries = []
+    dangling = [
+        (e.name, os.readlink(e))
+        for e in entries
+        if e.is_symlink() and not e.exists()
+    ]
     if not dangling:
         return CheckResult(
             name="command symlinks",
