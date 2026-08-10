@@ -6,6 +6,11 @@ plugin manifests under ``.claude/plugins/``) plus a quick subprocess
 liveness probe that confirms the resolved invocation actually starts a
 process.
 
+The lane has since become the dev-environment lane more broadly: alongside
+registration it checks the wiring around it that fails *silently* in a repo
+checkout — hook scope, ``weave`` on PATH, and dangling machine-local
+slash-command symlinks.
+
 Returns a structured ``DoctorResult`` so callers (the CLI dispatcher,
 tests) can branch on ``passed`` without parsing stdout.
 """
@@ -372,6 +377,73 @@ def check_hook_scope(cwd: Path) -> CheckResult:
     )
 
 
+# Slash-command symlinks are machine-local by convention (never committed), so
+# the only durable remedy the doctor can offer for a known one is the command
+# that recreates it. `/issue-loop` points at the funloops sibling checkout —
+# the target CLAUDE.md documents.
+_COMMAND_LINK_REPOINT = {
+    "issue-loop.md": (
+        "ln -sfn ../../../funloops/packages/devloop/docs/agents/"
+        "issue-loop.command.md .claude/commands/issue-loop.md"
+    ),
+}
+
+
+def _dangling_command_links(cwd: Path) -> list[tuple[str, str]]:
+    """``(link name, stale target)`` for each unresolvable symlink under the
+    checkout's ``.claude/commands/``.
+
+    Windows-safe by construction: a checkout on a filesystem without symlink
+    support simply has none to find, and an absent or unreadable directory
+    reads as "nothing to report" rather than raising.
+    """
+    try:
+        entries = sorted((cwd / ".claude" / "commands").iterdir())
+    except OSError:
+        return []
+    dangling: list[tuple[str, str]] = []
+    for entry in entries:
+        try:
+            if entry.is_symlink() and not entry.exists():
+                dangling.append((entry.name, os.readlink(entry)))
+        except OSError:
+            continue
+    return dangling
+
+
+def check_command_symlinks(cwd: Path) -> CheckResult:
+    """FAIL when a machine-local slash-command symlink no longer resolves.
+
+    The failure is silent by nature: the harness lists the commands it can
+    resolve and says nothing about the one it dropped. PR #160 moved the
+    ``/issue-loop`` command doc to the funloops checkout and the post-merge
+    repoint never happened, so the link dangled for a week with nothing
+    surfacing it (#172). Report-only — the repair is machine-local, so the
+    doctor names the command rather than running it.
+    """
+    dangling = _dangling_command_links(cwd)
+    if not dangling:
+        return CheckResult(
+            name="command symlinks",
+            passed=True,
+            detail="no dangling links under .claude/commands/",
+        )
+    return CheckResult(
+        name="command symlinks",
+        passed=False,
+        detail=(
+            "dangling: "
+            + ", ".join(f"{name} → {target}" for name, target in dangling)
+        ),
+        fix="; ".join(
+            _COMMAND_LINK_REPOINT.get(
+                name, f"re-point or delete .claude/commands/{name}"
+            )
+            for name, _ in dangling
+        ),
+    )
+
+
 def _git_bash_path(path: Path) -> str:
     """Translate an absolute Windows path for Git Bash."""
     value = path.resolve().as_posix()
@@ -710,6 +782,9 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     if _profile().hooks_global_only:
         result.checks.append(check_hook_scope(cwd))
         result.checks.append(check_weave_cli())
+    # Harness-independent: the dangling link is a fact about the checkout, not
+    # about which harness is reading it.
+    result.checks.append(check_command_symlinks(cwd))
     result.checks.append(check_vault_env())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)
