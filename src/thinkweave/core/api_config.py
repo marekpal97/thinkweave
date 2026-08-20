@@ -13,7 +13,7 @@ Schema::
       provider: openai            # openai | anthropic | gemini
       model: gpt-5-mini
       max_tokens: 8000
-      batch_concurrency: 20       # async fan-out semaphore cap
+      batch_concurrency: 20       # async fan-out worker-pool size
 
     embeddings:
       provider: openai            # openai | sentence_transformer | litellm

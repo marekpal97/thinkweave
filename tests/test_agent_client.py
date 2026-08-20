@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from thinkweave.core import agent_client
 from thinkweave.core.agent_client import (
     ProviderError,
     batch_completions,
@@ -327,54 +328,6 @@ def test_batch_completions_empty_returns_empty(patched_sdk):
     assert results == []
 
 
-def test_batch_completions_honors_concurrency_cap(patched_sdk):
-    """Run 6 prompts with concurrency=2 against a fake that gates each
-    completion behind a tracked semaphore — verify never more than 2 in
-    flight at once."""
-    in_flight = 0
-    peak = 0
-    lock = asyncio.Lock()
-
-    async def _tracked_tick(self, secs):
-        nonlocal in_flight, peak
-        async with lock:
-            in_flight += 1
-            peak = max(peak, in_flight)
-        await asyncio.sleep(secs)
-        async with lock:
-            in_flight -= 1
-
-    # Monkey-patch the fake to call our tracker per completion.
-    FakeAsyncOpenAI.tick = _tracked_tick  # type: ignore[assignment]
-
-    # Seed the fake's delay so each completion takes a measurable slice.
-    async def _runner():
-        # Construct the clients first so we can set the delay.
-        # Easier: pre-set the delay via fixture's first instance after
-        # the wrapper builds it. We rely on the wrapper building one
-        # client per call (current behaviour) — so seed via monkey-patch.
-        original_init = FakeAsyncOpenAI.__init__
-
-        def patched_init(self, *a, **kw):
-            original_init(self, *a, **kw)
-            self.delay = 0.05
-
-        FakeAsyncOpenAI.__init__ = patched_init  # type: ignore[assignment]
-        try:
-            return await batch_completions(
-                ["p"] * 6,
-                provider="openai",
-                model="m",
-                concurrency=2,
-            )
-        finally:
-            FakeAsyncOpenAI.__init__ = original_init  # type: ignore[assignment]
-
-    asyncio.run(_runner())
-    assert peak <= 2, f"concurrency cap breached: peak={peak}"
-    assert peak >= 1
-
-
 def test_batch_completions_return_exceptions_partial(patched_sdk, monkeypatch):
     """When one prompt fails and return_exceptions=True, surviving slots
     still hold their (text, usage) tuples."""
@@ -418,6 +371,136 @@ def test_batch_completions_fail_fast_raises(patched_sdk, monkeypatch):
                 model="m",
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Bounded admission (#176 / #177)
+#
+# The concurrency knob must bound how many per-prompt *tasks exist*, not
+# just how many provider calls are in flight. These tests patch
+# ``get_completion`` (the seam below ``batch_completions``) so no SDK, no
+# network, and no clock is involved — the gate is an ``asyncio.Event``.
+# ---------------------------------------------------------------------------
+
+
+def test_batch_completions_bounds_task_admission(monkeypatch):
+    """AC1 + AC5: with N=64 prompts and concurrency=4, at most ~4 per-prompt
+    tasks may EXIST at any moment (not merely 4 active calls).
+
+    The expected ceiling is hand-derived, not recomputed from the code:
+    4 worker tasks + the ``batch_completions`` task + this test's driver
+    task = 6. The pre-fix ``asyncio.gather``-over-N implementation parks
+    64 tasks on the semaphore, so it lands at 66.
+    """
+    n_prompts, cap = 64, 4
+    gate = asyncio.Event()
+    log: list[str] = []
+    live = {"peak_tasks": 0}
+
+    async def _stub(prompt: str, **kwargs) -> tuple[str, dict[str, int]]:
+        log.append(prompt)
+        live["peak_tasks"] = max(live["peak_tasks"], len(asyncio.all_tasks()))
+        await gate.wait()
+        return f"reply:{prompt}", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+
+    monkeypatch.setattr(agent_client, "get_completion", _stub)
+
+    async def _runner():
+        batch = asyncio.create_task(
+            batch_completions(
+                [f"p{i}" for i in range(n_prompts)],
+                provider="openai",
+                model="m",
+                concurrency=cap,
+            )
+        )
+        # Let every task the implementation wants to create get scheduled.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        admitted = len(log)
+        gate.set()
+        return admitted, await batch
+
+    admitted, _ = asyncio.run(_runner())
+
+    assert admitted == cap, f"admitted {admitted} prompts with concurrency={cap}"
+    assert live["peak_tasks"] <= cap + 2, (
+        f"per-prompt task admission unbounded: {live['peak_tasks']} tasks alive "
+        f"with concurrency={cap} over {n_prompts} prompts"
+    )
+
+
+def test_batch_completions_preserves_positional_order(monkeypatch):
+    """AC2: results line up 1:1 with the input prompts even when the
+    completions finish out of order (each prompt's stub sleeps for a
+    duration that inverts the input ordering)."""
+    prompts = [f"p{i}" for i in range(8)]
+
+    async def _reordering_stub(prompt: str, **kwargs):
+        # p0 sleeps longest, p7 shortest → completion order reverses input.
+        await asyncio.sleep((8 - int(prompt[1:])) * 0.005)
+        return f"reply:{prompt}", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+
+    monkeypatch.setattr(agent_client, "get_completion", _reordering_stub)
+    results = asyncio.run(
+        batch_completions(prompts, provider="openai", model="m", concurrency=8)
+    )
+    assert [text for text, _ in results] == [f"reply:{p}" for p in prompts]
+
+
+def test_batch_completions_fail_fast_does_not_start_remaining(monkeypatch):
+    """AC3: the first failure propagates unwrapped AND the un-admitted
+    prompts are never started — with 32 prompts, concurrency 2 and the
+    first prompt raising, at most a couple of stubs may ever run."""
+    seen: list[str] = []
+
+    async def _stub(prompt: str, **kwargs):
+        seen.append(prompt)
+        await asyncio.sleep(0)
+        if prompt == "p0":
+            raise RuntimeError("boom")
+        return "OK", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+
+    monkeypatch.setattr(agent_client, "get_completion", _stub)
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(
+            batch_completions(
+                [f"p{i}" for i in range(32)],
+                provider="openai",
+                model="m",
+                concurrency=2,
+            )
+        )
+    assert len(seen) <= 4, f"kept working after a fail-fast failure: {seen}"
+
+
+def test_batch_completions_return_exceptions_keeps_slots(monkeypatch):
+    """AC4: with ``return_exceptions=True`` every slot is either a
+    ``(text, usage)`` tuple or the exception instance, in position — here
+    the odd-indexed prompts fail."""
+    prompts = [f"p{i}" for i in range(10)]
+
+    async def _stub(prompt: str, **kwargs):
+        await asyncio.sleep(0)
+        if int(prompt[1:]) % 2:
+            raise ValueError(f"bad {prompt}")
+        return f"reply:{prompt}", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+
+    monkeypatch.setattr(agent_client, "get_completion", _stub)
+    results = asyncio.run(
+        batch_completions(
+            prompts,
+            provider="openai",
+            model="m",
+            concurrency=3,
+            return_exceptions=True,
+        )
+    )
+    for i, slot in enumerate(results):
+        if i % 2:
+            assert isinstance(slot, ValueError) and str(slot) == f"bad p{i}"
+        else:
+            assert slot[0] == f"reply:p{i}"
 
 
 # ---------------------------------------------------------------------------

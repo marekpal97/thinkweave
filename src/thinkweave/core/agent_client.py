@@ -8,9 +8,9 @@ Built on the ``openai`` Python SDK's :class:`AsyncOpenAI` with per-provider
   • ONE wrapper (no LiteLLM extension, no Agents SDK Runner on top).
   • ``base_url`` swaps between OpenAI-native, Anthropic's OpenAI-compat
     endpoint, and Gemini's OpenAI-compat endpoint.
-  • Batched work = ``asyncio.gather`` over N completions with a
-    semaphore-capped concurrency budget. Provider-native Batches APIs
-    are NOT used.
+  • Batched work = a fixed pool of ``concurrency`` workers pulling from
+    the prompt list, so admission (tasks alive) is capped alongside
+    activity. Provider-native Batches APIs are NOT used.
 
 The Gemini Files API (audio modality for podcast extraction) stays a
 direct ``google.genai`` carve-out in :mod:`sources.extractors.gemini_extract`
@@ -165,34 +165,45 @@ async def batch_completions(
     backfill orchestrators (``hubs_batch.py``, ``enrich_batch.py``) used
     to maintain. Trades ~50% provider-discount for one code path.
 
+    ``concurrency`` bounds *admission* via a fixed worker pool: a
+    512-prompt batch at concurrency 20 holds 20 tasks, not 512 (#176).
+
     When ``return_exceptions=False`` (default) the first failure raises
-    and cancels the rest. Pass ``return_exceptions=True`` for partial-
-    success semantics — each list slot is either a ``(text, usage)``
-    tuple or an exception instance.
+    and the un-admitted prompts are never started. Pass
+    ``return_exceptions=True`` for partial-success semantics — each list
+    slot is either a ``(text, usage)`` tuple or an exception instance.
 
     ``response_format`` is forwarded to every per-prompt
     :func:`get_completion` call.
     """
-    if not prompts:
-        return []
-    sem = asyncio.Semaphore(max(1, concurrency))
+    results: list[Any] = [None] * len(prompts)
+    pending = iter(range(len(prompts)))  # shared: one worker gets each index
+    failure: list[BaseException] = []
 
-    async def _one(p: str) -> tuple[str, dict[str, int]]:
-        async with sem:
-            return await get_completion(
-                p,
-                provider=provider,
-                model=model,
-                max_tokens=max_tokens,
-                system=system,
-                response_format=response_format,
-            )
+    async def _worker() -> None:
+        for i in pending:
+            if failure:  # fail-fast: stop admitting once a sibling died
+                return
+            try:
+                results[i] = await get_completion(
+                    prompts[i],
+                    provider=provider,
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=system,
+                    response_format=response_format,
+                )
+            except Exception as exc:
+                if not return_exceptions:
+                    failure.append(exc)
+                    return
+                results[i] = exc
 
-    results = await asyncio.gather(
-        *(_one(p) for p in prompts),
-        return_exceptions=return_exceptions,
-    )
-    return list(results)
+    workers = min(max(1, concurrency), len(prompts))
+    await asyncio.gather(*(_worker() for _ in range(workers)))
+    if failure:
+        raise failure[0]
+    return results
 
 
 # ---------------------------------------------------------------------------

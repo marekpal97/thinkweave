@@ -7,8 +7,8 @@ CLI ``weave drain --target hubs --via batch`` calls into ``run_hubs_batch``.
 The OpenAI Batches submission / polling / fetching dance was deleted
 2026-06-06 (plan: ``go-back-to-the-scalable-firefly.md`` step C2). The
 orchestrator now delegates execution to
-:func:`thinkweave.core.agent_client.batch_completions_sync`, which fires
-N async completions in parallel under a semaphore-capped concurrency budget
+:func:`thinkweave.core.agent_client.batch_completions_sync`, which runs
+the prompts through a pool of ``batch_concurrency`` async workers
 ([[feedback_unified_wrapper_no_batches_apis]]). ~50% per-token discount
 forfeited for one code path.
 """
