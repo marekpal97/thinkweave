@@ -1,6 +1,6 @@
 [project]
 name = "thinkweave"
-version = "0.1.1"
+version = "0.2.0"
 description = "Obsidian-native universal memory layer for agentic systems"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -105,7 +105,7 @@ markers = [
 # no breakage; flipping to 1.0.0 is `bump-my-version bump major`.
 # src/thinkweave/__init__.py is intentionally NOT a target: it derives the
 # version from installed package metadata, so pyproject is its single source.
-current_version = "0.1.1"
+current_version = "0.2.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"
@@ -129,6 +129,12 @@ replace = "\"version\": \"{new_version}\""
 # Marketplace catalog version — kept lock-step with the plugin for simplicity.
 [[tool.bumpversion.files]]
 filename = ".claude-plugin/marketplace.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+# Codex plugin manifest — same lock-step rule as the Claude Code pair above.
+[[tool.bumpversion.files]]
+filename = ".codex-plugin/plugin.json"
 search = "\"version\": \"{current_version}\""
 replace = "\"version\": \"{new_version}\""
 
