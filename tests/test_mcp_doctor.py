@@ -476,3 +476,72 @@ class TestVaultEnvCheck:
         monkeypatch.setenv("MCP_DOCTOR_FAKE_VAULT", str(tmp_path))
         result = md.check_vault_env()
         assert result.passed
+
+
+# ---------- machine-local slash-command symlinks (#172) ----------
+
+
+def _commands_dir(root: Path) -> Path:
+    d = root / ".claude" / "commands"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+class TestCommandSymlinks:
+    """A machine-local `.claude/commands/` symlink that stops resolving takes
+    the slash command off the menu with no error anywhere (#172: the
+    issue-loop repoint that never happened, dangling 08-03 → 08-10)."""
+
+    def test_dangling_symlink_fails_and_names_link_and_target(
+        self, tmp_path, requires_symlinks
+    ):
+        link = _commands_dir(tmp_path) / "issue-loop.md"
+        link.symlink_to("../../../funloops/packages/devloop/docs/agents/issue-loop.command.md")
+
+        result = md.check_command_symlinks(tmp_path)
+
+        assert not result.passed
+        assert "issue-loop.md" in result.detail
+        assert "../../../funloops/packages/devloop/docs/agents/issue-loop.command.md" in result.detail
+        # Remediation names the funloops sibling checkout (CLAUDE.md convention).
+        assert "funloops/packages/devloop/docs/agents/issue-loop.command.md" in result.fix
+
+    def test_resolving_symlink_passes(self, tmp_path, requires_symlinks):
+        target = tmp_path / "wrap.source.md"
+        target.write_text("body\n", encoding="utf-8")
+        (_commands_dir(tmp_path) / "wrap.md").symlink_to(target)
+
+        assert md.check_command_symlinks(tmp_path).passed
+
+    def test_regular_file_passes(self, tmp_path):
+        (_commands_dir(tmp_path) / "wrap.md").write_text("body\n", encoding="utf-8")
+
+        assert md.check_command_symlinks(tmp_path).passed
+
+    def test_absent_commands_dir_passes(self, tmp_path):
+        assert md.check_command_symlinks(tmp_path).passed
+
+    def test_dangling_symlink_fails_the_lane(
+        self, tmp_path, monkeypatch, capsys, use_profile, requires_symlinks
+    ):
+        """The whole `--mcp` lane goes red — broken dev tooling is a failing
+        check, and cmd_doctor exits non-zero off `result.passed`."""
+        claude_json = tmp_path / "claude.json"
+        _write_claude_json(claude_json, CANONICAL_ENTRY)
+        use_profile(mcp_config=claude_json)
+        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+        monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
+        monkeypatch.setattr(
+            md.subprocess,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(cmd="uv", timeout=5.0)
+            ),
+        )
+        (_commands_dir(tmp_path) / "issue-loop.md").symlink_to(tmp_path / "gone.md")
+
+        result = md.run_mcp_doctor(cwd=tmp_path)
+
+        assert not result.passed
+        assert "command symlinks" in [c.name for c in result.checks if not c.passed]
+        assert "overall: FAIL" in capsys.readouterr().out

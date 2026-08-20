@@ -372,6 +372,58 @@ def check_hook_scope(cwd: Path) -> CheckResult:
     )
 
 
+# Slash-command symlinks are machine-local by convention (never committed), so
+# the only durable remedy the doctor can offer for a known one is the command
+# that recreates it. `/issue-loop` points at the funloops sibling checkout —
+# the target CLAUDE.md documents.
+_COMMAND_LINK_REPOINT = {
+    "issue-loop.md": (
+        "ln -sfn ../../../funloops/packages/devloop/docs/agents/"
+        "issue-loop.command.md .claude/commands/issue-loop.md"
+    ),
+}
+
+
+def check_command_symlinks(cwd: Path) -> CheckResult:
+    """FAIL when a machine-local slash-command symlink no longer resolves —
+    the harness silently drops the command from its menu (#172).
+
+    Report-only: the repair is machine-local, so the doctor names the
+    command rather than running it. A checkout without symlink support
+    simply has none to find; an absent or unreadable directory reads as
+    "nothing to report" rather than raising.
+    """
+    try:
+        entries = sorted((cwd / ".claude" / "commands").iterdir())
+    except OSError:
+        entries = []
+    dangling = [
+        (e.name, os.readlink(e))
+        for e in entries
+        if e.is_symlink() and not e.exists()
+    ]
+    if not dangling:
+        return CheckResult(
+            name="command symlinks",
+            passed=True,
+            detail="no dangling links under .claude/commands/",
+        )
+    return CheckResult(
+        name="command symlinks",
+        passed=False,
+        detail=(
+            "dangling: "
+            + ", ".join(f"{name} → {target}" for name, target in dangling)
+        ),
+        fix="; ".join(
+            _COMMAND_LINK_REPOINT.get(
+                name, f"re-point or delete .claude/commands/{name}"
+            )
+            for name, _ in dangling
+        ),
+    )
+
+
 def _git_bash_path(path: Path) -> str:
     """Translate an absolute Windows path for Git Bash."""
     value = path.resolve().as_posix()
@@ -710,6 +762,9 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     if _profile().hooks_global_only:
         result.checks.append(check_hook_scope(cwd))
         result.checks.append(check_weave_cli())
+    # Harness-independent: the dangling link is a fact about the checkout, not
+    # about which harness is reading it.
+    result.checks.append(check_command_symlinks(cwd))
     result.checks.append(check_vault_env())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)
