@@ -165,10 +165,8 @@ async def batch_completions(
     backfill orchestrators (``hubs_batch.py``, ``enrich_batch.py``) used
     to maintain. Trades ~50% provider-discount for one code path.
 
-    ``concurrency`` bounds *admission*, not just activity: at most that
-    many per-prompt tasks exist at any moment. A fixed worker pool pulls
-    from a shared index iterator, so a 512-prompt batch at concurrency 20
-    holds 20 tasks, not 512 parked on a semaphore (#176).
+    ``concurrency`` bounds *admission* via a fixed worker pool: a
+    512-prompt batch at concurrency 20 holds 20 tasks, not 512 (#176).
 
     When ``return_exceptions=False`` (default) the first failure raises
     and the un-admitted prompts are never started. Pass
@@ -178,8 +176,6 @@ async def batch_completions(
     ``response_format`` is forwarded to every per-prompt
     :func:`get_completion` call.
     """
-    if not prompts:
-        return []
     results: list[Any] = [None] * len(prompts)
     pending = iter(range(len(prompts)))  # shared: one worker gets each index
     failure: list[BaseException] = []
