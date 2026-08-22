@@ -37,7 +37,7 @@ Manual setup + script green = the whole install surface is validated.
 
 ```bash
 cd /path/to/thinkweave
-uv sync --extra mcp                 # ensure weave / weave-hook / weave-mcp + deps (idempotent)
+uv sync --extra all                 # ensure weave / weave-hook / weave-mcp + deps (idempotent)
 uv run weave uninstall --yes        # start new-user-clean: removes any raw ~/.claude.json entry
 ```
 
