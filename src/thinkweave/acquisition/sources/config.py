@@ -36,7 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "queue": "vault/.weave/queues/repos.jsonl",
             "research_skill": "research-repo",
             "drain_strategy": "inline",
-            "dedup_keys": ["github_url", "slug"],
+            "dedup_keys": ["url", "github_url", "slug"],
             "url_patterns": ["github.com", "gitlab.com"],
         },
         "article": {

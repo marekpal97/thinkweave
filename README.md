@@ -206,9 +206,12 @@ and is reversed by `weave dev-unlink`.
 
 **Updating a dev-link checkout (especially on Windows):** close every Claude Code
 session, then run `git pull` and `uv sync --extra all`, and reopen Claude Code.
-The MCP and hook launchers intentionally use `uv run --no-sync python -m ...` at
-runtime, so a hook can never mutate the environment or replace a live Windows
-executable. If you use the alternative machine-scope hook route, also rerun
+All three launchers (`bin/weave`, `bin/weave-hook-launch`, `bin/weave-mcp-launch`)
+intentionally use `uv run --no-sync python -m ...` at runtime, so no hook, MCP
+start, or skill-side `weave …` call can mutate the environment or replace a live
+Windows executable. Always sync `--extra all`: `uv sync --extra <one>` *prunes*
+every extra it is not told to keep, silently killing the news/embedding/podcast/
+youtube crons (`weave doctor --mcp` → "venv extras" catches this). If you use the alternative machine-scope hook route, also rerun
 `uv run weave hooks install --scope user` before reopening.
 
 <details><summary>Alternative: <code>weave install</code> (MCP-only, machine-scope)</summary>
@@ -291,8 +294,8 @@ today** (Codex, Cursor, Zed, Claude Desktop, etc. are untested). The repo-root
 ```
 
 The launcher resolves `uv` (PATH, then `~/.local/bin/uv`, then
-`$UV_INSTALL_DIR/uv`) and execs `uv run --project <path-to-clone> --extra mcp
-weave-mcp`; if uv is missing it fails with a one-line error instead of
+`$UV_INSTALL_DIR/uv`) and execs `uv run --no-sync --project <path-to-clone> --extra mcp
+python -m thinkweave.surfaces.mcp.server`; if uv is missing it fails with a one-line error instead of
 silently not launching. Hosts that guarantee `uv` on PATH can inline that
 `uv run …` invocation directly.
 

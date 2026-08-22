@@ -746,6 +746,50 @@ def _probe_weave_cli() -> CheckResult:
     )
 
 
+#: Optional-extra modules the scheduled lanes import. The venv is synced to a
+#: fixed extra set; a `uv sync --extra <one>` or a pre-#164 `bin/weave` call
+#: silently uninstalls the rest, and the lanes then die invisibly in cron
+#: (news pull 2026-08-11→22: `feedparser_missing`; embed/dream narrowly
+#: escaped the same on 2026-08-22). Map: module → (extra, lanes it carries).
+_EXTRA_MODULES: tuple[tuple[str, str, str], ...] = (
+    ("mcp", "mcp", "MCP server"),
+    ("numpy", "embeddings", "embed-warm, similarity search, drift"),
+    ("openai", "embeddings", "embeddings, hubs batch, LLM wrapper"),
+    ("feedparser", "news", "news / podcast / youtube rss_poll"),
+    ("readability", "news", "news article extraction"),
+    ("google.genai", "gemini", "podcast transcription"),
+    ("youtube_transcript_api", "youtube", "youtube captions"),
+)
+
+
+def check_venv_extras() -> CheckResult:
+    """Every optional extra the acquisition + dream crons import must be
+    importable from *this* interpreter. Harness-independent."""
+    import importlib.util
+
+    missing = [
+        (mod, extra, lanes)
+        for mod, extra, lanes in _EXTRA_MODULES
+        if importlib.util.find_spec(mod) is None
+    ]
+    if not missing:
+        return CheckResult(
+            name="venv extras",
+            passed=True,
+            detail=f"all {len(_EXTRA_MODULES)} optional-extra modules importable",
+        )
+    listing = "; ".join(f"{m} [{e}] → {l}" for m, e, l in missing)
+    return CheckResult(
+        name="venv extras",
+        passed=False,
+        detail=f"missing: {listing}",
+        fix=(
+            f"`uv sync --project {_detect_project_root()} --extra all` — never "
+            "`--extra <one>`: uv sync prunes every extra it is not told to keep"
+        ),
+    )
+
+
 # ---------- top-level driver ----------
 
 
@@ -766,6 +810,7 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # about which harness is reading it.
     result.checks.append(check_command_symlinks(cwd))
     result.checks.append(check_vault_env())
+    result.checks.append(check_venv_extras())
     result.checks.append(check_weave_mcp_on_path())
     _print_doctor_report(result)
     return result

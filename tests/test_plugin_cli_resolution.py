@@ -45,8 +45,13 @@ def test_bin_weave_shim_runs_via_plugin_root_not_cwd():
         "bin/weave must resolve its own path to find the plugin root"
     )
     assert (
-        'exec "$uv_bin" run --project "$root" --extra mcp weave "$@"' in body
-    ), "bin/weave must run the bundled CLI via `uv run --project <root>`"
+        'exec "$uv_bin" run --no-sync --project "$root" --extra mcp '
+        'python -m thinkweave.surfaces.cli "$@"' in body
+    ), (
+        "bin/weave must run the bundled CLI via `uv run --no-sync --project "
+        "<root> python -m …` — a syncing `uv run … weave` prunes every other "
+        "extra from the venv on each call (#164)"
+    )
 
 
 def test_bin_weave_shim_resolves_uv_like_the_mcp_launcher():

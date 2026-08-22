@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Plugin CLI shim.
 #
 # Claude Code adds an enabled plugin's bin/ to the Bash tool's PATH, so skills
@@ -21,10 +21,9 @@
 # Self-location is shell-builtin-only (no dirname) — same as
 # bin/weave-mcp-launch — so the shim still works on minimal harness shells
 # with a stripped PATH.
-set -euo pipefail
-src="${BASH_SOURCE[0]:-$0}"
-case $src in
-    */*) script_dir=${src%/*} ;;
+set -eu
+case $0 in
+    */*) script_dir=${0%/*} ;;
     *)   script_dir=. ;;
 esac
 root="$(CDPATH='' cd -P -- "$script_dir/.." && pwd)"
@@ -40,4 +39,9 @@ else
     exit 127
 fi
 
-exec "$uv_bin" run --project "$root" --extra mcp weave "$@"
+# --no-sync + module entry (matches bin/weave-{hook,mcp}-launch, #156/#164):
+# a plain `uv run --extra mcp weave` re-syncs the venv to ONLY the mcp extra on
+# every call, silently uninstalling news/embeddings/gemini/youtube deps — this
+# killed the news pull on 2026-08-11 and the embed/dream crons on 2026-08-22.
+# Sync happens once, explicitly: `uv sync --extra all` (see README).
+exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.cli "$@"
