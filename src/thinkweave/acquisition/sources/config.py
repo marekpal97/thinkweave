@@ -60,6 +60,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "triage_model": "claude-haiku-4-5",
             "themes_catalog": "vault/THEMES.md",
             "dedup_keys": ["url", "entry_id"],
+            # Event-grain freshness (2026-08-23). Without these the news
+            # queue was a FIFO that never shrank (613 deep, inflow ≈ drain
+            # cap) and the drain head was always the OLDEST item — news a
+            # week old by the time it was briefed. lookback_days clips feed
+            # entries at enqueue; stale_after_days archives already-queued
+            # items (status=stale) on every rss_poll run. Both overridable
+            # in PRIORITIES.yaml::intake.news.
+            "lookback_days": 7,
+            "stale_after_days": 7,
             "drain_strategy": "subagent",
             "drain_parallelism": 4,
             "drain_batch_max": 20,

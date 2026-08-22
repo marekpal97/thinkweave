@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -119,7 +120,7 @@ class RssPollStrategy:
             # The intake block wins for fields it sets; spec fields fill
             # in everything else (queue path, dedup_keys, etc).
             effective_spec = dict(spec)
-            for key in ("lookback_days", "drain_batch_max"):
+            for key in ("lookback_days", "drain_batch_max", "stale_after_days"):
                 if key in intake_block:
                     effective_spec[key] = intake_block[key]
             descriptors.extend(
@@ -255,8 +256,16 @@ class RssPollStrategy:
             "dup_indexer": 0,
             "cap_hit": 0,
             "stale_lookback": 0,
+            "stale_archived": 0,
             "feed_errors": 0,
         }
+        # Queue-side freshness: archive already-queued items older than
+        # ``stale_after_days`` (status=stale) so the drain head is always
+        # fresh. lookback_days only guards the enqueue edge; this guards
+        # the queue itself when drain capacity lags inflow.
+        stats["stale_archived"] = _archive_stale(
+            queue, int(spec.get("stale_after_days") or 0)
+        )
         out: list[dict[str, Any]] = []
 
         for feed_url, meta in feed_urls:
@@ -343,6 +352,57 @@ class RssPollStrategy:
 
 # ---------------------------------------------------------------------------
 # Helpers
+
+
+def _item_age_anchor(item: dict[str, Any]) -> datetime | None:
+    """The item's publication time if parseable, else its enqueue time."""
+    for key in ("published", "published_date", "enqueued_at"):
+        raw = item.get(key)
+        if not raw:
+            continue
+        dt = _parse_any_datetime(str(raw))
+        if dt is None:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    return None
+
+
+def _parse_any_datetime(raw: str) -> datetime | None:
+    """ISO-8601 or RFC-2822 (feed ``published`` strings) → aware datetime."""
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    try:
+        return parsedate_to_datetime(raw)
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _archive_stale(queue: Queue, stale_after_days: int) -> int:
+    """Archive unclaimed queue items older than ``stale_after_days``.
+
+    Returns the number archived. ``0`` days disables the sweep. Items with
+    no parseable date are left alone (never silently dropped).
+    """
+    if stale_after_days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=stale_after_days)
+    stale_ids = [
+        str(item.get("id"))
+        for item in queue.peek(10_000)
+        if not item.get("claimed")
+        and item.get("id")
+        and (anchor := _item_age_anchor(item)) is not None
+        and anchor < cutoff
+    ]
+    for item_id in stale_ids:
+        queue.archive(
+            item_id, "stale", reason=f"older than {stale_after_days}d at rss_poll"
+        )
+    return len(stale_ids)
 # ---------------------------------------------------------------------------
 
 
