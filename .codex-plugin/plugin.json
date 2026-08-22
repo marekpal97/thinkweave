@@ -1,6 +1,6 @@
 {
   "name": "thinkweave",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Obsidian-native durable memory for coding agents",
   "author": {"name": "Marek Paluch"},
   "homepage": "https://github.com/marekpal97/thinkweave",
