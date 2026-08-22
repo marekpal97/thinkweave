@@ -137,11 +137,13 @@ CREATE INDEX IF NOT EXISTS idx_ch_ancestor ON concept_hierarchy(ancestor);
 -- developer message, spills it to a temp file above additionalContextLimit,
 -- and drops it entirely until the hook is trusted — so it must not be weighed
 -- as Claude Code's 'startup'.
+-- 'brief' / 'learn' (#120): the /brief and /learn serving surfaces (#170,
+-- #171) — each serving surface gets its own source (context-served rule).
 -- Rebuildable from retrieval_log.jsonl — markdown stays truth.
 CREATE TABLE IF NOT EXISTS context_served (
     session_id TEXT NOT NULL,
     note_id    TEXT NOT NULL,
-    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime', 'loop-prime', 'codex-startup')),
+    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime', 'loop-prime', 'codex-startup', 'brief', 'learn')),
     ts         TEXT,
     PRIMARY KEY (session_id, note_id, source)
 );
@@ -357,13 +359,14 @@ class Indexer:
             self.db.commit()
 
         # context_served's `source` CHECK has widened over time (R2 added
-        # 'prompttime'; #57 added 'loop-prime'; #107 added 'codex-startup').
+        # 'prompttime'; #57 added 'loop-prime'; #107 added 'codex-startup';
+        # #120 added 'brief' + 'learn').
         # Older vaults created the table with a narrower CHECK that rejects the
         # new-source INSERTs. SQLite can't ALTER a CHECK, but the table is 100%
         # derived from retrieval_log.jsonl — drop, let SCHEMA_SQL recreate it
         # with the current constraint, and re-project every session right here.
-        # Gate on the newest token: any table lacking 'codex-startup' predates
-        # the current schema.
+        # Gate on the newest token: any table lacking 'learn' predates the
+        # current schema.
         #
         # The re-projection is not deferred to the caller's rebuild: only
         # `rebuild(full=True)` walks every session, so an incremental rebuild
@@ -376,7 +379,7 @@ class Indexer:
             "WHERE type='table' AND name='context_served'"
         ).fetchone()
         cs_sql = cs_sql_row[0] if cs_sql_row else None
-        if cs_sql and "codex-startup" not in cs_sql:
+        if cs_sql and "'learn'" not in cs_sql:
             self.db.execute("DROP TABLE context_served")
             self.db.executescript(SCHEMA_SQL)
             self._rebuild_context_served()
@@ -1481,6 +1484,8 @@ class Indexer:
                         src = "prompttime"
                     elif tool == "loop_prime":
                         src = "loop-prime"
+                    elif tool in ("brief", "learn"):
+                        src = tool
                     else:
                         src = "onthefly"
                 else:
