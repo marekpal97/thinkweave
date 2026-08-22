@@ -44,4 +44,4 @@ fi
 # every call, silently uninstalling news/embeddings/gemini/youtube deps — this
 # killed the news pull on 2026-08-11 and the embed/dream crons on 2026-08-22.
 # Sync happens once, explicitly: `uv sync --extra all` (see README).
-exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.cli "$@"
+exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave "$@"

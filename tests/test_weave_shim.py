@@ -33,7 +33,7 @@ PROJECT_ROOT_PHYSICAL = _shell_path(REPO_ROOT)
 
 EXPECTED_UV_ARGV = (
     f"run --no-sync --project {PROJECT_ROOT_PHYSICAL} --extra mcp "
-    "python -m thinkweave.surfaces.cli queue list"
+    "python -m thinkweave queue list"
 )
 
 

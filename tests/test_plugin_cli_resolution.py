@@ -46,7 +46,7 @@ def test_bin_weave_shim_runs_via_plugin_root_not_cwd():
     )
     assert (
         'exec "$uv_bin" run --no-sync --project "$root" --extra mcp '
-        'python -m thinkweave.surfaces.cli "$@"' in body
+        'python -m thinkweave "$@"' in body
     ), (
         "bin/weave must run the bundled CLI via `uv run --no-sync --project "
         "<root> python -m …` — a syncing `uv run … weave` prunes every other "
