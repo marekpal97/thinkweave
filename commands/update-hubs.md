@@ -53,17 +53,17 @@ Run `weave hubs status` to see per-concept processed state. Look at the `todo` c
 
 If `todo` is small (roughly 1–20 notes across a handful of concepts, a normal daily delta), continue here.
 
-If `todo` is large (>50 notes total), this is a backfill-scale job — stop.
-In an interactive session, suggest `/update-hubs --bulk` (with `inline` or
-`batch` sub-mode) and let the user pick. **In a non-interactive session
-(headless `claude -p`), there's no one to pick a sub-mode — run
-`weave drain --target hubs --via batch` yourself** (pure CLI, non-
-interactive, OpenAI Batches API) rather than just reporting the backlog
-and stopping. A cron `/update-hubs` that only ever reports "backlog is
-large, run --bulk" every night is a permanent no-op: the backlog never
-shrinks because nothing headless ever answers that suggestion. Don't try
-to process a backfill in incremental mode either way; the per-invocation
-cap and the "watch every entry" posture both stop making sense.
+If `todo` is large (>50 notes total), this is a backfill-scale job — **stop
+without asking anything.** Print one line — `hubs backlog N pairs > 50:
+incremental mode skipped; the weekly `weave hubs plan && weave drain --target
+hubs --via batch` cron (Sun 14:30) owns backfill, or run /update-hubs --bulk
+[inline|batch] now` — and end the turn. Never pose "inline or batch?" as a
+question: this skill runs headless from cron daily, nothing ever answers, and
+an open question is a permanent no-op that still burns a full model turn
+(observed every day 2026-08-01→22). If the user *explicitly* invoked
+`/update-hubs --bulk`, follow the `--bulk` section instead. Don't try to
+process a backfill in incremental mode either way; the per-invocation cap and
+the "watch every entry" posture both stop making sense.
 
 ### 2. Pick concepts to process
 
