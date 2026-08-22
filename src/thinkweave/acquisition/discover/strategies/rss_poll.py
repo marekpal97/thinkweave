@@ -120,7 +120,12 @@ class RssPollStrategy:
             # The intake block wins for fields it sets; spec fields fill
             # in everything else (queue path, dedup_keys, etc).
             effective_spec = dict(spec)
-            for key in ("lookback_days", "drain_batch_max", "stale_after_days"):
+            for key in (
+                "lookback_days",
+                "drain_batch_max",
+                "stale_after_days",
+                "daily_cap",
+            ):
                 if key in intake_block:
                     effective_spec[key] = intake_block[key]
             descriptors.extend(
@@ -239,10 +244,14 @@ class RssPollStrategy:
             flavor = "youtube"
         else:
             flavor = "news"
-        # Both news and podcasts honour per-outlet daily caps.
-        enqueue_counts_today: dict[str, int] = (
-            _count_today_per_outlet(queue) if flavor in ("news", "podcast") else {}
+        # News and podcasts honour per-outlet daily caps (outlet config);
+        # youtube honours a lane-level ``daily_cap`` per channel (the
+        # channels registry is a flat id list, so the cap lives on the lane).
+        count_key = "channel_id" if flavor == "youtube" else "outlet"
+        enqueue_counts_today: dict[str, int] = _count_today_per_outlet(
+            queue, key=count_key
         )
+        youtube_cap = int(spec.get("daily_cap") or 0)
         lookback_days = int(spec.get("lookback_days") or 0)
         cutoff_dt: datetime | None = None
         if lookback_days > 0:
@@ -302,6 +311,10 @@ class RssPollStrategy:
                         stats["stale_lookback"] += 1
                         continue
                 else:
+                    outlet_slug = meta["channel_id"]
+                    if youtube_cap and enqueue_counts_today.get(outlet_slug, 0) >= youtube_cap:
+                        stats["cap_hit"] += 1
+                        continue
                     item = _build_youtube_item(
                         entry,
                         getattr(parsed, "feed", None),
@@ -324,10 +337,9 @@ class RssPollStrategy:
                     continue
                 item_id = queue.enqueue(item)
                 stats["enqueued"] += 1
-                if flavor in ("news", "podcast"):
-                    enqueue_counts_today[outlet_slug] = (
-                        enqueue_counts_today.get(outlet_slug, 0) + 1
-                    )
+                enqueue_counts_today[outlet_slug] = (
+                    enqueue_counts_today.get(outlet_slug, 0) + 1
+                )
                 out.append(
                     {
                         "strategy": self.name,
@@ -643,15 +655,18 @@ def _load_indexer_keys(
     return seen
 
 
-def _count_today_per_outlet(queue: Queue) -> dict[str, int]:
-    """Per-outlet count of items seen today (active queue + today's archive)."""
+def _count_today_per_outlet(queue: Queue, key: str = "outlet") -> dict[str, int]:
+    """Per-``key`` count of items seen today (active queue + today's archive).
+
+    ``key`` is ``outlet`` for news/podcast items, ``channel_id`` for youtube.
+    """
     today = datetime.now(timezone.utc).date()
     today_start = datetime(
         today.year, today.month, today.day, tzinfo=timezone.utc
     ).isoformat(timespec="seconds")
     out: dict[str, int] = {}
     for item in queue.items_since(today_start):
-        slug = item.get("outlet", "")
+        slug = item.get(key, "")
         if slug:
             out[slug] = out.get(slug, 0) + 1
     return out

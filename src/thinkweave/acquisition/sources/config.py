@@ -160,6 +160,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "drain_batch_max": 20,
             "channels": [],
             "lookback_days": 7,
+            # Per-channel daily cap + per-video Haiku funnel (2026-08-23). The
+            # channel list admits the FEED; firehose channels (Bloomberg TV
+            # posts 30+/day) and mixed channels (Lex) need both a cap and a
+            # title/summary gate before captions are pulled and a writer runs.
+            # Overridable in PRIORITIES.yaml::intake.youtube_*.
+            "daily_cap": 2,
+            "triage_model": "claude-haiku-4-5",
+            "themes_catalog": "vault/THEMES.md",
             "dedup_keys": ["video_id", "url"],
             # Event-grain freshness (2026-08-23): archive queued items older
             # than this at rss_poll (status=stale). Concept lane has none.
@@ -190,6 +198,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "drain_batch_max": 20,
             "channels": [],
             "lookback_days": 30,
+            # Per-channel daily cap + per-video Haiku funnel (2026-08-23). The
+            # channel list admits the FEED; firehose channels (Bloomberg TV
+            # posts 30+/day) and mixed channels (Lex) need both a cap and a
+            # title/summary gate before captions are pulled and a writer runs.
+            # Overridable in PRIORITIES.yaml::intake.youtube_*.
+            "daily_cap": 2,
+            "triage_model": "claude-haiku-4-5",
+            "themes_catalog": "vault/THEMES.md",
             "dedup_keys": ["video_id", "url"],
             "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
             "research_skill": "research-youtube",
