@@ -368,6 +368,16 @@ def add_admin_subparsers(sub) -> None:
             help="Comma-separated job names to act on (default: all).",
         )
 
+    p_health = sub.add_parser(
+        "health",
+        help="Deterministic system health: scheduled jobs (last run / stale), "
+        "queue depth + backlog, recent hook errors, digest freshness. "
+        "Exit 1 when anything is flagged.",
+    )
+    p_health.add_argument(
+        "--json", action="store_true", help="Emit the stable JSON contract /brief reads."
+    )
+
     p_config = sub.add_parser(
         "config",
         # NB: literal ``%`` must be doubled — argparse renders help via

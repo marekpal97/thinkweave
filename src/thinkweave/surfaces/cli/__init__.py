@@ -62,6 +62,7 @@ from thinkweave.surfaces.cli.parser import build_parser
 from thinkweave.surfaces.cli.queue import cmd_queue
 from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 from thinkweave.surfaces.cli.schedule import cmd_schedule
+from thinkweave.surfaces.cli.health import cmd_health
 from thinkweave.surfaces.cli.seam import cmd_seam
 from thinkweave.surfaces.cli.skill import cmd_skill
 from thinkweave.surfaces.cli.steering import cmd_steering
@@ -102,6 +103,7 @@ _DISPATCH = {
     "dev-unlink": cmd_dev_unlink,
     "hooks": cmd_hooks,
     "schedule": cmd_schedule,
+    "health": cmd_health,
     "mcp": cmd_mcp,
     "pause": cmd_pause,
     "resume": cmd_resume,

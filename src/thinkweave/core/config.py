@@ -278,6 +278,12 @@ class Config:
     # standard constant from the original RRF paper.
     retrieval_rrf_k: int = 60
 
+    # `weave health` (#120): a scheduled job is stale once its last-run
+    # evidence is older than cadence × stale_factor; a queue item is backlog
+    # once it has sat unclaimed for more than backlog_days.
+    health_stale_factor: float = 1.5
+    health_backlog_days: int = 7
+
     # R2 — prompt-time retrieval enrichment (see PromptTimeRetrieval).
     retrieval_prompt_time: PromptTimeRetrieval = field(
         default_factory=PromptTimeRetrieval
@@ -689,6 +695,13 @@ def load_config() -> Config:
         retrieval_cfg = data.get("retrieval", {})
         if "rrf_k" in retrieval_cfg:
             cfg.retrieval_rrf_k = int(retrieval_cfg["rrf_k"])
+
+        # `weave health` ([health])
+        health_cfg = data.get("health", {})
+        if "stale_factor" in health_cfg:
+            cfg.health_stale_factor = float(health_cfg["stale_factor"])
+        if "backlog_days" in health_cfg:
+            cfg.health_backlog_days = int(health_cfg["backlog_days"])
 
         # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
         pt = retrieval_cfg.get("prompt_time", {})

@@ -336,6 +336,10 @@ probes_display_cap = 10            # probes shown in STATE.md "Open Probes"
 rrf_k = 60                         # RRF fusion constant for hybrid search
 
 [retrieval.prompt_time]            # R2 enrichment (enabled, min_similarity, caps, …)
+
+[health]                           # `weave health` collector
+stale_factor = 1.5                 # job is stale when last-run age > cadence × this
+backlog_days = 7                   # queue item counts as backlog after N days unclaimed
 ```
 
 The `weave dream scan` flags (`--promotion-cap`, `--promotion-threshold`, `--essence-cap`) override their config fields per-invocation; cron (which passes no flags) is steered by the file.
