@@ -192,7 +192,7 @@ working tree are live:
 ```bash
 git clone https://github.com/marekpal97/thinkweave.git
 cd thinkweave
-uv sync --extra mcp        # installs weave, weave-hook, weave-mcp into the repo venv
+uv sync --extra all        # installs weave, weave-hook, weave-mcp into the repo venv
 uv run weave dev-link      # symlink into ~/.claude/skills/ (flagless auto-load)
 # → restart Claude Code; commands are now /thinkweave:onboard, :tighten, …
 ```
@@ -205,7 +205,7 @@ install, warns if a leftover `weave install` entry would double-register the ser
 and is reversed by `weave dev-unlink`.
 
 **Updating a dev-link checkout (especially on Windows):** close every Claude Code
-session, then run `git pull` and `uv sync --extra mcp`, and reopen Claude Code.
+session, then run `git pull` and `uv sync --extra all`, and reopen Claude Code.
 The MCP and hook launchers intentionally use `uv run --no-sync python -m ...` at
 runtime, so a hook can never mutate the environment or replace a live Windows
 executable. If you use the alternative machine-scope hook route, also rerun
