@@ -161,6 +161,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "channels": [],
             "lookback_days": 7,
             "dedup_keys": ["video_id", "url"],
+            # Event-grain freshness (2026-08-23): archive queued items older
+            # than this at rss_poll (status=stale). Concept lane has none.
+            "stale_after_days": 14,
             "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
             "research_skill": "research-youtube",
             "post_batch_hooks": [],
@@ -220,6 +223,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "drain_batch_max": 10,
             "lookback_days": 7,
             "dedup_keys": ["entry_id", "audio_url", "url"],
+            # Event-grain freshness (2026-08-23): archive queued items older
+            # than this at rss_poll (status=stale). Concept lane has none.
+            "stale_after_days": 14,
             "url_patterns": [
                 "feeds.megaphone.fm",
                 "feeds.libsyn.com",
@@ -232,9 +238,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
             ],
             "research_skill": "research-podcast",
             "post_batch_hooks": [],
-            # No `triage_model` — admission is the per-show subscription
-            # decision (an outlet in PRIORITIES.yaml::intake.podcast_events),
-            # not per-episode triage. /drain Path B fans out directly.
+            # Per-episode funnel (2026-08-23). Show subscription admits the
+            # FEED; this Haiku pass admits the EPISODE — mixed shows (Lex,
+            # Dwarkesh, Odd Lots) run guests far outside the user's lanes,
+            # and each admitted episode costs a Gemini transcription. Same
+            # stage-1 worker as news, fed title + feed summary; verdict
+            # `drop` never reaches the writer. See agents/news-triage-worker.md
+            # "Podcast items".
+            "triage_model": "claude-haiku-4-5",
+            "themes_catalog": "vault/THEMES.md",
             "allowed_failure_prefixes": [
                 "audio_fetch_failed",
                 "audio_too_large",
@@ -254,6 +266,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # Outlets registry → PRIORITIES.yaml::intake.podcast_concepts.outlets.
             "queue": "vault/.weave/queues/podcast-concepts.jsonl",
             "drain_strategy": "subagent",
+            "triage_model": "claude-haiku-4-5",
+            "themes_catalog": "vault/THEMES.md",
             "subagent_type": "research-podcast-worker",
             "subagent_model": "sonnet",
             "drain_parallelism": 2,

@@ -39,6 +39,14 @@ For each item, decide which of THREE verdicts applies:
 - **Be conservative on `drop`** — a false reject means a real signal is lost forever. A false admit gets caught by Stage-2 producing a thin brief, which the user can review periodically.
 - **`reason` field** — a short (≤80 char) human-readable rationale. For `keep`, name the matched theme. For `keep_unfiled`, say what makes it substantive. For `drop`, name the noise pattern (e.g. "celebrity gossip", "rumor without primary source").
 
+## Podcast items (`source_type` starts with `podcast-`)
+
+The show allowlist already admitted the *feed*; you admit the *episode*. Every admitted episode costs a full audio transcription, so the bar is higher than for a news headline:
+
+- `keep` — the episode's title/summary fits an active theme (event lane) **or** is squarely on the user's working lanes: ML/AI systems and agents, quantitative methods, macro / markets / company analysis (concept lane — `theme_id: null` always for `podcast-concepts`).
+- `keep_unfiled` — clearly technical or financial in depth but no theme match. Use it sparingly here — "interesting guest" is not enough.
+- `drop` — general-interest, celebrity, lifestyle, sports, pure politics-as-entertainment, or a guest whose field is outside the lanes above. **For podcasts `drop` is the default when unsure**, the inverse of the news cue — a missed episode is recoverable (the show is still subscribed; the user can `/research <url>` it), a transcribed dud is not.
+
 ## Output contract
 
 Emit ONE JSON object as the final non-empty line of your response. The object is keyed by item id; each value is `{verdict, theme_id, reason}`. Example:
