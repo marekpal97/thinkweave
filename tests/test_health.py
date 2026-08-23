@@ -252,20 +252,6 @@ class TestCli:
 class TestContextServedSources:
     """AC6 — ``source IN (…, 'brief', 'learn')`` plus migration of an old DB."""
 
-    def _rows(self, cfg):
-        from thinkweave.core.indexer import Indexer
-
-        idx = Indexer(config=cfg)
-        try:
-            idx._init_schema()
-            return [
-                r["note_id"]
-                for r in idx.db.execute("SELECT note_id FROM context_served")
-            ], idx
-        except Exception:
-            idx.close()
-            raise
-
     def test_brief_and_learn_rows_project_from_retrieval_log(self, vault_factory):
         handle = vault_factory()
         cfg, vm = handle.config, handle.vault
@@ -317,8 +303,10 @@ class TestContextServedSources:
         idx.db.commit()
         idx.close()
 
-        rows, idx = self._rows(cfg)
+        idx = Indexer(config=cfg)
         try:
+            idx._init_schema()
+            rows = [r["note_id"] for r in idx.db.execute("SELECT note_id FROM context_served")]
             # Existing rows are re-projected from retrieval_log (the table is
             # derived); the hand-inserted orphan has no log line so it is gone.
             assert rows == ["n-seeded"]

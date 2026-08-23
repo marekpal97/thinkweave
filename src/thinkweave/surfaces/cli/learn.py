@@ -22,18 +22,13 @@ def cmd_learn(args: argparse.Namespace) -> None:
     if action == "coverage":
         print(json.dumps(learn.coverage(cfg, args.topic, args.concepts), indent=2))
     elif action == "check":
-        from thinkweave.core.vault import VaultManager
-        from thinkweave.retrieval.search import Search
+        from thinkweave.operations.notes import read_note
 
-        s = Search(config=cfg)
-        try:
-            row = s.get_note_by_id(args.note)
-        finally:
-            s.close()
-        if not row:
+        meta, _ = read_note(cfg, args.note)
+        if meta is None:
             print(f"note {args.note} not in the index — run `weave index` first")
             sys.exit(2)
-        fm = VaultManager(config=cfg).read_note(cfg.vault_root / row["path"]).frontmatter
+        fm = meta.frontmatter
         problems = learn.validate_learn_note(fm)
         for p in problems:
             print(f"  - {p}")

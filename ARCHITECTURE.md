@@ -479,7 +479,7 @@ The rule: when restructuring internal modules, treat anything in this table as a
 
 The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus exactly four narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, and `weave judge --rejudge/--drain`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `weave`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see "Operations layer" below). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-The full inventory — 49 CLI subcommands × 17 MCP tools, with the per-operation audience labels (*agent* / *admin-cron* / *both* / *agent-Bash*) — lives in [docs/CLI-AND-MCP.md §"Surface contract"](docs/CLI-AND-MCP.md#surface-contract--cli--mcp).
+The full inventory — 50 CLI subcommands × 17 MCP tools, with the per-operation audience labels (*agent* / *admin-cron* / *both* / *agent-Bash*) — lives in [docs/CLI-AND-MCP.md §"Surface contract"](docs/CLI-AND-MCP.md#surface-contract--cli--mcp).
 
 ## Operations layer
 

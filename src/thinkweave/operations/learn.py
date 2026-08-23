@@ -124,8 +124,7 @@ def probe(cfg: Config, session: str, text: str) -> bool:
         return False
     ts = datetime.now(timezone.utc).isoformat()
     log = session_log(cfg, ref, "events.jsonl")
-    append_event(log, {"ts": ts, "type": "prompt", "text": text,
-                       "session_id": ref.source_session, "cwd": "", "origin": "learn"})
+    append_event(log, {"ts": ts, "type": "prompt", "text": text, "session_id": ref.source_session})
     append_event(log, {"ts": ts, "type": "probe", "session_id": ref.source_session,
                        "prompt_ref": text[:120]})
     return True
