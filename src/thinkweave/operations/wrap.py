@@ -45,6 +45,7 @@ class WrapFinalizeResult:
     verdicts_written: int = 0
     verdicts_skipped: int = 0
     verdicts_unmatched: int = 0
+    prompts_reprojected: int = 0
     errors: list[str] = field(default_factory=list)
     # Per-step wall time (seconds) — keys: verdicts, prune, index, judge,
     # landing, drift. Populated even when a step errors, so a slow failure
@@ -118,6 +119,26 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
         if events_file.exists():
             return events_file
     return None
+
+
+def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
+    """Map a wrap's session id (Claude UUID or ``ses-…``) to the session
+    note id the index keys prompts by. Falls back to the input unchanged."""
+    if session_id.startswith("ses-"):
+        return session_id
+    events = _resolve_events_file(cfg, session_id, project)
+    if events is None:
+        return session_id
+    sm = events.parent / "session.md"
+    if not sm.exists():
+        return session_id
+    from thinkweave.core.vault import parse_frontmatter
+
+    try:
+        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return session_id
+    return str(fm.get("id") or session_id)
 
 
 def _append_verdict_events(
@@ -288,6 +309,16 @@ def finalize_wrap(
         result.indexed = stats.get("indexed", 0)
         result.removed = stats.get("removed", 0)
         result.edges = stats.get("edges", 0)
+        # Verdicts landed in events.jsonl, not session.md — the incremental
+        # rebuild above won't re-project this session's prompts on its own.
+        if verdicts:
+            idx = Indexer(config=cfg)
+            try:
+                result.prompts_reprojected = idx.reproject_session_prompts(
+                    _session_note_id(cfg, session_id, project)
+                )
+            finally:
+                idx.close()
     except Exception as e:  # noqa: BLE001
         result.errors.append(f"index: {e}")
     finally:

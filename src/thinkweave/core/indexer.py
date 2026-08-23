@@ -1526,6 +1526,31 @@ class Indexer:
             log.exception("proposed-concept vocabulary load failed")
         return vocabulary
 
+    def reproject_session_prompts(self, session_id: str) -> int:
+        """Re-project ONE session's prompts/probes from its events.jsonl.
+
+        For callers that mutate ``events.jsonl`` without touching
+        ``session.md`` (wrap-finalize appending prompt verdicts): the
+        incremental rebuild keys on the note's content hash, so the new
+        ``probe`` labels would otherwise never reach the ``prompts`` table.
+        Returns rows written; 0 when the session or its events are missing.
+        """
+        row = self.db.execute(
+            "SELECT id, path, project FROM notes WHERE type = 'session' AND id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        sess_path = self.vault.root / row["path"]
+        written = self._project_session_prompts(
+            row["id"],
+            sess_path.parent / "events.jsonl",
+            row["project"],
+            self._probe_vocabulary(),
+        )
+        self.db.commit()
+        return written
+
     def _rebuild_prompts(self, only_ids: set[str] | None = None) -> None:
         """Project sessions' ``events.jsonl`` into ``prompts``/``prompt_concepts``.
 
