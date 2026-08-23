@@ -32,23 +32,13 @@ JSON contract (``weave health --json``) — stable keys, read by ``/brief``
       "digest": {"latest": "YYYY-MM-DD"|null, "age_days": int|null, "stale": bool}
     }
 
-Evidence join, strongest first: the dream rail writes one ``maintenance.jsonl``
-line per *completed* cycle (``cycle_id: dream-…``) — that is the completion
-signal and wins whenever present. Otherwise the ``>> <log>`` file's mtime is
-a fire-time signal (touched on every fire, crashes included; cron death =
-the file stops changing). ponytail: when several cron lines append to the
-same log the mtime cannot be attributed to any one of them — it is reported
-as ``log(shared)`` and still gates stale/missing, so a dead line masked by a
-live sibling reads OK. Upgrade path: per-job log files in scheduling.yaml.
-The whole ``crontab -l`` is read, not just the weave fence block: on a
-long-lived install most lines are hand-written outside the fence, and a job
-the user scheduled is a job they expect to run.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -65,15 +55,10 @@ _PROMPT = re.compile(r"""-p\s+["']?(/[\w:-]+)""")
 _SOURCE_TYPE = re.compile(r"--source-type\s+([\w-]+)")
 _WEAVE = re.compile(r"\bweave\s+([a-z][\w-]*)")
 _HOOK_HEADER = re.compile(r"^\[(\d{4}-\d\d-\d\dT[^\]]+)\] ")
-_DIGEST_DAY = re.compile(r"^(\d{4}-\d\d-\d\d)-")
-_HOOK_WINDOW = timedelta(days=1)
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-_NO_CRONTAB = "job layer not inspectable on this platform (no crontab)"
 
 
 def _read_crontab() -> str | None:
@@ -99,12 +84,12 @@ def collect(
     flags: list[str] = []
     advisories: list[str] = []
 
-    jobs_note = _NO_CRONTAB if cron is None else None
+    jobs_note = None if cron is not None else (
+        "job layer not inspectable on this platform (no crontab)"
+    )
     lines = _cron_lines(cron or "")
-    shared_logs = {
-        log for log in (_log_path(c) for _, c in lines) if log
-        and sum(1 for _, c in lines if _log_path(c) == log) > 1
-    }
+    counts = Counter(_log_path(c) for _, c in lines)
+    shared_logs = {p for p, n in counts.items() if p and n > 1}
     jobs = [_job(line, cfg, now, shared_logs) for line in lines]
     if jobs_note:
         flags.append(jobs_note)
@@ -117,7 +102,7 @@ def collect(
     queues = []
     cutoff = now - timedelta(days=cfg.health_backlog_days)
     for spec in all_specs(cfg.vault_root):
-        items = Queue.for_source_type(spec.slug, cfg.vault_root).peek(10_000)
+        items = Queue.for_source_type(spec.slug, cfg.vault_root)._read_all()
         ages = [_ts(it.get("enqueued_at")) for it in items]
         backlog = sum(1 for t in ages if t and t < cutoff)
         queues.append({"source_type": spec.slug, "depth": len(items), "backlog": backlog})
@@ -208,8 +193,8 @@ def _job_name(command: str) -> str:
     m = _WEAVE.search(command)
     if m:
         return f"weave {m.group(1)}"
-    m = _LOG_REDIRECT.search(command)
-    return Path(m.group(1).strip("'\"")).stem if m else command[:40]
+    log = _log_path(command)
+    return log.stem if log else command[:40]
 
 
 def _latest_maintenance(path: Path, skill: str) -> datetime | None:
@@ -274,7 +259,7 @@ def _hooks(path: Path, now: datetime) -> dict:
         if not m or "\nTraceback" not in block:
             continue
         ts = _ts(m.group(1))
-        if ts and now - ts <= _HOOK_WINDOW:
+        if ts and now - ts <= timedelta(days=1):
             out["recent_errors"] += 1
             out["last_error"] = block.splitlines()[0]
     return out
@@ -282,9 +267,9 @@ def _hooks(path: Path, now: datetime) -> dict:
 
 def _digest(digests_dir: Path, now: datetime, stale_factor: float) -> dict:
     days = sorted(
-        m.group(1)
+        p.name[:10]
         for p in (digests_dir.glob("*.md") if digests_dir.exists() else ())
-        if (m := _DIGEST_DAY.match(p.name))
+        if p.name[:4].isdigit()
     )
     if not days:
         return {"latest": None, "age_days": None, "stale": True}

@@ -30,13 +30,7 @@ weave graph <id>                              # local graph
 weave context "q" [--type X]                  # 3-layer retrieval (FTS → concept → recency)
 weave stats                                   # vault health (deprecated → weave doctor)
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
-weave health [--json]                         # is everything running? jobs (last run/stale),
-                                            # queue depth+backlog, hook errors, digest
-                                            # freshness. Exit 1 when a job, hook, or the
-                                            # digest is flagged; queue backlog is advisory
-                                            # only (never changes the exit code). --json is
-                                            # the contract /brief reads (schema docstring in
-                                            # operations/health.py)
+weave health [--json]                         # jobs/queues/hooks/digest; exit 1 on flag; --json is /brief's contract
 weave backlog [--project X]                   # todo notes + active queue items
 weave decisions [--file <path>] [--project X] # decision ledger lookup
 weave project {list|show|set-active}          # project registry on the vault

@@ -16,7 +16,7 @@ from thinkweave.operations import health
 
 def cmd_health(args: argparse.Namespace) -> None:
     report = health.collect(load_config())
-    if getattr(args, "json", False):
+    if args.json:
         print(json.dumps(report, indent=2))
     else:
         _print_table(report)
