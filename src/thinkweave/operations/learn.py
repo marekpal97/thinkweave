@@ -20,7 +20,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from thinkweave.core.config import Config
-from thinkweave.core.indexer import Indexer
 from thinkweave.operations.retrieval_log import append_event
 from thinkweave.operations.served import resolve_session, session_log
 
@@ -31,8 +30,6 @@ FIRST_CONTACT_LINE = "First contact in the vault — no prior trajectory for '{t
 # exception is the ChatGPT import — ``type: source`` but ``source_type:
 # conversation`` — which is the user's own history and so trajectory.
 _MATERIAL_TYPES = frozenset({"source", "theme", "digest", "concept-hub", "domain-hub"})
-_HUB_PREFIX = "concepts/"
-_USER_SOURCE_TYPES = frozenset({"conversation"})
 
 
 def coverage(cfg: Config, topic: str, concepts: list[str] | None = None, limit: int = 40) -> dict:
@@ -49,29 +46,24 @@ def coverage(cfg: Config, topic: str, concepts: list[str] | None = None, limit: 
 
     concepts = [c for c in (concepts or []) if c]
     hits = {r.id: r for r in query_fts(cfg, topic, limit=limit)}
-    if concepts:
-        s = Search(config=cfg)
-        try:
+    s = Search(config=cfg)
+    try:
+        if concepts:
             for r in s.search_by_concept(concepts, limit=limit):
                 hits.setdefault(r.id, r)
-        finally:
-            s.close()
-
-    fm: dict[str, tuple[str, str]] = {}  # id -> (kind, source_type)
-    if hits:
-        idx = Indexer(config=cfg)
-        try:
+        fm: dict[str, tuple[str, str]] = {}  # id -> (kind, source_type)
+        if hits:
             ph = ",".join("?" * len(hits))
             fm = {
                 row[0]: (row[1] or "", row[2] or "")
-                for row in idx.db.execute(
+                for row in s.db.execute(
                     "SELECT id, json_extract(frontmatter, '$.kind'), "
                     f"json_extract(frontmatter, '$.source_type') FROM notes WHERE id IN ({ph})",
                     list(hits),
                 )
             }
-        finally:
-            idx.close()
+    finally:
+        s.close()
 
     trajectory, material = [], []
     for r in hits.values():
@@ -79,8 +71,8 @@ def coverage(cfg: Config, topic: str, concepts: list[str] | None = None, limit: 
         row = {"id": r.id, "type": r.type, "title": r.title, "path": r.path,
                "date": r.date or "", "kind": kind}
         is_material = (
-            r.type in _MATERIAL_TYPES or r.path.startswith(_HUB_PREFIX)
-        ) and source_type not in _USER_SOURCE_TYPES
+            r.type in _MATERIAL_TYPES or r.path.startswith("concepts/")
+        ) and source_type != "conversation"
         (material if is_material else trajectory).append(row)
     trajectory.sort(key=lambda h: h["date"])
     prior_learn = [h["id"] for h in trajectory if h["kind"] == "learn"]
@@ -110,10 +102,11 @@ def validate_learn_note(fm: dict) -> list[str]:
         if not isinstance(fm.get(key, []), list):
             problems.append(f"{key} must be a list")
     for key, needed in (("solid", ("concept", "date")), ("shaky", ("concept", "date", "why"))):
-        for i, entry in enumerate(fm.get(key) or []):
-            if isinstance(fm.get(key), list) and not (
-                isinstance(entry, dict) and all(str(entry.get(k) or "").strip() for k in needed)
-            ):
+        entries = fm.get(key)
+        if not isinstance(entries, list):
+            continue
+        for i, entry in enumerate(entries):
+            if not (isinstance(entry, dict) and all(str(entry.get(k) or "").strip() for k in needed)):
                 problems.append(f"{key}[{i}] needs {', '.join(needed)}")
     return problems
 

@@ -20,17 +20,7 @@ def cmd_learn(args: argparse.Namespace) -> None:
     cfg = load_config()
     action = args.learn_action
     if action == "coverage":
-        cov = learn.coverage(cfg, args.topic, args.concepts)
-        if args.json:
-            print(json.dumps(cov, indent=2))
-            return
-        print(f"Mode: {cov['mode']}  (fill cap {cov['fill_cap']})")
-        print(cov["first_contact_line"] or f"Trajectory ({len(cov['trajectory'])}):")
-        for h in cov["trajectory"]:
-            print(f"  {h['date'][:10]}  [{h['type']}{'/' + h['kind'] if h['kind'] else ''}] {h['title']} ({h['id']})")
-        print(f"Material ({len(cov['material'])}):")
-        for h in cov["material"]:
-            print(f"  [{h['type']}] {h['title']} ({h['id']})")
+        print(json.dumps(learn.coverage(cfg, args.topic, args.concepts), indent=2))
     elif action == "check":
         from thinkweave.core.vault import VaultManager
         from thinkweave.retrieval.search import Search
@@ -56,6 +46,3 @@ def cmd_learn(args: argparse.Namespace) -> None:
     elif action == "probe":
         ok = learn.probe(cfg, args.session, args.text)
         print("probe recorded" if ok else f"session {args.session!r} unresolvable; wrote nothing")
-    else:
-        print("usage: weave learn {coverage,check,mark,probe}")
-        sys.exit(2)

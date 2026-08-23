@@ -31,7 +31,7 @@ weave context "q" [--type X]                  # 3-layer retrieval (FTS → conce
 weave stats                                   # vault health (deprecated → weave doctor)
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
 weave health [--json]                         # jobs/queues/hooks/digest; exit 1 on flag; --json is /brief's contract
-weave learn coverage --topic T [--concepts …] [--json]  # /learn: one retrieval → trajectory/material + mode
+weave learn coverage --topic T [--concepts …]  # /learn: one retrieval → trajectory/material + mode (JSON)
 weave learn check --note <id>                 # learn-note frontmatter contract; exit 1 on problems
 weave learn mark --session <uuid|ses-id> --note <id> --served <ids…>  # context_served(source='learn')
 weave learn probe --session <uuid|ses-id> --text "…"  # unanswered question → probe row

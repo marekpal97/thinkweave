@@ -18,7 +18,7 @@ description: Vault-grounded tutor — `/learn <topic>`. Teach-then-test dialogue
 
 # /learn <topic> — vault-grounded tutor
 
-Interactive. The user steers; you teach in the register their own vault history shows lands for them. A memoryless tutor presupposes nothing and re-explains everything; `/learn` presupposes **exactly what the vault evidences** and nothing more. Shape exemplar: `n-75689333` (disambiguation-led, misconception-driven, code-bridged) — `weave_read` it once if you have not seen it this session.
+Interactive. The user steers; you teach in the register their own vault history shows lands for them. A memoryless tutor presupposes nothing and re-explains everything; `/learn` presupposes **exactly what the vault evidences** and nothing more. Shape exemplar: `n-75689333` (disambiguation-led, misconception-driven, code-bridged).
 
 **Deterministic steps never prompt.** Everything the rail can do by code lives in `weave learn …` (Bash); everything else is your judgment.
 
@@ -28,7 +28,7 @@ Interactive. The user steers; you teach in the register their own vault history 
 
 ```
 weave_concepts                                   # pick 1–3 ontology slugs for the topic
-weave learn coverage --topic "<topic>" --concepts <slug…> --json
+weave learn coverage --topic "<topic>" --concepts <slug…>
 ```
 
 The rail runs ONE retrieval (FTS on the topic ∪ concept walk) and partitions **after** by provenance — never hand-pick note types per track:

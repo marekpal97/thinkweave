@@ -19,9 +19,6 @@ from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.operations.retrieval_log import append_event
 
-SOURCES = ("brief", "learn")
-
-
 @dataclass(frozen=True)
 class SessionRef:
     ses_id: str
@@ -57,8 +54,6 @@ def session_log(cfg: Config, ref: SessionRef, archived_name: str) -> Path:
 
 def mark(cfg: Config, source: str, session: str, note_id: str, served: list[str]) -> int:
     """Log ``served`` ids as context served by ``source``. Returns rows upserted."""
-    if source not in SOURCES:
-        raise ValueError(f"source must be one of {SOURCES}, got {source!r}")
     served = [s for s in dict.fromkeys(served) if s]
     ref = resolve_session(cfg, session)
     if ref is None or not served:
