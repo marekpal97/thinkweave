@@ -409,6 +409,7 @@ _POLICY_KNOBS = [
     ("retrieval_rrf_k", 60, "retrieval", "rrf_k"),
     ("health_stale_factor", 1.5, "health", "stale_factor"),
     ("health_backlog_days", 7, "health", "backlog_days"),
+    ("learn_fill_cap", 3, "learn", "fill_cap"),
 ]
 
 
