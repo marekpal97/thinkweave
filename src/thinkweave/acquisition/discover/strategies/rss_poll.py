@@ -267,6 +267,9 @@ class RssPollStrategy:
             "stale_lookback": 0,
             "stale_archived": 0,
             "feed_errors": 0,
+            # Which outlet/channel failed — a bare count let three dead
+            # news feeds rot unnoticed for months (found 2026-08-23).
+            "feed_errors_detail": [],
         }
         # Queue-side freshness: archive already-queued items older than
         # ``stale_after_days`` (status=stale) so the drain head is always
@@ -282,6 +285,9 @@ class RssPollStrategy:
             parsed = _safe_parse(feedparser_mod, feed_url)
             if parsed is None:
                 stats["feed_errors"] += 1
+                stats["feed_errors_detail"].append(
+                    meta.get("outlet_slug") or meta.get("channel_id") or feed_url
+                )
                 continue
             for entry in parsed.entries:
                 stats["entries_seen"] += 1
