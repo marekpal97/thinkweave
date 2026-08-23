@@ -134,7 +134,9 @@ class TestCliSurface:
         # `weave health` (deterministic system-health collector — jobs /
         # queues / hooks / digest, the /brief foundation, issue #120) added
         # 2026-08-23: 48 → 49.
-        assert len(_DISPATCH) == 49
+        # `weave learn` (coverage / check / mark / probe — the /learn tutor's
+        # deterministic rail, issue #171) added 2026-08-23: 49 → 50.
+        assert len(_DISPATCH) == 50
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():

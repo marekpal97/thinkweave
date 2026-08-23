@@ -19,6 +19,7 @@ from thinkweave.surfaces.cli.dream import cmd_dream
 from thinkweave.surfaces.cli.flows import cmd_flow
 from thinkweave.surfaces.cli.graph import cmd_graph
 from thinkweave.surfaces.cli.health import cmd_health
+from thinkweave.surfaces.cli.learn import cmd_learn
 from thinkweave.surfaces.cli.hooks import cmd_hooks
 from thinkweave.surfaces.cli.hubs import (
     _build_linkage_user_prompt,
@@ -112,6 +113,8 @@ _DISPATCH = {
     "skill": cmd_skill,
     "sources": cmd_sources,
     "project": cmd_project,
+    # `weave learn coverage/check/mark/probe` — /learn's rail (#171).
+    "learn": cmd_learn,
     # ── Cron & orchestration ──────────────────────────────────────────
     # Invoked by cron flows and headless skill orchestrators (/dream,
     # /drain, /tighten, …) — pipeline verbs plus the write

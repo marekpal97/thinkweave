@@ -378,6 +378,27 @@ def add_admin_subparsers(sub) -> None:
         "--json", action="store_true", help="Emit the stable JSON contract /brief reads."
     )
 
+    p_learn = sub.add_parser(
+        "learn",
+        help="/learn's deterministic rail (#171): coverage (retrieve + provenance "
+        "partition + mode), check (learn-note contract), mark "
+        "(context_served source='learn'), probe (unanswered question → probe).",
+    )
+    learn_sub = p_learn.add_subparsers(dest="learn_action")
+    p_lc = learn_sub.add_parser("coverage", help="One retrieval, partitioned into trajectory / material.")
+    p_lc.add_argument("--topic", required=True)
+    p_lc.add_argument("--concepts", nargs="*", default=[], help="Ontology concept slugs for the concept walk.")
+    p_lc.add_argument("--json", action="store_true")
+    p_lk = learn_sub.add_parser("check", help="Validate a learn note's frontmatter; exit 1 on problems.")
+    p_lk.add_argument("--note", required=True)
+    p_lm = learn_sub.add_parser("mark", help="Log exercised note ids as context_served(source='learn').")
+    p_lm.add_argument("--session", required=True, help="Harness UUID ($CLAUDE_CODE_SESSION_ID) or ses- id.")
+    p_lm.add_argument("--note", required=True, help="The learn note id.")
+    p_lm.add_argument("--served", nargs="+", required=True, help="Exercised note ids.")
+    p_lp = learn_sub.add_parser("probe", help="Record an unanswered question as a probe on the session.")
+    p_lp.add_argument("--session", required=True)
+    p_lp.add_argument("--text", required=True)
+
     p_config = sub.add_parser(
         "config",
         # NB: literal ``%`` must be doubled — argparse renders help via
