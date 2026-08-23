@@ -18,6 +18,7 @@ from thinkweave.core.schemas import NoteType
 from thinkweave.operations import learn, served
 from thinkweave.operations.prompts import recent_probe_questions
 
+HUB_ID = "n-hubkl-d01"
 UUID = "11111111-2222-3333-4444-555555555555"
 TOPIC = "kl divergence"
 CONCEPTS = ["kl-divergence"]
@@ -55,15 +56,22 @@ def arc(vault_factory):
                 "body": "KL divergence is the expected log ratio.",
                 "extra_frontmatter": {"concepts": CONCEPTS, "source_type": "paper"},
             },
+            {  # ChatGPT import: a source by type, but the user's own history
+                "title": "Entropy vs cross-entropy vs KL",
+                "note_type": NoteType.SOURCE,
+                "body": "User asked why kl divergence is asymmetric.",
+                "extra_frontmatter": {"concepts": CONCEPTS, "source_type": "conversation"},
+            },
         ]
     )
-    hub = handle.config.vault_root / "concepts" / "topics" / "kl-divergence.md"
-    hub.parent.mkdir(parents=True, exist_ok=True)
-    hub.write_text(
-        "---\ntype: note\nid: n-hubkl0001\ntitle: kl-divergence\n"
-        "concepts: [kl-divergence]\n---\n\nHub essence about kl divergence.\n",
-        encoding="utf-8",
-    )
+    for rel, ntype in (("topics/kl-divergence.md", "concept-hub"), ("math-probability.md", "domain-hub")):
+        hub = handle.config.vault_root / "concepts" / rel
+        hub.parent.mkdir(parents=True, exist_ok=True)
+        hub.write_text(
+            f"---\ntype: {ntype}\nid: n-hub{hub.stem[:4]}01\ntitle: {hub.stem}\n"
+            "concepts: [kl-divergence]\n---\n\nHub essence about kl divergence.\n",
+            encoding="utf-8",
+        )
     return handle.indexed()
 
 
@@ -72,11 +80,12 @@ def arc(vault_factory):
 
 def test_coverage_partitions_by_provenance(arc):
     cov = learn.coverage(arc.config, TOPIC, CONCEPTS)
-    traj_types = {h["type"] for h in cov["trajectory"]}
+    traj = {h["type"]: h["path"] for h in cov["trajectory"]}
     mat_paths = {h["path"] for h in cov["material"]}
-    assert traj_types == {"session"}
-    assert any(p.startswith("sources/") for p in mat_paths)
-    assert "concepts/topics/kl-divergence.md" in mat_paths
+    assert set(traj) == {"session", "source"}  # the chatgpt import is trajectory
+    assert traj["source"].startswith("sources/conversations/")
+    assert {"concepts/topics/kl-divergence.md", "concepts/math-probability.md"} <= mat_paths
+    assert any(p.startswith("sources/papers/") for p in mat_paths)
     assert cov["first_contact"] is False
     assert cov["mode"] == "teach-first"  # no prior learn note on the arc
 
@@ -156,17 +165,17 @@ def _served_rows(handle):
 def test_mark_keys_rows_by_ses_id_and_buffer_by_uuid(arc, key):
     ids = _ids(arc)
     session = UUID if key == "uuid" else ids["session"]
-    n = served.mark(arc.config, "learn", session, "n-learn0001", [ids["source"], "n-hubkl0001"])
+    n = served.mark(arc.config, "learn", session, "n-learn0001", [ids["source"], HUB_ID])
     assert n == 2
     rows = [tuple(r) for r in _served_rows(arc)]
     assert rows == [
-        (ids["session"], "n-hubkl0001", "learn"),
+        (ids["session"], HUB_ID, "learn"),
         (ids["session"], ids["source"], "learn"),
     ]
     buf = arc.config.weave_dir / "buffer" / f"{UUID}.jsonl"
     ev = json.loads(buf.read_text().splitlines()[-1])
     assert ev["type"] == "retrieval" and ev["tool"] == "learn"
-    assert set(ev["returned_ids"]) == {ids["source"], "n-hubkl0001"}
+    assert set(ev["returned_ids"]) == {ids["source"], HUB_ID}
     assert ev["args"]["note"] == "n-learn0001"
 
 
@@ -182,11 +191,11 @@ def test_mark_survives_index_rebuild(arc):
     from thinkweave.core.buffer import archive_buffer
 
     ids = _ids(arc)
-    served.mark(arc.config, "learn", UUID, "n-learn0001", ["n-hubkl0001"])
+    served.mark(arc.config, "learn", UUID, "n-learn0001", [HUB_ID])
     sess_dir = served.resolve_session(arc.config, UUID).session_dir
     archive_buffer(arc.config.weave_dir, UUID, sess_dir)
     arc.indexed()
-    assert [tuple(r) for r in _served_rows(arc)] == [(ids["session"], "n-hubkl0001", "learn")]
+    assert [tuple(r) for r in _served_rows(arc)] == [(ids["session"], HUB_ID, "learn")]
 
 
 # ── AC5: unanswered question → probe ─────────────────────────────────

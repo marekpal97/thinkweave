@@ -26,10 +26,13 @@ from thinkweave.operations.served import resolve_session, session_log
 
 FIRST_CONTACT_LINE = "First contact in the vault — no prior trajectory for '{topic}'."
 
-# World-authored provenance. Concept hubs carry ``type: note`` but live under
-# ``concepts/topics/`` (the indexer keys hub_log on the same prefix).
-_MATERIAL_TYPES = frozenset({"source", "theme", "digest"})
-_HUB_PREFIX = "concepts/topics/"
+# World-authored provenance: sources, themes, digests, and both hub families
+# (``concepts/topics/*`` concept hubs, ``concepts/*`` domain hubs). The one
+# exception is the ChatGPT import — ``type: source`` but ``source_type:
+# conversation`` — which is the user's own history and so trajectory.
+_MATERIAL_TYPES = frozenset({"source", "theme", "digest", "concept-hub", "domain-hub"})
+_HUB_PREFIX = "concepts/"
+_USER_SOURCE_TYPES = frozenset({"conversation"})
 
 
 def coverage(cfg: Config, topic: str, concepts: list[str] | None = None, limit: int = 40) -> dict:
@@ -54,15 +57,16 @@ def coverage(cfg: Config, topic: str, concepts: list[str] | None = None, limit: 
         finally:
             s.close()
 
-    kinds: dict[str, str] = {}
+    fm: dict[str, tuple[str, str]] = {}  # id -> (kind, source_type)
     if hits:
         idx = Indexer(config=cfg)
         try:
             ph = ",".join("?" * len(hits))
-            kinds = {
-                row[0]: row[1] or ""
+            fm = {
+                row[0]: (row[1] or "", row[2] or "")
                 for row in idx.db.execute(
-                    f"SELECT id, json_extract(frontmatter, '$.kind') FROM notes WHERE id IN ({ph})",
+                    "SELECT id, json_extract(frontmatter, '$.kind'), "
+                    f"json_extract(frontmatter, '$.source_type') FROM notes WHERE id IN ({ph})",
                     list(hits),
                 )
             }
@@ -71,9 +75,12 @@ def coverage(cfg: Config, topic: str, concepts: list[str] | None = None, limit: 
 
     trajectory, material = [], []
     for r in hits.values():
+        kind, source_type = fm.get(r.id, ("", ""))
         row = {"id": r.id, "type": r.type, "title": r.title, "path": r.path,
-               "date": r.date or "", "kind": kinds.get(r.id, "")}
-        is_material = r.type in _MATERIAL_TYPES or r.path.startswith(_HUB_PREFIX)
+               "date": r.date or "", "kind": kind}
+        is_material = (
+            r.type in _MATERIAL_TYPES or r.path.startswith(_HUB_PREFIX)
+        ) and source_type not in _USER_SOURCE_TYPES
         (material if is_material else trajectory).append(row)
     trajectory.sort(key=lambda h: h["date"])
     prior_learn = [h["id"] for h in trajectory if h["kind"] == "learn"]
