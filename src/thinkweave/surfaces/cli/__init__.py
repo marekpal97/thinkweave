@@ -18,6 +18,7 @@ from thinkweave.surfaces.cli.drain import cmd_discover, cmd_drain
 from thinkweave.surfaces.cli.dream import cmd_dream
 from thinkweave.surfaces.cli.flows import cmd_flow
 from thinkweave.surfaces.cli.graph import cmd_graph
+from thinkweave.surfaces.cli.health import cmd_health
 from thinkweave.surfaces.cli.hooks import cmd_hooks
 from thinkweave.surfaces.cli.hubs import (
     _build_linkage_user_prompt,
@@ -62,7 +63,6 @@ from thinkweave.surfaces.cli.parser import build_parser
 from thinkweave.surfaces.cli.queue import cmd_queue
 from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 from thinkweave.surfaces.cli.schedule import cmd_schedule
-from thinkweave.surfaces.cli.health import cmd_health
 from thinkweave.surfaces.cli.seam import cmd_seam
 from thinkweave.surfaces.cli.skill import cmd_skill
 from thinkweave.surfaces.cli.steering import cmd_steering

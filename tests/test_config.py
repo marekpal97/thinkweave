@@ -407,6 +407,8 @@ _POLICY_KNOBS = [
     ("landing_open_probes_cap", 20, "landing", "open_probes_cap"),
     ("landing_probes_display_cap", 10, "landing", "probes_display_cap"),
     ("retrieval_rrf_k", 60, "retrieval", "rrf_k"),
+    ("health_stale_factor", 1.5, "health", "stale_factor"),
+    ("health_backlog_days", 7, "health", "backlog_days"),
 ]
 
 

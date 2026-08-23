@@ -25,6 +25,8 @@ PATH=/usr/bin
 30 0 * * * /usr/bin/flock -n /tmp/x.lock -c 'cd /repo && claude -p "/dream" >> {logdir}/dream.log 2>&1'
 15 */4 * * * cd /repo && weave index --embed --only-new >> {logdir}/embed-warm.log 2>&1
 0 12 * * * claude -p "/drain --source-type paper --limit 5" >> {logdir}/research.log 2>&1
+20 12 * * * claude -p "/drain --source-type repo --limit 5" >> {logdir}/research.log 2>&1
+17 */4 * * * claude -p "/discover --strategy rss_poll --source-type news" >> {logdir}/pull_news.log 2>&1
 """
 
 
@@ -58,6 +60,7 @@ def healthy(vault_factory, tmp_path):
     _touch(logdir / "dream.log", NOW - timedelta(hours=12))
     _touch(logdir / "embed-warm.log", NOW - timedelta(hours=2))
     _touch(logdir / "research.log", NOW - timedelta(hours=20))
+    _touch(logdir / "pull_news.log", NOW - timedelta(hours=1))
     _digest(handle, "2026-08-22")
     return handle, cron, logdir
 
@@ -68,26 +71,52 @@ class TestCollector:
         report = health.collect(handle.config, now=NOW, crontab_text=cron)
         # AC3: stable key set — the contract /brief (#170) reads.
         assert set(report) == {
-            "ok", "checked_at", "flags", "jobs", "queues", "hooks", "digest"
+            "ok", "checked_at", "flags", "advisories", "jobs", "jobs_note",
+            "queues", "hooks", "digest",
         }
         assert set(report["jobs"][0]) == {
-            "name", "cadence", "cadence_seconds", "last_run", "evidence",
+            "id", "name", "cadence", "cadence_seconds", "last_run", "evidence",
             "stale", "missing",
         }
         assert set(report["digest"]) == {"latest", "age_days", "stale"}
         assert set(report["hooks"]) == {"recent_errors", "last_error"}
         assert report["ok"] is True
-        assert report["flags"] == []
+        assert report["flags"] == [] and report["advisories"] == []
+        assert report["jobs_note"] is None
 
-    def test_job_names_and_cadence_seconds(self, healthy):
+    def test_job_ids_names_cadence_and_evidence(self, healthy):
         handle, cron, _ = healthy
-        jobs = {j["name"]: j for j in health.collect(
+        jobs = {j["id"]: j for j in health.collect(
             handle.config, now=NOW, crontab_text=cron)["jobs"]}
-        assert set(jobs) == {"/dream", "weave index", "/drain paper"}
-        assert jobs["/dream"]["cadence_seconds"] == 86400
-        assert jobs["weave index"]["cadence_seconds"] == 4 * 3600
-        assert jobs["/dream"]["evidence"] == "maintenance"
-        assert jobs["weave index"]["evidence"] == "log"
+        assert set(jobs) == {
+            "30 0 * * * /dream", "15 */4 * * * weave index",
+            "0 12 * * * /drain paper", "20 12 * * * /drain repo",
+            "17 */4 * * * /discover news",
+        }
+        assert jobs["30 0 * * * /dream"]["cadence_seconds"] == 86400
+        assert jobs["15 */4 * * * weave index"]["cadence_seconds"] == 4 * 3600
+        assert jobs["15 */4 * * * weave index"]["evidence"] == "log"
+        # Shared log: both drains append to research.log, so the mtime is
+        # evidence for neither individually — say so.
+        assert jobs["0 12 * * * /drain paper"]["evidence"] == "log(shared)"
+        assert jobs["20 12 * * * /drain repo"]["evidence"] == "log(shared)"
+
+    def test_maintenance_beats_log_even_when_older(self, healthy):
+        # The log is touched on every fire (crashes included); the
+        # maintenance line only on completion — the completion signal wins.
+        handle, cron, logdir = healthy
+        _touch(logdir / "dream.log", NOW - timedelta(minutes=5))
+        job = next(j for j in health.collect(handle.config, now=NOW, crontab_text=cron)["jobs"]
+                   if j["name"] == "/dream")
+        assert job["evidence"] == "maintenance"
+        assert job["last_run"] == (NOW - timedelta(hours=12)).isoformat()
+
+    def test_cadence_heuristic_shapes(self):
+        assert health._cadence_seconds("0 8 * * 1-5") == 86400
+        assert health._cadence_seconds("0 8 * * 1,3") == 86400
+        assert health._cadence_seconds("0 9-17/2 * * *") == 2 * 3600
+        assert health._cadence_seconds("0 7,19 * * *") == 43200
+        assert health._cadence_seconds("30 14 * * 0") == 7 * 86400
 
     def test_stale_job_uses_factor(self, healthy):
         # AC2: 4h cadence × 1.5 = 6h. 7h-old log → stale; 5h → fine.
@@ -109,6 +138,7 @@ class TestCollector:
         report = health.collect(handle.config, now=NOW, crontab_text=cron)
         job = next(j for j in report["jobs"] if j["name"] == "/drain paper")
         assert job == {
+            "id": "0 12 * * * /drain paper",
             "name": "/drain paper",
             "cadence": "0 12 * * *",
             "cadence_seconds": 86400,
@@ -129,8 +159,19 @@ class TestCollector:
         report = health.collect(handle.config, now=NOW, crontab_text=cron)
         paper = next(q for q in report["queues"] if q["source_type"] == "paper")
         assert paper == {"source_type": "paper", "depth": 2, "backlog": 1}
-        assert report["ok"] is False
-        assert any("paper" in f for f in report["flags"])
+        # Backlog is a standing condition on a busy vault — advisory, never exit 1.
+        assert report["ok"] is True
+        assert report["flags"] == []
+        assert any("paper" in a for a in report["advisories"])
+
+    def test_queue_lanes_come_from_sources_config_not_fossil_files(self, healthy):
+        handle, cron, _ = healthy
+        qdir = handle.config.vault_root / ".weave" / "queues"
+        qdir.mkdir(parents=True, exist_ok=True)
+        (qdir / "paper.done.jsonl").write_text('{"url": "x"}\n', encoding="utf-8")
+        lanes = {q["source_type"] for q in health.collect(
+            handle.config, now=NOW, crontab_text=cron)["queues"]}
+        assert "paper.done" not in lanes and "paper" in lanes
 
     def test_hook_errors_counted(self, healthy):
         handle, cron, _ = healthy
@@ -139,13 +180,13 @@ class TestCollector:
         (handle.config.weave_dir / "hooks.log").write_text(
             f"[{old}] stop: boom\nTraceback (most recent call last):\n  x\n\n"
             f"[{ts}] prompt_time_enrichment: deadline miss for session s\n"
-            f"[{ts}] stop: FileNotFoundError\nTraceback (most recent call last):\n  y\n\n",
+            f"[{ts}] stop: CalledProcessError: cmd\nfailed\nTraceback (most recent call last):\n  y\n\n",
             encoding="utf-8",
         )
         report = health.collect(handle.config, now=NOW, crontab_text=cron)
         assert report["hooks"] == {
             "recent_errors": 1,
-            "last_error": f"[{ts}] stop: FileNotFoundError",
+            "last_error": f"[{ts}] stop: CalledProcessError: cmd",
         }
         assert report["ok"] is False
 
@@ -153,15 +194,27 @@ class TestCollector:
         handle, cron, _ = healthy
         report = health.collect(handle.config, now=NOW, crontab_text=cron)
         assert report["digest"] == {"latest": "2026-08-22", "age_days": 1, "stale": False}
-        _digest(handle, "2026-08-22")  # no newer one; push clock 3 days on
+        # no newer digest; push the clock 2 days on → age 3d > 1.5
         report = health.collect(handle.config, now=NOW + timedelta(days=2), crontab_text=cron)
         assert report["digest"]["stale"] is True
         assert report["ok"] is False
 
-    def test_no_crontab_yields_no_jobs(self, healthy):
+    def test_no_digest_renders_none(self, healthy):
+        import shutil
+
+        handle, cron, _ = healthy
+        shutil.rmtree(handle.config.vault_root / "digests")
+        report = health.collect(handle.config, now=NOW, crontab_text=cron)
+        assert report["digest"] == {"latest": None, "age_days": None, "stale": True}
+        assert report["flags"] == ["digest: none found"]
+
+    def test_no_crontab_is_not_green(self, healthy, monkeypatch):
         handle, _, _ = healthy
-        report = health.collect(handle.config, now=NOW, crontab_text="")
+        monkeypatch.setattr(health, "_read_crontab", lambda: None)
+        report = health.collect(handle.config, now=NOW)
         assert report["jobs"] == []
+        assert report["jobs_note"] == "job layer not inspectable on this platform (no crontab)"
+        assert report["ok"] is False
 
 
 class TestCli:
@@ -184,7 +237,7 @@ class TestCli:
         code, out = self._run(handle, cron, as_json=True, capsys=capsys, monkeypatch=monkeypatch)
         assert code == 0
         data = json.loads(out)
-        assert data["ok"] is True and len(data["jobs"]) == 3
+        assert data["ok"] is True and len(data["jobs"]) == 5
 
     def test_exit_1_flagged_table(self, healthy, capsys, monkeypatch):
         handle, cron, logdir = healthy

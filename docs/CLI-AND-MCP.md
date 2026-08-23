@@ -32,8 +32,11 @@ weave stats                                   # vault health (deprecated → wea
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
 weave health [--json]                         # is everything running? jobs (last run/stale),
                                             # queue depth+backlog, hook errors, digest
-                                            # freshness. Exit 1 when flagged; --json is the
-                                            # contract /brief reads (schema: operations/health.py)
+                                            # freshness. Exit 1 when a job, hook, or the
+                                            # digest is flagged; queue backlog is advisory
+                                            # only (never changes the exit code). --json is
+                                            # the contract /brief reads (schema docstring in
+                                            # operations/health.py)
 weave backlog [--project X]                   # todo notes + active queue items
 weave decisions [--file <path>] [--project X] # decision ledger lookup
 weave project {list|show|set-active}          # project registry on the vault

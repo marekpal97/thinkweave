@@ -29,7 +29,9 @@ def _print_table(r: dict) -> None:
     for j in r["jobs"]:
         status = "missing" if j["missing"] else "stale" if j["stale"] else "ok"
         print(f"{j['name']:<24} {j['cadence']:<14} {(j['last_run'] or '-')[:25]:<26} {status}")
-    if not r["jobs"]:
+    if r["jobs_note"]:
+        print(f"({r['jobs_note']})")
+    elif not r["jobs"]:
         print("(no crontab lines found)")
     print(f"\n{'QUEUE':<24} {'DEPTH':>6} {'BACKLOG':>8}")
     for q in r["queues"]:
@@ -37,9 +39,13 @@ def _print_table(r: dict) -> None:
     h, d = r["hooks"], r["digest"]
     print(f"\nHooks: {h['recent_errors']} error(s) in last 24h"
           + (f" — {h['last_error']}" if h["last_error"] else ""))
-    print(f"Digest: latest {d['latest'] or '-'} ({d['age_days']}d old)"
-          f"{' — STALE' if d['stale'] else ''}")
-    if r["flags"]:
-        print("\nFlags:")
-        for f in r["flags"]:
-            print(f"  - {f}")
+    if d["latest"]:
+        print(f"Digest: latest {d['latest']} ({d['age_days']}d old)"
+              f"{' — STALE' if d['stale'] else ''}")
+    else:
+        print("Digest: none")
+    for title, items in (("Flags", r["flags"]), ("Advisories", r["advisories"])):
+        if items:
+            print(f"\n{title}:")
+            for line in items:
+                print(f"  - {line}")
