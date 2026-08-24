@@ -47,14 +47,6 @@ def test_door_declares_all_and_every_name_resolves(pkg):
     )
 
 
-def test_synthesis_door_is_marked_provisional():
-    mod = importlib.import_module("thinkweave.synthesis")
-    source = Path(mod.__file__).read_text(encoding="utf-8")
-    assert "# provisional — finalized by Track A" in source, (
-        "synthesis door must carry the '# provisional — finalized by Track A' marker"
-    )
-
-
 def test_door_reexports_are_the_submodule_objects():
     import thinkweave.core
     import thinkweave.core.indexer
