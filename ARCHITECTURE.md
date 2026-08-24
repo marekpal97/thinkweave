@@ -6,6 +6,7 @@ The narrative reference hub. CLAUDE.md is the thin in-session operating guide; t
 
 - [Document roles](#document-roles)
 - [Two layers](#two-layers)
+  - [Package front doors](#package-front-doors)
 - [The source primitive](#the-source-primitive)
 - [Capability lanes](#capability-lanes)
   - [Source-type acquisition spine](#source-type-acquisition-spine)
@@ -64,6 +65,10 @@ Thinkweave splits cleanly into two layers with a one-way dependency.
 ```
 
 Dependency rule: `core/` imports nothing from the rest; `retrieval/` and `synthesis/` import only from `core/` and their neighbors; `operations/` may import any of the above but never from `surfaces/`. Surfaces are thin shells that delegate to `operations/`. If you find yourself wanting to import `surfaces.*` from `core/`, you're mixing concerns.
+
+### Package front doors
+
+Each of the six packages declares its interface in its `__init__.py`: a curated set of re-exports in `__all__` (the demand-measured workhorses, e.g. `from thinkweave.core import Config, VaultManager`) plus a front-door docstring in four parts — **operations** (what you call), **invariants** (what must hold), **storage** (what it owns on disk), **extension points** (where new members plug in). New code imports workhorses from the door, not from submodules; anything not on the door is reachable by submodule path but is not interface. The synthesis door is provisional (marked in-file) until Track A finalizes it — its names are stable even while implementations move. Two omissions are deliberate and documented in the door docstrings: `acquisition` does not re-export `importers`/`discover` (their top-level `core.vault` imports would close a cycle through `vault.py`'s registry import), and `surfaces` does not re-export `mcp` (optional extra). The contract is pinned by `tests/test_package_doors.py`.
 
 The harness interaction layer sits on top: lifecycle hooks feed session events
 into the knowledge layer via the CLI, while skills drive it through MCP tools.
