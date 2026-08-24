@@ -68,23 +68,16 @@ CONTRACT_KEYS = (
     "connections_reason", "render_plan", "served_ids",
 )
 _CATALYST_FLAGS = ("agrees", "contradicts", "extends")
-_PAPER_LANES = ("paper",)
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # ponytail: flat cap on the near-promotion list (120 live entries at count 4);
 # upgrade path is a [brief] knob if anyone wants to tune it.
 _NEAR_CAP = 20
 
 
-def note_title(when: datetime) -> str:
-    """Title (= filename slug) of the brief note written at ``when``.
-
-    ``brief-`` first, deliberately: ``health._digest`` only counts
-    date-prefixed files, so a brief never masks a stale nightly digest.
-    """
-    return f"brief-{when.strftime('%Y-%m-%d-%H%M')}"
-
-
 def find_watermark(db: sqlite3.Connection) -> dict | None:
+    # Brief notes are filed as ``brief-YYYY-MM-DD-HHMM.md`` — ``brief-`` first,
+    # deliberately: ``health._digest`` only counts date-prefixed files, so a
+    # brief never masks a stale nightly digest.
     row = db.execute(
         "SELECT id, date FROM notes WHERE type = 'digest' "
         "AND json_extract(frontmatter, '$.kind') = 'brief' ORDER BY date DESC LIMIT 1"
@@ -214,7 +207,7 @@ def collect(
     contradictions = [c for c in catalysts if c["flag"] == "contradicts"] + [
         c for c in catalysts if c["flag"] == "extends"
     ]
-    papers = [n for lane in _PAPER_LANES for n in landings.get(lane, [])]
+    papers = landings.get("paper", [])
     present = {
         "in_brief": True,
         "health": bool(banner or report["flags"]),

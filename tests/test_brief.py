@@ -108,7 +108,7 @@ def test_second_run_uses_watermark_and_mark_logs_context_served(vault_factory):
 
     when = NOW - timedelta(hours=3)
     path = tv.vault.create_note(
-        NoteType.DIGEST, brief.note_title(when), body="# brief\n",
+        NoteType.DIGEST, f"brief-{when.strftime('%Y-%m-%d-%H%M')}", body="# brief\n",
         extra_frontmatter={"kind": "brief", "date": when.isoformat()},
     )
     assert path.name == f"brief-{when.strftime('%Y-%m-%d-%H%M')}.md"
@@ -214,7 +214,6 @@ def test_near_threshold_filters_malformed_and_caps(vault_factory):
     assert out["attention"]["proposed_near_threshold"] == [
         {"concept": "good-term", "count": n, "threshold": n + 1}
     ]
-    assert len(out["attention"]["proposed_near_threshold"]) <= brief._NEAR_CAP
 
 
 def test_contradictions_key_is_filtered_ordered_subset(vault_factory):

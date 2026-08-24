@@ -64,7 +64,6 @@ def rank(
     cfg: Config,
     *,
     now: datetime | None = None,
-    window_days: int | None = None,
     db: sqlite3.Connection | None = None,
 ) -> dict:
     """The focus vector: ``{"concepts", "active_projects", "asked_below_floor"}``.
@@ -82,7 +81,7 @@ def rank(
     from thinkweave.operations.prompts import recent_probe_details
 
     now = now or datetime.now(timezone.utc)
-    window_days = window_days or cfg.salience_activity_window_days
+    window_days = cfg.salience_activity_window_days
     priorities = load_priorities(cfg.vault_root)
     declared = list(focus_concepts(priorities))
     from thinkweave.synthesis.landing import landing_filenames

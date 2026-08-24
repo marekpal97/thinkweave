@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 
 from thinkweave.core.config import load_config
 from thinkweave.operations import brief, served
@@ -37,15 +36,5 @@ def cmd_brief(args: argparse.Namespace) -> None:
                 "once hooks have created it)"
             )
         return
-    payload = brief.collect(cfg)
-    if args.json:
-        print(json.dumps(payload, indent=2))
-        return
-    print(f"brief since {payload['since']} ({payload['since_reason']})")
-    if payload["banner"]:
-        print(f"!! {payload['banner']}")
-    print("render_plan: " + ", ".join(payload["render_plan"]))
-    for lane in payload["lanes"]:
-        print(f"  {lane['source_type']:<22} landed={lane['landed']:<3} {lane['state']}")
-    print(f"served: {len(payload['served_ids'])} id(s)")
-    sys.exit(0)
+    # `--json` is accepted for symmetry but collect only has one output shape.
+    print(json.dumps(brief.collect(cfg), indent=2))
