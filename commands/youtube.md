@@ -38,7 +38,7 @@ weave_sources_config()
 
 Pick every key under `sources.` whose slug starts with `youtube-`. If `<source-type>` was passed, filter to just that one. If no `youtube-*` types are configured, stop with `"No youtube source types in sources.yaml — nothing to do."`.
 
-For each type, check that `channels:` is non-empty. Types with empty channel allowlists are skipped here (with a hint to add channel IDs).
+For each type, check the channel registry is non-empty. **The registry lives in `vault/config/PRIORITIES.yaml` under `intake.youtube_events.channels` / `intake.youtube_concepts.channels`** (Phase-3.1 move, same as podcast outlets) — read it from there (single `Read` of PRIORITIES.yaml); the legacy inline `channels:` in sources.yaml is only a fallback when the intake block is absent. Do NOT skip a type just because `weave_sources_config()` shows no `channels:` — that view doesn't merge the intake registry (this exact mistake made the 16:00 cron a silent no-op on 2026-08-23/24 while 39 videos sat queued). Types whose registry is empty in BOTH places are skipped (with a hint to add channel IDs to PRIORITIES.yaml).
 
 ---
 
