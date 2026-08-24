@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
-from thinkweave.operations import brief
+from thinkweave.operations import brief, served
 
 NOW = datetime.now(timezone.utc)
 
@@ -127,7 +127,7 @@ def test_second_run_uses_watermark_and_mark_logs_context_served(vault_factory):
     ses_id = tv.vault.read_note(
         next(tv.config.vault_root.glob("projects/p/sessions/*/session.md"))
     ).id
-    written = brief.mark(tv.config, note_id, ["n-aaaaaaaa", "dec-bbbbbbbb"], session_id="cc-1")
+    written = served.mark(tv.config, "brief", "cc-1", note_id, ["n-aaaaaaaa", "dec-bbbbbbbb"])
     assert written == 2
     idx = Indexer(config=tv.config)
     try:
@@ -163,7 +163,7 @@ def test_mark_resolves_harness_uuid_to_session_note(vault_factory):
     tv.indexed()
     ses_id = tv.vault.read_note(path).id
 
-    assert brief.mark(tv.config, "dig-x", ["n-aaaaaaaa"], session_id="11111111-uuid") == 1
+    assert served.mark(tv.config, "brief", "11111111-uuid", "dig-x", ["n-aaaaaaaa"]) == 1
     assert _rows(tv) == [(ses_id, "n-aaaaaaaa", "brief")]
     buf = tv.config.weave_dir / "buffer" / "11111111-uuid.jsonl"
     assert json.loads(buf.read_text().strip())["returned_ids"] == ["n-aaaaaaaa"]
@@ -171,8 +171,8 @@ def test_mark_resolves_harness_uuid_to_session_note(vault_factory):
 
 def test_mark_unresolvable_session_writes_nothing(vault_factory):
     tv = _quiet(vault_factory)
-    assert brief.mark(tv.config, "dig-x", ["n-aaaaaaaa"], session_id="") == 0
-    assert brief.mark(tv.config, "dig-x", ["n-aaaaaaaa"], session_id="nope-uuid") == 0
+    assert served.mark(tv.config, "brief", "", "dig-x", ["n-aaaaaaaa"]) == 0
+    assert served.mark(tv.config, "brief", "nope-uuid", "dig-x", ["n-aaaaaaaa"]) == 0
     assert _rows(tv) == []
     if (tv.config.weave_dir / "buffer").exists():
         assert not list((tv.config.weave_dir / "buffer").glob("*.jsonl"))
@@ -251,26 +251,35 @@ def test_mark_with_session_note_id_names_buffer_by_source_session(vault_factory)
                                 extra_frontmatter={"source_session": "2222-uuid"})
     tv.indexed()
     ses_id = tv.vault.read_note(path).id
-    assert brief.mark(tv.config, "dig-x", ["n-aaaaaaaa"], session_id=ses_id) == 1
+    assert served.mark(tv.config, "brief", ses_id, "dig-x", ["n-aaaaaaaa"]) == 1
     assert _rows(tv) == [(ses_id, "n-aaaaaaaa", "brief")]
     assert (tv.config.weave_dir / "buffer" / "2222-uuid.jsonl").exists()
     assert not (tv.config.weave_dir / "buffer" / f"{ses_id}.jsonl").exists()
 
 
-def test_lane_matches_job_on_skill_stem_not_substring():
+def test_lane_binds_all_matching_jobs_weakest_link():
     jobs = [
-        {"name": "/drain news", "stale": True, "missing": False},
-        {"name": "/thinkweave:newsletter", "stale": False, "missing": True},
-        {"name": "/youtube", "stale": False, "missing": False},
+        {"id": "17 */4 * * * /discover news", "name": "/discover news", "stale": False, "missing": False},
+        {"id": "0 7,19 * * * /drain news", "name": "/drain news", "stale": True, "missing": False},
+        {"id": "0 6 * * * /thinkweave:newsletter", "name": "/thinkweave:newsletter", "stale": False, "missing": True},
+        {"id": "0 9 * * * /youtube", "name": "/youtube", "stale": False, "missing": False},
     ]
     q = lambda s: {"source_type": s, "depth": 0}  # noqa: E731
-    assert brief._lane(q("newsletter-events"), {}, jobs)["job"] == "/thinkweave:newsletter"
-    assert brief._lane(q("newsletter-events"), {}, jobs)["state"] == "dead"
-    assert brief._lane(q("news"), {}, jobs)["job"] == "/drain news"
-    assert brief._lane(q("youtube-concepts"), {}, jobs)["state"] == "ran_nothing_kept"
-    assert brief._lane(q("paper"), {}, jobs)["job"] is None
-    # line order must not matter
-    assert brief._lane(q("news"), {}, jobs[::-1])["job"] == "/drain news"
+    news = brief._lane(q("news"), {}, jobs)
+    # both news feeders bind; the dead drain poisons the lane (weakest link)
+    assert news["jobs"] == ["17 */4 * * * /discover news", "0 7,19 * * * /drain news"]
+    assert news["dead_jobs"] == ["0 7,19 * * * /drain news"]
+    assert news["state"] == "dead"
+    nl = brief._lane(q("newsletter-events"), {}, jobs)
+    assert nl["jobs"] == ["0 6 * * * /thinkweave:newsletter"] and nl["state"] == "dead"
+    yt = brief._lane(q("youtube-concepts"), {}, jobs)
+    assert yt["state"] == "ran_nothing_kept" and yt["dead_jobs"] == []
+    assert brief._lane(q("paper"), {}, jobs) == {
+        "source_type": "paper", "landed": 0, "queue_depth": 0,
+        "jobs": [], "dead_jobs": [], "state": "unknown",
+    }
+    # binding is by exact stem token, not substring, and order-independent
+    assert brief._lane(q("news"), {}, jobs[::-1])["jobs"][::-1] == news["jobs"]
 
 
 def test_near_threshold_total_survives_cap(vault_factory):

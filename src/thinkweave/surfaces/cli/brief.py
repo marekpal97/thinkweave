@@ -14,7 +14,7 @@ import os
 import sys
 
 from thinkweave.core.config import load_config
-from thinkweave.operations import brief
+from thinkweave.operations import brief, served
 
 
 def cmd_brief(args: argparse.Namespace) -> None:
@@ -27,7 +27,7 @@ def cmd_brief(args: argparse.Namespace) -> None:
             or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
             or os.environ.get("CLAUDE_SESSION_ID", "")
         )
-        n = brief.mark(cfg, args.note, args.served, session_id=session)
+        n = served.mark(cfg, "brief", session, args.note, args.served)
         if n:
             print(f"brief mark · {n} id(s) logged as context_served(source='brief') for {args.note}")
         else:

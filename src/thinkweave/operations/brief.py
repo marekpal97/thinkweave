@@ -17,8 +17,11 @@ an empty section is an explicit empty, never missing::
     banner              str | null — loud line when the nightly digest is stale/missing
     timeline            {"sessions": [{id,title,project,date}], "decisions": [{id,title,status,verdict,date}]}
     landings            {source_type: [{id,title,concepts,theme_id}]} — only lanes that landed
-    lanes               [{source_type, landed, queue_depth, job, state}]
-                        state ∈ kept | ran_nothing_kept | dead | unknown
+    lanes               [{source_type, landed, queue_depth, jobs, dead_jobs, state}]
+                        jobs = health ids of every cron job bound to the lane;
+                        dead_jobs ⊆ jobs (stale/missing). state ∈ kept |
+                        ran_nothing_kept | dead | unknown — dead when ANY
+                        bound job is dead (weakest link)
     queues              health's queue rows (depth + backlog per lane)
     strategies          configured discover strategy names (sources.yaml)
     focus               operations.focus.rank() — ranked concept vector + active_projects
@@ -264,58 +267,6 @@ def collect(
     }
 
 
-def mark(cfg: Config, note_id: str, served_ids: list[str], *, session_id: str = "") -> int:
-    """Log the brief's surfaced ids as ``context_served(source='brief')``.
-
-    ``session_id`` is the harness UUID or the session note id; it must
-    resolve to an indexed session note (``id`` or ``source_session``) —
-    every other ``context_served`` row is keyed by a ``ses-`` id, and a
-    fabricated key would match no consumer and vanish on the next rebuild.
-    Unresolvable → nothing is written and 0 is returned.
-
-    Two writes: the durable one is a ``tool: "brief"`` retrieval event in
-    the harness session's buffer (archived into ``retrieval_log.jsonl`` at
-    Stop and projected to ``source='brief'`` by the indexer — JSONL stays
-    truth), the immediate one is the ``context_served`` upsert so the rows
-    exist now.
-    """
-    from thinkweave.core.indexer import Indexer
-    from thinkweave.operations.retrieval_log import append_event
-
-    ids = [i for i in dict.fromkeys(served_ids) if i]
-    if not session_id or not ids:
-        return 0
-    ts = datetime.now(timezone.utc).isoformat()
-    idx = Indexer(config=cfg)
-    try:
-        row = idx.db.execute(
-            "SELECT id, json_extract(frontmatter, '$.source_session') AS source_session "
-            "FROM notes WHERE type = 'session' AND (id = ? OR "
-            "json_extract(frontmatter, '$.source_session') = ?) LIMIT 1",
-            (session_id, session_id),
-        ).fetchone()
-        if row is None:
-            return 0
-        # The buffer is keyed by the harness UUID (what the Stop hook
-        # archives), never by the ses- note id.
-        harness = row["source_session"] or (session_id if session_id != row["id"] else "")
-        if harness:
-            append_event(
-                cfg.weave_dir / "buffer" / f"{harness}.jsonl",
-                {"ts": ts, "type": "retrieval", "tool": "brief", "args": {"note": note_id},
-                 "returned_ids": ids},
-            )
-        idx.db.executemany(
-            "INSERT OR REPLACE INTO context_served (session_id, note_id, source, ts) "
-            "VALUES (?, ?, 'brief', ?)",
-            [(row["id"], i, ts) for i in ids],
-        )
-        idx.db.commit()
-    finally:
-        idx.close()
-    return len(ids)
-
-
 # --------------------------------------------------------------------------- #
 # helpers
 
@@ -336,9 +287,11 @@ def _lane(queue: dict, landings: dict, jobs: list[dict]) -> dict:
 
     A job binds to a lane by exact token equality on its skill stem
     (``/thinkweave:newsletter`` → ``newsletter``, ``/drain news`` →
-    ``drain``/``news``): the lane slug itself first, else its family
+    ``drain``/``news``): the lane slug itself, or its family
     (``newsletter-events`` → ``newsletter``). Never substring — ``news`` is
-    inside ``newsletter``.
+    inside ``newsletter``. ALL matching jobs bind (news is fed by both
+    ``/discover news`` and ``/drain news``), and the lane is only healthy
+    when every bound job is: one dead feeder → ``dead`` (weakest link).
     """
     slug = queue["source_type"]
     family = slug.split("-")[0]
@@ -346,21 +299,20 @@ def _lane(queue: dict, landings: dict, jobs: list[dict]) -> dict:
     def tokens(job: dict) -> set[str]:
         return {t.lstrip("/").split(":")[-1] for t in job["name"].split()}
 
-    job = next((j for j in jobs if slug in tokens(j)), None) or next(
-        (j for j in jobs if family in tokens(j)), None
-    )
+    bound = [j for j in jobs if slug in tokens(j) or family in tokens(j)]
+    dead = [j["id"] for j in bound if j["stale"] or j["missing"]]
     landed = len(landings.get(slug, []))
     if landed:
         state = "kept"
-    elif job is None:
+    elif not bound:
         state = "unknown"
-    elif job["stale"] or job["missing"]:
+    elif dead:
         state = "dead"
     else:
         state = "ran_nothing_kept"
     return {
         "source_type": slug, "landed": landed, "queue_depth": queue["depth"],
-        "job": job["name"] if job else None, "state": state,
+        "jobs": [j["id"] for j in bound], "dead_jobs": dead, "state": state,
     }
 
 
