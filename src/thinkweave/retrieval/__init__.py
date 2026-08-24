@@ -1,7 +1,8 @@
 """Retrieval layer — the three modalities over the derived index.
 
 Operations: FTS / similarity / hybrid search and graph traversal
-(``Search``), budgeted context composition (``build_project_context``).
+(``Search``, yielding ``SearchResult`` rows), budgeted context
+composition (``build_project_context``).
 
 Invariants: read-only over ``.weave/index.db``; semantic failures raise
 ``SemanticSearchUnavailable`` rather than returning an empty list, so

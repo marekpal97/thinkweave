@@ -8,6 +8,8 @@ not from the door files themselves.
 """
 
 import importlib
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,6 +50,66 @@ def test_door_declares_all_and_every_name_resolves(pkg):
 def test_synthesis_door_is_marked_provisional():
     mod = importlib.import_module("thinkweave.synthesis")
     source = Path(mod.__file__).read_text(encoding="utf-8")
-    assert "provisional" in source, (
+    assert "# provisional — finalized by Track A" in source, (
         "synthesis door must carry the '# provisional — finalized by Track A' marker"
     )
+
+
+def test_door_reexports_are_the_submodule_objects():
+    import thinkweave.core
+    import thinkweave.core.indexer
+    import thinkweave.surfaces
+    import thinkweave.surfaces.cli
+
+    assert thinkweave.core.Indexer is thinkweave.core.indexer.Indexer
+    assert thinkweave.surfaces.main is thinkweave.surfaces.cli.main
+
+
+def test_load_bearing_omissions_stay_omitted():
+    acquisition = importlib.import_module("thinkweave.acquisition")
+    surfaces = importlib.import_module("thinkweave.surfaces")
+    for name in ("importers", "discover"):
+        assert name not in acquisition.__all__, (
+            f"acquisition door must not re-export {name!r}: its modules import "
+            "core.vault at top level, and vault.py imports acquisition's source "
+            "registry — an eager re-export closes that cycle"
+        )
+    assert "mcp" not in surfaces.__all__, (
+        "surfaces door must not re-export mcp: pulling the server into every "
+        "surfaces import adds weight the hook path can't afford"
+    )
+
+
+def _thinkweave_modules_loaded_by(stmt: str) -> set[str]:
+    """Modules a fresh interpreter loads for ``import <stmt>`` — subprocess so
+    the measurement is not polluted by the test session's own imports."""
+    code = (
+        f"import {stmt}\nimport sys\n"
+        "print('\\n'.join(m for m in sys.modules if m.startswith('thinkweave')))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    return set(out.stdout.split())
+
+
+def test_hook_handler_import_stays_light():
+    # weave-hook fires on every UserPromptSubmit/PostToolUse/Stop; handler.py
+    # keeps its own imports lazy by design, and the surfaces door must not
+    # undo that by eagerly pulling the CLI (25+ command modules → operations,
+    # synthesis, retrieval, acquisition).
+    loaded = _thinkweave_modules_loaded_by("thinkweave.surfaces.hooks.handler")
+    heavy = {
+        m
+        for m in loaded
+        if m.startswith(("thinkweave.surfaces.cli", "thinkweave.operations"))
+    }
+    assert not heavy, f"hook-handler import pulled the CLI/operations tree: {sorted(heavy)}"
+
+
+def test_core_leaf_import_stays_light():
+    # load_config from a hook body must not pay for the indexer's upward edge
+    # into synthesis (core/__init__ resolves Indexer/VaultManager lazily).
+    loaded = _thinkweave_modules_loaded_by("thinkweave.core.config")
+    heavy = {m for m in loaded if m.startswith("thinkweave.synthesis")}
+    assert not heavy, f"core.config import pulled synthesis: {sorted(heavy)}"

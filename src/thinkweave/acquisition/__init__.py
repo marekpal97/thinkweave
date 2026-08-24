@@ -17,8 +17,10 @@ one ``SourceTypeSpec`` + one skill file; ``vault.py`` dispatches on
 Storage: ``vault/.weave/queues/<source_type>.jsonl`` (+ ``_processed/``);
 config in ``vault/config/sources.yaml``.
 
-Extension points: register specs via ``sources.registry``; discover
-strategies plug into ``discover.strategies``.
+Extension points: register specs via ``sources.registry`` — the spec
+types (``SourceTypeSpec``, ``Layout``), slug ``normalize``, and the
+vault-overlay loader ``load_user_specs`` are on the door for exactly
+that; discover strategies plug into ``discover.strategies``.
 
 ``importers`` and ``discover`` are deliberately NOT re-exported here:
 their modules import ``core.vault`` at module top level, and ``core``'s
