@@ -307,12 +307,12 @@ class TestLinkageHelpers:
     """
 
     def _build_prompt(self, concept, essence, entries):
-        from thinkweave.surfaces.cli import _build_linkage_user_prompt
-        return _build_linkage_user_prompt(concept, essence, entries)
+        from thinkweave.operations.hubs_batch import build_linkage_user_prompt
+        return build_linkage_user_prompt(concept, essence, entries)
 
     def _parse(self, raw):
-        from thinkweave.surfaces.cli import _parse_linkage_response
-        return _parse_linkage_response(raw)
+        from thinkweave.operations.hubs_batch import parse_linkage_response
+        return parse_linkage_response(raw)
 
     def test_prompt_preserves_chronological_order(self):
         entries = [
@@ -372,8 +372,8 @@ class TestValidateLinkageRevision:
     """
 
     def _validate(self, entry_date, flag, ref):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        return _validate_linkage_revision(entry_date, flag, ref)
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        return validate_linkage_revision(entry_date, flag, ref)
 
     def test_unknown_flag_returns_none(self):
         flag, ref, quote = self._validate("2026-03-01", "weird", "")
@@ -439,8 +439,8 @@ class TestValidateLinkageRevision:
         assert ref == ""
 
     def test_quote_validation_passes_when_substring_matches(self):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        flag, ref, quote = _validate_linkage_revision(
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        flag, ref, quote = validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="pytest-bdd lets you write Gherkin scenarios",
             by_date_texts={"2026-01-15": [
@@ -452,8 +452,8 @@ class TestValidateLinkageRevision:
         assert "pytest-bdd" in quote
 
     def test_quote_validation_downgrades_when_quote_absent(self):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        flag, ref, _ = _validate_linkage_revision(
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        flag, ref, _ = validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="something the model invented out of thin air",
             by_date_texts={"2026-01-15": [
@@ -464,8 +464,8 @@ class TestValidateLinkageRevision:
         assert ref == ""
 
     def test_quote_validation_downgrades_when_quote_too_short(self):
-        from thinkweave.surfaces.cli import _validate_linkage_revision
-        flag, ref, _ = _validate_linkage_revision(
+        from thinkweave.operations.hubs_batch import validate_linkage_revision
+        flag, ref, _ = validate_linkage_revision(
             "2026-03-01", "extends", "2026-01-15",
             ref_quote="pytest",  # < 20 chars, untrustworthy
             by_date_texts={"2026-01-15": ["pytest is fine"]},
