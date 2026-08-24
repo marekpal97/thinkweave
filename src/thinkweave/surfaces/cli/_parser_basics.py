@@ -403,7 +403,7 @@ def add_admin_subparsers(sub) -> None:
         help="/brief's deterministic halves: `collect --json` (the payload the "
         "skill narrates) and `mark` (log surfaced ids as context_served).",
     )
-    brief_sub = p_brief.add_subparsers(dest="brief_action")
+    brief_sub = p_brief.add_subparsers(dest="brief_action", required=True)
     p_brief_collect = brief_sub.add_parser("collect", help="Collect the brief payload.")
     p_brief_collect.add_argument("--json", action="store_true", help="Emit the JSON contract.")
     p_brief_mark = brief_sub.add_parser(

@@ -312,3 +312,12 @@ def test_theme_movements_flag_rows_already_shown_in_contradictions(vault_factory
     shown = {t["flag"]: t["shown_in_contradictions"] for t in out["theme_movements"]}
     assert shown == {"new": False, "contradicts": True}
     assert [c["flag"] for c in out["contradictions"]] == ["contradicts"]
+
+
+def test_bare_brief_requires_a_subaction():
+    import pytest
+
+    from thinkweave.surfaces.cli.parser import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["brief"])
