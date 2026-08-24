@@ -27,6 +27,7 @@ deferred into function bodies). Import ``thinkweave.surfaces.mcp.server``
 directly.
 """
 
+# Lazy-door idiom — kept verbatim in core/operations/surfaces __init__.
 _DOOR = {
     "build_parser": "thinkweave.surfaces.cli",
     "main": "thinkweave.surfaces.cli",
@@ -34,7 +35,7 @@ _DOOR = {
     "uninstall_hooks": "thinkweave.surfaces.hooks.install",
 }
 
-__all__ = sorted(_DOOR)  # noqa: F822 — names resolve via __getattr__
+__all__ = sorted(_DOOR)
 
 
 def __getattr__(name: str):
@@ -47,3 +48,7 @@ def __getattr__(name: str):
     obj = getattr(importlib.import_module(module), name)
     globals()[name] = obj  # cache: later accesses skip __getattr__
     return obj
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

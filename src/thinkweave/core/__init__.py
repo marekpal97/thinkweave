@@ -27,6 +27,7 @@ from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config, load_config, resolve_config_file
 from thinkweave.core.schemas import NoteMeta, NoteType
 
+# Lazy-door idiom — kept verbatim in core/operations/surfaces __init__.
 _DOOR = {
     "Indexer": "thinkweave.core.indexer",
     "VaultManager": "thinkweave.core.vault",
@@ -58,3 +59,7 @@ def __getattr__(name: str):
     obj = getattr(importlib.import_module(module), name)
     globals()[name] = obj  # cache: later accesses skip __getattr__
     return obj
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

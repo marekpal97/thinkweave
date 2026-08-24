@@ -109,7 +109,45 @@ def test_hook_handler_import_stays_light():
 
 def test_core_leaf_import_stays_light():
     # load_config from a hook body must not pay for the indexer's upward edge
-    # into synthesis (core/__init__ resolves Indexer/VaultManager lazily).
+    # into synthesis, nor vault's into acquisition (core/__init__ resolves
+    # Indexer/VaultManager lazily).
     loaded = _thinkweave_modules_loaded_by("thinkweave.core.config")
-    heavy = {m for m in loaded if m.startswith("thinkweave.synthesis")}
-    assert not heavy, f"core.config import pulled synthesis: {sorted(heavy)}"
+    heavy = {
+        m
+        for m in loaded
+        if m.startswith(("thinkweave.synthesis", "thinkweave.acquisition"))
+    }
+    assert not heavy, f"core.config import pulled heavy packages: {sorted(heavy)}"
+
+
+# The hook handler imports these inside its per-event bodies — a fresh
+# weave-hook process pays each import on every fire, under handler.py's
+# stated hook-timeout budget. Values: package prefixes the import must NOT
+# pull (what an eager operations door would drag in; extract legitimately
+# needs synthesis/retrieval, so its check is unrelated-sibling modules).
+HANDLER_BODY_BUDGETS = {
+    "thinkweave.operations.retrieval_log": (
+        "thinkweave.retrieval",
+        "thinkweave.synthesis",
+        "thinkweave.acquisition",
+        "thinkweave.surfaces",
+    ),
+    "thinkweave.operations.prompt_time_retrieval": (
+        "thinkweave.synthesis",
+        "thinkweave.acquisition",
+        "thinkweave.surfaces",
+    ),
+    "thinkweave.operations.extract": (
+        "thinkweave.operations.hubs_batch",
+        "thinkweave.operations.rlvr_export",
+        "thinkweave.operations.migrations",
+        "thinkweave.surfaces",
+    ),
+}
+
+
+@pytest.mark.parametrize("module", sorted(HANDLER_BODY_BUDGETS))
+def test_handler_body_imports_stay_light(module):
+    loaded = _thinkweave_modules_loaded_by(module)
+    heavy = {m for m in loaded if m.startswith(HANDLER_BODY_BUDGETS[module])}
+    assert not heavy, f"{module} import pulled unneeded packages: {sorted(heavy)}"
