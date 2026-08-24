@@ -410,6 +410,8 @@ _POLICY_KNOBS = [
     ("health_stale_factor", 1.5, "health", "stale_factor"),
     ("health_backlog_days", 7, "health", "backlog_days"),
     ("learn_fill_cap", 3, "learn", "fill_cap"),
+    ("brief_attention_pressure", 2, "brief", "attention_pressure"),
+    ("brief_connection_min_score", 0.6, "brief", "connection_min_score"),
 ]
 
 

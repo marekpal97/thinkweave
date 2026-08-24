@@ -398,6 +398,23 @@ def add_admin_subparsers(sub) -> None:
     p_lp.add_argument("--session", required=True)
     p_lp.add_argument("--text", required=True)
 
+    p_brief = sub.add_parser(
+        "brief",
+        help="/brief's deterministic halves: `collect --json` (the payload the "
+        "skill narrates) and `mark` (log surfaced ids as context_served).",
+    )
+    brief_sub = p_brief.add_subparsers(dest="brief_action")
+    p_brief_collect = brief_sub.add_parser("collect", help="Collect the brief payload.")
+    p_brief_collect.add_argument("--json", action="store_true", help="Emit the JSON contract.")
+    p_brief_mark = brief_sub.add_parser(
+        "mark", help="Log surfaced ids as context_served(source='brief')."
+    )
+    p_brief_mark.add_argument("--note", required=True, help="The persisted brief note id.")
+    p_brief_mark.add_argument("--served", nargs="*", default=[], help="Surfaced note ids.")
+    p_brief_mark.add_argument(
+        "--session", default="", help="Session note id or harness UUID (default: $CLAUDE_CODE_SESSION_ID, then $CLAUDE_SESSION_ID)."
+    )
+
     p_config = sub.add_parser(
         "config",
         # NB: literal ``%`` must be doubled — argparse renders help via

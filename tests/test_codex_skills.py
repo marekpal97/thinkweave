@@ -32,7 +32,7 @@ def _frontmatter(text: str) -> dict:
 
 def test_every_supported_command_has_a_drift_free_codex_projection() -> None:
     contracts = list(iter_command_contracts(COMMANDS_ROOT, AGENTS_ROOT))
-    assert len(contracts) == 28
+    assert len(contracts) == 29
 
     for contract in contracts:
         skill_dir = SKILLS_ROOT / codex_skill_name(contract.name)

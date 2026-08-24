@@ -859,6 +859,9 @@ def _collect_knowledge_delta(
         focus_concepts,
         load_priorities,
     )
+    from thinkweave.operations.focus import (
+        active_projects as focus_active_projects_ranked,
+    )
 
     priorities = load_priorities(getattr(cfg, "vault_root", None))
     pinned_projects = focus_active_projects(priorities)
@@ -886,25 +889,12 @@ def _collect_knowledge_delta(
 
     idx = Indexer(config=cfg)
     try:
-        # 0. active_projects — behavioral focus: which projects saw sessions
-        #    in the last 14d (mutates the active_focus dict already on delta).
-        #    Excludes meta buckets (_unscoped/_personal/…). Self-heals: a
-        #    renamed or abandoned project simply stops appearing.
+        # 0. active_projects — behavioral focus (operations/focus.py, shared
+        #    with /brief; mutates the active_focus dict already on delta).
         try:
-            cutoff_window = (now - timedelta(days=window_days)).date().isoformat()
-            proj_rows = idx.db.execute(
-                "SELECT project, COUNT(*) AS c FROM notes "
-                "WHERE type = 'session' AND date >= ? "
-                "GROUP BY project ORDER BY c DESC",
-                (cutoff_window,),
-            ).fetchall()
-            behavioral_projects = [
-                row["project"] for row in proj_rows
-                if row["project"] and not row["project"].startswith("_")
-            ][:8]
-            # Pins are a floor (see apply_pins): behavioural activity leads.
-            behavioral_projects = apply_pins(behavioral_projects, pinned_projects)
-            active_focus["active_projects"] = behavioral_projects
+            active_focus["active_projects"] = focus_active_projects_ranked(
+                idx.db, now=now, window_days=window_days, pins=pinned_projects
+            )
         except Exception:  # noqa: BLE001 — focus is best-effort
             pass
 
