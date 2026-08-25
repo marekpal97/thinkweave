@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -318,28 +319,6 @@ class TestToolManifestConsolidation:
     — that's what tells the agent which surface to call.
     """
 
-    # The 17 canonical MCP tools — must all appear at least once in the
-    # rendered SessionStart payload.
-    CANONICAL_TOOLS = (
-        "weave_search",
-        "weave_create",
-        "weave_read",
-        "weave_update",
-        "weave_link",
-        "weave_unlink",
-        "weave_context",
-        "weave_graph",
-        "weave_concepts",
-        "weave_extract",
-        "weave_judge",
-        "weave_landing",
-        "weave_timeline",
-        "weave_project_snapshot",
-        "weave_queue",
-        "weave_sources_config",
-        "weave_prompts",
-    )
-
     # Deprecated names — folded into weave_concepts(action=...) and
     # weave_graph(filter=...). Must not appear in the rendered payload.
     DEPRECATED_TOOLS = (
@@ -358,11 +337,6 @@ class TestToolManifestConsolidation:
                 f"deprecated tool name {name!r} still advertised in SessionStart payload"
             )
 
-    def test_all_canonical_tools_present(self, config: Config, vault: VaultManager):
-        payload = build_project_context(config, project="test", budget_tokens=10000)
-        missing = [t for t in self.CANONICAL_TOOLS if t not in payload]
-        assert not missing, f"canonical MCP tools missing from manifest: {missing!r}"
-
     def test_manifest_matches_mcp_registry(self):
         """Bidirectional contract: manifest ↔ the MCP server's DISPATCH registry.
 
@@ -370,19 +344,17 @@ class TestToolManifestConsolidation:
         ``_build_tools_manifest`` was the only guard. Expected names come
         from the server's actual dispatch table, not a re-listing.
         """
-        import re
-
         from thinkweave.retrieval.context import _build_tools_manifest
         from thinkweave.surfaces.mcp.tools import DISPATCH
 
         body = _build_tools_manifest().body
         registered = set(DISPATCH)
         advertised = set(re.findall(r"weave_[a-z_]+", body))
-        assert registered - advertised == set(), (
+        assert not registered - advertised, (
             f"MCP tools registered but not advertised in the manifest: "
             f"{sorted(registered - advertised)!r}"
         )
-        assert advertised - registered == set(), (
+        assert not advertised - registered, (
             f"manifest advertises tool names the MCP server doesn't register: "
             f"{sorted(advertised - registered)!r}"
         )
