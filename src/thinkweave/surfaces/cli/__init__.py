@@ -17,6 +17,8 @@ from thinkweave.surfaces.cli.drain import cmd_discover, cmd_drain
 from thinkweave.surfaces.cli.dream import cmd_dream
 from thinkweave.surfaces.cli.flows import cmd_flow
 from thinkweave.surfaces.cli.graph import cmd_graph
+from thinkweave.surfaces.cli.health import cmd_health
+from thinkweave.surfaces.cli.learn import cmd_learn
 from thinkweave.surfaces.cli.hooks import cmd_hooks
 from thinkweave.surfaces.cli.hubs import cmd_hubs
 from thinkweave.surfaces.cli.index import (
@@ -76,15 +78,19 @@ from thinkweave.surfaces.cli.wrap import cmd_wrap_finalize
 # only; dispatch is by key, order is irrelevant.
 _DISPATCH = {
     # ── Agent-Bash entries ────────────────────────────────────────────
-    # The four narrow subcommands in-session agents / dream workers call
+    # The narrow subcommands in-session agents / dream workers call
     # from a Bash tool mid-flow (everything else agents reach via MCP):
     # `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`,
-    # `weave judge --rejudge/--drain`. hubs / landing / judge double as
-    # admin surfaces for their other flags.
+    # `weave judge --rejudge/--drain`, `weave health --json`, `weave learn
+    # check/probe` (retrieval is the skills' job, and MCP calls already land
+    # in context_served — dec-696bacfb). hubs / landing / judge / health
+    # double as admin surfaces.
     "wrap-finalize": cmd_wrap_finalize,
+    "health": cmd_health,
     "hubs": cmd_hubs,
     "landing": cmd_landing,
     "judge": cmd_judge,
+    "learn": cmd_learn,
     # ── Admin & setup ─────────────────────────────────────────────────
     # Interactive machine / vault administration. No MCP parity by
     # design; agents shouldn't run these (CLAUDE.md §7).

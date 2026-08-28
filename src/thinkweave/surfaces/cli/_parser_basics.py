@@ -368,6 +368,30 @@ def add_admin_subparsers(sub) -> None:
             help="Comma-separated job names to act on (default: all).",
         )
 
+    p_health = sub.add_parser(
+        "health",
+        help="Deterministic system health: scheduled jobs (last run / stale), "
+        "queue depth + backlog, recent hook errors, digest freshness. "
+        "Exit 1 when anything is flagged.",
+    )
+    p_health.add_argument(
+        "--json", action="store_true", help="Emit the stable JSON contract /brief reads."
+    )
+
+    p_learn = sub.add_parser(
+        "learn",
+        help="/learn's deterministic rail (#171): check (learn-note contract), "
+        "probe (unanswered question → probe row). Retrieval is the skill's "
+        "job (weave_search/weave_concepts), and its MCP calls already land "
+        "in context_served — no mark step.",
+    )
+    learn_sub = p_learn.add_subparsers(dest="learn_action", required=True)
+    p_lk = learn_sub.add_parser("check", help="Validate a learn note's frontmatter; exit 1 on problems.")
+    p_lk.add_argument("--note", required=True)
+    p_lp = learn_sub.add_parser("probe", help="Record an unanswered question as a probe on the session.")
+    p_lp.add_argument("--session", required=True)
+    p_lp.add_argument("--text", required=True)
+
     p_config = sub.add_parser(
         "config",
         # NB: literal ``%`` must be doubled — argparse renders help via

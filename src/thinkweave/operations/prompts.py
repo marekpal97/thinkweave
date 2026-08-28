@@ -13,7 +13,9 @@ first-class on the acquisition rail (queue items inherit them so
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from thinkweave.core.config import Config
 from thinkweave.core.events import match_probe_concepts
@@ -257,3 +259,59 @@ def recent_probe_questions(
         if len(out) >= limit:
             break
     return out
+
+
+# --------------------------------------------------------------------------- #
+# probe write side — /learn's "unanswered question → probe row" (#171)
+
+
+@dataclass(frozen=True)
+class SessionRef:
+    ses_id: str
+    source_session: str
+    session_dir: Path
+
+
+def resolve_session(cfg: Config, session: str) -> SessionRef | None:
+    """Resolve a harness UUID or ``ses-`` id through the index. ``None``
+    when unknown — callers write nothing rather than fabricate a key."""
+    from thinkweave.core.indexer import Indexer
+
+    idx = Indexer(config=cfg)
+    try:
+        row = idx.db.execute(
+            "SELECT id, path, json_extract(frontmatter, '$.source_session') AS src "
+            "FROM notes WHERE type = 'session' AND (id = ? OR "
+            "json_extract(frontmatter, '$.source_session') = ?) LIMIT 1",
+            (session, session),
+        ).fetchone()
+    finally:
+        idx.close()
+    if not row or not row["src"]:
+        return None
+    return SessionRef(row["id"], str(row["src"]), (cfg.vault_root / row["path"]).parent)
+
+
+def record_probe(cfg: Config, session: str, text: str) -> bool:
+    """Record ``text`` as a probe-classified prompt on the session's log.
+
+    Same two-line shape the wrap verdict path writes (``prompt`` + ``probe``
+    sharing ``ts``/``prompt_ref``), so ``extract_prompts`` classifies it
+    without new schema. Targets the live buffer while the session runs, the
+    archived ``events.jsonl`` once Stop moved it. False when the session
+    cannot be resolved.
+    """
+    from thinkweave.operations.retrieval_log import append_event
+
+    text = text.strip()
+    ref = resolve_session(cfg, session)
+    if ref is None or not text:
+        return False
+    live = cfg.weave_dir / "buffer" / f"{ref.source_session}.jsonl"
+    archived = ref.session_dir / "events.jsonl"
+    log = archived if archived.exists() and not live.exists() else live
+    ts = datetime.now(timezone.utc).isoformat()
+    append_event(log, {"ts": ts, "type": "prompt", "text": text, "session_id": ref.source_session})
+    append_event(log, {"ts": ts, "type": "probe", "session_id": ref.source_session,
+                       "prompt_ref": text[:120]})
+    return True

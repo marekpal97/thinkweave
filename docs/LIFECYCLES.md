@@ -4,7 +4,7 @@ The deep-dive reference for every first-class lifecycle in Thinkweave: session, 
 
 ## Table of contents
 
-- [Session](#session)
+- [Session](#session) · [Learn note](#learn-note-kind-learn)
 - [Concept](#concept)
 - [Theme](#theme)
 - [Prompt](#prompt)
@@ -28,6 +28,24 @@ failure announces itself once per session per hook type — every occurrence sti
 lands in `<vault>/.weave/hooks.log`.
 
 Hooks accumulate events + insights + commits + tests into a session note. The Stop hook auto-extracts (thin: archive events as `events.jsonl`, mark `processed: true` + `auto_extracted: true`). `/wrap` runs as a single inline pass: compose insights/decisions, call `weave_extract` once, then `weave wrap-finalize` (the deterministic tail — prune → index → judge → landing → drift, zero model turns). Two minor variants — *live* (in-session, conversation is the source) and *catch-up* (headless, working off `events.jsonl` + git). The *catch-up* variant is invoked nightly by `dream-wrap-worker` (phase 2 of `/dream`) for any session that lacks `processed: true` and has a non-empty `events.jsonl` — there is no separate `/wrap` catch-up cron entry. Self-decides what to record; never prompts. For non-code conversations, `weave_extract` auto-creates a session note.
+
+### Learn note (`kind: learn`)
+
+`/learn` (#171) persists one plain `type: note` per tutoring session — no new NoteType, the indexer needs no change. The frontmatter is the contract `weave learn check --note <id>` enforces (`surfaces/cli/learn.py::validate_learn_note`):
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `kind` | `learn` | what makes it a learn note; `/learn`'s coverage pass (§1 of the skill) treats its presence on the arc as the revisit signal (→ `test-first`) |
+| `topic` | str | the session's topic |
+| `concepts` | list | ontology slugs, gated like any note |
+| `solid` | `[{concept, date}]` | concepts the transcript answers evidenced as held, dated |
+| `shaky` | `[{concept, date, why}]` | concepts that decayed or never landed, with the reason |
+| `friction` | `[str]` | where an explanation failed — accumulated friction amends the teaching contract over time |
+| `explain_back` | str | the final Feynman explain-back, **verbatim** |
+| `builds_on` | `[ids]` | prior learn notes on the arc — the trajectory made browsable |
+| `questions` | `[str]` | every question asked |
+
+`solid`/`shaky` are legal under the no-unvalidatable-lifecycle rule because the transcript answers are the evidence (LLM judgment, no scores). Every note the session read or taught from lands in `context_served` through the standard MCP retrieval logging (no mark step — dec-696bacfb); unanswered questions and parked tangents become probe rows (`weave learn probe`, `operations/prompts.py::record_probe`, writes the same `prompt` + `probe` event pair the wrap verdict path does — see [Prompt](#prompt)).
 
 ## Concept
 
@@ -155,4 +173,4 @@ Email newsletters land via a provider-agnostic mail connector — `gmail` today,
 
 ## Context-served (RLVR substrate)
 
-Each session captures the notes served to it: a single `type: startup` event at SessionStart (notes in the SessionStart payload + `token_est`) plus one `type: retrieval` event per MCP retrieval call during the session (`weave_search`, `weave_context`, `weave_graph`, `weave_read`, `weave_timeline`, `weave_project_snapshot`). Buffered to the same per-session JSONL as action events; `archive_buffer` (Stop time / `weave_extract`) splits them into sibling `events.jsonl` and `retrieval_log.jsonl`. The Indexer projects every session's `retrieval_log.jsonl` into `context_served(session_id, note_id, source ∈ {startup, onthefly}, ts)` — rebuildable from markdown. The RLVR row's `context.cited_onthefly_ids` / `cited_startup_only_ids` come from intersecting decision body wikilinks against this table; a note served both via startup and on-the-fly counts as onthefly (the stronger signal).
+Each session captures the notes served to it: a single `type: startup` event at SessionStart (notes in the SessionStart payload + `token_est`) plus one `type: retrieval` event per MCP retrieval call during the session (`weave_search`, `weave_context`, `weave_graph`, `weave_read`, `weave_timeline`, `weave_project_snapshot`). Buffered to the same per-session JSONL as action events; `archive_buffer` (Stop time / `weave_extract`) splits them into sibling `events.jsonl` and `retrieval_log.jsonl`. The Indexer projects every session's `retrieval_log.jsonl` into `context_served(session_id, note_id, source ∈ {startup, onthefly, prompttime, loop-prime, codex-startup}, ts)` — rebuildable from markdown. `/learn`'s reads land here as ordinary `onthefly` rows; `/brief` deliberately adds nothing beyond its own calls (a survey is not demand — dec-696bacfb). The RLVR row's `context.cited_onthefly_ids` / `cited_startup_only_ids` come from intersecting decision body wikilinks against this table; a note served both via startup and on-the-fly counts as onthefly (the stronger signal).

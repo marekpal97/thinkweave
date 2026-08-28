@@ -11,7 +11,7 @@ The full CLI subcommand reference, the MCP tool surface, the CLI↔MCP surface c
 
 ## CLI reference
 
-The CLI exposes **48 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
+The CLI exposes **50 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
 
 Consolidations to keep in mind: wikilink materialisation lives under `weave index --materialize-links` (was `weave connect`, deleted 2026-05-21); the `weave_concepts*` MCP tools are folded into `weave_concepts(action=...)`; `weave_source_lens` + `weave_decisions_for_file` are folded into `weave_graph(filter=...)`. The Phase-4-C deprecation aliases for both CLI and MCP names were removed 2026-05-21 — call the canonical names.
 
@@ -30,6 +30,9 @@ weave graph <id>                              # local graph
 weave context "q" [--type X]                  # 3-layer retrieval (FTS → concept → recency)
 weave stats                                   # vault health (deprecated → weave doctor)
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
+weave health [--json]                         # jobs/queues/hooks/digest; exit 1 on flag; --json is /brief's contract
+weave learn check --note <id>                 # learn-note frontmatter contract; exit 1 on problems
+weave learn probe --session <uuid|ses-id> --text "…"  # unanswered question → probe row
 weave backlog [--project X]                   # todo notes + active queue items
 weave decisions [--file <path>] [--project X] # decision ledger lookup
 weave project {list|show|set-active}          # project registry on the vault
@@ -76,9 +79,9 @@ The MCP server (id `thinkweave`, so tools are addressed `mcp__thinkweave__weave_
 
 ## Surface contract — CLI ↔ MCP
 
-The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus exactly four narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, and `weave judge --rejudge/--drain`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
+The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus a small set of narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, `weave judge --rejudge/--drain`, `weave learn` (the `/learn` rail, #171), and `weave health --json`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-Full inventory — 48 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the four CLI carve-outs):
+Full inventory — 50 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the CLI carve-outs):
 
 | Operation | CLI subcommand | MCP tool | Audience |
 |---|---|---|---|
@@ -107,6 +110,8 @@ Full inventory — 48 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Importers (claude-code / codex / chatgpt / …) | `weave import` | — | admin-cron |
 | Vault health | `weave stats` | — | admin-cron |
 | Coherence linter | `weave doctor` | — | admin-cron |
+| System health (jobs / queues / hooks / digest) | `weave health` | — | admin-cron — `--json` is **agent-Bash** (`/brief`) |
+| `/learn` rail (check / probe) | `weave learn` | — | agent-Bash (`/learn`); retrieval is the skill's job, its MCP calls land in context_served on their own (dec-696bacfb) |
 | Named workflow pipelines | `weave flow` | — | admin-cron |
 | Host scheduler render | `weave schedule` | — | admin-cron |
 | Hook install / status | `weave hooks` | — | admin-cron |

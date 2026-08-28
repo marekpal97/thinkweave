@@ -45,7 +45,7 @@ import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from thinkweave.core.config import Config
@@ -329,7 +329,7 @@ def _collect_essence_candidates(
     warm by ``VaultManager.create_note`` and every rebuild, so it carries
     the same freshness the rest of the scan already trusts.
     """
-    from datetime import date, timedelta
+    from datetime import date
 
     from thinkweave.core.indexer import Indexer
     from thinkweave.synthesis.hub import FLAG_CONTRADICTS
@@ -574,7 +574,7 @@ def _collect_unwrapped_sessions(
     All discovery goes through the SQLite index (``type='session'``); we
     never walk the projects/ tree.
     """
-    from datetime import date, timedelta
+    from datetime import date
 
     from thinkweave.core.indexer import Indexer
 
@@ -760,7 +760,7 @@ def _collect_rejudge_queue(
     Discovery uses the SQLite index (``json_extract`` on the frontmatter
     blob) — no vault file crawl.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     from thinkweave.core.indexer import Indexer
 
@@ -880,7 +880,7 @@ def _collect_knowledge_delta(
     discovery still goes through the SQLite index, never a filesystem
     crawl.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     from thinkweave.core.indexer import Indexer
     from thinkweave.operations.prompts import recent_probe_pressure
@@ -968,25 +968,21 @@ def _collect_knowledge_delta(
 
     idx = Indexer(config=cfg)
     try:
-        # 0. active_projects — behavioral focus: which projects saw sessions
-        #    in the last 14d (mutates the active_focus dict already on delta).
-        #    Excludes meta buckets (_unscoped/_personal/…). Self-heals: a
-        #    renamed or abandoned project simply stops appearing.
+        # 0. active_projects — projects with sessions in the window (most
+        #    active first); meta buckets (`_unscoped`/`_personal`…) excluded,
+        #    pins appended as a floor. Self-heals — a renamed or abandoned
+        #    project just stops appearing.
         try:
-            cutoff_window = (now - timedelta(days=window_days)).date().isoformat()
-            proj_rows = idx.db.execute(
+            rows = idx.db.execute(
                 "SELECT project, COUNT(*) AS c FROM notes "
-                "WHERE type = 'session' AND date >= ? "
-                "GROUP BY project ORDER BY c DESC",
-                (cutoff_window,),
+                "WHERE type = 'session' AND date >= ? GROUP BY project ORDER BY c DESC",
+                ((now - timedelta(days=window_days)).date().isoformat(),),
             ).fetchall()
-            behavioral_projects = [
-                row["project"] for row in proj_rows
-                if row["project"] and not row["project"].startswith("_")
+            ranked = [
+                r["project"] for r in rows
+                if r["project"] and not r["project"].startswith("_")
             ][:8]
-            # Pins are a floor (see apply_pins): behavioural activity leads.
-            behavioral_projects = apply_pins(behavioral_projects, pinned_projects)
-            active_focus["active_projects"] = behavioral_projects
+            active_focus["active_projects"] = apply_pins(ranked, pinned_projects)
         except Exception:  # noqa: BLE001 — focus is best-effort
             pass
 
