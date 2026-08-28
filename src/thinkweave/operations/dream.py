@@ -592,11 +592,19 @@ def _collect_unwrapped_sessions(
         idx.close()
 
     out: list[dict] = []
+    seen_buffers: set[Path] = set()
     for row in rows:
         try:
             fm = json.loads(row["frontmatter"] or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
+
+        session_path = cfg.vault_root / row["path"]
+        events_path = _resolve_session_events(cfg, session_path, fm)
+        if events_path is not None:
+            # Claimed by an indexed session either way — never re-surface
+            # it as a note-less buffer in the second pass.
+            seen_buffers.add(events_path.resolve())
 
         # Already processed → skip.
         if fm.get("processed") is True:
@@ -607,14 +615,7 @@ def _collect_unwrapped_sessions(
         if session_date and session_date < cutoff_date:
             continue
 
-        session_path = cfg.vault_root / row["path"]
-        events_path = session_path.parent / "events.jsonl"
-
-        # Conservative: missing/empty events.jsonl ⇒ nothing to wrap.
-        try:
-            if not events_path.exists() or events_path.stat().st_size == 0:
-                continue
-        except OSError:
+        if events_path is None:
             continue
 
         out.append({
@@ -624,8 +625,89 @@ def _collect_unwrapped_sessions(
             "last_activity_ts": row["date"] or "",
         })
         if len(out) >= cap:
-            break
+            return out
 
+    # Second pass: live buffers with NO session note at all (the Stop hook
+    # never materialised one — crash, /clear without /wrap, or a session
+    # that ended before the first tool call). Invisible to the index walk
+    # above, yet they hold real user prompts. weave_extract auto-creates
+    # the note when the worker wraps them.
+    out.extend(
+        _collect_noteless_buffers(
+            cfg, cutoff_date, seen_buffers, cap - len(out)
+        )
+    )
+    return out
+
+
+def _resolve_session_events(cfg: Config, session_path: Path, fm: dict) -> Path | None:
+    """The events stream an unwrapped session should be wrapped from.
+
+    Pre-wrap, events live in the LIVE buffer ``weave_dir/buffer/<uuid>.jsonl``
+    (archived into the folder only by weave_extract). The old scan looked
+    only at the archived location, so every genuinely unwrapped session was
+    skipped as "nothing to wrap" — 645 buffers piled up and the RL study
+    sessions of 2026-07 never reached the labeler (found 2026-08-23).
+    Candidates in order: folder ``events.jsonl``, buffer keyed by
+    ``source_session``, buffer keyed by the folder-name UUID prefix.
+    Returns the first non-empty one, else ``None``.
+    """
+    candidates = [session_path.parent / "events.jsonl"]
+    buffer_dir = cfg.weave_dir / "buffer"
+    src = str(fm.get("source_session") or "")
+    if src:
+        candidates.append(buffer_dir / f"{src}.jsonl")
+    folder = session_path.parent.name
+    uuid_prefix = folder.split("-2026")[0] if "-20" in folder else folder
+    if uuid_prefix and uuid_prefix != src:
+        candidates.append(buffer_dir / f"{uuid_prefix}.jsonl")
+    for cand in candidates:
+        try:
+            if cand.exists() and cand.stat().st_size > 0:
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _collect_noteless_buffers(
+    cfg: Config, cutoff_date: str, seen: set[Path], budget: int
+) -> list[dict]:
+    """Live buffers (within the date cutoff, ≥1 user prompt) that no session
+    note references. ``project`` is derived from the prompt's ``cwd``."""
+    if budget <= 0:
+        return []
+    buffer_dir = cfg.weave_dir / "buffer"
+    if not buffer_dir.exists():
+        return []
+    from thinkweave.core.events import extract_prompts
+
+    out: list[dict] = []
+    for buf in sorted(buffer_dir.glob("*.jsonl")):
+        if buf.resolve() in seen:
+            continue
+        try:
+            if buf.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
+        prompts = [
+            p for p in extract_prompts(buf) if not p.text.lstrip().startswith("<")
+        ]
+        if not prompts:
+            continue
+        last = max(p.ts for p in prompts)
+        if last.isoformat()[:10] < cutoff_date:
+            continue
+        cwd = prompts[-1].cwd or ""
+        out.append({
+            "session_id": buf.stem,
+            "project": prompts[-1].project or (Path(cwd).name if cwd else ""),
+            "events_jsonl_path": str(buf),
+            "last_activity_ts": last.isoformat(),
+        })
+        if len(out) >= budget:
+            break
     return out
 
 

@@ -298,16 +298,23 @@ def _check_pyproject_reachable(project_root: Path) -> None:
 
 
 def _uv_sync(project_root: Path) -> None:
-    """Run ``uv sync --extra mcp`` eagerly so the first Claude Code session
+    """Run ``uv sync --extra all`` eagerly so the first Claude Code session
     after install doesn't pay 30s–2min of dependency resolution. Streams
     uv's output so users see progress; a non-zero exit aborts the
-    install with a clear pointer to manual retry."""
+    install with a clear pointer to manual retry.
+
+    ``--extra all``, never a single extra: ``uv sync`` prunes every extra
+    it is not told to keep, so ``--extra mcp`` here would uninstall the
+    news/embeddings/gemini/youtube deps from an already-synced venv —
+    the same silent pruning the ``--no-sync`` launchers exist to prevent
+    (killed the news pull 2026-08-11→22; ``weave doctor --mcp`` "venv
+    extras" catches the aftermath)."""
     print()
     print(f"Syncing thinkweave dependencies at {project_root} …")
     print("(one-time, ~30s–2min depending on cache)")
     try:
         result = subprocess.run(
-            ["uv", "sync", "--project", str(project_root), "--extra", "mcp"],
+            ["uv", "sync", "--project", str(project_root), "--extra", "all"],
             check=False,
         )
     except FileNotFoundError:
@@ -318,7 +325,7 @@ def _uv_sync(project_root: Path) -> None:
         print(
             f"\nerror: `uv sync` exited {result.returncode}. The MCP server\n"
             f"likely won't start. Retry manually after fixing the error:\n"
-            f"  uv sync --project {project_root} --extra mcp",
+            f"  uv sync --project {project_root} --extra all",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -707,7 +714,10 @@ def cmd_install(args: argparse.Namespace) -> None:
             )
         # Eager `uv sync` is skipped on the plugin route — the plugin's
         # source path (`${CLAUDE_PLUGIN_ROOT}`) is resolved by the plugin
-        # runtime, not by `weave`. First MCP launch syncs lazily.
+        # runtime, not by `weave`. NOTE: nothing syncs lazily either — all
+        # launchers run `uv run --no-sync` (#156/#164), so a fresh plugin
+        # checkout needs a manual `uv sync --extra all` before the MCP
+        # server can start. First-sync ownership is tracked in #198.
         if not getattr(args, "no_claude_md", False):
             _install_claude_md_block(args.yes)
         _print_next_steps()

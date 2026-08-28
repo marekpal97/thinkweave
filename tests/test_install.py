@@ -622,7 +622,7 @@ class TestUvSync:
     failures clearly. The actual sync is mocked — we're testing the
     contract, not exercising uv."""
 
-    def test_invokes_uv_sync_with_project_and_mcp_extra(
+    def test_invokes_uv_sync_with_project_and_all_extras(
         self, tmp_path, monkeypatch
     ):
         calls: list[list[str]] = []
@@ -640,7 +640,11 @@ class TestUvSync:
         assert "--project" in cmd
         assert str(tmp_path) in cmd
         assert "--extra" in cmd
-        assert "mcp" in cmd
+        assert "all" in cmd
+        # regression guard: `uv sync --extra <one>` PRUNES every other extra
+        # from an already-synced venv (killed the news pull 2026-08-11→22);
+        # the eager install sync must never name a single extra.
+        assert "mcp" not in cmd
 
     def test_exits_on_nonzero_uv_sync(self, tmp_path, monkeypatch, capsys):
         def fake_run(cmd, check):

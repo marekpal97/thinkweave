@@ -197,26 +197,3 @@ def _hubs_repair(cfg, args: argparse.Namespace) -> None:
             f"contention. Run `uv run weave index` once the contending process "
             f"releases the lock."
         )
-
-
-# Backwards-compatibility shims — these helpers moved to operations/hubs_batch.py
-# (formerly operations/drain.py). Tests still import them under their
-# underscore-prefixed names.
-def _validate_linkage_revision(entry_date: str, flag: str, ref: str, **kwargs):
-    from thinkweave.operations.hubs_batch import validate_linkage_revision
-
-    return validate_linkage_revision(entry_date, flag, ref, **kwargs)
-
-
-def _build_linkage_user_prompt(
-    concept: str, essence: str, entries: list, **kwargs
-) -> str:
-    from thinkweave.operations.hubs_batch import build_linkage_user_prompt
-
-    return build_linkage_user_prompt(concept, essence, entries, **kwargs)
-
-
-def _parse_linkage_response(raw: str) -> list[dict]:
-    from thinkweave.operations.hubs_batch import parse_linkage_response
-
-    return parse_linkage_response(raw)

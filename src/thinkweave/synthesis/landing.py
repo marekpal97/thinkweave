@@ -23,6 +23,7 @@ from pathlib import Path
 
 from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config
+from thinkweave.synthesis.hub import build_id_path_map, reflink
 
 
 def _default_landing_filenames() -> dict[str, str]:
@@ -117,32 +118,6 @@ def _extract_summary(frontmatter: dict, body: str) -> str:
     return ""
 
 
-def _id_path_map(db) -> dict[str, str]:
-    """Map note id -> vault-relative path (sans .md) for path-based wikilinks.
-
-    Path links resolve structurally in Obsidian by file location, so they
-    never spawn a phantom stub even on notes that predate the `aliases:`
-    backfill. This is the durable form for every materialised link — the
-    same structural shape concept-hub links use.
-    """
-    out: dict[str, str] = {}
-    for r in db.execute("SELECT id, path FROM notes"):
-        rel = str(r["path"] or "").replace("\\", "/")
-        if rel.endswith(".md"):
-            rel = rel[:-3]
-        if rel:
-            out[r["id"]] = rel
-    return out
-
-
-def _reflink(idmap: dict[str, str], note_id: str, display: str | None = None) -> str:
-    """Path-based wikilink to a note, falling back to the bare id (alias)."""
-    ref = idmap.get(note_id) or note_id
-    if ref == note_id and display is None:
-        return f"[[{note_id}]]"
-    return f"[[{ref}|{display if display is not None else note_id}]]"
-
-
 def _query_decisions(db, project: str) -> list[dict]:
     """Query all decisions for a project, ordered by date."""
     rows = db.execute(
@@ -187,7 +162,7 @@ def decisions_ledger(config: Config, project: str) -> str:
     db = _get_db(config)
     decisions = _query_decisions(db, project)
     edges = _query_edges(db, project)
-    idmap = _id_path_map(db)
+    idmap = build_id_path_map(db)
     db.close()
 
     today = date.today().isoformat()
@@ -218,7 +193,7 @@ def decisions_ledger(config: Config, project: str) -> str:
                 verdict_str = f"{d['verdict']}{conf}"
             summary = d["summary"].replace("|", "\\|")
             lines.append(
-                f"| {_reflink(idmap, d['id'])} | {d['date']} | {d['title']} "
+                f"| {reflink(d['id'], idmap)} | {d['date']} | {d['title']} "
                 f"| {d['status']} | {verdict_str} | {summary} |"
             )
         lines.append("")
@@ -258,7 +233,7 @@ def decisions_ledger(config: Config, project: str) -> str:
         for d in inactive:
             summary = d["summary"].replace("|", "\\|")
             lines.append(
-                f"| {_reflink(idmap, d['id'])} | {d['date']} | {d['title']} "
+                f"| {reflink(d['id'], idmap)} | {d['date']} | {d['title']} "
                 f"| {d['status']} | {summary} |"
             )
         lines.append("")
@@ -366,7 +341,7 @@ def backlog_summary(config: Config, project: str) -> str:
             "reason": reason,
         })
 
-    idmap = _id_path_map(db)
+    idmap = build_id_path_map(db)
     db.close()
 
     today_str = today.isoformat()
@@ -398,7 +373,7 @@ def backlog_summary(config: Config, project: str) -> str:
                 tag_str = ""
                 if item["tags"]:
                     tag_str = f" — {', '.join(item['tags'])}"
-                lines.append(f"- [ ] {item['title']} ({_reflink(idmap, item['id'])}){tag_str}")
+                lines.append(f"- [ ] {item['title']} ({reflink(item['id'], idmap)}){tag_str}")
             lines.append("")
 
     # Stalled proposals
@@ -410,7 +385,7 @@ def backlog_summary(config: Config, project: str) -> str:
         lines.append("|---|---|---|---|")
         for s in stalled:
             summary = s["summary"].replace("|", "\\|")
-            lines.append(f"| {_reflink(idmap, s['id'])} | {s['date']} | {s['title']} | {summary} |")
+            lines.append(f"| {reflink(s['id'], idmap)} | {s['date']} | {s['title']} | {summary} |")
         lines.append("")
 
     # Parked items
@@ -420,7 +395,7 @@ def backlog_summary(config: Config, project: str) -> str:
         lines.append("")
         for p in parked:
             reason = f" — {p['reason']}" if p["reason"] else ""
-            lines.append(f"- {p['title']} ({_reflink(idmap, p['id'])}){reason}")
+            lines.append(f"- {p['title']} ({reflink(p['id'], idmap)}){reason}")
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -652,7 +627,7 @@ def state_of_play(config: Config, project: str) -> str:
     """
     ctx = _gather_state_context(config, project)
     _db = _get_db(config)
-    idmap = _id_path_map(_db)
+    idmap = build_id_path_map(_db)
     _db.close()
     today = date.today().isoformat()
 
@@ -723,7 +698,7 @@ def state_of_play(config: Config, project: str) -> str:
         if worth_inspecting:
             for d in worth_inspecting:
                 conf_str = f" — confidence: {d['confidence']}" if d['confidence'] else " — not yet evaluated"
-                lines.append(f"- {_reflink(idmap, d['id'])} **{d['title']}**{conf_str}")
+                lines.append(f"- {reflink(d['id'], idmap)} **{d['title']}**{conf_str}")
                 if d["summary"]:
                     lines.append(f"  {d['summary']}")
             lines.append("")
@@ -775,7 +750,7 @@ def state_of_play(config: Config, project: str) -> str:
         )
         for p in probes[:display_cap]:
             session = p.get("session", "")
-            sess_ref = f", {_reflink(idmap, session)}" if session else ""
+            sess_ref = f", {reflink(session, idmap)}" if session else ""
             tag = ""
             if p.get("source") == "prompt":
                 tag = " · *prompt*"
@@ -1036,7 +1011,7 @@ def themes_ledger(config: Config) -> str:
     """
     db = _get_db(config)
     themes = _query_themes(db)
-    idmap = _id_path_map(db)
+    idmap = build_id_path_map(db)
     db.close()
 
     today = date.today().isoformat()
@@ -1074,7 +1049,7 @@ def themes_ledger(config: Config) -> str:
         # Use the real indexed path, not a path reconstructed from the
         # title-slug — a title whose slug differs from the on-disk filename
         # would otherwise spawn a phantom theme stub.
-        link = f"{prefix}{_reflink(idmap, t['id'], t['title'])}"
+        link = f"{prefix}{reflink(t['id'], idmap, {t['id']: t['title']})}"
         proj = t["project"] or "—"
         # Catalyst log dates are bare YYYY-MM-DD; the index `date` column
         # carries an ISO timestamp — trim the time portion for display.
@@ -1197,7 +1172,7 @@ def _catalog_card(t: dict, depth: int, by_id: dict[str, dict], idmap: dict[str, 
     title = t["title"] or t["id"]
     parent_id = t.get("parent") or ""
     parent_line = (
-        f"- **parent:** {_reflink(idmap or {}, parent_id, parent_id)} ({by_id[parent_id]['title']})"
+        f"- **parent:** {reflink(parent_id, idmap)} ({by_id[parent_id]['title']})"
         if parent_id and parent_id in by_id
         else "- **parent:** _(top-level)_"
     )

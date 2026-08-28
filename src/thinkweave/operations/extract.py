@@ -581,9 +581,12 @@ def extract_session(
         content = render_frontmatter(fm_part) + "\n\n" + cleaned_body
         session_path.write_text(content, encoding="utf-8")
 
-    idx.index_file(session_path)
-    idx.close()
-
+    # Archive the live buffer into the session folder BEFORE indexing the
+    # note: index_file projects prompts/probes from the sibling
+    # events.jsonl, and that file only exists once archive_buffer has run.
+    # The old order (index, then archive) projected against a missing file
+    # → zero prompt rows for every wrapped session, which silently starved
+    # the probe → dream-priority → queue rail (found 2026-08-23).
     try:
         source_session = session_note.frontmatter.get("source_session", session_id)
         archive_buffer(cfg.weave_dir, source_session, session_path.parent)
@@ -592,5 +595,8 @@ def extract_session(
             "Lifecycle event archive failed; the live buffer was preserved for "
             f"retry ({type(e).__name__}: {e})."
         )
+
+    idx.index_file(session_path)
+    idx.close()
 
     return outcome

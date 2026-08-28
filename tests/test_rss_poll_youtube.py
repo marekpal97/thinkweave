@@ -289,3 +289,33 @@ def test_indexer_dedup_honours_per_type_keys_only(
     summary = next(d for d in descriptors if d.get("kind") == "summary")
     assert summary["stats"]["dup_indexer"] == 0
     assert summary["stats"]["enqueued"] == 1
+
+
+def test_strategy_youtube_daily_cap_per_channel(tmp_path, fake_feedparser, monkeypatch) -> None:
+    """Lane-level ``daily_cap`` is counted per ``channel_id`` — a firehose
+    channel (Bloomberg TV, 30+/day) can't flood the queue, and the count
+    survives across runs because it reads today's queue + archive."""
+    fresh = (datetime.now(timezone.utc) - timedelta(hours=2)).timetuple()
+    entries = [
+        _yt_entry(video_id=f"vid{i:08d}", title=f"Video {i}", published_parsed=fresh)
+        for i in range(5)
+    ]
+    monkeypatch.setattr(fake_feedparser, "parse", lambda url: FakeParsed(entries))
+    config = {
+        "sources": {
+            "youtube-concepts": {
+                "channels": ["UCfirehose0000000000000"],
+                "lookback_days": 7,
+                "daily_cap": 2,
+                "dedup_keys": ["video_id", "url"],
+            }
+        }
+    }
+    run = lambda: RssPollStrategy().run(_fake_vault(tmp_path), None, config)  # noqa: E731
+    stats = [d for d in run() if d.get("kind") == "summary"][0]["stats"]
+    assert stats["enqueued"] == 2
+    assert stats["cap_hit"] == 3
+    # second run the same day: cap already spent, nothing more enqueued
+    stats2 = [d for d in run() if d.get("kind") == "summary"][0]["stats"]
+    assert stats2["enqueued"] == 0
+    assert len(Queue.for_source_type("youtube-concepts", tmp_path).peek(10)) == 2
