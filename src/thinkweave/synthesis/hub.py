@@ -106,7 +106,7 @@ def build_id_path_map(db) -> dict[str, str]:
     A path wikilink resolves structurally in Obsidian by file location, so it
     never spawns a phantom stub — unlike a bare ``[[note-id]]`` that depends on
     the target's ``aliases:`` frontmatter being present *and* indexed. This is
-    the same id->path resolution ``landing._id_path_map`` and the ``## See Also``
+    the same id->path resolution the landing docs and the ``## See Also``
     materialiser use; the catalyst log shares it so every surface links the same
     durable way. ``db`` is any sqlite connection with a ``notes(id, path)`` table.
     """
