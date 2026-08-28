@@ -762,15 +762,25 @@ _EXTRA_MODULES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _extra_importable(mod: str) -> bool:
+    """``find_spec`` on a dotted name RAISES ModuleNotFoundError when the
+    parent package is absent (``google.genai`` without ``google``); it only
+    returns None when the parent exists. Either way the extra is missing."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(mod) is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def check_venv_extras() -> CheckResult:
     """Every optional extra the acquisition + dream crons import must be
     importable from *this* interpreter. Harness-independent."""
-    import importlib.util
-
     missing = [
         (mod, extra, lanes)
         for mod, extra, lanes in _EXTRA_MODULES
-        if importlib.util.find_spec(mod) is None
+        if not _extra_importable(mod)
     ]
     if not missing:
         return CheckResult(

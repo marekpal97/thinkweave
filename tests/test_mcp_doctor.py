@@ -302,6 +302,11 @@ class TestRunMcpDoctor:
             raise subprocess.TimeoutExpired(cmd="uv", timeout=5.0)
 
         monkeypatch.setattr(md.subprocess, "run", fake_run)
+        # Hermetic: the venv-extras check must not depend on which extras the
+        # suite's own venv happens to have synced (`--extra mcp` in CI).
+        monkeypatch.setattr(
+            md, "_EXTRA_MODULES", (("json", "stdlib", "always present"),)
+        )
 
         result = md.run_mcp_doctor(cwd=tmp_path)
         assert result.passed
@@ -570,4 +575,19 @@ class TestVenvExtrasCheck:
         result = md.check_venv_extras()
         assert not result.passed
         assert "no_such_module_xyz [news]" in result.detail
+        assert "--extra all" in result.fix
+
+    def test_dotted_module_with_absent_parent_reports_missing(self, monkeypatch):
+        """``find_spec("google.genai")`` RAISES ModuleNotFoundError when the
+        parent package is absent — it only returns None when the parent
+        exists. The check must report the extra missing, never crash on the
+        very condition it exists to detect (#164)."""
+        monkeypatch.setattr(
+            md,
+            "_EXTRA_MODULES",
+            (("no_such_parent_xyz.child", "gemini", "podcast transcription"),),
+        )
+        result = md.check_venv_extras()
+        assert not result.passed
+        assert "no_such_parent_xyz.child [gemini]" in result.detail
         assert "--extra all" in result.fix
