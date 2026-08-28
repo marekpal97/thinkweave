@@ -2,7 +2,7 @@
 name: learn
 owns_mechanic: vault_tutoring
 consumes: [weave_concepts, weave_search, weave_read, weave_create, weave_queue, weave_prompts]
-produces: [learn note (type: note, kind: learn), context_served(source='learn'), probe rows]
+produces: [learn note (type: note, kind: learn), probe rows]
 tools:
   - Read
   - Bash
@@ -115,7 +115,7 @@ Closing synthesis, then the final **Feynman explain-back** (free text, persisted
    ```
 
 2. `weave learn check --note <new-id>` — exit 1 lists the contract problems; fix via `weave_update` and re-check.
-3. `weave learn mark --session "$CLAUDE_CODE_SESSION_ID" --note <new-id> --served <every note id you read or taught from>` — `context_served(source='learn')`.
+(No mark step: the session's own `weave_search`/`weave_read` calls already land in `context_served` through the standard retrieval logging — dec-696bacfb.)
 
 Compaction mid-session is fine; the note is composed at the end regardless. Report: mode, trajectory/material sizes, fills run, chunks taught, solid/shaky, probes recorded, the learn-note id.
 

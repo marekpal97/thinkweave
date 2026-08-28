@@ -381,35 +381,16 @@ def add_admin_subparsers(sub) -> None:
     p_learn = sub.add_parser(
         "learn",
         help="/learn's deterministic rail (#171): check (learn-note contract), "
-        "mark (context_served source='learn'), probe (unanswered question → "
-        "probe). Retrieval is the skill's job (weave_search/weave_concepts).",
+        "probe (unanswered question → probe row). Retrieval is the skill's "
+        "job (weave_search/weave_concepts), and its MCP calls already land "
+        "in context_served — no mark step.",
     )
     learn_sub = p_learn.add_subparsers(dest="learn_action", required=True)
     p_lk = learn_sub.add_parser("check", help="Validate a learn note's frontmatter; exit 1 on problems.")
     p_lk.add_argument("--note", required=True)
-    p_lm = learn_sub.add_parser("mark", help="Log exercised note ids as context_served(source='learn').")
-    p_lm.add_argument("--session", required=True, help="Harness UUID ($CLAUDE_CODE_SESSION_ID) or ses- id.")
-    p_lm.add_argument("--note", required=True, help="The learn note id.")
-    p_lm.add_argument("--served", nargs="+", required=True, help="Exercised note ids.")
     p_lp = learn_sub.add_parser("probe", help="Record an unanswered question as a probe on the session.")
     p_lp.add_argument("--session", required=True)
     p_lp.add_argument("--text", required=True)
-
-    p_brief = sub.add_parser(
-        "brief",
-        help="/brief's one deterministic write: `mark` (log surfaced ids as "
-        "context_served source='brief'). The payload is composed by the skill "
-        "from `weave health --json` + the weave_* retrieval tools.",
-    )
-    brief_sub = p_brief.add_subparsers(dest="brief_action", required=True)
-    p_brief_mark = brief_sub.add_parser(
-        "mark", help="Log surfaced ids as context_served(source='brief')."
-    )
-    p_brief_mark.add_argument("--note", required=True, help="The persisted brief note id.")
-    p_brief_mark.add_argument("--served", nargs="*", default=[], help="Surfaced note ids.")
-    p_brief_mark.add_argument(
-        "--session", default="", help="Session note id or harness UUID (default: $CLAUDE_CODE_SESSION_ID, then $CLAUDE_SESSION_ID)."
-    )
 
     p_config = sub.add_parser(
         "config",

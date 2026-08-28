@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from thinkweave.core.schemas import NoteType
 from thinkweave.operations import health
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
@@ -276,73 +275,3 @@ class TestCli:
         assert code == 1
         assert "/drain paper" in out and "missing" in out
         assert "digest" in out.lower() and "hook" in out.lower()
-
-
-class TestContextServedSources:
-    """AC6 — ``source IN (…, 'brief', 'learn')`` plus migration of an old DB."""
-
-    def test_brief_and_learn_rows_project_from_retrieval_log(self, vault_factory):
-        handle = vault_factory()
-        cfg, vm = handle.config, handle.vault
-        sess = vm.create_note(NoteType.SESSION, "S", body="## Summary\nx\n", project="p")
-        lines = [
-            {"ts": "2026-08-23T00:00:00Z", "type": "retrieval", "tool": "brief", "returned_ids": ["n-b"]},
-            {"ts": "2026-08-23T00:00:00Z", "type": "retrieval", "tool": "learn", "returned_ids": ["n-l"]},
-        ]
-        (sess.parent / "retrieval_log.jsonl").write_text(
-            "".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8"
-        )
-        handle.indexed()
-        from thinkweave.core.indexer import Indexer
-
-        idx = Indexer(config=cfg)
-        try:
-            rows = sorted(
-                tuple(r) for r in idx.db.execute(
-                    "SELECT note_id, source FROM context_served")
-            )
-        finally:
-            idx.close()
-        assert rows == [("n-b", "brief"), ("n-l", "learn")]
-
-    def test_pre_brief_table_with_rows_is_migrated(self, vault_factory):
-        from thinkweave.core.indexer import Indexer
-
-        handle = vault_factory()
-        cfg, vm = handle.config, handle.vault
-        sess = vm.create_note(NoteType.SESSION, "S", body="## Summary\nx\n", project="p")
-        (sess.parent / "retrieval_log.jsonl").write_text(
-            json.dumps({"ts": "2026-08-23T00:00:00Z", "type": "startup",
-                        "returned_ids": ["n-seeded"]}) + "\n",
-            encoding="utf-8",
-        )
-        handle.indexed()
-        idx = Indexer(config=cfg)
-        idx.db.execute("DROP TABLE context_served")
-        idx.db.execute(
-            "CREATE TABLE context_served ("
-            " session_id TEXT NOT NULL, note_id TEXT NOT NULL,"
-            " source TEXT NOT NULL CHECK(source IN "
-            "  ('startup', 'onthefly', 'prompttime', 'loop-prime', 'codex-startup')),"
-            " ts TEXT, PRIMARY KEY (session_id, note_id, source))"
-        )
-        idx.db.execute(
-            "INSERT INTO context_served VALUES ('ses-old', 'n-old', 'startup', '')"
-        )
-        idx.db.commit()
-        idx.close()
-
-        idx = Indexer(config=cfg)
-        try:
-            idx._init_schema()
-            rows = [r["note_id"] for r in idx.db.execute("SELECT note_id FROM context_served")]
-            # Existing rows are re-projected from retrieval_log (the table is
-            # derived); the hand-inserted orphan has no log line so it is gone.
-            assert rows == ["n-seeded"]
-            for src in ("brief", "learn"):
-                idx.db.execute(
-                    "INSERT INTO context_served VALUES (?, ?, ?, '')",
-                    ("ses-x", f"n-{src}", src),
-                )
-        finally:
-            idx.close()

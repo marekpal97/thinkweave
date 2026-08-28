@@ -45,7 +45,7 @@ import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from thinkweave.core.config import Config
@@ -329,7 +329,7 @@ def _collect_essence_candidates(
     warm by ``VaultManager.create_note`` and every rebuild, so it carries
     the same freshness the rest of the scan already trusts.
     """
-    from datetime import date, timedelta
+    from datetime import date
 
     from thinkweave.core.indexer import Indexer
     from thinkweave.synthesis.hub import FLAG_CONTRADICTS
@@ -574,7 +574,7 @@ def _collect_unwrapped_sessions(
     All discovery goes through the SQLite index (``type='session'``); we
     never walk the projects/ tree.
     """
-    from datetime import date, timedelta
+    from datetime import date
 
     from thinkweave.core.indexer import Indexer
 
@@ -678,7 +678,7 @@ def _collect_rejudge_queue(
     Discovery uses the SQLite index (``json_extract`` on the frontmatter
     blob) — no vault file crawl.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     from thinkweave.core.indexer import Indexer
 
@@ -798,7 +798,7 @@ def _collect_knowledge_delta(
     discovery still goes through the SQLite index, never a filesystem
     crawl.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     from thinkweave.core.indexer import Indexer
     from thinkweave.operations.prompts import recent_probe_pressure
@@ -859,9 +859,6 @@ def _collect_knowledge_delta(
         focus_concepts,
         load_priorities,
     )
-    from thinkweave.operations.focus import (
-        active_projects as focus_active_projects_ranked,
-    )
 
     priorities = load_priorities(getattr(cfg, "vault_root", None))
     pinned_projects = focus_active_projects(priorities)
@@ -889,12 +886,21 @@ def _collect_knowledge_delta(
 
     idx = Indexer(config=cfg)
     try:
-        # 0. active_projects — behavioral focus (operations/focus.py, shared
-        #    with /brief; mutates the active_focus dict already on delta).
+        # 0. active_projects — projects with sessions in the window (most
+        #    active first); meta buckets (`_unscoped`/`_personal`…) excluded,
+        #    pins appended as a floor. Self-heals — a renamed or abandoned
+        #    project just stops appearing.
         try:
-            active_focus["active_projects"] = focus_active_projects_ranked(
-                idx.db, now=now, window_days=window_days, pins=pinned_projects
-            )
+            rows = idx.db.execute(
+                "SELECT project, COUNT(*) AS c FROM notes "
+                "WHERE type = 'session' AND date >= ? GROUP BY project ORDER BY c DESC",
+                ((now - timedelta(days=window_days)).date().isoformat(),),
+            ).fetchall()
+            ranked = [
+                r["project"] for r in rows
+                if r["project"] and not r["project"].startswith("_")
+            ][:8]
+            active_focus["active_projects"] = apply_pins(ranked, pinned_projects)
         except Exception:  # noqa: BLE001 — focus is best-effort
             pass
 

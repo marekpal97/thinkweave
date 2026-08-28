@@ -18,7 +18,6 @@ from thinkweave.surfaces.cli.drain import cmd_discover, cmd_drain
 from thinkweave.surfaces.cli.dream import cmd_dream
 from thinkweave.surfaces.cli.flows import cmd_flow
 from thinkweave.surfaces.cli.graph import cmd_graph
-from thinkweave.surfaces.cli.brief import cmd_brief
 from thinkweave.surfaces.cli.health import cmd_health
 from thinkweave.surfaces.cli.learn import cmd_learn
 from thinkweave.surfaces.cli.hooks import cmd_hooks
@@ -88,16 +87,15 @@ _DISPATCH = {
     # The narrow subcommands in-session agents / dream workers call
     # from a Bash tool mid-flow (everything else agents reach via MCP):
     # `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`,
-    # `weave judge --rejudge/--drain`, `weave health --json`, `weave brief
-    # mark`, `weave learn check/mark/probe` (retrieval is the skills' job —
-    # dec-696bacfb). hubs / landing / judge / health double as admin surfaces.
+    # `weave judge --rejudge/--drain`, `weave health --json`, `weave learn
+    # check/probe` (retrieval is the skills' job, and MCP calls already land
+    # in context_served — dec-696bacfb). hubs / landing / judge / health
+    # double as admin surfaces.
     "wrap-finalize": cmd_wrap_finalize,
     "health": cmd_health,
-    "brief": cmd_brief,
     "hubs": cmd_hubs,
     "landing": cmd_landing,
     "judge": cmd_judge,
-    # `weave learn check/mark/probe` — /learn's rail (#171).
     "learn": cmd_learn,
     # ── Admin & setup ─────────────────────────────────────────────────
     # Interactive machine / vault administration. No MCP parity by

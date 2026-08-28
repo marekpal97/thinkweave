@@ -31,7 +31,7 @@ Hooks accumulate events + insights + commits + tests into a session note. The St
 
 ### Learn note (`kind: learn`)
 
-`/learn` (#171) persists one plain `type: note` per tutoring session — no new NoteType, the indexer needs no change. The frontmatter is the contract `weave learn check --note <id>` enforces (`operations/learn.py::validate_learn_note`):
+`/learn` (#171) persists one plain `type: note` per tutoring session — no new NoteType, the indexer needs no change. The frontmatter is the contract `weave learn check --note <id>` enforces (`surfaces/cli/learn.py::validate_learn_note`):
 
 | Key | Shape | Meaning |
 |---|---|---|
@@ -45,7 +45,7 @@ Hooks accumulate events + insights + commits + tests into a session note. The St
 | `builds_on` | `[ids]` | prior learn notes on the arc — the trajectory made browsable |
 | `questions` | `[str]` | every question asked |
 
-`solid`/`shaky` are legal under the no-unvalidatable-lifecycle rule because the transcript answers are the evidence (LLM judgment, no scores). Every note the session read or taught from is logged as `context_served(source='learn')` (`weave learn mark`, the generic `operations/served.py::mark`); unanswered questions and parked tangents become probe rows (`weave learn probe` writes the same `prompt` + `probe` event pair the wrap verdict path does — see [Prompt](#prompt)).
+`solid`/`shaky` are legal under the no-unvalidatable-lifecycle rule because the transcript answers are the evidence (LLM judgment, no scores). Every note the session read or taught from lands in `context_served` through the standard MCP retrieval logging (no mark step — dec-696bacfb); unanswered questions and parked tangents become probe rows (`weave learn probe`, `operations/prompts.py::record_probe`, writes the same `prompt` + `probe` event pair the wrap verdict path does — see [Prompt](#prompt)).
 
 ## Concept
 
@@ -173,4 +173,4 @@ Email newsletters land via a provider-agnostic mail connector — `gmail` today,
 
 ## Context-served (RLVR substrate)
 
-Each session captures the notes served to it: a single `type: startup` event at SessionStart (notes in the SessionStart payload + `token_est`) plus one `type: retrieval` event per MCP retrieval call during the session (`weave_search`, `weave_context`, `weave_graph`, `weave_read`, `weave_timeline`, `weave_project_snapshot`). Buffered to the same per-session JSONL as action events; `archive_buffer` (Stop time / `weave_extract`) splits them into sibling `events.jsonl` and `retrieval_log.jsonl`. The Indexer projects every session's `retrieval_log.jsonl` into `context_served(session_id, note_id, source ∈ {startup, onthefly, prompttime, loop-prime, codex-startup, brief, learn}, ts)` — `brief`/`learn` rows come from the serving surfaces themselves via `operations/served.py::mark` (#171), which also appends the `retrieval` event the next rebuild re-projects — rebuildable from markdown. The RLVR row's `context.cited_onthefly_ids` / `cited_startup_only_ids` come from intersecting decision body wikilinks against this table; a note served both via startup and on-the-fly counts as onthefly (the stronger signal).
+Each session captures the notes served to it: a single `type: startup` event at SessionStart (notes in the SessionStart payload + `token_est`) plus one `type: retrieval` event per MCP retrieval call during the session (`weave_search`, `weave_context`, `weave_graph`, `weave_read`, `weave_timeline`, `weave_project_snapshot`). Buffered to the same per-session JSONL as action events; `archive_buffer` (Stop time / `weave_extract`) splits them into sibling `events.jsonl` and `retrieval_log.jsonl`. The Indexer projects every session's `retrieval_log.jsonl` into `context_served(session_id, note_id, source ∈ {startup, onthefly, prompttime, loop-prime, codex-startup}, ts)` — rebuildable from markdown. `/learn`'s reads land here as ordinary `onthefly` rows; `/brief` deliberately adds nothing beyond its own calls (a survey is not demand — dec-696bacfb). The RLVR row's `context.cited_onthefly_ids` / `cited_startup_only_ids` come from intersecting decision body wikilinks against this table; a note served both via startup and on-the-fly counts as onthefly (the stronger signal).

@@ -1,8 +1,8 @@
 ---
 name: brief
 owns_mechanic: daily_orientation
-consumes: [weave_health, weave_timeline, weave_search, weave_prompts, weave_concepts, weave_read, weave_create, weave_brief_mark]
-produces: [digests/brief-YYYY-MM-DD-HHMM.md, context_served(source=brief)]
+consumes: [weave_health, weave_timeline, weave_search, weave_prompts, weave_concepts, weave_read, weave_create]
+produces: [digests/brief-YYYY-MM-DD-HHMM.md]
 tools:
   - Bash
   - Read
@@ -12,14 +12,14 @@ tools:
   - weave_concepts
   - weave_read
   - weave_create
-description: Daily orientation — a live meta layer over the nightly digests. One Bash call (`weave health --json`), a handful of weave_* retrievals, judgment narration, one `weave_create` (the next watermark), one `weave brief mark`. Pull-only, user-invoked; flags digest/cron failures at consumption, never heals them unasked.
+description: Daily orientation — a live meta layer over the nightly digests. One Bash call (`weave health --json`), a handful of weave_* retrievals, judgment narration, one `weave_create` (the next watermark). Pull-only, user-invoked; flags digest/cron failures at consumption, never heals them unasked.
 ---
 
 # /brief — Daily Orientation
 
 Read the substrate fresh and tell the user where the edges are: what landed and what it changes, whether a lane went quiet because nothing was kept or because the cron died, what they have been asking that nothing answered. **Self-contained; never prompts the user.**
 
-**Composition (dec-696bacfb): existing surfaces + your judgment.** The only bespoke rail is `weave health` (evidence no retrieval tool serves) and the `mark` write at the end. Everything else is the retrieval tools you already have — there is no collect payload, and no Python decides what is worth saying.
+**Composition (dec-696bacfb): existing surfaces + your judgment.** The only bespoke rail is `weave health` (evidence no retrieval tool serves). Everything else is the retrieval tools you already have — there is no collect payload, no mark step, and no Python decides what is worth saying. A brief *surveys* what is new; it does not mark notes as sought-after context (that would double-count demand — the sought-after signal belongs to sessions that actually pulled a note to work with it).
 
 **Not a digest.** The nightly `/dream` digests summarise what happened; `/brief` reads them *against the user*. Nothing pedagogical here — recall and tutoring are `/learn`. No push of any kind.
 
@@ -51,17 +51,15 @@ A quiet day is a five-line brief; do not pad it. Second person, knowledge voice,
 
 ## 4. Persist — the brief IS the next watermark
 
-One `weave_create`, then one Bash call:
+One `weave_create`:
 
 ```
 weave_create(type="digest", title="brief-<YYYY-MM-DD-HHMM>", body=<the rendered brief>,
-             frontmatter={"kind": "brief", "since": <since>, "served": <cited ids>})
-weave brief mark --note <dig-id> --session "$CLAUDE_CODE_SESSION_ID" --served <cited ids…>
+             frontmatter={"kind": "brief", "since": <since>})
 ```
 
-- The title **must** start with `brief-` (use UTC) — the vault files it at `digests/brief-<stamp>.md`, and the `brief-` prefix keeps it out of `weave health`'s nightly-digest freshness check. `kind: brief` is what the next run's watermark lookup matches. No new note type.
-- `mark` logs every id you cited as `context_served(source='brief')` — a retrieval event in the harness session's buffer (archived at Stop, re-projected on index) plus the immediate rows keyed by the session note. Always pass `--session "$CLAUDE_CODE_SESSION_ID"` (the Bash env's name; the CLI also falls back to `$CLAUDE_SESSION_ID`). If it prints *nothing logged*, the session note does not exist yet — that is fine, do not invent an id.
+The title **must** start with `brief-` (use UTC) — the vault files it at `digests/brief-<stamp>.md`, and the `brief-` prefix keeps it out of `weave health`'s nightly-digest freshness check. `kind: brief` is what the next run's watermark lookup matches. No new note type. The body's `[[id]]` wikilinks are the citation record; no separate served log.
 
 ## 5. Done — the brief is the output
 
-Print the rendered brief once (step 3). Do not restate the `weave_create`/`mark` output; a one-line acknowledgement is fine only if something went wrong.
+Print the rendered brief once (step 3). Do not restate the `weave_create` output; a one-line acknowledgement is fine only if something went wrong.
