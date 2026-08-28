@@ -134,10 +134,11 @@ class TestCliSurface:
         # `weave health` (deterministic system-health collector — jobs /
         # queues / hooks / digest, the /brief foundation, issue #120) added
         # 2026-08-23: 48 → 49.
-        # `weave learn` (coverage / check / mark / probe — the /learn tutor's
+        # `weave learn` (check / mark / probe — the /learn tutor's
         # deterministic rail, issue #171) added 2026-08-23: 49 → 50.
-        # `weave brief` (collect --json / mark — the deterministic halves of
-        # the /brief orientation skill, issue #170) added 2026-08-23: 50 → 51.
+        # `weave brief` (mark — /brief's one deterministic write, issue #170)
+        # added 2026-08-23: 50 → 51. The collect/coverage halves were removed
+        # in the #193 rework (dec-696bacfb): retrieval is the skills' job.
         assert len(_DISPATCH) == 51
 
     def test_dispatch_handlers_resolve(self):

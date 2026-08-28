@@ -25,9 +25,14 @@ JSON contract (``weave health --json``) — stable keys, read by ``/brief``
         "stale":           bool,   # now - last_run > cadence × health.stale_factor
         "missing":         bool    # no evidence at all (distinct from stale)
       }, …],
-      "queues": [{"source_type": str, "depth": int, "backlog": int}, …],
+      "queues": [{"source_type": str, "depth": int, "backlog": int,
+                  "jobs": [str, …], "dead_jobs": [str, …]}, …],
                                    # lanes = sources.yaml registry;
-                                   # backlog = items older than health.backlog_days
+                                   # backlog = items older than health.backlog_days;
+                                   # jobs = ids of every cron job bound to the
+                                   # lane, dead_jobs ⊆ jobs (stale/missing) —
+                                   # one dead feeder starves the lane
+                                   # (weakest link)
       "hooks":  {"recent_errors": int, "last_error": str|null},   # last 24h
       "digest": {"latest": "YYYY-MM-DD"|null, "age_days": int|null, "stale": bool}
     }
@@ -105,7 +110,12 @@ def collect(
         items = Queue.for_source_type(spec.slug, cfg.vault_root)._read_all()
         ages = [_ts(it.get("enqueued_at")) for it in items]
         backlog = sum(1 for t in ages if t and t < cutoff)
-        queues.append({"source_type": spec.slug, "depth": len(items), "backlog": backlog})
+        bound = _bound_jobs(spec.slug, jobs)
+        queues.append({
+            "source_type": spec.slug, "depth": len(items), "backlog": backlog,
+            "jobs": [j["id"] for j in bound],
+            "dead_jobs": [j["id"] for j in bound if j["stale"] or j["missing"]],
+        })
         if backlog:
             advisories.append(
                 f"queue {spec.slug}: {backlog} item(s) older than {cfg.health_backlog_days}d"
@@ -183,6 +193,25 @@ def _job(line: tuple[str, str], cfg: Config, now: datetime, shared_logs: set[Pat
         "stale": stale,
         "missing": last is None,
     }
+
+
+def _bound_jobs(slug: str, jobs: list[dict]) -> list[dict]:
+    """Cron jobs feeding the lane ``slug`` (ported from /brief's collect).
+
+    A job binds by exact token equality on its skill stem
+    (``/thinkweave:newsletter`` → ``newsletter``, ``/drain news`` →
+    ``drain``/``news``): the lane slug itself, or its family
+    (``newsletter-events`` → ``newsletter``). Never substring — ``news`` is
+    inside ``newsletter``. ALL matching jobs bind (news is fed by both
+    ``/discover news`` and ``/drain news``); the consumer treats one dead
+    feeder as starving the lane (weakest link).
+    """
+    family = slug.split("-")[0]
+
+    def tokens(job: dict) -> set[str]:
+        return {t.lstrip("/").split(":")[-1] for t in job["name"].split()}
+
+    return [j for j in jobs if slug in tokens(j) or family in tokens(j)]
 
 
 def _job_name(command: str) -> str:

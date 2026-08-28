@@ -35,7 +35,7 @@ Hooks accumulate events + insights + commits + tests into a session note. The St
 
 | Key | Shape | Meaning |
 |---|---|---|
-| `kind` | `learn` | what makes it a learn note; `weave learn coverage` treats its presence on the arc as the revisit signal (→ `test-first`) |
+| `kind` | `learn` | what makes it a learn note; `/learn`'s coverage pass (§1 of the skill) treats its presence on the arc as the revisit signal (→ `test-first`) |
 | `topic` | str | the session's topic |
 | `concepts` | list | ontology slugs, gated like any note |
 | `solid` | `[{concept, date}]` | concepts the transcript answers evidenced as held, dated |

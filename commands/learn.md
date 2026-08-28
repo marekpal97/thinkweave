@@ -1,7 +1,7 @@
 ---
 name: learn
 owns_mechanic: vault_tutoring
-consumes: [weave_concepts, weave_read, weave_create, weave_queue, weave_prompts]
+consumes: [weave_concepts, weave_search, weave_read, weave_create, weave_queue, weave_prompts]
 produces: [learn note (type: note, kind: learn), context_served(source='learn'), probe rows]
 tools:
   - Read
@@ -9,6 +9,7 @@ tools:
   - WebSearch
   - AskUserQuestion
   - weave_concepts
+  - weave_search
   - weave_read
   - weave_create
   - weave_queue
@@ -24,35 +25,37 @@ Interactive. The user steers; you teach in the register their own vault history 
 
 ---
 
-## 1. Coverage — one retrieval, partitioned by provenance
+## 1. Coverage — one retrieval pass, partitioned by provenance
+
+Two calls, no bespoke rail (dec-696bacfb):
 
 ```
-weave_concepts                                   # pick 1–3 ontology slugs for the topic
-weave learn coverage --topic "<topic>" --concepts <slug…>
+weave_concepts                                          # pick 1–3 ontology slugs for the topic
+weave_search(query="<topic>", mode="fts", limit=40)     # FTS leg
+weave_concepts(action="search", concepts=[<slug…>])     # concept-walk leg — union with the FTS hits
 ```
 
-The rail runs ONE retrieval (FTS on the topic ∪ concept walk) and partitions **after** by provenance — never hand-pick note types per track:
+> Not `weave_context`: its similarity leg is not live (#145) and its recency supplement pads unrelated notes in — recency padding would fabricate a trajectory. FTS ∪ concept walk, nothing else.
 
-- `trajectory` — authored by the user: session, decision, note (incl. `kind: learn`, `til`, ChatGPT imports), sorted by date. This **is** the presupposition check.
-- `material` — authored by the world: source, hub essence, theme, digest.
-- `mode` — `test-first` iff a prior `kind: learn` note exists on the arc (`prior_learn_notes`); else `teach-first`.
-- `first_contact` + `first_contact_line` — trajectory empty.
-- `fill_cap` — `[learn] fill_cap` from config (default 3).
+Partition the union **by provenance** — every hit already carries `type` (and `source_type`); never hand-pick note types per track:
 
-> The similarity leg is **not live** on `weave_context` (it is FTS → concept expansion → recency; #145). The rail therefore uses FTS + concept walk, deliberately dropping the recency supplement — recency padding would fabricate a trajectory.
+- `trajectory` — authored by the user: `session`, `decision`, `note` (incl. `kind: learn`, `til`), plus ChatGPT imports (`type: source` but `source_type: conversation` — the user's own history). Sort by date. This **is** the presupposition check.
+- `material` — authored by the world: every other `source`, hub essences (paths under `concepts/`), themes, digests.
+- **mode** — `test-first` iff the trajectory holds a prior `kind: learn` note (only a learn note carries dated solid/shaky claims to re-probe); else `teach-first`.
+- **first contact** — trajectory empty → open with exactly *"First contact in the vault — no prior trajectory for '<topic>'."* **Never fabricate a recap.**
 
 `weave_read` the trajectory hits (newest learn note first, then sessions/decisions) and the top material hits. You now know what the user has touched, what stuck, and what the world says.
 
 ## 2. Open — recap, or first contact
 
 - **Trajectory non-empty** → open with the **trajectory recap**: first touch, what stuck, last shaky point (from the latest learn note's `solid`/`shaky`, from session summaries, from ChatGPT-import Key Questions = record of past confusions).
-- **Trajectory empty** → print `first_contact_line` verbatim. **Never fabricate a recap.**
+- **Trajectory empty** → print the first-contact line from §1 verbatim. **Never fabricate a recap.**
 
 Then name the session goal in one line (the parking rail anchors to it) and run an opening **calibration** question via `AskUserQuestion` (multiple choice).
 
 ## 3. Fill — thin material, capped
 
-If `material` is thin for the goal (you judge): name the gap aloud, `WebSearch`, then drain **≤ `fill_cap`** sources via the real research workers **in parallel** — `/research <url>` one-shot per source (or `weave_queue(action="enqueue", …)` + `weave drain --source-type <slug> --limit <fill_cap>`). Narrate the wait. Teach from vault + the fresh notes. Overflow candidates → `weave_queue(action="enqueue", …)` for the nightly spine. Further capped fills may be *offered* mid-session, never forced.
+If `material` is thin for the goal (you judge): name the gap aloud, `WebSearch`, then drain **at most 3** sources via the real research workers **in parallel** — `/research <url>` one-shot per source (or `weave_queue(action="enqueue", …)` + `weave drain --source-type <slug> --limit 3`). Narrate the wait. Teach from vault + the fresh notes. Overflow candidates → `weave_queue(action="enqueue", …)` for the nightly spine. Further capped fills may be *offered* mid-session, never forced.
 
 **Fill failure** (no hits / worker error) → teach from what exists, record the gap as a probe (§6), never stall.
 
@@ -107,7 +110,7 @@ Closing synthesis, then the final **Feynman explain-back** (free text, persisted
    shaky:   [{concept: <slug>, date: YYYY-MM-DD, why: "…"}]
    friction: ["<where an explanation failed and why>"]        # accumulated friction amends this contract over time
    explain_back: "<final Feynman explain-back, verbatim>"
-   builds_on: [<prior learn-note ids on this arc, from prior_learn_notes>]
+   builds_on: [<prior learn-note ids on this arc, from the §1 trajectory>]
    questions: ["<every question asked>"]
    ```
 

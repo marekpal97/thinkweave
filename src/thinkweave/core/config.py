@@ -283,15 +283,6 @@ class Config:
     # once it has sat unclaimed for more than backlog_days.
     health_stale_factor: float = 1.5
     health_backlog_days: int = 7
-    # `/learn` (#171): max sources drained in one in-session fill ([learn])
-    learn_fill_cap: int = 3
-
-    # `weave brief` (#170): a probed concept lands in ATTENTION once its
-    # pressure reaches attention_pressure with zero landings since the
-    # watermark; CONNECTIONS keeps new↔old similarity hits at or above
-    # connection_min_score (cosine), two at most.
-    brief_attention_pressure: int = 2
-    brief_connection_min_score: float = 0.6
 
     # R2 — prompt-time retrieval enrichment (see PromptTimeRetrieval).
     retrieval_prompt_time: PromptTimeRetrieval = field(
@@ -711,18 +702,6 @@ def load_config() -> Config:
             cfg.health_stale_factor = float(health_cfg["stale_factor"])
         if "backlog_days" in health_cfg:
             cfg.health_backlog_days = int(health_cfg["backlog_days"])
-
-        # `/learn` ([learn])
-        learn_cfg = data.get("learn", {})
-        if "fill_cap" in learn_cfg:
-            cfg.learn_fill_cap = int(learn_cfg["fill_cap"])
-
-        # `weave brief` ([brief])
-        brief_cfg = data.get("brief", {})
-        if "attention_pressure" in brief_cfg:
-            cfg.brief_attention_pressure = int(brief_cfg["attention_pressure"])
-        if "connection_min_score" in brief_cfg:
-            cfg.brief_connection_min_score = float(brief_cfg["connection_min_score"])
 
         # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
         pt = retrieval_cfg.get("prompt_time", {})

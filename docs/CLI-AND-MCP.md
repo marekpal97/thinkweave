@@ -31,11 +31,9 @@ weave context "q" [--type X]                  # 3-layer retrieval (FTS → conce
 weave stats                                   # vault health (deprecated → weave doctor)
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
 weave health [--json]                         # jobs/queues/hooks/digest; exit 1 on flag; --json is /brief's contract
-weave learn coverage --topic T [--concepts …]  # /learn: one retrieval → trajectory/material + mode (JSON)
 weave learn check --note <id>                 # learn-note frontmatter contract; exit 1 on problems
 weave learn mark --session <uuid|ses-id> --note <id> --served <ids…>  # context_served(source='learn')
 weave learn probe --session <uuid|ses-id> --text "…"  # unanswered question → probe row
-weave brief collect --json                    # /brief's deterministic collect (watermark, landings, focus, catalysts, render_plan)
 weave brief mark --note <id> --served <ids…>  # log the brief's surfaced ids as context_served(source='brief')
 weave backlog [--project X]                   # todo notes + active queue items
 weave decisions [--file <path>] [--project X] # decision ledger lookup
@@ -115,8 +113,8 @@ Full inventory — 51 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Vault health | `weave stats` | — | admin-cron |
 | Coherence linter | `weave doctor` | — | admin-cron |
 | System health (jobs / queues / hooks / digest) | `weave health` | — | admin-cron — `--json` is **agent-Bash** (`/brief`) |
-| `/learn` rail (coverage / check / mark / probe) | `weave learn` | — | agent-Bash (`/learn`) |
-| /brief deterministic collect + served-id mark | `weave brief` | — | **agent-Bash** |
+| `/learn` rail (check / mark / probe) | `weave learn` | — | agent-Bash (`/learn`); retrieval is the skill's job (dec-696bacfb) |
+| /brief served-id mark | `weave brief` | — | **agent-Bash**; the payload is composed from `weave health --json` + `weave_*` tools |
 | Named workflow pipelines | `weave flow` | — | admin-cron |
 | Host scheduler render | `weave schedule` | — | admin-cron |
 | Hook install / status | `weave hooks` | — | admin-cron |

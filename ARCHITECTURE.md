@@ -340,13 +340,6 @@ rrf_k = 60                         # RRF fusion constant for hybrid search
 [health]                           # `weave health` collector
 stale_factor = 1.5                 # job is stale when last-run age > cadence × this
 backlog_days = 7                   # queue item counts as backlog after N days unclaimed
-
-[learn]                            # `/learn` tutor
-fill_cap = 3                       # max sources drained in one in-session acquisition fill
-
-[brief]                            # `weave brief collect` (/brief)
-attention_pressure = 2             # probe pressure at which an unanswered concept hits ATTENTION
-connection_min_score = 0.6         # cosine floor for CONNECTIONS (new↔old similarity hits)
 ```
 
 The `weave dream scan` flags (`--promotion-cap`, `--promotion-threshold`, `--essence-cap`) override their config fields per-invocation; cron (which passes no flags) is steered by the file.

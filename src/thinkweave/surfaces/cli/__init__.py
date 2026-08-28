@@ -88,15 +88,16 @@ _DISPATCH = {
     # The narrow subcommands in-session agents / dream workers call
     # from a Bash tool mid-flow (everything else agents reach via MCP):
     # `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`,
-    # `weave judge --rejudge/--drain`, `weave health --json`, `weave brief`,
-    # `weave learn`. hubs / landing / judge / health double as admin surfaces.
+    # `weave judge --rejudge/--drain`, `weave health --json`, `weave brief
+    # mark`, `weave learn check/mark/probe` (retrieval is the skills' job —
+    # dec-696bacfb). hubs / landing / judge / health double as admin surfaces.
     "wrap-finalize": cmd_wrap_finalize,
     "health": cmd_health,
     "brief": cmd_brief,
     "hubs": cmd_hubs,
     "landing": cmd_landing,
     "judge": cmd_judge,
-    # `weave learn coverage/check/mark/probe` — /learn's rail (#171).
+    # `weave learn check/mark/probe` — /learn's rail (#171).
     "learn": cmd_learn,
     # ── Admin & setup ─────────────────────────────────────────────────
     # Interactive machine / vault administration. No MCP parity by

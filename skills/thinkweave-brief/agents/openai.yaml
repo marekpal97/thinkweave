@@ -1,6 +1,6 @@
 interface:
   display_name: "ThinkWeave Brief"
-  short_description: "Daily orientation — a live meta layer over the nightly digests. One Bash collect"
+  short_description: "Daily orientation — a live meta layer over the nightly digests. One Bash call (`"
   default_prompt: "Use $thinkweave-brief to run this ThinkWeave workflow."
 dependencies:
   tools:

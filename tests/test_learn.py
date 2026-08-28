@@ -1,10 +1,11 @@
 """``/learn`` deterministic seams (#171).
 
-Seams: ``learn.coverage`` (provenance partition + mode + first-contact),
-``learn.validate_learn_note`` (the learn-note frontmatter contract),
+Seams: ``learn.validate_learn_note`` (the learn-note frontmatter contract),
 ``served.mark`` (``context_served`` keyed by ``ses-`` id, buffer keyed by
 ``source_session``; unresolvable → nothing), and ``learn.probe`` (a probe
-row visible to ``recent_probe_questions`` / ``weave_prompts``).
+row visible to ``recent_probe_questions`` / ``weave_prompts``). Retrieval
+and the trajectory/material partition are the skill's job over
+``weave_search``/``weave_concepts`` (dec-696bacfb) — no Python seam.
 """
 
 from __future__ import annotations
@@ -73,43 +74,6 @@ def arc(vault_factory):
             encoding="utf-8",
         )
     return handle.indexed()
-
-
-# ── AC2: partition + first contact ───────────────────────────────────
-
-
-def test_coverage_partitions_by_provenance(arc):
-    cov = learn.coverage(arc.config, TOPIC, CONCEPTS)
-    traj = {h["type"]: h["path"] for h in cov["trajectory"]}
-    mat_paths = {h["path"] for h in cov["material"]}
-    assert set(traj) == {"session", "source"}  # the chatgpt import is trajectory
-    assert traj["source"].startswith("sources/conversations/")
-    assert {"concepts/topics/kl-divergence.md", "concepts/math-probability.md"} <= mat_paths
-    assert any(p.startswith("sources/papers/") for p in mat_paths)
-    assert cov["first_contact"] is False
-    assert cov["mode"] == "teach-first"  # no prior learn note on the arc
-
-
-def test_coverage_zero_trajectory_is_first_contact(arc):
-    cov = learn.coverage(arc.config, "category theory", ["category-theory"])
-    assert cov["trajectory"] == []
-    assert cov["first_contact"] is True
-    assert cov["first_contact_line"] == learn.FIRST_CONTACT_LINE.format(topic="category theory")
-    assert cov["mode"] == "teach-first"
-
-
-# ── AC3: revisit → test-first ────────────────────────────────────────
-
-
-def test_coverage_prior_learn_note_flips_to_test_first(arc):
-    arc.with_note(
-        "Learn: KL divergence",
-        body="Taught kl divergence; solid on the expected-log-ratio form.",
-        extra_frontmatter={"kind": "learn", "topic": TOPIC, "concepts": CONCEPTS},
-    ).indexed()
-    cov = learn.coverage(arc.config, TOPIC, CONCEPTS)
-    assert cov["mode"] == "test-first"
-    assert [h["id"] for h in cov["trajectory"] if h["kind"] == "learn"]
 
 
 # ── AC1: learn-note contract ─────────────────────────────────────────

@@ -380,14 +380,11 @@ def add_admin_subparsers(sub) -> None:
 
     p_learn = sub.add_parser(
         "learn",
-        help="/learn's deterministic rail (#171): coverage (retrieve + provenance "
-        "partition + mode), check (learn-note contract), mark "
-        "(context_served source='learn'), probe (unanswered question → probe).",
+        help="/learn's deterministic rail (#171): check (learn-note contract), "
+        "mark (context_served source='learn'), probe (unanswered question → "
+        "probe). Retrieval is the skill's job (weave_search/weave_concepts).",
     )
     learn_sub = p_learn.add_subparsers(dest="learn_action", required=True)
-    p_lc = learn_sub.add_parser("coverage", help="One retrieval, partitioned into trajectory / material (JSON).")
-    p_lc.add_argument("--topic", required=True)
-    p_lc.add_argument("--concepts", nargs="*", default=[], help="Ontology concept slugs for the concept walk.")
     p_lk = learn_sub.add_parser("check", help="Validate a learn note's frontmatter; exit 1 on problems.")
     p_lk.add_argument("--note", required=True)
     p_lm = learn_sub.add_parser("mark", help="Log exercised note ids as context_served(source='learn').")
@@ -400,12 +397,11 @@ def add_admin_subparsers(sub) -> None:
 
     p_brief = sub.add_parser(
         "brief",
-        help="/brief's deterministic halves: `collect --json` (the payload the "
-        "skill narrates) and `mark` (log surfaced ids as context_served).",
+        help="/brief's one deterministic write: `mark` (log surfaced ids as "
+        "context_served source='brief'). The payload is composed by the skill "
+        "from `weave health --json` + the weave_* retrieval tools.",
     )
     brief_sub = p_brief.add_subparsers(dest="brief_action", required=True)
-    p_brief_collect = brief_sub.add_parser("collect", help="Collect the brief payload.")
-    p_brief_collect.add_argument("--json", action="store_true", help="Emit the JSON contract.")
     p_brief_mark = brief_sub.add_parser(
         "mark", help="Log surfaced ids as context_served(source='brief')."
     )

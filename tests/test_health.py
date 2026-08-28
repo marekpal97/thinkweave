@@ -158,11 +158,40 @@ class TestCollector:
         q.enqueue({"url": "u2", "enqueued_at": (NOW - timedelta(days=1)).isoformat()})
         report = health.collect(handle.config, now=NOW, crontab_text=cron)
         paper = next(q for q in report["queues"] if q["source_type"] == "paper")
-        assert paper == {"source_type": "paper", "depth": 2, "backlog": 1}
+        assert paper == {
+            "source_type": "paper", "depth": 2, "backlog": 1,
+            "jobs": ["0 12 * * * /drain paper"], "dead_jobs": [],
+        }
         # Backlog is a standing condition on a busy vault — advisory, never exit 1.
         assert report["ok"] is True
         assert report["flags"] == []
         assert any("paper" in a for a in report["advisories"])
+
+    def test_bound_jobs_token_equality_weakest_link(self):
+        """Lane↔cron binding (ported from /brief's collect, dec-696bacfb):
+        exact stem tokens, family fallback, never substring; ALL matching
+        feeders bind and dead_jobs marks the weak links."""
+        jobs = [
+            {"id": "17 */4 * * * /discover news", "name": "/discover news", "stale": False, "missing": False},
+            {"id": "0 7,19 * * * /drain news", "name": "/drain news", "stale": True, "missing": False},
+            {"id": "0 6 * * * /thinkweave:newsletter", "name": "/thinkweave:newsletter", "stale": False, "missing": True},
+            {"id": "0 9 * * * /youtube", "name": "/youtube", "stale": False, "missing": False},
+        ]
+        news = health._bound_jobs("news", jobs)
+        assert [j["id"] for j in news] == [
+            "17 */4 * * * /discover news", "0 7,19 * * * /drain news"
+        ]
+        # family fallback: newsletter-events binds /thinkweave:newsletter —
+        # and `news` never substring-matches into `newsletter`
+        nl = health._bound_jobs("newsletter-events", jobs)
+        assert [j["id"] for j in nl] == ["0 6 * * * /thinkweave:newsletter"]
+        yt = health._bound_jobs("youtube-concepts", jobs)
+        assert [j["id"] for j in yt] == ["0 9 * * * /youtube"]
+        assert health._bound_jobs("paper", jobs) == []
+        # order-independent
+        assert [j["id"] for j in health._bound_jobs("news", jobs[::-1])][::-1] == [
+            j["id"] for j in news
+        ]
 
     def test_queue_lanes_come_from_sources_config_not_fossil_files(self, healthy):
         handle, cron, _ = healthy

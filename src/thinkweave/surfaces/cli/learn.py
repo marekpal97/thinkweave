@@ -1,15 +1,15 @@
 """``weave learn`` — the agent-Bash rail under ``/learn`` (#171).
 
-``coverage`` (retrieve + partition + mode), ``check`` (learn-note contract),
-``mark`` (``context_served(source='learn')``), ``probe`` (unanswered
-question → probe row). Never prompts; ``mark``/``probe`` exit 0 with a note
+``check`` (learn-note contract), ``mark`` (``context_served(source='learn')``),
+``probe`` (unanswered question → probe row). Retrieval + the trajectory
+partition live in the skill over ``weave_search``/``weave_concepts``
+(dec-696bacfb). Never prompts; ``mark``/``probe`` exit 0 with a note
 when the session is unresolvable — they never fabricate a key.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 from thinkweave.core.config import load_config
@@ -19,9 +19,7 @@ from thinkweave.operations import learn, served
 def cmd_learn(args: argparse.Namespace) -> None:
     cfg = load_config()
     action = args.learn_action
-    if action == "coverage":
-        print(json.dumps(learn.coverage(cfg, args.topic, args.concepts), indent=2))
-    elif action == "check":
+    if action == "check":
         from thinkweave.operations.notes import read_note
 
         meta, _ = read_note(cfg, args.note)
