@@ -395,3 +395,52 @@ class TestVerdictStep:
         assert fb[0]["about"] == "rejected the regex-based parser rewrite"
         probe = [r for r in rows if r.get("type") == "probe"]
         assert "about" not in probe[0]
+
+
+class TestProbeReachesIndex:
+    """The probe → dream-priority → queue rail starts at the ``prompts``
+    table. Found 2026-08-23: every session wrapped after the buffer-path
+    change had ZERO prompt rows — extract indexed ``session.md`` before
+    archiving the buffer into ``events.jsonl``, and finalize's verdicts
+    landed in ``events.jsonl`` without re-projecting. This pins the
+    end-to-end contract: wrap with a probe verdict → a ``probe`` row."""
+
+    def test_probe_verdict_on_archived_session_lands_in_prompts_table(
+        self, config: Config, vault: VaultManager
+    ):
+        import sqlite3
+
+        # A wrapped session: note + archived events.jsonl (post-extract shape)
+        sess_path = vault.create_note(
+            NoteType.SESSION,
+            "Asked about RL",
+            body="## Summary\nExplored RLVR.\n",
+            project="t",
+            extra_frontmatter={"source_session": "cc-uuid-rl"},
+        )
+        sess_id = vault.read_note(sess_path).id
+        events = sess_path.parent / "events.jsonl"
+        events.write_text(
+            json.dumps({
+                "ts": "2026-08-23T10:00:00+00:00", "type": "prompt",
+                "text": "how does GRPO differ from PPO for RLVR?",
+                "session_id": "cc-uuid-rl", "project": "t",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        _index(config)  # note indexed; no verdict yet → row exists, unclassified
+
+        result = finalize_wrap(
+            config, session_id="cc-uuid-rl", project="t", prune=False,
+            verdicts=[{"prompt": "how does GRPO", "register": "probe",
+                       "about": "GRPO vs PPO under RLVR"}],
+        )
+        assert result.verdicts_written == 1
+        assert result.prompts_reprojected == 1
+        assert result.errors == []
+
+        db = sqlite3.connect(config.index_db)
+        rows = db.execute(
+            "SELECT classification FROM prompts WHERE session_id = ?", (sess_id,)
+        ).fetchall()
+        assert rows == [("probe",)]

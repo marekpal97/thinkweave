@@ -14,6 +14,7 @@ stubs, no vote winner, no lifecycle/status changes.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -2228,3 +2229,52 @@ class TestPolicyKnobOverrides:
         cand = result.essence_candidates[0]
         assert cand["total_catalysts"] == 3
         assert len(cand["recent_catalysts"]) == 1
+
+
+class TestUnwrappedScanSeesLiveBuffers:
+    """2026-08-23: the catch-up scan only looked for the ARCHIVED
+    events.jsonl inside the session folder, which exists only after a wrap —
+    so genuinely unwrapped sessions (events still in weave_dir/buffer) were
+    skipped as "nothing to wrap". 645 buffers piled up; the July RL study
+    sessions never reached the probe labeler."""
+
+    def _buffer(self, config: Config, uuid: str, text: str, ts: str, cwd="/p/t"):
+        d = config.weave_dir / "buffer"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{uuid}.jsonl").write_text(
+            json.dumps({"ts": ts, "type": "prompt", "text": text,
+                        "session_id": uuid, "cwd": cwd, "project": "t"}) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_indexed_session_with_live_buffer_surfaces(
+        self, config: Config, vault: VaultManager
+    ):
+        sess_path = vault.create_note(
+            NoteType.SESSION, "rl study", body="# rl\n", project="t",
+            extra_frontmatter={"source_session": "cc-rl-1"},
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        self._buffer(config, "cc-rl-1", "how does GRPO differ from PPO?", now)
+        _index(config)
+
+        result = scan(config, project="t")
+        fm, _ = parse_frontmatter(sess_path.read_text(encoding="utf-8"))
+        entry = next(e for e in result.unwrapped_sessions if e["session_id"] == fm["id"])
+        assert entry["events_jsonl_path"].endswith("cc-rl-1.jsonl")
+
+    def test_noteless_buffer_with_user_prompt_surfaces(
+        self, config: Config, vault: VaultManager
+    ):
+        now = datetime.now(timezone.utc).isoformat()
+        self._buffer(config, "cc-orphan-1", "where does the KL penalty enter PPO?", now)
+        # machine-generated-only buffer must NOT surface
+        self._buffer(config, "cc-noise-1", "<task-notification>…</task-notification>", now)
+        _index(config)
+
+        result = scan(config, project="t")
+        ids = {e["session_id"] for e in result.unwrapped_sessions}
+        assert "cc-orphan-1" in ids
+        assert "cc-noise-1" not in ids
+        entry = next(e for e in result.unwrapped_sessions if e["session_id"] == "cc-orphan-1")
+        assert entry["project"] == "t"

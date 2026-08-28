@@ -92,7 +92,7 @@ The drain orchestrator spawns Sonnet writer subagents in parallel. Admission is 
 
 **Stage 1 — Haiku triage subagent. Only runs when `triage_model` is set.**
 
-Take up to `drain_batch_max` items off the queue (don't archive yet). Build a JSON list of `{id, title, outlet, tier}` for each. Then spawn the triage subagent:
+Take up to `drain_batch_max` items off the queue (don't archive yet). Build a JSON list of `{id, title, outlet, tier, summary}` for each (`summary` = the feed description when the item carries one — podcasts always do; omit the key when empty). Include `source_type` once at the top of the items payload so the worker can apply lane-specific calibration. Then spawn the triage subagent:
 
 ```
 Task({
@@ -109,7 +109,7 @@ The subagent's spec lives at `agents/news-triage-worker.md`. It Reads `THEMES.md
 - `keep_unfiled` — substantive but no theme match. `theme_id: null`. Goes to the periodic-review pile (frontmatter flag `theme_unfiled: true`).
 - `drop` — noise. Archive directly.
 
-When `triage_model` is unset (YouTube, newsletter, etc.), skip the helper call entirely and synthesise `keep_unfiled` for every item — the source's per-skill orchestrator (the channel allowlist for `/youtube`, the sender allowlist for `/newsletter`) is the upstream admission gate.
+When `triage_model` is unset (YouTube, newsletter, article, etc.), skip the helper call entirely and synthesise `keep_unfiled` for every item — the source's per-skill orchestrator (the channel allowlist for `/youtube`, the sender allowlist for `/newsletter`) is the upstream admission gate.
 
 **Stage 2 — Spawn writer subagents in parallel for `keep` and `keep_unfiled` items.**
 

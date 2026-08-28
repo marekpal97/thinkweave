@@ -545,3 +545,29 @@ class TestCommandSymlinks:
         assert not result.passed
         assert "command symlinks" in [c.name for c in result.checks if not c.passed]
         assert "overall: FAIL" in capsys.readouterr().out
+
+
+# ---------- venv extras check ----------
+
+
+class TestVenvExtrasCheck:
+    """A pruned venv (``uv sync --extra <one>``) must be a loud FAIL with the
+    ``--extra all`` remedy, never a silent cron death."""
+
+    def test_all_importable_passes(self, monkeypatch):
+        monkeypatch.setattr(
+            md, "_EXTRA_MODULES", (("json", "stdlib", "always present"),)
+        )
+        result = md.check_venv_extras()
+        assert result.passed
+
+    def test_missing_module_fails_with_extra_all_fix(self, monkeypatch):
+        monkeypatch.setattr(
+            md,
+            "_EXTRA_MODULES",
+            (("no_such_module_xyz", "news", "news rss_poll"),),
+        )
+        result = md.check_venv_extras()
+        assert not result.passed
+        assert "no_such_module_xyz [news]" in result.detail
+        assert "--extra all" in result.fix
