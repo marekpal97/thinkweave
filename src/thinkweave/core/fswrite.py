@@ -12,26 +12,17 @@ user or another tool also writes is never regenerated: our span is spliced in
 and every byte outside it survives (the sentinel blocks here, the key-scoped
 TOML/JSON splice in ``core.mcp_config``, the hook-entry merge in
 ``surfaces.hooks.install``).
-
-*Prefer the harness's native CLI shape.* Where a harness ships its own
-registration command (``HarnessProfile.mcp_via_cli`` — ``claude mcp add``,
-``codex mcp add``), our writers reproduce its output byte-for-byte instead of
-inventing a shape (pinned in ``tests/test_codex_install.py``).
-ponytail: we splice rather than shell out to the CLI itself — one less child
-process to sandbox and mock; the upgrade path, if a harness's CLI output ever
-drifts from our writer, is to invoke ``mcp_via_cli`` directly.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import stat
 import tempfile
 from pathlib import Path
 
 
-def atomic_write_text(path: Path, text: str, *, backup: bool = False) -> None:
+def atomic_write_text(path: Path, text: str) -> None:
     """Replace ``path``'s content via a unique tempfile + ``os.replace``.
 
     The original survives untouched until the atomic rename — that is the
@@ -44,9 +35,7 @@ def atomic_write_text(path: Path, text: str, *, backup: bool = False) -> None:
 
     The replacement inherits the original's permissions (Codex creates
     ``config.toml`` 0600 and it can carry env secrets; the umask default
-    would quietly widen it). ``backup=True`` additionally keeps the previous
-    file at ``<path>.bak`` — copied as bytes, so a restore returns exactly
-    what was there, CRLF endings and non-UTF-8 content included.
+    would quietly widen it).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
@@ -56,8 +45,6 @@ def atomic_write_text(path: Path, text: str, *, backup: bool = False) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
         if path.exists():
-            if backup:
-                shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
             os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
         os.replace(tmp, path)
     except BaseException:

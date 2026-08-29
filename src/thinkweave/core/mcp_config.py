@@ -59,13 +59,10 @@ def canonical(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
     unknown field. An empty ``env`` is dropped for the same reason ``codex mcp
     add`` omits it — it is noise, and its absence is what a re-read returns.
 
-    ponytail: normalisation is by file format only, so every JSON harness gets
-    Claude Code's entry BODY — for the declared-not-verified rows (OpenCode
-    documents type local|remote, command as an array, an ``environment`` map)
-    that fact lives as an MCP-registration Degradation on the profile, echoed
-    in install output. Entry-shape-as-profile-data is deliberately NOT minted
-    from an unverified blueprint (dec-5a076384: no capability data without a
-    truth source); it becomes real data when #114/#195 verify the rows.
+    ponytail: normalisation is by file format only — a harness whose native
+    entry shape differs (OpenCode) carries that as an MCP-registration
+    Degradation on its profile; real shape data waits on #114/#195
+    verification (dec-5a076384).
     """
     if not _is_toml(path):
         return entry

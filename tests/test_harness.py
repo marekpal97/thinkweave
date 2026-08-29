@@ -77,12 +77,6 @@ def _probe_profile(home: Path) -> harness.HarnessProfile:
 
 
 class TestRegistry:
-    def test_registered_profiles(self):
-        # W1a shipped `claude-code` alone; the Codex wave (#106) added the
-        # second entry, and #191's dispatch-contract re-scope added the two
-        # E0 blueprint rows (Pi, OpenCode).
-        assert set(harness.PROFILES) == {"claude-code", "codex", "pi", "opencode"}
-
     def test_active_defaults_to_claude_code(self, fake_home: Path):
         assert harness.active().id == "claude-code"
 

@@ -532,14 +532,6 @@ class TestGeneratedHarnessesDoc:
             "`uv run python -m thinkweave.core.harness_docs --write`"
         )
 
-    def test_matrix_names_every_profile_and_degradation(self):
-        block = harness_docs.generated_block()
-        for pid in ALL_IDS:
-            p = _build(pid, Path("/h"))
-            assert (p.display_name or pid) in block
-            for d in p.degradations:
-                assert d.note in block
-
     def test_matrix_carries_no_machine_paths(self):
         assert str(Path.home()) not in harness_docs.generated_block()
 

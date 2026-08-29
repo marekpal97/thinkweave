@@ -36,29 +36,6 @@ class TestAtomicWriteText:
         fswrite.atomic_write_text(target, "new\n")
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
-    def test_backup_keeps_the_previous_bytes(self, tmp_path: Path):
-        target = tmp_path / "settings.json"
-        target.write_text("old\n", encoding="utf-8")
-        fswrite.atomic_write_text(target, "new\n", backup=True)
-        assert target.with_suffix(".json.bak").read_text(encoding="utf-8") == "old\n"
-        assert target.read_text(encoding="utf-8") == "new\n"
-
-    def test_backup_of_a_fresh_file_writes_no_bak(self, tmp_path: Path):
-        target = tmp_path / "fresh.json"
-        fswrite.atomic_write_text(target, "new\n", backup=True)
-        assert not target.with_suffix(".json.bak").exists()
-
-    def test_backup_preserves_bytes_verbatim(self, tmp_path: Path):
-        # A .bak that exists to be restored must be the file, not a decode/
-        # re-encode of it: CRLF endings (routine on Windows) and non-UTF-8
-        # bytes both survive.
-        target = tmp_path / "s.json"
-        target.write_bytes(b"line one\r\nline two\r\n\xff")
-        fswrite.atomic_write_text(target, "new\n", backup=True)
-        assert target.with_suffix(".json.bak").read_bytes() == (
-            b"line one\r\nline two\r\n\xff"
-        )
-
     def test_failed_write_leaves_no_droppings_and_keeps_the_original(
         self, tmp_path: Path
     ):
