@@ -78,11 +78,16 @@ def _load(path: Path) -> dict[str, Any] | None:
         raise MalformedConfig(f"{path} is not valid {path.suffix.lstrip('.') or 'JSON'}: {exc}") from exc
 
 
-def _servers_key(path: Path) -> str:
-    return TOML_SERVERS_KEY if _is_toml(path) else JSON_SERVERS_KEY
+def _servers_key(path: Path, override: str = "") -> str:
+    """The key server entries nest under — the format's convention, unless
+    the harness profile declares otherwise (``mcp_servers_key``: OpenCode is
+    a JSON file whose key is ``mcp``, not ``mcpServers``)."""
+    return override or (TOML_SERVERS_KEY if _is_toml(path) else JSON_SERVERS_KEY)
 
 
-def read_entry(path: Path, name: str) -> dict[str, Any] | None:
+def read_entry(
+    path: Path, name: str, *, servers_key: str = ""
+) -> dict[str, Any] | None:
     """The named server's block, or None when the file or the entry is absent.
 
     Raises :class:`MalformedConfig` on an unparseable file.
@@ -90,7 +95,7 @@ def read_entry(path: Path, name: str) -> dict[str, Any] | None:
     doc = _load(path)
     if doc is None:
         return None
-    return doc.get(_servers_key(path), {}).get(name)
+    return doc.get(_servers_key(path, servers_key), {}).get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -98,29 +103,33 @@ def read_entry(path: Path, name: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-def write_entry(path: Path, name: str, entry: dict[str, Any]) -> None:
+def write_entry(
+    path: Path, name: str, entry: dict[str, Any], *, servers_key: str = ""
+) -> None:
     """Register (or converge) the named server, leaving the rest of the file
     alone. Creates the file when it does not exist."""
     if _is_toml(path):
-        _toml_write(path, name, entry)
+        _toml_write(path, name, entry, servers_key)
     else:
-        _json_write(path, name, entry)
+        _json_write(path, name, entry, servers_key)
 
 
-def remove_entry(path: Path, name: str) -> bool:
+def remove_entry(path: Path, name: str, *, servers_key: str = "") -> bool:
     """Drop the named server. Returns False when there was nothing to remove."""
-    if read_entry(path, name) is None:
+    if read_entry(path, name, servers_key=servers_key) is None:
         return False
     if _is_toml(path):
-        _toml_write(path, name, None)
+        _toml_write(path, name, None, servers_key)
     else:
-        _json_write(path, name, None)
+        _json_write(path, name, None, servers_key)
     return True
 
 
-def _json_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
+def _json_write(
+    path: Path, name: str, entry: dict[str, Any] | None, key: str = ""
+) -> None:
     doc = _load(path) or {}
-    servers = doc.setdefault(JSON_SERVERS_KEY, {})
+    servers = doc.setdefault(_servers_key(path, key), {})
     if entry is None:
         servers.pop(name, None)
     else:
@@ -138,10 +147,10 @@ def _json_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
 _HEADER = re.compile(r"^[ \t]*\[\[?(?P<key>[^\]]*)\]\]?[ \t]*(?:#.*)?$")
 
 
-def _owns(header_key: str, name: str) -> bool:
+def _owns(header_key: str, name: str, key: str) -> bool:
     """True for our table and any of its sub-tables (``…thinkweave.env``)."""
     parts = [p.strip().strip("\"'") for p in header_key.split(".")]
-    return parts[:2] == [TOML_SERVERS_KEY, name]
+    return parts[:2] == [key, name]
 
 
 def _toml_scalar(value: Any) -> str:
@@ -163,15 +172,15 @@ def _toml_scalar(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _toml_table(name: str, entry: dict[str, Any]) -> str:
+def _toml_table(name: str, entry: dict[str, Any], key: str) -> str:
     """Our table, rendered as one contiguous block (``env`` inlined, so the
     whole entry is a single splice unit)."""
-    lines = [f"[{TOML_SERVERS_KEY}.{name}]"]
+    lines = [f"[{key}.{name}]"]
     lines += [f"{k} = {_toml_scalar(v)}" for k, v in entry.items()]
     return "\n".join(lines) + "\n"
 
 
-def _splice(text: str, name: str, block: str | None) -> str:
+def _splice(text: str, name: str, block: str | None, key: str) -> str:
     """Replace our table (and its sub-tables) with ``block``, or drop it when
     ``block`` is None. Appends when the table is absent.
 
@@ -203,7 +212,7 @@ def _splice(text: str, name: str, block: str | None) -> str:
     for line in text.splitlines(keepends=True):
         header = _HEADER.match(line)
         if header:
-            was_ours, ours = ours, _owns(header.group("key"), name)
+            was_ours, ours = ours, _owns(header.group("key"), name, key)
             if was_ours and not ours:
                 # A comment sitting directly above a header documents *that*
                 # header, so the run trailing our table is not ours to delete.
@@ -244,11 +253,16 @@ def _splice(text: str, name: str, block: str | None) -> str:
     return "".join(out)
 
 
-def _toml_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
+def _toml_write(
+    path: Path, name: str, entry: dict[str, Any] | None, key: str = ""
+) -> None:
+    key = _servers_key(path, key)
     before = _load(path) or {}
     text = path.read_text(encoding="utf-8") if path.exists() else ""
 
-    after = _splice(text, name, _toml_table(name, entry) if entry is not None else None)
+    after = _splice(
+        text, name, _toml_table(name, entry, key) if entry is not None else None, key
+    )
 
     # Independent check that the splice did what it claimed: re-parse and
     # compare against the document we meant to produce. A line-oriented cut
@@ -259,26 +273,26 @@ def _toml_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
     # unsplice-able config is refused and the user edits it by hand. Upgrade
     # path is a real TOML round-tripper (tomlkit), a dependency this project
     # does not otherwise need.
-    servers = {k: v for k, v in before.get(TOML_SERVERS_KEY, {}).items() if k != name}
+    servers = {k: v for k, v in before.get(key, {}).items() if k != name}
     if entry is not None:
         servers[name] = entry
     expected = {**before}
     if servers:
-        expected[TOML_SERVERS_KEY] = servers
+        expected[key] = servers
     else:
-        expected.pop(TOML_SERVERS_KEY, None)
+        expected.pop(key, None)
 
     try:
         got = tomllib.loads(after)
     except tomllib.TOMLDecodeError as exc:
         raise MalformedConfig(
             f"editing {path} would have produced invalid TOML ({exc}); "
-            f"left untouched — edit the [{TOML_SERVERS_KEY}.{name}] table by hand"
+            f"left untouched — edit the [{key}.{name}] table by hand"
         ) from exc
     if got != expected:
         raise MalformedConfig(
             f"could not edit {path} without disturbing the rest of the file; "
-            f"left untouched — edit the [{TOML_SERVERS_KEY}.{name}] table by hand"
+            f"left untouched — edit the [{key}.{name}] table by hand"
         )
 
     atomic_write_text(path, after)

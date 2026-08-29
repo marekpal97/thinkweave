@@ -273,6 +273,45 @@ class TestDegradations:
 
 
 # --------------------------------------------------------------------------- #
+# MCP config round-trip, in every profile's declared format + key
+# --------------------------------------------------------------------------- #
+
+
+class TestMcpConfigRoundTrip:
+    ENTRY = {"command": "uv", "args": ["run", "weave-mcp"], "env": {}}
+
+    def test_write_then_read_round_trips_under_the_declared_key(
+        self, profile, tmp_path: Path
+    ):
+        target = tmp_path / ("cfg" + profile.mcp_config.suffix)
+        entry = mcp_config.canonical(target, self.ENTRY)
+        mcp_config.write_entry(
+            target, "thinkweave", entry, servers_key=profile.mcp_servers_key
+        )
+        assert (
+            mcp_config.read_entry(
+                target, "thinkweave", servers_key=profile.mcp_servers_key
+            )
+            == entry
+        )
+
+    def test_json_formats_nest_under_the_declared_key(
+        self, profile, tmp_path: Path
+    ):
+        if profile.mcp_config.suffix != ".json":
+            pytest.skip("TOML nesting is pinned byte-level in test_codex_install")
+        target = tmp_path / "cfg.json"
+        # A foreign top-level key must survive the splice untouched.
+        target.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+        mcp_config.write_entry(
+            target, "thinkweave", self.ENTRY, servers_key=profile.mcp_servers_key
+        )
+        doc = json.loads(target.read_text(encoding="utf-8"))
+        assert doc["theme"] == "dark"
+        assert doc[profile.mcp_servers_key]["thinkweave"] == self.ENTRY
+
+
+# --------------------------------------------------------------------------- #
 # zero per-harness forks outside the interpreter (grep-enforced, AC3)
 # --------------------------------------------------------------------------- #
 
