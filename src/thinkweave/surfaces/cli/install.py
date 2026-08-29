@@ -40,7 +40,7 @@ import sysconfig
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from thinkweave.core import mcp_config
+from thinkweave.core import fswrite, mcp_config
 from thinkweave.core.harness import active as _profile
 
 SERVER_NAME = "thinkweave"
@@ -545,15 +545,16 @@ def _extract_claude_md_block(text: str) -> str | None:
 
 
 def _splice_claude_md_block(text: str, new_block: str) -> str:
-    """Replace an existing block in place, or append a new one. Never edits
-    bytes outside the sentinels — hand-edits adjacent to the block survive."""
-    start = text.find(CLAUDE_MD_BLOCK_START)
-    end = text.find(CLAUDE_MD_BLOCK_END, max(start, 0))
-    if start == -1 or end == -1:
-        # absent or only one sentinel (corrupt) — append a fresh block
-        sep = "" if text == "" or text.endswith("\n") else "\n"
-        return f"{text}{sep}\n{new_block}\n"
-    return text[:start] + new_block + text[end + len(CLAUDE_MD_BLOCK_END) :]
+    """Replace an existing block in place, or append a new one (absent or
+    single-sentinel-corrupt file). Never edits bytes outside the sentinels —
+    hand-edits adjacent to the block survive."""
+    return fswrite.replace_between(
+        text,
+        CLAUDE_MD_BLOCK_START,
+        CLAUDE_MD_BLOCK_END,
+        new_block,
+        on_missing="append",
+    )
 
 
 def _install_claude_md_block(yes: bool) -> None:
@@ -599,7 +600,7 @@ def _install_claude_md_block(yes: bool) -> None:
         print("Re-run with --yes to apply, or --no-claude-md to skip.")
         sys.exit(1)
 
-    mcp_config._atomic_write(_instructions(), _splice_claude_md_block(text, new_block))
+    fswrite.atomic_write_text(_instructions(), _splice_claude_md_block(text, new_block))
     print()
     verb = "Updated" if existing is not None else "Appended"
     print(f"{verb} thinkweave block in {_instructions()}.")

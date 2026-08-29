@@ -25,12 +25,12 @@ re-parses the result and refuses to save if anything outside our key moved.
 from __future__ import annotations
 
 import json
-import os
 import re
-import stat
 import tomllib
 from pathlib import Path
 from typing import Any
+
+from thinkweave.core.fswrite import atomic_write_text
 
 TOML_SERVERS_KEY = "mcp_servers"
 JSON_SERVERS_KEY = "mcpServers"
@@ -118,21 +118,6 @@ def remove_entry(path: Path, name: str) -> bool:
     return True
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    """tempfile + os.replace, so an interrupted write cannot leave the user's
-    harness config truncated.
-
-    The replacement inherits the original's permissions: Codex creates
-    ``config.toml`` 0600 and it can carry env secrets, so falling back to the
-    umask default would quietly widen it.
-    """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    if path.exists():
-        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
-    os.replace(tmp, path)
-
-
 def _json_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
     doc = _load(path) or {}
     servers = doc.setdefault(JSON_SERVERS_KEY, {})
@@ -140,8 +125,7 @@ def _json_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
         servers.pop(name, None)
     else:
         servers[name] = entry
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, json.dumps(doc, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(doc, indent=2) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -297,5 +281,4 @@ def _toml_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
             f"left untouched — edit the [{TOML_SERVERS_KEY}.{name}] table by hand"
         )
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, after)
+    atomic_write_text(path, after)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
+from thinkweave.core import fswrite
 from thinkweave.core.harness import CANONICAL_EVENTS, PROFILES, HarnessProfile
 
 MATRIX_START = "<!-- weave:harness-matrix:start — GENERATED from core/harness.py profiles; edit the profile, then `uv run python -m thinkweave.core.harness_docs --write` -->"
@@ -127,14 +128,13 @@ def generated_block() -> str:
 
 
 def splice(doc: str) -> str:
-    """Replace the sentinel block in ``doc``, leaving every other byte alone."""
-    start = doc.find(MATRIX_START)
-    end = doc.find(MATRIX_END)
-    if start == -1 or end == -1:
-        raise ValueError(
-            "docs/HARNESSES.md is missing the harness-matrix sentinels"
-        )
-    return doc[:start] + generated_block() + doc[end + len(MATRIX_END) :]
+    """Replace the sentinel block in ``doc``, leaving every other byte alone.
+
+    ``on_missing="error"`` is the generator-fingerprint gate: a generated
+    block only ever overwrites a span its own sentinels mark."""
+    return fswrite.replace_between(
+        doc, MATRIX_START, MATRIX_END, generated_block(), on_missing="error"
+    )
 
 
 def main() -> None:
@@ -151,7 +151,7 @@ def main() -> None:
     if not args.write:
         print("stale" if updated != doc else "in sync")
         return
-    doc_path.write_text(updated, encoding="utf-8")
+    fswrite.atomic_write_text(doc_path, updated)
     print(f"wrote {doc_path}")
 
 

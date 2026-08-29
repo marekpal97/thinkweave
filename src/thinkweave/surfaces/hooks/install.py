@@ -18,6 +18,7 @@ import json
 import sys
 from pathlib import Path
 
+from thinkweave.core.fswrite import atomic_write_text
 from thinkweave.core.harness import active as active_harness
 from thinkweave.core.plugin_route import plugin_namespace
 
@@ -209,9 +210,7 @@ def _converge_to_plugin_ownership(project_dir: str, dry_run: bool) -> None:
             print(f"Would remove stale manual hooks from: {target}")
             print(_settings_diff(existing, planned, target), end="")
         else:
-            target.write_text(
-                json.dumps(planned, indent=2) + "\n", encoding="utf-8"
-            )
+            atomic_write_text(target, json.dumps(planned, indent=2) + "\n")
 
     print("The active thinkweave plugin owns lifecycle registration.")
     if not cleaned:
@@ -410,10 +409,7 @@ def install_hooks(
             print("(no changes)")
         return
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(
-        json.dumps(planned, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(settings_path, json.dumps(planned, indent=2) + "\n")
     print(
         f"Hooks installed at {settings_path} (scope={scope})\n"
         "  SessionStart hook will inject ~7–10k tokens of project context "
@@ -453,9 +449,7 @@ def uninstall_hooks(
             print("(no changes)")
         return
 
-    settings_path.write_text(
-        json.dumps(planned, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(settings_path, json.dumps(planned, indent=2) + "\n")
     print(f"Hooks removed from {settings_path} (scope={scope})")
 
 
