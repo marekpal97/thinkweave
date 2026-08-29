@@ -397,6 +397,141 @@ class TestVerdictStep:
         assert "about" not in probe[0]
 
 
+class TestSessionIdentityResolution:
+    """#181/#183 — the verdict join must survive the logical-session
+    identity triangle (harness UUID, minted ``ses-…`` note id, folder
+    name). Fixture shapes taken from the 2026-08-28 diagnosis on #200:
+    an auto-extract stub folder and the wrap's minted folder both claim
+    the same ``source_session``, and hook-eager folders are UUID-named
+    while catch-up wraps address them by note id."""
+
+    def _folder(
+        self, config: Config, name: str, note_id: str, source: str,
+        rows: list[dict],
+    ) -> Path:
+        d = config.vault_root / "projects" / "t" / "sessions" / name
+        d.mkdir(parents=True)
+        (d / "session.md").write_text(
+            "---\n"
+            "type: session\n"
+            f"id: {note_id}\n"
+            f"source_session: {source}\n"
+            f"aliases: [{note_id}]\n"
+            "---\n\n## Summary\nx\n",
+            encoding="utf-8",
+        )
+        ev = d / "events.jsonl"
+        ev.write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+        )
+        return ev
+
+    def _rows(self, f: Path) -> list[dict]:
+        return [
+            json.loads(ln)
+            for ln in f.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+
+    def test_split_session_matches_across_folders(
+        self, config: Config, vault: VaultManager
+    ):
+        # Live-wrap route: the UUID claims BOTH folders; the verdict's
+        # prompt lives in the minted folder, not the 1-prompt stub the
+        # old single-file resolution stopped at (4/4 unmatched live).
+        uuid = "cc-uuid-split"
+        stub = self._folder(config, f"{uuid}-2026-08-28", "ses-stub", uuid, [
+            {"ts": "2026-08-28T21:20:00+00:00", "type": "prompt",
+             "text": "what PRs do we have open?", "session_id": uuid},
+        ])
+        real = self._folder(config, "ses-real-2026-08-28", "ses-real", uuid, [
+            {"ts": "2026-08-28T22:16:00+00:00", "type": "prompt",
+             "text": "On #193 - I left some comments up on that PR",
+             "session_id": uuid},
+        ])
+        result = finalize_wrap(
+            config, session_id=uuid, project="t", prune=False,
+            verdicts=[{"prompt": "On #193", "register": "correction",
+                       "about": "the #193 wrapper layering"}],
+        )
+        assert result.verdicts_written == 1
+        assert result.verdicts_unmatched == 0
+        assert [r for r in self._rows(real) if r.get("type") == "feedback"]
+        assert not [r for r in self._rows(stub) if r.get("type") == "feedback"]
+
+    def test_ses_id_resolves_uuid_named_folder(
+        self, config: Config, vault: VaultManager
+    ):
+        # Headless catch-up route: the dream worklist hands the worker
+        # the ``ses-…`` note id while the folder is UUID-named — the old
+        # resolution returned None and dropped every catch-up verdict.
+        uuid = "cc-uuid-headless"
+        ev = self._folder(config, f"{uuid}-2026-08-28", "ses-head", uuid, [
+            {"ts": "2026-08-28T10:00:00+00:00", "type": "prompt",
+             "text": "is the hubs rail broken?", "session_id": uuid},
+        ])
+        result = finalize_wrap(
+            config, session_id="ses-head", project="t", prune=False,
+            verdicts=[{"prompt": "is the hubs rail", "register": "probe"}],
+        )
+        assert result.verdicts_written == 1
+        assert result.verdicts_unmatched == 0
+        assert [r for r in self._rows(ev) if r.get("type") == "probe"]
+
+    def test_resubmitted_prompt_gets_one_event(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 item 1: identical text captured twice OUTSIDE the echo
+        # window (a genuine resubmission) — one verdict labels ONE
+        # prompt, not every prefix match.
+        buf_dir = config.weave_dir / "buffer"
+        buf_dir.mkdir(parents=True, exist_ok=True)
+        f = buf_dir / "cc-uuid-resub.jsonl"
+        f.write_text(
+            "".join(
+                json.dumps({
+                    "ts": ts, "type": "prompt",
+                    "text": "merged. /wrap make note of the feedback",
+                    "session_id": "cc-uuid-resub",
+                }) + "\n"
+                for ts in (
+                    "2026-08-28T23:43:19+00:00",
+                    "2026-08-28T23:43:30+00:00",
+                )
+            ),
+            encoding="utf-8",
+        )
+        result = finalize_wrap(
+            config, session_id="cc-uuid-resub", project="t", prune=False,
+            verdicts=[{"prompt": "merged. /wrap", "register": "confirmation"}],
+        )
+        assert result.verdicts_written == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+        assert fb[0]["ts"] == "2026-08-28T23:43:19+00:00"
+
+    def test_unmatched_verdict_is_loud(
+        self, config: Config, vault: VaultManager
+    ):
+        # The tripwire: a dropped label must surface as an error (non-zero
+        # CLI exit), never as a silent success (#200).
+        buf_dir = config.weave_dir / "buffer"
+        buf_dir.mkdir(parents=True, exist_ok=True)
+        (buf_dir / "cc-uuid-loud.jsonl").write_text(
+            json.dumps({
+                "ts": "2026-08-28T10:00:00+00:00", "type": "prompt",
+                "text": "do the thing", "session_id": "cc-uuid-loud",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        result = finalize_wrap(
+            config, session_id="cc-uuid-loud", project="t", prune=False,
+            verdicts=[{"prompt": "never said this", "register": "correction"}],
+        )
+        assert result.verdicts_unmatched == 1
+        assert any("unmatched" in e for e in result.errors)
+
+
 class TestProbeReachesIndex:
     """The probe → dream-priority → queue rail starts at the ``prompts``
     table. Found 2026-08-23: every session wrapped after the buffer-path
