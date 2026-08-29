@@ -83,27 +83,53 @@ class WrapFinalizeResult:
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
 
-def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | None:
-    """Locate the session's event stream without creating anything.
+def _folder_claims_session(fm: dict, session_id: str) -> bool:
+    """Does a session folder's frontmatter claim this session identity?
 
-    Live wrap: the buffer file keyed by the Claude Code session UUID.
-    Catch-up wrap: the archived ``events.jsonl`` in the session folder
-    (matched by folder-name prefix or ``source_session`` frontmatter —
-    the same rule ``VaultManager._find_session_dir`` applies, minus its
-    eager-create side effect).
+    True when ``source_session`` (harness UUID), the note ``id``
+    (``ses-…``), or any entry in ``aliases`` equals ``session_id``. The
+    note-id/aliases legs are what let a catch-up wrap address a
+    hook-eager UUID-named folder by its minted ``ses-…`` id (#181).
     """
+    if fm.get("source_session") == session_id or fm.get("id") == session_id:
+        return True
+    aliases = fm.get("aliases") or []
+    if not isinstance(aliases, list):
+        aliases = [aliases]
+    return session_id in {str(a) for a in aliases}
+
+
+def _resolve_events_files(cfg: Config, session_id: str, project: str) -> list[Path]:
+    """Every event stream the session identity claims — buffer first, then
+    archived folders newest-first. Never creates anything.
+
+    One logical session can own several streams (#183): an auto-extract
+    stub folder and the wrap's minted folder both carry the same
+    ``source_session``, and catch-up wraps address sessions by ``ses-…``
+    note id while hook-eager folders are named by the harness UUID.
+    Resolving exactly one file silently orphaned every verdict whose
+    prompt lived in another (2026-08-28: 4/4 grounded verdicts unmatched
+    against a 1-prompt stub) — so the verdict join matches across all of
+    them. Folders match by name prefix, ``source_session``, note ``id``,
+    or ``aliases``.
+    """
+    out: list[Path] = []
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
-        return buf
+        out.append(buf)
     if not project:
-        return None
+        return out
     sessions_dir = cfg.vault_root / "projects" / project / "sessions"
     if not sessions_dir.exists():
-        return None
+        return out
     from thinkweave.core.vault import parse_frontmatter
 
+    matched: list[Path] = []
     for d in sessions_dir.iterdir():
         if not d.is_dir() or d.name == "misc":
+            continue
+        events_file = d / "events.jsonl"
+        if not events_file.exists():
             continue
         if not d.name.startswith(session_id):
             sm = d / "session.md"
@@ -113,32 +139,34 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
                 fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
                 continue
-            if fm.get("source_session") != session_id:
+            if not _folder_claims_session(fm, session_id):
                 continue
-        events_file = d / "events.jsonl"
-        if events_file.exists():
-            return events_file
-    return None
+        matched.append(events_file)
+    matched.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    out.extend(matched)
+    return out
 
 
-def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
-    """Map a wrap's session id (Claude UUID or ``ses-…``) to the session
-    note id the index keys prompts by. Falls back to the input unchanged."""
+def _session_note_ids(cfg: Config, session_id: str, project: str) -> list[str]:
+    """Map a wrap's session id (Claude UUID or ``ses-…``) to every session
+    note id the index may key its prompts by. Falls back to the input."""
     if session_id.startswith("ses-"):
-        return session_id
-    events = _resolve_events_file(cfg, session_id, project)
-    if events is None:
-        return session_id
-    sm = events.parent / "session.md"
-    if not sm.exists():
-        return session_id
+        return [session_id]
     from thinkweave.core.vault import parse_frontmatter
 
-    try:
-        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return session_id
-    return str(fm.get("id") or session_id)
+    ids: list[str] = []
+    for events in _resolve_events_files(cfg, session_id, project):
+        sm = events.parent / "session.md"
+        if not sm.exists():
+            continue
+        try:
+            fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        note_id = str(fm.get("id") or "")
+        if note_id and note_id not in ids:
+            ids.append(note_id)
+    return ids or [session_id]
 
 
 def _append_verdict_events(
@@ -169,30 +197,40 @@ def _append_verdict_events(
     but expected to be rare.
 
     Idempotent: a (ts, register) pair that already exists is skipped, so
-    re-wraps never double-write.
+    re-wraps never double-write. Each verdict labels a SINGLE prompt —
+    the earliest matching one not already carrying this register — so a
+    prefix shared by several rows (duplicate captures, resubmissions)
+    can't fan one verdict out into several events (#181).
     """
     from thinkweave.core.events import extract_prompts, feedback_events
 
-    events_file = _resolve_events_file(cfg, session_id, project)
-    if events_file is None:
+    events_files = _resolve_events_files(cfg, session_id, project)
+    if not events_files:
         result.verdicts_unmatched = len(verdicts)
         result.errors.append(
             f"verdicts: no events file found for session {session_id}"
         )
         return
 
-    prompts = extract_prompts(events_file)
-    existing = {
-        (r.get("ts", ""), r.get("register", ""))
-        for r in feedback_events(events_file)
-    }
-    existing.update(
-        (p.ts.isoformat(), "probe")
-        for p in prompts
-        if p.classification == "probe"
-    )
+    # The verdict join matches across every stream the session claims —
+    # a logical session's prompts can sit in a different folder than the
+    # one the id resolves to first (#183); each event is appended to the
+    # file that holds its matched prompt.
+    tagged: list[tuple] = []  # (Prompt, owning events file)
+    existing: set[tuple[str, str]] = set()
+    for f in events_files:
+        prompts = extract_prompts(f)
+        tagged.extend((p, f) for p in prompts)
+        existing.update(
+            (r.get("ts", ""), r.get("register", "")) for r in feedback_events(f)
+        )
+        existing.update(
+            (p.ts.isoformat(), "probe")
+            for p in prompts
+            if p.classification == "probe"
+        )
 
-    lines: list[str] = []
+    pending: dict[Path, list[str]] = {}
     for v in verdicts:
         register = str(v.get("register", "")).strip().lower()
         needle = str(v.get("prompt", "")).strip().lower()
@@ -204,33 +242,54 @@ def _append_verdict_events(
             result.errors.append("verdicts: verdict with empty prompt ref")
             continue
         matched = [
-            p for p in prompts if p.text.strip().lower().startswith(needle)
+            (p, f)
+            for p, f in tagged
+            if p.text.strip().lower().startswith(needle)
         ]
         if not matched:
             result.verdicts_unmatched += 1
             continue
-        for p in matched:
-            ts_iso = p.ts.isoformat()
-            if (ts_iso, register) in existing:
-                result.verdicts_skipped += 1
-                continue
-            existing.add((ts_iso, register))
-            event = {
-                "ts": ts_iso,
-                "type": "probe" if register == "probe" else "feedback",
-                "session_id": p.session_id,
-                "prompt_ref": p.text[:120],
-            }
-            if register != "probe":
-                event["register"] = register
-            if about:
-                event["about"] = about[:300]
-            lines.append(json.dumps(event, ensure_ascii=False))
+        matched.sort(key=lambda pf: pf[0].ts)
+        target = next(
+            (
+                (p, f)
+                for p, f in matched
+                if (p.ts.isoformat(), register) not in existing
+            ),
+            None,
+        )
+        if target is None:
+            result.verdicts_skipped += 1
+            continue
+        p, f = target
+        ts_iso = p.ts.isoformat()
+        existing.add((ts_iso, register))
+        event = {
+            "ts": ts_iso,
+            "type": "probe" if register == "probe" else "feedback",
+            "session_id": p.session_id,
+            "prompt_ref": p.text[:120],
+        }
+        if register != "probe":
+            event["register"] = register
+        if about:
+            event["about"] = about[:300]
+        pending.setdefault(f, []).append(json.dumps(event, ensure_ascii=False))
 
-    if lines:
-        with events_file.open("a", encoding="utf-8") as fh:
+    for f, lines in pending.items():
+        with f.open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
-        result.verdicts_written = len(lines)
+        result.verdicts_written += len(lines)
+
+    # Loud-fail tripwire: an unmatched verdict is a dropped human label —
+    # the exact failure mode that let the rail sit dark (#200). Surface it
+    # as an error so the CLI exits non-zero instead of reporting success.
+    if result.verdicts_unmatched:
+        result.errors.append(
+            f"verdicts: {result.verdicts_unmatched} verdict(s) unmatched — "
+            "labels dropped; check session identity / segment chain "
+            "(#181, #180)"
+        )
 
 
 def finalize_wrap(
@@ -311,12 +370,14 @@ def finalize_wrap(
         result.edges = stats.get("edges", 0)
         # Verdicts landed in events.jsonl, not session.md — the incremental
         # rebuild above won't re-project this session's prompts on its own.
+        # A logical session may span several note ids (#183): refresh each.
         if verdicts:
             idx = Indexer(config=cfg)
             try:
-                result.prompts_reprojected = idx.reproject_session_prompts(
-                    _session_note_id(cfg, session_id, project)
-                )
+                for note_id in _session_note_ids(cfg, session_id, project):
+                    result.prompts_reprojected += idx.reproject_session_prompts(
+                        note_id
+                    )
             finally:
                 idx.close()
     except Exception as e:  # noqa: BLE001

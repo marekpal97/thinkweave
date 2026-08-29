@@ -440,7 +440,7 @@ def match_probe_concepts(text: str, vocabulary: Iterable[str]) -> set[str]:
 # which of our actions the user pushed back on, and which they endorsed.
 # Since #101 the labeler is an LLM pass, not a hook-time lexicon: the /wrap
 # LLM (which holds the conversation) composes verdicts and hands them to
-# ``weave wrap-finalize --feedback``, whose deterministic step appends the
+# ``weave wrap-finalize --verdicts``, whose deterministic step appends the
 # events (see ``operations.wrap``). Catch-up for unwrapped sessions rides
 # /dream's wrap-worker on the same rail. The event schema is frozen — it
 # predates #101 and downstream consumers (export, projections) key on it.
