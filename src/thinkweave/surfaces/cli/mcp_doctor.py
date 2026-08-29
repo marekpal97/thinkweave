@@ -765,12 +765,16 @@ _EXTRA_MODULES: tuple[tuple[str, str, str], ...] = (
 def _extra_importable(mod: str) -> bool:
     """``find_spec`` on a dotted name RAISES ModuleNotFoundError when the
     parent package is absent (``google.genai`` without ``google``); it only
-    returns None when the parent exists. Either way the extra is missing."""
+    returns None when the parent exists. It also *imports* the parent, whose
+    ``__init__`` may raise anything, and raises ValueError for a sys.modules
+    entry with ``__spec__ = None``. ``except Exception`` is deliberate: this
+    check's one job is diagnosing a damaged venv, so any failure to resolve
+    the module IS the finding — report it missing, never crash the doctor."""
     import importlib.util
 
     try:
         return importlib.util.find_spec(mod) is not None
-    except ModuleNotFoundError:
+    except Exception:
         return False
 
 

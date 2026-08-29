@@ -46,11 +46,26 @@ fi
 # One-time dependency bootstrap (#164, matches bin/weave and the MCP
 # launcher): a fresh plugin/marketplace clone has no venv, and `uv run
 # --no-sync` would fabricate an EMPTY one and die with ModuleNotFoundError.
-# When the venv lacks the project's own console script (bin/ on POSIX,
-# Scripts/ for a native Windows venv reached via Git Bash), run the ONE
-# sanctioned sync (dec-3d4f8ce9): `uv sync --extra all` — never per-call,
-# never a narrower extra set. Output to stderr: stdout belongs to the harness.
-if [ ! -x "$root/.venv/bin/weave" ] && [ ! -e "$root/.venv/Scripts/weave.exe" ]; then
+# Sentinel = an installed thinkweave distribution
+# (site-packages/thinkweave-*.dist-info, either venv layout — the marker
+# editable installs ship too; they have no site-packages/thinkweave/). NOT
+# the console scripts: uv deletes those FIRST during a project reinstall
+# (docs/HARNESSES.md os-error-32 incident), and the resulting half-shimmed
+# venv still runs fine via `python -m` — it must never re-fire a sync that
+# dies while live servers hold the shims. The sync is the ONE sanctioned
+# shape (dec-3d4f8ce9): `--extra all`, never per-call, never narrower.
+# Breadcrumb + sync output on stderr: stdout belongs to the harness, and a
+# hook killed at its timeout mid-sync must leave a diagnosable trace.
+# ponytail: a sync killed exactly between dist-info removal and re-creation
+# re-fires the bootstrap on the next launch; uv's venv lock + warm cache make
+# that retry converge. Upgrade path: a success stamp the bootstrap writes.
+installed=no
+for marker in "$root"/.venv/lib/python*/site-packages/thinkweave-*.dist-info \
+              "$root"/.venv/Lib/site-packages/thinkweave-*.dist-info; do
+    if [ -e "$marker" ]; then installed=yes; fi
+done
+if [ "$installed" = no ]; then
+    echo 'weave-hook-launch: first-run bootstrap: uv sync --extra all (a cold cache can take minutes; a killed attempt resumes at the next launch)' >&2
     "$uv_bin" sync --project "$root" --extra all 1>&2
 fi
 

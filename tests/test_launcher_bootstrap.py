@@ -4,11 +4,18 @@ Pre-#156 the launchers' implicit ``uv run`` sync populated the plugin
 (marketplace) clone's venv — the route's ONLY dependency bootstrap. The move
 to ``--no-sync`` (#156/#164) removed it: ``uv run --no-sync`` on a venv-less
 clone fabricates an EMPTY venv and dies with ModuleNotFoundError, with no
-actionable message. The launchers now branch: when the venv lacks the
-project's own console script, they run the ONE sanctioned sync
+actionable message. The launchers now branch: when the venv lacks an
+installed ``thinkweave`` distribution, they run the ONE sanctioned sync
 (dec-3d4f8ce9) — ``uv sync --extra all`` — before exec'ing the module.
-A synced venv (every dev checkout, this suite's included) never triggers it,
-so a live session still never re-syncs.
+
+The sentinel is ``site-packages/thinkweave-*.dist-info`` — the install
+marker present for BOTH editable installs (what ``uv sync`` produces on the
+dev and plugin routes; there is no ``site-packages/thinkweave/`` then) and
+regular ones. Console scripts are deliberately NOT the sentinel: uv deletes
+them FIRST during a project reinstall (the measured os-error-32 incident in
+docs/HARNESSES.md left a venv that imported fine but had no shims), and that
+half-shimmed venv is survivable via ``python -m`` — it must not re-fire a
+sync that provably dies while live servers hold the shims.
 
 Same seam as ``test_mcp_launcher.py``: the real script, a fake ``uv`` that
 echoes its argv, a clone directory in tmp. The sync's output must land on
@@ -31,6 +38,13 @@ LAUNCHERS = {
     "weave": "python -m thinkweave",
     "weave-hook-launch": "python -m thinkweave.surfaces.hooks.handler",
     "weave-mcp-launch": "python -m thinkweave.surfaces.mcp.server",
+}
+
+# Both venv layouts the sentinel must recognise: POSIX and native Windows
+# (the POSIX launchers also run under Git Bash against a Windows venv).
+DIST_INFO_LAYOUTS = {
+    "posix": Path("lib") / "python3.12" / "site-packages",
+    "windows": Path("Lib") / "site-packages",
 }
 
 
@@ -60,11 +74,13 @@ def _clone_with_launcher(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return clone, script
 
 
-def _run(tmp_path: Path, script: Path) -> subprocess.CompletedProcess:
+def _run(
+    tmp_path: Path, script: Path, fake_uv_body: str | None = None
+) -> subprocess.CompletedProcess:
     path_dir = tmp_path / "fakepath"
     path_dir.mkdir(exist_ok=True)
     fake = path_dir / "uv"
-    fake.write_text('#!/bin/sh\necho "uv $@"\n', encoding="utf-8")
+    fake.write_text(fake_uv_body or '#!/bin/sh\necho "uv $@"\n', encoding="utf-8")
     fake.chmod(0o755)
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
@@ -87,7 +103,10 @@ def test_venv_less_clone_syncs_extra_all_then_runs(tmp_path, name):
 
     assert result.returncode == 0, result.stderr
     root = _shell_path(clone)
-    # Bootstrap sync first — the sanctioned shape, on stderr (stdout is the
+    # A breadcrumb first, so a hook killed at its timeout mid-sync leaves a
+    # diagnosable trace instead of dying silently.
+    assert "bootstrap" in result.stderr
+    # Bootstrap sync next — the sanctioned shape, on stderr (stdout is the
     # MCP stdio channel for weave-mcp-launch).
     assert f"uv sync --project {root} --extra all" in result.stderr
     # …then the unchanged --no-sync module exec on stdout.
@@ -96,14 +115,17 @@ def test_venv_less_clone_syncs_extra_all_then_runs(tmp_path, name):
     )
 
 
+@pytest.mark.parametrize("layout", DIST_INFO_LAYOUTS)
 @pytest.mark.parametrize("name", LAUNCHERS)
-def test_synced_venv_skips_bootstrap(tmp_path, name):
+def test_installed_dist_skips_bootstrap(tmp_path, name, layout):
+    """An installed distribution — and NOTHING else: no console scripts —
+    must skip the bootstrap. This is exactly the half-shimmed venv the
+    2026-08-03 incident produced (imports fine, shims deleted by an
+    interrupted reinstall): survivable via ``python -m``, and syncing it
+    while servers hold the shims is the os-error-32 failure."""
     clone, script = _clone_with_launcher(tmp_path, name)
-    venv_bin = clone / ".venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    marker = venv_bin / "weave"
-    marker.write_text("#!/bin/sh\n", encoding="utf-8")
-    marker.chmod(0o755)
+    dist_info = clone / ".venv" / DIST_INFO_LAYOUTS[layout] / "thinkweave-0.2.0.dist-info"
+    dist_info.mkdir(parents=True)
 
     result = _run(tmp_path, script)
 
@@ -115,9 +137,52 @@ def test_synced_venv_skips_bootstrap(tmp_path, name):
     )
 
 
+@pytest.mark.parametrize("name", LAUNCHERS)
+def test_failed_bootstrap_aborts_before_run(tmp_path, name):
+    """A failing sync must abort the launcher (set -eu), never fall through
+    to a `uv run` that would fabricate an empty venv and die confusingly."""
+    clone, script = _clone_with_launcher(tmp_path, name)
+    failing_uv = (
+        "#!/bin/sh\n"
+        'if [ "$1" = "sync" ]; then echo "uv $@"; exit 7; fi\n'
+        'echo "uv $@"\n'
+    )
+    result = _run(tmp_path, script, fake_uv_body=failing_uv)
+
+    assert result.returncode != 0
+    assert result.stdout.strip() == "", "launcher ran past a failed bootstrap"
+    assert "uv sync" in result.stderr  # the failed attempt is visible
+
+
 def test_cmd_launchers_pin_bootstrap_branch():
-    """cmd.exe can't run here; pin the native-Windows twins by content."""
+    """cmd.exe can't run here; pin the native-Windows twins by their
+    non-comment invocation lines (the test_install.py pattern): sentinel,
+    sanctioned sync shape on stderr, failure propagation, and the bootstrap
+    ordered before the run line."""
     for name in ("weave-hook-launch.cmd", "weave-mcp-launch.cmd"):
         text = (REPO_ROOT / "bin" / name).read_text(encoding="utf-8")
-        assert 'if not exist "%root%\\.venv\\Scripts\\weave.exe"' in text, name
-        assert 'sync --project "%root%" --extra all' in text, name
+        lines = [
+            ln.strip() for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith("rem ")
+        ]
+        sentinel = next(
+            (i for i, ln in enumerate(lines) if ln.startswith(
+                'if not exist "%root%\\.venv\\Lib\\site-packages\\thinkweave-*.dist-info"'
+            )),
+            None,
+        )
+        assert sentinel is not None, f"{name}: no dist-info bootstrap sentinel"
+        sync = next(
+            (i for i, ln in enumerate(lines)
+             if 'sync --project "%root%" --extra all' in ln),
+            None,
+        )
+        assert sync is not None, f"{name}: no sanctioned bootstrap sync line"
+        assert "1>&2" in lines[sync], f"{name}: sync output not on stderr"
+        assert "if errorlevel 1 exit /b 1" in lines, (
+            f"{name}: failed bootstrap does not abort"
+        )
+        run = next(
+            i for i, ln in enumerate(lines) if "run --no-sync" in ln
+        )
+        assert sentinel < sync < run, f"{name}: bootstrap not before the run line"

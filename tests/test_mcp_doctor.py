@@ -591,3 +591,22 @@ class TestVenvExtrasCheck:
         assert not result.passed
         assert "no_such_parent_xyz.child [gemini]" in result.detail
         assert "--extra all" in result.fix
+
+    def test_broken_module_reports_missing_not_crash(self, monkeypatch):
+        """``find_spec`` can raise beyond ModuleNotFoundError: it imports a
+        dotted name's parent (whose ``__init__`` may raise anything), and a
+        sys.modules entry with ``__spec__ = None`` raises ValueError. A
+        present-but-broken extra must report as missing — the doctor's job
+        is diagnosing a damaged venv, never crashing on one."""
+        import sys
+        import types
+
+        broken = types.ModuleType("broken_extra_xyz")
+        broken.__spec__ = None
+        monkeypatch.setitem(sys.modules, "broken_extra_xyz", broken)
+        monkeypatch.setattr(
+            md, "_EXTRA_MODULES", (("broken_extra_xyz", "news", "news rss_poll"),)
+        )
+        result = md.check_venv_extras()
+        assert not result.passed
+        assert "broken_extra_xyz [news]" in result.detail

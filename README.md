@@ -178,9 +178,14 @@ fan out to.
 
 No manual `uv sync` is needed on this route: the very first launcher that
 fires (MCP server, hook, or a skill's `weave` call) sees the fresh clone has
-no populated venv and runs the one-time bootstrap `uv sync --extra all`
-itself, so the first session may take a moment longer to start. Launchers
-never sync after that — a populated venv skips the bootstrap entirely.
+no installed `thinkweave` distribution and runs the one-time bootstrap
+`uv sync --extra all` itself. **First launch can take several minutes** on a
+cold uv cache (the `all` extras pull numpy, lxml, and friends), and hooks may
+hit their timeouts and be killed while it converges — each attempt logs a
+`first-run bootstrap` line to stderr and resumes where the last one stopped
+(uv caches every downloaded wheel), so a restart or two of Claude Code lands
+on a fully populated venv. Launchers never sync after that — an installed
+distribution skips the bootstrap entirely.
 
 **Namespacing.** Claude Code registers plugin commands under the plugin's
 namespace: type `/thinkweave:onboard`, not `/onboard` (tab-complete after

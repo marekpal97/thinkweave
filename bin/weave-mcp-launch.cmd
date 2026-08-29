@@ -50,11 +50,18 @@ if not defined uv_bin (
 
 rem One-time dependency bootstrap (#164, matches the POSIX launchers): a
 rem fresh plugin/marketplace clone has no venv, and `uv run --no-sync` would
-rem fabricate an EMPTY one and die with ModuleNotFoundError. When the venv
-rem lacks the project's own console script, run the ONE sanctioned sync
-rem (dec-3d4f8ce9): --extra all, never per-call, never a narrower extra set.
-rem Output to stderr: stdout is this process's MCP JSON-RPC stdio channel.
-if not exist "%root%\.venv\Scripts\weave.exe" (
+rem fabricate an EMPTY one and die with ModuleNotFoundError. Sentinel = an
+rem installed thinkweave distribution (site-packages\thinkweave-*.dist-info,
+rem the marker editable installs ship too). NOT the console scripts: uv
+rem deletes those FIRST during a project reinstall (the os-error-32 incident
+rem below), and the resulting half-shimmed venv still runs fine via
+rem `python -m` — it must never re-fire a sync that dies while live servers
+rem hold the shims. The sync is the ONE sanctioned shape (dec-3d4f8ce9):
+rem --extra all, never per-call, never narrower. Breadcrumb + sync output on
+rem stderr: stdout is this process's MCP JSON-RPC stdio channel, and a
+rem killed sync must leave a diagnosable trace.
+if not exist "%root%\.venv\Lib\site-packages\thinkweave-*.dist-info" (
+    echo weave-mcp-launch: first-run bootstrap: uv sync --extra all - a cold cache can take minutes; a killed attempt resumes at the next launch 1>&2
     "%uv_bin%" sync --project "%root%" --extra all 1>&2
     if errorlevel 1 exit /b 1
 )

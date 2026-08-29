@@ -391,6 +391,38 @@ which is what `uv run` already guarantees. This was Codex's original
 recommendation, initially rejected here as churn on the grounds that the console
 script worked at the time; the lock failure is the case that argument missed.
 
+**Amended 2026-08-29 (#164) — unconditional `--no-sync` deleted the plugin
+route's only dependency bootstrap, so the launchers now carry a guarded one.**
+"The launchers must keep syncing" (above) and "the launchers pass `--no-sync`
+unconditionally" (the 2026-08-03 amendment) were each half right: the implicit
+sync WAS the marketplace clone's only bootstrap, and removing it meant
+`uv run --no-sync` on a venv-less clone fabricated an empty venv and died with
+`ModuleNotFoundError`. The resolution is a third state: every launcher (three
+POSIX + the two `.cmd` twins) checks for an installed thinkweave distribution
+and, only when none exists, runs the one sanctioned sync
+(`uv sync --extra all`, dec-3d4f8ce9) before its unchanged `--no-sync` exec.
+
+The sentinel is `site-packages/thinkweave-*.dist-info` (either venv layout),
+**not** the console scripts, for exactly the reason this section records: the
+2026-08-03 incident showed uv deletes the shims *first* during a reinstall,
+leaving a venv that imports fine but has no `weave-hook.exe` — a state
+`python -m` survives, and which therefore must not re-trigger a sync while
+live servers hold the shims. dist-info is the marker both editable installs
+(what `uv sync` produces on the dev and plugin routes — there is no
+`site-packages/thinkweave/` then) and regular installs share. A sync killed
+mid-flight can transiently remove dist-info too; the bootstrap then re-fires
+on the next launch and converges via uv's venv lock and wheel cache.
+
+A cold `uv sync --extra all` routinely outlives hook timeouts, so
+`hooks/hooks.json` raises SessionStart from 60s to 300s: SessionStart is the
+first hook to fire on a fresh clone and the natural place for the bootstrap to
+converge, a healthy SessionStart still finishes in about a second (the ceiling
+only binds when the hook genuinely runs long, which was previously a
+guaranteed kill), and the 30s hooks stay put — by the time they fire, the venv
+has either converged or the cache is warm enough that the next attempt
+finishes. Each attempt logs a `first-run bootstrap` breadcrumb to stderr so a
+hook killed at its timeout is diagnosable rather than silent.
+
 ### A latent bug this surfaced
 
 (This one is fixed here; the launcher and probe items above are #156's, and the
