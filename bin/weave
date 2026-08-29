@@ -39,21 +39,9 @@ else
     exit 127
 fi
 
-# One-time dependency bootstrap (#164, matches bin/weave-{hook,mcp}-launch):
-# a fresh plugin/marketplace clone has no venv, and `uv run --no-sync` would
-# fabricate an EMPTY one and die with ModuleNotFoundError. Sentinel = an
-# installed thinkweave distribution (site-packages/thinkweave-*.dist-info,
-# either venv layout — the marker editable installs ship too; they have no
-# site-packages/thinkweave/). NOT the console scripts: uv deletes those FIRST
-# during a project reinstall (docs/HARNESSES.md os-error-32 incident), and the
-# resulting half-shimmed venv still runs fine via `python -m` — it must never
-# re-fire a sync that dies while live servers hold the shims. The sync is the
-# ONE sanctioned shape (dec-3d4f8ce9): `--extra all`, never per-call, never
-# narrower. Breadcrumb + sync output on stderr: stdout belongs to the caller,
-# and a hook killed at its timeout mid-sync must leave a diagnosable trace.
-# ponytail: a sync killed exactly between dist-info removal and re-creation
-# re-fires the bootstrap on the next launch; uv's venv lock + warm cache make
-# that retry converge. Upgrade path: a success stamp the bootstrap writes.
+# One-time bootstrap (#164): no installed thinkweave dist-info → run the one
+# sanctioned `uv sync --extra all` (dec-3d4f8ce9); sentinel is dist-info,
+# never console scripts. Full rationale: docs/HARNESSES.md.
 installed=no
 for marker in "$root"/.venv/lib/python*/site-packages/thinkweave-*.dist-info \
               "$root"/.venv/Lib/site-packages/thinkweave-*.dist-info; do

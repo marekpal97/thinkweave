@@ -1,25 +1,10 @@
 """Bootstrap seam for the three POSIX launchers + the ``.cmd`` twins (#164).
 
-Pre-#156 the launchers' implicit ``uv run`` sync populated the plugin
-(marketplace) clone's venv — the route's ONLY dependency bootstrap. The move
-to ``--no-sync`` (#156/#164) removed it: ``uv run --no-sync`` on a venv-less
-clone fabricates an EMPTY venv and dies with ModuleNotFoundError, with no
-actionable message. The launchers now branch: when the venv lacks an
-installed ``thinkweave`` distribution, they run the ONE sanctioned sync
-(dec-3d4f8ce9) — ``uv sync --extra all`` — before exec'ing the module.
-
-The sentinel is ``site-packages/thinkweave-*.dist-info`` — the install
-marker present for BOTH editable installs (what ``uv sync`` produces on the
-dev and plugin routes; there is no ``site-packages/thinkweave/`` then) and
-regular ones. Console scripts are deliberately NOT the sentinel: uv deletes
-them FIRST during a project reinstall (the measured os-error-32 incident in
-docs/HARNESSES.md left a venv that imported fine but had no shims), and that
-half-shimmed venv is survivable via ``python -m`` — it must not re-fire a
-sync that provably dies while live servers hold the shims.
-
 Same seam as ``test_mcp_launcher.py``: the real script, a fake ``uv`` that
-echoes its argv, a clone directory in tmp. The sync's output must land on
-stderr — for the MCP launcher, stdout is the JSON-RPC stdio channel.
+echoes its argv, a clone directory in tmp. The sentinel is
+``site-packages/thinkweave-*.dist-info``, never console scripts; the sync's
+output must land on stderr (for the MCP launcher, stdout is the JSON-RPC
+stdio channel). Incident history and rationale: docs/HARNESSES.md.
 """
 
 from __future__ import annotations

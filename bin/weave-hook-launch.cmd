@@ -41,18 +41,9 @@ if not defined uv_bin (
     exit /b 127
 )
 
-rem One-time dependency bootstrap (#164, matches the POSIX launchers): a
-rem fresh plugin/marketplace clone has no venv, and `uv run --no-sync` would
-rem fabricate an EMPTY one and die with ModuleNotFoundError. Sentinel = an
-rem installed thinkweave distribution (site-packages\thinkweave-*.dist-info,
-rem the marker editable installs ship too). NOT the console scripts: uv
-rem deletes those FIRST during a project reinstall (the os-error-32 incident
-rem in docs/HARNESSES.md), and the resulting half-shimmed venv still runs
-rem fine via `python -m` — it must never re-fire a sync that dies while live
-rem servers hold the shims. The sync is the ONE sanctioned shape
-rem (dec-3d4f8ce9): --extra all, never per-call, never narrower. Breadcrumb
-rem + sync output on stderr: stdout belongs to the harness, and a hook
-rem killed at its timeout mid-sync must leave a diagnosable trace.
+rem One-time bootstrap (#164): no installed thinkweave dist-info -> run the
+rem one sanctioned `uv sync --extra all` (dec-3d4f8ce9); sentinel is
+rem dist-info, never console scripts. Full rationale: docs/HARNESSES.md.
 if not exist "%root%\.venv\Lib\site-packages\thinkweave-*.dist-info" (
     echo weave-hook-launch: first-run bootstrap: uv sync --extra all - a cold cache can take minutes; a killed attempt resumes at the next launch 1>&2
     "%uv_bin%" sync --project "%root%" --extra all 1>&2
