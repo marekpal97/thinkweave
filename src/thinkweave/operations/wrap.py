@@ -277,11 +277,11 @@ def _append_verdict_events(
     # the register from a PREVIOUS wrap is a re-wrap duplicate and is
     # skipped outright (falling through would label a prompt the user never
     # judged). ``batch`` holds the prompts labeled in THIS call — keyed by
-    # timestamp alone, because one prompt takes ONE label per wrap (#181
-    # round 4: a register-keyed claim would let a second verdict of a
-    # different register double-label the same prompt) — and drives the
-    # fall-through so repeated same-prefix verdicts in one batch
-    # distribute over distinct prompts.
+    # (timestamp, channel), where the channel folds correction/confirmation
+    # into ``feedback`` and keeps ``probe`` separate (§C5: one prompt takes
+    # ONE feedback label per wrap, but a probe label is orthogonal and may
+    # ride the same prompt) — and drives the fall-through so repeated
+    # same-prefix verdicts in one batch distribute over distinct prompts.
     preexisting = {
         (r.get("ts", ""), r.get("register", ""))
         for r in feedback_events(events_file)
@@ -291,7 +291,7 @@ def _append_verdict_events(
         for p in prompts
         if p.classification == "probe"
     )
-    batch: set[str] = set()
+    batch: set[tuple[str, str]] = set()
 
     lines: list[str] = []
     # Longest needle first (#181 review): the most specific verdict claims
@@ -309,6 +309,7 @@ def _append_verdict_events(
         if not needle:
             result.errors.append("verdicts: verdict with empty prompt ref")
             continue
+        channel = "probe" if register == "probe" else "feedback"
         matched = [
             p for p in prompts if p.text.strip().lower().startswith(needle)
         ]
@@ -338,7 +339,11 @@ def _append_verdict_events(
             key=lambda c: c.text.strip().lower() != needle,
         )
         p = next(
-            (c for c in candidates if c.ts.isoformat() not in batch),
+            (
+                c
+                for c in candidates
+                if (c.ts.isoformat(), channel) not in batch
+            ),
             None,
         )
         if p is None:
@@ -353,10 +358,10 @@ def _append_verdict_events(
             )
             continue
         ts_iso = p.ts.isoformat()
-        batch.add(ts_iso)
+        batch.add((ts_iso, channel))
         event = {
             "ts": ts_iso,
-            "type": "probe" if register == "probe" else "feedback",
+            "type": channel,
             "session_id": p.session_id,
             "prompt_ref": p.text[:120],
         }

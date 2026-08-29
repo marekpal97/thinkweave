@@ -605,6 +605,38 @@ class TestVerdictStep:
             "2026-08-29T09:30:00+00:00": "confirmation",
         }
 
+    def test_probe_and_feedback_are_orthogonal_channels(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 review round 5: feedback (correction/confirmation) and probe
+        # are TWO channels (§C5) — one prompt can legitimately carry both a
+        # feedback label and a probe label in the same batch, and the
+        # identical verdict list re-wrapped must be a fixed point.
+        f = self._write_buffer(config, "cc-uuid-14", [
+            {"ts": "2026-08-29T09:00:00+00:00", "type": "prompt",
+             "text": "how should the resolver rank folders?",
+             "session_id": "cc-uuid-14"},
+        ])
+        verdicts = [
+            {"prompt": "how should the resolver", "register": "correction"},
+            {"prompt": "how should the resolver", "register": "probe"},
+        ]
+        result = finalize_wrap(
+            config, session_id="cc-uuid-14", project="t", prune=False,
+            verdicts=verdicts,
+        )
+        assert result.verdicts_written == 2
+        rows = self._rows(f)
+        assert [r["type"] for r in rows[1:]] == ["feedback", "probe"]
+
+        rewrap = finalize_wrap(
+            config, session_id="cc-uuid-14", project="t", prune=False,
+            verdicts=verdicts,
+        )
+        assert rewrap.verdicts_written == 0
+        assert rewrap.verdicts_skipped == 2
+        assert len(self._rows(f)) == 3
+
     def test_ses_id_falls_back_to_source_uuid_buffer(
         self, config: Config, vault: VaultManager
     ):
