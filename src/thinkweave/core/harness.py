@@ -308,6 +308,22 @@ class HarnessProfile:
     the file format (``mcpServers``/``mcp_servers``) — OpenCode is the
     counterexample that makes this a profile fact: JSON file, ``mcp`` key."""
 
+    mcp_entry_shape: str = "command-args"
+    """Which documented body ``mcp_config.canonical`` renders the server
+    entry into — one of ``mcp_config.ENTRY_SHAPES``.
+
+    ``command-args`` — Claude Code's authored split shape (``type: stdio``,
+    ``command`` string, ``args`` list, ``env`` map). Pi documents the same
+    split ``mcpServers`` block (``command``/``args``/``env``, blueprint
+    n-a1d3beba §4), and Codex's TOML differs only by the format-level trims
+    the writer already applies. ``argv-array`` — OpenCode's documented
+    ``mcp`` body (opencode.ai/docs/mcp-servers/, fetched 2026-08-24 into
+    blueprint n-767d66b4 §4): ``type: local``, launcher and argv merged into
+    ONE ``command`` array, optional ``environment`` map. A harness's own
+    published schema is a truth source for declared profile data
+    (dec-2fa074a0, owner override 2026-08-29); whether the written entry
+    PARSES on a live install stays owed to #114/#195."""
+
     mcp_via_cli: str = ""
     """The harness-native registration command (``claude mcp add`` /
     ``codex mcp add``) when one exists — preferred over hand-splicing where
@@ -682,10 +698,11 @@ def pi(home: Path | None = None) -> HarnessProfile:
             Degradation(
                 "MCP registration",
                 "documented",
-                "weave install writes the entry in Claude Code's shape "
-                "(command string + args list under mcpServers); Pi's "
-                "documented mcpServers block is close, but the written entry "
-                "has not been verified to parse on a live Pi install",
+                "the written entry follows Pi's documented mcpServers block "
+                "(command string + args list + env map, n-a1d3beba §4) apart "
+                "from an extra `type: stdio` key Pi's field list does not "
+                "name; NOT yet verified to parse on a live install — #114 "
+                "owns the live verification",
                 "n-a1d3beba §4; verified by #114",
             ),
             Degradation(
@@ -775,6 +792,7 @@ def opencode(home: Path | None = None) -> HarnessProfile:
         session_id_scheme="ses_<12-hex><14-base62> (ULID-style sortable)",
         harness_flag="--harness opencode",
         mcp_servers_key="mcp",
+        mcp_entry_shape="argv-array",
         evidence="declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install",
         degradations=(
             Degradation(
@@ -788,12 +806,11 @@ def opencode(home: Path | None = None) -> HarnessProfile:
             Degradation(
                 "MCP registration",
                 "documented",
-                "weave install writes Claude Code's entry shape (command "
-                "string, args list, type stdio, env map) under the correct "
-                "`mcp` key, but OpenCode's documented schema wants type "
-                "local|remote, command as an ARRAY, and an `environment` "
-                "map — the entry has not been verified to parse; #195's "
-                "installer owns the shape normalisation",
+                "weave install writes OpenCode's documented schema under the "
+                "`mcp` key (type local, command as one array, environment "
+                "map when non-empty — opencode.ai/docs/mcp-servers/ via "
+                "n-767d66b4 §4); NOT yet verified to parse on a live "
+                "install — #195 owns the live verification",
                 "n-767d66b4 §4",
             ),
             Degradation(

@@ -121,6 +121,12 @@ class TestSchemaInvariants:
                 profile.mcp_config
             )
 
+    def test_mcp_entry_shape_is_a_tag_the_interpreter_dispatches_on(self, profile):
+        # The shape is profile DATA interpreted by ``mcp_config.canonical`` —
+        # a tag outside the interpreter's vocabulary would silently fall
+        # nowhere, which is the "config that parses and never fires" failure.
+        assert profile.mcp_entry_shape in mcp_config.ENTRY_SHAPES
+
 
 # --------------------------------------------------------------------------- #
 # hand-written expected rows for the two blueprint harnesses
@@ -392,6 +398,57 @@ class TestMcpInstallSurface:
             # Measured rows keep the exact pre-#191 line — byte-identical.
             assert f"{line}.\n" in out
             assert profile.evidence not in out
+
+    def test_emitted_body_is_the_harness_documented_schema(self, profile, inst):
+        """The entry BODY, per profile, through the production caller.
+
+        Owner decision 2026-08-29 (amending #191's contract under
+        dec-2fa074a0's truth-source rule): a harness's own PUBLISHED schema
+        counts as a truth source for declared profile data, so the body is
+        profile-driven now — live-install parsing stays owed to #114/#195.
+        Expected bodies are written out by hand from the blueprints
+        (n-a1d3beba §4, n-767d66b4 §4), never recomputed from the shaping
+        code under test.
+        """
+        entry = self._install(inst)
+        uv_args = [
+            "run", "--no-sync", "--project", "/repo", "--extra", "mcp",
+            "python", "-m", "thinkweave.surfaces.mcp.server",
+        ]
+        if profile.id == "opencode":
+            # opencode.ai/docs/mcp-servers/ (blueprint n-767d66b4 §4):
+            # type local|remote, command as ONE array (launcher + argv
+            # merged), optional environment map — omitted here because the
+            # env is empty.
+            assert entry == {"type": "local", "command": ["/uv", *uv_args]}
+        elif profile.id == "codex":
+            # `codex mcp add`'s own 2026-08-02 output: no type key, empty
+            # env omitted (format-level trims, still the split shape).
+            assert entry == {"command": "/uv", "args": uv_args}
+        else:  # claude-code, pi — Claude Code's authored split shape.
+            assert entry == {
+                "type": "stdio",
+                "command": "/uv",
+                "args": uv_args,
+                "env": {},
+            }
+
+    def test_opencode_environment_appears_only_when_a_vault_is_baked(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # The docs mark ``environment`` optional (n-767d66b4 §4), so an empty
+        # map is omitted — same noise rule the Codex TOML trim applies to
+        # ``env``.
+        from thinkweave.surfaces.cli import install as inst
+
+        monkeypatch.setattr(
+            harness, "_OVERRIDE", _build("opencode", tmp_path / "home")
+        )
+        monkeypatch.setattr(inst, "_detect_uv_path", lambda: "/uv")
+        with_vault = inst._build_server_entry(Path("/repo"), "/v")
+        assert with_vault["environment"] == {"THINKWEAVE_VAULT": "/v"}
+        bare = inst._build_server_entry(Path("/repo"), None)
+        assert "environment" not in bare and "env" not in bare
 
     def test_foreign_top_level_keys_survive_the_install(self, profile, inst):
         if profile.mcp_config.suffix == ".toml":

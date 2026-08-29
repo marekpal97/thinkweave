@@ -266,6 +266,21 @@ class TestRegistrationScopes:
         assert not result.passed
 
 
+class TestKeyFingerprint:
+    """OpenCode's documented body carries ONE ``command`` array (launcher +
+    argv merged, blueprint n-767d66b4 §4); every other shape splits the
+    launcher string from an ``args`` list. ``_key`` must fingerprint the two
+    as the same invocation or a machine entry beside an OpenCode-shaped one
+    reads as a phantom cross-scope conflict."""
+
+    def test_argv_array_and_split_shapes_fingerprint_identically(self):
+        merged = {
+            "type": "local",
+            "command": [CANONICAL_ENTRY["command"], *CANONICAL_ENTRY["args"]],
+        }
+        assert md._key(merged) == md._key(CANONICAL_ENTRY)
+
+
 class TestMcpServersNarrowing:
     """``_mcp_servers`` narrows the manifest block to something dict-shaped."""
 

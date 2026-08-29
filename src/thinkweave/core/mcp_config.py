@@ -37,6 +37,11 @@ from thinkweave.core.fswrite import atomic_write_text
 TOML_SERVERS_KEY = "mcp_servers"
 JSON_SERVERS_KEY = "mcpServers"
 
+#: The documented entry bodies :func:`canonical` can render — the vocabulary a
+#: profile's ``mcp_entry_shape`` must come from (pinned by the conformance
+#: suite, so a row cannot declare a tag no interpreter branch dispatches on).
+ENTRY_SHAPES = ("command-args", "argv-array")
+
 
 class MalformedConfig(ValueError):
     """The config file exists but could not be parsed — the caller should
@@ -47,26 +52,62 @@ def _is_toml(path: Path) -> bool:
     return path.suffix == ".toml"
 
 
-def canonical(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
-    """The entry as this format stores it.
+def canonical(
+    path: Path, entry: dict[str, Any], *, shape: str = "command-args"
+) -> dict[str, Any]:
+    """The entry as this harness's documented schema stores it.
 
-    Callers build one entry shape and pass it through here so that what they
-    later compare against :func:`read_entry` is like-for-like — otherwise every
-    ``weave install`` on a TOML harness would report phantom drift.
+    Callers build one entry shape (Claude Code's split ``command``/``args``/
+    ``env``) and pass it through here so that what they later compare against
+    :func:`read_entry` is like-for-like — otherwise every repeat ``weave
+    install`` would report phantom drift.
 
-    Codex infers the transport from the presence of ``command`` vs ``url``, has
-    no ``type`` key, and ``codex exec --strict-config`` errors out on the
-    unknown field. An empty ``env`` is dropped for the same reason ``codex mcp
-    add`` omits it — it is noise, and its absence is what a re-read returns.
+    ``shape`` is the profile's ``mcp_entry_shape``: a harness's own published
+    schema is a truth source for declared profile data (dec-2fa074a0, owner
+    override 2026-08-29), so a differing documented body is rendered here —
+    keyed off profile data, never a per-harness writer fork. Whether the
+    written entry parses on a live install remains #114/#195's verification.
 
-    ponytail: normalisation is by file format only — a harness whose native
-    entry shape differs (OpenCode) carries that as an MCP-registration
-    Degradation on its profile; real shape data waits on #114/#195
-    verification (dec-5a076384).
+    ``argv-array`` (OpenCode, blueprint n-767d66b4 §4): ``type: local``,
+    launcher and argv merged into ONE ``command`` array, and an
+    ``environment`` map — omitted when empty, as the docs mark it optional.
+
+    ``command-args`` keeps the split shape and then normalises by file
+    format: Codex infers the transport from the presence of ``command`` vs
+    ``url``, has no ``type`` key, and ``codex exec --strict-config`` errors
+    out on the unknown field. An empty ``env`` is dropped for the same reason
+    ``codex mcp add`` omits it — it is noise, and its absence is what a
+    re-read returns.
     """
+    if shape not in ENTRY_SHAPES:
+        raise ValueError(
+            f"unknown mcp_entry_shape {shape!r}; expected one of {ENTRY_SHAPES}"
+        )
+    if shape == "argv-array":
+        merged: dict[str, Any] = {
+            "type": "local",
+            "command": [entry["command"], *entry.get("args", [])],
+        }
+        if entry.get("env"):
+            merged["environment"] = dict(entry["env"])
+        return merged
     if not _is_toml(path):
         return entry
     return {k: v for k, v in entry.items() if k != "type" and v != {}}
+
+
+def invocation(entry: dict[str, Any]) -> tuple[str, list[Any]]:
+    """The ``(command, args)`` pair an entry launches, whichever shape holds it.
+
+    The ``argv-array`` body carries one merged ``command`` array and no
+    ``args`` key; every other shape splits a launcher string from an ``args``
+    list. Readers — the doctor's fingerprint and its launch probe — come
+    through here so both shapes compare, and run, as the same invocation.
+    """
+    cmd = entry.get("command", "")
+    if isinstance(cmd, list):
+        return (cmd[0] if cmd else "", list(cmd[1:]))
+    return (cmd, list(entry.get("args", [])))
 
 
 # ---------------------------------------------------------------------------

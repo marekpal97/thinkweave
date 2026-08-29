@@ -214,9 +214,13 @@ def _key(entry: dict) -> tuple:
     passes it (#156; the plugin route's first sync is the launchers' guarded
     bootstrap, #164), but legacy entries without it must not report a phantom
     cross-scope conflict.
+
+    ``mcp_config.invocation`` first folds OpenCode's merged argv-array body
+    onto the split shape, so both spellings of one invocation fingerprint
+    alike.
     """
-    cmd = _command_stem(entry.get("command", ""))
-    raw_args = list(entry.get("args", []))
+    launcher, raw_args = mcp_config.invocation(entry)
+    cmd = _command_stem(launcher)
     norm: list[str] = []
     i = 0
     while i < len(raw_args):
@@ -490,8 +494,9 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
             fix="register thinkweave first (see scope check above)",
         )
 
-    raw_cmd = entry.get("command", "")
-    args = list(entry.get("args", []))
+    # `invocation` folds OpenCode's merged argv-array body onto the split
+    # shape, so the probe launches it like any other entry.
+    raw_cmd, args = mcp_config.invocation(entry)
 
     # Expand env vars in the command AND args (notably ${CLAUDE_PLUGIN_ROOT}
     # for plugins — since #52 the plugin command is

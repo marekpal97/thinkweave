@@ -59,7 +59,7 @@ None — the reference harness.
 #### Pi
 
 - **lifecycle hooks** — documented: the Pi extension shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#114)
-- **MCP registration** — documented: weave install writes the entry in Claude Code's shape (command string + args list under mcpServers); Pi's documented mcpServers block is close, but the written entry has not been verified to parse on a live Pi install (n-a1d3beba §4; verified by #114)
+- **MCP registration** — documented: the written entry follows Pi's documented mcpServers block (command string + args list + env map, n-a1d3beba §4) apart from an extra `type: stdio` key Pi's field list does not name; NOT yet verified to parse on a live install — #114 owns the live verification (n-a1d3beba §4; verified by #114)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
 - **skill invocation** — documented: no Skill tool — /skill:name is prompt-expansion, and the bootstrap must say read-the-SKILL.md, not invoke (n-a1d3beba §4)
 - **transcript import** — documented: session files are parentId trees, not flat JSONL; no importer walks them yet (n-a1d3beba §6)
@@ -67,7 +67,7 @@ None — the reference harness.
 #### OpenCode
 
 - **lifecycle hooks** — documented: the OpenCode plugin shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#195)
-- **MCP registration** — documented: weave install writes Claude Code's entry shape (command string, args list, type stdio, env map) under the correct `mcp` key, but OpenCode's documented schema wants type local|remote, command as an ARRAY, and an `environment` map — the entry has not been verified to parse; #195's installer owns the shape normalisation (n-767d66b4 §4)
+- **MCP registration** — documented: weave install writes OpenCode's documented schema under the `mcp` key (type local, command as one array, environment map when non-empty — opencode.ai/docs/mcp-servers/ via n-767d66b4 §4); NOT yet verified to parse on a live install — #195 owns the live verification (n-767d66b4 §4)
 - **Stop capture** — documented: no verified Stop-equivalent event — claude-mem's plugin subscribed to bus events that never fire and captured nothing silently; only session.idle/session.deleted are confirmed real (claude-mem#2462)
 - **subagent fan-out** — documented: no hook fires on subagent dispatch/completion in the docs or any reference plugin (n-767d66b4 §2)
 - **transcript import** — documented: sessions are per-record JSON files (session/message/part); no importer reads them yet (n-767d66b4 §6)

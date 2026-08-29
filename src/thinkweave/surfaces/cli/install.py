@@ -133,9 +133,10 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     2026-08-03: editing ``pyproject.toml`` with a session running did exactly
     that. Module execution depends only on the package being importable, which is
     what ``uv run`` already guarantees. The result is
-    normalised to whatever the harness's config *format* stores — Codex's TOML
-    carries no ``type`` key — so that a re-read compares equal and a repeat
-    install is a genuine no-op.
+    normalised to the active profile's documented entry shape and config
+    format — Codex's TOML carries no ``type`` key, OpenCode's body merges the
+    argv into one ``command`` array — so that a re-read compares equal and a
+    repeat install is a genuine no-op.
 
     ``--no-sync`` is safe *here specifically* because ``cmd_install`` has
     already run :func:`_uv_sync` eagerly, so the environment this entry launches
@@ -170,7 +171,9 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     }
     if vault_root:
         entry["env"]["THINKWEAVE_VAULT"] = vault_root
-    return mcp_config.canonical(_mcp_config(), entry)
+    return mcp_config.canonical(
+        _mcp_config(), entry, shape=_profile().mcp_entry_shape
+    )
 
 
 class ScriptsCheck(NamedTuple):
@@ -664,10 +667,11 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
     path = _mcp_config()
 
     # Degrade out loud (dec-5a076384, r2): on a row whose MCP registration is
-    # itself a documented degradation — the entry body is Claude Code's shape,
-    # unverified against this harness's schema — the success line carries the
-    # profile's provenance instead of an unqualified "Registered". Measured
-    # rows (CC, Codex) keep their exact pre-#191 lines.
+    # itself a documented degradation — the body follows the harness's
+    # documented schema but no live install has verified it parses (#114/
+    # #195) — the success line carries the profile's provenance instead of an
+    # unqualified "Registered". Measured rows (CC, Codex) keep their exact
+    # pre-#191 lines.
     qualifier = ""
     if any(
         "mcp registration" in d.capability.lower()
