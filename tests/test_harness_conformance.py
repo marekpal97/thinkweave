@@ -328,6 +328,38 @@ class TestEnvelopeRoundTrip:
 
 
 # --------------------------------------------------------------------------- #
+# docs/HARNESSES.md carries the GENERATED capability matrix (AC4)
+# --------------------------------------------------------------------------- #
+
+
+class TestGeneratedHarnessesDoc:
+    def test_committed_matrix_matches_the_profiles(self):
+        """The capability matrix people read is rendered from the same rows
+        the installer runs on — a hand-maintained table is the rot pattern
+        the issue names (vercel/memorix/hol-guard)."""
+        doc = (REPO_ROOT / "docs" / "HARNESSES.md").read_text(encoding="utf-8")
+        start = doc.find(harness_docs.MATRIX_START)
+        end = doc.find(harness_docs.MATRIX_END)
+        assert start != -1 and end != -1, "generated-matrix sentinels missing"
+        committed = doc[start : end + len(harness_docs.MATRIX_END)]
+        assert committed == harness_docs.generated_block(), (
+            "docs/HARNESSES.md is stale — regenerate with "
+            "`uv run python -m thinkweave.core.harness_docs --write`"
+        )
+
+    def test_matrix_names_every_profile_and_degradation(self):
+        block = harness_docs.generated_block()
+        for pid in ALL_IDS:
+            p = _build(pid, Path("/h"))
+            assert (p.display_name or pid) in block
+            for d in p.degradations:
+                assert d.note in block
+
+    def test_matrix_carries_no_machine_paths(self):
+        assert str(Path.home()) not in harness_docs.generated_block()
+
+
+# --------------------------------------------------------------------------- #
 # transcript-parse fixture, per declared format
 # --------------------------------------------------------------------------- #
 

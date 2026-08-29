@@ -1,16 +1,74 @@
 # Harnesses
 
-> **Scope note.** This file is owned by #105 (W1b), which will carry the full
-> capability matrix across every harness. #107 (W2b) created it early because
-> its spike answers had to land somewhere citable. Everything below is the
-> **Codex** section plus the spike results; #105 should absorb it and add the
-> Claude Code column rather than treat this shape as settled.
-
 Per-harness facts live in code, in one place: `HarnessProfile`
-(`src/thinkweave/core/harness.py`). This document is the *evidence* behind the
-data in those profiles — what was measured, against which version, and what is
-still unknown. When the two disagree, the profile is what runs; fix whichever
-is wrong.
+(`src/thinkweave/core/harness.py`). The capability matrix below is
+**generated** from those profiles (#191, subsuming the hand-written half of
+#105) — the conformance suite fails when it goes stale. Everything after it
+is the *evidence* behind the data in the profiles — what was measured,
+against which version, and what is still unknown. When the two disagree, the
+profile is what runs; fix whichever is wrong.
+
+<!-- weave:harness-matrix:start — GENERATED from core/harness.py profiles; edit the profile, then `uv run python -m thinkweave.core.harness_docs --write` -->
+
+## Capability matrix
+
+| | Claude Code | Codex | Pi | OpenCode |
+|---|--- | --- | --- | ---|
+| eligibility (dec-5a076384 ladder) | E3 | E3 | E0 | E0 |
+| detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
+| lifecycle hooks | plugin | file | none | none |
+| subagent fan-out | yes | yes | no | no |
+| headless slash skills | yes | no | no | no |
+| native memory seam | `~/.claude/projects` | — | — | — |
+| context channel | `additionalContext` | `additionalContext` | `context-injection` | `message-transform` |
+| dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
+| transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/storage/session/*/*.json` (json-records) |
+| session ids | uuid4 | uuid7 | uuid (session-header id) | ses_<12-hex><14-base62> (ULID-style sortable) |
+| MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/settings.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
+| MCP native CLI | `claude mcp add` | `codex mcp add` | — | — |
+| instructions file | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` | `~/.pi/agent/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
+| skills dir | `~/.claude/skills` | `~/.codex/skills` | `~/.pi/agent/skills` | `~/.config/opencode/skills` |
+
+### Hook events (canonical → native, with observed-fire dates)
+
+| canonical | Claude Code | Codex | Pi | OpenCode |
+|---|--- | --- | --- | ---|
+| SessionStart | ✓ 2026-08-29 | ✓ 2026-08-02 | `session_start` (declared) | `experimental.chat.messages.transform` (declared) |
+| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-08-02 | `before_agent_start` (declared) | `chat.message` (declared) |
+| PostToolUse | ✓ 2026-08-29 | wired, unverified | `tool_result` (declared) | `tool.execute.after` (declared) |
+| Stop | ✓ 2026-08-29 | wired, unverified | `agent_end` (declared) | — (no verified equivalent) |
+
+### Documented degradations
+
+Nothing below is silently faked (#103 anti-goal): a listed capability
+degrades exactly as stated, and everything unlisted works as on
+Claude Code.
+
+#### Claude Code
+
+None — the reference harness.
+
+#### Codex
+
+- **Stop capture** — documented: wired but unobserved on a live run — the 2026-08-02 spike aborted at auth before any turn completed; SessionEnd did fire and is the fallback if Stop proves unreliable headlessly (docs/HARNESSES.md §Spike answers)
+- **SessionStart context delivery** — documented: additionalContext renders as a visible developer message, not a silent system one (openai/codex#16933)
+- **headless skill invocation** — documented: codex exec resolves no slash commands; a $name mention is a hint the model acts on by reading the skill file itself (docs/HARNESSES.md §Q2)
+
+#### Pi
+
+- **lifecycle hooks** — documented: the Pi extension shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#114)
+- **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
+- **skill invocation** — documented: no Skill tool — /skill:name is prompt-expansion, and the bootstrap must say read-the-SKILL.md, not invoke (n-a1d3beba §4)
+- **transcript import** — documented: session files are parentId trees, not flat JSONL; no importer walks them yet (n-a1d3beba §6)
+
+#### OpenCode
+
+- **lifecycle hooks** — documented: the OpenCode plugin shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#195)
+- **Stop capture** — documented: no verified Stop-equivalent event — claude-mem's plugin subscribed to bus events that never fire and captured nothing silently; only session.idle/session.deleted are confirmed real (claude-mem#2462)
+- **subagent fan-out** — documented: no hook fires on subagent dispatch/completion in the docs or any reference plugin (n-767d66b4 §2)
+- **transcript import** — documented: sessions are per-record JSON files (session/message/part); no importer reads them yet (n-767d66b4 §6)
+
+<!-- weave:harness-matrix:end -->
 
 ## Codex
 

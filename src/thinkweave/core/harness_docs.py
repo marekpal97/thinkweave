@@ -9,7 +9,12 @@ pattern the issue names). So the prose people read is *rendered from* the same
 
 from __future__ import annotations
 
-from thinkweave.core.harness import HarnessProfile
+from pathlib import Path, PurePosixPath
+
+from thinkweave.core.harness import CANONICAL_EVENTS, PROFILES, HarnessProfile
+
+MATRIX_START = "<!-- weave:harness-matrix:start — GENERATED from core/harness.py profiles; edit the profile, then `uv run python -m thinkweave.core.harness_docs --write` -->"
+MATRIX_END = "<!-- weave:harness-matrix:end -->"
 
 
 def render_degradations(profile: HarnessProfile) -> str:
@@ -23,3 +28,132 @@ def render_degradations(profile: HarnessProfile) -> str:
         ref = f" ({d.upstream_ref})" if d.upstream_ref else ""
         lines.append(f"- **{d.capability}** — {d.mode}: {d.note}{ref}")
     return "\n".join(lines)
+
+
+def _profiles() -> list[HarnessProfile]:
+    # Aimed at a PurePosixPath home so every rendered path reads `~/…` with
+    # forward slashes on any platform — committed docs must not vary by the
+    # machine that regenerated them.
+    return [factory(PurePosixPath("~")) for factory in PROFILES.values()]
+
+
+def _yes(flag: bool) -> str:
+    return "yes" if flag else "no"
+
+
+def _event_cell(profile: HarnessProfile, event: str) -> str:
+    native = profile.hook_events.get(event)
+    if native is None:
+        return "— (no verified equivalent)"
+    verified = profile.fires_verified.get(event)
+    if verified:
+        suffix = f"✓ {verified}" if native == event else f"`{native}` ✓ {verified}"
+        return suffix
+    if profile.hook_mechanism != "none":
+        return "wired, unverified"
+    return f"`{native}` (declared)"
+
+
+def render_matrix() -> str:
+    """The capability matrix + degradations, rendered from the profile rows."""
+    ps = _profiles()
+    head = " | ".join(p.display_name or p.id for p in ps)
+    bar = " | ".join("---" for _ in ps)
+
+    def row(label: str, cell) -> str:
+        return f"| {label} | " + " | ".join(cell(p) for p in ps) + " |"
+
+    lines = [
+        "## Capability matrix",
+        "",
+        f"| | {head} |",
+        f"|---|{bar}|",
+        row("eligibility (dec-5a076384 ladder)", lambda p: p.eligibility),
+        row("detected by", lambda p: f"`{p.detect_dir}`"),
+        row("lifecycle hooks", lambda p: p.hook_mechanism),
+        row("subagent fan-out", lambda p: _yes(p.subagents)),
+        row("headless slash skills", lambda p: _yes(p.headless_slash)),
+        row(
+            "native memory seam",
+            lambda p: f"`{p.native_memory_artifact}`"
+            if p.native_memory_artifact
+            else "—",
+        ),
+        row("context channel", lambda p: f"`{p.context_channel}`"),
+        row(
+            "dispatch",
+            lambda p: "`" + " ".join(p.headless_argv("<prompt>")) + "`",
+        ),
+        row(
+            "transcripts",
+            lambda p: f"`{p.transcript_glob}` ({p.transcript_format})",
+        ),
+        row("session ids", lambda p: p.session_id_scheme),
+        row(
+            "MCP config",
+            lambda p: f"`{p.mcp_config}` · key `{p.mcp_servers_key}`",
+        ),
+        row(
+            "MCP native CLI",
+            lambda p: f"`{p.mcp_via_cli}`" if p.mcp_via_cli else "—",
+        ),
+        row("instructions file", lambda p: f"`{p.instructions_file}`"),
+        row("skills dir", lambda p: f"`{p.skills_dir}`"),
+        "",
+        "### Hook events (canonical → native, with observed-fire dates)",
+        "",
+        f"| canonical | {head} |",
+        f"|---|{bar}|",
+    ]
+    for event in CANONICAL_EVENTS:
+        lines.append(row(event, lambda p, e=event: _event_cell(p, e)))
+    lines += [
+        "",
+        "### Documented degradations",
+        "",
+        "Nothing below is silently faked (#103 anti-goal): a listed capability",
+        "degrades exactly as stated, and everything unlisted works as on",
+        "Claude Code.",
+    ]
+    for p in ps:
+        rendered = render_degradations(p)
+        lines += ["", f"#### {p.display_name or p.id}", ""]
+        lines.append(rendered if rendered else "None — the reference harness.")
+    return "\n".join(lines)
+
+
+def generated_block() -> str:
+    return f"{MATRIX_START}\n\n{render_matrix()}\n\n{MATRIX_END}"
+
+
+def splice(doc: str) -> str:
+    """Replace the sentinel block in ``doc``, leaving every other byte alone."""
+    start = doc.find(MATRIX_START)
+    end = doc.find(MATRIX_END)
+    if start == -1 or end == -1:
+        raise ValueError(
+            "docs/HARNESSES.md is missing the harness-matrix sentinels"
+        )
+    return doc[:start] + generated_block() + doc[end + len(MATRIX_END) :]
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Regenerate the HARNESSES.md capability matrix from the profiles."
+    )
+    parser.add_argument("--write", action="store_true")
+    args = parser.parse_args()
+    doc_path = Path(__file__).resolve().parents[3] / "docs" / "HARNESSES.md"
+    doc = doc_path.read_text(encoding="utf-8")
+    updated = splice(doc)
+    if not args.write:
+        print("stale" if updated != doc else "in sync")
+        return
+    doc_path.write_text(updated, encoding="utf-8")
+    print(f"wrote {doc_path}")
+
+
+if __name__ == "__main__":
+    main()
