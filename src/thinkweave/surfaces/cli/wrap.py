@@ -91,6 +91,10 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         )
         if parts:
             print(f"  timing:  {parts}")
+    if result.warnings:
+        print("  warnings:")
+        for w in result.warnings:
+            print(f"    ~ {w}")
     if result.errors:
         print("  errors:")
         for e in result.errors:

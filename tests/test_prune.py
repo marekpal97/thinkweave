@@ -224,6 +224,23 @@ class TestIsOrphan:
             sibling, current_session_id="ses-newwrap", min_age_seconds=0
         )
 
+    def test_resolved_events_folder_is_protected(self, vault_dir: Path):
+        # #181: the folder finalize actually read events from (and wrote
+        # verdicts into) is shielded even when none of its id fields match
+        # the current session id — e.g. the source-UUID folder holding the
+        # prompts while finalize is keyed by a force-minted sibling ses- id.
+        session = _make_session(
+            vault_dir, "alpha", "cc-uuid-x",
+            note_id="ses-other", source_session="cc-uuid-x",
+        )
+        assert is_orphan(
+            session, current_session_id="ses-unrelated", min_age_seconds=0
+        )
+        assert not is_orphan(
+            session, current_session_id="ses-unrelated", min_age_seconds=0,
+            protected_dir=session,
+        )
+
     def test_non_session_folder_ignored(self, vault_dir: Path):
         fake = vault_dir / "projects" / "alpha" / "sessions" / "misc"
         fake.mkdir(parents=True)

@@ -232,8 +232,17 @@ class TestExtractFormatReport:
             summary="first pass", insights=[], decisions=[],
         )
         assert first.error == ""
-        # Hooks keep capturing after the first archive.
-        buf.write_text(row, encoding="utf-8")
+        # archive_buffer UNLINKED the buffer, so what hooks recreate holds
+        # only post-archive rows — the prompts are unreachable from it.
+        # (#181 review round 3: re-seeding the prompt row here masked the
+        # real state.)
+        buf.write_text(
+            json.dumps({
+                "ts": "2026-08-22T09:10:00+00:00", "type": "action",
+                "tool": "Bash", "session_id": cc_uuid,
+            }) + "\n",
+            encoding="utf-8",
+        )
 
         out = extract_session(
             config, session_id=cc_uuid, project="t",

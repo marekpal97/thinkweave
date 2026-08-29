@@ -570,9 +570,12 @@ class TestVerdictStep:
             r["ts"]: r for r in self._rows(f) if r.get("type") == "feedback"
         }
         # The narrow verdict got its precise referent; one broad duplicate
-        # starved — and said so.
+        # starved — surfaced as a warning, NOT an error (two verdicts
+        # resolving to one prompt is a benign LLM-output shape and must not
+        # flip the wrap-finalize exit code).
         assert fb["2026-08-22T11:00:00+00:00"]["about"] == "narrow"
-        assert any("no unlabeled prompt" in e for e in result.errors)
+        assert any("no unlabeled prompt" in w for w in result.warnings)
+        assert result.errors == []
 
     def test_ses_id_falls_back_to_source_uuid_buffer(
         self, config: Config, vault: VaultManager

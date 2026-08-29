@@ -48,6 +48,9 @@ class WrapFinalizeResult:
     verdicts_unmatched: int = 0
     prompts_reprojected: int = 0
     errors: list[str] = field(default_factory=list)
+    # Benign anomalies worth surfacing without flipping the exit code
+    # (e.g. two verdicts resolving to one prompt).
+    warnings: list[str] = field(default_factory=list)
     # Per-step wall time (seconds) — keys: verdicts, prune, index, judge,
     # landing, drift. Populated even when a step errors, so a slow failure
     # is visible.
@@ -70,6 +73,7 @@ class WrapFinalizeResult:
             "verdicts_skipped": self.verdicts_skipped,
             "verdicts_unmatched": self.verdicts_unmatched,
             "errors": self.errors,
+            "warnings": self.warnings,
             "timings": self.timings,
         }
 
@@ -84,16 +88,39 @@ class WrapFinalizeResult:
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
 
+def _has_prompt_rows(events_file: Path) -> bool:
+    """True when the events file holds at least one ``prompt`` row.
+    Re-reads the file line-by-line, but candidates are the few folders
+    matching one session's ids — cheap in practice."""
+    try:
+        with events_file.open(encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and row.get("type") == "prompt":
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | None:
     """Locate the session's event stream without creating anything.
 
-    Primary: the archived ``events.jsonl`` in a session folder matched by
-    folder-name prefix or frontmatter — ``source_session`` or ``id``, the
-    live folder being named after the source UUID with the minted ses- id
-    inside (#181). Among matches the most recently written events file
-    wins (folder name breaks exact mtime ties): a forced re-extract mints
-    a second folder claiming the same source UUID, and the freshest
-    archive is the one the extract just wrote.
+    Primary: the archived ``events.jsonl`` of a session folder matched by
+    either of the session's identities — the id passed in and, for a
+    ses- id, its ``source_session`` UUID (#181: a forced re-extract
+    splits one session across sibling folders, and the folder holding
+    the prompts claims only the UUID). Folders whose events actually
+    contain prompt rows outrank promptless siblings — the recreated
+    buffer archived into a force-minted folder holds only post-archive
+    rows; within a class the most recently written file wins, folder
+    name breaking exact mtime ties. The prompt gate is the primary
+    discriminator on purpose: mtime is not durable across clone/restore.
 
     Last resort: the live buffer — keyed by the source UUID, so a ses- id
     also probes via its ``source_session``. Hooks recreate the buffer the
@@ -101,16 +128,21 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
     alongside an archive is post-archive noise; it is the events file
     only when no archive exists (archive failed, or never ran).
     """
+    ids = {session_id}
+    if session_id.startswith("ses-"):
+        src = _source_session_of(cfg, session_id)
+        if src:
+            ids.add(src)
     if project:
         sessions_dir = cfg.vault_root / "projects" / project / "sessions"
         if sessions_dir.exists():
             from thinkweave.core.vault import parse_frontmatter
 
-            best: tuple[float, str, Path] | None = None
+            best: tuple[bool, float, str, Path] | None = None
             for d in sessions_dir.iterdir():
                 if not d.is_dir() or d.name == "misc":
                     continue
-                if not d.name.startswith(session_id):
+                if not any(d.name.startswith(i) for i in ids):
                     sm = d / "session.md"
                     if not sm.exists():
                         continue
@@ -120,19 +152,23 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
                         )
                     except Exception:  # noqa: BLE001
                         continue
-                    if session_id not in (
-                        fm.get("source_session"),
-                        fm.get("id"),
+                    if (
+                        fm.get("source_session") not in ids
+                        and fm.get("id") not in ids
                     ):
                         continue
                 events_file = d / "events.jsonl"
                 if not events_file.exists():
                     continue
-                rank = (events_file.stat().st_mtime, d.name)
-                if best is None or rank > best[:2]:
+                rank = (
+                    _has_prompt_rows(events_file),
+                    events_file.stat().st_mtime,
+                    d.name,
+                )
+                if best is None or rank > best[:3]:
                     best = (*rank, events_file)
             if best:
-                return best[2]
+                return best[3]
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
         return buf
@@ -146,10 +182,11 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
 
 
 def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
-    """Map a wrap's session id (Claude UUID or ``ses-…``) to the session
-    note id the index keys prompts by. Falls back to the input unchanged."""
-    if session_id.startswith("ses-"):
-        return session_id
+    """Map a wrap's session id (Claude UUID or ``ses-…``) to the note id
+    of the folder the events actually resolved to — that's where verdicts
+    landed, so that's the note whose prompts need reprojection (#181: for
+    a force-minted ses- id this can be the SIBLING note owning the
+    source-UUID folder). Falls back to the input unchanged."""
     events = _resolve_events_file(cfg, session_id, project)
     if events is None:
         return session_id
@@ -302,10 +339,11 @@ def _append_verdict_events(
         )
         if p is None:
             # Every candidate was taken by this batch — the label is
-            # dropped, which is an anomaly worth surfacing, unlike the
-            # silent re-wrap skip above.
+            # dropped. Worth surfacing, unlike the silent re-wrap skip
+            # above, but benign (an LLM-output shape, not a failure): a
+            # warning, so the wrap-finalize exit code stays 0.
             result.verdicts_skipped += 1
-            result.errors.append(
+            result.warnings.append(
                 f"verdicts: no unlabeled prompt left for {needle!r}"
                 f" ({register})"
             )
@@ -379,8 +417,20 @@ def finalize_wrap(
         try:
             from thinkweave.operations.prune import find_orphans, prune_orphans
 
+            # #181: also shield the folder events resolved to — verdicts
+            # were just written there, and its id fields may name a sibling
+            # note (the source-UUID folder of a force-minted ses- id).
+            ev = _resolve_events_file(cfg, session_id, project)
+            protected = (
+                ev.parent
+                if ev is not None and ev.name == "events.jsonl"
+                else None
+            )
             orphans = find_orphans(
-                cfg, project=project, current_session_id=session_id
+                cfg,
+                project=project,
+                current_session_id=session_id,
+                protected_dir=protected,
             )
             if orphans:
                 pr = prune_orphans(orphans, dry_run=False)
