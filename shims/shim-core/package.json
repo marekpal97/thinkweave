@@ -4,6 +4,9 @@
   "private": true,
   "description": "Canonical hook-envelope types + runHook subprocess bridge shared by every thinkweave E3 harness shim. Protocol adaptation only (dec-5a076384).",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
