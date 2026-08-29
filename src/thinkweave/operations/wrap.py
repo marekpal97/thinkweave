@@ -88,26 +88,6 @@ class WrapFinalizeResult:
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
 
-def _has_prompt_rows(events_file: Path) -> bool:
-    """True when the events file holds at least one ``prompt`` row.
-    Re-reads the file line-by-line, but candidates are the few folders
-    matching one session's ids — cheap in practice."""
-    try:
-        with events_file.open(encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(row, dict) and row.get("type") == "prompt":
-                    return True
-    except OSError:
-        return False
-    return False
-
-
 def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | None:
     """Locate the session's event stream without creating anything.
 
@@ -128,17 +108,18 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
     alongside an archive is post-archive noise; it is the events file
     only when no archive exists (archive failed, or never ran).
     """
+    from thinkweave.core.events import extract_prompts
+
     ids = {session_id}
-    if session_id.startswith("ses-"):
-        src = _source_session_of(cfg, session_id)
-        if src:
-            ids.add(src)
+    src = _source_session_of(cfg, session_id) if session_id.startswith("ses-") else ""
+    if src:
+        ids.add(src)
     if project:
         sessions_dir = cfg.vault_root / "projects" / project / "sessions"
         if sessions_dir.exists():
             from thinkweave.core.vault import parse_frontmatter
 
-            best: tuple[bool, float, str, Path] | None = None
+            best: tuple[tuple[bool, float, str], Path] | None = None
             for d in sessions_dir.iterdir():
                 if not d.is_dir() or d.name == "misc":
                     continue
@@ -161,23 +142,21 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
                 if not events_file.exists():
                     continue
                 rank = (
-                    _has_prompt_rows(events_file),
+                    bool(extract_prompts(events_file)),
                     events_file.stat().st_mtime,
                     d.name,
                 )
-                if best is None or rank > best[:3]:
-                    best = (*rank, events_file)
+                if best is None or rank > best[0]:
+                    best = (rank, events_file)
             if best:
-                return best[3]
+                return best[1]
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
         return buf
-    if session_id.startswith("ses-"):
-        src = _source_session_of(cfg, session_id)
-        if src:
-            src_buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
-            if src_buf.exists():
-                return src_buf
+    if src:
+        src_buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
+        if src_buf.exists():
+            return src_buf
     return None
 
 
@@ -207,7 +186,6 @@ def _source_session_of(cfg: Config, session_note_id: str) -> str:
     ``source_session`` its decisions are stamped with (the extract input).
     Empty string when unknown — including when the index doesn't exist yet
     (the verdicts step runs before reindex)."""
-    from thinkweave.core.vault import VaultManager
     from thinkweave.retrieval.search import Search
 
     try:
@@ -220,12 +198,11 @@ def _source_session_of(cfg: Config, session_note_id: str) -> str:
         return ""
     if not row:
         return ""
-    vm = VaultManager(config=cfg)
     try:
-        note = vm.read_note(vm.root / row["path"])
-    except (OSError, ValueError, KeyError):
+        fm = json.loads(row["frontmatter"]) if row.get("frontmatter") else {}
+    except json.JSONDecodeError:
         return ""
-    return str(note.frontmatter.get("source_session") or "")
+    return str(fm.get("source_session") or "")
 
 
 def _append_verdict_events(
