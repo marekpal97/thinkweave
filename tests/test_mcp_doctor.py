@@ -16,15 +16,18 @@ from thinkweave.surfaces.cli import mcp_doctor as md
 
 
 @pytest.fixture(autouse=True)
-def _sandbox_home_plugin_dirs(tmp_path, use_profile):
+def _sandbox_home_plugin_dirs(tmp_path, use_profile, monkeypatch):
     """Point the doctor's HOME-scoped plugin scan at empty dirs so it never
     reads the developer's real ~/.claude/plugins or ~/.claude/skills. Tests
     that want a plugin scope present re-point the profile themselves (their
-    ``use_profile`` call runs after this fixture)."""
+    ``use_profile`` call runs after this fixture). Also pin _EXTRA_MODULES so
+    doctor verdicts don't depend on which extras the ambient venv holds;
+    TestVenvExtrasCheck re-points it per test."""
     use_profile(
         plugins_cache=tmp_path / "_home_plugins_cache",
         skills_dir=tmp_path / "_home_skills",
     )
+    monkeypatch.setattr(md, "_EXTRA_MODULES", (("json", "stdlib", "always present"),))
 
 
 # ---------- helpers ----------
