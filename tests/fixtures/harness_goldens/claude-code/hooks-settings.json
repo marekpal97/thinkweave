@@ -1,0 +1,62 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"«REPO»/bin/weave-hook-launch\" session_start",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"«REPO»/bin/weave-hook-launch\" user_prompt_submit",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"«REPO»/bin/weave-hook-launch\" post_tool_use",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__thinkweave__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"«REPO»/bin/weave-hook-launch\" post_tool_use",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"«REPO»/bin/weave-hook-launch\" stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
