@@ -145,10 +145,11 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     ``.venv\\Scripts\\weave-mcp.exe``, which fails with a sharing violation
     while a previously-spawned server still holds that image open.
 
-    The portable launchers deliberately do NOT pass it. On the plugin route
-    nothing ever runs ``weave install``, so the launcher's implicit sync is that
-    route's only dependency bootstrap; ``mcp_doctor._key`` normalises the flag
-    away so the two shapes still fingerprint as one invocation.
+    The portable launchers pass it too (#156); on the plugin route, where
+    nothing ever runs ``weave install``, their guarded one-time bootstrap
+    (#164) owns the first sync instead. ``mcp_doctor._key`` normalises the
+    flag away so entry shapes with and without it fingerprint as one
+    invocation.
     """
     args = [
         "run",
@@ -739,10 +740,8 @@ def cmd_install(args: argparse.Namespace) -> None:
             )
         # Eager `uv sync` is skipped on the plugin route — the plugin's
         # source path (`${CLAUDE_PLUGIN_ROOT}`) is resolved by the plugin
-        # runtime, not by `weave`. NOTE: nothing syncs lazily either — all
-        # launchers run `uv run --no-sync` (#156/#164), so a fresh plugin
-        # checkout needs a manual `uv sync --extra all` before the MCP
-        # server can start. First-sync ownership is tracked in #198.
+        # runtime, not by `weave`; the launchers' guarded one-time bootstrap
+        # (#164) owns the route's first sync.
         if not getattr(args, "no_claude_md", False):
             _install_claude_md_block(args.yes)
         _print_next_steps()

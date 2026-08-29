@@ -210,10 +210,10 @@ def _key(entry: dict) -> tuple:
     differing only by which scope is launching it.
 
     ``--no-sync`` is dropped for the same reason: it changes how uv *prepares*
-    the environment, not what gets launched into it. The machine-scope entry
-    passes it (``weave install`` has already synced) and the portable launchers
-    do not (they bootstrap the plugin route), so without this the two would
-    report a phantom cross-scope conflict.
+    the environment, not what gets launched into it. Every current entry shape
+    passes it (#156; the plugin route's first sync is the launchers' guarded
+    bootstrap, #164), but legacy entries without it must not report a phantom
+    cross-scope conflict.
     """
     cmd = _command_stem(entry.get("command", ""))
     raw_args = list(entry.get("args", []))
