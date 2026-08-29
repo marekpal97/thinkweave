@@ -5,8 +5,11 @@ Code UUID), ``weave_extract`` auto-mints a session note whose own ``id:`` is a
 fresh ``ses-XXX`` but whose ``source_session:`` frontmatter is the input value.
 Decisions written for that session inherit ``source_session = <input>``.
 
-``weave wrap-finalize <input>`` then matches decisions correctly; passing
-``<minted ses-XXX>`` instead silently returns 0 (judge writeback no-ops).
+Since #181 the finalize hint prints the **minted ses-id**: a forced
+re-extract leaves two folders claiming the same source UUID, and only the
+session-note id unambiguously names the one just written. ``finalize_wrap``
+maps a ses- id back to ``source_session`` for the judge step, so the old
+2026-05-14 trap (ses-id → 0 decisions judged) no longer applies.
 
 These tests pin:
 
@@ -14,7 +17,8 @@ These tests pin:
   ``ses-XXX`` distinct from ``session_id`` when they diverge
 - The MCP format report distinguishes them in the header
 - The format report ends with a ``▶ To finalize: weave wrap-finalize ...``
-  line that uses the **input** ``session_id``, not the minted ses-id
+  line that uses the **minted ses-id**, and following it verbatim after a
+  forced re-extract matches prompts (#181 AC2)
 """
 
 from __future__ import annotations
@@ -170,11 +174,12 @@ class TestExtractFormatReport:
         assert "(session note:" not in report
         assert sess_id in report
 
-    def test_finalize_hint_uses_input_session_id(
+    def test_finalize_hint_uses_minted_ses_id(
         self, config: Config, vault: VaultManager
     ):
-        # The load-bearing assertion: the finalize hint MUST use the input
-        # session_id (what decisions are stamped with), not the minted ses-id.
+        # #181: the finalize hint MUST use the minted ses-id — after a
+        # forced re-extract the source UUID is claimed by two folders, and
+        # only the note id names the one this extract just wrote.
         from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
 
         _index(config)
@@ -195,11 +200,59 @@ class TestExtractFormatReport:
         report = _format_extract_report(out)
         # The exact wrap-finalize hint line.
         assert "▶ To finalize:" in report
-        # Critically: uses the UUID (input), not the minted ses-id.
-        assert f"weave wrap-finalize {cc_uuid}" in report
-        assert f"weave wrap-finalize {out.session_note_id}" not in report
+        assert f"weave wrap-finalize {out.session_note_id}" in report
+        assert f"weave wrap-finalize {cc_uuid}" not in report
         # And includes the project so the agent can copy-paste verbatim.
         assert "--project thinkweave" in report
+
+    def test_force_reextract_hint_followed_verbatim_matches_prompts(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 AC2 — live incident 2026-08-22: weave_extract(force=true) on
+        # an already-processed session mints a NEW folder and archives the
+        # buffer there. The printed hint must name an id that resolves the
+        # freshly archived events (prompts found, verdicts matched).
+        import json
+
+        from thinkweave.operations.wrap import finalize_wrap
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
+
+        _index(config)
+        cc_uuid = "aaaa1111-2222-4333-8444-555566667777"
+        row = json.dumps({
+            "ts": "2026-08-22T09:00:00+00:00", "type": "prompt",
+            "text": "collapse the duplicate rows", "session_id": cc_uuid,
+        }) + "\n"
+        buf = config.weave_dir / "buffer" / f"{cc_uuid}.jsonl"
+        buf.parent.mkdir(parents=True, exist_ok=True)
+        buf.write_text(row, encoding="utf-8")
+
+        first = extract_session(
+            config, session_id=cc_uuid, project="t",
+            summary="first pass", insights=[], decisions=[],
+        )
+        assert first.error == ""
+        # Hooks keep capturing after the first archive.
+        buf.write_text(row, encoding="utf-8")
+
+        out = extract_session(
+            config, session_id=cc_uuid, project="t",
+            summary="forced redo", insights=[], decisions=[], force=True,
+        )
+        assert out.error == ""
+        assert out.skipped_reason == ""
+        report = _format_extract_report(out)
+        assert f"weave wrap-finalize {out.session_note_id}" in report
+
+        # Follow the hint verbatim: the id it names must match prompts.
+        result = finalize_wrap(
+            config, session_id=out.session_note_id, project="t", prune=False,
+            verdicts=[{
+                "prompt": "collapse the duplicate", "register": "correction",
+            }],
+        )
+        assert result.verdicts_written == 1
+        assert result.verdicts_unmatched == 0
 
     def test_finalize_hint_without_project_when_unknown(
         self, config: Config, vault: VaultManager
@@ -216,4 +269,5 @@ class TestExtractFormatReport:
         report = _format_extract_report(out)
         assert "▶ To finalize:" in report
         # No created notes/decisions → no project surfaced from those — fine.
-        assert "weave wrap-finalize ses-99999999" in report
+        assert f"weave wrap-finalize {out.session_note_id}" in report
+        assert "--project" not in report

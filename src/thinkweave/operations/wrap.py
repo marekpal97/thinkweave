@@ -90,7 +90,11 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
     Catch-up wrap: the archived ``events.jsonl`` in the session folder
     (matched by folder-name prefix or ``source_session`` frontmatter —
     the same rule ``VaultManager._find_session_dir`` applies, minus its
-    eager-create side effect).
+    eager-create side effect). A forced re-extract mints a second folder
+    claiming the same source UUID (#181), so among candidates a
+    ``source_session`` match outranks a bare name-prefix match and the
+    most recently written events file wins ties — that's the one the
+    extract just archived into.
     """
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
@@ -102,9 +106,11 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
         return None
     from thinkweave.core.vault import parse_frontmatter
 
+    best: tuple[bool, float, Path] | None = None
     for d in sessions_dir.iterdir():
         if not d.is_dir() or d.name == "misc":
             continue
+        by_source = False
         if not d.name.startswith(session_id):
             sm = d / "session.md"
             if not sm.exists():
@@ -115,10 +121,14 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
                 continue
             if fm.get("source_session") != session_id:
                 continue
+            by_source = True
         events_file = d / "events.jsonl"
-        if events_file.exists():
-            return events_file
-    return None
+        if not events_file.exists():
+            continue
+        rank = (by_source, events_file.stat().st_mtime)
+        if best is None or rank > best[:2]:
+            best = (*rank, events_file)
+    return best[2] if best else None
 
 
 def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
@@ -141,6 +151,28 @@ def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
     return str(fm.get("id") or session_id)
 
 
+def _source_session_of(cfg: Config, session_note_id: str) -> str:
+    """Inverse of :func:`_session_note_id`: map a ``ses-…`` note id to the
+    ``source_session`` its decisions are stamped with (the extract input).
+    Empty string when unknown."""
+    from thinkweave.core.vault import VaultManager
+    from thinkweave.retrieval.search import Search
+
+    s = Search(config=cfg)
+    try:
+        row = s.get_note_by_id(session_note_id)
+    finally:
+        s.close()
+    if not row:
+        return ""
+    vm = VaultManager(config=cfg)
+    try:
+        note = vm.read_note(vm.root / row["path"])
+    except Exception:  # noqa: BLE001
+        return ""
+    return str(note.frontmatter.get("source_session") or "")
+
+
 def _append_verdict_events(
     cfg: Config,
     session_id: str,
@@ -153,8 +185,10 @@ def _append_verdict_events(
     The wrap LLM composes ``[{"prompt": <text-or-prefix>, "register":
     "correction"|"confirmation"|"probe", "about": <referent clause>}, ...]``;
     this matches each verdict against the session's captured prompt events
-    (echo-collapsed) and appends one event per matched prompt, reusing the
-    prompt event's own ``ts`` so the join back onto the prompt is exact.
+    (echo-collapsed) and appends ONE event for the single best-matching
+    prompt (#181 — a prefix matching several rows must not fan out),
+    reusing the prompt event's own ``ts`` so the join back onto the prompt
+    is exact.
     ``correction`` / ``confirmation`` write ``feedback`` events (the base
     schema predates #101 and is frozen; ``about`` is an additive optional
     key); ``probe`` writes a sibling ``probe`` event that
@@ -171,7 +205,7 @@ def _append_verdict_events(
     Idempotent: a (ts, register) pair that already exists is skipped, so
     re-wraps never double-write.
     """
-    from thinkweave.core.events import extract_prompts, feedback_events
+    from thinkweave.core.events import Prompt, extract_prompts, feedback_events
 
     events_file = _resolve_events_file(cfg, session_id, project)
     if events_file is None:
@@ -209,23 +243,39 @@ def _append_verdict_events(
         if not matched:
             result.verdicts_unmatched += 1
             continue
+        # #181: one verdict labels one prompt. Duplicate rows of the same
+        # text can survive the echo-collapse window (old multi-registration
+        # capture, #161) — keep the first row per text, then label the
+        # first candidate not already carrying this register so re-wraps
+        # stay idempotent and same-batch repeats fall through to later
+        # prompts.
+        first_by_text: dict[tuple[str, str], Prompt] = {}
         for p in matched:
-            ts_iso = p.ts.isoformat()
-            if (ts_iso, register) in existing:
-                result.verdicts_skipped += 1
-                continue
-            existing.add((ts_iso, register))
-            event = {
-                "ts": ts_iso,
-                "type": "probe" if register == "probe" else "feedback",
-                "session_id": p.session_id,
-                "prompt_ref": p.text[:120],
-            }
-            if register != "probe":
-                event["register"] = register
-            if about:
-                event["about"] = about[:300]
-            lines.append(json.dumps(event, ensure_ascii=False))
+            first_by_text.setdefault((p.session_id, p.text), p)
+        p = next(
+            (
+                c
+                for c in first_by_text.values()
+                if (c.ts.isoformat(), register) not in existing
+            ),
+            None,
+        )
+        if p is None:
+            result.verdicts_skipped += 1
+            continue
+        ts_iso = p.ts.isoformat()
+        existing.add((ts_iso, register))
+        event = {
+            "ts": ts_iso,
+            "type": "probe" if register == "probe" else "feedback",
+            "session_id": p.session_id,
+            "prompt_ref": p.text[:120],
+        }
+        if register != "probe":
+            event["register"] = register
+        if about:
+            event["about"] = about[:300]
+        lines.append(json.dumps(event, ensure_ascii=False))
 
     if lines:
         with events_file.open("a", encoding="utf-8") as fh:
@@ -333,6 +383,14 @@ def finalize_wrap(
         )
 
         judged = judge_and_writeback(cfg, session_id=session_id)
+        if not judged and session_id.startswith("ses-"):
+            # #181: the extract report hints the minted ses- id, but
+            # decisions are stamped with the extract *input* (often a
+            # Claude Code UUID). Fall back to that source id so the judge
+            # still finds them.
+            src = _source_session_of(cfg, session_id)
+            if src and src != session_id:
+                judged = judge_and_writeback(cfg, session_id=src)
         result.decisions_judged = len(judged)
         for _dec, res in judged:
             verdict = res.get("verdict", "unknown")

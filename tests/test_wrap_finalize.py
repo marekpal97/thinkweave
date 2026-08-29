@@ -113,6 +113,41 @@ class TestFinalizeWrap:
         assert "verdict" in decs[0].frontmatter
         assert "judged_at" in decs[0].frontmatter
 
+    def test_judge_finds_decisions_when_given_minted_ses_id(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181: the extract report now hints the minted ses- id, but
+        # decisions are stamped with the extract INPUT (``source_session``,
+        # often a Claude Code UUID). The judge step must fall back to that
+        # id instead of silently judging 0 (the 2026-05-14 trap).
+        cc_uuid = "d4e07b2a-0000-4aa3-a9ff-7d8bdad37951"
+        sess_path = vault.create_note(
+            NoteType.SESSION,
+            "Did some work",
+            body="## Summary\nDid some work.\n",
+            project="t",
+            extra_frontmatter={"processed": True, "source_session": cc_uuid},
+        )
+        ses_id = vault.read_note(sess_path).id
+        vault.create_note(
+            NoteType.DECISION,
+            "Use SQLite for the index",
+            body="## Context\n\nNeeded an index.\n\n## Decision\n\nSQLite.",
+            project="t",
+            extra_frontmatter={
+                "status": "proposed",
+                "committed": True,
+                "source_session": cc_uuid,
+                "derived_from": [cc_uuid],
+                "concepts": ["sqlite", "memory-system"],
+            },
+            output_dir=sess_path.parent,
+        )
+        _index(config)
+
+        result = finalize_wrap(config, session_id=ses_id, project="t")
+        assert result.decisions_judged == 1
+
     def test_no_decisions_is_fine(self, config: Config, vault: VaultManager):
         sess_path = vault.create_note(
             NoteType.SESSION,
@@ -298,6 +333,102 @@ class TestVerdictStep:
         assert result.verdicts_written == 1
         fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
+
+    def test_duplicate_prompt_rows_yield_one_event(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 AC1: triple hook registration could leave duplicate prompt
+        # rows farther apart than the echo-collapse window. One verdict must
+        # still write exactly ONE feedback event — and a re-wrap must not
+        # sneak a second event onto a surviving duplicate.
+        f = self._write_buffer(config, "cc-uuid-6", [
+            {"ts": f"2026-08-22T10:00:{s:02d}+00:00", "type": "prompt",
+             "text": "no, use the queue primitive", "session_id": "cc-uuid-6"}
+            for s in (0, 10, 20)
+        ])
+        verdicts = [{"prompt": "no, use the queue", "register": "correction"}]
+        result = finalize_wrap(config, session_id="cc-uuid-6", project="t",
+                               prune=False, verdicts=verdicts)
+        assert result.verdicts_written == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+
+        rewrap = finalize_wrap(config, session_id="cc-uuid-6", project="t",
+                               prune=False, verdicts=verdicts)
+        assert rewrap.verdicts_written == 0
+        assert rewrap.verdicts_skipped == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+
+    def test_verdict_labels_single_best_of_distinct_prefix_matches(
+        self, config: Config, vault: VaultManager
+    ):
+        # Two distinct prompts share the verdict's prefix — the verdict
+        # labels one (the first unlabeled), never fans out to both.
+        f = self._write_buffer(config, "cc-uuid-7", [
+            {"ts": "2026-08-22T10:00:00+00:00", "type": "prompt",
+             "text": "fix the parser bug", "session_id": "cc-uuid-7"},
+            {"ts": "2026-08-22T11:00:00+00:00", "type": "prompt",
+             "text": "fix the parser tests too", "session_id": "cc-uuid-7"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-7", project="t", prune=False,
+            verdicts=[{"prompt": "fix the parser", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+        assert fb[0]["ts"] == "2026-08-22T10:00:00+00:00"
+
+    def test_forced_reextract_prefers_newest_source_session_folder(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181: weave_extract(force=true) mints a SECOND folder claiming the
+        # same source UUID. Resolution must pick the most recently written
+        # events file, not whichever folder iterdir yields first.
+        import os
+
+        base = config.vault_root / "projects" / "t" / "sessions"
+        row = json.dumps({
+            "ts": "2026-08-22T09:00:00+00:00", "type": "prompt",
+            "text": "wire the verdict rail", "session_id": "cc-uuid-8",
+        })
+        events_files: dict[str, Path] = {}
+        # These names are chosen so directory hash order yields the STALE
+        # folder first (probed on ext4/tmpfs; stable across creation order)
+        # — a first-match resolver would hit it, so the selection must rest
+        # on mtime, not directory order.
+        for name, sid, mtime in [
+            ("ses-stale111-2026-08-20", "ses-stale111", 1_000_000_000),
+            ("ses-fresh222-2026-08-22", "ses-fresh222", 2_000_000_000),
+        ]:
+            d = base / name
+            d.mkdir(parents=True)
+            (d / "session.md").write_text(
+                f"---\ntype: session\nid: {sid}\n"
+                "source_session: cc-uuid-8\n---\n",
+                encoding="utf-8",
+            )
+            ev = d / "events.jsonl"
+            ev.write_text(row + "\n", encoding="utf-8")
+            os.utime(ev, (mtime, mtime))
+            events_files[sid] = ev
+
+        result = finalize_wrap(
+            config, session_id="cc-uuid-8", project="t", prune=False,
+            verdicts=[{"prompt": "wire the verdict", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        new_fb = [
+            r for r in self._rows(events_files["ses-fresh222"])
+            if r.get("type") == "feedback"
+        ]
+        old_fb = [
+            r for r in self._rows(events_files["ses-stale111"])
+            if r.get("type") == "feedback"
+        ]
+        assert len(new_fb) == 1
+        assert old_fb == []
 
     def test_archived_events_jsonl_is_found(
         self, config: Config, vault: VaultManager

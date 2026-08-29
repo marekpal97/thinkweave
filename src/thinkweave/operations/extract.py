@@ -47,10 +47,11 @@ class ExtractOutcome:
     ``ses-XXXXXXXX``). They diverge when the caller passed a non-ses-id
     value and ``weave_extract`` auto-minted a fresh note.
 
-    **Pass ``session_id`` (not ``session_note_id``) to** ``weave wrap-finalize``
-    — decisions are stamped with ``source_session = session_id`` (the input
-    form), and the judge matches on that field. The format report flags
-    this explicitly so callers don't pick the wrong identifier.
+    **Pass ``session_note_id`` to** ``weave wrap-finalize`` (#181) — after
+    a forced re-extract the source UUID is claimed by two folders, and only
+    the note id names the one just written. Decisions are still stamped
+    with ``source_session = session_id`` (the input form); ``finalize_wrap``
+    maps a ses-id back to that source id for the judge step.
     """
 
     session_id: str

@@ -181,6 +181,17 @@ class TestIsOrphan:
             session, current_session_id="cc-current", min_age_seconds=0
         )
 
+    def test_current_wrap_session_is_protected_by_ses_id(self, vault_dir: Path):
+        # #181: wrap-finalize is now hinted with the minted ses- id — the
+        # folder-name prefix must protect the current wrap the same way a
+        # source_session match does.
+        session = _make_session(
+            vault_dir, "alpha", "ses-wrap2", source_session="cc-current"
+        )
+        assert not is_orphan(
+            session, current_session_id="ses-wrap2", min_age_seconds=0
+        )
+
     def test_non_session_folder_ignored(self, vault_dir: Path):
         fake = vault_dir / "projects" / "alpha" / "sessions" / "misc"
         fake.mkdir(parents=True)
