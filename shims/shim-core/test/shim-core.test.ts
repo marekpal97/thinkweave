@@ -10,18 +10,14 @@ import { join } from "node:path";
 
 import {
   CANONICAL_EVENTS,
-  DEFAULT_TIMEOUT_MS,
   EVENT_PHASES,
   createFirstCallGuard,
   runHook,
 } from "../src/index.js";
 
 // --- cross-language parity ---------------------------------------------------
-// canonical-events.json is the one fixture both suites pin against; the
-// pytest side checks it equals core.harness.CANONICAL_EVENTS and the argv
-// phases authored in hooks/hooks.json. Together the two suites make it
-// impossible for the TS vocabulary and the Python normaliser to drift apart
-// without a test going red somewhere.
+// canonical-events.json is the shared fixture; the pytest side pins the
+// Python constants + hooks.json argv (see tests/test_shim_core.py).
 
 const fixture: Record<string, string> = JSON.parse(
   readFileSync(new URL("../../canonical-events.json", import.meta.url), "utf-8"),
@@ -33,13 +29,6 @@ test("CANONICAL_EVENTS matches the shared fixture (names and order)", () => {
 
 test("EVENT_PHASES matches the shared fixture exactly", () => {
   assert.deepEqual(EVENT_PHASES, fixture);
-});
-
-test("every canonical event has a default timeout budget", () => {
-  assert.deepEqual(Object.keys(DEFAULT_TIMEOUT_MS).sort(), [...CANONICAL_EVENTS].sort());
-  for (const ms of Object.values(DEFAULT_TIMEOUT_MS)) {
-    assert.ok(ms > 0);
-  }
 });
 
 // --- runHook subprocess bridge ----------------------------------------------

@@ -51,10 +51,8 @@ export const EVENT_PHASES: Record<CanonicalEvent, string> = {
 /**
  * Hard per-event budgets (ms), after the agentmemory precedent: ~800 ms for
  * fire-and-forget telemetry, ~1500 ms where the caller waits on injected
- * context. The 2026-08-29 spike (methodology recorded on #194) measured the
- * real command at 98 ms warm / 141 ms cold (telemetry) and 188 ms warm /
- * 263 ms cold (injection), so these are error-policy ceilings, not headroom
- * the happy path spends. Known carve-out: the launcher's one-time first-run
+ * context. Ceilings, not headroom — the measured happy path is 5–45× inside
+ * them (spike on #194). Known carve-out: the launcher's one-time first-run
  * bootstrap (`uv sync`, minutes) blows any budget — every hook in that
  * window times out with the bootstrap notice on the failure's stderr.
  */

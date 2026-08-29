@@ -5,16 +5,10 @@ builds on. ESM-only (`type: module`, NodeNext), Node >= 20, zero runtime
 dependencies. Five runtime exports plus the envelope types:
 
 - **`CANONICAL_EVENTS` / `EVENT_PHASES`** + `HookEnvelope`/`HookResponse` —
-  the canonical vocabulary and the handler's stdin/stdout protocol. This is
-  **four events, not the nine issue #194 lists**: the vocabulary is whatever
-  `core.harness.CANONICAL_EVENTS` declares (currently the four phases the
-  Python hook handler implements). Claude Code natively fires more
-  (PreToolUse, SessionEnd, PreCompact, Subagent lifecycle) — those have no
-  thinkweave destination today, and shipping their names here would promise a
-  capability nothing delivers. The issue's longer list is aspirational,
-  pending Python-side support; when an event lands there, it lands in
-  `canonical-events.json` and both suites force the two languages to move
-  together. That fixture is the drift gate: this package's node:test suite
+  the canonical vocabulary and the handler's stdin/stdout protocol: exactly
+  what `core.harness.CANONICAL_EVENTS` declares, four events today — the
+  why is in the `CANONICAL_EVENTS` docblock in `src/index.ts`.
+  `canonical-events.json` is the drift gate: this package's node:test suite
   pins the TS exports against it, and `tests/test_shim_core.py` pins it
   against the Python constants, the authored `hooks/hooks.json` argv, AND
   (statically) this package's source — so a stale side fails a suite instead
@@ -35,18 +29,12 @@ dependencies. Five runtime exports plus the envelope types:
   synthesise SessionStart once on harnesses without one, drop double-fired
   deliveries, or gate the warn-once diagnostics above.
 
-Spike verdict (2026-08-29, methodology + full tables recorded on #194):
-spawn-per-call is fine — the real command measured 98 ms warm p50 / 263 ms
-cold, 5–45× inside every budget including Pi's ~4.5 s deadline. No resident
-daemon. One carve-out: the launcher's one-time first-run bootstrap (`uv sync`
-when the venv has no thinkweave yet) takes minutes and times out every hook
-in that window — the bootstrap notice arrives on the failure's stderr via
-`onFailure`, and the window ends at the first completed sync.
+Spike verdict (2026-08-29, tables on #194): spawn-per-call fine, 5–45×
+inside every budget; first-run uv-sync carve-out documented at
+`DEFAULT_TIMEOUT_MS`.
 
-**Translator rule (dec-5a076384):** protocol adaptation only — event
-synthesis, dedup, debounce, timeouts. Anything that understands what the
-events mean lives on the Python side. A pytest deny-list grep over `shims/`
-enforces the floor of that rule.
+**Translator rule (dec-5a076384):** protocol adaptation only — enforced by
+the pytest deny-list grep.
 
 Standalone on purpose: not part of the Python package tree, not in the pytest
 run. `npm install && npm test` here (tsc + node:test, no runtime deps).

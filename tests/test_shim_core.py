@@ -1,18 +1,8 @@
 """The Python half of the shims/shim-core cross-language seam (#194).
 
-Two contracts live here, both cheap and both aimed at drift that would
-otherwise be silent:
-
-1. **Vocabulary parity.** ``shims/shim-core/canonical-events.json`` is the one
-   shared fixture both suites pin against: this file checks it equals
-   ``core.harness.CANONICAL_EVENTS`` (names, order) and that each event's
-   phase token is exactly the argv the authored ``hooks/hooks.json`` commands
-   pass to the handler. The package's node:test suite pins its TypeScript
-   exports against the same fixture, so neither side can drift alone.
-
-2. **The translator rule** (dec-5a076384): shims may adapt protocol — event
-   synthesis, dedup, debounce, timeouts — but never carry vault semantics.
-   Enforced as an enumerated deny-list grep over ``shims/``.
+Vocabulary parity: ``shims/shim-core/canonical-events.json`` is the shared
+fixture both suites pin. Translator rule (dec-5a076384, spike on #194):
+deny-list grep over ``shims/``.
 """
 
 from __future__ import annotations
