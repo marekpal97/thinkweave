@@ -43,6 +43,18 @@ else
     exit 127
 fi
 
-# Hooks are runtime callbacks, never an environment-management surface.
+# One-time dependency bootstrap (#164, matches bin/weave and the MCP
+# launcher): a fresh plugin/marketplace clone has no venv, and `uv run
+# --no-sync` would fabricate an EMPTY one and die with ModuleNotFoundError.
+# When the venv lacks the project's own console script (bin/ on POSIX,
+# Scripts/ for a native Windows venv reached via Git Bash), run the ONE
+# sanctioned sync (dec-3d4f8ce9): `uv sync --extra all` — never per-call,
+# never a narrower extra set. Output to stderr: stdout belongs to the harness.
+if [ ! -x "$root/.venv/bin/weave" ] && [ ! -e "$root/.venv/Scripts/weave.exe" ]; then
+    "$uv_bin" sync --project "$root" --extra all 1>&2
+fi
+
+# Hooks are runtime callbacks, never an environment-management surface (the
+# guard above only fires when there is no environment to manage yet).
 # Module invocation remains available when weave-hook.exe is stale or absent.
 exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.hooks.handler "$@"

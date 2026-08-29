@@ -12,11 +12,10 @@ rem verified against the shipped binary). Under Git Bash the POSIX sibling is
 rem picked instead. One authored command, two implementations.
 rem
 rem Kept in step with bin/weave-hook-launch: same 3-tier uv resolution ladder,
-rem same loud one-line exit 127 when uv is genuinely absent (#47/#52).
-rem Sync-on-run is deliberately preserved here too — on the plugin route, which
-rem never runs `weave install`, the launcher's implicit `uv run` sync IS the
-rem dependency bootstrap. Only the machine-scope MCP entry passes uv's
-rem --no-sync, having synced eagerly at install time.
+rem same loud one-line exit 127 when uv is genuinely absent (#47/#52), and the
+rem same guarded one-time bootstrap sync (#164) so the plugin route — which
+rem never runs `weave install` — still populates its clone's venv on first
+rem launch.
 setlocal EnableExtensions
 
 rem Self-locate the project root (parent of this script's bin/), never the
@@ -40,6 +39,17 @@ for %%X in (uv.exe uv.cmd uv.bat) do if not defined uv_bin if defined UV_INSTALL
 if not defined uv_bin (
     echo weave-hook-launch: uv not found ^(checked PATH, %USERPROFILE%\.local\bin, %%UV_INSTALL_DIR%%^); install uv from https://docs.astral.sh/uv/getting-started/installation/ or add it to PATH 1>&2
     exit /b 127
+)
+
+rem One-time dependency bootstrap (#164, matches the POSIX launchers): a
+rem fresh plugin/marketplace clone has no venv, and `uv run --no-sync` would
+rem fabricate an EMPTY one and die with ModuleNotFoundError. When the venv
+rem lacks the project's own console script, run the ONE sanctioned sync
+rem (dec-3d4f8ce9): --extra all, never per-call, never a narrower extra set.
+rem Output to stderr: stdout belongs to the harness.
+if not exist "%root%\.venv\Scripts\weave.exe" (
+    "%uv_bin%" sync --project "%root%" --extra all 1>&2
+    if errorlevel 1 exit /b 1
 )
 
 rem The hook phase (session_start, user_prompt_submit, post_tool_use, stop) and

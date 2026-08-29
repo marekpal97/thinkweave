@@ -176,6 +176,12 @@ separate `weave install` MCP-registration step — distinct from the `weave` CLI
 prerequisite above) and ships the subagent workers that `/dream` and `/drain`
 fan out to.
 
+No manual `uv sync` is needed on this route: the very first launcher that
+fires (MCP server, hook, or a skill's `weave` call) sees the fresh clone has
+no populated venv and runs the one-time bootstrap `uv sync --extra all`
+itself, so the first session may take a moment longer to start. Launchers
+never sync after that — a populated venv skips the bootstrap entirely.
+
 **Namespacing.** Claude Code registers plugin commands under the plugin's
 namespace: type `/thinkweave:onboard`, not `/onboard` (tab-complete after
 `/thinkweave:` lists everything). `weave schedule` renders namespaced cron lines

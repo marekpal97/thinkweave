@@ -16,10 +16,9 @@ rem   * a hand-edited project/plugin entry naming THIS file explicitly:
 rem       "command": "bin/weave-mcp-launch.cmd"
 rem
 rem Kept in step with bin/weave-mcp-launch: same 3-tier uv resolution ladder,
-rem same loud one-line exit 127 (#47/#52), and sync-on-run preserved so the
-rem plugin route still bootstraps its dependencies on first launch. Only the
-rem machine-scope entry written by `weave install` passes uv's --no-sync, and it
-rem has earned that by syncing eagerly at install time.
+rem same loud one-line exit 127 (#47/#52), and the same guarded one-time
+rem bootstrap sync (#164) so the plugin route — which never runs
+rem `weave install` — still populates its clone's venv on first launch.
 rem
 rem `@echo off` above is load-bearing, not cosmetic: this process speaks the MCP
 rem stdio protocol on stdout, so a single echoed command line would corrupt the
@@ -47,6 +46,17 @@ for %%X in (uv.exe uv.cmd uv.bat) do if not defined uv_bin if defined UV_INSTALL
 if not defined uv_bin (
     echo weave-mcp-launch: uv not found ^(checked PATH, %USERPROFILE%\.local\bin, %%UV_INSTALL_DIR%%^); install uv from https://docs.astral.sh/uv/getting-started/installation/ or add it to PATH 1>&2
     exit /b 127
+)
+
+rem One-time dependency bootstrap (#164, matches the POSIX launchers): a
+rem fresh plugin/marketplace clone has no venv, and `uv run --no-sync` would
+rem fabricate an EMPTY one and die with ModuleNotFoundError. When the venv
+rem lacks the project's own console script, run the ONE sanctioned sync
+rem (dec-3d4f8ce9): --extra all, never per-call, never a narrower extra set.
+rem Output to stderr: stdout is this process's MCP JSON-RPC stdio channel.
+if not exist "%root%\.venv\Scripts\weave.exe" (
+    "%uv_bin%" sync --project "%root%" --extra all 1>&2
+    if errorlevel 1 exit /b 1
 )
 
 rem `--no-sync` and `python -m`, matching the POSIX launchers exactly (#156

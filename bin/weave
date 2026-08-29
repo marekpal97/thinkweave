@@ -39,9 +39,20 @@ else
     exit 127
 fi
 
+# One-time dependency bootstrap (#164, matches bin/weave-{hook,mcp}-launch):
+# a fresh plugin/marketplace clone has no venv, and `uv run --no-sync` would
+# fabricate an EMPTY one and die with ModuleNotFoundError. When the venv lacks
+# the project's own console script (bin/ on POSIX, Scripts/ for a native
+# Windows venv reached via Git Bash), run the ONE sanctioned sync
+# (dec-3d4f8ce9): `uv sync --extra all` — never per-call, never a narrower
+# extra set. Output to stderr: stdout belongs to the caller.
+if [ ! -x "$root/.venv/bin/weave" ] && [ ! -e "$root/.venv/Scripts/weave.exe" ]; then
+    "$uv_bin" sync --project "$root" --extra all 1>&2
+fi
+
 # --no-sync + module entry (matches bin/weave-{hook,mcp}-launch, #156/#164):
 # a plain `uv run --extra mcp weave` re-syncs the venv to ONLY the mcp extra on
 # every call, silently uninstalling news/embeddings/gemini/youtube deps — this
 # killed the news pull on 2026-08-11 and the embed/dream crons on 2026-08-22.
-# Sync happens once, explicitly: `uv sync --extra all` (see README).
+# Sync happens once, explicitly: `uv sync --extra all` (bootstrap above / README).
 exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave "$@"

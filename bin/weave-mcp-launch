@@ -35,7 +35,20 @@ else
     exit 127
 fi
 
-# Runtime launchers must never mutate the environment they are running from.
-# On Windows, syncing here can try to replace this live MCP process launcher.
+# One-time dependency bootstrap (#164, matches bin/weave and the hook
+# launcher): a fresh plugin/marketplace clone has no venv, and `uv run
+# --no-sync` would fabricate an EMPTY one and die with ModuleNotFoundError.
+# When the venv lacks the project's own console script (bin/ on POSIX,
+# Scripts/ for a native Windows venv reached via Git Bash), run the ONE
+# sanctioned sync (dec-3d4f8ce9): `uv sync --extra all` — never per-call,
+# never a narrower extra set. Output to stderr: stdout is this process's
+# MCP JSON-RPC stdio channel.
+if [ ! -x "$root/.venv/bin/weave" ] && [ ! -e "$root/.venv/Scripts/weave.exe" ]; then
+    "$uv_bin" sync --project "$root" --extra all 1>&2
+fi
+
+# Runtime launchers must never mutate an environment they are already running
+# from (the guard above only fires when there is nothing to mutate). On
+# Windows, syncing here can try to replace this live MCP process launcher.
 # Module invocation also avoids holding the generated weave-mcp.exe open.
 exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.mcp.server "$@"
