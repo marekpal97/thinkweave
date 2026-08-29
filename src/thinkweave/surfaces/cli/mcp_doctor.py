@@ -266,7 +266,7 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
         # defaults to Claude Code, so handing a Codex user the bare command
         # would write the registration into the wrong home.
         harness_flag = (
-            "" if _profile().id == "claude-code" else f" --harness {_profile().id}"
+            f" {_profile().harness_flag}" if _profile().harness_flag else ""
         )
         return CheckResult(
             name="registration scopes",

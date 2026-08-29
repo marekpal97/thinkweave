@@ -273,6 +273,33 @@ class TestDegradations:
 
 
 # --------------------------------------------------------------------------- #
+# zero per-harness forks outside the interpreter (grep-enforced, AC3)
+# --------------------------------------------------------------------------- #
+
+
+class TestNoHarnessForks:
+    def test_no_id_comparisons_against_harness_literals(self):
+        """Consumers branch on capability *data*, never on which harness it
+        is — that is the whole contract ("new harness = one profile row").
+        The one sanctioned home for id-keyed knowledge is ``core/harness.py``
+        itself, where the rows are authored."""
+        fork = re.compile(r"\.id\s*[!=]=\s*[\"']")
+        offenders = []
+        for py in (REPO_ROOT / "src" / "thinkweave").rglob("*.py"):
+            if py.name == "harness.py" and py.parent.name == "core":
+                continue
+            for lineno, line in enumerate(
+                py.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if fork.search(line):
+                    offenders.append(f"{py.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+        assert not offenders, (
+            "per-harness fork(s) outside the profile interpreter — express "
+            "the fact as profile data instead:\n" + "\n".join(offenders)
+        )
+
+
+# --------------------------------------------------------------------------- #
 # hook-envelope round-trip per (harness × event)
 # --------------------------------------------------------------------------- #
 

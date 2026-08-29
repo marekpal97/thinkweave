@@ -106,19 +106,19 @@ def _localize_command(command: str, root: Path) -> str:
 
 def _stamp_harness(command: str, profile) -> str:
     """Second per-route transformation: tell the handler which harness fired
-    it, by appending ``--harness <id>``.
+    it, by appending the profile's ``harness_flag``.
 
     Why argv and not :func:`thinkweave.core.harness.active` is
     docs/HARNESSES.md § "Why the handler reads argv, not the profile".
     ``bin/weave-hook-launch`` forwards ``"$@"`` untouched.
 
-    Claude Code is the shape ``hooks/hooks.json`` is authored in, so its
-    command is left byte-identical and the plugin route (which loads that file
-    directly, unstamped) keeps agreeing with what this writes.
+    Claude Code's flag is empty — ``hooks/hooks.json`` is authored in its
+    shape, so its command is left byte-identical and the plugin route (which
+    loads that file directly, unstamped) keeps agreeing with what this writes.
     """
-    if profile.id == "claude-code":
+    if not profile.harness_flag:
         return command
-    return f"{command} --harness {profile.id}"
+    return f"{command} {profile.harness_flag}"
 
 
 def _windows_command(command: str) -> str:
@@ -367,9 +367,10 @@ def install_hooks(
         )
         sys.exit(1)
 
-    # Claude Code loads the canonical hooks file from an active plugin. A
-    # second settings-file registration would deliver every event twice.
-    if profile.id == "claude-code" and plugin_namespace(
+    # A plugin-mechanism harness loads the canonical hooks file from its
+    # active plugin, which then owns registration outright — a second
+    # settings-file registration would deliver every event twice.
+    if profile.hook_mechanism == "plugin" and plugin_namespace(
         manifest=profile.installed_plugins,
         dev_link=profile.dev_link,
     ):

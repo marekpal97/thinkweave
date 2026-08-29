@@ -464,7 +464,7 @@ def _codex_windows_launcher() -> Path:
 
 def _install_codex_windows_cli(project_root: Path) -> Path | None:
     """Install Codex's sandbox-safe bare ``weave`` command on Windows."""
-    if not _is_windows() or _profile().id != "codex":
+    if not _is_windows() or not _profile().windows_cli_shim:
         return None
     target = _codex_windows_launcher()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -744,7 +744,7 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         and CLAUDE_MD_BLOCK_START in _instructions().read_text(encoding="utf-8")
     )
     mcp_present = _raw_mcp_entry_present()
-    launcher = _codex_windows_launcher() if _profile().id == "codex" else None
+    launcher = _codex_windows_launcher() if _profile().windows_cli_shim else None
 
     to_remove: list[str] = []
     if mcp_present:
