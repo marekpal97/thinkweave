@@ -577,6 +577,34 @@ class TestVerdictStep:
         assert any("no unlabeled prompt" in w for w in result.warnings)
         assert result.errors == []
 
+    def test_mixed_register_verdicts_do_not_double_label_one_prompt(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 review round 4: a prompt claimed by one verdict must not be
+        # "free" for a verdict of a DIFFERENT register (contradictory
+        # labels on one prompt), and an exact-text match outranks a mere
+        # prefix match — here the confirmation needle IS p2's text.
+        f = self._write_buffer(config, "cc-uuid-13", [
+            {"ts": "2026-08-29T09:00:00+00:00", "type": "prompt",
+             "text": "carry on with the refactor", "session_id": "cc-uuid-13"},
+            {"ts": "2026-08-29T09:30:00+00:00", "type": "prompt",
+             "text": "carry on", "session_id": "cc-uuid-13"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-13", project="t", prune=False,
+            verdicts=[
+                {"prompt": "carry on with the refactor",
+                 "register": "correction"},
+                {"prompt": "carry on", "register": "confirmation"},
+            ],
+        )
+        assert result.verdicts_written == 2
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert {r["ts"]: r["register"] for r in fb} == {
+            "2026-08-29T09:00:00+00:00": "correction",
+            "2026-08-29T09:30:00+00:00": "confirmation",
+        }
+
     def test_ses_id_falls_back_to_source_uuid_buffer(
         self, config: Config, vault: VaultManager
     ):

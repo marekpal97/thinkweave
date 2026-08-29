@@ -276,9 +276,12 @@ def _append_verdict_events(
     # labels read from the file — a verdict whose candidate already carries
     # the register from a PREVIOUS wrap is a re-wrap duplicate and is
     # skipped outright (falling through would label a prompt the user never
-    # judged). ``batch`` holds labels written in THIS call and drives the
-    # fall-through so repeated same-prefix verdicts in one batch distribute
-    # over distinct prompts.
+    # judged). ``batch`` holds the prompts labeled in THIS call — keyed by
+    # timestamp alone, because one prompt takes ONE label per wrap (#181
+    # round 4: a register-keyed claim would let a second verdict of a
+    # different register double-label the same prompt) — and drives the
+    # fall-through so repeated same-prefix verdicts in one batch
+    # distribute over distinct prompts.
     preexisting = {
         (r.get("ts", ""), r.get("register", ""))
         for r in feedback_events(events_file)
@@ -288,7 +291,7 @@ def _append_verdict_events(
         for p in prompts
         if p.classification == "probe"
     )
-    batch: set[tuple[str, str]] = set()
+    batch: set[str] = set()
 
     lines: list[str] = []
     # Longest needle first (#181 review): the most specific verdict claims
@@ -316,10 +319,11 @@ def _append_verdict_events(
         # text can survive the echo-collapse window (old multi-registration
         # capture, #161) — keep the first row per text. A previously-written
         # label on ANY candidate means this verdict is a re-wrap duplicate:
-        # skip it. Otherwise label the first candidate not taken by this
-        # batch, so repeated verdicts on DISTINCT same-prefix prompts
-        # distribute (identical-text repeats collapsed above count as
-        # skipped).
+        # skip it. Otherwise label the first free candidate, preferring an
+        # exact text match over a mere prefix match (round 4: the shorter
+        # needle may BE a later prompt verbatim), so repeated verdicts on
+        # DISTINCT same-prefix prompts distribute (identical-text repeats
+        # collapsed above count as skipped).
         first_by_text: dict[tuple[str, str], Prompt] = {}
         for p in matched:
             first_by_text.setdefault((p.session_id, p.text), p)
@@ -329,12 +333,12 @@ def _append_verdict_events(
         ):
             result.verdicts_skipped += 1
             continue
+        candidates = sorted(
+            first_by_text.values(),
+            key=lambda c: c.text.strip().lower() != needle,
+        )
         p = next(
-            (
-                c
-                for c in first_by_text.values()
-                if (c.ts.isoformat(), register) not in batch
-            ),
+            (c for c in candidates if c.ts.isoformat() not in batch),
             None,
         )
         if p is None:
@@ -349,7 +353,7 @@ def _append_verdict_events(
             )
             continue
         ts_iso = p.ts.isoformat()
-        batch.add((ts_iso, register))
+        batch.add(ts_iso)
         event = {
             "ts": ts_iso,
             "type": "probe" if register == "probe" else "feedback",
