@@ -42,6 +42,7 @@ def _make_session(
     project: str,
     session_id: str,
     *,
+    note_id: str = "",
     processed_at: str = "2026-04-05",
     files_touched: list[str] | None = None,
     commits: list[dict] | None = None,
@@ -65,7 +66,7 @@ def _make_session(
     fm_lines = [
         "---",
         "type: session",
-        f"id: {session_id}",
+        f"id: {note_id or session_id}",
         f"date: {processed_at}",
         f"project: {project}",
         f"processed_at: {processed_at}",
@@ -190,6 +191,24 @@ class TestIsOrphan:
         )
         assert not is_orphan(
             session, current_session_id="ses-wrap2", min_age_seconds=0
+        )
+
+    def test_live_wrap_uuid_named_folder_protected_by_ses_id(
+        self, vault_dir: Path
+    ):
+        # #181 review: the dominant LIVE-wrap folder shape — folder named
+        # after the source UUID (the eagerly-created <uuid>-<date> dir),
+        # `id: ses-XXXX` in frontmatter. Finalize now passes the ses-id;
+        # the frontmatter id must protect it.
+        session = _make_session(
+            vault_dir,
+            "alpha",
+            "cc-uuid-live",
+            note_id="ses-live1",
+            source_session="cc-uuid-live",
+        )
+        assert not is_orphan(
+            session, current_session_id="ses-live1", min_age_seconds=0
         )
 
     def test_non_session_folder_ignored(self, vault_dir: Path):

@@ -371,22 +371,49 @@ class TestVerdictStep:
             {"ts": "2026-08-22T11:00:00+00:00", "type": "prompt",
              "text": "fix the parser tests too", "session_id": "cc-uuid-7"},
         ])
+        verdicts = [{"prompt": "fix the parser", "register": "correction"}]
         result = finalize_wrap(
             config, session_id="cc-uuid-7", project="t", prune=False,
-            verdicts=[{"prompt": "fix the parser", "register": "correction"}],
+            verdicts=verdicts,
         )
         assert result.verdicts_written == 1
         fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
         assert fb[0]["ts"] == "2026-08-22T10:00:00+00:00"
 
+        # #181 review: a re-wrap of the SAME verdict must not walk onto the
+        # next unlabeled candidate — that would label a prompt the user
+        # never judged. Skip outright instead.
+        rewrap = finalize_wrap(
+            config, session_id="cc-uuid-7", project="t", prune=False,
+            verdicts=verdicts,
+        )
+        assert rewrap.verdicts_written == 0
+        assert rewrap.verdicts_skipped == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+        assert fb[0]["ts"] == "2026-08-22T10:00:00+00:00"
+
+    @pytest.mark.parametrize("reverse", [False, True])
     def test_forced_reextract_prefers_newest_source_session_folder(
-        self, config: Config, vault: VaultManager
+        self, config: Config, vault: VaultManager, monkeypatch, reverse: bool
     ):
         # #181: weave_extract(force=true) mints a SECOND folder claiming the
         # same source UUID. Resolution must pick the most recently written
-        # events file, not whichever folder iterdir yields first.
+        # events file, not whichever folder iterdir yields first — pinned
+        # by forcing BOTH directory orders instead of trusting the
+        # filesystem's readdir order.
         import os
+
+        real_iterdir = Path.iterdir
+        monkeypatch.setattr(
+            Path,
+            "iterdir",
+            lambda self: iter(
+                sorted(real_iterdir(self), key=lambda p: p.name,
+                       reverse=reverse)
+            ),
+        )
 
         base = config.vault_root / "projects" / "t" / "sessions"
         row = json.dumps({
@@ -394,10 +421,6 @@ class TestVerdictStep:
             "text": "wire the verdict rail", "session_id": "cc-uuid-8",
         })
         events_files: dict[str, Path] = {}
-        # These names are chosen so directory hash order yields the STALE
-        # folder first (probed on ext4/tmpfs; stable across creation order)
-        # — a first-match resolver would hit it, so the selection must rest
-        # on mtime, not directory order.
         for name, sid, mtime in [
             ("ses-stale111-2026-08-20", "ses-stale111", 1_000_000_000),
             ("ses-fresh222-2026-08-22", "ses-fresh222", 2_000_000_000),
@@ -456,6 +479,31 @@ class TestVerdictStep:
         ]
         assert len(fb) == 1
         assert fb[0]["session_id"] == "ses-arch1"
+
+    def test_ses_id_falls_back_to_source_uuid_buffer(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 review: the hint names the minted ses- id, but the live
+        # buffer is keyed by the source UUID. If archive_buffer failed, the
+        # buffer is the only events file — the ses- id must still find it.
+        sess_path = vault.create_note(
+            NoteType.SESSION, "S", body="## Summary\n", project="t",
+            extra_frontmatter={"source_session": "cc-uuid-9"},
+        )
+        ses_id = vault.read_note(sess_path).id
+        _index(config)
+        f = self._write_buffer(config, "cc-uuid-9", [
+            {"ts": "2026-08-22T10:00:00+00:00", "type": "prompt",
+             "text": "archive failed but capture lives",
+             "session_id": "cc-uuid-9"},
+        ])
+        result = finalize_wrap(
+            config, session_id=ses_id, project="t", prune=False,
+            verdicts=[{"prompt": "archive failed", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        assert len(fb) == 1
 
     def test_no_events_file_reports_error(
         self, config: Config, vault: VaultManager

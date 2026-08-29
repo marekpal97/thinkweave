@@ -73,8 +73,8 @@ def is_orphan(
     4. Frontmatter ``files_touched`` is missing or empty
     5. Frontmatter ``commits`` is missing or empty
     6. Folder age > ``min_age_seconds`` (by frontmatter date or mtime)
-    7. Neither frontmatter ``source_session`` nor the folder-name prefix
-       matches ``current_session_id``
+    7. Neither frontmatter ``source_session`` / ``id`` nor the folder-name
+       prefix matches ``current_session_id``
 
     Returns False on any IO error — conservative: if we can't tell, don't delete.
     """
@@ -111,10 +111,14 @@ def is_orphan(
             return False
 
         # Condition 7: not the current wrap. Finalize passes either the
-        # source UUID (matches source_session) or the minted ses- id
-        # (#181 — matches the folder-name prefix).
+        # source UUID (matches source_session) or the minted ses- id (#181
+        # — matches the frontmatter id, or the folder-name prefix for
+        # ses-named catch-up folders). The live-wrap folder is named after
+        # the UUID with `id: ses-XXXX` inside, so the id clause is the one
+        # that protects it.
         if current_session_id and (
             fm.get("source_session") == current_session_id
+            or fm.get("id") == current_session_id
             or session_dir.name.startswith(current_session_id)
         ):
             return False

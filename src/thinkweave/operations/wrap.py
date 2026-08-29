@@ -86,19 +86,26 @@ _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | None:
     """Locate the session's event stream without creating anything.
 
-    Live wrap: the buffer file keyed by the Claude Code session UUID.
-    Catch-up wrap: the archived ``events.jsonl`` in the session folder
-    (matched by folder-name prefix or ``source_session`` frontmatter —
-    the same rule ``VaultManager._find_session_dir`` applies, minus its
-    eager-create side effect). A forced re-extract mints a second folder
-    claiming the same source UUID (#181), so among candidates a
-    ``source_session`` match outranks a bare name-prefix match and the
-    most recently written events file wins ties — that's the one the
-    extract just archived into.
+    Live wrap: the buffer file — keyed by the Claude Code session UUID,
+    so a ``ses-…`` id is also probed under its ``source_session`` (#181:
+    the finalize hint names the minted ses- id; if ``archive_buffer``
+    failed, the buffer is the only events file). Catch-up wrap: the
+    archived ``events.jsonl`` in the session folder, matched by
+    folder-name prefix or ``source_session`` frontmatter. A forced
+    re-extract mints a second folder claiming the same source UUID
+    (#181), so among candidates a ``source_session`` match outranks a
+    bare name-prefix match and the most recently written events file
+    wins — that's the one the extract just archived into.
     """
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
         return buf
+    if session_id.startswith("ses-"):
+        src = _source_session_of(cfg, session_id)
+        if src:
+            src_buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
+            if src_buf.exists():
+                return src_buf
     if not project:
         return None
     sessions_dir = cfg.vault_root / "projects" / project / "sessions"
@@ -106,7 +113,7 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
         return None
     from thinkweave.core.vault import parse_frontmatter
 
-    best: tuple[bool, float, Path] | None = None
+    best: tuple[bool, float, str, Path] | None = None
     for d in sessions_dir.iterdir():
         if not d.is_dir() or d.name == "misc":
             continue
@@ -125,10 +132,12 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
         events_file = d / "events.jsonl"
         if not events_file.exists():
             continue
-        rank = (by_source, events_file.stat().st_mtime)
-        if best is None or rank > best[:2]:
+        # Folder name as final key: deterministic when mtimes tie exactly
+        # (the name embeds the date, and newer mints sort after).
+        rank = (by_source, events_file.stat().st_mtime, d.name)
+        if best is None or rank > best[:3]:
             best = (*rank, events_file)
-    return best[2] if best else None
+    return best[3] if best else None
 
 
 def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
@@ -154,15 +163,19 @@ def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
 def _source_session_of(cfg: Config, session_note_id: str) -> str:
     """Inverse of :func:`_session_note_id`: map a ``ses-…`` note id to the
     ``source_session`` its decisions are stamped with (the extract input).
-    Empty string when unknown."""
+    Empty string when unknown — including when the index doesn't exist yet
+    (the verdicts step runs before reindex)."""
     from thinkweave.core.vault import VaultManager
     from thinkweave.retrieval.search import Search
 
-    s = Search(config=cfg)
     try:
-        row = s.get_note_by_id(session_note_id)
-    finally:
-        s.close()
+        s = Search(config=cfg)
+        try:
+            row = s.get_note_by_id(session_note_id)
+        finally:
+            s.close()
+    except Exception:  # noqa: BLE001
+        return ""
     if not row:
         return ""
     vm = VaultManager(config=cfg)
@@ -202,8 +215,9 @@ def _append_verdict_events(
     named should not be emitted at all), so an absent ``about`` is legal
     but expected to be rare.
 
-    Idempotent: a (ts, register) pair that already exists is skipped, so
-    re-wraps never double-write.
+    Idempotent: a verdict whose matched prompt already carries the register
+    from a previous wrap is skipped outright, so re-wraps never
+    double-write nor spill onto sibling prompts.
     """
     from thinkweave.core.events import Prompt, extract_prompts, feedback_events
 
@@ -216,15 +230,23 @@ def _append_verdict_events(
         return
 
     prompts = extract_prompts(events_file)
-    existing = {
+    # Two sets with different roles (#181 review): ``preexisting`` holds
+    # labels read from the file — a verdict whose candidate already carries
+    # the register from a PREVIOUS wrap is a re-wrap duplicate and is
+    # skipped outright (falling through would label a prompt the user never
+    # judged). ``batch`` holds labels written in THIS call and drives the
+    # fall-through so repeated same-prefix verdicts in one batch distribute
+    # over distinct prompts.
+    preexisting = {
         (r.get("ts", ""), r.get("register", ""))
         for r in feedback_events(events_file)
     }
-    existing.update(
+    preexisting.update(
         (p.ts.isoformat(), "probe")
         for p in prompts
         if p.classification == "probe"
     )
+    batch: set[tuple[str, str]] = set()
 
     lines: list[str] = []
     for v in verdicts:
@@ -245,18 +267,26 @@ def _append_verdict_events(
             continue
         # #181: one verdict labels one prompt. Duplicate rows of the same
         # text can survive the echo-collapse window (old multi-registration
-        # capture, #161) — keep the first row per text, then label the
-        # first candidate not already carrying this register so re-wraps
-        # stay idempotent and same-batch repeats fall through to later
-        # prompts.
+        # capture, #161) — keep the first row per text. A previously-written
+        # label on ANY candidate means this verdict is a re-wrap duplicate:
+        # skip it. Otherwise label the first candidate not taken by this
+        # batch, so repeated verdicts on DISTINCT same-prefix prompts
+        # distribute (identical-text repeats collapsed above count as
+        # skipped).
         first_by_text: dict[tuple[str, str], Prompt] = {}
         for p in matched:
             first_by_text.setdefault((p.session_id, p.text), p)
+        if any(
+            (c.ts.isoformat(), register) in preexisting
+            for c in first_by_text.values()
+        ):
+            result.verdicts_skipped += 1
+            continue
         p = next(
             (
                 c
                 for c in first_by_text.values()
-                if (c.ts.isoformat(), register) not in existing
+                if (c.ts.isoformat(), register) not in batch
             ),
             None,
         )
@@ -264,7 +294,7 @@ def _append_verdict_events(
             result.verdicts_skipped += 1
             continue
         ts_iso = p.ts.isoformat()
-        existing.add((ts_iso, register))
+        batch.add((ts_iso, register))
         event = {
             "ts": ts_iso,
             "type": "probe" if register == "probe" else "feedback",
