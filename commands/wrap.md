@@ -69,8 +69,13 @@ If the session note has a `## Candidate Insights` section (populated when hooks 
 ## 4. Run `weave wrap-finalize` (one Bash call)
 
 ```
-weave wrap-finalize <session_id> --project <project> [--verdicts '<json>']
+weave wrap-finalize <ses-id> --project <project> [--verdicts '<json>']
 ```
+
+Copy the `▶ To finalize:` line `weave_extract` printed **verbatim** — it
+names the minted `ses-…` session-note id (#181), which resolves the freshly
+archived events even after a forced re-extract. Do not substitute the Claude
+Code UUID.
 
 **Prompt verdicts (#101) — compose them in step 3, pass them here.** You are the prompt labeler: while composing insights/decisions, also judge each *user* prompt this session on three registers — did it clearly push back on agent work (`correction`), clearly endorse it (`confirmation`), or ask a substantive exploratory question (`probe`)? Apply §C5 below; if any non-neutral verdicts exist, add:
 

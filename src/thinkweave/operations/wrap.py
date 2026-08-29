@@ -20,6 +20,7 @@ Imports ``core/`` / ``operations/`` / ``synthesis/`` only — never ``surfaces/`
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,17 +87,52 @@ _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | None:
     """Locate the session's event stream without creating anything.
 
-    Live wrap: the buffer file — keyed by the Claude Code session UUID,
-    so a ``ses-…`` id is also probed under its ``source_session`` (#181:
-    the finalize hint names the minted ses- id; if ``archive_buffer``
-    failed, the buffer is the only events file). Catch-up wrap: the
-    archived ``events.jsonl`` in the session folder, matched by
-    folder-name prefix or ``source_session`` frontmatter. A forced
-    re-extract mints a second folder claiming the same source UUID
-    (#181), so among candidates a ``source_session`` match outranks a
-    bare name-prefix match and the most recently written events file
-    wins — that's the one the extract just archived into.
+    Primary: the archived ``events.jsonl`` in a session folder matched by
+    folder-name prefix or frontmatter — ``source_session`` or ``id``, the
+    live folder being named after the source UUID with the minted ses- id
+    inside (#181). Among matches the most recently written events file
+    wins (folder name breaks exact mtime ties): a forced re-extract mints
+    a second folder claiming the same source UUID, and the freshest
+    archive is the one the extract just wrote.
+
+    Last resort: the live buffer — keyed by the source UUID, so a ses- id
+    also probes via its ``source_session``. Hooks recreate the buffer the
+    moment any event fires after ``archive_buffer`` ran, so a buffer
+    alongside an archive is post-archive noise; it is the events file
+    only when no archive exists (archive failed, or never ran).
     """
+    if project:
+        sessions_dir = cfg.vault_root / "projects" / project / "sessions"
+        if sessions_dir.exists():
+            from thinkweave.core.vault import parse_frontmatter
+
+            best: tuple[float, str, Path] | None = None
+            for d in sessions_dir.iterdir():
+                if not d.is_dir() or d.name == "misc":
+                    continue
+                if not d.name.startswith(session_id):
+                    sm = d / "session.md"
+                    if not sm.exists():
+                        continue
+                    try:
+                        fm, _ = parse_frontmatter(
+                            sm.read_text(encoding="utf-8")
+                        )
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if session_id not in (
+                        fm.get("source_session"),
+                        fm.get("id"),
+                    ):
+                        continue
+                events_file = d / "events.jsonl"
+                if not events_file.exists():
+                    continue
+                rank = (events_file.stat().st_mtime, d.name)
+                if best is None or rank > best[:2]:
+                    best = (*rank, events_file)
+            if best:
+                return best[2]
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
         return buf
@@ -106,38 +142,7 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
             src_buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
             if src_buf.exists():
                 return src_buf
-    if not project:
-        return None
-    sessions_dir = cfg.vault_root / "projects" / project / "sessions"
-    if not sessions_dir.exists():
-        return None
-    from thinkweave.core.vault import parse_frontmatter
-
-    best: tuple[bool, float, str, Path] | None = None
-    for d in sessions_dir.iterdir():
-        if not d.is_dir() or d.name == "misc":
-            continue
-        by_source = False
-        if not d.name.startswith(session_id):
-            sm = d / "session.md"
-            if not sm.exists():
-                continue
-            try:
-                fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                continue
-            if fm.get("source_session") != session_id:
-                continue
-            by_source = True
-        events_file = d / "events.jsonl"
-        if not events_file.exists():
-            continue
-        # Folder name as final key: deterministic when mtimes tie exactly
-        # (the name embeds the date, and newer mints sort after).
-        rank = (by_source, events_file.stat().st_mtime, d.name)
-        if best is None or rank > best[:3]:
-            best = (*rank, events_file)
-    return best[3] if best else None
+    return None
 
 
 def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
@@ -174,14 +179,14 @@ def _source_session_of(cfg: Config, session_note_id: str) -> str:
             row = s.get_note_by_id(session_note_id)
         finally:
             s.close()
-    except Exception:  # noqa: BLE001
+    except (FileNotFoundError, sqlite3.Error):
         return ""
     if not row:
         return ""
     vm = VaultManager(config=cfg)
     try:
         note = vm.read_note(vm.root / row["path"])
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, KeyError):
         return ""
     return str(note.frontmatter.get("source_session") or "")
 
@@ -249,7 +254,12 @@ def _append_verdict_events(
     batch: set[tuple[str, str]] = set()
 
     lines: list[str] = []
-    for v in verdicts:
+    # Longest needle first (#181 review): the most specific verdict claims
+    # its prompt before a broader prefix can take it — in-batch assignment
+    # stops depending on the wrap LLM's verdict order.
+    for v in sorted(
+        verdicts, key=lambda v: -len(str(v.get("prompt", "")).strip())
+    ):
         register = str(v.get("register", "")).strip().lower()
         needle = str(v.get("prompt", "")).strip().lower()
         about = str(v.get("about", "")).strip()
@@ -291,7 +301,14 @@ def _append_verdict_events(
             None,
         )
         if p is None:
+            # Every candidate was taken by this batch — the label is
+            # dropped, which is an anomaly worth surfacing, unlike the
+            # silent re-wrap skip above.
             result.verdicts_skipped += 1
+            result.errors.append(
+                f"verdicts: no unlabeled prompt left for {needle!r}"
+                f" ({register})"
+            )
             continue
         ts_iso = p.ts.isoformat()
         batch.add((ts_iso, register))
@@ -310,7 +327,7 @@ def _append_verdict_events(
     if lines:
         with events_file.open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
-        result.verdicts_written = len(lines)
+        result.verdicts_written += len(lines)
 
 
 def finalize_wrap(

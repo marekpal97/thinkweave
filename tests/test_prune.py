@@ -211,6 +211,19 @@ class TestIsOrphan:
             session, current_session_id="ses-live1", min_age_seconds=0
         )
 
+    def test_sibling_folder_same_source_uuid_is_prunable(self, vault_dir: Path):
+        # #181: a forced re-extract leaves an older sibling folder claiming
+        # the same source UUID. With finalize keyed by the minted ses- id,
+        # that sibling is deliberately NOT protected — when the remaining
+        # orphan conditions hold (no derived notes, tiny events, old
+        # enough) it is legitimate GC. Pinned as intended behavior.
+        sibling = _make_session(
+            vault_dir, "alpha", "ses-oldwrap", source_session="cc-current"
+        )
+        assert is_orphan(
+            sibling, current_session_id="ses-newwrap", min_age_seconds=0
+        )
+
     def test_non_session_folder_ignored(self, vault_dir: Path):
         fake = vault_dir / "projects" / "alpha" / "sessions" / "misc"
         fake.mkdir(parents=True)

@@ -72,9 +72,9 @@ def is_orphan(
     3. ``events.jsonl`` is missing OR smaller than ``EVENTS_MIN_BYTES``
     4. Frontmatter ``files_touched`` is missing or empty
     5. Frontmatter ``commits`` is missing or empty
-    6. Folder age > ``min_age_seconds`` (by frontmatter date or mtime)
-    7. Neither frontmatter ``source_session`` / ``id`` nor the folder-name
+    6. Neither frontmatter ``source_session`` / ``id`` nor the folder-name
        prefix matches ``current_session_id``
+    7. Folder age > ``min_age_seconds`` (by frontmatter date or mtime)
 
     Returns False on any IO error — conservative: if we can't tell, don't delete.
     """
@@ -96,7 +96,7 @@ def is_orphan(
         if events_file.exists() and events_file.stat().st_size >= EVENTS_MIN_BYTES:
             return False
 
-        # Parse frontmatter once for conditions 4, 5, 6, 7
+        # Parse frontmatter once for conditions 4-7
         text = session_md.read_text(encoding="utf-8")
         fm, _body = parse_frontmatter(text)
 
@@ -110,7 +110,7 @@ def is_orphan(
         if commits:
             return False
 
-        # Condition 7: not the current wrap. Finalize passes either the
+        # Condition 6: not the current wrap. Finalize passes either the
         # source UUID (matches source_session) or the minted ses- id (#181
         # — matches the frontmatter id, or the folder-name prefix for
         # ses-named catch-up folders). The live-wrap folder is named after
@@ -123,7 +123,7 @@ def is_orphan(
         ):
             return False
 
-        # Condition 6: old enough
+        # Condition 7: old enough
         if now is None:
             now = time.time()
         age = _folder_age_seconds(session_dir, fm, now)

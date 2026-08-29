@@ -480,6 +480,100 @@ class TestVerdictStep:
         assert len(fb) == 1
         assert fb[0]["session_id"] == "ses-arch1"
 
+    def _hijack_fixture(self, config: Config, ses_id: str, uuid: str):
+        """Archived UUID-named folder with one prompt + a recreated buffer
+        holding only a post-archive action row. Returns the archive path."""
+        sess_dir = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / f"{uuid}-2026-08-22"
+        )
+        sess_dir.mkdir(parents=True)
+        (sess_dir / "session.md").write_text(
+            f"---\ntype: session\nid: {ses_id}\n"
+            f"source_session: {uuid}\nproject: t\n---\n",
+            encoding="utf-8",
+        )
+        events = sess_dir / "events.jsonl"
+        events.write_text(
+            json.dumps({
+                "ts": "2026-08-22T10:00:00+00:00", "type": "prompt",
+                "text": "ship the archive", "session_id": uuid,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        self._write_buffer(config, uuid, [
+            {"ts": "2026-08-22T10:05:00+00:00", "type": "action",
+             "tool": "Bash", "session_id": uuid},
+        ])
+        _index(config)
+        return events
+
+    def test_recreated_buffer_does_not_hijack_archived_events(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 review: hooks recreate the buffer the moment any event fires
+        # after weave_extract archived it. Resolution keyed by the hinted
+        # ses- id must still hit the archived events.jsonl (the live folder
+        # is UUID-named with the ses- id in frontmatter) — the buffer is
+        # the events file only when no archive exists.
+        events = self._hijack_fixture(config, "ses-hijack1", "cc-uuid-10")
+        result = finalize_wrap(
+            config, session_id="ses-hijack1", project="t", prune=False,
+            verdicts=[{"prompt": "ship the archive", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        assert result.verdicts_unmatched == 0
+        fb = [r for r in self._rows(events) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+
+    def test_recreated_buffer_does_not_hijack_for_uuid_id(
+        self, config: Config, vault: VaultManager
+    ):
+        # Same hijack, UUID-keyed finalize: the direct buffer probe must
+        # not shadow the archived folder either.
+        events = self._hijack_fixture(config, "ses-hijack2", "cc-uuid-11")
+        result = finalize_wrap(
+            config, session_id="cc-uuid-11", project="t", prune=False,
+            verdicts=[{"prompt": "ship the archive", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        assert result.verdicts_unmatched == 0
+        fb = [r for r in self._rows(events) if r.get("type") == "feedback"]
+        assert len(fb) == 1
+
+    def test_specific_verdict_beats_broad_same_batch(
+        self, config: Config, vault: VaultManager
+    ):
+        # #181 review: in-batch assignment must not be verdict-order
+        # dependent — the most specific (longest) needle claims its prompt
+        # first, and a starved verdict is surfaced, not silently skipped.
+        f = self._write_buffer(config, "cc-uuid-12", [
+            {"ts": "2026-08-22T10:00:00+00:00", "type": "prompt",
+             "text": "fix the parser bug", "session_id": "cc-uuid-12"},
+            {"ts": "2026-08-22T11:00:00+00:00", "type": "prompt",
+             "text": "fix the parser tests too", "session_id": "cc-uuid-12"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-12", project="t", prune=False,
+            verdicts=[
+                {"prompt": "fix the parser", "register": "correction",
+                 "about": "broad one"},
+                {"prompt": "fix the parser", "register": "correction",
+                 "about": "broad two"},
+                {"prompt": "fix the parser tests", "register": "correction",
+                 "about": "narrow"},
+            ],
+        )
+        assert result.verdicts_written == 2
+        assert result.verdicts_skipped == 1
+        fb = {
+            r["ts"]: r for r in self._rows(f) if r.get("type") == "feedback"
+        }
+        # The narrow verdict got its precise referent; one broad duplicate
+        # starved — and said so.
+        assert fb["2026-08-22T11:00:00+00:00"]["about"] == "narrow"
+        assert any("no unlabeled prompt" in e for e in result.errors)
+
     def test_ses_id_falls_back_to_source_uuid_buffer(
         self, config: Config, vault: VaultManager
     ):
