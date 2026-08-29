@@ -59,7 +59,7 @@ None — the reference harness.
 #### Pi
 
 - **lifecycle hooks** — documented: the Pi extension shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#114)
-- **MCP registration** — documented: the written entry follows Pi's documented mcpServers block (command string + args list + env map, n-a1d3beba §4) apart from an extra `type: stdio` key Pi's field list does not name; NOT yet verified to parse on a live install — #114 owns the live verification (n-a1d3beba §4; verified by #114)
+- **MCP registration** — documented: the written entry follows Pi's documented mcpServers block (command string + args list + env map, n-a1d3beba §4) apart from an extra `type: stdio` key Pi's field list does not name; NOT yet verified to parse on a live install — #114 owns the live verification (n-a1d3beba §4)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
 - **skill invocation** — documented: no Skill tool — /skill:name is prompt-expansion, and the bootstrap must say read-the-SKILL.md, not invoke (n-a1d3beba §4)
 - **transcript import** — documented: session files are parentId trees, not flat JSONL; no importer walks them yet (n-a1d3beba §6)

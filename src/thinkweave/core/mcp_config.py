@@ -90,6 +90,16 @@ def canonical(
         }
         if entry.get("env"):
             merged["environment"] = dict(entry["env"])
+        # `enabled` is optional in the docs, whose own example sets it true
+        # (opencode.ai/docs/mcp-servers/ via n-767d66b4 §4). Written
+        # explicitly because a wrong guess about its default is the silent
+        # registered-but-never-started failure (review r3 advisory).
+        merged["enabled"] = True
+        # ponytail: the shape dispatch returns here, BEFORE the file-format
+        # trims below — shape and format are ordered, not composed. Safe
+        # while the only argv-array row writes JSON; a TOML harness
+        # declaring argv-array would need the trims moved after the
+        # dispatch.
         return merged
     if not _is_toml(path):
         return entry

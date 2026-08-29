@@ -319,6 +319,75 @@ class TestNextStepsOutput:
 
 
 # --------------------------------------------------------------------------- #
+# instructions block — every named CLI fallback must resolve
+# --------------------------------------------------------------------------- #
+
+
+class TestInstructionsBlock:
+    """Documented fallback commands rot (review r3): every ``weave …`` CLI
+    invocation a rendered instructions block names must resolve — an
+    absolute, existing launcher path and a real argparse subcommand. And a
+    row whose MCP registration is itself declared-not-verified must name a
+    CLI fallback at all: with hooks off and no skills shipped, the block is
+    the harness's ONLY persistence path when that entry fails to load."""
+
+    def _render(self, profile, monkeypatch) -> str:
+        from thinkweave.surfaces.cli import install as inst
+
+        monkeypatch.setattr(harness, "_OVERRIDE", profile)
+        monkeypatch.setattr(inst, "_detect_project_root", lambda: REPO_ROOT)
+        return inst._render_claude_md_block()
+
+    @staticmethod
+    def _cli_invocations(block: str) -> list[list[str]]:
+        # A backtick span whose first token IS the weave launcher (bare or
+        # path-shaped). Single tokens like `weave_extract` / `weave_*` are
+        # MCP-tool names, not shell commands.
+        out = []
+        for span in re.findall(r"`([^`\n]+)`", block):
+            argv = span.split()
+            if argv and Path(argv[0]).name == "weave":
+                out.append(argv)
+        return out
+
+    def test_every_named_cli_invocation_resolves(self, profile, monkeypatch):
+        import argparse
+
+        from thinkweave.surfaces.cli.parser import build_parser
+
+        sub = next(
+            a
+            for a in build_parser()._actions
+            if isinstance(a, argparse._SubParsersAction)
+        )
+        block = self._render(profile, monkeypatch)
+        assert "{weave}" not in block, "unsubstituted launcher placeholder"
+        for argv in self._cli_invocations(block):
+            cmd = Path(argv[0])
+            assert cmd.is_absolute() and cmd.exists(), (
+                f"{profile.id}: block names `{argv[0]}` which does not "
+                "resolve outside Claude Code's plugin PATH"
+            )
+            assert len(argv) > 1 and argv[1] in sub.choices, (
+                f"{profile.id}: block names `weave {argv[1] if len(argv) > 1 else ''}`, "
+                "not a real subcommand — a rotted fallback"
+            )
+
+    def test_declared_mcp_rows_name_a_cli_fallback(self, profile, monkeypatch):
+        if not any(
+            "mcp registration" in d.capability.lower()
+            for d in profile.degradations
+        ):
+            return  # measured rows: hooks and skills cover persistence
+        block = self._render(profile, monkeypatch)
+        assert self._cli_invocations(block), (
+            f"{profile.id}: MCP registration is declared-not-verified and "
+            "the instructions block names no CLI fallback — zero "
+            "persistence path when the entry fails to load"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # MCP config round-trip, in every profile's declared format + key
 # --------------------------------------------------------------------------- #
 
@@ -419,8 +488,14 @@ class TestMcpInstallSurface:
             # opencode.ai/docs/mcp-servers/ (blueprint n-767d66b4 §4):
             # type local|remote, command as ONE array (launcher + argv
             # merged), optional environment map — omitted here because the
-            # env is empty.
-            assert entry == {"type": "local", "command": ["/uv", *uv_args]}
+            # env is empty. `enabled` is optional too but written: its
+            # docs-side default being wrong is the silent
+            # registered-but-never-started failure (review r3 advisory).
+            assert entry == {
+                "type": "local",
+                "command": ["/uv", *uv_args],
+                "enabled": True,
+            }
         elif profile.id == "codex":
             # `codex mcp add`'s own 2026-08-02 output: no type key, empty
             # env omitted (format-level trims, still the split shape).

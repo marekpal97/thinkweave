@@ -532,8 +532,20 @@ def _diff_lines(old: dict, new: dict) -> list[str]:
 
 
 def _render_claude_md_block() -> str:
-    """The exact bytes we want between the sentinels (no trailing newline)."""
+    """The exact bytes we want between the sentinels (no trailing newline).
+
+    A ``{weave}`` placeholder in the profile's body becomes this install's
+    absolute ``bin/weave`` launcher: bare ``weave`` only resolves inside
+    Claude Code's plugin shell, and the E0 rows' CLI fallback must be
+    invocable from any harness shell — the launcher self-bootstraps its venv
+    (#164). Baking an absolute path is correct here because the block is
+    rendered per install, unlike the committed manifests.
+    """
     body = _profile().instructions_block_body
+    if "{weave}" in body:
+        body = body.replace(
+            "{weave}", str(_detect_project_root() / "bin" / "weave")
+        )
     return f"{CLAUDE_MD_BLOCK_START}\n{body}\n{CLAUDE_MD_BLOCK_END}"
 
 

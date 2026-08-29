@@ -100,7 +100,14 @@ class HarnessProfile:
     A Claude Code block ends "run ``/wrap`` before ``/clear``"; on a harness
     with no slash commands and no session-end hook that is an instruction the
     model cannot follow, so its block names the explicit ``weave_extract`` call
-    instead — the epic's "documented degradation, not a broken promise"."""
+    instead — the epic's "documented degradation, not a broken promise".
+
+    A ``{weave}`` placeholder is substituted at install time with the absolute
+    ``bin/weave`` launcher path (``install._render_claude_md_block``): bare
+    ``weave`` only resolves inside Claude Code's plugin shell, so a CLI
+    fallback the block names must carry a path any harness shell can run —
+    and every fallback it names is conformance-pinned against the real
+    argparse, because documented fallback commands rot (review r3)."""
 
     mcp_config: Path
     """Where an MCP server registration is read from / written to. The *format*
@@ -648,7 +655,11 @@ def pi(home: Path | None = None) -> HarnessProfile:
         instructions_block_body=(
             f"{_NUDGE}. This harness fires no thinkweave lifecycle hooks, so "
             "call `weave_extract` yourself before you finish — it is what "
-            "persists the session's insights and decisions into the vault."
+            "persists the session's insights and decisions into the vault. "
+            "If the `weave_*` tools did not load, fall back to the CLI: "
+            "`{weave} add <title> -t note -p <project> -b <body>` persists "
+            "a note (`-t decision` for a decision) and "
+            "`{weave} search <query>` retrieves."
         ),
         # NB: mcp_config, user_settings and installed_plugins all resolve to
         # this one settings.json. Safe while every writer is key-scoped or
@@ -703,7 +714,7 @@ def pi(home: Path | None = None) -> HarnessProfile:
                 "from an extra `type: stdio` key Pi's field list does not "
                 "name; NOT yet verified to parse on a live install — #114 "
                 "owns the live verification",
-                "n-a1d3beba §4; verified by #114",
+                "n-a1d3beba §4",
             ),
             Degradation(
                 "subagent fan-out",
@@ -753,7 +764,11 @@ def opencode(home: Path | None = None) -> HarnessProfile:
         instructions_block_body=(
             f"{_NUDGE}. This harness fires no thinkweave lifecycle hooks, so "
             "call `weave_extract` yourself before you finish — it is what "
-            "persists the session's insights and decisions into the vault."
+            "persists the session's insights and decisions into the vault. "
+            "If the `weave_*` tools did not load, fall back to the CLI: "
+            "`{weave} add <title> -t note -p <project> -b <body>` persists "
+            "a note (`-t decision` for a decision) and "
+            "`{weave} search <query>` retrieves."
         ),
         # NB: mcp_config, user_settings and installed_plugins all resolve to
         # this one opencode.json — same merge-never-regenerate constraint as
