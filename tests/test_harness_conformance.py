@@ -87,6 +87,9 @@ class TestSchemaInvariants:
         assert profile.transcript_format
         assert profile.session_id_scheme
         assert profile.context_channel
+        # Provenance travels as data (review r1): every row says whether its
+        # facts were measured or merely declared from a blueprint.
+        assert profile.evidence
 
     def test_harness_flag_is_empty_or_names_this_harness(self, profile):
         # Claude Code is the authored canonical shape and stays unstamped;
@@ -273,42 +276,100 @@ class TestDegradations:
 
 
 # --------------------------------------------------------------------------- #
+# next-steps output — derived from the profile, degradations out loud
+# --------------------------------------------------------------------------- #
+
+
+class TestNextStepsOutput:
+    """dec-5a076384: degrade OUT LOUD at the point of action. The install's
+    closing screen must never name a command the profile cannot run (review
+    r1: E0 users were handed `weave hooks install` that exits 1 and a
+    `weave import pi` argparse rejects) and must render the degradations."""
+
+    def _out(self, profile, monkeypatch, capsys) -> str:
+        from thinkweave.surfaces.cli import install as inst
+
+        monkeypatch.setattr(harness, "_OVERRIDE", profile)
+        inst._print_next_steps()
+        return capsys.readouterr().out
+
+    def test_only_runnable_commands_are_named(self, profile, monkeypatch, capsys):
+        out = self._out(profile, monkeypatch, capsys)
+        if not profile.hooks:
+            assert "weave hooks install" not in out
+        if profile.load_transcript_importer() is None:
+            assert f"weave import {profile.id}" not in out
+
+    def test_degradations_are_rendered_out_loud(self, profile, monkeypatch, capsys):
+        out = self._out(profile, monkeypatch, capsys)
+        for d in profile.degradations:
+            assert d.note in out
+
+    def test_codex_keeps_its_cli_steps(self, tmp_path: Path, monkeypatch, capsys):
+        codex = _build("codex", tmp_path)
+        out = self._out(codex, monkeypatch, capsys)
+        assert "weave hooks install --scope user --harness codex" in out
+        assert "weave import codex --enrich" in out
+
+
+# --------------------------------------------------------------------------- #
 # MCP config round-trip, in every profile's declared format + key
 # --------------------------------------------------------------------------- #
 
 
-class TestMcpConfigRoundTrip:
-    ENTRY = {"command": "uv", "args": ["run", "weave-mcp"], "env": {}}
+class TestMcpInstallSurface:
+    """Driven through the PRODUCTION install/doctor callers, not
+    ``mcp_config`` directly — hand-feeding ``servers_key`` into the low-level
+    writer is exactly how the missing wire stayed invisible (review r1)."""
 
-    def test_write_then_read_round_trips_under_the_declared_key(
-        self, profile, tmp_path: Path
-    ):
-        target = tmp_path / ("cfg" + profile.mcp_config.suffix)
-        entry = mcp_config.canonical(target, self.ENTRY)
-        mcp_config.write_entry(
-            target, "thinkweave", entry, servers_key=profile.mcp_servers_key
-        )
-        assert (
-            mcp_config.read_entry(
-                target, "thinkweave", servers_key=profile.mcp_servers_key
-            )
-            == entry
+    @pytest.fixture
+    def inst(self, profile, monkeypatch):
+        from thinkweave.surfaces.cli import install as inst
+
+        monkeypatch.setattr(harness, "_OVERRIDE", profile)
+        monkeypatch.setattr(inst, "_detect_uv_path", lambda: "/uv")
+        return inst
+
+    @staticmethod
+    def _doc(path: Path) -> dict:
+        import tomllib
+
+        text = path.read_text(encoding="utf-8")
+        return tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
+
+    @staticmethod
+    def _install(inst) -> dict:
+        import argparse
+
+        entry = inst._build_server_entry(Path("/repo"), None)
+        inst._write_mcp_entry(argparse.Namespace(yes=True), entry)
+        return entry
+
+    def test_install_writes_under_the_profiles_declared_key(self, profile, inst):
+        entry = self._install(inst)
+        doc = self._doc(profile.mcp_config)
+        assert doc[profile.mcp_servers_key][inst.SERVER_NAME] == entry, (
+            f"{profile.id}: entry not under {profile.mcp_servers_key!r} — the "
+            "harness will never see this registration"
         )
 
-    def test_json_formats_nest_under_the_declared_key(
-        self, profile, tmp_path: Path
-    ):
-        if profile.mcp_config.suffix != ".json":
-            pytest.skip("TOML nesting is pinned byte-level in test_codex_install")
-        target = tmp_path / "cfg.json"
-        # A foreign top-level key must survive the splice untouched.
-        target.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
-        mcp_config.write_entry(
-            target, "thinkweave", self.ENTRY, servers_key=profile.mcp_servers_key
-        )
-        doc = json.loads(target.read_text(encoding="utf-8"))
-        assert doc["theme"] == "dark"
-        assert doc[profile.mcp_servers_key]["thinkweave"] == self.ENTRY
+    def test_doctor_and_removal_read_the_same_key(self, profile, inst):
+        from thinkweave.surfaces.cli import mcp_doctor as md
+
+        entry = self._install(inst)
+        assert inst._raw_mcp_entry_present()
+        path, found = md._entry_from_claude_json()
+        assert path == profile.mcp_config and found == entry
+        assert inst._remove_mcp_entry()
+        assert not inst._raw_mcp_entry_present()
+
+    def test_foreign_top_level_keys_survive_the_install(self, profile, inst):
+        if profile.mcp_config.suffix == ".toml":
+            pytest.skip("TOML preservation is pinned byte-level in test_codex_install")
+        profile.mcp_config.parent.mkdir(parents=True, exist_ok=True)
+        profile.mcp_config.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+        self._install(inst)
+        assert self._doc(profile.mcp_config)["theme"] == "dark"
 
 
 # --------------------------------------------------------------------------- #
@@ -317,21 +378,58 @@ class TestMcpConfigRoundTrip:
 
 
 class TestNoHarnessForks:
-    def test_no_id_comparisons_against_harness_literals(self):
+    def test_no_harness_id_literals_in_branching_positions(self):
         """Consumers branch on capability *data*, never on which harness it
         is — that is the whole contract ("new harness = one profile row").
-        The one sanctioned home for id-keyed knowledge is ``core/harness.py``
-        itself, where the rows are authored."""
-        fork = re.compile(r"\.id\s*[!=]=\s*[\"']")
-        offenders = []
-        for py in (REPO_ROOT / "src" / "thinkweave").rglob("*.py"):
-            if py.name == "harness.py" and py.parent.name == "core":
-                continue
-            for lineno, line in enumerate(
-                py.read_text(encoding="utf-8").splitlines(), 1
-            ):
-                if fork.search(line):
-                    offenders.append(f"{py.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+        The one sanctioned home for id-keyed knowledge is ``core/harness.py``,
+        where the rows are authored.
+
+        AST-based, not a regex: any harness-id string literal appearing in a
+        comparison (either side, ``in``-tuples included), a ``match`` case, a
+        subscript, or a dict key is a fork in some spelling.
+
+        ponytail: a literal laundered through an intermediate constant
+        (``CODEX = "codex"; p.id == CODEX``) is not caught; the upgrade path
+        is dataflow analysis, which this codebase does not otherwise need.
+        """
+        import ast
+
+        ids = set(harness.PROFILES)
+        offenders: list[str] = []
+
+        def literals(node: ast.expr | None):
+            if node is None:
+                return
+            elts = (
+                node.elts
+                if isinstance(node, (ast.Tuple, ast.List, ast.Set))
+                else [node]
+            )
+            for e in elts:
+                if isinstance(e, ast.Constant) and e.value in ids:
+                    yield e.value
+
+        for root in (REPO_ROOT / "src" / "thinkweave", REPO_ROOT / "scripts"):
+            for py in root.rglob("*.py"):
+                if py.name == "harness.py" and py.parent.name == "core":
+                    continue
+                tree = ast.parse(py.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    hits: list[str] = []
+                    if isinstance(node, ast.Compare):
+                        for operand in (node.left, *node.comparators):
+                            hits += literals(operand)
+                    elif isinstance(node, ast.MatchValue):
+                        hits += literals(node.value)
+                    elif isinstance(node, ast.Subscript):
+                        hits += literals(node.slice)
+                    elif isinstance(node, ast.Dict):
+                        for key in node.keys:
+                            hits += literals(key)
+                    for value in hits:
+                        offenders.append(
+                            f"{py.relative_to(REPO_ROOT)}:{node.lineno}: {value!r}"
+                        )
         assert not offenders, (
             "per-harness fork(s) outside the profile interpreter — express "
             "the fact as profile data instead:\n" + "\n".join(offenders)
@@ -404,6 +502,26 @@ class TestGeneratedHarnessesDoc:
 
 
 class TestTranscriptFormats:
+    """ponytail: the fixture leg is a parse smoke test (plain user/assistant
+    turns only), not a per-format record-type check — tool_use, sidechain,
+    and compaction records are unexercised. The upgrade path is deeper
+    fixtures per format tag when an importer bug motivates them."""
+
+    def test_entry_point_edges_are_recorded(self, profile):
+        # The parser/importer refs are dotted strings the package-edge AST
+        # contract cannot see (core would otherwise import onboarding), so
+        # the exemption is pinned here instead of merely being unobserved.
+        allowed = {
+            "thinkweave.onboarding.claude_code_seed",
+            "thinkweave.acquisition.importers.codex",
+        }
+        for loaded in (
+            profile.load_transcript_parser(),
+            profile.load_transcript_importer(),
+        ):
+            if loaded is not None:
+                assert loaded.__module__ in allowed
+
     def test_format_has_a_parser_or_a_documented_degradation(self, profile):
         parser = profile.load_transcript_parser()
         if parser is None:

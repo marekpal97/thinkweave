@@ -358,10 +358,14 @@ def install_hooks(
     # support is pointed at manual `/wrap`, not handed a file it never reads.
     profile = active_harness()
     if not profile.hooks:
+        # `/wrap` would be advice this harness cannot follow — the E0 rows
+        # have no slash commands either. `weave_extract` is what their
+        # instructions blocks already tell the model to call.
         print(
             f"error: the {profile.id!r} harness has no lifecycle hooks, so there is\n"
-            "nothing to install. Run `/wrap` explicitly at the end of a session\n"
-            "instead — it does the same extraction the Stop hook would trigger.",
+            "nothing to install. Have the session call the `weave_extract` MCP tool\n"
+            "before it ends instead — it does the same extraction the Stop hook\n"
+            "would trigger.",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -259,7 +259,29 @@ class HarnessProfile:
     must say so — conformance-enforced). A dotted path rather than an import:
     the parsers live in ``onboarding``/``acquisition``, which the package-edge
     contract keeps out of every ranked package's import graph, and the profile
-    stays pure data either way. Resolve via :meth:`load_transcript_parser`."""
+    stays pure data either way. Resolve via :meth:`load_transcript_parser`;
+    the conformance suite pins the exact modules these strings may reach."""
+
+    transcript_importer: str = ""
+    """Entry point of the batch importer behind ``weave import <id>``, as
+    ``module:callable`` taking ``(cfg, sessions_root=…, **filters)``. Empty
+    while none exists — the install next-steps then must not name the
+    command. Resolve via :meth:`load_transcript_importer`."""
+
+    evidence: str = ""
+    """Provenance of this row's facts, rendered into the generated matrix:
+    measured against a live harness (say when/where) or declared from a
+    blueprint note (say which, and that it is unverified). Facts presented in
+    the same register regardless of provenance are the quiet cousin of a
+    capability silently faked."""
+
+    context_served_source: str = "startup"
+    """``context_served.source`` value for this harness's SessionStart
+    payload. Codex delivers the payload under a materially different contract
+    (visible developer message, spill cap) so it logs distinctly; anything
+    else pools into plain ``startup``. Values must stay inside the closed
+    CHECK in ``core/indexer.py`` — a NEW distinct value needs that table's
+    drop+recreate migration, not just a row edit here."""
 
     session_id_scheme: str = ""
     """How the harness mints session ids, for importers and dedup keys."""
@@ -299,12 +321,26 @@ class HarnessProfile:
         as a plugin."""
         return self.skills_dir / PLUGIN_NAME
 
-    def load_transcript_parser(self) -> Callable[[Path], object] | None:
-        """Resolve :attr:`transcript_parser`, or None when no importer exists."""
-        if not self.transcript_parser:
+    @property
+    def transcript_root(self) -> Path:
+        """The static directory prefix of :attr:`transcript_glob` — where a
+        walker starts. Derived, so glob and root cannot drift apart."""
+        return Path(self.transcript_glob.split("*", 1)[0].rstrip("/\\"))
+
+    @staticmethod
+    def _load_entry(ref: str) -> Callable | None:
+        if not ref:
             return None
-        module, name = self.transcript_parser.split(":")
+        module, name = ref.split(":")
         return getattr(importlib.import_module(module), name)
+
+    def load_transcript_parser(self) -> Callable[[Path], object] | None:
+        """Resolve :attr:`transcript_parser`, or None when no parser exists."""
+        return self._load_entry(self.transcript_parser)
+
+    def load_transcript_importer(self) -> Callable | None:
+        """Resolve :attr:`transcript_importer`, or None when none exists."""
+        return self._load_entry(self.transcript_importer)
 
     def namespace(self) -> str | None:
         """The plugin namespace skill tokens must carry, or None for bare names.
@@ -395,17 +431,26 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         detect_dir=cc,
         hook_mechanism="plugin",
         hook_events={e: e for e in CANONICAL_EVENTS},
-        # Fires continuously on this machine's live sessions; the handler is
-        # additionally driven end-to-end by the suite on captured envelopes.
-        fires_verified={e: "2026-08-29" for e in CANONICAL_EVENTS},
+        # Literal per-event entries, not a comprehension: each date is one
+        # recorded observation (here: all four seen firing in live sessions
+        # on the dev machine on 2026-08-29) and future re-verifications must
+        # be able to move independently.
+        fires_verified={
+            "SessionStart": "2026-08-29",
+            "UserPromptSubmit": "2026-08-29",
+            "PostToolUse": "2026-08-29",
+            "Stop": "2026-08-29",
+        },
         context_channel="additionalContext",
         transcript_glob=str(cc / "projects" / "*" / "*.jsonl"),
         transcript_format="jsonl-flat",
         transcript_parser="thinkweave.onboarding.claude_code_seed:parse_session",
+        transcript_importer="thinkweave.onboarding.claude_code_seed:import_claude_code",
         session_id_scheme="uuid4",
         native_memory_artifact=cc / "projects",
         mcp_servers_key="mcpServers",
         mcp_via_cli="claude mcp add",
+        evidence="measured — daily live use on the dev machine; suite drives the handler end-to-end",
     )
 
 
@@ -529,11 +574,14 @@ def codex(home: Path | None = None) -> HarnessProfile:
         ),
         transcript_format="jsonl-rollout",
         transcript_parser="thinkweave.acquisition.importers.codex:parse_rollout",
+        transcript_importer="thinkweave.acquisition.importers.codex:import_codex",
         session_id_scheme="uuid7",
         harness_flag="--harness codex",
         windows_cli_shim=True,
         mcp_servers_key="mcp_servers",
         mcp_via_cli="codex mcp add",
+        context_served_source="codex-startup",
+        evidence="measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md)",
         degradations=(
             Degradation(
                 "Stop capture",
@@ -617,6 +665,7 @@ def pi(home: Path | None = None) -> HarnessProfile:
         session_id_scheme="uuid (session-header id)",
         harness_flag="--harness pi",
         mcp_servers_key="mcpServers",
+        evidence="declared — blueprint n-a1d3beba (2026-08-24); NOT verified on a live install",
         degradations=(
             Degradation(
                 "lifecycle hooks",
@@ -709,6 +758,7 @@ def opencode(home: Path | None = None) -> HarnessProfile:
         session_id_scheme="ses_<12-hex><14-base62> (ULID-style sortable)",
         harness_flag="--harness opencode",
         mcp_servers_key="mcp",
+        evidence="declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install",
         degradations=(
             Degradation(
                 "lifecycle hooks",

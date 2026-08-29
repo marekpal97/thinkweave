@@ -36,13 +36,19 @@ log = logging.getLogger(__name__)
 # the graph and FTS results.
 SOURCE_COMPANION_FILENAMES = {"raw.md", "raw.txt", "snapshot.md"}
 
-# `context_served.source` for a SessionStart payload, keyed by the harness
-# stamped onto the buffered `startup` event (see surfaces/hooks/handler.py:
-# _hook_harness); why Codex gets its own value is on the CHECK in SCHEMA_SQL
-# below. Closed, because the CHECK constraint is: an unrecognised harness falls
-# back to plain 'startup'. Claude Code is unstamped and hits that fallback,
-# which keeps every pre-#107 log projecting identically.
-_STARTUP_SOURCES = {"codex": "codex-startup"}
+def _startup_source(harness_id: str) -> str:
+    """``context_served.source`` for a SessionStart payload, from the harness
+    stamped onto the buffered ``startup`` event (see surfaces/hooks/handler.py:
+    _hook_harness). The value is the stamped harness profile's
+    ``context_served_source``; an unrecognised or unstamped harness falls back
+    to plain ``'startup'`` — Claude Code is unstamped and hits that fallback,
+    which keeps every pre-#107 log projecting identically. Values are closed
+    by the CHECK in SCHEMA_SQL below; see that field's docstring before
+    minting a new one."""
+    from thinkweave.core.harness import PROFILES
+
+    factory = PROFILES.get(harness_id)
+    return factory().context_served_source if factory else "startup"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS notes (
@@ -1467,7 +1473,7 @@ class Indexer:
                     continue
                 etype = ev.get("type", "")
                 if etype == "startup":
-                    src = _STARTUP_SOURCES.get(ev.get("surface", ""), "startup")
+                    src = _startup_source(ev.get("surface", ""))
                 elif etype == "retrieval":
                     # Retrieval events carry a source distinction by their tool
                     # sentinel: system-pushed enrichment (prompt-time R2, or

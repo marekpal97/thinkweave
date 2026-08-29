@@ -96,11 +96,16 @@ def _mcp_servers(data: dict[str, Any]) -> dict[str, Any]:
 
 def _safe_read_entry(path: Path) -> dict | None:
     """The thinkweave block from a harness MCP config, in whatever format that
-    harness uses (JSON for Claude Code, TOML for Codex). A malformed file reads
-    as "absent" — the doctor reports the missing registration rather than
-    aborting on someone else's syntax error."""
+    harness uses (JSON for Claude Code, TOML for Codex) and under whatever
+    servers key the profile declares (``mcp`` on OpenCode). A malformed file
+    reads as "absent" — the doctor reports the missing registration rather
+    than aborting on someone else's syntax error. Only the profile's own
+    machine/project files come through here; plugin manifests are read
+    elsewhere and always use Claude Code's ``mcpServers`` shape."""
     try:
-        return mcp_config.read_entry(path, SERVER_NAME)
+        return mcp_config.read_entry(
+            path, SERVER_NAME, servers_key=_profile().mcp_servers_key
+        )
     except mcp_config.MalformedConfig:
         return None
 

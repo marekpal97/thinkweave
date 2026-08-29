@@ -305,7 +305,7 @@ def import_claude_code(
     *,
     project_filter: str = "",
     dry_run: bool = False,
-    claude_projects_root: Path | None = None,
+    sessions_root: Path | None = None,
     since: str = "",
     limit: int = 0,
 ) -> dict:
@@ -317,8 +317,10 @@ def import_claude_code(
         project_filter: If non-empty, only import sessions whose
             *normalized* project matches this name.
         dry_run: If True, returns per-project counts without writing.
-        claude_projects_root: Override for the CC projects root
-            (default ``~/.claude/projects``).
+        sessions_root: Override for the CC projects root
+            (default ``~/.claude/projects``). Named uniformly with the other
+            harnesses' importers so ``weave import`` can drive any of them
+            through one profile-declared entry point.
         since: ISO date (``YYYY-MM-DD``). Sessions whose ``started_at``
             is older are tallied as ``skipped_since`` and not imported.
             Empty string disables the filter.
@@ -335,7 +337,7 @@ def import_claude_code(
         }``
     """
     cfg = cfg or load_config()
-    root = claude_projects_root or DEFAULT_CC_PROJECTS_ROOT
+    root = sessions_root or DEFAULT_CC_PROJECTS_ROOT
 
     stats: dict = {
         "discovered": 0,

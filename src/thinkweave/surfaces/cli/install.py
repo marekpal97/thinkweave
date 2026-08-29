@@ -40,7 +40,7 @@ import sysconfig
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from thinkweave.core import fswrite, mcp_config
+from thinkweave.core import fswrite, harness_docs, mcp_config
 from thinkweave.core.harness import active as _profile
 
 SERVER_NAME = "thinkweave"
@@ -606,16 +606,28 @@ def _install_claude_md_block(yes: bool) -> None:
     print(f"{verb} thinkweave block in {_instructions()}.")
 
 
+def _servers_key() -> str:
+    """The active harness's declared MCP servers key. Passed to every
+    ``mcp_config`` call in this module: the suffix-derived default agrees for
+    most harnesses, but OpenCode is a JSON file whose key is ``mcp`` — writing
+    the default there registers a server the harness never reads (r1)."""
+    return _profile().mcp_servers_key
+
+
 def _remove_mcp_entry() -> bool:
     """Remove the thinkweave MCP entry from the harness's config. Other
     servers and top-level keys survive. Returns False if nothing to do."""
-    return mcp_config.remove_entry(_mcp_config(), SERVER_NAME)
+    return mcp_config.remove_entry(
+        _mcp_config(), SERVER_NAME, servers_key=_servers_key()
+    )
 
 
 def _restore_mcp_entry() -> None:
     """Re-register the thinkweave MCP entry. Used by ``weave resume``."""
     entry = _build_server_entry(_detect_project_root(), vault_root=None)
-    mcp_config.write_entry(_mcp_config(), SERVER_NAME, entry)
+    mcp_config.write_entry(
+        _mcp_config(), SERVER_NAME, entry, servers_key=_servers_key()
+    )
 
 
 def _remove_claude_md_block() -> bool:
@@ -655,16 +667,16 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
             print(f"{path} does not exist. `weave install` will create it.")
             print("Re-run with --yes to proceed.")
             sys.exit(1)
-        mcp_config.write_entry(path, SERVER_NAME, new_entry)
+        mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
         print(f"Wrote {path} with thinkweave MCP entry.")
         return
 
     # A MalformedConfig from here (or from either write below) carries its own
     # remedy and is turned into a clean exit by the CLI's error boundary.
-    existing = mcp_config.read_entry(path, SERVER_NAME)
+    existing = mcp_config.read_entry(path, SERVER_NAME, servers_key=_servers_key())
 
     if existing is None:
-        mcp_config.write_entry(path, SERVER_NAME, new_entry)
+        mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
         print(f"Registered thinkweave MCP server in {path}.")
         return
 
@@ -679,7 +691,7 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
     if not args.yes:
         print(f"Re-run with --yes to overwrite, or edit {path} by hand.")
         sys.exit(1)
-    mcp_config.write_entry(path, SERVER_NAME, new_entry)
+    mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
     print(f"Updated thinkweave MCP entry in {path}.")
 
 
@@ -813,13 +825,28 @@ def _print_next_steps() -> None:
 
     # No skills on this harness — spell out the same steps as CLI commands,
     # without naming the skill: a user reading this cannot run it, so mentioning
-    # it only invites them to try.
+    # it only invites them to try. The SAME rule gates each step on the
+    # profile: `weave hooks install` exits 1 on a hooks-less harness and
+    # `weave import <id>` needs an importer, so naming either to an E0 user
+    # is the rot this screen was rewritten to remove (r1).
     name = profile.display_name or profile.id
-    print(f"  3. weave init               # vault wiring ({name} has no thinkweave skills)")
-    print(f"  4. weave hooks install --scope user --harness {profile.id}")
-    if profile.hooks_install_caveat:
-        print("     (then trust the hooks — see the note printed by that command)")
-    print(f"  5. weave import {profile.id} --enrich   # backfill prior sessions")
+    step = 3
+    print(f"  {step}. weave init               # vault wiring ({name} has no thinkweave skills)")
+    if profile.hooks:
+        step += 1
+        print(f"  {step}. weave hooks install --scope user {profile.harness_flag}".rstrip())
+        if profile.hooks_install_caveat:
+            print("     (then trust the hooks — see the note printed by that command)")
+    if profile.load_transcript_importer() is not None:
+        step += 1
+        print(f"  {step}. weave import {profile.id} --enrich   # backfill prior sessions")
+    # Degrade OUT LOUD at the point of action (dec-5a076384): what this
+    # harness does not deliver is stated here, not discovered later.
+    degraded = harness_docs.render_degradations(profile)
+    if degraded:
+        print()
+        print(f"{name} degradations — documented, not silently faked:")
+        print(degraded)
     print()
     print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
     print("MCP server entry now; `weave init` will otherwise ask and persist it.")
@@ -831,7 +858,12 @@ def _raw_mcp_entry_present() -> bool:
     warn: the plugin manifest already declares the server, so a leftover raw
     entry would make the harness spawn ``thinkweave`` twice."""
     try:
-        return mcp_config.read_entry(_mcp_config(), SERVER_NAME) is not None
+        return (
+            mcp_config.read_entry(
+                _mcp_config(), SERVER_NAME, servers_key=_servers_key()
+            )
+            is not None
+        )
     except mcp_config.MalformedConfig:
         return False
 

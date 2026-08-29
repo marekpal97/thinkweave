@@ -569,7 +569,7 @@ def test_note_shape_matches_a_claude_code_import(vault_cfg: Config, tmp_path: Pa
             fh.write(json.dumps(ev) + "\n")
 
     import_codex(vault_cfg, sessions_root=codex_root)
-    import_claude_code(vault_cfg, claude_projects_root=cc_root.parent)
+    import_claude_code(vault_cfg, sessions_root=cc_root.parent)
 
     notes = _session_notes(vault_cfg)
     assert len(notes) == 2
@@ -631,7 +631,7 @@ def _seed_both_harnesses(cfg: Config, codex_root: Path, tmp_path: Path) -> None:
     ) as fh:
         for ev in cc_lines:
             fh.write(json.dumps(ev) + "\n")
-    import_claude_code(cfg, claude_projects_root=cc_root.parent)
+    import_claude_code(cfg, sessions_root=cc_root.parent)
     # Guard the guard: both harnesses really are present and unprocessed, so a
     # scoping assertion below can't pass by finding nothing to exclude.
     assert len(_session_notes(cfg)) == 2
