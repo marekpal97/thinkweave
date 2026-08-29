@@ -6,6 +6,7 @@ Incremental updates use SHA-256 content hashes to skip unchanged files.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sqlite3
@@ -36,6 +37,7 @@ log = logging.getLogger(__name__)
 # the graph and FTS results.
 SOURCE_COMPANION_FILENAMES = {"raw.md", "raw.txt", "snapshot.md"}
 
+@functools.cache
 def _startup_source(harness_id: str) -> str:
     """``context_served.source`` for a SessionStart payload, from the harness
     stamped onto the buffered ``startup`` event (see surfaces/hooks/handler.py:

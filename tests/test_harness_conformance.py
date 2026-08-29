@@ -363,6 +363,36 @@ class TestMcpInstallSurface:
         assert inst._remove_mcp_entry()
         assert not inst._raw_mcp_entry_present()
 
+    def test_declared_rows_document_the_unverified_mcp_registration(self, profile):
+        # r2 blocker: the written entry BODY is Claude Code's shape; on a row
+        # whose evidence is declared-not-verified that is a documented
+        # degradation, never an implied success (OpenCode's documented schema
+        # wants type local/remote, command as an array, an environment map).
+        if profile.evidence.startswith("declared"):
+            assert any(
+                "mcp registration" in d.capability.lower()
+                for d in profile.degradations
+            ), f"{profile.id}: declared row with no MCP-registration degradation"
+
+    def test_registration_line_carries_provenance_on_declared_rows_only(
+        self, profile, inst, capsys
+    ):
+        # Pre-create an empty config so the install lands in the
+        # "Registered …" branch rather than "Wrote …".
+        profile.mcp_config.parent.mkdir(parents=True, exist_ok=True)
+        profile.mcp_config.write_text(
+            "{}" if profile.mcp_config.suffix == ".json" else "", encoding="utf-8"
+        )
+        self._install(inst)
+        out = capsys.readouterr().out
+        line = f"Registered thinkweave MCP server in {profile.mcp_config}"
+        if profile.evidence.startswith("declared"):
+            assert f"{line}. [{profile.evidence}" in out
+        else:
+            # Measured rows keep the exact pre-#191 line — byte-identical.
+            assert f"{line}.\n" in out
+            assert profile.evidence not in out
+
     def test_foreign_top_level_keys_survive_the_install(self, profile, inst):
         if profile.mcp_config.suffix == ".toml":
             pytest.skip("TOML preservation is pinned byte-level in test_codex_install")
@@ -389,12 +419,21 @@ class TestNoHarnessForks:
         subscript, or a dict key is a fork in some spelling.
 
         ponytail: a literal laundered through an intermediate constant
-        (``CODEX = "codex"; p.id == CODEX``) is not caught; the upgrade path
-        is dataflow analysis, which this codebase does not otherwise need.
+        (``CODEX = "codex"; p.id == CODEX``, or a module-level set constant
+        used for membership) is not caught; the upgrade path is dataflow
+        analysis, which this codebase does not otherwise need.
         """
         import ast
 
         ids = set(harness.PROFILES)
+        # Named allowlist: a provenance TAG an importer stamps onto the notes
+        # it creates ("imported", "codex") is vocabulary, not branching — and
+        # these modules are the per-harness implementations the profile's
+        # entry points name, so id-vocabulary is their job.
+        allowed = {
+            ("src/thinkweave/onboarding/claude_code_seed.py", "claude-code"),
+            ("src/thinkweave/acquisition/importers/codex.py", "codex"),
+        }
         offenders: list[str] = []
 
         def literals(node: ast.expr | None):
@@ -426,10 +465,19 @@ class TestNoHarnessForks:
                     elif isinstance(node, ast.Dict):
                         for key in node.keys:
                             hits += literals(key)
+                    elif isinstance(node, ast.Call):
+                        # A collection literal handed to a call is a fork in
+                        # disguise too — argparse ``choices=[…]`` was a live
+                        # second source of truth for the importer-backed
+                        # harnesses (r2).
+                        for arg in (*node.args, *(kw.value for kw in node.keywords)):
+                            if isinstance(arg, (ast.Tuple, ast.List, ast.Set)):
+                                hits += literals(arg)
                     for value in hits:
-                        offenders.append(
-                            f"{py.relative_to(REPO_ROOT)}:{node.lineno}: {value!r}"
-                        )
+                        rel = py.relative_to(REPO_ROOT).as_posix()
+                        if (rel, value) in allowed:
+                            continue
+                        offenders.append(f"{rel}:{node.lineno}: {value!r}")
         assert not offenders, (
             "per-harness fork(s) outside the profile interpreter — express "
             "the fact as profile data instead:\n" + "\n".join(offenders)

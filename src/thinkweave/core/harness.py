@@ -634,6 +634,11 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "call `weave_extract` yourself before you finish — it is what "
             "persists the session's insights and decisions into the vault."
         ),
+        # NB: mcp_config, user_settings and installed_plugins all resolve to
+        # this one settings.json. Safe while every writer is key-scoped or
+        # gated off (hooks=False); when #114 flips hooks on, the hook writer
+        # merges into the same document the MCP entry lives in — merge, never
+        # regenerate.
         mcp_config=agent / "settings.json",
         skills_dir=agent / "skills",
         plugins_root=agent / "extensions",
@@ -673,6 +678,15 @@ def pi(home: Path | None = None) -> HarnessProfile:
                 "the Pi extension shim is not yet shipped, so passive capture "
                 "does not run; end sessions with an explicit weave_extract",
                 "#114",
+            ),
+            Degradation(
+                "MCP registration",
+                "documented",
+                "weave install writes the entry in Claude Code's shape "
+                "(command string + args list under mcpServers); Pi's "
+                "documented mcpServers block is close, but the written entry "
+                "has not been verified to parse on a live Pi install",
+                "n-a1d3beba §4; verified by #114",
             ),
             Degradation(
                 "subagent fan-out",
@@ -724,6 +738,9 @@ def opencode(home: Path | None = None) -> HarnessProfile:
             "call `weave_extract` yourself before you finish — it is what "
             "persists the session's insights and decisions into the vault."
         ),
+        # NB: mcp_config, user_settings and installed_plugins all resolve to
+        # this one opencode.json — same merge-never-regenerate constraint as
+        # the Pi row when #195 flips hooks on.
         mcp_config=cfg / "opencode.json",
         skills_dir=cfg / "skills",
         plugins_root=cfg / "plugins",
@@ -767,6 +784,17 @@ def opencode(home: Path | None = None) -> HarnessProfile:
                 "capture does not run; end sessions with an explicit "
                 "weave_extract",
                 "#195",
+            ),
+            Degradation(
+                "MCP registration",
+                "documented",
+                "weave install writes Claude Code's entry shape (command "
+                "string, args list, type stdio, env map) under the correct "
+                "`mcp` key, but OpenCode's documented schema wants type "
+                "local|remote, command as an ARRAY, and an `environment` "
+                "map — the entry has not been verified to parse; #195's "
+                "installer owns the shape normalisation",
+                "n-767d66b4 §4",
             ),
             Degradation(
                 "Stop capture",

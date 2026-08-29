@@ -662,13 +662,25 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
     """
     path = _mcp_config()
 
+    # Degrade out loud (dec-5a076384, r2): on a row whose MCP registration is
+    # itself a documented degradation — the entry body is Claude Code's shape,
+    # unverified against this harness's schema — the success line carries the
+    # profile's provenance instead of an unqualified "Registered". Measured
+    # rows (CC, Codex) keep their exact pre-#191 lines.
+    qualifier = ""
+    if any(
+        "mcp registration" in d.capability.lower()
+        for d in _profile().degradations
+    ):
+        qualifier = f" [{_profile().evidence} — see the degradations listed below]"
+
     if not path.exists():
         if not args.yes:
             print(f"{path} does not exist. `weave install` will create it.")
             print("Re-run with --yes to proceed.")
             sys.exit(1)
         mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
-        print(f"Wrote {path} with thinkweave MCP entry.")
+        print(f"Wrote {path} with thinkweave MCP entry.{qualifier}")
         return
 
     # A MalformedConfig from here (or from either write below) carries its own
@@ -677,7 +689,7 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
 
     if existing is None:
         mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
-        print(f"Registered thinkweave MCP server in {path}.")
+        print(f"Registered thinkweave MCP server in {path}.{qualifier}")
         return
 
     if existing == new_entry:
@@ -692,7 +704,7 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
         print(f"Re-run with --yes to overwrite, or edit {path} by hand.")
         sys.exit(1)
     mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
-    print(f"Updated thinkweave MCP entry in {path}.")
+    print(f"Updated thinkweave MCP entry in {path}.{qualifier}")
 
 
 def cmd_install(args: argparse.Namespace) -> None:

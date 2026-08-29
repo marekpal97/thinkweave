@@ -662,8 +662,9 @@ class TestImportClaudeCodeFlagWiring:
             "thinkweave.onboarding.claude_code_seed.import_claude_code",
             fake_import_claude_code,
         )
-        # cmd_import does a `from ... import import_claude_code` inside the
-        # function body, so we need to patch the source module — done above.
+        # cmd_import resolves the importer through the profile's entry-point
+        # string (load_transcript_importer does a getattr at call time), so
+        # patching the source module — done above — is what intercepts it.
 
         parser = build_parser()
         args = parser.parse_args(argv)

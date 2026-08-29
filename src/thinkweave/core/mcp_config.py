@@ -5,8 +5,10 @@ the active harness keeps its config in.
 and deliberately says nothing about its format — that is this module's job.
 Claude Code keeps JSON (``~/.claude.json``, servers under ``mcpServers``);
 Codex keeps TOML (``$CODEX_HOME/config.toml``, servers under ``mcp_servers``).
-The key name follows from the format rather than needing its own profile field:
-each harness names the table the way its format's conventions do.
+The servers key usually follows the format's convention, but it is ultimately
+the profile's fact (``mcp_servers_key``): OpenCode keeps a JSON file whose key
+is ``mcp``, so every production caller passes the declared key through the
+``servers_key=`` parameter and the suffix-derived default is only a fallback.
 
 Two rules shape everything here:
 
@@ -56,6 +58,14 @@ def canonical(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
     no ``type`` key, and ``codex exec --strict-config`` errors out on the
     unknown field. An empty ``env`` is dropped for the same reason ``codex mcp
     add`` omits it — it is noise, and its absence is what a re-read returns.
+
+    ponytail: normalisation is by file format only, so every JSON harness gets
+    Claude Code's entry BODY — for the declared-not-verified rows (OpenCode
+    documents type local|remote, command as an array, an ``environment`` map)
+    that fact lives as an MCP-registration Degradation on the profile, echoed
+    in install output. Entry-shape-as-profile-data is deliberately NOT minted
+    from an unverified blueprint (dec-5a076384: no capability data without a
+    truth source); it becomes real data when #114/#195 verify the rows.
     """
     if not _is_toml(path):
         return entry

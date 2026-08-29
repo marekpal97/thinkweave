@@ -357,9 +357,8 @@ def cmd_import(args: argparse.Namespace) -> None:
         profile = harness.PROFILES[args.source]()
         importer = profile.load_transcript_importer()
         if importer is None:
-            # Unreachable through argparse today (its choices list only the
-            # importer-backed sources), kept for the day an E0 row is added
-            # there before its importer exists.
+            # The argparse choices derive from the same registry, so an E0
+            # row without an importer lands here (`weave import pi`).
             print(f"No transcript importer exists for {args.source} yet.")
             return
         stats = importer(

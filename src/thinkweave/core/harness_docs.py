@@ -119,8 +119,9 @@ def render_matrix() -> str:
         "### Documented degradations",
         "",
         "Nothing below is silently faked (#103 anti-goal): a listed capability",
-        "degrades exactly as stated, and everything unlisted works as on",
-        "Claude Code.",
+        "degrades exactly as stated. On a **measured** row (see the evidence",
+        "row above) everything unlisted works as on Claude Code; on a",
+        "**declared** row, unlisted means *not yet checked*, not *works*.",
     ]
     for p in ps:
         rendered = render_degradations(p)
