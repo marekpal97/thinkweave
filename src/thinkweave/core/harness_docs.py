@@ -43,7 +43,12 @@ def _yes(flag: bool) -> str:
 
 
 def _event_cell(profile: HarnessProfile, event: str) -> str:
-    native = profile.hook_events.get(event)
+    # An event the profile has no key for is a different, worse state than an
+    # explicit None mapping: the latter is an evidence-backed refusal, the
+    # former means nobody has looked yet.
+    if event not in profile.hook_events:
+        return "unmapped — no verdict recorded"
+    native = profile.hook_events[event]
     if native is None:
         return "— (no verified equivalent)"
     verified = profile.fires_verified.get(event)
@@ -59,7 +64,7 @@ def render_matrix() -> str:
     """The capability matrix + degradations, rendered from the profile rows."""
     ps = _profiles()
     head = " | ".join(p.display_name or p.id for p in ps)
-    bar = " | ".join("---" for _ in ps)
+    bar = "|" + "|".join(["---"] * (len(ps) + 1)) + "|"
 
     def row(label: str, cell) -> str:
         return f"| {label} | " + " | ".join(cell(p) for p in ps) + " |"
@@ -68,7 +73,8 @@ def render_matrix() -> str:
         "## Capability matrix",
         "",
         f"| | {head} |",
-        f"|---|{bar}|",
+        bar,
+        row("evidence", lambda p: p.evidence),
         row("eligibility (dec-5a076384 ladder)", lambda p: p.eligibility),
         row("detected by", lambda p: f"`{p.detect_dir}`"),
         row("lifecycle hooks", lambda p: p.hook_mechanism),
@@ -89,7 +95,7 @@ def render_matrix() -> str:
             "transcripts",
             lambda p: f"`{p.transcript_glob}` ({p.transcript_format})",
         ),
-        row("session ids", lambda p: p.session_id_scheme),
+        row("session ids", lambda p: f"`{p.session_id_scheme}`"),
         row(
             "MCP config",
             lambda p: f"`{p.mcp_config}` · key `{p.mcp_servers_key}`",
@@ -104,7 +110,7 @@ def render_matrix() -> str:
         "### Hook events (canonical → native, with observed-fire dates)",
         "",
         f"| canonical | {head} |",
-        f"|---|{bar}|",
+        bar,
     ]
     for event in CANONICAL_EVENTS:
         lines.append(row(event, lambda p, e=event: _event_cell(p, e)))
@@ -139,15 +145,31 @@ def splice(doc: str) -> str:
 
 def main() -> None:
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(
         description="Regenerate the HARNESSES.md capability matrix from the profiles."
     )
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args()
+    # Repo-relative, like _canonical_hooks_path: every supported route is an
+    # editable install from a checkout, so the docs tree is always present —
+    # and when it is not, say so rather than compute a site-packages path.
     doc_path = Path(__file__).resolve().parents[3] / "docs" / "HARNESSES.md"
+    if not doc_path.exists():
+        sys.exit(
+            f"error: {doc_path} not found — the generator must run from a "
+            "thinkweave repo checkout (editable install)."
+        )
     doc = doc_path.read_text(encoding="utf-8")
-    updated = splice(doc)
+    try:
+        updated = splice(doc)
+    except ValueError:
+        sys.exit(
+            f"error: {doc_path} has lost its harness-matrix sentinel pair.\n"
+            f"Restore both lines —\n  {MATRIX_START}\n  {MATRIX_END}\n"
+            "— then re-run `uv run python -m thinkweave.core.harness_docs --write`."
+        )
     if not args.write:
         print("stale" if updated != doc else "in sync")
         return

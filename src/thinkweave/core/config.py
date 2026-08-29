@@ -18,10 +18,11 @@ import json
 import os
 import platform
 import re
-import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+
+from thinkweave.core.fswrite import atomic_write_text
 
 
 _DEFAULT_VAULT = Path.home() / "vault"
@@ -413,19 +414,14 @@ def user_cache_dir() -> Path:
 
 
 def write_user_config(vault_root: Path) -> None:
-    """Atomically persist ``vault_root`` to the user-scope config file.
-
-    Creates parent dirs as needed. Mirrors the tempfile + ``os.replace``
-    pattern from ``surfaces/cli/install.py:_atomic_write_json`` so an
-    interrupted write never leaves a half-written TOML behind.
+    """Atomically persist ``vault_root`` to the user-scope config file
+    (via :func:`thinkweave.core.fswrite.atomic_write_text`).
 
     The file shape is intentionally minimal — one key — because the
     vault-internal ``config.toml`` (tier 3, at ``vault/config/config.toml``)
     remains the home for embedding / edge / dream fields. This tier only
     ever sets the path.
     """
-    path = user_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     # The value MUST be escaped, not interpolated. A Windows vault root
     # (``C:\\Users\\me\\vault``) dropped raw into a TOML *basic* string reads
     # ``\\U`` as the start of an 8-hex-digit unicode escape, so tomllib rejects
@@ -436,22 +432,7 @@ def write_user_config(vault_root: Path) -> None:
     # keeps a non-BMP character (an emoji in a vault path) as a literal rather
     # than a surrogate pair, which TOML rejects as not a Unicode scalar value.
     payload = f"vault_root = {json.dumps(str(vault_root), ensure_ascii=False)}\n"
-    # Atomic write via tempfile in the same dir (so os.replace is on the
-    # same filesystem) + os.replace. Mirrors install.py._atomic_write_json.
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=path.name + ".", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
-        os.replace(tmp_name, path)
-    except Exception:
-        # Best-effort cleanup of the tempfile on failure
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(user_config_path(), payload)
 
 
 def is_vault_initialized(cfg: Config) -> bool:

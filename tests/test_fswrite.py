@@ -48,6 +48,27 @@ class TestAtomicWriteText:
         fswrite.atomic_write_text(target, "new\n", backup=True)
         assert not target.with_suffix(".json.bak").exists()
 
+    def test_backup_preserves_bytes_verbatim(self, tmp_path: Path):
+        # A .bak that exists to be restored must be the file, not a decode/
+        # re-encode of it: CRLF endings (routine on Windows) and non-UTF-8
+        # bytes both survive.
+        target = tmp_path / "s.json"
+        target.write_bytes(b"line one\r\nline two\r\n\xff")
+        fswrite.atomic_write_text(target, "new\n", backup=True)
+        assert target.with_suffix(".json.bak").read_bytes() == (
+            b"line one\r\nline two\r\n\xff"
+        )
+
+    def test_failed_write_leaves_no_droppings_and_keeps_the_original(
+        self, tmp_path: Path
+    ):
+        target = tmp_path / "c.toml"
+        target.write_text("old\n", encoding="utf-8")
+        with pytest.raises(UnicodeEncodeError):
+            fswrite.atomic_write_text(target, "\ud800")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["c.toml"]
+
 
 class TestReplaceBetween:
     S, E = "<!-- s -->", "<!-- e -->"

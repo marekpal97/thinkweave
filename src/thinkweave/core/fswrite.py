@@ -1,7 +1,9 @@
 """Write-safety primitives for harness-owned and user-owned files (#191 AC5).
 
-Every thinkweave writer that touches a config or docs file on a user's disk
-goes through here. The doctrine, in one place:
+Every thinkweave writer that touches a harness config, user-scope config, or
+docs file goes through here. (Vault-internal state writers — queues, session
+buffers — keep their own idioms; their failure domain is thinkweave's, not a
+user's hand-maintained file.) The doctrine, in one place:
 
 *Ownership decides the strategy.* A file thinkweave generates outright is
 regenerated whole (behind a sentinel/fingerprint gate — :func:`replace_between`
@@ -23,30 +25,47 @@ drifts from our writer, is to invoke ``mcp_via_cli`` directly.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
+import tempfile
 from pathlib import Path
 
 
 def atomic_write_text(path: Path, text: str, *, backup: bool = False) -> None:
-    """Replace ``path``'s content via tempfile + ``os.replace``.
+    """Replace ``path``'s content via a unique tempfile + ``os.replace``.
 
-    An interrupted write can never leave the file truncated — the original
-    survives untouched until the atomic rename, which is the rollback
-    guarantee. The replacement inherits the original's permissions (Codex
-    creates ``config.toml`` 0600 and it can carry env secrets; the umask
-    default would quietly widen it). ``backup=True`` additionally keeps the
-    previous bytes at ``<path>.bak`` for a caller that offers restore.
+    The original survives untouched until the atomic rename — that is the
+    rollback guarantee, and the temp name is unique (``mkstemp`` beside the
+    target, same filesystem) so two concurrent writers cannot interleave on
+    one temp path; last rename wins whole. Durability boundary: atomic
+    against process death, but nothing is fsynced — a machine crash inside
+    the OS flush window can surface the previous content. A failed write
+    removes its own temp file.
+
+    The replacement inherits the original's permissions (Codex creates
+    ``config.toml`` 0600 and it can carry env secrets; the umask default
+    would quietly widen it). ``backup=True`` additionally keeps the previous
+    file at ``<path>.bak`` — copied as bytes, so a restore returns exactly
+    what was there, CRLF endings and non-UTF-8 content included.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    if path.exists():
-        if backup:
-            path.with_suffix(path.suffix + ".bak").write_text(
-                path.read_text(encoding="utf-8"), encoding="utf-8"
-            )
-        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(
+        dir=path.parent, prefix=path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        if path.exists():
+            if backup:
+                shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def replace_between(

@@ -13,7 +13,8 @@ profile is what runs; fix whichever is wrong.
 ## Capability matrix
 
 | | Claude Code | Codex | Pi | OpenCode |
-|---|--- | --- | --- | ---|
+|---|---|---|---|---|
+| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md) | declared — blueprint n-a1d3beba (2026-08-24); NOT verified on a live install | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
 | eligibility (dec-5a076384 ladder) | E3 | E3 | E0 | E0 |
 | detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
 | lifecycle hooks | plugin | file | none | none |
@@ -23,7 +24,7 @@ profile is what runs; fix whichever is wrong.
 | context channel | `additionalContext` | `additionalContext` | `context-injection` | `message-transform` |
 | dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
 | transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/storage/session/*/*.json` (json-records) |
-| session ids | uuid4 | uuid7 | uuid (session-header id) | ses_<12-hex><14-base62> (ULID-style sortable) |
+| session ids | `uuid4` | `uuid7` | `uuid (session-header id)` | `ses_<12-hex><14-base62> (ULID-style sortable)` |
 | MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/settings.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
 | MCP native CLI | `claude mcp add` | `codex mcp add` | — | — |
 | instructions file | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` | `~/.pi/agent/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
@@ -32,7 +33,7 @@ profile is what runs; fix whichever is wrong.
 ### Hook events (canonical → native, with observed-fire dates)
 
 | canonical | Claude Code | Codex | Pi | OpenCode |
-|---|--- | --- | --- | ---|
+|---|---|---|---|---|
 | SessionStart | ✓ 2026-08-29 | ✓ 2026-08-02 | `session_start` (declared) | `experimental.chat.messages.transform` (declared) |
 | UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-08-02 | `before_agent_start` (declared) | `chat.message` (declared) |
 | PostToolUse | ✓ 2026-08-29 | wired, unverified | `tool_result` (declared) | `tool.execute.after` (declared) |
