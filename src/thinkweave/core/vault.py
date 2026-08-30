@@ -124,6 +124,19 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return result, body
 
 
+def read_session_fm(session_md: Path) -> dict | None:
+    """Parse one session.md's frontmatter; None when missing or unreadable.
+
+    The shared head-read for chain/serve-state scans (hooks handler, wrap
+    finalize) — one place for the missing-file / parse-failure semantics.
+    """
+    try:
+        fm, _ = parse_frontmatter(session_md.read_text(encoding="utf-8"))
+        return fm if isinstance(fm, dict) else None
+    except Exception:
+        return None
+
+
 def _unquote_scalar(value: str) -> str:
     """Undo frontmatter scalar quoting.
 

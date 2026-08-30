@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.conftest import write_transcript
 from thinkweave.core.config import Config
 from thinkweave.surfaces.hooks.handler import (
     _buffer_event,
@@ -2237,11 +2238,7 @@ class TestLogicalSessionKey:
     """
 
     def _transcript(self, tmp_path: Path, rows: list[dict]) -> Path:
-        f = tmp_path / "transcript.jsonl"
-        f.write_text(
-            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
-        )
-        return f
+        return write_transcript(tmp_path, rows)
 
     def test_key_read_from_bridge_session_row(self, tmp_path: Path):
         from thinkweave.surfaces.hooks.handler import _logical_session_key

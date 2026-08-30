@@ -585,18 +585,16 @@ _OWN_SCAN_RECENT = 48
 
 
 def _read_session_fm(session_md: Path) -> dict | None:
-    """Parse one session.md's frontmatter; None when unreadable.
+    """Module-level alias over :func:`core.vault.read_session_fm`.
 
-    Split out so tests can count how many folders a scan actually opens —
-    the SessionStart latency budget is syscall-shaped (#175 review).
+    Kept as a def so tests can count how many folders a scan actually
+    opens by monkeypatching it — the SessionStart latency budget is
+    syscall-shaped (#175 review) — and so the import stays lazy (hook
+    startup cost).
     """
-    try:
-        from thinkweave.core.vault import parse_frontmatter
+    from thinkweave.core.vault import read_session_fm
 
-        fm, _ = parse_frontmatter(session_md.read_text(encoding="utf-8"))
-        return fm if isinstance(fm, dict) else None
-    except Exception:
-        return None
+    return read_session_fm(session_md)
 
 
 # Session folders are named ``{session_id}-{YYYY-MM-DD}`` (core/vault.py
@@ -631,6 +629,26 @@ def _recent_session_dirs(sessions_dir: Path, limit: int) -> list[Path]:
     return [Path(e.path) for e in entries[:limit]]
 
 
+def _jsonl_events(path: Path):
+    """Yield ``(raw_line, parsed_or_None)`` per non-empty line of a JSONL file.
+
+    Yields nothing when the file is unreadable; a malformed line comes
+    through with ``None`` so each consumer keeps its own semantics for it
+    (count it, skip it, prefilter on the raw text).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            yield line, json.loads(line)
+        except json.JSONDecodeError:
+            yield line, None
+
+
 def _read_serve_streams(
     streams: list[Path],
 ) -> tuple[set[str], set[str], str]:
@@ -646,16 +664,8 @@ def _read_serve_streams(
     served: set[str] = set()
     delivery_ids: set[str] = set()
     first_ts = ""
-    for path in dict.fromkeys(streams):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    for path in streams:
+        for _raw, event in _jsonl_events(path):
             if not isinstance(event, dict):
                 continue
             if event.get("type") not in ("startup", "retrieval"):
@@ -847,22 +857,11 @@ def _activity_count(cfg, session_id: str, own_dir: Path | None) -> int:
     """
 
     def non_startup_lines(path: Path) -> int:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            return 0
-        n = 0
-        for line in text.splitlines():
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                n += 1
-                continue
-            if not (isinstance(event, dict) and event.get("type") == "startup"):
-                n += 1
-        return n
+        return sum(
+            1
+            for _raw, event in _jsonl_events(path)
+            if not (isinstance(event, dict) and event.get("type") == "startup")
+        )
 
     n = non_startup_lines(cfg.weave_dir / "buffer" / f"{session_id}.jsonl")
     if own_dir is not None:
@@ -875,18 +874,11 @@ def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str)
     """True when the live buffer already holds a skip event for this replay
     — bounds telemetry to one line per (session, replay_of)."""
     buf = weave_dir / "buffer" / f"{session_id}.jsonl"
-    try:
-        text = buf.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    for line in text.splitlines():
-        if delivery_id not in line:
+    for raw, event in _jsonl_events(buf):
+        if delivery_id not in raw:
             continue
-        try:
-            if json.loads(line).get("replay_of") == delivery_id:
-                return True
-        except (json.JSONDecodeError, AttributeError):
-            continue
+        if isinstance(event, dict) and event.get("replay_of") == delivery_id:
+            return True
     return False
 
 

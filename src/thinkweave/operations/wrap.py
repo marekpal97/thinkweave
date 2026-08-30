@@ -145,22 +145,13 @@ def _resolve_session_chain(
     if project:
         sessions_dir = cfg.vault_root / "projects" / project / "sessions"
         if sessions_dir.exists():
-            from thinkweave.core.vault import parse_frontmatter
+            from thinkweave.core.vault import read_session_fm
 
             folders: list[tuple[Path, dict | None]] = []
             for d in sessions_dir.iterdir():
                 if not d.is_dir() or d.name == "misc":
                     continue
-                fm: dict | None = None
-                sm = d / "session.md"
-                if sm.exists():
-                    try:
-                        fm, _ = parse_frontmatter(
-                            sm.read_text(encoding="utf-8")
-                        )
-                    except Exception:  # noqa: BLE001
-                        fm = None
-                folders.append((d, fm))
+                folders.append((d, read_session_fm(d / "session.md")))
 
             def id_matched(d: Path, fm: dict | None) -> bool:
                 if any(d.name.startswith(i) for i in ids):
@@ -222,13 +213,9 @@ def _resolve_session_chain(
             out.append((ev, d, fm))
     if out:
         return out
-    buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
-    if buf.exists():
-        return [(buf, None, None)]
-    if src:
-        src_buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
-        if src_buf.exists():
-            return [(src_buf, None, None)]
+    for sid in (session_id, src):
+        if sid and (buf := cfg.weave_dir / "buffer" / f"{sid}.jsonl").exists():
+            return [(buf, None, None)]
     return []
 
 

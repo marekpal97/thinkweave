@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import read_jsonl, write_session_md, write_transcript
+
 # One full-snapshot payload used by every test. Ids chosen so the delta
 # math has an independent source of truth: the chain fixture pre-serves
 # dec-aaaa1111 + ses-cccc3333, leaving dec-bbbb2222 the only new note.
@@ -75,14 +77,7 @@ def outputs(monkeypatch) -> list[dict]:
 
 
 def _buffer_events(cfg, session_id: str) -> list[dict]:
-    buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
-    if not buf.exists():
-        return []
-    return [
-        json.loads(line)
-        for line in buf.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    return read_jsonl(cfg.weave_dir / "buffer" / f"{session_id}.jsonl")
 
 
 def _write_session_md(
@@ -93,18 +88,14 @@ def _write_session_md(
     date: str = "",
 ) -> None:
     """One session.md with the frontmatter fields the serve paths read."""
-    folder.mkdir(parents=True, exist_ok=True)
-    lines = ["---", f"id: {note_id}", "type: session", "project: t"]
+    fm: dict = {"id": note_id, "type": "session", "project": "t"}
     if date:
-        lines.append(f"date: '{date}'")
+        fm["date"] = date
     if source_session:
-        lines.append(f"source_session: {source_session}")
+        fm["source_session"] = source_session
     if logical_session:
-        lines.append(f"logical_session: {logical_session}")
-    lines.append("---")
-    (folder / "session.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
-    )
+        fm["logical_session"] = logical_session
+    write_session_md(folder, **fm)
 
 
 def _seed_chain_root(
@@ -143,13 +134,9 @@ def _seed_chain_root(
 
 
 def _transcript_with_bridge(tmp_path: Path) -> str:
-    t = tmp_path / "transcript.jsonl"
-    t.write_text(
-        json.dumps({"type": "bridge-session", "bridgeSessionId": CHAIN_KEY})
-        + "\n",
-        encoding="utf-8",
-    )
-    return str(t)
+    return str(write_transcript(
+        tmp_path, [{"type": "bridge-session", "bridgeSessionId": CHAIN_KEY}]
+    ))
 
 
 class TestFullServe:

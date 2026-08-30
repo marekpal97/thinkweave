@@ -19,6 +19,7 @@ from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager, parse_frontmatter
 from thinkweave.operations.wrap import WrapFinalizeResult, finalize_wrap
+from tests.conftest import read_jsonl, write_session_md
 
 
 @pytest.fixture
@@ -42,14 +43,6 @@ def _index(config: Config) -> None:
     idx = Indexer(config=config)
     idx.rebuild(full=True)
     idx.close()
-
-
-def _rows(f: Path) -> list[dict]:
-    return [
-        json.loads(ln)
-        for ln in f.read_text(encoding="utf-8").splitlines()
-        if ln.strip()
-    ]
 
 
 def _seed_session_with_decision(vm: VaultManager) -> str:
@@ -276,7 +269,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 2
         assert result.verdicts_unmatched == 0
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert [r["register"] for r in fb] == ["correction", "confirmation"]
         # Frozen schema: exactly the keys the pre-#101 hook labeler wrote,
         # and ts reuses the prompt event's own timestamp (exact join).
@@ -297,7 +290,7 @@ class TestVerdictStep:
                                prune=False, verdicts=verdicts)
         assert result.verdicts_written == 0
         assert result.verdicts_skipped == 1
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_unmatched_and_invalid_verdicts(
@@ -333,7 +326,7 @@ class TestVerdictStep:
             verdicts=[{"prompt": "no, wrong", "register": "correction"}],
         )
         assert result.verdicts_written == 1
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_duplicate_prompt_rows_yield_one_event(
@@ -352,14 +345,14 @@ class TestVerdictStep:
         result = finalize_wrap(config, session_id="cc-uuid-6", project="t",
                                prune=False, verdicts=verdicts)
         assert result.verdicts_written == 1
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
         rewrap = finalize_wrap(config, session_id="cc-uuid-6", project="t",
                                prune=False, verdicts=verdicts)
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 1
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_verdict_labels_single_best_of_distinct_prefix_matches(
@@ -379,7 +372,7 @@ class TestVerdictStep:
             verdicts=verdicts,
         )
         assert result.verdicts_written == 1
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
         assert fb[0]["ts"] == "2026-08-22T10:00:00+00:00"
 
@@ -392,7 +385,7 @@ class TestVerdictStep:
         )
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 1
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
         assert fb[0]["ts"] == "2026-08-22T10:00:00+00:00"
 
@@ -428,11 +421,8 @@ class TestVerdictStep:
             ("ses-fresh222-2026-08-22", "ses-fresh222", 2_000_000_000),
         ]:
             d = base / name
-            d.mkdir(parents=True)
-            (d / "session.md").write_text(
-                f"---\ntype: session\nid: {sid}\n"
-                "source_session: cc-uuid-8\n---\n",
-                encoding="utf-8",
+            write_session_md(
+                d, type="session", id=sid, source_session="cc-uuid-8"
             )
             ev = d / "events.jsonl"
             ev.write_text(row + "\n", encoding="utf-8")
@@ -445,11 +435,11 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         new_fb = [
-            r for r in _rows(events_files["ses-fresh222"])
+            r for r in read_jsonl(events_files["ses-fresh222"])
             if r.get("type") == "feedback"
         ]
         old_fb = [
-            r for r in _rows(events_files["ses-stale111"])
+            r for r in read_jsonl(events_files["ses-stale111"])
             if r.get("type") == "feedback"
         ]
         assert len(new_fb) == 1
@@ -477,7 +467,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         fb = [
-            r for r in _rows(events) if r.get("type") == "feedback"
+            r for r in read_jsonl(events) if r.get("type") == "feedback"
         ]
         assert len(fb) == 1
         assert fb[0]["session_id"] == "ses-arch1"
@@ -489,11 +479,9 @@ class TestVerdictStep:
             config.vault_root / "projects" / "t" / "sessions"
             / f"{uuid}-2026-08-22"
         )
-        sess_dir.mkdir(parents=True)
-        (sess_dir / "session.md").write_text(
-            f"---\ntype: session\nid: {ses_id}\n"
-            f"source_session: {uuid}\nproject: t\n---\n",
-            encoding="utf-8",
+        write_session_md(
+            sess_dir, type="session", id=ses_id,
+            source_session=uuid, project="t",
         )
         events = sess_dir / "events.jsonl"
         events.write_text(
@@ -525,7 +513,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         assert result.verdicts_unmatched == 0
-        fb = [r for r in _rows(events) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(events) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_recreated_buffer_does_not_hijack_for_uuid_id(
@@ -540,7 +528,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         assert result.verdicts_unmatched == 0
-        fb = [r for r in _rows(events) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(events) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_specific_verdict_beats_broad_same_batch(
@@ -569,7 +557,7 @@ class TestVerdictStep:
         assert result.verdicts_written == 2
         assert result.verdicts_skipped == 1
         fb = {
-            r["ts"]: r for r in _rows(f) if r.get("type") == "feedback"
+            r["ts"]: r for r in read_jsonl(f) if r.get("type") == "feedback"
         }
         # The narrow verdict got its precise referent; one broad duplicate
         # starved — surfaced as a warning, NOT an error (two verdicts
@@ -601,7 +589,7 @@ class TestVerdictStep:
             ],
         )
         assert result.verdicts_written == 2
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert {r["ts"]: r["register"] for r in fb} == {
             "2026-08-29T09:00:00+00:00": "correction",
             "2026-08-29T09:30:00+00:00": "confirmation",
@@ -628,7 +616,7 @@ class TestVerdictStep:
             verdicts=verdicts,
         )
         assert result.verdicts_written == 2
-        rows = _rows(f)
+        rows = read_jsonl(f)
         assert [r["type"] for r in rows[1:]] == ["feedback", "probe"]
 
         rewrap = finalize_wrap(
@@ -637,7 +625,7 @@ class TestVerdictStep:
         )
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 2
-        assert len(_rows(f)) == 3
+        assert len(read_jsonl(f)) == 3
 
     def test_ses_id_falls_back_to_source_uuid_buffer(
         self, config: Config, vault: VaultManager
@@ -661,7 +649,7 @@ class TestVerdictStep:
             verdicts=[{"prompt": "archive failed", "register": "correction"}],
         )
         assert result.verdicts_written == 1
-        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_no_events_file_reports_error(
@@ -690,7 +678,7 @@ class TestVerdictStep:
             verdicts=[{"prompt": "how does the drift", "register": "probe"}],
         )
         assert result.verdicts_written == 1
-        rows = _rows(f)
+        rows = read_jsonl(f)
         probe = [r for r in rows if r.get("type") == "probe"]
         assert len(probe) == 1
         assert probe[0]["ts"] == "2026-08-03T10:00:00+00:00"
@@ -728,7 +716,7 @@ class TestVerdictStep:
             ],
         )
         assert result.verdicts_written == 2
-        rows = _rows(f)
+        rows = read_jsonl(f)
         fb = [r for r in rows if r.get("type") == "feedback"]
         assert fb[0]["about"] == "rejected the regex-based parser rewrite"
         probe = [r for r in rows if r.get("type") == "probe"]
@@ -822,23 +810,17 @@ class TestSegmentChain:
             config.vault_root / "projects" / "t" / "sessions"
             / f"{seg_uuid}-2026-08-21"
         )
-        d.mkdir(parents=True)
-        fm_lines = [
-            "---", "type: session", f"id: {ses_id}",
-            f"source_session: {seg_uuid}",
-        ]
+        fm: dict = {"type": "session", "id": ses_id, "source_session": seg_uuid}
         if logical:
-            fm_lines.append(f"logical_session: {logical}")
+            fm["logical_session"] = logical
         if segments:
-            fm_lines.append(f"segments: [{', '.join(segments)}]")
+            fm["segments"] = segments
         if processed:
-            fm_lines.append("processed: true")
+            fm["processed"] = True
         if auto_extracted:
-            fm_lines.append("auto_extracted: true")
-        fm_lines += ["project: t", "---", ""]
-        (d / "session.md").write_text(
-            "\n".join(fm_lines), encoding="utf-8"
-        )
+            fm["auto_extracted"] = True
+        fm["project"] = "t"
+        write_session_md(d, **fm)
         row = json.dumps({
             "ts": ts, "type": "prompt", "text": prompt_text,
             "session_id": seg_uuid,
@@ -900,13 +882,13 @@ class TestSegmentChain:
         assert result.errors == []
         # Each event lands in the file that holds its prompt — downstream
         # per-file joins (probe classification, reprojection) stay local.
-        fb1 = [r for r in _rows(files["seg1"])
+        fb1 = [r for r in read_jsonl(files["seg1"])
                if r.get("type") == "feedback"]
         assert len(fb1) == 1 and fb1[0]["register"] == "correction"
         assert fb1[0]["session_id"] == "cc-seg1"
-        pr2 = [r for r in _rows(files["seg2"]) if r.get("type") == "probe"]
+        pr2 = [r for r in read_jsonl(files["seg2"]) if r.get("type") == "probe"]
         assert len(pr2) == 1
-        fb3 = [r for r in _rows(files["seg3"])
+        fb3 = [r for r in read_jsonl(files["seg3"])
                if r.get("type") == "feedback"]
         assert len(fb3) == 1 and fb3[0]["register"] == "confirmation"
 
@@ -924,7 +906,7 @@ class TestSegmentChain:
                                prune=False, verdicts=verdicts)
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 2
-        fb1 = [r for r in _rows(files["seg1"])
+        fb1 = [r for r in read_jsonl(files["seg1"])
                if r.get("type") == "feedback"]
         assert len(fb1) == 1
 
@@ -950,7 +932,7 @@ class TestSegmentChain:
         )
         assert result.verdicts_written == 1
         assert result.verdicts_unmatched == 1
-        assert [r for r in _rows(other) if r.get("type") == "feedback"] \
+        assert [r for r in read_jsonl(other) if r.get("type") == "feedback"] \
             == []
 
     def test_segments_recorded_on_wrapped_session_note(
@@ -1052,8 +1034,8 @@ class TestSegmentChain:
         )
         assert result.verdicts_unmatched == 0
         assert result.verdicts_written == 2
-        fb1 = [r for r in _rows(f1) if r.get("type") == "feedback"]
-        fb2 = [r for r in _rows(f2) if r.get("type") == "feedback"]
+        fb1 = [r for r in read_jsonl(f1) if r.get("type") == "feedback"]
+        fb2 = [r for r in read_jsonl(f2) if r.get("type") == "feedback"]
         assert len(fb1) == 1 and len(fb2) == 1
 
     def test_cross_segment_prefix_match_prefers_earliest_prompt(
@@ -1076,10 +1058,10 @@ class TestSegmentChain:
         )
         assert result.verdicts_written == 1
         fb_early = [
-            r for r in _rows(f_early) if r.get("type") == "feedback"
+            r for r in read_jsonl(f_early) if r.get("type") == "feedback"
         ]
         fb_late = [
-            r for r in _rows(f_late) if r.get("type") == "feedback"
+            r for r in read_jsonl(f_late) if r.get("type") == "feedback"
         ]
         assert len(fb_early) == 1
         assert fb_late == []
@@ -1108,9 +1090,9 @@ class TestSegmentChain:
         )
         assert result.verdicts_written == 1
         fb_today = [
-            r for r in _rows(today) if r.get("type") == "feedback"
+            r for r in read_jsonl(today) if r.get("type") == "feedback"
         ]
-        fb_old = [r for r in _rows(old) if r.get("type") == "feedback"]
+        fb_old = [r for r in read_jsonl(old) if r.get("type") == "feedback"]
         assert len(fb_today) == 1
         assert fb_old == []
         assert result.segments == []
@@ -1203,11 +1185,9 @@ class TestSegmentChain:
             ("ses-fresh222-2026-08-21", "ses-fresh222"),
         ]:
             d = base / name
-            d.mkdir(parents=True)
-            (d / "session.md").write_text(
-                f"---\ntype: session\nid: {sid}\n"
-                "source_session: cc-mint\nproject: t\n---\n",
-                encoding="utf-8",
+            write_session_md(
+                d, type="session", id=sid,
+                source_session="cc-mint", project="t",
             )
             (d / "events.jsonl").write_text(row + "\n", encoding="utf-8")
         result = finalize_wrap(

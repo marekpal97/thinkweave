@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import write_session_md
 from thinkweave.core.config import Config
 from thinkweave.operations.prune import (
     EVENTS_MIN_BYTES,
@@ -61,35 +62,24 @@ def _make_session(
     # timestamp for the *frontmatter* without minting a folder name
     # containing ``:``, which is an illegal character on Windows.
     session_dir = sessions_dir / f"{session_id}-{processed_at[:10]}"
-    session_dir.mkdir(parents=True, exist_ok=True)
 
-    fm_lines = [
-        "---",
-        "type: session",
-        f"id: {note_id or session_id}",
-        f"date: {processed_at}",
-        f"project: {project}",
-        f"processed_at: {processed_at}",
-    ]
+    fm: dict = {
+        "type": "session",
+        "id": note_id or session_id,
+        "date": processed_at,
+        "project": project,
+        "processed_at": processed_at,
+    }
     if files_touched:
-        fm_lines.append("files_touched:")
-        for f in files_touched:
-            fm_lines.append(f"  - {f}")
+        fm["files_touched"] = files_touched
     if commits:
-        fm_lines.append("commits:")
-        for c in commits:
-            fm_lines.append(f"  - {c}")
+        fm["commits"] = commits
     if source_session:
-        fm_lines.append(f"source_session: {source_session}")
-    fm_lines.append("---")
-    fm_lines.append("")
-    fm_lines.append(f"# Session {session_id}")
-    fm_lines.append("")
-    fm_lines.append("## Summary")
-    fm_lines.append("Stub session.")
-
-    (session_dir / "session.md").write_text(
-        "\n".join(fm_lines) + "\n", encoding="utf-8"
+        fm["source_session"] = source_session
+    write_session_md(
+        session_dir,
+        body=f"\n# Session {session_id}\n\n## Summary\nStub session.\n",
+        **fm,
     )
 
     if event_bytes:
