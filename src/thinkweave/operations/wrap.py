@@ -95,11 +95,11 @@ _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
 def _resolve_session_chain(
     cfg: Config, session_id: str, project: str
-) -> list[tuple[Path, Path | None]]:
+) -> list[tuple[Path, Path | None, dict | None]]:
     """Locate the logical session's event streams without creating anything.
 
-    Returns ``[(events_file, session_folder-or-None), ...]``, best-ranked
-    first: the head is the PRIMARY stream (#181's single-file resolution)
+    Returns ``[(events_file, session_folder-or-None, frontmatter-or-None),
+    ...]``, best-ranked first: the head is the PRIMARY stream (#181's single-file resolution)
     and the tail is the rest of the compaction-segment chain (#180 — a
     long-running session spans several harness session UUIDs, one per
     context compaction, each buffering its prompts under its own id).
@@ -212,53 +212,45 @@ def _resolve_session_chain(
                     ev.stat().st_mtime,
                     d.name,
                 )
-                ranked.append((rank, ev, d))
+                ranked.append((rank, ev, d, fm))
     ranked.sort(key=lambda t: t[0], reverse=True)
-    out: list[tuple[Path, Path | None]] = []
+    out: list[tuple[Path, Path | None, dict | None]] = []
     seen: set[Path] = set()
-    for _rank, ev, d in ranked:
+    for _rank, ev, d, fm in ranked:
         if ev not in seen:
             seen.add(ev)
-            out.append((ev, d))
+            out.append((ev, d, fm))
     if out:
         return out
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
-        return [(buf, None)]
+        return [(buf, None, None)]
     if src:
         src_buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
         if src_buf.exists():
-            return [(src_buf, None)]
+            return [(src_buf, None, None)]
     return []
 
 
 def _chain_note_ids(
-    chain: list[tuple[Path, Path | None]], session_id: str
+    chain: list[tuple[Path, Path | None, dict | None]], session_id: str
 ) -> list[str]:
     """Note ids of every chain folder, primary first — the notes whose
     prompts need reprojection after verdicts land (#181: for a force-minted
     ses- id the primary can be the SIBLING note owning the source-UUID
     folder; #180: verdicts land across the whole segment chain). Falls back
     to the input id unchanged when nothing resolves."""
-    from thinkweave.core.vault import parse_frontmatter
-
     out: list[str] = []
-    for _ev, d in chain:
-        sm = d / "session.md" if d is not None else None
-        if sm is None or not sm.exists():
-            continue
-        try:
-            fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            continue
-        nid = str(fm.get("id") or "")
+    for _ev, _d, fm in chain:
+        nid = str((fm or {}).get("id") or "")
         if nid and nid not in out:
             out.append(nid)
     return out or [session_id]
 
 
 def _record_segments(
-    chain: list[tuple[Path, Path | None]], result: WrapFinalizeResult
+    chain: list[tuple[Path, Path | None, dict | None]],
+    result: WrapFinalizeResult,
 ) -> None:
     """Durable chain record (#180): once a wrap sees more than one segment
     UUID, the primary session note gains ``segments: [uuid, ...]`` in
@@ -287,32 +279,23 @@ def _record_segments(
     from thinkweave.core.vault import parse_frontmatter, render_frontmatter
 
     stamped: list[tuple[float, str]] = []
-    for ev, d in chain:
-        if d is None:
-            sid = ev.stem  # raw buffer files are named by their UUID
-        else:
-            sm = d / "session.md"
-            sid = ""
-            if sm.exists():
-                try:
-                    fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-                    sid = str(fm.get("source_session") or "")
-                except Exception:  # noqa: BLE001
-                    sid = ""
-            if not sid:
-                # No resolvable UUID — never let a placeholder (the
-                # archive's literal "events" stem) into the durable list.
-                continue
+    for ev, d, fm in chain:
+        # Raw buffer files are named by their UUID; a folder without a
+        # resolvable UUID never puts a placeholder in the durable list.
+        sid = (
+            ev.stem
+            if d is None
+            else str((fm or {}).get("source_session") or "")
+        )
+        if not sid:
+            continue
         prompt_ts = [
             p.ts for p in extract_prompts(ev) if p.ts != datetime.min
         ]
         key = min(prompt_ts).timestamp() if prompt_ts else float("inf")
         stamped.append((key, sid))
     stamped.sort()
-    ordered: list[str] = []
-    for _ts, sid in stamped:
-        if sid not in ordered:
-            ordered.append(sid)
+    ordered = list(dict.fromkeys(sid for _ts, sid in stamped))
     # Gate on distinct UUIDs, not file count: the #181 force-mint shape is
     # two folders over ONE source UUID — not a multi-segment session.
     if len(ordered) < 2:
@@ -371,7 +354,7 @@ def _append_verdict_events(
     session_id: str,
     verdicts: list[dict],
     result: WrapFinalizeResult,
-    chain: list[tuple[Path, Path | None]],
+    chain: list[tuple[Path, Path | None, dict | None]],
 ) -> None:
     """Deterministic half of the async prompt labeler (#101).
 
@@ -425,7 +408,7 @@ def _append_verdict_events(
     # the fall-through so repeated same-prefix verdicts in one batch
     # distribute over distinct prompts.
     preexisting: set[tuple[str, str, str]] = set()
-    for events_file, _folder in chain:
+    for events_file, _folder, _fm in chain:
         file_prompts = extract_prompts(events_file)
         prompts.extend((p, events_file) for p in file_prompts)
         preexisting.update(
@@ -607,7 +590,7 @@ def finalize_wrap(
             # verdicts were just written there, and their id fields may
             # name a sibling note (force-minted ses- id) or an earlier
             # compaction segment the caller's id doesn't match.
-            chain_dirs = {d for _ev, d in chain if d is not None}
+            chain_dirs = {d for _ev, d, _fm in chain if d is not None}
             orphans = [
                 o
                 for o in find_orphans(

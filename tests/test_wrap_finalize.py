@@ -9,6 +9,7 @@ looks like a just-extracted session and assert the chain runs cleanly.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ import pytest
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
-from thinkweave.core.vault import VaultManager
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 from thinkweave.operations.wrap import WrapFinalizeResult, finalize_wrap
 
 
@@ -41,6 +42,14 @@ def _index(config: Config) -> None:
     idx = Indexer(config=config)
     idx.rebuild(full=True)
     idx.close()
+
+
+def _rows(f: Path) -> list[dict]:
+    return [
+        json.loads(ln)
+        for ln in f.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
 
 
 def _seed_session_with_decision(vm: VaultManager) -> str:
@@ -247,13 +256,6 @@ class TestVerdictStep:
         )
         return f
 
-    def _rows(self, f: Path) -> list[dict]:
-        return [
-            json.loads(ln)
-            for ln in f.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        ]
-
     def test_verdicts_append_frozen_shape_events(
         self, config: Config, vault: VaultManager
     ):
@@ -274,7 +276,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 2
         assert result.verdicts_unmatched == 0
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert [r["register"] for r in fb] == ["correction", "confirmation"]
         # Frozen schema: exactly the keys the pre-#101 hook labeler wrote,
         # and ts reuses the prompt event's own timestamp (exact join).
@@ -295,7 +297,7 @@ class TestVerdictStep:
                                prune=False, verdicts=verdicts)
         assert result.verdicts_written == 0
         assert result.verdicts_skipped == 1
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_unmatched_and_invalid_verdicts(
@@ -331,7 +333,7 @@ class TestVerdictStep:
             verdicts=[{"prompt": "no, wrong", "register": "correction"}],
         )
         assert result.verdicts_written == 1
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_duplicate_prompt_rows_yield_one_event(
@@ -350,14 +352,14 @@ class TestVerdictStep:
         result = finalize_wrap(config, session_id="cc-uuid-6", project="t",
                                prune=False, verdicts=verdicts)
         assert result.verdicts_written == 1
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
         rewrap = finalize_wrap(config, session_id="cc-uuid-6", project="t",
                                prune=False, verdicts=verdicts)
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 1
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_verdict_labels_single_best_of_distinct_prefix_matches(
@@ -377,7 +379,7 @@ class TestVerdictStep:
             verdicts=verdicts,
         )
         assert result.verdicts_written == 1
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
         assert fb[0]["ts"] == "2026-08-22T10:00:00+00:00"
 
@@ -390,7 +392,7 @@ class TestVerdictStep:
         )
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 1
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
         assert fb[0]["ts"] == "2026-08-22T10:00:00+00:00"
 
@@ -443,11 +445,11 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         new_fb = [
-            r for r in self._rows(events_files["ses-fresh222"])
+            r for r in _rows(events_files["ses-fresh222"])
             if r.get("type") == "feedback"
         ]
         old_fb = [
-            r for r in self._rows(events_files["ses-stale111"])
+            r for r in _rows(events_files["ses-stale111"])
             if r.get("type") == "feedback"
         ]
         assert len(new_fb) == 1
@@ -475,7 +477,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         fb = [
-            r for r in self._rows(events) if r.get("type") == "feedback"
+            r for r in _rows(events) if r.get("type") == "feedback"
         ]
         assert len(fb) == 1
         assert fb[0]["session_id"] == "ses-arch1"
@@ -523,7 +525,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         assert result.verdicts_unmatched == 0
-        fb = [r for r in self._rows(events) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(events) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_recreated_buffer_does_not_hijack_for_uuid_id(
@@ -538,7 +540,7 @@ class TestVerdictStep:
         )
         assert result.verdicts_written == 1
         assert result.verdicts_unmatched == 0
-        fb = [r for r in self._rows(events) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(events) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_specific_verdict_beats_broad_same_batch(
@@ -567,7 +569,7 @@ class TestVerdictStep:
         assert result.verdicts_written == 2
         assert result.verdicts_skipped == 1
         fb = {
-            r["ts"]: r for r in self._rows(f) if r.get("type") == "feedback"
+            r["ts"]: r for r in _rows(f) if r.get("type") == "feedback"
         }
         # The narrow verdict got its precise referent; one broad duplicate
         # starved — surfaced as a warning, NOT an error (two verdicts
@@ -599,7 +601,7 @@ class TestVerdictStep:
             ],
         )
         assert result.verdicts_written == 2
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert {r["ts"]: r["register"] for r in fb} == {
             "2026-08-29T09:00:00+00:00": "correction",
             "2026-08-29T09:30:00+00:00": "confirmation",
@@ -626,7 +628,7 @@ class TestVerdictStep:
             verdicts=verdicts,
         )
         assert result.verdicts_written == 2
-        rows = self._rows(f)
+        rows = _rows(f)
         assert [r["type"] for r in rows[1:]] == ["feedback", "probe"]
 
         rewrap = finalize_wrap(
@@ -635,7 +637,7 @@ class TestVerdictStep:
         )
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 2
-        assert len(self._rows(f)) == 3
+        assert len(_rows(f)) == 3
 
     def test_ses_id_falls_back_to_source_uuid_buffer(
         self, config: Config, vault: VaultManager
@@ -659,7 +661,7 @@ class TestVerdictStep:
             verdicts=[{"prompt": "archive failed", "register": "correction"}],
         )
         assert result.verdicts_written == 1
-        fb = [r for r in self._rows(f) if r.get("type") == "feedback"]
+        fb = [r for r in _rows(f) if r.get("type") == "feedback"]
         assert len(fb) == 1
 
     def test_no_events_file_reports_error(
@@ -688,7 +690,7 @@ class TestVerdictStep:
             verdicts=[{"prompt": "how does the drift", "register": "probe"}],
         )
         assert result.verdicts_written == 1
-        rows = self._rows(f)
+        rows = _rows(f)
         probe = [r for r in rows if r.get("type") == "probe"]
         assert len(probe) == 1
         assert probe[0]["ts"] == "2026-08-03T10:00:00+00:00"
@@ -726,7 +728,7 @@ class TestVerdictStep:
             ],
         )
         assert result.verdicts_written == 2
-        rows = self._rows(f)
+        rows = _rows(f)
         fb = [r for r in rows if r.get("type") == "feedback"]
         assert fb[0]["about"] == "rejected the regex-based parser rewrite"
         probe = [r for r in rows if r.get("type") == "probe"]
@@ -794,13 +796,6 @@ class TestSegmentChain:
     unmatched because resolution stopped at one events file.
     """
 
-    def _rows(self, f: Path) -> list[dict]:
-        return [
-            json.loads(ln)
-            for ln in f.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        ]
-
     def _segment(
         self,
         config: Config,
@@ -823,8 +818,6 @@ class TestSegmentChain:
         models a REAL wrap (weave_extract clears auto_extracted);
         ``processed + auto_extracted`` models the Stop hook's thin
         auto-extract stub."""
-        import os
-
         d = (
             config.vault_root / "projects" / "t" / "sessions"
             / f"{seg_uuid}-2026-08-21"
@@ -907,13 +900,13 @@ class TestSegmentChain:
         assert result.errors == []
         # Each event lands in the file that holds its prompt — downstream
         # per-file joins (probe classification, reprojection) stay local.
-        fb1 = [r for r in self._rows(files["seg1"])
+        fb1 = [r for r in _rows(files["seg1"])
                if r.get("type") == "feedback"]
         assert len(fb1) == 1 and fb1[0]["register"] == "correction"
         assert fb1[0]["session_id"] == "cc-seg1"
-        pr2 = [r for r in self._rows(files["seg2"]) if r.get("type") == "probe"]
+        pr2 = [r for r in _rows(files["seg2"]) if r.get("type") == "probe"]
         assert len(pr2) == 1
-        fb3 = [r for r in self._rows(files["seg3"])
+        fb3 = [r for r in _rows(files["seg3"])
                if r.get("type") == "feedback"]
         assert len(fb3) == 1 and fb3[0]["register"] == "confirmation"
 
@@ -931,7 +924,7 @@ class TestSegmentChain:
                                prune=False, verdicts=verdicts)
         assert rewrap.verdicts_written == 0
         assert rewrap.verdicts_skipped == 2
-        fb1 = [r for r in self._rows(files["seg1"])
+        fb1 = [r for r in _rows(files["seg1"])
                if r.get("type") == "feedback"]
         assert len(fb1) == 1
 
@@ -957,7 +950,7 @@ class TestSegmentChain:
         )
         assert result.verdicts_written == 1
         assert result.verdicts_unmatched == 1
-        assert [r for r in self._rows(other) if r.get("type") == "feedback"] \
+        assert [r for r in _rows(other) if r.get("type") == "feedback"] \
             == []
 
     def test_segments_recorded_on_wrapped_session_note(
@@ -965,8 +958,6 @@ class TestSegmentChain:
     ):
         # The durable chain record (#183: same parent key the task-trace
         # epic needs): the wrapped session note gains segments: [uuid, ...].
-        from thinkweave.core.vault import parse_frontmatter
-
         self._chain_fixture(config)
         finalize_wrap(
             config, session_id="cc-seg3", project="t", prune=False,
@@ -984,8 +975,6 @@ class TestSegmentChain:
     ):
         # Earlier segments look like orphans (stub note, tiny events, old)
         # — the wrap that just landed verdicts in them must not GC them.
-        import os
-
         files = self._chain_fixture(config)
         for f in files.values():
             folder = f.parent
@@ -1023,8 +1012,6 @@ class TestSegmentChain:
         assert result.segments == ["cc-seg1", "cc-seg2", "cc-seg3"]
 
         # A correct record is a fixed point under re-wrap.
-        from thinkweave.core.vault import parse_frontmatter
-
         rewrap = finalize_wrap(
             config, session_id="cc-seg3", project="t", prune=False,
             verdicts=verdicts,
@@ -1065,8 +1052,8 @@ class TestSegmentChain:
         )
         assert result.verdicts_unmatched == 0
         assert result.verdicts_written == 2
-        fb1 = [r for r in self._rows(f1) if r.get("type") == "feedback"]
-        fb2 = [r for r in self._rows(f2) if r.get("type") == "feedback"]
+        fb1 = [r for r in _rows(f1) if r.get("type") == "feedback"]
+        fb2 = [r for r in _rows(f2) if r.get("type") == "feedback"]
         assert len(fb1) == 1 and len(fb2) == 1
 
     def test_cross_segment_prefix_match_prefers_earliest_prompt(
@@ -1089,10 +1076,10 @@ class TestSegmentChain:
         )
         assert result.verdicts_written == 1
         fb_early = [
-            r for r in self._rows(f_early) if r.get("type") == "feedback"
+            r for r in _rows(f_early) if r.get("type") == "feedback"
         ]
         fb_late = [
-            r for r in self._rows(f_late) if r.get("type") == "feedback"
+            r for r in _rows(f_late) if r.get("type") == "feedback"
         ]
         assert len(fb_early) == 1
         assert fb_late == []
@@ -1121,9 +1108,9 @@ class TestSegmentChain:
         )
         assert result.verdicts_written == 1
         fb_today = [
-            r for r in self._rows(today) if r.get("type") == "feedback"
+            r for r in _rows(today) if r.get("type") == "feedback"
         ]
-        fb_old = [r for r in self._rows(old) if r.get("type") == "feedback"]
+        fb_old = [r for r in _rows(old) if r.get("type") == "feedback"]
         assert len(fb_today) == 1
         assert fb_old == []
         assert result.segments == []
@@ -1135,8 +1122,6 @@ class TestSegmentChain:
         # so a stored wrong order (written before the round-1 ordering
         # fix) could never be corrected — disk and result.segments
         # disagreed. The segments: write needs replace semantics.
-        from thinkweave.core.vault import parse_frontmatter
-
         self._chain_fixture(config)
         # Simulate a pre-fix corrupted record on the primary note.
         sm = (
@@ -1168,8 +1153,6 @@ class TestSegmentChain:
         # record documents the session chain (#184 keys attribution on
         # it), so the write must union with what is already stored, not
         # replace it lossily.
-        from thinkweave.core.vault import parse_frontmatter
-
         self._chain_fixture(config)
         verdicts = [{"prompt": "looks good", "register": "confirmation"}]
         first = finalize_wrap(
@@ -1210,8 +1193,6 @@ class TestSegmentChain:
         # Fix round 2 minor: the #181 force-mint shape — two folders, ONE
         # source UUID — is not a multi-segment session; a degenerate
         # one-element segments: record must not be written.
-        from thinkweave.core.vault import parse_frontmatter
-
         base = config.vault_root / "projects" / "t" / "sessions"
         row = json.dumps({
             "ts": "2026-08-21T09:00:00+00:00", "type": "prompt",
