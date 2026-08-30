@@ -883,11 +883,10 @@ def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str)
         if delivery_id not in line:
             continue
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+            if json.loads(line).get("replay_of") == delivery_id:
+                return True
+        except (json.JSONDecodeError, AttributeError):
             continue
-        if isinstance(event, dict) and event.get("replay_of") == delivery_id:
-            return True
     return False
 
 
@@ -968,11 +967,11 @@ def _note_meta(cfg, ids: list[str]) -> dict[str, tuple[str, str, str]]:
     try:
         if not ids or not cfg.index_db.exists():
             return out
+        import contextlib
         import sqlite3
 
-        db = sqlite3.connect(str(cfg.index_db))
-        db.row_factory = sqlite3.Row
-        try:
+        with contextlib.closing(sqlite3.connect(str(cfg.index_db))) as db:
+            db.row_factory = sqlite3.Row
             placeholders = ",".join("?" * len(ids))
             for r in db.execute(
                 f"SELECT id, type, title, date FROM notes "
@@ -984,10 +983,8 @@ def _note_meta(cfg, ids: list[str]) -> dict[str, tuple[str, str, str]]:
                     str(r["title"] or ""),
                     str(r["date"] or ""),
                 )
-        finally:
-            db.close()
     except Exception:
-        return out
+        pass
     return out
 
 
@@ -1795,7 +1792,6 @@ def _handle_session_start(hook_input: dict) -> None:
                     )
             except Exception as e:
                 _log_error("session_start_chain", e)
-                chain_root, prior_ids, prior_deliveries = "", set(), set()
             if lifecycle in ("resume", "compact") and prior_ids:
                 # A chain with no serve record degrades to the full
                 # snapshot — a resume this machine never served is
@@ -1909,43 +1905,29 @@ def _handle_session_start(hook_input: dict) -> None:
             _log_error("session_start_seam", e)
             guard = ""
 
+        sysmsg = (
+            _report_failure("session_start_capture", hook_input, capture_error)
+            if capture_error
+            else ""
+        )
+
         if replayed:
             _output(
-                system_message=(
-                    _report_failure(
-                        "session_start_capture", hook_input, capture_error
-                    )
-                    if capture_error
-                    else ""
-                ),
+                system_message=sysmsg,
                 additional_context=guard,
-                hook_event_name="SessionStart" if guard else "",
+                hook_event_name="SessionStart",
             )
             return
 
         if not payload.strip() and not guard:
-            _output(
-                system_message=(
-                    _report_failure(
-                        "session_start_capture", hook_input, capture_error
-                    )
-                    if capture_error
-                    else ""
-                )
-            )
+            _output(system_message=sysmsg)
             return
 
         # Guard rides at the TOP — it's a correctness interrupt on notes the
         # model is about to rely on, so it must be seen before the context.
         full = f"{guard}\n{payload}" if guard else payload
         _output(
-            system_message=(
-                _report_failure(
-                    "session_start_capture", hook_input, capture_error
-                )
-                if capture_error
-                else ""
-            ),
+            system_message=sysmsg,
             additional_context=full,
             hook_event_name="SessionStart",
         )

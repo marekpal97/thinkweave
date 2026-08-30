@@ -85,6 +85,28 @@ def _buffer_events(cfg, session_id: str) -> list[dict]:
     ]
 
 
+def _write_session_md(
+    folder: Path,
+    note_id: str,
+    source_session: str = "",
+    logical_session: str = "",
+    date: str = "",
+) -> None:
+    """One session.md with the frontmatter fields the serve paths read."""
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = ["---", f"id: {note_id}", "type: session", "project: t"]
+    if date:
+        lines.append(f"date: '{date}'")
+    if source_session:
+        lines.append(f"source_session: {source_session}")
+    if logical_session:
+        lines.append(f"logical_session: {logical_session}")
+    lines.append("---")
+    (folder / "session.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+
 def _seed_chain_root(
     cfg,
     *,
@@ -102,17 +124,8 @@ def _seed_chain_root(
     ``_session_dir``): a leading RANDOM uuid, date only at the tail — any
     recency logic keyed on the leading name is wrong by construction."""
     folder = cfg.vault_root / "projects" / "t" / "sessions" / folder_name
-    folder.mkdir(parents=True)
-    (folder / "session.md").write_text(
-        "---\n"
-        f"id: {note_id}\n"
-        "type: session\n"
-        "project: t\n"
-        "date: '2026-08-29'\n"
-        f"source_session: {source_session}\n"
-        f"logical_session: {CHAIN_KEY}\n"
-        "---\n",
-        encoding="utf-8",
+    _write_session_md(
+        folder, note_id, source_session, CHAIN_KEY, date="2026-08-29"
     )
     (folder / "events.jsonl").touch()
     event: dict = {
@@ -410,22 +423,12 @@ class TestReplayGuard:
         # inert after archival.
         sessions = env.vault_root / "projects" / "t" / "sessions"
         for i in range(20):
-            d = sessions / f"zzzz{i:04x}beef-2019-01-01"
-            d.mkdir(parents=True)
-            (d / "session.md").write_text(
-                "---\nid: ses-decoy002\ntype: session\n---\n", encoding="utf-8"
+            _write_session_md(
+                sessions / f"zzzz{i:04x}beef-2019-01-01", "ses-decoy002"
             )
         folder = sessions / "uuid-arch1-2026-08-30"
-        folder.mkdir(parents=True)
-        (folder / "session.md").write_text(
-            "---\n"
-            "id: ses-arch00001\n"
-            "type: session\n"
-            "project: t\n"
-            "date: '2026-08-30'\n"
-            "source_session: uuid-arch1\n"
-            "---\n",
-            encoding="utf-8",
+        _write_session_md(
+            folder, "ses-arch00001", "uuid-arch1", date="2026-08-30"
         )
         archive_buffer(env.weave_dir, "uuid-arch1", folder)
         assert not (env.weave_dir / "buffer" / "uuid-arch1.jsonl").exists()
@@ -580,16 +583,8 @@ class TestReplayGuard:
 
         sessions = env.vault_root / "projects" / "t" / "sessions"
         folder = sessions / "uuid-arch2-2026-08-30"
-        folder.mkdir(parents=True)
-        (folder / "session.md").write_text(
-            "---\n"
-            "id: ses-arch00002\n"
-            "type: session\n"
-            "project: t\n"
-            "date: '2026-08-30'\n"
-            "source_session: uuid-arch2\n"
-            "---\n",
-            encoding="utf-8",
+        _write_session_md(
+            folder, "ses-arch00002", "uuid-arch2", date="2026-08-30"
         )
         archive_buffer(env.weave_dir, "uuid-arch2", folder)
         assert not (env.weave_dir / "buffer" / "uuid-arch2.jsonl").exists()
@@ -667,10 +662,8 @@ class TestCallShape:
         # and never see the chain. Far more of them than the scan budget.
         sessions = env.vault_root / "projects" / "t" / "sessions"
         for i in range(60):
-            d = sessions / f"zzzz{i:04x}dead-2019-01-01"
-            d.mkdir(parents=True)
-            (d / "session.md").write_text(
-                "---\nid: ses-decoy001\ntype: session\n---\n", encoding="utf-8"
+            _write_session_md(
+                sessions / f"zzzz{i:04x}dead-2019-01-01", "ses-decoy001"
             )
 
         reads: list[Path] = []
