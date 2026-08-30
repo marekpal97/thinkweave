@@ -529,18 +529,19 @@ def _logical_session_key(hook_input: dict) -> str:
     if not path:
         return ""
     try:
-        with open(path, encoding="utf-8") as fh:
-            for _ in range(40):
-                line = fh.readline()
-                if not line:
-                    break
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(row, dict) and row.get("type") == "bridge-session":
-                    return str(row.get("bridgeSessionId") or "")
-    except OSError:
+        # Byte-capped head read; errors="replace" because a transcript can
+        # hold invalid UTF-8 — a UnicodeDecodeError here would unwind
+        # through _ensure_session and break the whole hook delivery.
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(65536)
+        for line in head.splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and row.get("type") == "bridge-session":
+                return str(row.get("bridgeSessionId") or "")
+    except (OSError, ValueError):
         return ""
     return ""
 

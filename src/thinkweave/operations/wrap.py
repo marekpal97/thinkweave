@@ -23,6 +23,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from thinkweave.core.config import Config
@@ -238,32 +239,48 @@ def _record_segments(
 ) -> None:
     """Durable chain record (#180): once a wrap sees more than one segment,
     the primary session note gains ``segments: [uuid, ...]`` in
-    chronological (events mtime) order. Markdown-truth for later consumers
-    — the task-trace epic (#184) keys subagent attribution on the same
-    list — and honoured by the resolver, so the chain survives re-wraps
-    even if a segment's ``logical_session`` stamp is lost."""
+    chronological order — by each segment's earliest prompt timestamp, NOT
+    file mtime: the verdict appends that just ran bumped the labeled
+    files' mtimes to now (and mtime isn't durable across clone/restore —
+    the same argument the resolver's ranking makes). Promptless segments
+    sort last. Markdown-truth for later consumers — the task-trace epic
+    (#184) keys subagent attribution on the same list — and honoured by
+    the resolver, so the chain survives re-wraps even if a segment's
+    ``logical_session`` stamp is lost."""
     chain = _resolve_session_chain(cfg, session_id, project)
     if len(chain) < 2:
         return
     primary = chain[0][1]
     if primary is None or not (primary / "session.md").exists():
         return
+    from thinkweave.core.events import extract_prompts
     from thinkweave.core.vault import VaultManager, parse_frontmatter
 
     stamped: list[tuple[float, str]] = []
     for ev, d in chain:
-        sid = ""
-        sm = d / "session.md" if d is not None else None
-        if sm is not None and sm.exists():
-            try:
-                fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-                sid = str(fm.get("source_session") or "")
-            except Exception:  # noqa: BLE001
-                sid = ""
-        stamped.append((ev.stat().st_mtime, sid or ev.stem))
+        if d is None:
+            sid = ev.stem  # raw buffer files are named by their UUID
+        else:
+            sm = d / "session.md"
+            sid = ""
+            if sm.exists():
+                try:
+                    fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+                    sid = str(fm.get("source_session") or "")
+                except Exception:  # noqa: BLE001
+                    sid = ""
+            if not sid:
+                # No resolvable UUID — never let a placeholder (the
+                # archive's literal "events" stem) into the durable list.
+                continue
+        prompt_ts = [
+            p.ts for p in extract_prompts(ev) if p.ts != datetime.min
+        ]
+        key = min(prompt_ts).timestamp() if prompt_ts else float("inf")
+        stamped.append((key, sid))
     stamped.sort()
     ordered: list[str] = []
-    for _mtime, sid in stamped:
+    for _ts, sid in stamped:
         if sid not in ordered:
             ordered.append(sid)
     VaultManager(config=cfg).update_note(
@@ -368,6 +385,16 @@ def _append_verdict_events(
             for p in file_prompts
             if p.classification == "probe"
         )
+    # Chronological pool: a needle prefix-matching prompts in two segments
+    # claims the earliest one, not whichever file ranked higher (unparsed
+    # timestamps sort first — same conservative slot as datetime.min).
+    prompts.sort(
+        key=lambda pf: (
+            pf[0].ts.timestamp()
+            if pf[0].ts != datetime.min
+            else float("-inf")
+        )
+    )
     batch: set[tuple[str, str, str]] = set()
 
     lines: dict[Path, list[str]] = {}
@@ -496,15 +523,18 @@ def finalize_wrap(
         _t = time.perf_counter()
         try:
             _append_verdict_events(cfg, session_id, project, verdicts, result)
-            # ponytail: the segments: record only lands on verdict-bearing
-            # wraps — a verdict-less multi-segment wrap leaves no durable
-            # chain. Upgrade path: hoist _record_segments out of this
-            # branch once a verdict-less consumer (task-trace) needs it.
-            _record_segments(cfg, session_id, project, result)
         except Exception as e:  # noqa: BLE001 — best-effort labeler
             result.errors.append(f"verdicts: {e}")
-        finally:
-            result.timings["verdicts"] = time.perf_counter() - _t
+        # ponytail: the segments: record only lands on verdict-bearing
+        # wraps — a verdict-less multi-segment wrap leaves no durable
+        # chain. Upgrade path: hoist _record_segments out of this
+        # branch once a verdict-less consumer (task-trace) needs it.
+        try:
+            _record_segments(cfg, session_id, project, result)
+        except Exception as e:  # noqa: BLE001 — bookkeeping must not
+            # flip the exit code after successful verdict writes
+            result.warnings.append(f"segments: {e}")
+        result.timings["verdicts"] = time.perf_counter() - _t
 
     # 1. prune orphan session folders -------------------------------------
     if prune:

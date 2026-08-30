@@ -62,7 +62,6 @@ def is_orphan(
     current_session_id: str = "",
     min_age_seconds: int = ORPHAN_MIN_AGE_SECONDS,
     now: float | None = None,
-    protected_dir: Path | None = None,
 ) -> bool:
     """Return True if a session folder is a safe-to-delete orphan.
 
@@ -77,15 +76,14 @@ def is_orphan(
        prefix matches ``current_session_id``
     7. Folder age > ``min_age_seconds`` (by frontmatter date or mtime)
 
-    ``protected_dir`` shields one folder unconditionally — the folder the
-    current wrap actually resolved events from (#181: it can belong to a
-    sibling note whose id fields match nothing the caller holds).
+    Folders the current wrap resolved events into are NOT handled here:
+    wrap-finalize filters its whole segment chain out of the
+    ``find_orphans`` result itself (#181/#180 — they can belong to sibling
+    notes whose id fields match nothing this predicate sees).
 
     Returns False on any IO error — conservative: if we can't tell, don't delete.
     """
     try:
-        if protected_dir is not None and session_dir == protected_dir:
-            return False
         if not session_dir.is_dir():
             return False
 
@@ -150,7 +148,6 @@ def find_orphans(
     current_session_id: str = "",
     min_age_seconds: int = ORPHAN_MIN_AGE_SECONDS,
     now: float | None = None,
-    protected_dir: Path | None = None,
 ) -> list[Path]:
     """Return every orphan session folder under the vault, optionally scoped to a project."""
     cfg = cfg or load_config()
@@ -164,7 +161,6 @@ def find_orphans(
             current_session_id=current_session_id,
             min_age_seconds=min_age_seconds,
             now=now,
-            protected_dir=protected_dir,
         ):
             orphans.append(session_dir)
     return orphans

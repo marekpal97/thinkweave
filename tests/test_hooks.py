@@ -2275,6 +2275,34 @@ class TestLogicalSessionKey:
         ) == ""
         assert _logical_session_key({}) == ""
 
+    def test_invalid_utf8_transcript_never_escapes(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Fix round 1 blocker: invalid UTF-8 in the transcript raised
+        # UnicodeDecodeError (a ValueError, not OSError) out of the head
+        # read, unwinding through _ensure_session into the prompt/post
+        # handlers — no session note, failure banner on every prompt.
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        t = tmp_path / "transcript.jsonl"
+        t.write_bytes(
+            b'\xff\xfe{"type":"bridge-session","bridgeSessionId":"cse_X"}\n'
+        )
+        assert handler_mod._logical_session_key(
+            {"transcript_path": str(t)}
+        ) == ""
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+        handler_mod._ensure_session(cfg, "seg-uuid-bad", {
+            "session_id": "seg-uuid-bad",
+            "transcript_path": str(t),
+            "cwd": str(tmp_path),
+        })
+        vm = VaultManager(config=cfg)
+        assert handler_mod._find_session_note(vm, "seg-uuid-bad") is not None
+
     def test_ensure_session_stamps_logical_session(
         self, tmp_path: Path, monkeypatch
     ):

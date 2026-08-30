@@ -812,9 +812,12 @@ class TestSegmentChain:
         archived: bool = True,
         logical: str = "cse_chain1",
         mtime: float | None = None,
+        segments: list[str] | None = None,
     ) -> Path:
         """One segment: session folder (+ archived events.jsonl, or a live
-        buffer keyed by the segment UUID when ``archived=False``)."""
+        buffer keyed by the segment UUID when ``archived=False``).
+        ``logical=""`` omits the stamp (pre-#180 note shape); ``segments``
+        pre-seeds a durable chain record on the note."""
         import os
 
         d = (
@@ -822,11 +825,17 @@ class TestSegmentChain:
             / f"{seg_uuid}-2026-08-21"
         )
         d.mkdir(parents=True)
+        fm_lines = [
+            "---", "type: session", f"id: {ses_id}",
+            f"source_session: {seg_uuid}",
+        ]
+        if logical:
+            fm_lines.append(f"logical_session: {logical}")
+        if segments:
+            fm_lines.append(f"segments: [{', '.join(segments)}]")
+        fm_lines += ["project: t", "---", ""]
         (d / "session.md").write_text(
-            f"---\ntype: session\nid: {ses_id}\n"
-            f"source_session: {seg_uuid}\nlogical_session: {logical}\n"
-            "project: t\n---\n",
-            encoding="utf-8",
+            "\n".join(fm_lines), encoding="utf-8"
         )
         row = json.dumps({
             "ts": ts, "type": "prompt", "text": prompt_text,
@@ -981,3 +990,96 @@ class TestSegmentChain:
         assert files["seg1"].exists()
         assert files["seg2"].exists()
         assert result.orphans_pruned == 0
+
+    def test_segments_order_survives_verdict_append_to_earlier_segment(
+        self, config: Config, vault: VaultManager
+    ):
+        # Fix round 1 blocker: verdict events are appended BEFORE the
+        # segments: record is composed, bumping the labeled file's mtime to
+        # now — ordering must come from prompt timestamps, not mtime. Here
+        # the verdict matches seg1 (the OLDEST segment, the #180 motivating
+        # case), so an mtime ordering would sort it last.
+        verdicts = [
+            {"prompt": "no, the buffer dir is wrong", "register": "correction"},
+        ]
+        self._chain_fixture(config)
+        result = finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=verdicts,
+        )
+        assert result.segments == ["cc-seg1", "cc-seg2", "cc-seg3"]
+
+        # A correct record is a fixed point under re-wrap.
+        from thinkweave.core.vault import parse_frontmatter
+
+        rewrap = finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=verdicts,
+        )
+        assert rewrap.segments == ["cc-seg1", "cc-seg2", "cc-seg3"]
+        sm = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / "cc-seg3-2026-08-21" / "session.md"
+        )
+        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+        assert fm.get("segments") == ["cc-seg1", "cc-seg2", "cc-seg3"]
+
+    def test_segments_list_readmits_unstamped_sibling(
+        self, config: Config, vault: VaultManager
+    ):
+        # Fix round 1 minor 6b/6c: a mixed chain — seg1 admitted via the
+        # shared logical_session stamp, seg2 UNSTAMPED (pre-#180 note
+        # shape) and admitted only through the primary's durable
+        # ``segments:`` list.
+        f1 = self._segment(
+            config, "cc-seg1", "ses-seg1", "stamped segment prompt",
+            "2026-08-21T09:00:00+00:00",
+        )
+        f2 = self._segment(
+            config, "cc-seg2", "ses-seg2", "unstamped segment prompt",
+            "2026-08-21T10:00:00+00:00", logical="",
+        )
+        self._segment(
+            config, "cc-seg3", "ses-seg3", "final segment prompt",
+            "2026-08-21T11:00:00+00:00", segments=["cc-seg2"],
+        )
+        result = finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=[
+                {"prompt": "stamped segment", "register": "correction"},
+                {"prompt": "unstamped segment", "register": "confirmation"},
+            ],
+        )
+        assert result.verdicts_unmatched == 0
+        assert result.verdicts_written == 2
+        fb1 = [r for r in self._rows(f1) if r.get("type") == "feedback"]
+        fb2 = [r for r in self._rows(f2) if r.get("type") == "feedback"]
+        assert len(fb1) == 1 and len(fb2) == 1
+
+    def test_cross_segment_prefix_match_prefers_earliest_prompt(
+        self, config: Config, vault: VaultManager
+    ):
+        # Fix round 1 minor 4: a needle prefix-matching prompts in two
+        # segments must claim the chronologically FIRST prompt, not
+        # whichever segment file ranked higher / was written last.
+        f_late = self._segment(
+            config, "cc-seg2", "ses-seg2", "fix the resolver ranking too",
+            "2026-08-21T12:00:00+00:00", mtime=2_000_000_000,
+        )
+        f_early = self._segment(
+            config, "cc-seg1", "ses-seg1", "fix the resolver bug",
+            "2026-08-21T09:00:00+00:00", mtime=1_000_000_000,
+        )
+        result = finalize_wrap(
+            config, session_id="cc-seg2", project="t", prune=False,
+            verdicts=[{"prompt": "fix the resolver", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        fb_early = [
+            r for r in self._rows(f_early) if r.get("type") == "feedback"
+        ]
+        fb_late = [
+            r for r in self._rows(f_late) if r.get("type") == "feedback"
+        ]
+        assert len(fb_early) == 1
+        assert fb_late == []
