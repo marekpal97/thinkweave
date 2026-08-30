@@ -2221,3 +2221,79 @@ class TestFailureDiagnosticRateLimit:
 
         emitted = json.loads(capsys.readouterr().out or "{}")
         assert "not persisted" in emitted.get("systemMessage", "")
+
+
+class TestLogicalSessionKey:
+    """#180 — the cross-segment chain key.
+
+    claude.ai/code splits one logical session across several harness
+    session UUIDs (one per context compaction). The only durable link the
+    harness provides (#180 investigation, 2026-08-30) is the
+    ``bridge-session`` transcript row near the top of EVERY segment's
+    transcript: its ``bridgeSessionId`` (``cse_…``) is the cloud session id
+    all segments share. The hooks lift it into each segment note's
+    frontmatter as ``logical_session`` so the wrap verdict join can
+    resolve the chain.
+    """
+
+    def _transcript(self, tmp_path: Path, rows: list[dict]) -> Path:
+        f = tmp_path / "transcript.jsonl"
+        f.write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+        )
+        return f
+
+    def test_key_read_from_bridge_session_row(self, tmp_path: Path):
+        from thinkweave.surfaces.hooks.handler import _logical_session_key
+
+        t = self._transcript(tmp_path, [
+            {"type": "mode", "sessionId": "seg-1"},
+            {"type": "bridge-session", "sessionId": "seg-1",
+             "bridgeSessionId": "cse_ABC123"},
+        ])
+        assert (
+            _logical_session_key({"transcript_path": str(t)}) == "cse_ABC123"
+        )
+
+    def test_no_bridge_row_or_transcript_is_empty(self, tmp_path: Path):
+        # Interactive CLI sessions, Codex, and missing/garbled transcripts
+        # all degrade to "" — the stamp is best-effort, never blocking.
+        from thinkweave.surfaces.hooks.handler import _logical_session_key
+
+        t = self._transcript(
+            tmp_path, [{"type": "mode", "sessionId": "seg-1"}]
+        )
+        (tmp_path / "garbled.jsonl").write_text(
+            "not json\n", encoding="utf-8"
+        )
+        assert _logical_session_key({"transcript_path": str(t)}) == ""
+        assert _logical_session_key(
+            {"transcript_path": str(tmp_path / "missing.jsonl")}
+        ) == ""
+        assert _logical_session_key(
+            {"transcript_path": str(tmp_path / "garbled.jsonl")}
+        ) == ""
+        assert _logical_session_key({}) == ""
+
+    def test_ensure_session_stamps_logical_session(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+        t = self._transcript(tmp_path, [
+            {"type": "bridge-session", "sessionId": "seg-uuid-1",
+             "bridgeSessionId": "cse_stamp1"},
+        ])
+        handler_mod._ensure_session(cfg, "seg-uuid-1", {
+            "session_id": "seg-uuid-1",
+            "transcript_path": str(t),
+            "cwd": str(tmp_path),
+        })
+        vm = VaultManager(config=cfg)
+        path = handler_mod._find_session_note(vm, "seg-uuid-1")
+        assert path is not None
+        note = vm.read_note(path)
+        assert note.frontmatter["logical_session"] == "cse_stamp1"

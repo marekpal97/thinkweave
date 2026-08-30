@@ -513,6 +513,38 @@ def _find_session_note(vm, session_id: str) -> Path | None:
     return None
 
 
+def _logical_session_key(hook_input: dict) -> str:
+    """The stable cross-segment session key, when the harness provides one.
+
+    claude.ai/code splits one logical session across several harness
+    session UUIDs — each context compaction starts a new segment with its
+    own ``session_id``. The only durable link between segments (#180
+    investigation, 2026-08-30) is the ``bridge-session`` row every
+    segment's transcript carries within its first few lines: its
+    ``bridgeSessionId`` (``cse_…``) is the cloud session id all segments
+    share. Bounded head-read; "" when absent (interactive CLI sessions,
+    Codex, missing transcript) — the stamp is best-effort by design.
+    """
+    path = hook_input.get("transcript_path", "")
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for _ in range(40):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and row.get("type") == "bridge-session":
+                    return str(row.get("bridgeSessionId") or "")
+    except OSError:
+        return ""
+    return ""
+
+
 def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     """Create session note on first event, index it once for MCP discoverability."""
     if not session_id:
@@ -528,11 +560,17 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
         return
 
     project = _detect_project(hook_input)
+    extra_fm: dict = {"source_session": session_id}
+    # #180: stamp the compaction-segment chain key so the wrap verdict
+    # join can resolve sibling segments of the same logical session.
+    logical = _logical_session_key(hook_input)
+    if logical:
+        extra_fm["logical_session"] = logical
     session_path = vm.create_note(
         NoteType.SESSION,
         f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         project=project,
-        extra_frontmatter={"source_session": session_id},
+        extra_frontmatter=extra_fm,
     )
 
     # Index once so MCP tools (weave_search) can find this session mid-conversation
