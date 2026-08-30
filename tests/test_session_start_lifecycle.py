@@ -555,6 +555,59 @@ class TestReplayGuard:
             "served_full", "served_delta", "skipped_replay",
         ]
 
+    def test_compact_replay_after_archival_is_still_skipped(
+        self, env, outputs, tmp_path: Path
+    ):
+        # The activity watermark must survive archival: archive_buffer
+        # unlinks the live buffer, and a watermark recomputed as 0 would
+        # miss the receipt (which DID survive, inside retrieval_log.jsonl)
+        # and re-serve — falsifying "identical redelivery injects nothing".
+        # The archived activity lives in events.jsonl + the retrieval lines
+        # of retrieval_log.jsonl; folding those in keeps the pre- and
+        # post-archival watermarks equal.
+        from thinkweave.core.buffer import archive_buffer
+        from thinkweave.surfaces.hooks import handler as h
+
+        base = {"session_id": "uuid-arch2", "cwd": str(tmp_path)}
+        h._handle_session_start(dict(base, source="startup"))
+        h._buffer_event(
+            env.weave_dir,
+            "uuid-arch2",
+            {"ts": "t", "tool": "Edit", "file": "a.py"},
+        )
+        h._handle_session_start(dict(base, source="compact"))
+        assert "notes already in context" in outputs[-1]["additional_context"]
+
+        sessions = env.vault_root / "projects" / "t" / "sessions"
+        folder = sessions / "uuid-arch2-2026-08-30"
+        folder.mkdir(parents=True)
+        (folder / "session.md").write_text(
+            "---\n"
+            "id: ses-arch00002\n"
+            "type: session\n"
+            "project: t\n"
+            "date: '2026-08-30'\n"
+            "source_session: uuid-arch2\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        archive_buffer(env.weave_dir, "uuid-arch2", folder)
+        assert not (env.weave_dir / "buffer" / "uuid-arch2.jsonl").exists()
+
+        # Byte-duplicate redelivery of the same compact event, post-archival.
+        h._handle_session_start(dict(base, source="compact"))
+        assert outputs[-1]["additional_context"] == ""
+        events = _buffer_events(env, "uuid-arch2")
+        assert [e["disposition"] for e in events] == ["skipped_replay"]
+
+        # And the watermark stays stable once the skip event itself sits in
+        # the fresh live buffer: a further redelivery still skips, without
+        # a second skip line.
+        h._handle_session_start(dict(base, source="compact"))
+        assert outputs[-1]["additional_context"] == ""
+        events = _buffer_events(env, "uuid-arch2")
+        assert [e["disposition"] for e in events] == ["skipped_replay"]
+
     def test_repeated_replays_write_one_skip_event(
         self, env, outputs, tmp_path: Path
     ):
@@ -591,7 +644,7 @@ class TestCallShape:
         monkeypatch.setattr(
             h,
             "_chain_serve_state",
-            lambda *a, **kw: calls.append(a) or ("", set(), set()),
+            lambda *a, **kw: calls.append(a) or ("", set(), set(), None),
         )
         h._handle_session_start({
             "session_id": f"uuid-cs-{source}",

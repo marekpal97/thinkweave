@@ -576,9 +576,12 @@ def _logical_session_key(hook_input: dict) -> str:
 # session's segments are recent by construction; anything older is invisible
 # to serve-dedup, which fails toward over-serving (the cheap failure).
 _CHAIN_SCAN_RECENT = 40
-# Post-archival own-folder lookup budget for startup/clear replay checks —
-# a just-archived session's folder is among the newest few by name.
-_OWN_SCAN_RECENT = 15
+# Post-archival own-folder lookup budget — a just-archived session's folder
+# is among the newest few by trailing date, but the SAME-DAY tiebreak is a
+# random uuid: the production vault (measured, review round 3) has 11 days
+# exceeding 15 folders, peak 30, with 14.3% of folders ranking beyond 15
+# within their date. Budget sits above the observed peak.
+_OWN_SCAN_RECENT = 48
 
 
 def _read_session_fm(session_md: Path) -> dict | None:
@@ -677,11 +680,14 @@ def _read_serve_streams(
 
 def _chain_serve_state(
     cfg, session_id: str, project: str, hook_input: dict
-) -> tuple[str, set[str], set[str]]:
+) -> tuple[str, set[str], set[str], Path | None]:
     """What the logical-session chain has already been served (#175).
 
-    Returns ``(chain_root_note_id, served_note_ids, prior_delivery_ids)``,
-    read from each chain member's retrieval streams — its archived
+    Returns ``(chain_root_note_id, served_note_ids, prior_delivery_ids,
+    own_dir)`` — the last being THIS session's own archived folder when the
+    scan saw one, handed back so the activity watermark can read it without
+    a second folder walk (the read-count bound is pinned by tests). Serve
+    state comes from each chain member's retrieval streams — its archived
     ``retrieval_log.jsonl`` plus any live buffer. Called on resume/compact
     ONLY; startup/clear use :func:`_own_serve_state` and never resolve the
     chain (call shape pinned by tests — the full scan was a 4.9s hook).
@@ -727,10 +733,13 @@ def _chain_serve_state(
     delivery_ids: set[str] = set()
     root = ""
     root_rank: tuple | None = None
+    own_dir: Path | None = None
     for d, fm in scanned:
         if fm is None:
             continue
         is_primary = primary(d, fm)
+        if is_primary and own_dir is None:
+            own_dir = d
         in_chain = str(fm.get("logical_session") or "") in keys
         if (
             in_chain
@@ -772,38 +781,49 @@ def _chain_serve_state(
         s_ids, d_ids, _ = _read_serve_streams([live])
         served |= s_ids
         delivery_ids |= d_ids
-    return root, served, delivery_ids
+    return root, served, delivery_ids, own_dir
 
 
-def _own_serve_state(cfg, session_id: str, project: str) -> tuple[set[str], set[str]]:
-    """(served_ids, delivery_ids) from THIS session's own streams only.
+def _own_session_dir(cfg, session_id: str, project: str) -> Path | None:
+    """This session's archived folder among the newest ``_OWN_SCAN_RECENT``.
 
-    The startup/clear replay check: the live buffer when it exists, else
-    (post-archival replay) this session's folder among the newest
-    ``_OWN_SCAN_RECENT`` — a just-archived folder is recent by name. Never
-    resolves the chain; a fresh session pays at most the bounded lookup.
+    A just-archived folder is recent by trailing date; None when nothing
+    within the budget matches this session's identity.
     """
-    live = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
-    if live.exists():
-        served, delivery_ids, _ = _read_serve_streams([live])
-        return served, delivery_ids
     if not project:
-        return set(), set()
+        return None
     sessions_dir = cfg.vault_root / "projects" / project / "sessions"
     for d in _recent_session_dirs(sessions_dir, _OWN_SCAN_RECENT):
         fm = _read_session_fm(d / "session.md")
         if fm is None:
             continue
         if fm.get("source_session") == session_id or fm.get("id") == session_id:
-            served, delivery_ids, _ = _read_serve_streams(
-                [d / "retrieval_log.jsonl"]
-            )
-            return served, delivery_ids
+            return d
+    return None
+
+
+def _own_serve_state(cfg, session_id: str, project: str) -> tuple[set[str], set[str]]:
+    """(served_ids, delivery_ids) from THIS session's own streams only.
+
+    The startup/clear replay check: the live buffer when it exists, else
+    (post-archival replay) this session's own folder. Never resolves the
+    chain; a fresh session pays at most the bounded lookup.
+    """
+    live = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
+    if live.exists():
+        served, delivery_ids, _ = _read_serve_streams([live])
+        return served, delivery_ids
+    d = _own_session_dir(cfg, session_id, project)
+    if d is not None:
+        served, delivery_ids, _ = _read_serve_streams(
+            [d / "retrieval_log.jsonl"]
+        )
+        return served, delivery_ids
     return set(), set()
 
 
-def _activity_count(weave_dir: Path, session_id: str) -> int:
-    """Non-startup event lines in the session's live buffer.
+def _activity_count(cfg, session_id: str, own_dir: Path | None) -> int:
+    """Non-startup event lines across the session's live AND archived streams.
 
     The delivery-distinguishing component of a resume/compact replay
     identity (#175 review round 2): notes are only minted at wrap time, so
@@ -813,23 +833,41 @@ def _activity_count(weave_dir: Path, session_id: str) -> int:
     nothing buffered in between. Counting our own startup-type events here
     would defeat the guard: each serve would bump its own successor's
     identity. Malformed lines count — they belong to the action stream.
+
+    ``own_dir`` — this session's archived folder, handed down from the
+    chain scan so no second folder walk is needed — counts too (round 3):
+    ``archive_buffer`` unlinks the live buffer, and a watermark that
+    dropped to 0 would miss the receipt that survived into
+    ``retrieval_log.jsonl`` and re-serve. For pre/post-archival parity the
+    archived activity is exactly what the live count would have been —
+    every ``events.jsonl`` line plus the retrieval-type lines of
+    ``retrieval_log.jsonl`` (the two files are the buffer's partition;
+    startup lines stay excluded on both sides). Live and archived never
+    hold the same line, so summing cannot double-count.
     """
-    buf = weave_dir / "buffer" / f"{session_id}.jsonl"
-    try:
-        text = buf.read_text(encoding="utf-8")
-    except OSError:
-        return 0
-    n = 0
-    for line in text.splitlines():
-        if not line.strip():
-            continue
+
+    def non_startup_lines(path: Path) -> int:
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            n += 1
-            continue
-        if not (isinstance(event, dict) and event.get("type") == "startup"):
-            n += 1
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return 0
+        n = 0
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                n += 1
+                continue
+            if not (isinstance(event, dict) and event.get("type") == "startup"):
+                n += 1
+        return n
+
+    n = non_startup_lines(cfg.weave_dir / "buffer" / f"{session_id}.jsonl")
+    if own_dir is not None:
+        n += non_startup_lines(own_dir / "events.jsonl")
+        n += non_startup_lines(own_dir / "retrieval_log.jsonl")
     return n
 
 
@@ -1738,12 +1776,16 @@ def _handle_session_start(hook_input: dict) -> None:
         chain_root = ""
         prior_ids: set[str] = set()
         prior_deliveries: set[str] = set()
+        own_dir: Path | None = None
         if session_id:
             try:
                 if lifecycle in ("resume", "compact"):
-                    chain_root, prior_ids, prior_deliveries = _chain_serve_state(
-                        cfg, session_id, project, hook_input
-                    )
+                    (
+                        chain_root,
+                        prior_ids,
+                        prior_deliveries,
+                        own_dir,
+                    ) = _chain_serve_state(cfg, session_id, project, hook_input)
                 else:
                     # startup/clear consume only the replay receipts, and
                     # only this session's own — never the chain scan (#175
@@ -1809,7 +1851,7 @@ def _handle_session_start(hook_input: dict) -> None:
                 # retrieval_log.jsonl); _buffer_event's O_EXCL receipt
                 # catches two live registrations racing.
                 watermark = (
-                    f"{_activity_count(cfg.weave_dir, session_id)}:"
+                    f"{_activity_count(cfg, session_id, own_dir)}:"
                     if lifecycle in ("resume", "compact")
                     else ""
                 )
