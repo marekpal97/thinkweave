@@ -780,3 +780,204 @@ class TestProbeReachesIndex:
             "SELECT classification FROM prompts WHERE session_id = ?", (sess_id,)
         ).fetchall()
         assert rows == [("probe",)]
+
+
+class TestSegmentChain:
+    """#180 — one logical session split across compaction segments.
+
+    A long-running session spans multiple harness session UUIDs (one per
+    context compaction). Each segment buffers its prompts under its own id;
+    the live wrap runs in the FINAL segment. The chain link is the
+    ``logical_session`` key the hooks stamp on every segment's session note
+    (from the transcript's ``bridgeSessionId``). The verdict join must match
+    across the whole chain — the 2026-08-21 shape was 5/5 grounded verdicts
+    unmatched because resolution stopped at one events file.
+    """
+
+    def _rows(self, f: Path) -> list[dict]:
+        return [
+            json.loads(ln)
+            for ln in f.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+
+    def _segment(
+        self,
+        config: Config,
+        seg_uuid: str,
+        ses_id: str,
+        prompt_text: str,
+        ts: str,
+        *,
+        archived: bool = True,
+        logical: str = "cse_chain1",
+        mtime: float | None = None,
+    ) -> Path:
+        """One segment: session folder (+ archived events.jsonl, or a live
+        buffer keyed by the segment UUID when ``archived=False``)."""
+        import os
+
+        d = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / f"{seg_uuid}-2026-08-21"
+        )
+        d.mkdir(parents=True)
+        (d / "session.md").write_text(
+            f"---\ntype: session\nid: {ses_id}\n"
+            f"source_session: {seg_uuid}\nlogical_session: {logical}\n"
+            "project: t\n---\n",
+            encoding="utf-8",
+        )
+        row = json.dumps({
+            "ts": ts, "type": "prompt", "text": prompt_text,
+            "session_id": seg_uuid,
+        })
+        if archived:
+            f = d / "events.jsonl"
+        else:
+            buf_dir = config.weave_dir / "buffer"
+            buf_dir.mkdir(parents=True, exist_ok=True)
+            f = buf_dir / f"{seg_uuid}.jsonl"
+        f.write_text(row + "\n", encoding="utf-8")
+        if mtime is not None:
+            os.utime(f, (mtime, mtime))
+        return f
+
+    def _chain_fixture(self, config: Config) -> dict[str, Path]:
+        """The 2026-08-21 regression shape: prompts spread across three
+        segment files (two archives + the final segment's live buffer);
+        verdicts composed against prompts from the EARLIER segments."""
+        return {
+            "seg1": self._segment(
+                config, "cc-seg1", "ses-seg1",
+                "no, the buffer dir is wrong — use weave_dir",
+                "2026-08-21T09:00:00+00:00", mtime=1_000_000_100,
+            ),
+            "seg2": self._segment(
+                config, "cc-seg2", "ses-seg2",
+                "how does the verdict join resolve events?",
+                "2026-08-21T12:00:00+00:00", mtime=1_000_000_200,
+            ),
+            "seg3": self._segment(
+                config, "cc-seg3", "ses-seg3",
+                "looks good, wrap it up",
+                "2026-08-21T15:00:00+00:00", archived=False,
+            ),
+        }
+
+    def test_verdicts_match_across_segment_chain(
+        self, config: Config, vault: VaultManager
+    ):
+        # THE #180 acceptance criterion: a session spanning >=2 compaction
+        # segments wraps with every grounded verdict matched.
+        files = self._chain_fixture(config)
+        result = finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=[
+                {"prompt": "no, the buffer dir is wrong",
+                 "register": "correction"},
+                {"prompt": "how does the verdict join", "register": "probe"},
+                {"prompt": "looks good", "register": "confirmation"},
+            ],
+        )
+        assert result.verdicts_unmatched == 0
+        assert result.verdicts_written == 3
+        assert result.errors == []
+        # Each event lands in the file that holds its prompt — downstream
+        # per-file joins (probe classification, reprojection) stay local.
+        fb1 = [r for r in self._rows(files["seg1"])
+               if r.get("type") == "feedback"]
+        assert len(fb1) == 1 and fb1[0]["register"] == "correction"
+        assert fb1[0]["session_id"] == "cc-seg1"
+        pr2 = [r for r in self._rows(files["seg2"]) if r.get("type") == "probe"]
+        assert len(pr2) == 1
+        fb3 = [r for r in self._rows(files["seg3"])
+               if r.get("type") == "feedback"]
+        assert len(fb3) == 1 and fb3[0]["register"] == "confirmation"
+
+    def test_chain_rewrap_is_idempotent(
+        self, config: Config, vault: VaultManager
+    ):
+        files = self._chain_fixture(config)
+        verdicts = [
+            {"prompt": "no, the buffer dir is wrong", "register": "correction"},
+            {"prompt": "looks good", "register": "confirmation"},
+        ]
+        finalize_wrap(config, session_id="cc-seg3", project="t", prune=False,
+                      verdicts=verdicts)
+        rewrap = finalize_wrap(config, session_id="cc-seg3", project="t",
+                               prune=False, verdicts=verdicts)
+        assert rewrap.verdicts_written == 0
+        assert rewrap.verdicts_skipped == 2
+        fb1 = [r for r in self._rows(files["seg1"])
+               if r.get("type") == "feedback"]
+        assert len(fb1) == 1
+
+    def test_foreign_logical_session_is_not_admitted(
+        self, config: Config, vault: VaultManager
+    ):
+        # A concurrent session in the same project with a DIFFERENT
+        # logical_session must not leak its prompts into this wrap's join.
+        self._segment(
+            config, "cc-seg1", "ses-seg1", "chain prompt",
+            "2026-08-21T09:00:00+00:00",
+        )
+        other = self._segment(
+            config, "cc-other", "ses-other", "foreign prompt",
+            "2026-08-21T09:30:00+00:00", logical="cse_other",
+        )
+        result = finalize_wrap(
+            config, session_id="cc-seg1", project="t", prune=False,
+            verdicts=[
+                {"prompt": "chain prompt", "register": "confirmation"},
+                {"prompt": "foreign prompt", "register": "correction"},
+            ],
+        )
+        assert result.verdicts_written == 1
+        assert result.verdicts_unmatched == 1
+        assert [r for r in self._rows(other) if r.get("type") == "feedback"] \
+            == []
+
+    def test_segments_recorded_on_wrapped_session_note(
+        self, config: Config, vault: VaultManager
+    ):
+        # The durable chain record (#183: same parent key the task-trace
+        # epic needs): the wrapped session note gains segments: [uuid, ...].
+        from thinkweave.core.vault import parse_frontmatter
+
+        self._chain_fixture(config)
+        finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=[{"prompt": "looks good", "register": "confirmation"}],
+        )
+        sm = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / "cc-seg3-2026-08-21" / "session.md"
+        )
+        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+        assert fm.get("segments") == ["cc-seg1", "cc-seg2", "cc-seg3"]
+
+    def test_prune_spares_chain_segment_folders(
+        self, config: Config, vault: VaultManager
+    ):
+        # Earlier segments look like orphans (stub note, tiny events, old)
+        # — the wrap that just landed verdicts in them must not GC them.
+        import os
+
+        files = self._chain_fixture(config)
+        for f in files.values():
+            folder = f.parent
+            if folder.name == "buffer":
+                continue
+            old = 1_000_000_000
+            os.utime(folder / "session.md", (old, old))
+        result = finalize_wrap(
+            config, session_id="cc-seg3", project="t",
+            verdicts=[
+                {"prompt": "no, the buffer dir is wrong",
+                 "register": "correction"},
+            ],
+        )
+        assert files["seg1"].exists()
+        assert files["seg2"].exists()
+        assert result.orphans_pruned == 0

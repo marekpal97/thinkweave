@@ -47,6 +47,9 @@ class WrapFinalizeResult:
     verdicts_skipped: int = 0
     verdicts_unmatched: int = 0
     prompts_reprojected: int = 0
+    # Compaction-segment chain (#180): the harness session UUIDs this wrap
+    # spanned, chronological. Empty for single-segment sessions.
+    segments: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     # Benign anomalies worth surfacing without flipping the exit code
     # (e.g. two verdicts resolving to one prompt).
@@ -72,6 +75,7 @@ class WrapFinalizeResult:
             "verdicts_written": self.verdicts_written,
             "verdicts_skipped": self.verdicts_skipped,
             "verdicts_unmatched": self.verdicts_unmatched,
+            "segments": self.segments,
             "errors": self.errors,
             "warnings": self.warnings,
             "timings": self.timings,
@@ -88,25 +92,36 @@ class WrapFinalizeResult:
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
 
-def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | None:
-    """Locate the session's event stream without creating anything.
+def _resolve_session_chain(
+    cfg: Config, session_id: str, project: str
+) -> list[tuple[Path, Path | None]]:
+    """Locate the logical session's event streams without creating anything.
 
-    Primary: the archived ``events.jsonl`` of a session folder matched by
-    either of the session's identities — the id passed in and, for a
-    ses- id, its ``source_session`` UUID (#181: a forced re-extract
-    splits one session across sibling folders, and the folder holding
-    the prompts claims only the UUID). Folders whose events actually
-    contain prompt rows outrank promptless siblings — the recreated
-    buffer archived into a force-minted folder holds only post-archive
-    rows; within a class the most recently written file wins, folder
-    name breaking exact mtime ties. The prompt gate is the primary
-    discriminator on purpose: mtime is not durable across clone/restore.
+    Returns ``[(events_file, session_folder-or-None), ...]``, best-ranked
+    first: the head is the PRIMARY stream (#181's single-file resolution)
+    and the tail is the rest of the compaction-segment chain (#180 — a
+    long-running session spans several harness session UUIDs, one per
+    context compaction, each buffering its prompts under its own id).
 
-    Last resort: the live buffer — keyed by the source UUID, so a ses- id
-    also probes via its ``source_session``. Hooks recreate the buffer the
-    moment any event fires after ``archive_buffer`` ran, so a buffer
-    alongside an archive is post-archive noise; it is the events file
-    only when no archive exists (archive failed, or never ran).
+    Membership. Primary candidates match the session's identities — the id
+    passed in and, for a ses- id, its ``source_session`` UUID (#181: a
+    forced re-extract splits one session across sibling folders). The chain
+    then admits sibling folders that share a primary candidate's
+    ``logical_session`` (the cross-segment key hooks stamp from the
+    transcript's ``bridgeSessionId``) or whose ``source_session`` appears
+    in a primary's ``segments:`` list (the durable record a previous wrap
+    wrote).
+
+    Ranking (#181, unchanged within a class): id-matched folders outrank
+    chain-admitted ones; folders whose events actually contain prompt rows
+    outrank promptless siblings; then the most recently written file wins,
+    folder name breaking exact mtime ties. A member folder without an
+    archived ``events.jsonl`` reads its live buffer keyed by its
+    ``source_session`` — a buffer ALONGSIDE an archive stays post-archive
+    noise (#181), never a chain member.
+
+    Last resort (no folder yielded a file): the live buffer keyed by
+    ``session_id``, then by the source UUID.
     """
     from thinkweave.core.events import extract_prompts
 
@@ -114,71 +129,147 @@ def _resolve_events_file(cfg: Config, session_id: str, project: str) -> Path | N
     src = _source_session_of(cfg, session_id) if session_id.startswith("ses-") else ""
     if src:
         ids.add(src)
+    ranked: list[tuple[tuple, Path, Path]] = []
     if project:
         sessions_dir = cfg.vault_root / "projects" / project / "sessions"
         if sessions_dir.exists():
             from thinkweave.core.vault import parse_frontmatter
 
-            best: tuple[tuple[bool, float, str], Path] | None = None
+            folders: list[tuple[Path, dict | None]] = []
             for d in sessions_dir.iterdir():
                 if not d.is_dir() or d.name == "misc":
                     continue
-                if not any(d.name.startswith(i) for i in ids):
-                    sm = d / "session.md"
-                    if not sm.exists():
-                        continue
+                fm: dict | None = None
+                sm = d / "session.md"
+                if sm.exists():
                     try:
                         fm, _ = parse_frontmatter(
                             sm.read_text(encoding="utf-8")
                         )
                     except Exception:  # noqa: BLE001
-                        continue
-                    if (
-                        fm.get("source_session") not in ids
-                        and fm.get("id") not in ids
-                    ):
-                        continue
-                events_file = d / "events.jsonl"
-                if not events_file.exists():
+                        fm = None
+                folders.append((d, fm))
+
+            def id_matched(d: Path, fm: dict | None) -> bool:
+                if any(d.name.startswith(i) for i in ids):
+                    return True
+                return fm is not None and (
+                    fm.get("source_session") in ids or fm.get("id") in ids
+                )
+
+            keys: set[str] = set()
+            segment_ids: set[str] = set()
+            for d, fm in folders:
+                if fm is None or not id_matched(d, fm):
+                    continue
+                key = str(fm.get("logical_session") or "")
+                if key:
+                    keys.add(key)
+                segment_ids.update(
+                    str(s) for s in fm.get("segments") or [] if s
+                )
+
+            for d, fm in folders:
+                primary = id_matched(d, fm)
+                in_chain = fm is not None and (
+                    str(fm.get("logical_session") or "") in keys
+                    or str(fm.get("source_session") or "") in segment_ids
+                )
+                if not primary and not in_chain:
+                    continue
+                ev = d / "events.jsonl"
+                if not ev.exists() and fm is not None:
+                    sid = str(fm.get("source_session") or "")
+                    if sid:
+                        ev = cfg.weave_dir / "buffer" / f"{sid}.jsonl"
+                if not ev.exists():
                     continue
                 rank = (
-                    bool(extract_prompts(events_file)),
-                    events_file.stat().st_mtime,
+                    primary,
+                    bool(extract_prompts(ev)),
+                    ev.stat().st_mtime,
                     d.name,
                 )
-                if best is None or rank > best[0]:
-                    best = (rank, events_file)
-            if best:
-                return best[1]
+                ranked.append((rank, ev, d))
+    ranked.sort(key=lambda t: t[0], reverse=True)
+    out: list[tuple[Path, Path | None]] = []
+    seen: set[Path] = set()
+    for _rank, ev, d in ranked:
+        if ev not in seen:
+            seen.add(ev)
+            out.append((ev, d))
+    if out:
+        return out
     buf = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if buf.exists():
-        return buf
+        return [(buf, None)]
     if src:
         src_buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
         if src_buf.exists():
-            return src_buf
-    return None
+            return [(src_buf, None)]
+    return []
 
 
-def _session_note_id(cfg: Config, session_id: str, project: str) -> str:
-    """Map a wrap's session id (Claude UUID or ``ses-…``) to the note id
-    of the folder the events actually resolved to — that's where verdicts
-    landed, so that's the note whose prompts need reprojection (#181: for
-    a force-minted ses- id this can be the SIBLING note owning the
-    source-UUID folder). Falls back to the input unchanged."""
-    events = _resolve_events_file(cfg, session_id, project)
-    if events is None:
-        return session_id
-    sm = events.parent / "session.md"
-    if not sm.exists():
-        return session_id
+def _chain_note_ids(cfg: Config, session_id: str, project: str) -> list[str]:
+    """Note ids of every chain folder, primary first — the notes whose
+    prompts need reprojection after verdicts land (#181: for a force-minted
+    ses- id the primary can be the SIBLING note owning the source-UUID
+    folder; #180: verdicts land across the whole segment chain). Falls back
+    to the input id unchanged when nothing resolves."""
     from thinkweave.core.vault import parse_frontmatter
 
-    try:
-        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return session_id
-    return str(fm.get("id") or session_id)
+    out: list[str] = []
+    for _ev, d in _resolve_session_chain(cfg, session_id, project):
+        sm = d / "session.md" if d is not None else None
+        if sm is None or not sm.exists():
+            continue
+        try:
+            fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        nid = str(fm.get("id") or "")
+        if nid and nid not in out:
+            out.append(nid)
+    return out or [session_id]
+
+
+def _record_segments(
+    cfg: Config, session_id: str, project: str, result: WrapFinalizeResult
+) -> None:
+    """Durable chain record (#180): once a wrap sees more than one segment,
+    the primary session note gains ``segments: [uuid, ...]`` in
+    chronological (events mtime) order. Markdown-truth for later consumers
+    — the task-trace epic (#184) keys subagent attribution on the same
+    list — and honoured by the resolver, so the chain survives re-wraps
+    even if a segment's ``logical_session`` stamp is lost."""
+    chain = _resolve_session_chain(cfg, session_id, project)
+    if len(chain) < 2:
+        return
+    primary = chain[0][1]
+    if primary is None or not (primary / "session.md").exists():
+        return
+    from thinkweave.core.vault import VaultManager, parse_frontmatter
+
+    stamped: list[tuple[float, str]] = []
+    for ev, d in chain:
+        sid = ""
+        sm = d / "session.md" if d is not None else None
+        if sm is not None and sm.exists():
+            try:
+                fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+                sid = str(fm.get("source_session") or "")
+            except Exception:  # noqa: BLE001
+                sid = ""
+        stamped.append((ev.stat().st_mtime, sid or ev.stem))
+    stamped.sort()
+    ordered: list[str] = []
+    for _mtime, sid in stamped:
+        if sid not in ordered:
+            ordered.append(sid)
+    VaultManager(config=cfg).update_note(
+        primary / "session.md", frontmatter_updates={"segments": ordered}
+    )
+    result.segments = ordered
 
 
 def _source_session_of(cfg: Config, session_note_id: str) -> str:
@@ -240,37 +331,46 @@ def _append_verdict_events(
     """
     from thinkweave.core.events import Prompt, extract_prompts, feedback_events
 
-    events_file = _resolve_events_file(cfg, session_id, project)
-    if events_file is None:
+    chain = _resolve_session_chain(cfg, session_id, project)
+    if not chain:
         result.verdicts_unmatched = len(verdicts)
         result.errors.append(
             f"verdicts: no events file found for session {session_id}"
         )
         return
 
-    prompts = extract_prompts(events_file)
+    # #180: prompts from EVERY segment of the logical session join the
+    # match pool; each verdict event is appended to the file that holds its
+    # prompt, so per-file consumers (probe classification in
+    # ``extract_prompts``, reprojection) keep working unchanged.
+    prompts: list[tuple[Prompt, Path]] = []
     # Two sets with different roles (#181 review): ``preexisting`` holds
-    # labels read from the file — a verdict whose candidate already carries
-    # the register from a PREVIOUS wrap is a re-wrap duplicate and is
-    # skipped outright (falling through would label a prompt the user never
-    # judged). ``batch`` holds the prompts labeled in THIS call — keyed by
-    # (timestamp, channel), where the channel folds correction/confirmation
-    # into ``feedback`` and keeps ``probe`` separate (§C5: one prompt takes
-    # ONE feedback label per wrap, but a probe label is orthogonal and may
-    # ride the same prompt) — and drives the fall-through so repeated
-    # same-prefix verdicts in one batch distribute over distinct prompts.
-    preexisting = {
-        (r.get("ts", ""), r.get("register", ""))
-        for r in feedback_events(events_file)
-    }
-    preexisting.update(
-        (p.ts.isoformat(), "probe")
-        for p in prompts
-        if p.classification == "probe"
-    )
-    batch: set[tuple[str, str]] = set()
+    # labels read from the files — a verdict whose candidate already
+    # carries the register from a PREVIOUS wrap is a re-wrap duplicate and
+    # is skipped outright (falling through would label a prompt the user
+    # never judged). ``batch`` holds the prompts labeled in THIS call —
+    # keyed by (segment, timestamp, channel), where the channel folds
+    # correction/confirmation into ``feedback`` and keeps ``probe``
+    # separate (§C5: one prompt takes ONE feedback label per wrap, but a
+    # probe label is orthogonal and may ride the same prompt) — and drives
+    # the fall-through so repeated same-prefix verdicts in one batch
+    # distribute over distinct prompts.
+    preexisting: set[tuple[str, str, str]] = set()
+    for events_file, _folder in chain:
+        file_prompts = extract_prompts(events_file)
+        prompts.extend((p, events_file) for p in file_prompts)
+        preexisting.update(
+            (r.get("session_id", ""), r.get("ts", ""), r.get("register", ""))
+            for r in feedback_events(events_file)
+        )
+        preexisting.update(
+            (p.session_id, p.ts.isoformat(), "probe")
+            for p in file_prompts
+            if p.classification == "probe"
+        )
+    batch: set[tuple[str, str, str]] = set()
 
-    lines: list[str] = []
+    lines: dict[Path, list[str]] = {}
     # Longest needle first (#181 review): the most specific verdict claims
     # its prompt before a broader prefix can take it — in-batch assignment
     # stops depending on the wrap LLM's verdict order.
@@ -288,7 +388,9 @@ def _append_verdict_events(
             continue
         channel = "probe" if register == "probe" else "feedback"
         matched = [
-            p for p in prompts if p.text.strip().lower().startswith(needle)
+            (p, f)
+            for p, f in prompts
+            if p.text.strip().lower().startswith(needle)
         ]
         if not matched:
             result.verdicts_unmatched += 1
@@ -302,26 +404,26 @@ def _append_verdict_events(
         # needle may BE a later prompt verbatim), so repeated verdicts on
         # DISTINCT same-prefix prompts distribute (identical-text repeats
         # collapsed above count as skipped).
-        first_by_text: dict[tuple[str, str], Prompt] = {}
-        for p in matched:
-            first_by_text.setdefault((p.session_id, p.text), p)
+        first_by_text: dict[tuple[str, str], tuple[Prompt, Path]] = {}
+        for p, f in matched:
+            first_by_text.setdefault((p.session_id, p.text), (p, f))
         if any(
-            (c.ts.isoformat(), register) in preexisting
-            for c in first_by_text.values()
+            (c.session_id, c.ts.isoformat(), register) in preexisting
+            for c, _f in first_by_text.values()
         ):
             result.verdicts_skipped += 1
             continue
         candidates = sorted(
             first_by_text.values(),
-            key=lambda c: c.text.strip().lower() != needle,
+            key=lambda cf: cf[0].text.strip().lower() != needle,
         )
-        p = next(
+        p, target = next(
             (
-                c
-                for c in candidates
-                if (c.ts.isoformat(), channel) not in batch
+                (c, f)
+                for c, f in candidates
+                if (c.session_id, c.ts.isoformat(), channel) not in batch
             ),
-            None,
+            (None, None),
         )
         if p is None:
             # Every candidate was taken by this batch — the label is
@@ -335,7 +437,7 @@ def _append_verdict_events(
             )
             continue
         ts_iso = p.ts.isoformat()
-        batch.add((ts_iso, channel))
+        batch.add((p.session_id, ts_iso, channel))
         event = {
             "ts": ts_iso,
             "type": channel,
@@ -346,12 +448,14 @@ def _append_verdict_events(
             event["register"] = register
         if about:
             event["about"] = about[:300]
-        lines.append(json.dumps(event, ensure_ascii=False))
+        lines.setdefault(target, []).append(
+            json.dumps(event, ensure_ascii=False)
+        )
 
-    if lines:
+    for events_file, file_lines in lines.items():
         with events_file.open("a", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + "\n")
-        result.verdicts_written += len(lines)
+            fh.write("\n".join(file_lines) + "\n")
+        result.verdicts_written += len(file_lines)
 
 
 def finalize_wrap(
@@ -392,6 +496,11 @@ def finalize_wrap(
         _t = time.perf_counter()
         try:
             _append_verdict_events(cfg, session_id, project, verdicts, result)
+            # ponytail: the segments: record only lands on verdict-bearing
+            # wraps — a verdict-less multi-segment wrap leaves no durable
+            # chain. Upgrade path: hoist _record_segments out of this
+            # branch once a verdict-less consumer (task-trace) needs it.
+            _record_segments(cfg, session_id, project, result)
         except Exception as e:  # noqa: BLE001 — best-effort labeler
             result.errors.append(f"verdicts: {e}")
         finally:
@@ -403,21 +512,22 @@ def finalize_wrap(
         try:
             from thinkweave.operations.prune import find_orphans, prune_orphans
 
-            # #181: also shield the folder events resolved to — verdicts
-            # were just written there, and its id fields may name a sibling
-            # note (the source-UUID folder of a force-minted ses- id).
-            ev = _resolve_events_file(cfg, session_id, project)
-            protected = (
-                ev.parent
-                if ev is not None and ev.name == "events.jsonl"
-                else None
-            )
-            orphans = find_orphans(
-                cfg,
-                project=project,
-                current_session_id=session_id,
-                protected_dir=protected,
-            )
+            # #181/#180: shield every folder the chain resolved to —
+            # verdicts were just written there, and their id fields may
+            # name a sibling note (force-minted ses- id) or an earlier
+            # compaction segment the caller's id doesn't match.
+            chain_dirs = {
+                d
+                for _ev, d in _resolve_session_chain(cfg, session_id, project)
+                if d is not None
+            }
+            orphans = [
+                o
+                for o in find_orphans(
+                    cfg, project=project, current_session_id=session_id
+                )
+                if o not in chain_dirs
+            ]
             if orphans:
                 pr = prune_orphans(orphans, dry_run=False)
                 result.orphans_pruned = pr.deleted
@@ -447,8 +557,9 @@ def finalize_wrap(
         if verdicts:
             idx = Indexer(config=cfg)
             try:
-                result.prompts_reprojected = idx.reproject_session_prompts(
-                    _session_note_id(cfg, session_id, project)
+                result.prompts_reprojected = sum(
+                    idx.reproject_session_prompts(nid)
+                    for nid in _chain_note_ids(cfg, session_id, project)
                 )
             finally:
                 idx.close()
