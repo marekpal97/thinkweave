@@ -513,6 +513,10 @@ def _find_session_note(vm, session_id: str) -> Path | None:
     return None
 
 
+# Bytes scanned at each end of the transcript for the bridge-session row.
+_BRIDGE_SCAN_BYTES = 65536
+
+
 def _logical_session_key(hook_input: dict) -> str:
     """The stable cross-segment session key, when the harness provides one.
 
@@ -529,18 +533,33 @@ def _logical_session_key(hook_input: dict) -> str:
     if not path:
         return ""
     try:
-        # Byte-capped head read; errors="replace" because a transcript can
-        # hold invalid UTF-8 — a UnicodeDecodeError here would unwind
-        # through _ensure_session and break the whole hook delivery.
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            head = fh.read(65536)
-        for line in head.splitlines():
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict) and row.get("type") == "bridge-session":
-                return str(row.get("bridgeSessionId") or "")
+        # Byte-capped head + tail scan (binary, decoded with replace: a
+        # transcript can hold invalid UTF-8, and a UnicodeDecodeError here
+        # would unwind through _ensure_session and break the whole hook
+        # delivery). The row usually sits in the first few lines, but a
+        # measured ~18% of bridged transcripts carry it only near the END
+        # (~1MB in) — hence the tail chunk; its first line may be a
+        # partial row, which simply fails the JSON parse.
+        with open(path, "rb") as fh:
+            head = fh.read(_BRIDGE_SCAN_BYTES)
+            size = fh.seek(0, os.SEEK_END)
+            tail = b""
+            if size > _BRIDGE_SCAN_BYTES:
+                fh.seek(size - _BRIDGE_SCAN_BYTES)
+                tail = fh.read(_BRIDGE_SCAN_BYTES)
+        for chunk in (head, tail):
+            for line in chunk.decode("utf-8", errors="replace").splitlines():
+                if "bridge-session" not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(row, dict)
+                    and row.get("type") == "bridge-session"
+                ):
+                    return str(row.get("bridgeSessionId") or "")
     except (OSError, ValueError):
         return ""
     return ""
@@ -1200,6 +1219,14 @@ def _handle_stop(hook_input: dict) -> None:
         fm["processed"] = True
         fm["processed_at"] = today
         fm["auto_extracted"] = True
+        # #180: backfill the segment-chain key when creation-time stamping
+        # missed it (the bridge row can appear later in the transcript) —
+        # Stop rewrites the frontmatter anyway, so this costs one bounded
+        # transcript scan only while the key is absent.
+        if not fm.get("logical_session"):
+            logical = _logical_session_key(hook_input)
+            if logical:
+                fm["logical_session"] = logical
         if result.files_touched:
             fm["files_touched"] = result.files_touched
         if result.commits:

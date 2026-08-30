@@ -813,11 +813,16 @@ class TestSegmentChain:
         logical: str = "cse_chain1",
         mtime: float | None = None,
         segments: list[str] | None = None,
+        processed: bool = False,
+        auto_extracted: bool = False,
     ) -> Path:
         """One segment: session folder (+ archived events.jsonl, or a live
         buffer keyed by the segment UUID when ``archived=False``).
         ``logical=""`` omits the stamp (pre-#180 note shape); ``segments``
-        pre-seeds a durable chain record on the note."""
+        pre-seeds a durable chain record on the note. ``processed`` alone
+        models a REAL wrap (weave_extract clears auto_extracted);
+        ``processed + auto_extracted`` models the Stop hook's thin
+        auto-extract stub."""
         import os
 
         d = (
@@ -833,6 +838,10 @@ class TestSegmentChain:
             fm_lines.append(f"logical_session: {logical}")
         if segments:
             fm_lines.append(f"segments: [{', '.join(segments)}]")
+        if processed:
+            fm_lines.append("processed: true")
+        if auto_extracted:
+            fm_lines.append("auto_extracted: true")
         fm_lines += ["project: t", "---", ""]
         (d / "session.md").write_text(
             "\n".join(fm_lines), encoding="utf-8"
@@ -855,12 +864,16 @@ class TestSegmentChain:
     def _chain_fixture(self, config: Config) -> dict[str, Path]:
         """The 2026-08-21 regression shape: prompts spread across three
         segment files (two archives + the final segment's live buffer);
-        verdicts composed against prompts from the EARLIER segments."""
+        verdicts composed against prompts from the EARLIER segments.
+        seg1 carries the Stop hook's auto-extract stub flags — earlier
+        segments of a live logical session DO get the thin Stop pass, and
+        must still be admitted (only a REAL wrap excludes a sibling)."""
         return {
             "seg1": self._segment(
                 config, "cc-seg1", "ses-seg1",
                 "no, the buffer dir is wrong — use weave_dir",
                 "2026-08-21T09:00:00+00:00", mtime=1_000_000_100,
+                processed=True, auto_extracted=True,
             ),
             "seg2": self._segment(
                 config, "cc-seg2", "ses-seg2",
@@ -1083,3 +1096,103 @@ class TestSegmentChain:
         ]
         assert len(fb_early) == 1
         assert fb_late == []
+
+    def test_wrapped_sibling_sharing_bridge_key_is_not_admitted(
+        self, config: Config, vault: VaultManager
+    ):
+        # Fix round 2 blocker: bridgeSessionId is CLOUD-session identity
+        # and survives resumption across days — the local corpus shows one
+        # cse key covering harness sessions six days apart, each separately
+        # worked and wrapped. A sibling already wrapped by a REAL wrap
+        # (processed, auto_extracted cleared) had its prompts labeled by
+        # that wrap's own richer context; admitting it binds today's
+        # verdict to a days-old prompt and poisons the RLVR substrate.
+        old = self._segment(
+            config, "cc-old", "ses-old", "fix the resolver bug",
+            "2026-08-15T09:00:00+00:00", processed=True,
+        )
+        today = self._segment(
+            config, "cc-now", "ses-now", "fix the resolver ranking",
+            "2026-08-21T09:00:00+00:00",
+        )
+        result = finalize_wrap(
+            config, session_id="cc-now", project="t", prune=False,
+            verdicts=[{"prompt": "fix the resolver", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        fb_today = [
+            r for r in self._rows(today) if r.get("type") == "feedback"
+        ]
+        fb_old = [r for r in self._rows(old) if r.get("type") == "feedback"]
+        assert len(fb_today) == 1
+        assert fb_old == []
+        assert result.segments == []
+
+    def test_stored_segments_order_is_repaired_on_rewrap(
+        self, config: Config, vault: VaultManager
+    ):
+        # Fix round 2 blocker: update_note union-MERGES list frontmatter,
+        # so a stored wrong order (written before the round-1 ordering
+        # fix) could never be corrected — disk and result.segments
+        # disagreed. The segments: write needs replace semantics.
+        from thinkweave.core.vault import parse_frontmatter
+
+        self._chain_fixture(config)
+        # Simulate a pre-fix corrupted record on the primary note.
+        sm = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / "cc-seg3-2026-08-21" / "session.md"
+        )
+        sm.write_text(
+            sm.read_text(encoding="utf-8").replace(
+                "source_session: cc-seg3",
+                "source_session: cc-seg3\n"
+                "segments: [cc-seg2, cc-seg3, cc-seg1]",
+            ),
+            encoding="utf-8",
+        )
+        result = finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=[{"prompt": "looks good", "register": "confirmation"}],
+        )
+        expected = ["cc-seg1", "cc-seg2", "cc-seg3"]
+        assert result.segments == expected
+        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+        assert fm.get("segments") == expected
+
+    def test_single_uuid_sibling_pair_writes_no_segments_record(
+        self, config: Config, vault: VaultManager
+    ):
+        # Fix round 2 minor: the #181 force-mint shape — two folders, ONE
+        # source UUID — is not a multi-segment session; a degenerate
+        # one-element segments: record must not be written.
+        from thinkweave.core.vault import parse_frontmatter
+
+        base = config.vault_root / "projects" / "t" / "sessions"
+        row = json.dumps({
+            "ts": "2026-08-21T09:00:00+00:00", "type": "prompt",
+            "text": "wire the verdict rail", "session_id": "cc-mint",
+        })
+        for name, sid in [
+            ("ses-stale111-2026-08-20", "ses-stale111"),
+            ("ses-fresh222-2026-08-21", "ses-fresh222"),
+        ]:
+            d = base / name
+            d.mkdir(parents=True)
+            (d / "session.md").write_text(
+                f"---\ntype: session\nid: {sid}\n"
+                "source_session: cc-mint\nproject: t\n---\n",
+                encoding="utf-8",
+            )
+            (d / "events.jsonl").write_text(row + "\n", encoding="utf-8")
+        result = finalize_wrap(
+            config, session_id="cc-mint", project="t", prune=False,
+            verdicts=[{"prompt": "wire the verdict", "register": "correction"}],
+        )
+        assert result.verdicts_written == 1
+        assert result.segments == []
+        for name in ("ses-stale111-2026-08-20", "ses-fresh222-2026-08-21"):
+            fm, _ = parse_frontmatter(
+                (base / name / "session.md").read_text(encoding="utf-8")
+            )
+            assert "segments" not in fm

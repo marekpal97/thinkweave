@@ -111,7 +111,14 @@ def _resolve_session_chain(
     ``logical_session`` (the cross-segment key hooks stamp from the
     transcript's ``bridgeSessionId``) or whose ``source_session`` appears
     in a primary's ``segments:`` list (the durable record a previous wrap
-    wrote).
+    wrote) — EXCEPT siblings a REAL wrap already processed (``processed``
+    with ``auto_extracted`` cleared): ``bridgeSessionId`` is cloud-session
+    identity and survives resumption across days, so a shared key alone
+    also matches sessions separately worked and wrapped earlier, whose
+    prompts that wrap already labeled. The Stop hook's thin auto-extract
+    stub (``processed`` + ``auto_extracted``) never labels prompts, and
+    earlier segments of a live logical session carry exactly that shape —
+    they stay admitted.
 
     Ranking (#181, unchanged within a class): id-matched folders outrank
     chain-admitted ones; folders whose events actually contain prompt rows
@@ -176,6 +183,16 @@ def _resolve_session_chain(
                     str(fm.get("logical_session") or "") in keys
                     or str(fm.get("source_session") or "") in segment_ids
                 )
+                if (
+                    in_chain
+                    and not primary
+                    and fm.get("processed")
+                    and not fm.get("auto_extracted")
+                ):
+                    # Already wrapped by a real wrap — its own labeler had
+                    # the richer context; today's verdicts must not bind
+                    # to its prompts (round 2 blocker).
+                    in_chain = False
                 if not primary and not in_chain:
                     continue
                 ev = d / "events.jsonl"
@@ -211,7 +228,9 @@ def _resolve_session_chain(
     return []
 
 
-def _chain_note_ids(cfg: Config, session_id: str, project: str) -> list[str]:
+def _chain_note_ids(
+    chain: list[tuple[Path, Path | None]], session_id: str
+) -> list[str]:
     """Note ids of every chain folder, primary first — the notes whose
     prompts need reprojection after verdicts land (#181: for a force-minted
     ses- id the primary can be the SIBLING note owning the source-UUID
@@ -220,7 +239,7 @@ def _chain_note_ids(cfg: Config, session_id: str, project: str) -> list[str]:
     from thinkweave.core.vault import parse_frontmatter
 
     out: list[str] = []
-    for _ev, d in _resolve_session_chain(cfg, session_id, project):
+    for _ev, d in chain:
         sm = d / "session.md" if d is not None else None
         if sm is None or not sm.exists():
             continue
@@ -235,10 +254,10 @@ def _chain_note_ids(cfg: Config, session_id: str, project: str) -> list[str]:
 
 
 def _record_segments(
-    cfg: Config, session_id: str, project: str, result: WrapFinalizeResult
+    chain: list[tuple[Path, Path | None]], result: WrapFinalizeResult
 ) -> None:
-    """Durable chain record (#180): once a wrap sees more than one segment,
-    the primary session note gains ``segments: [uuid, ...]`` in
+    """Durable chain record (#180): once a wrap sees more than one segment
+    UUID, the primary session note gains ``segments: [uuid, ...]`` in
     chronological order — by each segment's earliest prompt timestamp, NOT
     file mtime: the verdict appends that just ran bumped the labeled
     files' mtimes to now (and mtime isn't durable across clone/restore —
@@ -247,14 +266,13 @@ def _record_segments(
     (#184) keys subagent attribution on the same list — and honoured by
     the resolver, so the chain survives re-wraps even if a segment's
     ``logical_session`` stamp is lost."""
-    chain = _resolve_session_chain(cfg, session_id, project)
     if len(chain) < 2:
         return
     primary = chain[0][1]
     if primary is None or not (primary / "session.md").exists():
         return
     from thinkweave.core.events import extract_prompts
-    from thinkweave.core.vault import VaultManager, parse_frontmatter
+    from thinkweave.core.vault import parse_frontmatter, render_frontmatter
 
     stamped: list[tuple[float, str]] = []
     for ev, d in chain:
@@ -283,9 +301,22 @@ def _record_segments(
     for _ts, sid in stamped:
         if sid not in ordered:
             ordered.append(sid)
-    VaultManager(config=cfg).update_note(
-        primary / "session.md", frontmatter_updates={"segments": ordered}
-    )
+    # Gate on distinct UUIDs, not file count: the #181 force-mint shape is
+    # two folders over ONE source UUID — not a multi-segment session.
+    if len(ordered) < 2:
+        return
+    # Direct frontmatter write, REPLACE semantics: update_note union-merges
+    # list values, which would freeze a previously stored (possibly wrong)
+    # order forever — this record must equal the recomputed chronology.
+    sm = primary / "session.md"
+    fm, body = parse_frontmatter(sm.read_text(encoding="utf-8"))
+    if fm.get("segments") != ordered:
+        fm["segments"] = ordered
+        sm.write_text(
+            render_frontmatter(fm) + "\n\n" + body,
+            encoding="utf-8",
+            newline="\n",
+        )
     result.segments = ordered
 
 
@@ -314,11 +345,10 @@ def _source_session_of(cfg: Config, session_note_id: str) -> str:
 
 
 def _append_verdict_events(
-    cfg: Config,
     session_id: str,
-    project: str,
     verdicts: list[dict],
     result: WrapFinalizeResult,
+    chain: list[tuple[Path, Path | None]],
 ) -> None:
     """Deterministic half of the async prompt labeler (#101).
 
@@ -348,7 +378,6 @@ def _append_verdict_events(
     """
     from thinkweave.core.events import Prompt, extract_prompts, feedback_events
 
-    chain = _resolve_session_chain(cfg, session_id, project)
     if not chain:
         result.verdicts_unmatched = len(verdicts)
         result.errors.append(
@@ -518,11 +547,20 @@ def finalize_wrap(
     """
     result = WrapFinalizeResult(session_id=session_id, project=project)
 
+    # Resolve the segment chain ONCE — the verdict join, segments record,
+    # prune shield and reprojection all consume the same resolution (it
+    # re-reads every candidate's events per call, so 4 calls was 4 scans).
+    try:
+        chain = _resolve_session_chain(cfg, session_id, project)
+    except Exception as e:  # noqa: BLE001
+        chain = []
+        result.errors.append(f"resolve: {e}")
+
     # 0. prompt verdicts → events (#101) -----------------------------------
     if verdicts:
         _t = time.perf_counter()
         try:
-            _append_verdict_events(cfg, session_id, project, verdicts, result)
+            _append_verdict_events(session_id, verdicts, result, chain)
         except Exception as e:  # noqa: BLE001 — best-effort labeler
             result.errors.append(f"verdicts: {e}")
         # ponytail: the segments: record only lands on verdict-bearing
@@ -530,7 +568,7 @@ def finalize_wrap(
         # chain. Upgrade path: hoist _record_segments out of this
         # branch once a verdict-less consumer (task-trace) needs it.
         try:
-            _record_segments(cfg, session_id, project, result)
+            _record_segments(chain, result)
         except Exception as e:  # noqa: BLE001 — bookkeeping must not
             # flip the exit code after successful verdict writes
             result.warnings.append(f"segments: {e}")
@@ -546,11 +584,7 @@ def finalize_wrap(
             # verdicts were just written there, and their id fields may
             # name a sibling note (force-minted ses- id) or an earlier
             # compaction segment the caller's id doesn't match.
-            chain_dirs = {
-                d
-                for _ev, d in _resolve_session_chain(cfg, session_id, project)
-                if d is not None
-            }
+            chain_dirs = {d for _ev, d in chain if d is not None}
             orphans = [
                 o
                 for o in find_orphans(
@@ -589,7 +623,7 @@ def finalize_wrap(
             try:
                 result.prompts_reprojected = sum(
                     idx.reproject_session_prompts(nid)
-                    for nid in _chain_note_ids(cfg, session_id, project)
+                    for nid in _chain_note_ids(chain, session_id)
                 )
             finally:
                 idx.close()

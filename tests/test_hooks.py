@@ -2275,6 +2275,67 @@ class TestLogicalSessionKey:
         ) == ""
         assert _logical_session_key({}) == ""
 
+    def test_bridge_row_near_transcript_end_is_found(self, tmp_path: Path):
+        # Fix round 2 minor: ~18% of real bridged transcripts carry the
+        # bridge row only near the END (measured ~1MB in) — the scan reads
+        # a bounded tail chunk as well as the head.
+        from thinkweave.surfaces.hooks.handler import _logical_session_key
+
+        f = tmp_path / "transcript.jsonl"
+        filler = json.dumps({"type": "user", "text": "x" * 200}) + "\n"
+        f.write_text(
+            filler * 500
+            + json.dumps({
+                "type": "bridge-session", "bridgeSessionId": "cse_TAIL",
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+        assert f.stat().st_size > 65536
+        assert _logical_session_key({"transcript_path": str(f)}) == "cse_TAIL"
+
+    def test_stop_backfills_missing_logical_session(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Fix round 2 minor: the creation-time stamp misses a bridge row
+        # that only exists later in the transcript — the Stop hook (which
+        # rewrites the note frontmatter anyway) backfills it.
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        vm.create_note(
+            NoteType.SESSION, "S", project="t",
+            extra_frontmatter={"source_session": "seg-uuid-late"},
+        )
+        buf_dir = cfg.weave_dir / "buffer"
+        buf_dir.mkdir(parents=True, exist_ok=True)
+        (buf_dir / "seg-uuid-late.jsonl").write_text(
+            json.dumps({
+                "ts": "2026-08-30T10:00:00+00:00", "type": "prompt",
+                "text": "hello", "session_id": "seg-uuid-late",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        t = self._transcript(tmp_path, [
+            {"type": "bridge-session", "bridgeSessionId": "cse_LATE"},
+        ])
+        handler_mod._handle_stop({
+            "session_id": "seg-uuid-late", "transcript_path": str(t),
+            "cwd": str(tmp_path),
+        })
+        path = handler_mod._find_session_note(vm, "seg-uuid-late")
+        assert path is not None
+        note = vm.read_note(path)
+        assert note.frontmatter.get("logical_session") == "cse_LATE"
+        assert note.frontmatter.get("processed") is True
+
     def test_invalid_utf8_transcript_never_escapes(
         self, tmp_path: Path, monkeypatch
     ):
