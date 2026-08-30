@@ -596,11 +596,20 @@ def _read_session_fm(session_md: Path) -> dict | None:
         return None
 
 
-def _recent_session_dirs(sessions_dir: Path, limit: int) -> list[Path]:
-    """The newest ``limit`` session folders by name — one readdir, no stats.
+# Session folders are named ``{session_id}-{YYYY-MM-DD}`` (core/vault.py
+# ``_session_dir``): the LEADING component is a random uuid, so a bare name
+# sort orders by coin flip (review round 2 measured 4/40 overlap with true
+# recency on the production vault). Recency lives in the trailing date.
+_DIR_DATE_RE = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
 
-    Session folder slugs carry their creation date, so a descending name
-    sort is a recency sort without touching any per-folder metadata.
+
+def _recent_session_dirs(sessions_dir: Path, limit: int) -> list[Path]:
+    """The newest ``limit`` session folders — one readdir, no stats.
+
+    Sorted by the trailing ``-YYYY-MM-DD`` of the folder name (descending),
+    bare name as the same-day tiebreak; folders with no date suffix rank
+    oldest. Chosen over st_mtime deliberately: names are durable across
+    restore/copy, mtimes are not.
     """
     try:
         entries = [
@@ -610,7 +619,12 @@ def _recent_session_dirs(sessions_dir: Path, limit: int) -> list[Path]:
         ]
     except OSError:
         return []
-    entries.sort(key=lambda e: e.name, reverse=True)
+
+    def key(e) -> tuple[str, str]:
+        m = _DIR_DATE_RE.search(e.name)
+        return (m.group(1) if m else "", e.name)
+
+    entries.sort(key=key, reverse=True)
     return [Path(e.path) for e in entries[:limit]]
 
 
@@ -788,6 +802,37 @@ def _own_serve_state(cfg, session_id: str, project: str) -> tuple[set[str], set[
     return set(), set()
 
 
+def _activity_count(weave_dir: Path, session_id: str) -> int:
+    """Non-startup event lines in the session's live buffer.
+
+    The delivery-distinguishing component of a resume/compact replay
+    identity (#175 review round 2): notes are only minted at wrap time, so
+    successive compactions routinely build IDENTICAL delta payloads — but
+    a genuine new compaction always follows conversation activity (that is
+    what grew the window), while a byte-duplicate double registration has
+    nothing buffered in between. Counting our own startup-type events here
+    would defeat the guard: each serve would bump its own successor's
+    identity. Malformed lines count — they belong to the action stream.
+    """
+    buf = weave_dir / "buffer" / f"{session_id}.jsonl"
+    try:
+        text = buf.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    n = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            n += 1
+            continue
+        if not (isinstance(event, dict) and event.get("type") == "startup"):
+            n += 1
+    return n
+
+
 def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str) -> bool:
     """True when the live buffer already holds a skip event for this replay
     — bounds telemetry to one line per (session, replay_of)."""
@@ -806,6 +851,13 @@ def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str)
         if isinstance(event, dict) and event.get("replay_of") == delivery_id:
             return True
     return False
+
+
+# The full-snapshot sections a compact delta re-serves (they were evicted
+# with the window). Must match retrieval/context.py's _default_title for
+# "tools" and "footer" — pinned by a contract test, so a heading rename
+# there fails loudly instead of silently dropping these from compact deltas.
+_COMPACT_RESERVED_SECTIONS = ("Available MCP Tools", "Retrieval Hints")
 
 
 def _payload_section(payload: str, title: str) -> str:
@@ -865,7 +917,7 @@ def _delta_payload(
                 "(references only, already served):",
             ]
             lines += [note_line(nid) for nid in known_ids]
-        for title in ("Available MCP Tools", "Retrieval Hints"):
+        for title in _COMPACT_RESERVED_SECTIONS:
             section = _payload_section(full_payload, title)
             if section:
                 lines += ["", section]
@@ -1745,13 +1797,26 @@ def _handle_session_start(hook_input: dict) -> None:
                 # header timestamp would split identity across a minute
                 # boundary; and not the seam guard section either, which
                 # varies with seam state, not with what this delivery
-                # serves. prior_deliveries catches replays whose buffer was
-                # already archived (the delivery_id rides inside the event
-                # line into retrieval_log.jsonl); _buffer_event's O_EXCL
-                # receipt catches two live registrations racing.
-                delivery_id = "session_start:{}:{}:{}".format(
+                # serves. Resume/compact identity additionally folds in the
+                # activity watermark (#175 round 2): successive compactions
+                # of an unchanged vault serve IDENTICAL deltas, and each one
+                # evicts its predecessor's window — the conversation
+                # activity between them is what tells a genuinely new
+                # lifecycle event from a byte-duplicate double registration.
+                # startup/clear keep the plain identity. prior_deliveries
+                # catches replays whose buffer was already archived (the
+                # delivery_id rides inside the event line into
+                # retrieval_log.jsonl); _buffer_event's O_EXCL receipt
+                # catches two live registrations racing.
+                watermark = (
+                    f"{_activity_count(cfg.weave_dir, session_id)}:"
+                    if lifecycle in ("resume", "compact")
+                    else ""
+                )
+                delivery_id = "session_start:{}:{}:{}{}".format(
                     session_id,
                     lifecycle,
+                    watermark,
                     hashlib.sha256(
                         "\n".join(sorted(served_ids)).encode("utf-8")
                     ).hexdigest()[:16],

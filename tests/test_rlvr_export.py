@@ -374,19 +374,45 @@ class TestAssembleRow:
         # #175: a resume/compact delta re-homes its startup rows to the
         # chain ROOT session. A decision minted in the later segment must
         # still see that exposure — the export unions context_served across
-        # every session sharing the segment's logical_session key.
+        # every session sharing the segment's logical_session key. But the
+        # union applies the same real-wrap exclusion as the serve/wrap
+        # paths: bridgeSessionId survives resumption across days, so a
+        # sibling a REAL wrap already processed (``processed`` without
+        # ``auto_extracted``) is a separately-worked session, not exposure.
         root_path = vault.create_note(
             NoteType.SESSION,
             "R",
             body="## Summary\nroot\n",
             project="t",
-            extra_frontmatter={"processed": True, "logical_session": "cse_rl1"},
+            # The Stop auto-extract stub shape — a live chain's earlier
+            # segment carries exactly this, and stays admitted.
+            extra_frontmatter={
+                "processed": True,
+                "auto_extracted": True,
+                "logical_session": "cse_rl1",
+            },
         )
         root_id = vault.read_note(root_path).id
         (root_path.parent / "retrieval_log.jsonl").write_text(
             json.dumps({
                 "ts": "t0", "type": "startup",
                 "returned_ids": ["n-rootnote1"], "token_est": 5000,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        # Days-earlier session, same cloud key, REAL-wrapped: excluded.
+        outsider_path = vault.create_note(
+            NoteType.SESSION,
+            "O",
+            body="## Summary\nwrapped earlier\n",
+            project="t",
+            extra_frontmatter={"processed": True, "logical_session": "cse_rl1"},
+        )
+        (outsider_path.parent / "retrieval_log.jsonl").write_text(
+            json.dumps({
+                "ts": "t-1", "type": "startup",
+                "returned_ids": ["n-outsider9"], "token_est": 900,
             }) + "\n",
             encoding="utf-8",
         )
@@ -411,7 +437,10 @@ class TestAssembleRow:
         dec_path = vault.create_note(
             NoteType.DECISION,
             "D2",
-            body="Based on [[n-deltanew1]] and [[n-rootnote1]].",
+            body=(
+                "Based on [[n-deltanew1]] and [[n-rootnote1]], "
+                "not [[n-outsider9]]."
+            ),
             project="t",
             extra_frontmatter={
                 "status": "accepted",
@@ -426,6 +455,8 @@ class TestAssembleRow:
         _index(config)
 
         row = assemble_row(config, dec_id).as_dict()
+        # Chain union sees the stub-shaped root's rows — and ONLY those:
+        # the real-wrapped outsider's exposure stays out.
         assert set(row["context"]["cited_startup_only_ids"]) == {
             "n-deltanew1", "n-rootnote1",
         }

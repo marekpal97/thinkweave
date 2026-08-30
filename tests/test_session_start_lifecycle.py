@@ -92,12 +92,15 @@ def _seed_chain_root(
     source_session: str = "uuid-root",
     served_ids: list[str] | None = None,
     delivery_id: str = "",
-    folder_name: str = "session-root",
+    folder_name: str = "uuid-root-2026-08-29",
     startup_ts: str = "2026-08-29T10:00:00+00:00",
 ) -> Path:
     """An archived earlier segment of the logical session: session note
     stamped with the chain key, empty events.jsonl, and a retrieval_log
-    holding one already-served startup event."""
+    holding one already-served startup event. The folder name follows the
+    production ``{session_id}-{YYYY-MM-DD}`` shape (core/vault.py
+    ``_session_dir``): a leading RANDOM uuid, date only at the tail — any
+    recency logic keyed on the leading name is wrong by construction."""
     folder = cfg.vault_root / "projects" / "t" / "sessions" / folder_name
     folder.mkdir(parents=True)
     (folder / "session.md").write_text(
@@ -296,7 +299,7 @@ class TestDeltaServe:
             env,
             note_id="ses-later0001",
             source_session="uuid-later",
-            folder_name="session-x1",
+            folder_name="uuid-later-2026-08-29",
             startup_ts="2026-08-29T12:00:00+00:00",
             served_ids=["dec-aaaa1111"],
         )
@@ -304,7 +307,7 @@ class TestDeltaServe:
             env,
             note_id="ses-first0001",
             source_session="uuid-first",
-            folder_name="session-x2",
+            folder_name="uuid-first-2026-08-29",
             startup_ts="2026-08-29T08:00:00+00:00",
             served_ids=["ses-cccc3333"],
         )
@@ -400,8 +403,19 @@ class TestReplayGuard:
         assert outputs[0]["additional_context"] == FULL_PAYLOAD
 
         # Stop-time archival: buffer (and its receipt scratch dir) retired
-        # into the session folder the chain resolver can find.
-        folder = env.vault_root / "projects" / "t" / "sessions" / "session-arch"
+        # into the session folder — production {uuid}-{date} name. The
+        # decoy crowd (higher-sorting uuids, ancient dates) pins that the
+        # own-folder lookup keys on the trailing DATE: a name-keyed sort
+        # would fill its window with decoys and leave the replay guard
+        # inert after archival.
+        sessions = env.vault_root / "projects" / "t" / "sessions"
+        for i in range(20):
+            d = sessions / f"zzzz{i:04x}beef-2019-01-01"
+            d.mkdir(parents=True)
+            (d / "session.md").write_text(
+                "---\nid: ses-decoy002\ntype: session\n---\n", encoding="utf-8"
+            )
+        folder = sessions / "uuid-arch1-2026-08-30"
         folder.mkdir(parents=True)
         (folder / "session.md").write_text(
             "---\n"
@@ -479,6 +493,68 @@ class TestReplayGuard:
             "served_full", "skipped_replay",
         ]
 
+    def test_repeated_compaction_with_unchanged_vault_still_serves(
+        self, env, outputs, tmp_path: Path
+    ):
+        # Notes are only minted at wrap time, so an UNCHANGED snapshot
+        # across compactions is the NORMAL case — and each compaction
+        # evicts the previous delta from the window. A second compact must
+        # re-serve (evicted list included), not be mistaken for a replay of
+        # the first: genuine lifecycle events are separated by conversation
+        # activity, byte-duplicate redeliveries are not.
+        from thinkweave.surfaces.hooks import handler as h
+
+        base = {"session_id": "uuid-cc1", "cwd": str(tmp_path)}
+        h._handle_session_start(dict(base, source="startup"))
+        h._handle_session_start(dict(base, source="compact"))
+        # The conversation activity that triggered the second compaction.
+        h._buffer_event(
+            env.weave_dir,
+            "uuid-cc1",
+            {"ts": "t", "tool": "Edit", "file": "a.py"},
+        )
+        h._handle_session_start(dict(base, source="compact"))
+
+        payload = outputs[-1]["additional_context"]
+        assert "3 notes already in context" in payload
+        assert "Compacted out of the window" in payload
+        for nid in ("dec-aaaa1111", "dec-bbbb2222", "ses-cccc3333"):
+            assert nid in payload
+
+        startups = [
+            e for e in _buffer_events(env, "uuid-cc1")
+            if e.get("type") == "startup"
+        ]
+        assert [e["disposition"] for e in startups] == [
+            "served_full", "served_delta", "served_delta",
+        ]
+
+    def test_duplicate_compact_redelivery_still_skips(
+        self, env, outputs, tmp_path: Path
+    ):
+        # The inverse guard: a byte-duplicate redelivery of the SAME compact
+        # event (double registration — no activity in between) still skips.
+        from thinkweave.surfaces.hooks import handler as h
+
+        base = {"session_id": "uuid-cc2", "cwd": str(tmp_path)}
+        h._handle_session_start(dict(base, source="startup"))
+        h._buffer_event(
+            env.weave_dir,
+            "uuid-cc2",
+            {"ts": "t", "tool": "Edit", "file": "a.py"},
+        )
+        h._handle_session_start(dict(base, source="compact"))
+        h._handle_session_start(dict(base, source="compact"))  # redelivery
+
+        assert outputs[-1]["additional_context"] == ""
+        startups = [
+            e for e in _buffer_events(env, "uuid-cc2")
+            if e.get("type") == "startup"
+        ]
+        assert [e["disposition"] for e in startups] == [
+            "served_full", "served_delta", "skipped_replay",
+        ]
+
     def test_repeated_replays_write_one_skip_event(
         self, env, outputs, tmp_path: Path
     ):
@@ -532,11 +608,13 @@ class TestCallShape:
         from thinkweave.surfaces.hooks import handler as h
 
         _seed_chain_root(env, served_ids=["dec-aaaa1111", "ses-cccc3333"])
-        # Decoy folders whose date-stamped names sort OLDER than the chain
-        # root — far more of them than the scan budget.
+        # Decoy folders in the production {uuid}-{date} shape: leading
+        # uuids that sort AFTER the root's name, dates far OLDER — a
+        # name-keyed recency sort would fill its whole window with these
+        # and never see the chain. Far more of them than the scan budget.
         sessions = env.vault_root / "projects" / "t" / "sessions"
         for i in range(60):
-            d = sessions / f"session-2019-01-01-{i:04d}"
+            d = sessions / f"zzzz{i:04x}dead-2019-01-01"
             d.mkdir(parents=True)
             (d / "session.md").write_text(
                 "---\nid: ses-decoy001\ntype: session\n---\n", encoding="utf-8"
@@ -564,6 +642,22 @@ class TestCallShape:
         # …and the scan never opened more folders than its budget, despite
         # 61 candidates on disk.
         assert 0 < len(reads) <= h._CHAIN_SCAN_RECENT
+
+
+class TestSectionHeadingContract:
+    def test_compact_reserved_sections_match_context_titles(self):
+        # _payload_section slices the compact-preserved sections out of the
+        # rendered snapshot by their literal headings. Pin them to the
+        # payload builder's authoritative titles so a rename in
+        # retrieval/context.py fails HERE instead of silently dropping the
+        # manifest from every compact delta.
+        from thinkweave.retrieval import context as ctx
+        from thinkweave.surfaces.hooks import handler as h
+
+        assert h._COMPACT_RESERVED_SECTIONS == (
+            ctx._default_title("tools"),
+            ctx._default_title("footer"),
+        )
 
 
 class TestSeamGuardUnion:
