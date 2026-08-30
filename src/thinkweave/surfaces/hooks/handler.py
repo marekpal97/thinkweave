@@ -23,12 +23,15 @@ Duplicate deliveries (#161): when a lifecycle event arrives carrying a
   wire id the harness minted for it (``tool_use_id`` / ``turn_id``), the
   buffer write is guarded by a delivery receipt so two registrations of
   the same hook persist the event once. Events with NO wire id — Claude
-  Code's UserPromptSubmit, SessionStart, a PostToolUse without a
-  ``tool_use_id`` — are deliberately NOT deduped: nothing on the wire
-  distinguishes "the same delivery twice" from "the user really did send
-  `continue` twice", and guessing via a content hash gets both wrong.
-  Their cure is single-owner registration (`surfaces/hooks/install.py`),
-  not a receipt.
+  Code's UserPromptSubmit, a PostToolUse without a ``tool_use_id`` —
+  are deliberately NOT deduped: nothing on the wire distinguishes "the
+  same delivery twice" from "the user really did send `continue` twice",
+  and guessing via a content hash gets both wrong. Their cure is
+  single-owner registration (`surfaces/hooks/install.py`), not a receipt.
+  SessionStart is the exception (#175): its delivery is pure system
+  output, so (session, lifecycle source, payload bytes) IS its identity —
+  a byte-identical redelivery injects nothing (``skipped_replay``), while
+  any content or lifecycle difference serves normally.
 
 Note: an earlier PreToolUse(Write|Edit) handler injected "Related vault
 notes" before each file edit. It was redundant with SessionStart context
@@ -563,6 +566,148 @@ def _logical_session_key(hook_input: dict) -> str:
     except (OSError, ValueError):
         return ""
     return ""
+
+
+def _chain_serve_state(
+    cfg, session_id: str, project: str, hook_input: dict
+) -> tuple[str, set[str], set[str]]:
+    """What the logical-session chain has already been served (#175).
+
+    Returns ``(chain_root_note_id, served_note_ids, prior_delivery_ids)``,
+    read from the chain's retrieval streams — each member folder's archived
+    ``retrieval_log.jsonl`` plus any live buffers. Reading the raw streams
+    rather than the ``context_served`` SQLite projection is deliberate: the
+    projection lags behind (it runs at index-rebuild/wrap time), while the
+    streams are current the moment an event is buffered, and they are the
+    very files ``context_served`` is rebuilt from.
+
+    ``chain_root`` is the earliest chain member's note id (by frontmatter
+    date, folder name breaking ties) — the segment that received the full
+    startup snapshot. ``prior_delivery_ids`` is the replay receipt set: the
+    ``delivery_id`` stamped on each served startup event survives
+    ``archive_buffer`` (it rides inside the event line into
+    ``retrieval_log.jsonl``), unlike the buffer-side O_EXCL receipt files,
+    which are retired with the buffer.
+
+    ponytail: chain members a real wrap already processed are excluded by
+    the resolver (their prompts are labeled; see resolve_session_chain),
+    so a resume of a wrapped-then-continued session re-serves its notes.
+    Over-serving is the cheap failure; the case is rare.
+    """
+    from thinkweave.operations.wrap import resolve_session_chain
+
+    chain = resolve_session_chain(
+        cfg, session_id, project, logical_key=_logical_session_key(hook_input)
+    )
+    streams: list[Path] = []
+    root = ""
+    root_key: tuple[str, str] | None = None
+    for ev, folder, fm in chain:
+        if folder is None:
+            streams.append(ev)  # live-buffer fallback member
+            continue
+        log_path = folder / "retrieval_log.jsonl"
+        if log_path.exists():
+            streams.append(log_path)
+        src = str((fm or {}).get("source_session") or "")
+        if src:
+            buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
+            if buf.exists():
+                streams.append(buf)
+        nid = str((fm or {}).get("id") or "")
+        key = (str((fm or {}).get("date") or ""), folder.name)
+        if nid and (root_key is None or key < root_key):
+            root_key, root = key, nid
+    live = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
+    if live.exists():
+        streams.append(live)
+
+    served: set[str] = set()
+    delivery_ids: set[str] = set()
+    for path in dict.fromkeys(streams):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") not in ("startup", "retrieval"):
+                continue
+            served.update(
+                i
+                for i in event.get("returned_ids") or []
+                if isinstance(i, str) and i
+            )
+            did = event.get("delivery_id")
+            if event.get("type") == "startup" and did:
+                delivery_ids.add(str(did))
+    return root, served, delivery_ids
+
+
+def _delta_payload(
+    cfg, lifecycle: str, all_ids: list[str], prior_ids: set[str]
+) -> tuple[str, list[str]]:
+    """Render the resume/compact delta: new-note lines + one summary line.
+
+    ``all_ids`` is what today's full snapshot would serve; everything the
+    chain already holds collapses into a single "N notes already in
+    context" line, and only genuinely new notes get a line each.
+
+    ponytail: a new note gets one id+title line, not the full snapshot
+    chunk — the agent can weave_read anything it needs. Upgrade path:
+    thread an exclude-set through the section builders in
+    retrieval/context.py and re-render rich chunks for new notes only.
+    """
+    new_ids = [i for i in all_ids if i not in prior_ids]
+    n_known = len(all_ids) - len(new_ids)
+    lines = [
+        f"## Context delta ({lifecycle})",
+        "",
+        f"{n_known} notes already in context from earlier in this session "
+        "— not repeated here.",
+    ]
+    if new_ids:
+        meta = _note_meta(cfg, new_ids)
+        lines += ["", "**New since last serve** (`weave_read` for details):"]
+        for nid in new_ids:
+            typ, title, date = meta.get(nid, ("", "", ""))
+            desc = " — ".join(x for x in (typ, title, date) if x)
+            lines.append(f"- `{nid}`" + (f" {desc}" if desc else ""))
+    return "\n".join(lines) + "\n", new_ids
+
+
+def _note_meta(cfg, ids: list[str]) -> dict[str, tuple[str, str, str]]:
+    """{id: (type, title, date)} from the index; empty on any failure."""
+    out: dict[str, tuple[str, str, str]] = {}
+    try:
+        if not ids or not cfg.index_db.exists():
+            return out
+        import sqlite3
+
+        db = sqlite3.connect(str(cfg.index_db))
+        db.row_factory = sqlite3.Row
+        try:
+            placeholders = ",".join("?" * len(ids))
+            for r in db.execute(
+                f"SELECT id, type, title, date FROM notes "
+                f"WHERE id IN ({placeholders})",
+                ids,
+            ):
+                out[r["id"]] = (
+                    str(r["type"] or ""),
+                    str(r["title"] or ""),
+                    str(r["date"] or ""),
+                )
+        finally:
+            db.close()
+    except Exception:
+        return out
+    return out
 
 
 def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
@@ -1303,6 +1448,18 @@ def _handle_session_start(hook_input: dict) -> None:
     built by ``thinkweave.retrieval.context.build_project_context``. Never blocks;
     exceptions produce a valid hook response with an actionable diagnostic.
 
+    Lifecycle-aware (#175): the hook input's ``source`` decides the payload
+    kind. ``startup``/``clear`` (or absent — legacy harnesses) get the full
+    snapshot; ``resume``/``compact`` get a delta against what the
+    logical-session chain (#180) was already served, plus one "N notes
+    already in context" line; a byte-identical redelivery (double
+    registration, post-archival replay) injects nothing and records a
+    ``skipped_replay`` telemetry event. The replay receipt is the
+    ``delivery_id`` on the buffered startup event itself — #161's "no wire
+    id" objection is answered by keying on (session, lifecycle, payload
+    bytes): a later SessionStart with different content, or a different
+    lifecycle, always serves.
+
     Also records a single ``type: startup`` event in the session buffer with
     the set of note IDs the payload contains and the token estimate. This
     feeds the RLVR substrate's ``startup`` source — distinct from
@@ -1320,6 +1477,10 @@ def _handle_session_start(hook_input: dict) -> None:
 
         cfg = load_config()
         project = _detect_project(hook_input)
+        session_id = hook_input.get(
+            "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
+        )
+        lifecycle = str(hook_input.get("source") or "")
         payload = build_project_context(
             cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
         )
@@ -1330,27 +1491,32 @@ def _handle_session_start(hook_input: dict) -> None:
         # reference already-served notes — don't double-count.)
         served_ids = parse_returned_ids(payload)
 
-        # Memory-seam serving lens — NOT a whole-seam dump. Cross-matches the
-        # served notes against the flagged-twin index and injects a small
-        # guard ONLY when a note in this session's context is the twin of a
-        # durable CC memory flagged stale/diverged. Empty string = inject
-        # nothing (the common case). Best-effort; never blocks the payload.
-        capture_error: Exception | None = None
-        try:
-            from thinkweave.synthesis.memory_seam import session_guard_section
-
-            guard = session_guard_section(cfg, served_ids)
-        except Exception as e:
-            _log_error("session_start_seam", e)
-            guard = ""
+        disposition = "served_full"
+        chain_root = ""
+        prior_deliveries: set[str] = set()
+        if session_id:
+            try:
+                chain_root, prior_ids, prior_deliveries = _chain_serve_state(
+                    cfg, session_id, project, hook_input
+                )
+            except Exception as e:
+                _log_error("session_start_chain", e)
+                chain_root, prior_ids = "", set()
+            if lifecycle in ("resume", "compact") and prior_ids:
+                # A chain with no serve record degrades to the full
+                # snapshot — a resume this machine never served is
+                # effectively a fresh session (AC5).
+                payload, served_ids = _delta_payload(
+                    cfg, lifecycle, served_ids, prior_ids
+                )
+                disposition = "served_delta"
 
         # Record the startup event regardless of whether we emit the payload —
         # an empty payload (cold vault) is itself a fact the RLVR row should
         # carry (n_retrievals_onthefly stays 0, startup_token_est = 0).
+        capture_error: Exception | None = None
+        replayed = False
         try:
-            session_id = hook_input.get(
-                "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
-            )
             if session_id:
                 event = {
                     "ts": datetime.now(timezone.utc).isoformat(),
@@ -1359,27 +1525,83 @@ def _handle_session_start(hook_input: dict) -> None:
                     # Rough token estimate — matches the SessionStart budget
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
+                    "disposition": disposition,
                 }
+                if lifecycle:
+                    event["lifecycle"] = lifecycle
+                if lifecycle in ("resume", "compact") and chain_root:
+                    # The chain's ROOT session id — context_served rows for
+                    # this delivery key to the logical conversation, not the
+                    # segment (indexer._project_session_retrieval_log).
+                    event["chain_root"] = chain_root
                 # Which harness served it. The indexer projects this to its
                 # own `context_served.source`; why that split exists is on the
                 # CHECK in core/indexer.py's SCHEMA_SQL.
                 surface = _hook_harness()
                 if surface:
                     event["surface"] = surface
-                # Deliberately un-deduped (#161 review). SessionStart carries
-                # no wire id, and every discriminator available here is wrong:
-                # keyed on session_id alone the *second* SessionStart for a
-                # session — a resume, a compact, a /clear — injects nothing,
-                # silently costing the session its context for good (receipts
-                # are never re-opened). Adding `source` only narrows that to
-                # repeated resumes and compacts, which are routine. Duplicate
-                # startup rows are the cheaper failure, and the registration
-                # single-owner sweep in surfaces/hooks/install.py is what
-                # actually stops them being produced.
-                _buffer_event(cfg.weave_dir, session_id, event)
+                # Replay guard: identity is (session, lifecycle, payload
+                # bytes). The hash deliberately excludes the seam guard
+                # section, which varies with seam state, not with what this
+                # delivery serves. prior_deliveries catches replays whose
+                # buffer was already archived (the delivery_id rides inside
+                # the event line into retrieval_log.jsonl); _buffer_event's
+                # O_EXCL receipt catches two live registrations racing.
+                delivery_id = "session_start:{}:{}:{}".format(
+                    session_id,
+                    lifecycle,
+                    hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16],
+                )
+                event["delivery_id"] = delivery_id
+                if delivery_id in prior_deliveries:
+                    replayed = True
+                else:
+                    replayed = not _buffer_event(cfg.weave_dir, session_id, event)
+                if replayed:
+                    skip_event = {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "type": "startup",
+                        "returned_ids": [],
+                        "token_est": 0,
+                        "disposition": "skipped_replay",
+                        # NOT delivery_id: a receipt field here would let
+                        # _buffer_event drop the telemetry line itself.
+                        "replay_of": delivery_id,
+                    }
+                    if lifecycle:
+                        skip_event["lifecycle"] = lifecycle
+                    if surface:
+                        skip_event["surface"] = surface
+                    _buffer_event(cfg.weave_dir, session_id, skip_event)
         except Exception as e:
             _log_error("session_start_capture", e)
             capture_error = e
+
+        if replayed:
+            _output(
+                system_message=(
+                    _report_failure(
+                        "session_start_capture", hook_input, capture_error
+                    )
+                    if capture_error
+                    else ""
+                )
+            )
+            return
+
+        # Memory-seam serving lens — NOT a whole-seam dump. Cross-matches the
+        # served notes against the flagged-twin index and injects a small
+        # guard ONLY when a note in this session's context is the twin of a
+        # durable CC memory flagged stale/diverged. Empty string = inject
+        # nothing (the common case). Best-effort; never blocks the payload.
+        # Runs on the ids actually delivered — for a delta, only the new ones.
+        try:
+            from thinkweave.synthesis.memory_seam import session_guard_section
+
+            guard = session_guard_section(cfg, served_ids)
+        except Exception as e:
+            _log_error("session_start_seam", e)
+            guard = ""
 
         if not payload.strip() and not guard:
             _output(

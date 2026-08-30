@@ -93,8 +93,8 @@ class WrapFinalizeResult:
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
 
-def _resolve_session_chain(
-    cfg: Config, session_id: str, project: str
+def resolve_session_chain(
+    cfg: Config, session_id: str, project: str, logical_key: str = ""
 ) -> list[tuple[Path, Path | None, dict | None]]:
     """Locate the logical session's event streams without creating anything.
 
@@ -109,7 +109,9 @@ def _resolve_session_chain(
     forced re-extract splits one session across sibling folders). The chain
     then admits sibling folders that share a primary candidate's
     ``logical_session`` (the cross-segment key hooks stamp from the
-    transcript's ``bridgeSessionId``) or whose ``source_session`` appears
+    transcript's ``bridgeSessionId``; ``logical_key`` seeds that set for
+    callers that already read the bridge row but whose own segment note
+    may not exist yet — SessionStart, #175) or whose ``source_session`` appears
     in a primary's ``segments:`` list (the durable record a previous wrap
     wrote) — EXCEPT siblings a REAL wrap already processed (``processed``
     with ``auto_extracted`` cleared): ``bridgeSessionId`` is cloud-session
@@ -169,7 +171,7 @@ def _resolve_session_chain(
                     fm.get("source_session") in ids or fm.get("id") in ids
                 )
 
-            keys: set[str] = set()
+            keys: set[str] = {logical_key} if logical_key else set()
             segment_ids: set[str] = set()
             for d, fm in folders:
                 if fm is None or not id_matched(d, fm):
@@ -557,7 +559,7 @@ def finalize_wrap(
     # prune shield and reprojection all consume the same resolution (it
     # re-reads every candidate's events per call, so 4 calls was 4 scans).
     try:
-        chain = _resolve_session_chain(cfg, session_id, project)
+        chain = resolve_session_chain(cfg, session_id, project)
     except Exception as e:  # noqa: BLE001
         chain = []
         result.errors.append(f"resolve: {e}")
