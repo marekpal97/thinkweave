@@ -133,6 +133,10 @@ def _resolve_session_chain(
     """
     from thinkweave.core.events import extract_prompts
 
+    if not session_id:
+        # An empty id must resolve nothing — ids={""} would
+        # startswith-match EVERY folder as a primary.
+        return []
     ids = {session_id}
     src = _source_session_of(cfg, session_id) if session_id.startswith("ses-") else ""
     if src:
@@ -265,7 +269,15 @@ def _record_segments(
     sort last. Markdown-truth for later consumers — the task-trace epic
     (#184) keys subagent attribution on the same list — and honoured by
     the resolver, so the chain survives re-wraps even if a segment's
-    ``logical_session`` stamp is lost."""
+    ``logical_session`` stamp is lost.
+
+    The write UNIONS with the UUIDs already stored on the primary: the
+    chain this join resolved can be narrower than the session chain (a
+    sibling drops out once its own real wrap runs), and the record
+    documents the chain, not one join's span. Merge rule (deterministic):
+    members seen this run keep this run's timestamp order; stored-only
+    members keep their stored position relative to the shared members
+    (inserted after their nearest stored predecessor that survives)."""
     if len(chain) < 2:
         return
     primary = chain[0][1]
@@ -305,11 +317,22 @@ def _record_segments(
     # two folders over ONE source UUID — not a multi-segment session.
     if len(ordered) < 2:
         return
-    # Direct frontmatter write, REPLACE semantics: update_note union-merges
-    # list values, which would freeze a previously stored (possibly wrong)
-    # order forever — this record must equal the recomputed chronology.
     sm = primary / "session.md"
     fm, body = parse_frontmatter(sm.read_text(encoding="utf-8"))
+    # Union with the stored record (see docstring): walk the stored list
+    # with an insert cursor — a shared member moves the cursor behind
+    # itself, a stored-only member is inserted at the cursor.
+    stored = fm.get("segments") or []
+    pos = 0
+    for sid in (str(s) for s in stored if s):
+        if sid in ordered:
+            pos = ordered.index(sid) + 1
+        else:
+            ordered.insert(pos, sid)
+            pos += 1
+    # Direct frontmatter write, controlled-merge semantics: update_note's
+    # blind union-merge would freeze a previously stored (possibly wrong)
+    # order forever — shared members must take the recomputed chronology.
     if fm.get("segments") != ordered:
         fm["segments"] = ordered
         sm.write_text(

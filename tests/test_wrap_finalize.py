@@ -1160,6 +1160,50 @@ class TestSegmentChain:
         fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
         assert fm.get("segments") == expected
 
+    def test_segments_record_keeps_member_after_its_own_real_wrap(
+        self, config: Config, vault: VaultManager
+    ):
+        # Post-gate cleanup: once a MIDDLE segment gets its own real wrap,
+        # the chain exclusion drops it from this join — but the durable
+        # record documents the session chain (#184 keys attribution on
+        # it), so the write must union with what is already stored, not
+        # replace it lossily.
+        from thinkweave.core.vault import parse_frontmatter
+
+        self._chain_fixture(config)
+        verdicts = [{"prompt": "looks good", "register": "confirmation"}]
+        first = finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=verdicts,
+        )
+        expected = ["cc-seg1", "cc-seg2", "cc-seg3"]
+        assert first.segments == expected
+
+        # seg2 now gets its own real wrap (processed, auto_extracted
+        # cleared) — excluded from the next join's chain.
+        seg2_sm = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / "cc-seg2-2026-08-21" / "session.md"
+        )
+        seg2_sm.write_text(
+            seg2_sm.read_text(encoding="utf-8").replace(
+                "source_session: cc-seg2",
+                "source_session: cc-seg2\nprocessed: true",
+            ),
+            encoding="utf-8",
+        )
+        rewrap = finalize_wrap(
+            config, session_id="cc-seg3", project="t", prune=False,
+            verdicts=verdicts,
+        )
+        assert rewrap.segments == expected
+        sm = (
+            config.vault_root / "projects" / "t" / "sessions"
+            / "cc-seg3-2026-08-21" / "session.md"
+        )
+        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
+        assert fm.get("segments") == expected
+
     def test_single_uuid_sibling_pair_writes_no_segments_record(
         self, config: Config, vault: VaultManager
     ):
