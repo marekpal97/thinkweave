@@ -3,6 +3,82 @@
 Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
 `weave_*` MCP + CLI surface may still break between minors.
 
+## [0.2.1] — 2026-08-31
+
+The release headline: **one logical conversation, however many session
+UUIDs the harness spends on it.** Compaction, resume, clear and replay
+each mint a new UUID, but the hooks, the wrap verdict join, and
+`context_served` all keyed on a single one — the logical-session chain
+(#183 stack, PR #203) fixes all three keying bugs, and reverses a v0.2.0
+behavior along the way: SessionStart context is now served **once** per
+session, never re-injected on resume/compact. `/brief`, `/learn`, and
+`weave health` ride along (feature work on a patch release — a deliberate
+call on the 0.x contract; the v0.3 milestone continues separately).
+
+### Changed
+
+- **Serve-once SessionStart** (#175, PR #203): `startup`/`clear` serve the
+  full snapshot exactly once — replay identity survives double
+  registration and buffer archival; `resume`/`compact` inject nothing,
+  recording a visible `skipped_lifecycle` event. Resume replays the
+  transcript, and post-compaction retrieval is on-demand via the `weave_*`
+  surface. Reverses v0.2.0's "resume/compact always re-inject" (#161):
+  that fix ended silent holes, this one ends the ~25k-char snapshot
+  re-delivery those injections cost — the biggest daily token waste in the
+  system — by deletion (−585 lines), not by delta.
+- **Acquisition lanes tightened** (#192, PR #192): event lanes gain
+  freshness windows (news 7d, podcast/youtube events 14d) and the Haiku
+  stage-1 funnel extends to podcast + YouTube; the repo queue actually
+  dedups (`url` joined `dedup_keys`); `feed_errors_detail` names the
+  failing feed; daily `/update-hubs` in cron no longer stalls on a
+  question.
+
+### Added
+
+- **`weave health`** (#120, PR #193): deterministic system-health
+  collector — cron jobs joined to run evidence, per-lane queue depth,
+  drain-backlog advisories (never the exit code), hook errors, digest
+  freshness; `--json` is `/brief`'s contract.
+- **`/brief`** (#170, PR #193): daily orientation over the nightly
+  digests — a watermarked deterministic collect (health, timeline,
+  per-lane landings with bound cron feeders and weakest-link state,
+  three-layer focus merge, attention, catalysts) rendered exactly per its
+  render_plan.
+- **`/learn`** (#171, PR #193): vault-grounded tutor — one retrieval
+  partitioned into the user's own trajectory vs world material, test-first
+  on revisit, a learn-note validator, and unanswered questions feeding the
+  probe rail.
+- **The `logical_session` chain primitive** (#180, PR #203): hooks stamp
+  each segment note from the transcript's bridge-session row; wraps
+  record a durable `segments:` union on the primary note; the one
+  chain-membership rule (shared key or `segments:` match, minus siblings
+  a real wrap already labeled) lives on `core.vault.is_chain_sibling`,
+  called by both the verdict join and the RLVR exposure union.
+
+### Fixed
+
+- **Wrap verdict rail** (#181, PR #203): one verdict labels exactly one
+  prompt (identical-text collapse, exact match over prefix, per-channel
+  label separation so re-wraps are a fixed point); events-file resolution
+  matches both session identities and ranks prompt-bearing archives over
+  recreated live buffers; prune can no longer GC the folder a wrap just
+  wrote verdicts into; the join spans the whole compaction-segment chain.
+- **The probe rail actually flows** (#192): wrap catch-up sees live
+  buffers, not just archived ones (645 had piled up invisible); prompt
+  labels reach the index (archive-before-index + explicit reprojection —
+  the priority worker had been consuming pre-#101 heuristic fossils);
+  the labeler's probe bar rewritten around retention.
+- **`bin/weave` no longer re-syncs (and prunes) the venv on every call**
+  (#164 straggler, PR #192): the silent `--extra mcp` sync uninstalled
+  the other extras — the bug that killed the news pull for 11 days;
+  `weave doctor --mcp` gains a venv-extras check, and the check itself
+  survives absent parent packages (PR #203 pre-slice).
+
+### Internal
+
+- Four zero-risk deletions from the purity sweep (#15, PR #197);
+  dev-link upgrade docs standardize on `uv sync --extra all` (PR #182).
+
 ## [0.2.0] — 2026-08-20
 
 The release headline: **ThinkWeave slims to the memory layer.** The
