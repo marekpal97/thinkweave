@@ -48,7 +48,11 @@ from typing import Iterator
 
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
-from thinkweave.core.vault import VaultManager, extract_wikilink_ids
+from thinkweave.core.vault import (
+    VaultManager,
+    extract_wikilink_ids,
+    is_chain_sibling,
+)
 from thinkweave.synthesis.prediction import read_history
 
 # Same prefix family as operations/retrieval_log.py:_ID_RE. `fullmatch` here —
@@ -176,11 +180,11 @@ def _chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
     for unknown or unchained sessions. The LIKE is a prefilter (``_``
     over-matches harmlessly); the json parse confirms.
 
-    Siblings a REAL wrap already processed (``processed`` without
-    ``auto_extracted``) are excluded, mirroring the serve/wrap membership:
-    ``bridgeSessionId`` survives resumption across days, and a
-    separately-worked, separately-wrapped session's exposure would inflate
-    the RLVR context signal. The decision's own session is always in.
+    Membership applies the shared real-wrap exclusion
+    (``core.vault.is_chain_sibling``, key-only here — no ``segments:``
+    union): a separately-worked, separately-wrapped session's exposure
+    would inflate the RLVR context signal. The decision's own session is
+    always in.
     """
     ids = {session_id}
     row = idx.db.execute(
@@ -206,10 +210,8 @@ def _chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
             fm = json.loads(r["frontmatter"]) or {}
         except (json.JSONDecodeError, TypeError):
             continue
-        if str(fm.get("logical_session") or "") != key:
+        if not is_chain_sibling(fm, {key}):
             continue
-        if fm.get("processed") and not fm.get("auto_extracted"):
-            continue  # real-wrapped sibling — not this conversation's serve
         ids.add(r["id"])
     return ids
 

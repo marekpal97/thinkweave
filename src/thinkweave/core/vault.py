@@ -137,6 +137,38 @@ def read_session_fm(session_md: Path) -> dict | None:
         return None
 
 
+def is_chain_sibling(
+    fm: dict, keys: set[str], segment_ids: set[str] = frozenset()
+) -> bool:
+    """The ONE logical-session chain-membership rule, shared by every join.
+
+    A sibling session belongs to the chain when it shares a primary's
+    ``logical_session`` key (hooks stamp it from the transcript's
+    bridge-session row) or its ``source_session`` appears in a primary's
+    durable ``segments:`` record — EXCEPT a sibling a REAL wrap already
+    processed (``processed`` with ``auto_extracted`` cleared): the bridge
+    key is cloud-session identity and survives resumption across days, so
+    a shared key alone also matches sessions separately worked and wrapped
+    earlier, whose prompts that wrap already labeled. The Stop hook's thin
+    auto-extract stub (``processed`` + ``auto_extracted``) never labels
+    prompts, and earlier segments of a live logical session carry exactly
+    that shape — they stay admitted.
+
+    Callers: the wrap verdict join (#180 — passes ``segment_ids`` too) and
+    the RLVR export's exposure union (#175 — key-only). Factored here so
+    the exclusion rule cannot drift between them. Callers pass only
+    non-empty keys; a session without a ``logical_session`` stamp never
+    key-matches.
+    """
+    key = str(fm.get("logical_session") or "")
+    in_chain = (key and key in keys) or (
+        str(fm.get("source_session") or "") in segment_ids
+    )
+    if not in_chain:
+        return False
+    return not (fm.get("processed") and not fm.get("auto_extracted"))
+
+
 def _unquote_scalar(value: str) -> str:
     """Undo frontmatter scalar quoting.
 

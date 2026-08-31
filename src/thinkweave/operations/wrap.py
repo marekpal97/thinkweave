@@ -111,14 +111,9 @@ def _resolve_session_chain(
     ``logical_session`` (the cross-segment key hooks stamp from the
     transcript's ``bridgeSessionId``) or whose ``source_session`` appears
     in a primary's ``segments:`` list (the durable record a previous wrap
-    wrote) — EXCEPT siblings a REAL wrap already processed (``processed``
-    with ``auto_extracted`` cleared): ``bridgeSessionId`` is cloud-session
-    identity and survives resumption across days, so a shared key alone
-    also matches sessions separately worked and wrapped earlier, whose
-    prompts that wrap already labeled. The Stop hook's thin auto-extract
-    stub (``processed`` + ``auto_extracted``) never labels prompts, and
-    earlier segments of a live logical session carry exactly that shape —
-    they stay admitted.
+    wrote) — subject to the real-wrap exclusion in
+    ``core.vault.is_chain_sibling``, the one membership rule this join and
+    the RLVR chain union share (rationale lives on the predicate).
 
     Ranking (#181, unchanged within a class): id-matched folders outrank
     chain-admitted ones; folders whose events actually contain prompt rows
@@ -145,7 +140,7 @@ def _resolve_session_chain(
     if project:
         sessions_dir = cfg.vault_root / "projects" / project / "sessions"
         if sessions_dir.exists():
-            from thinkweave.core.vault import read_session_fm
+            from thinkweave.core.vault import is_chain_sibling, read_session_fm
 
             folders: list[tuple[Path, dict | None]] = []
             for d in sessions_dir.iterdir():
@@ -174,21 +169,9 @@ def _resolve_session_chain(
 
             for d, fm in folders:
                 primary = id_matched(d, fm)
-                in_chain = fm is not None and (
-                    str(fm.get("logical_session") or "") in keys
-                    or str(fm.get("source_session") or "") in segment_ids
-                )
-                if (
-                    in_chain
-                    and not primary
-                    and fm.get("processed")
-                    and not fm.get("auto_extracted")
+                if not primary and not (
+                    fm is not None and is_chain_sibling(fm, keys, segment_ids)
                 ):
-                    # Already wrapped by a real wrap — its own labeler had
-                    # the richer context; today's verdicts must not bind
-                    # to its prompts (round 2 blocker).
-                    in_chain = False
-                if not primary and not in_chain:
                     continue
                 ev = d / "events.jsonl"
                 if not ev.exists() and fm is not None:
