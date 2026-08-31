@@ -251,35 +251,29 @@ class TestLoopPrimeProjection:
         assert [(r["note_id"], r["source"]) for r in rows] == [("n-p1", "loop-prime")]
 
 
-class TestChainRootProjection:
-    def test_delta_startup_event_keys_rows_to_the_chain_root(
+class TestServeTelemetryProjection:
+    def test_skipped_lifecycle_event_projects_nothing(
         self, config: Config, vault: VaultManager
     ):
-        """#175 AC3: a resume/compact delta delivery stamps ``chain_root``
-        (the chain's ROOT session note id) on its startup event; the
-        projection keys those rows to the root, not the segment that
-        physically buffered them — segments are one logical conversation."""
-        root_id, _ = _seed_session(vault, [
-            {"ts": "2026-08-29T10:00:00Z", "type": "startup",
+        """Serve-once (#175 rework): a resume/compact delivery buffers only
+        a zero-id ``skipped_lifecycle`` telemetry event — no context_served
+        rows, exposure stays counted once."""
+        sess_id, _ = _seed_session(vault, [
+            {"ts": "2026-08-31T09:00:00Z", "type": "startup",
              "returned_ids": ["n-aaa111aa"], "token_est": 100},
-        ])
-        seg_id, _ = _seed_session(vault, [
-            {"ts": "2026-08-30T09:00:00Z", "type": "startup",
-             "lifecycle": "resume", "disposition": "served_delta",
-             "chain_root": root_id,
-             "returned_ids": ["dec-new11111"], "token_est": 40},
+            {"ts": "2026-08-31T10:00:00Z", "type": "startup",
+             "lifecycle": "compact", "disposition": "skipped_lifecycle",
+             "returned_ids": [], "token_est": 0},
         ])
         idx = Indexer(config=config)
         try:
             idx.rebuild(full=True)
-            root_rows = _select_all(idx, root_id)
-            seg_rows = _select_all(idx, seg_id)
+            rows = _select_all(idx, sess_id)
         finally:
             idx.close()
-        # The delta exposure lands on the chain root…
-        assert {r["note_id"] for r in root_rows} == {"n-aaa111aa", "dec-new11111"}
-        # …and NOT on the segment's own session id.
-        assert seg_rows == []
+        assert [(r["note_id"], r["source"]) for r in rows] == [
+            ("n-aaa111aa", "startup"),
+        ]
 
     def test_skipped_replay_event_projects_nothing(
         self, config: Config, vault: VaultManager

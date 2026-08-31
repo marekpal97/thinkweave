@@ -368,11 +368,11 @@ class TestAssembleRow:
         row = assemble_row(config, dec_id).as_dict()
         assert row["context"]["startup_token_est"] == 4321
 
-    def test_delta_rows_on_chain_root_are_visible_to_segment_decisions(
+    def test_chain_union_makes_root_exposure_visible_to_segment_decisions(
         self, config: Config, vault: VaultManager
     ):
-        # #175: a resume/compact delta re-homes its startup rows to the
-        # chain ROOT session. A decision minted in the later segment must
+        # #175 serve-once: only the chain's FIRST segment receives the
+        # startup snapshot. A decision minted in a later segment must
         # still see that exposure — the export unions context_served across
         # every session sharing the segment's logical_session key. But the
         # union applies the same real-wrap exclusion as the serve/wrap
@@ -392,7 +392,6 @@ class TestAssembleRow:
                 "logical_session": "cse_rl1",
             },
         )
-        root_id = vault.read_note(root_path).id
         (root_path.parent / "retrieval_log.jsonl").write_text(
             json.dumps({
                 "ts": "t0", "type": "startup",
@@ -428,8 +427,13 @@ class TestAssembleRow:
         (seg_path.parent / "retrieval_log.jsonl").write_text(
             json.dumps({
                 "ts": "t1", "type": "startup", "lifecycle": "resume",
-                "disposition": "served_delta", "chain_root": root_id,
-                "returned_ids": ["n-deltanew1"], "token_est": 40,
+                "disposition": "skipped_lifecycle",
+                "returned_ids": [], "token_est": 0,
+            }) + "\n"
+            + json.dumps({
+                "ts": "t2", "type": "retrieval",
+                "tool": "mcp__thinkweave__weave_read",
+                "returned_ids": ["n-segpull11"],
             }) + "\n",
             encoding="utf-8",
         )
@@ -438,7 +442,7 @@ class TestAssembleRow:
             NoteType.DECISION,
             "D2",
             body=(
-                "Based on [[n-deltanew1]] and [[n-rootnote1]], "
+                "Based on [[n-rootnote1]] and [[n-segpull11]], "
                 "not [[n-outsider9]]."
             ),
             project="t",
@@ -455,11 +459,13 @@ class TestAssembleRow:
         _index(config)
 
         row = assemble_row(config, dec_id).as_dict()
-        # Chain union sees the stub-shaped root's rows — and ONLY those:
-        # the real-wrapped outsider's exposure stays out.
+        # Chain union sees the stub-shaped root's startup rows — and ONLY
+        # those: the real-wrapped outsider's exposure stays out. The
+        # segment's own on-demand pull buckets as onthefly, untouched.
         assert set(row["context"]["cited_startup_only_ids"]) == {
-            "n-deltanew1", "n-rootnote1",
+            "n-rootnote1",
         }
+        assert set(row["context"]["cited_onthefly_ids"]) == {"n-segpull11"}
 
     def test_session_without_retrieval_log_is_graceful(
         self, config: Config, vault: VaultManager

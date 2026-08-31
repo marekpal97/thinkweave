@@ -170,10 +170,11 @@ def _chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
     """The session plus every session note sharing its ``logical_session``.
 
     #175 chain union: a compaction-segment chain is one logical
-    conversation, and delta deliveries key their ``context_served`` rows to
-    the chain's root — so exposure lookups must span the chain. Returns
-    just ``{session_id}`` for unknown or unchained sessions. The LIKE is a
-    prefilter (``_`` over-matches harmlessly); the json parse confirms.
+    conversation, and under serve-once only its FIRST segment receives the
+    startup snapshot — a decision minted in a later segment still relied on
+    it, so exposure lookups span the chain. Returns just ``{session_id}``
+    for unknown or unchained sessions. The LIKE is a prefilter (``_``
+    over-matches harmlessly); the json parse confirms.
 
     Siblings a REAL wrap already processed (``processed`` without
     ``auto_extracted``) are excluded, mirroring the serve/wrap membership:
@@ -246,10 +247,10 @@ def _assemble_with_indexer(
     startup_ids: set[str] = set()
     n_retrievals_onthefly = 0
     if session_id:
-        # #175: resume/compact delta deliveries re-home their startup rows
-        # to the chain's ROOT session. A decision minted in a later segment
-        # must still see that exposure, so the lookup unions context_served
-        # across every session note sharing this session's logical_session.
+        # #175 serve-once: only the chain's first segment receives the
+        # startup snapshot. A decision minted in a later segment must still
+        # see that exposure, so the lookup unions context_served across
+        # every session note sharing this session's logical_session.
         session_ids = sorted(_chain_session_ids(idx, session_id))
         placeholders = ",".join("?" * len(session_ids))
         rows = idx.db.execute(

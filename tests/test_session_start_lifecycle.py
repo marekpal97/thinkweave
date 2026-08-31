@@ -1,17 +1,19 @@
-"""Lifecycle-aware SessionStart delivery (#175).
+"""Serve-once SessionStart delivery (#175, reworked per the PR #203 review).
 
 Harnesses emit SessionStart more than once per logical conversation
-(startup, resume, clear, compact, replay). ``_handle_session_start``
-branches on the hook input's ``source``:
+(startup, resume, clear, compact, replay), but the initial context is
+served exactly ONCE per session. ``_handle_session_start`` branches on the
+hook input's ``source``:
 
 - ``startup`` / ``clear`` (or absent — legacy harnesses): the full
-  project snapshot, as before.
-- ``resume`` / ``compact``: a delta — only notes not already served to
-  the logical-session chain (#180), plus one "N notes already in
-  context" line.
-- a byte-identical redelivery (double registration, post-archival
-  replay): nothing is injected; a ``skipped_replay`` telemetry event is
-  recorded with no note ids, so context exposure is never double-counted.
+  project snapshot.
+- ``resume`` / ``compact``: NOTHING is injected — resume replays the
+  transcript (the context is still in the window), and after compaction
+  the agent retrieves on demand via the weave_* MCP/CLI. A zero-id
+  ``skipped_lifecycle`` telemetry event keeps exposure accounting honest.
+- a redelivery of the startup/clear serve (double registration,
+  post-archival replay): nothing is injected; a ``skipped_replay``
+  telemetry event is recorded with no note ids.
 
 The replay receipt is the ``delivery_id`` stamped on the buffered
 ``startup`` event itself: ``archive_buffer`` carries it into the session
@@ -28,9 +30,9 @@ import pytest
 
 from tests.conftest import read_jsonl, write_session_md, write_transcript
 
-# One full-snapshot payload used by every test. Ids chosen so the delta
-# math has an independent source of truth: the chain fixture pre-serves
-# dec-aaaa1111 + ses-cccc3333, leaving dec-bbbb2222 the only new note.
+# One full-snapshot payload used by every test; the chain fixture
+# pre-serves dec-aaaa1111 + ses-cccc3333 so serve-state on disk is
+# distinguishable from a fresh vault.
 FULL_PAYLOAD = (
     "## Recent Decisions\n"
     "- (`dec-aaaa1111`) decision one\n"
@@ -181,184 +183,44 @@ class TestFullServe:
         assert _buffer_events(env, "uuid-fresh1")[0]["disposition"] == "served_full"
 
 
-class TestDeltaServe:
-    """AC1 (resume/compact legs) + AC3 chain-root stamping + AC6."""
+class TestLifecycleSkip:
+    """Serve-once (#175 rework, PR #203 review): the initial context is
+    served once per session — resume replays the transcript (context still
+    present) and after compaction the agent retrieves on demand via the
+    weave_* MCP/CLI, so resume/compact inject NOTHING. Only a telemetry
+    event with zero ids is buffered, keeping exposure accounting honest."""
 
-    def test_resume_delta_is_disjoint_from_served_set(
-        self, env, outputs, tmp_path: Path
+    @pytest.mark.parametrize("source", ["resume", "compact"])
+    def test_resume_and_compact_inject_nothing(
+        self, env, outputs, tmp_path: Path, monkeypatch, source: str
     ):
-        # Resume REPLAYS the transcript: prior injections are genuinely back
-        # in the window, so suppressed ids must not even appear as text.
         from thinkweave.surfaces.hooks import handler as h
 
-        _seed_chain_root(env, served_ids=["dec-aaaa1111", "ses-cccc3333"])
-        h._handle_session_start({
-            "session_id": "uuid-seg2",
-            "source": "resume",
-            "cwd": str(tmp_path),
-            "transcript_path": _transcript_with_bridge(tmp_path),
-        })
-
-        payload = outputs[-1]["additional_context"]
-        # Disjoint from the chain's served set…
-        assert "dec-aaaa1111" not in payload
-        assert "ses-cccc3333" not in payload
-        # …carrying only the genuinely new note…
-        assert "dec-bbbb2222" in payload
-        # …plus the single already-in-context summary line.
-        assert "2 notes already in context" in payload
-
-        events = _buffer_events(env, "uuid-seg2")
-        assert len(events) == 1
-        assert events[0]["disposition"] == "served_delta"
-        assert events[0]["lifecycle"] == "resume"
-        # AC6: exposure counted once — only the new note id is recorded.
-        assert events[0]["returned_ids"] == ["dec-bbbb2222"]
-        # AC3: the delivery is keyed to the chain's ROOT session note.
-        assert events[0]["chain_root"] == "ses-root0001"
-
-    def test_compact_delta_lists_evicted_ids_for_restore(
-        self, env, outputs, tmp_path: Path
-    ):
-        # Compaction EVICTED the prior injections from the window: the delta
-        # lists the suppressed ids (id + title line) so the agent can
-        # weave_read them back — as plain-text references, NOT exposure.
-        from thinkweave.surfaces.hooks import handler as h
-
-        _seed_chain_root(env, served_ids=["dec-aaaa1111", "ses-cccc3333"])
-        h._handle_session_start({
-            "session_id": "uuid-seg2c",
-            "source": "compact",
-            "cwd": str(tmp_path),
-            "transcript_path": _transcript_with_bridge(tmp_path),
-        })
-
-        payload = outputs[-1]["additional_context"]
-        assert "dec-bbbb2222" in payload
-        assert "2 notes already in context" in payload
-        # The evicted ids are listed so they can be restored…
-        assert "dec-aaaa1111" in payload
-        assert "ses-cccc3333" in payload
-
-        events = _buffer_events(env, "uuid-seg2c")
-        assert len(events) == 1
-        assert events[0]["disposition"] == "served_delta"
-        assert events[0]["lifecycle"] == "compact"
-        # …but exposure stays the NEW ids only (AC1/AC6 disjointness holds
-        # at the context_served level).
-        assert events[0]["returned_ids"] == ["dec-bbbb2222"]
-        assert events[0]["chain_root"] == "ses-root0001"
-
-    def test_compact_keeps_tools_manifest_and_footer_resume_does_not(
-        self, env, outputs, tmp_path: Path, monkeypatch
-    ):
-        # The tools manifest and retrieval footer were compacted out of the
-        # window too — a compact delta re-serves them; a resume (window
-        # restored) does not.
-        from thinkweave.surfaces.hooks import handler as h
-
-        payload_with_tools = (
-            FULL_PAYLOAD
-            + "\n## Available MCP Tools\n- weave_search: find X\n"
-            + "\n## Retrieval Hints\nUse weave_context for Y.\n"
-        )
+        builds: list = []
         monkeypatch.setattr(
             "thinkweave.retrieval.context.build_project_context",
-            lambda *a, **kw: payload_with_tools,
+            lambda *a, **kw: builds.append(1) or FULL_PAYLOAD,
         )
+        # Even with chain serve-state on disk: nothing is injected.
         _seed_chain_root(env, served_ids=["dec-aaaa1111", "ses-cccc3333"])
 
         h._handle_session_start({
-            "session_id": "uuid-toolsr",
-            "source": "resume",
-            "cwd": str(tmp_path),
-            "transcript_path": _transcript_with_bridge(tmp_path),
-        })
-        assert "weave_search: find X" not in outputs[-1]["additional_context"]
-
-        h._handle_session_start({
-            "session_id": "uuid-toolsc",
-            "source": "compact",
-            "cwd": str(tmp_path),
-            "transcript_path": _transcript_with_bridge(tmp_path),
-        })
-        compact_payload = outputs[-1]["additional_context"]
-        assert "weave_search: find X" in compact_payload
-        assert "Use weave_context for Y." in compact_payload
-
-    def test_chain_root_ranked_by_earliest_startup_ts_not_folder_name(
-        self, env, outputs, tmp_path: Path
-    ):
-        # Two same-day segments: frontmatter date ties, and the folder whose
-        # name sorts FIRST holds the LATER startup. The root must be the
-        # segment that actually served first (earliest startup ts), or the
-        # root would flip mid-conversation and split context_served.
-        from thinkweave.surfaces.hooks import handler as h
-
-        _seed_chain_root(
-            env,
-            note_id="ses-later0001",
-            source_session="uuid-later",
-            folder_name="uuid-later-2026-08-29",
-            startup_ts="2026-08-29T12:00:00+00:00",
-            served_ids=["dec-aaaa1111"],
-        )
-        _seed_chain_root(
-            env,
-            note_id="ses-first0001",
-            source_session="uuid-first",
-            folder_name="uuid-first-2026-08-29",
-            startup_ts="2026-08-29T08:00:00+00:00",
-            served_ids=["ses-cccc3333"],
-        )
-
-        h._handle_session_start({
-            "session_id": "uuid-seg9",
-            "source": "resume",
+            "session_id": f"uuid-lc-{source}",
+            "source": source,
             "cwd": str(tmp_path),
             "transcript_path": _transcript_with_bridge(tmp_path),
         })
 
-        events = _buffer_events(env, "uuid-seg9")
-        assert events[0]["chain_root"] == "ses-first0001"
-
-    def test_resume_with_no_chain_state_falls_back_to_full(
-        self, env, outputs, tmp_path: Path
-    ):
-        # A resume the vault has no serve record for is effectively a fresh
-        # session: the full snapshot is the only useful delivery.
-        from thinkweave.surfaces.hooks import handler as h
-
-        h._handle_session_start({
-            "session_id": "uuid-lonely1",
-            "source": "resume",
-            "cwd": str(tmp_path),
-        })
-
-        assert outputs[-1]["additional_context"] == FULL_PAYLOAD
-        assert _buffer_events(env, "uuid-lonely1")[0]["disposition"] == "served_full"
-
-    def test_everything_already_served_yields_summary_only(
-        self, env, outputs, tmp_path: Path
-    ):
-        from thinkweave.surfaces.hooks import handler as h
-
-        _seed_chain_root(
-            env,
-            served_ids=["dec-aaaa1111", "dec-bbbb2222", "ses-cccc3333"],
-        )
-        h._handle_session_start({
-            "session_id": "uuid-seg3",
-            "source": "resume",
-            "cwd": str(tmp_path),
-            "transcript_path": _transcript_with_bridge(tmp_path),
-        })
-
-        payload = outputs[-1]["additional_context"]
-        assert "3 notes already in context" in payload
-        for nid in ("dec-aaaa1111", "dec-bbbb2222", "ses-cccc3333"):
-            assert nid not in payload
-        assert _buffer_events(env, "uuid-seg3")[0]["returned_ids"] == []
+        assert outputs[-1]["additional_context"] == ""
+        # The snapshot is not even built — the skip path is payload-free.
+        assert builds == []
+        events = _buffer_events(env, f"uuid-lc-{source}")
+        assert len(events) == 1
+        assert events[0]["disposition"] == "skipped_lifecycle"
+        assert events[0]["lifecycle"] == source
+        # Zero exposure: nothing for context_served to project.
+        assert events[0]["returned_ids"] == []
+        assert events[0]["token_est"] == 0
 
 
 class TestReplayGuard:
@@ -483,113 +345,6 @@ class TestReplayGuard:
             "served_full", "skipped_replay",
         ]
 
-    def test_repeated_compaction_with_unchanged_vault_still_serves(
-        self, env, outputs, tmp_path: Path
-    ):
-        # Notes are only minted at wrap time, so an UNCHANGED snapshot
-        # across compactions is the NORMAL case — and each compaction
-        # evicts the previous delta from the window. A second compact must
-        # re-serve (evicted list included), not be mistaken for a replay of
-        # the first: genuine lifecycle events are separated by conversation
-        # activity, byte-duplicate redeliveries are not.
-        from thinkweave.surfaces.hooks import handler as h
-
-        base = {"session_id": "uuid-cc1", "cwd": str(tmp_path)}
-        h._handle_session_start(dict(base, source="startup"))
-        h._handle_session_start(dict(base, source="compact"))
-        # The conversation activity that triggered the second compaction.
-        h._buffer_event(
-            env.weave_dir,
-            "uuid-cc1",
-            {"ts": "t", "tool": "Edit", "file": "a.py"},
-        )
-        h._handle_session_start(dict(base, source="compact"))
-
-        payload = outputs[-1]["additional_context"]
-        assert "3 notes already in context" in payload
-        assert "Compacted out of the window" in payload
-        for nid in ("dec-aaaa1111", "dec-bbbb2222", "ses-cccc3333"):
-            assert nid in payload
-
-        startups = [
-            e for e in _buffer_events(env, "uuid-cc1")
-            if e.get("type") == "startup"
-        ]
-        assert [e["disposition"] for e in startups] == [
-            "served_full", "served_delta", "served_delta",
-        ]
-
-    def test_duplicate_compact_redelivery_still_skips(
-        self, env, outputs, tmp_path: Path
-    ):
-        # The inverse guard: a byte-duplicate redelivery of the SAME compact
-        # event (double registration — no activity in between) still skips.
-        from thinkweave.surfaces.hooks import handler as h
-
-        base = {"session_id": "uuid-cc2", "cwd": str(tmp_path)}
-        h._handle_session_start(dict(base, source="startup"))
-        h._buffer_event(
-            env.weave_dir,
-            "uuid-cc2",
-            {"ts": "t", "tool": "Edit", "file": "a.py"},
-        )
-        h._handle_session_start(dict(base, source="compact"))
-        h._handle_session_start(dict(base, source="compact"))  # redelivery
-
-        assert outputs[-1]["additional_context"] == ""
-        startups = [
-            e for e in _buffer_events(env, "uuid-cc2")
-            if e.get("type") == "startup"
-        ]
-        assert [e["disposition"] for e in startups] == [
-            "served_full", "served_delta", "skipped_replay",
-        ]
-
-    def test_compact_replay_after_archival_is_still_skipped(
-        self, env, outputs, tmp_path: Path
-    ):
-        # The activity watermark must survive archival: archive_buffer
-        # unlinks the live buffer, and a watermark recomputed as 0 would
-        # miss the receipt (which DID survive, inside retrieval_log.jsonl)
-        # and re-serve — falsifying "identical redelivery injects nothing".
-        # The archived activity lives in events.jsonl + the retrieval lines
-        # of retrieval_log.jsonl; folding those in keeps the pre- and
-        # post-archival watermarks equal.
-        from thinkweave.core.buffer import archive_buffer
-        from thinkweave.surfaces.hooks import handler as h
-
-        base = {"session_id": "uuid-arch2", "cwd": str(tmp_path)}
-        h._handle_session_start(dict(base, source="startup"))
-        h._buffer_event(
-            env.weave_dir,
-            "uuid-arch2",
-            {"ts": "t", "tool": "Edit", "file": "a.py"},
-        )
-        h._handle_session_start(dict(base, source="compact"))
-        assert "notes already in context" in outputs[-1]["additional_context"]
-
-        sessions = env.vault_root / "projects" / "t" / "sessions"
-        folder = sessions / "uuid-arch2-2026-08-30"
-        _write_session_md(
-            folder, "ses-arch00002", "uuid-arch2", date="2026-08-30"
-        )
-        archive_buffer(env.weave_dir, "uuid-arch2", folder)
-        assert not (env.weave_dir / "buffer" / "uuid-arch2.jsonl").exists()
-
-        # Byte-duplicate redelivery of the same compact event, post-archival.
-        h._handle_session_start(dict(base, source="compact"))
-        assert outputs[-1]["additional_context"] == ""
-        events = _buffer_events(env, "uuid-arch2")
-        assert [e["disposition"] for e in events] == ["skipped_replay"]
-
-        # And the watermark stays stable once the skip event itself sits in
-        # the fresh live buffer: a further redelivery still skips, without
-        # a second skip line.
-        h._handle_session_start(dict(base, source="compact"))
-        assert outputs[-1]["additional_context"] == ""
-        events = _buffer_events(env, "uuid-arch2")
-        assert [e["disposition"] for e in events] == ["skipped_replay"]
-
     def test_repeated_replays_write_one_skip_event(
         self, env, outputs, tmp_path: Path
     ):
@@ -611,95 +366,13 @@ class TestReplayGuard:
         ]
 
 
-class TestCallShape:
-    """#175 review round 1: SessionStart latency is syscall-shaped, so the
-    scan topology is pinned — startup/clear never resolve the chain, and the
-    resume-path scan opens a bounded number of session folders."""
-
-    @pytest.mark.parametrize("source", ["startup", "clear"])
-    def test_startup_and_clear_never_resolve_the_chain(
-        self, env, outputs, tmp_path: Path, monkeypatch, source: str
-    ):
-        from thinkweave.surfaces.hooks import handler as h
-
-        calls: list = []
-        monkeypatch.setattr(
-            h,
-            "_chain_serve_state",
-            lambda *a, **kw: calls.append(a) or ("", set(), set(), None),
-        )
-        h._handle_session_start({
-            "session_id": f"uuid-cs-{source}",
-            "source": source,
-            "cwd": str(tmp_path),
-        })
-
-        assert calls == []
-        assert outputs[-1]["additional_context"] == FULL_PAYLOAD
-
-    def test_resume_scan_opens_a_bounded_number_of_folders(
-        self, env, outputs, tmp_path: Path, monkeypatch
-    ):
-        from thinkweave.surfaces.hooks import handler as h
-
-        _seed_chain_root(env, served_ids=["dec-aaaa1111", "ses-cccc3333"])
-        # Decoy folders in the production {uuid}-{date} shape: leading
-        # uuids that sort AFTER the root's name, dates far OLDER — a
-        # name-keyed recency sort would fill its whole window with these
-        # and never see the chain. Far more of them than the scan budget.
-        sessions = env.vault_root / "projects" / "t" / "sessions"
-        for i in range(60):
-            _write_session_md(
-                sessions / f"zzzz{i:04x}dead-2019-01-01", "ses-decoy001"
-            )
-
-        reads: list[Path] = []
-        real = h._read_session_fm
-
-        def counting(path: Path):
-            reads.append(path)
-            return real(path)
-
-        monkeypatch.setattr(h, "_read_session_fm", counting)
-
-        h._handle_session_start({
-            "session_id": "uuid-bound1",
-            "source": "resume",
-            "cwd": str(tmp_path),
-            "transcript_path": _transcript_with_bridge(tmp_path),
-        })
-
-        # The delta still resolves correctly through the bounded scan…
-        assert "dec-bbbb2222" in outputs[-1]["additional_context"]
-        assert "dec-aaaa1111" not in outputs[-1]["additional_context"]
-        # …and the scan never opened more folders than its budget, despite
-        # 61 candidates on disk.
-        assert 0 < len(reads) <= h._CHAIN_SCAN_RECENT
-
-
-class TestSectionHeadingContract:
-    def test_compact_reserved_sections_match_context_titles(self):
-        # _payload_section slices the compact-preserved sections out of the
-        # rendered snapshot by their literal headings. Pin them to the
-        # payload builder's authoritative titles so a rename in
-        # retrieval/context.py fails HERE instead of silently dropping the
-        # manifest from every compact delta.
-        from thinkweave.retrieval import context as ctx
-        from thinkweave.surfaces.hooks import handler as h
-
-        assert h._COMPACT_RESERVED_SECTIONS == (
-            ctx._default_title("tools"),
-            ctx._default_title("footer"),
-        )
-
-
 class TestSeamGuardUnion:
     def test_guard_runs_on_prior_and_new_ids(
         self, env, outputs, tmp_path: Path, monkeypatch
     ):
-        # The agent still relies on context served earlier in the chain, so
-        # the stale-twin guard must consider prior ids too, not just the
-        # delta's new ones.
+        # The agent still relies on everything this session was served, so
+        # the stale-twin guard considers the session's own prior serves too
+        # — not just this delivery's ids.
         captured: list[set] = []
         monkeypatch.setattr(
             "thinkweave.synthesis.memory_seam.session_guard_section",
@@ -707,15 +380,21 @@ class TestSeamGuardUnion:
         )
         from thinkweave.surfaces.hooks import handler as h
 
-        _seed_chain_root(env, served_ids=["dec-aaaa1111", "ses-cccc3333"])
-        h._handle_session_start({
+        hook_input = {
             "session_id": "uuid-guard1",
-            "source": "resume",
+            "source": "startup",
             "cwd": str(tmp_path),
-            "transcript_path": _transcript_with_bridge(tmp_path),
-        })
+        }
+        h._handle_session_start(dict(hook_input))
+        # The vault moved on: the next serve carries a different id set…
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda *a, **kw: "- (`n-ddd44444`) new note\n",
+        )
+        h._handle_session_start(dict(hook_input))
 
+        # …and the guard still sees the earlier serve's ids alongside it.
         assert captured
         assert captured[-1] >= {
-            "dec-aaaa1111", "ses-cccc3333", "dec-bbbb2222",
+            "dec-aaaa1111", "dec-bbbb2222", "ses-cccc3333", "n-ddd44444",
         }

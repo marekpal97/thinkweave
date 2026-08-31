@@ -30,8 +30,11 @@ Duplicate deliveries (#161): when a lifecycle event arrives carrying a
   single-owner registration (`surfaces/hooks/install.py`), not a receipt.
   SessionStart is the exception (#175): its delivery is pure system
   output, so (session, lifecycle source, served id set) IS its identity —
-  an identical redelivery injects nothing (``skipped_replay``), while any
-  difference in what would be served, or in lifecycle, serves normally.
+  an identical redelivery injects nothing (``skipped_replay``). Serve-once
+  (#175 rework, PR #203 review): only ``startup``/``clear`` serve at all;
+  ``resume``/``compact`` inject nothing ever (``skipped_lifecycle``) — the
+  initial context goes out once, anything further is agent-pulled via the
+  weave_* MCP/CLI retrieval surface.
 
 Note: an earlier PreToolUse(Write|Edit) handler injected "Related vault
 notes" before each file edit. It was redundant with SessionStart context
@@ -568,19 +571,12 @@ def _logical_session_key(hook_input: dict) -> str:
     return ""
 
 
-# Bounded chain scan (#175 review round 1): SessionStart must never walk the
-# whole sessions dir — the full-folder scan measured 4.9s on a 567-folder
-# DrvFs vault, pure syscall count. One readdir, name-sorted descending
-# (session folder slugs are date-stamped, so lexicographic order ≈ recency),
-# frontmatter parsed for at most this many recent folders. A live logical
-# session's segments are recent by construction; anything older is invisible
-# to serve-dedup, which fails toward over-serving (the cheap failure).
-_CHAIN_SCAN_RECENT = 40
 # Post-archival own-folder lookup budget — a just-archived session's folder
 # is among the newest few by trailing date, but the SAME-DAY tiebreak is a
-# random uuid: the production vault (measured, review round 3) has 11 days
-# exceeding 15 folders, peak 30, with 14.3% of folders ranking beyond 15
-# within their date. Budget sits above the observed peak.
+# random uuid: the production vault (measured, review round 3) has days with
+# up to 30 folders. Budget sits above the observed peak. Bounded because
+# SessionStart must never walk the whole sessions dir (a full-folder scan
+# measured 4.9s on a 567-folder DrvFs vault, pure syscall count).
 _OWN_SCAN_RECENT = 48
 
 
@@ -649,21 +645,17 @@ def _jsonl_events(path: Path):
             yield line, None
 
 
-def _read_serve_streams(
-    streams: list[Path],
-) -> tuple[set[str], set[str], str]:
-    """(served_ids, delivery_ids, earliest_startup_ts) across event streams.
+def _read_serve_streams(streams: list[Path]) -> tuple[set[str], set[str]]:
+    """(served_ids, delivery_ids) across event streams.
 
     Reads raw buffer / retrieval_log JSONL rather than the ``context_served``
     SQLite projection deliberately: the projection lags behind (it runs at
     index-rebuild/wrap time), while the streams are current the moment an
     event is buffered — and they are the files the projection rebuilds from.
-    ``skipped_replay`` telemetry contributes nothing (no ids, no delivery_id,
-    and its ts is not a serve time).
+    ``skipped_*`` telemetry contributes nothing (no ids, no delivery_id).
     """
     served: set[str] = set()
     delivery_ids: set[str] = set()
-    first_ts = ""
     for path in streams:
         for _raw, event in _jsonl_events(path):
             if not isinstance(event, dict):
@@ -677,121 +669,10 @@ def _read_serve_streams(
             )
             if event.get("type") != "startup":
                 continue
-            if event.get("disposition") == "skipped_replay":
-                continue
             did = event.get("delivery_id")
             if did:
                 delivery_ids.add(str(did))
-            ts = str(event.get("ts") or "")
-            if ts and (not first_ts or ts < first_ts):
-                first_ts = ts
-    return served, delivery_ids, first_ts
-
-
-def _chain_serve_state(
-    cfg, session_id: str, project: str, hook_input: dict
-) -> tuple[str, set[str], set[str], Path | None]:
-    """What the logical-session chain has already been served (#175).
-
-    Returns ``(chain_root_note_id, served_note_ids, prior_delivery_ids,
-    own_dir)`` — the last being THIS session's own archived folder when the
-    scan saw one, handed back so the activity watermark can read it without
-    a second folder walk (the read-count bound is pinned by tests). Serve
-    state comes from each chain member's retrieval streams — its archived
-    ``retrieval_log.jsonl`` plus any live buffer. Called on resume/compact
-    ONLY; startup/clear use :func:`_own_serve_state` and never resolve the
-    chain (call shape pinned by tests — the full scan was a 4.9s hook).
-
-    Membership mirrors #180's ``_resolve_session_chain`` reduced to what
-    serving needs: within the ``_CHAIN_SCAN_RECENT`` newest folders, a
-    member either matches this session's identity (folder-name prefix,
-    ``source_session``, or ``id``) or shares the transcript's bridge key /
-    a primary's ``logical_session`` — except non-primary siblings a real
-    wrap already processed (``processed`` without ``auto_extracted``).
-
-    ``chain_root`` is the member with the earliest startup-event ts in its
-    streams (review item: same-day segments must not pick the root by
-    folder-name accident); members with no startup event rank after any
-    that have one, by (frontmatter date, folder name).
-
-    ponytail: bounded recency scan + logical_key membership only (no
-    ``segments:``-list admission) — both failure modes are over-serving,
-    the cheap failure.
-    """
-    logical_key = _logical_session_key(hook_input)
-    scanned: list[tuple[Path, dict | None]] = []
-    if project:
-        sessions_dir = cfg.vault_root / "projects" / project / "sessions"
-        scanned = [
-            (d, _read_session_fm(d / "session.md"))
-            for d in _recent_session_dirs(sessions_dir, _CHAIN_SCAN_RECENT)
-        ]
-
-    def primary(d: Path, fm: dict) -> bool:
-        if d.name.startswith(session_id):
-            return True
-        return fm.get("source_session") == session_id or fm.get("id") == session_id
-
-    keys = {logical_key} if logical_key else set()
-    for d, fm in scanned:
-        if fm is not None and primary(d, fm):
-            k = str(fm.get("logical_session") or "")
-            if k:
-                keys.add(k)
-
-    served: set[str] = set()
-    delivery_ids: set[str] = set()
-    root = ""
-    root_rank: tuple | None = None
-    own_dir: Path | None = None
-    for d, fm in scanned:
-        if fm is None:
-            continue
-        is_primary = primary(d, fm)
-        if is_primary and own_dir is None:
-            own_dir = d
-        in_chain = str(fm.get("logical_session") or "") in keys
-        if (
-            in_chain
-            and not is_primary
-            and fm.get("processed")
-            and not fm.get("auto_extracted")
-        ):
-            # A real wrap already labeled this sibling (#180): a shared
-            # bridge key survives resumption across days, so exclude it —
-            # its notes get re-served, the cheap failure.
-            in_chain = False
-        if not is_primary and not in_chain:
-            continue
-        streams: list[Path] = []
-        log_path = d / "retrieval_log.jsonl"
-        if log_path.exists():
-            streams.append(log_path)
-        src = str(fm.get("source_session") or "")
-        if src:
-            buf = cfg.weave_dir / "buffer" / f"{src}.jsonl"
-            if buf.exists():
-                streams.append(buf)
-        s_ids, d_ids, first_ts = _read_serve_streams(streams)
-        served |= s_ids
-        delivery_ids |= d_ids
-        nid = str(fm.get("id") or "")
-        if nid:
-            rank: tuple = (
-                (0, first_ts)
-                if first_ts
-                else (1, str(fm.get("date") or ""), d.name)
-            )
-            if root_rank is None or rank < root_rank:
-                root_rank, root = rank, nid
-
-    # The current segment's own live buffer — its note may not exist yet.
-    live = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
-    if live.exists():
-        s_ids, d_ids, _ = _read_serve_streams([live])
-        served |= s_ids
-        delivery_ids |= d_ids
-    return root, served, delivery_ids, own_dir
+    return served, delivery_ids
 
 
 def _own_session_dir(cfg, session_id: str, project: str) -> Path | None:
@@ -815,59 +696,17 @@ def _own_session_dir(cfg, session_id: str, project: str) -> Path | None:
 def _own_serve_state(cfg, session_id: str, project: str) -> tuple[set[str], set[str]]:
     """(served_ids, delivery_ids) from THIS session's own streams only.
 
-    The startup/clear replay check: the live buffer when it exists, else
-    (post-archival replay) this session's own folder. Never resolves the
-    chain; a fresh session pays at most the bounded lookup.
+    The startup/clear replay check — the serve-once guarantee: the live
+    buffer when it exists, else (post-archival replay) this session's own
+    folder. A fresh session pays at most the bounded lookup.
     """
     live = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
     if live.exists():
-        served, delivery_ids, _ = _read_serve_streams([live])
-        return served, delivery_ids
+        return _read_serve_streams([live])
     d = _own_session_dir(cfg, session_id, project)
     if d is not None:
-        served, delivery_ids, _ = _read_serve_streams(
-            [d / "retrieval_log.jsonl"]
-        )
-        return served, delivery_ids
+        return _read_serve_streams([d / "retrieval_log.jsonl"])
     return set(), set()
-
-
-def _activity_count(cfg, session_id: str, own_dir: Path | None) -> int:
-    """Non-startup event lines across the session's live AND archived streams.
-
-    The delivery-distinguishing component of a resume/compact replay
-    identity (#175 review round 2): notes are only minted at wrap time, so
-    successive compactions routinely build IDENTICAL delta payloads — but
-    a genuine new compaction always follows conversation activity (that is
-    what grew the window), while a byte-duplicate double registration has
-    nothing buffered in between. Counting our own startup-type events here
-    would defeat the guard: each serve would bump its own successor's
-    identity. Malformed lines count — they belong to the action stream.
-
-    ``own_dir`` — this session's archived folder, handed down from the
-    chain scan so no second folder walk is needed — counts too (round 3):
-    ``archive_buffer`` unlinks the live buffer, and a watermark that
-    dropped to 0 would miss the receipt that survived into
-    ``retrieval_log.jsonl`` and re-serve. For pre/post-archival parity the
-    archived activity is exactly what the live count would have been —
-    every ``events.jsonl`` line plus the retrieval-type lines of
-    ``retrieval_log.jsonl`` (the two files are the buffer's partition;
-    startup lines stay excluded on both sides). Live and archived never
-    hold the same line, so summing cannot double-count.
-    """
-
-    def non_startup_lines(path: Path) -> int:
-        return sum(
-            1
-            for _raw, event in _jsonl_events(path)
-            if not (isinstance(event, dict) and event.get("type") == "startup")
-        )
-
-    n = non_startup_lines(cfg.weave_dir / "buffer" / f"{session_id}.jsonl")
-    if own_dir is not None:
-        n += non_startup_lines(own_dir / "events.jsonl")
-        n += non_startup_lines(own_dir / "retrieval_log.jsonl")
-    return n
 
 
 def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str) -> bool:
@@ -880,104 +719,6 @@ def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str)
         if isinstance(event, dict) and event.get("replay_of") == delivery_id:
             return True
     return False
-
-
-# The full-snapshot sections a compact delta re-serves (they were evicted
-# with the window). Must match retrieval/context.py's _default_title for
-# "tools" and "footer" — pinned by a contract test, so a heading rename
-# there fails loudly instead of silently dropping these from compact deltas.
-_COMPACT_RESERVED_SECTIONS = ("Available MCP Tools", "Retrieval Hints")
-
-
-def _payload_section(payload: str, title: str) -> str:
-    """One ``## title`` section of the rendered snapshot, or "" if absent."""
-    m = re.search(
-        rf"^## {re.escape(title)}\n.*?(?=^## |\Z)", payload, re.M | re.S
-    )
-    return m.group(0).rstrip() if m else ""
-
-
-def _delta_payload(
-    cfg, lifecycle: str, full_payload: str, all_ids: list[str], prior_ids: set[str]
-) -> tuple[str, list[str]]:
-    """Render the resume/compact delta: new-note lines + one summary line.
-
-    ``all_ids`` is what today's full snapshot would serve; everything the
-    chain already holds collapses into a single "N notes already in
-    context" line, and only genuinely new notes get a line each.
-
-    Resume and compact differ (#175 review round 1): resume REPLAYS the
-    transcript, so suppressed notes are genuinely back in the window and
-    must not reappear even as text; compaction EVICTED them, so the compact
-    delta lists the suppressed ids (id + title line, plain-text references
-    — NOT exposure, they never enter ``returned_ids``) and re-serves the
-    tools manifest + retrieval footer the full snapshot carries.
-
-    ponytail: a new note gets one id+title line, not the full snapshot
-    chunk — the agent can weave_read anything it needs. Upgrade path:
-    thread an exclude-set through the section builders in
-    retrieval/context.py and re-render rich chunks for new notes only.
-    """
-    new_ids = [i for i in all_ids if i not in prior_ids]
-    known_ids = [i for i in all_ids if i in prior_ids]
-    lines = [
-        f"## Context delta ({lifecycle})",
-        "",
-        f"{len(known_ids)} notes already in context from earlier in this "
-        "session — not repeated here.",
-    ]
-    meta = _note_meta(
-        cfg, new_ids + (known_ids if lifecycle == "compact" else [])
-    )
-
-    def note_line(nid: str) -> str:
-        typ, title, date = meta.get(nid, ("", "", ""))
-        desc = " — ".join(x for x in (typ, title, date) if x)
-        return f"- `{nid}`" + (f" {desc}" if desc else "")
-
-    if new_ids:
-        lines += ["", "**New since last serve** (`weave_read` for details):"]
-        lines += [note_line(nid) for nid in new_ids]
-    if lifecycle == "compact":
-        if known_ids:
-            lines += [
-                "",
-                "**Compacted out of the window** — `weave_read` to restore "
-                "(references only, already served):",
-            ]
-            lines += [note_line(nid) for nid in known_ids]
-        for title in _COMPACT_RESERVED_SECTIONS:
-            section = _payload_section(full_payload, title)
-            if section:
-                lines += ["", section]
-    return "\n".join(lines) + "\n", new_ids
-
-
-def _note_meta(cfg, ids: list[str]) -> dict[str, tuple[str, str, str]]:
-    """{id: (type, title, date)} from the index; empty on any failure."""
-    out: dict[str, tuple[str, str, str]] = {}
-    try:
-        if not ids or not cfg.index_db.exists():
-            return out
-        import contextlib
-        import sqlite3
-
-        with contextlib.closing(sqlite3.connect(str(cfg.index_db))) as db:
-            db.row_factory = sqlite3.Row
-            placeholders = ",".join("?" * len(ids))
-            for r in db.execute(
-                f"SELECT id, type, title, date FROM notes "
-                f"WHERE id IN ({placeholders})",
-                ids,
-            ):
-                out[r["id"]] = (
-                    str(r["type"] or ""),
-                    str(r["title"] or ""),
-                    str(r["date"] or ""),
-                )
-    except Exception:
-        pass
-    return out
 
 
 def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
@@ -1718,17 +1459,19 @@ def _handle_session_start(hook_input: dict) -> None:
     built by ``thinkweave.retrieval.context.build_project_context``. Never blocks;
     exceptions produce a valid hook response with an actionable diagnostic.
 
-    Lifecycle-aware (#175): the hook input's ``source`` decides the payload
-    kind. ``startup``/``clear`` (or absent — legacy harnesses) get the full
-    snapshot; ``resume``/``compact`` get a delta against what the
-    logical-session chain (#180) was already served, plus one "N notes
-    already in context" line; a byte-identical redelivery (double
-    registration, post-archival replay) injects nothing and records a
-    ``skipped_replay`` telemetry event. The replay receipt is the
-    ``delivery_id`` on the buffered startup event itself — #161's "no wire
-    id" objection is answered by keying on (session, lifecycle, served id
-    set): a later SessionStart serving different notes, or a different
-    lifecycle, always serves.
+    Serve-once (#175, reworked per the PR #203 review): the initial context
+    is served exactly once per session — ``startup``/``clear`` (or absent —
+    legacy harnesses) get the full snapshot; ``resume``/``compact`` inject
+    NOTHING and record a zero-id ``skipped_lifecycle`` telemetry event. On
+    resume the harness replays the transcript, so the context is still in
+    the window; after compaction the agent retrieves what it needs on
+    demand through the weave_* MCP/CLI surface. A redelivery of the
+    startup/clear serve (double registration, post-archival replay)
+    likewise injects nothing and records ``skipped_replay``. The replay
+    receipt is the ``delivery_id`` on the buffered startup event itself —
+    #161's "no wire id" objection is answered by keying on (session,
+    lifecycle, served id set): a later SessionStart serving different
+    notes always serves.
 
     Also records a single ``type: startup`` event in the session buffer with
     the set of note IDs the payload contains and the token estimate. This
@@ -1746,11 +1489,45 @@ def _handle_session_start(hook_input: dict) -> None:
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
         cfg = load_config()
-        project = _detect_project(hook_input)
         session_id = hook_input.get(
             "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
         )
         lifecycle = str(hook_input.get("source") or "")
+
+        if lifecycle in ("resume", "compact"):
+            # Serve-once: nothing is injected, nothing is even built. The
+            # zero-id telemetry event keeps exposure accounting honest (it
+            # projects no context_served rows) and makes the skip visible.
+            capture_error = None
+            try:
+                if session_id:
+                    skip_event = {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "type": "startup",
+                        "returned_ids": [],
+                        "token_est": 0,
+                        "disposition": "skipped_lifecycle",
+                        "lifecycle": lifecycle,
+                    }
+                    surface = _hook_harness()
+                    if surface:
+                        skip_event["surface"] = surface
+                    _buffer_event(cfg.weave_dir, session_id, skip_event)
+            except Exception as e:
+                _log_error("session_start_capture", e)
+                capture_error = e
+            _output(
+                system_message=(
+                    _report_failure(
+                        "session_start_capture", hook_input, capture_error
+                    )
+                    if capture_error
+                    else ""
+                )
+            )
+            return
+
+        project = _detect_project(hook_input)
         payload = build_project_context(
             cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
         )
@@ -1762,36 +1539,17 @@ def _handle_session_start(hook_input: dict) -> None:
         served_ids = parse_returned_ids(payload)
 
         disposition = "served_full"
-        chain_root = ""
         prior_ids: set[str] = set()
         prior_deliveries: set[str] = set()
-        own_dir: Path | None = None
         if session_id:
             try:
-                if lifecycle in ("resume", "compact"):
-                    (
-                        chain_root,
-                        prior_ids,
-                        prior_deliveries,
-                        own_dir,
-                    ) = _chain_serve_state(cfg, session_id, project, hook_input)
-                else:
-                    # startup/clear consume only the replay receipts, and
-                    # only this session's own — never the chain scan (#175
-                    # review: the full scan was a 4.9s hook on a real vault).
-                    prior_ids, prior_deliveries = _own_serve_state(
-                        cfg, session_id, project
-                    )
+                # Replay receipts come from this session's own streams only
+                # (#175 review: a whole-vault scan was a 4.9s hook).
+                prior_ids, prior_deliveries = _own_serve_state(
+                    cfg, session_id, project
+                )
             except Exception as e:
                 _log_error("session_start_chain", e)
-            if lifecycle in ("resume", "compact") and prior_ids:
-                # A chain with no serve record degrades to the full
-                # snapshot — a resume this machine never served is
-                # effectively a fresh session (AC5).
-                payload, served_ids = _delta_payload(
-                    cfg, lifecycle, payload, served_ids, prior_ids
-                )
-                disposition = "served_delta"
 
         # Record the startup event regardless of whether we emit the payload —
         # an empty payload (cold vault) is itself a fact the RLVR row should
@@ -1811,11 +1569,6 @@ def _handle_session_start(hook_input: dict) -> None:
                 }
                 if lifecycle:
                     event["lifecycle"] = lifecycle
-                if lifecycle in ("resume", "compact") and chain_root:
-                    # The chain's ROOT session id — context_served rows for
-                    # this delivery key to the logical conversation, not the
-                    # segment (indexer._project_session_retrieval_log).
-                    event["chain_root"] = chain_root
                 # Which harness served it. The indexer projects this to its
                 # own `context_served.source`; why that split exists is on the
                 # CHECK in core/indexer.py's SCHEMA_SQL.
@@ -1827,26 +1580,13 @@ def _handle_session_start(hook_input: dict) -> None:
                 # header timestamp would split identity across a minute
                 # boundary; and not the seam guard section either, which
                 # varies with seam state, not with what this delivery
-                # serves. Resume/compact identity additionally folds in the
-                # activity watermark (#175 round 2): successive compactions
-                # of an unchanged vault serve IDENTICAL deltas, and each one
-                # evicts its predecessor's window — the conversation
-                # activity between them is what tells a genuinely new
-                # lifecycle event from a byte-duplicate double registration.
-                # startup/clear keep the plain identity. prior_deliveries
-                # catches replays whose buffer was already archived (the
-                # delivery_id rides inside the event line into
-                # retrieval_log.jsonl); _buffer_event's O_EXCL receipt
-                # catches two live registrations racing.
-                watermark = (
-                    f"{_activity_count(cfg, session_id, own_dir)}:"
-                    if lifecycle in ("resume", "compact")
-                    else ""
-                )
-                delivery_id = "session_start:{}:{}:{}{}".format(
+                # serves. prior_deliveries catches replays whose buffer was
+                # already archived (the delivery_id rides inside the event
+                # line into retrieval_log.jsonl); _buffer_event's O_EXCL
+                # receipt catches two live registrations racing.
+                delivery_id = "session_start:{}:{}:{}".format(
                     session_id,
                     lifecycle,
-                    watermark,
                     hashlib.sha256(
                         "\n".join(sorted(served_ids)).encode("utf-8")
                     ).hexdigest()[:16],
@@ -1884,9 +1624,8 @@ def _handle_session_start(hook_input: dict) -> None:
         # durable CC memory flagged stale/diverged. Empty string = inject
         # nothing (the common case). Best-effort; never blocks the payload.
         # Runs on everything the session relies on — the ids delivered now
-        # UNION the chain's prior serves (a delta suppresses their text, not
-        # the agent's reliance on them). Computed on the replay path too: a
-        # correctness interrupt outweighs the skip's no-op purity.
+        # UNION this session's own prior serves. Computed on the replay path
+        # too: a correctness interrupt outweighs the skip's no-op purity.
         try:
             from thinkweave.synthesis.memory_seam import session_guard_section
 

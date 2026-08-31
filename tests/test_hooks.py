@@ -2112,14 +2112,15 @@ class TestDuplicateDeliveryPolicy:
         prompts = [e for e in self._buffered(cfg) if e.get("type") == "prompt"]
         assert [e["text"] for e in prompts] == ["continue", "continue"]
 
-    def test_resume_and_compact_still_inject_context(
+    def test_resume_and_compact_skip_by_policy_not_by_accident(
         self, tmp_path: Path, monkeypatch, capsys
     ):
-        """The blocker: SessionStart dedup made resume a context-less session.
-
-        Receipts are never reopened, so a session id whose ``startup`` was
-        already recorded would have gone permanently un-oriented on every
-        later re-entry.
+        """Serve-once (#175 rework, PR #203 review): the initial context is
+        served exactly once — on ``startup`` — and a re-entered session gets
+        NOTHING, by policy: resume replays the transcript, compaction is
+        followed by on-demand ``weave_*`` retrieval. The distinction from
+        #161's silent-dedup blocker is that every skipped delivery leaves a
+        visible ``skipped_lifecycle`` telemetry event, not a silent hole.
         """
         from thinkweave.surfaces.hooks import handler as handler_mod
 
@@ -2137,11 +2138,12 @@ class TestDuplicateDeliveryPolicy:
                 emitted.get("hookSpecificOutput", {}).get("additionalContext", "")
             )
 
-        assert all("ses-1" in ctx for ctx in served), (
-            "a re-entered session was left without project context"
-        )
+        assert "ses-1" in served[0]
+        assert served[1] == "" and served[2] == ""
         starts = [e for e in self._buffered(cfg) if e.get("type") == "startup"]
-        assert len(starts) == 3
+        assert [e.get("disposition") for e in starts] == [
+            "served_full", "skipped_lifecycle", "skipped_lifecycle",
+        ]
 
     def test_receipts_are_cleared_with_the_buffer(self, tmp_path: Path):
         from thinkweave.core.buffer import session_state_dir

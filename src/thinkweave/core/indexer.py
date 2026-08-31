@@ -1444,13 +1444,12 @@ class Indexer:
         """Parse one ``retrieval_log.jsonl`` and upsert its rows.
 
         Each ``startup`` event contributes one row per ``returned_id`` with
-        ``source='startup'`` — keyed to the event's ``chain_root`` when set
-        (#175: resume/compact delta deliveries belong to the logical
-        session's root segment). Each ``retrieval`` event contributes one
-        per ``returned_id`` with ``source='onthefly'``. If the same note
-        appears in both, both rows persist — the export-side code decides
-        precedence (onthefly wins over startup-only). ``skipped_replay``
-        telemetry events carry no ids and therefore project nothing.
+        ``source='startup'``. Each ``retrieval`` event contributes one per
+        ``returned_id`` with ``source='onthefly'``. If the same note appears
+        in both, both rows persist — the export-side code decides precedence
+        (onthefly wins over startup-only). ``skipped_replay`` /
+        ``skipped_lifecycle`` telemetry events (#175 serve-once) carry no
+        ids and therefore project nothing.
 
         Returns the number of rows upserted; 0 if the log file is missing.
         Tolerates malformed lines line-by-line.
@@ -1469,13 +1468,8 @@ class Indexer:
                 except json.JSONDecodeError:
                     continue
                 etype = ev.get("type", "")
-                row_sid = session_id
                 if etype == "startup":
                     src = _STARTUP_SOURCES.get(ev.get("surface", ""), "startup")
-                    # #175: a resume/compact delta delivery stamps the
-                    # chain's ROOT session id — its exposure belongs to the
-                    # logical conversation, not the segment that buffered it.
-                    row_sid = str(ev.get("chain_root") or "") or session_id
                 elif etype == "retrieval":
                     # Retrieval events carry a source distinction by their tool
                     # sentinel: system-pushed enrichment (prompt-time R2, or
@@ -1501,7 +1495,7 @@ class Indexer:
                     self.db.execute(
                         "INSERT OR REPLACE INTO context_served "
                         "(session_id, note_id, source, ts) VALUES (?, ?, ?, ?)",
-                        (row_sid, nid, src, ts),
+                        (session_id, nid, src, ts),
                     )
                     upserted += 1
         return upserted
