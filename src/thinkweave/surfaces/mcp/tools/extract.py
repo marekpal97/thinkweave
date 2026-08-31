@@ -55,16 +55,18 @@ def _format_extract_report(out) -> str:
     lines.extend(out.suggestions[:5])
     lines.extend(f"Warning: {warning}" for warning in out.warnings)
     lines.append(f"Session marked processed={out.processed_at}")
-    # Surface the exact finalize command — pass `session_id` (the input),
-    # NOT `session_note_id`. Decisions stamp `source_session = session_id`
-    # and the judge matches on that field; passing the ses-id when input
-    # was a UUID silently returns 0 decisions (issue surfaced 2026-05-14).
+    # Surface the exact finalize command — pass the minted ses-id (#181):
+    # a forced re-extract leaves two folders claiming the same source UUID,
+    # and only the session-note id unambiguously names the one this extract
+    # just wrote. The judge step maps a ses-id back to `source_session`
+    # itself (finalize_wrap), so the 2026-05-14 trap (ses-id → 0 decisions
+    # judged) no longer applies.
     project = ""
     if out.created_decisions:
         project = out.created_decisions[0].frontmatter.get("project", "") or ""
     elif out.created_notes:
         project = out.created_notes[0].frontmatter.get("project", "") or ""
-    finalize_arg = out.session_id  # the input — what decisions are stamped with
+    finalize_arg = out.session_note_id or out.session_id
     if project:
         lines.append(
             f"▶ To finalize: weave wrap-finalize {finalize_arg} --project {project}"

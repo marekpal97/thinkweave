@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import write_session_md
 from thinkweave.core.config import Config
 from thinkweave.operations.prune import (
     EVENTS_MIN_BYTES,
@@ -42,6 +43,7 @@ def _make_session(
     project: str,
     session_id: str,
     *,
+    note_id: str = "",
     processed_at: str = "2026-04-05",
     files_touched: list[str] | None = None,
     commits: list[dict] | None = None,
@@ -60,35 +62,24 @@ def _make_session(
     # timestamp for the *frontmatter* without minting a folder name
     # containing ``:``, which is an illegal character on Windows.
     session_dir = sessions_dir / f"{session_id}-{processed_at[:10]}"
-    session_dir.mkdir(parents=True, exist_ok=True)
 
-    fm_lines = [
-        "---",
-        "type: session",
-        f"id: {session_id}",
-        f"date: {processed_at}",
-        f"project: {project}",
-        f"processed_at: {processed_at}",
-    ]
+    fm: dict = {
+        "type": "session",
+        "id": note_id or session_id,
+        "date": processed_at,
+        "project": project,
+        "processed_at": processed_at,
+    }
     if files_touched:
-        fm_lines.append("files_touched:")
-        for f in files_touched:
-            fm_lines.append(f"  - {f}")
+        fm["files_touched"] = files_touched
     if commits:
-        fm_lines.append("commits:")
-        for c in commits:
-            fm_lines.append(f"  - {c}")
+        fm["commits"] = commits
     if source_session:
-        fm_lines.append(f"source_session: {source_session}")
-    fm_lines.append("---")
-    fm_lines.append("")
-    fm_lines.append(f"# Session {session_id}")
-    fm_lines.append("")
-    fm_lines.append("## Summary")
-    fm_lines.append("Stub session.")
-
-    (session_dir / "session.md").write_text(
-        "\n".join(fm_lines) + "\n", encoding="utf-8"
+        fm["source_session"] = source_session
+    write_session_md(
+        session_dir,
+        body=f"\n# Session {session_id}\n\n## Summary\nStub session.\n",
+        **fm,
     )
 
     if event_bytes:
@@ -180,6 +171,53 @@ class TestIsOrphan:
         assert not is_orphan(
             session, current_session_id="cc-current", min_age_seconds=0
         )
+
+    def test_current_wrap_session_is_protected_by_ses_id(self, vault_dir: Path):
+        # #181: wrap-finalize is now hinted with the minted ses- id — the
+        # folder-name prefix must protect the current wrap the same way a
+        # source_session match does.
+        session = _make_session(
+            vault_dir, "alpha", "ses-wrap2", source_session="cc-current"
+        )
+        assert not is_orphan(
+            session, current_session_id="ses-wrap2", min_age_seconds=0
+        )
+
+    def test_live_wrap_uuid_named_folder_protected_by_ses_id(
+        self, vault_dir: Path
+    ):
+        # #181 review: the dominant LIVE-wrap folder shape — folder named
+        # after the source UUID (the eagerly-created <uuid>-<date> dir),
+        # `id: ses-XXXX` in frontmatter. Finalize now passes the ses-id;
+        # the frontmatter id must protect it.
+        session = _make_session(
+            vault_dir,
+            "alpha",
+            "cc-uuid-live",
+            note_id="ses-live1",
+            source_session="cc-uuid-live",
+        )
+        assert not is_orphan(
+            session, current_session_id="ses-live1", min_age_seconds=0
+        )
+
+    def test_sibling_folder_same_source_uuid_is_prunable(self, vault_dir: Path):
+        # #181: a forced re-extract leaves an older sibling folder claiming
+        # the same source UUID. With finalize keyed by the minted ses- id,
+        # that sibling is deliberately NOT protected — when the remaining
+        # orphan conditions hold (no derived notes, tiny events, old
+        # enough) it is legitimate GC. Pinned as intended behavior.
+        sibling = _make_session(
+            vault_dir, "alpha", "ses-oldwrap", source_session="cc-current"
+        )
+        assert is_orphan(
+            sibling, current_session_id="ses-newwrap", min_age_seconds=0
+        )
+
+    # #181's protected_dir parameter was removed in #180: wrap-finalize now
+    # filters its whole resolved segment chain out of the find_orphans
+    # result itself — pinned by
+    # test_wrap_finalize.TestSegmentChain::test_prune_spares_chain_segment_folders.
 
     def test_non_session_folder_ignored(self, vault_dir: Path):
         fake = vault_dir / "projects" / "alpha" / "sessions" / "misc"

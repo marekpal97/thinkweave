@@ -348,6 +348,125 @@ class TestAssembleRow:
         row = assemble_row(config, dec_id).as_dict()
         assert row["context"]["startup_token_est"] == 9876
 
+    def test_startup_token_est_skips_replay_events(
+        self, config: Config, vault: VaultManager
+    ):
+        # #175 emits several startup-type events per log: a leading
+        # skipped_replay (token_est 0) must not shadow the real serve.
+        _, dec_id, _ = _seed(
+            vault,
+            log_lines=[
+                {"ts": "t0", "type": "startup", "returned_ids": [],
+                 "token_est": 0, "disposition": "skipped_replay",
+                 "replay_of": "session_start:u:startup:x"},
+                {"ts": "t1", "type": "startup",
+                 "returned_ids": ["n-aaaabbbb"], "token_est": 4321,
+                 "disposition": "served_full"},
+            ],
+        )
+        _index(config)
+        row = assemble_row(config, dec_id).as_dict()
+        assert row["context"]["startup_token_est"] == 4321
+
+    def test_chain_union_makes_root_exposure_visible_to_segment_decisions(
+        self, config: Config, vault: VaultManager
+    ):
+        # #175 serve-once: only the chain's FIRST segment receives the
+        # startup snapshot. A decision minted in a later segment must
+        # still see that exposure — the export unions context_served across
+        # every session sharing the segment's logical_session key. But the
+        # union applies the same real-wrap exclusion as the serve/wrap
+        # paths: bridgeSessionId survives resumption across days, so a
+        # sibling a REAL wrap already processed (``processed`` without
+        # ``auto_extracted``) is a separately-worked session, not exposure.
+        root_path = vault.create_note(
+            NoteType.SESSION,
+            "R",
+            body="## Summary\nroot\n",
+            project="t",
+            # The Stop auto-extract stub shape — a live chain's earlier
+            # segment carries exactly this, and stays admitted.
+            extra_frontmatter={
+                "processed": True,
+                "auto_extracted": True,
+                "logical_session": "cse_rl1",
+            },
+        )
+        (root_path.parent / "retrieval_log.jsonl").write_text(
+            json.dumps({
+                "ts": "t0", "type": "startup",
+                "returned_ids": ["n-rootnote1"], "token_est": 5000,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        # Days-earlier session, same cloud key, REAL-wrapped: excluded.
+        outsider_path = vault.create_note(
+            NoteType.SESSION,
+            "O",
+            body="## Summary\nwrapped earlier\n",
+            project="t",
+            extra_frontmatter={"processed": True, "logical_session": "cse_rl1"},
+        )
+        (outsider_path.parent / "retrieval_log.jsonl").write_text(
+            json.dumps({
+                "ts": "t-1", "type": "startup",
+                "returned_ids": ["n-outsider9"], "token_est": 900,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        seg_path = vault.create_note(
+            NoteType.SESSION,
+            "S2",
+            body="## Summary\nsegment\n",
+            project="t",
+            extra_frontmatter={"processed": True, "logical_session": "cse_rl1"},
+        )
+        seg_id = vault.read_note(seg_path).id
+        (seg_path.parent / "retrieval_log.jsonl").write_text(
+            json.dumps({
+                "ts": "t1", "type": "startup", "lifecycle": "resume",
+                "disposition": "skipped_lifecycle",
+                "returned_ids": [], "token_est": 0,
+            }) + "\n"
+            + json.dumps({
+                "ts": "t2", "type": "retrieval",
+                "tool": "mcp__thinkweave__weave_read",
+                "returned_ids": ["n-segpull11"],
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        dec_path = vault.create_note(
+            NoteType.DECISION,
+            "D2",
+            body=(
+                "Based on [[n-rootnote1]] and [[n-segpull11]], "
+                "not [[n-outsider9]]."
+            ),
+            project="t",
+            extra_frontmatter={
+                "status": "accepted",
+                "committed": True,
+                "source_session": seg_id,
+                "derived_from": [seg_id],
+                "concepts": ["a", "b"],
+            },
+            output_dir=seg_path.parent,
+        )
+        dec_id = vault.read_note(dec_path).id
+        _index(config)
+
+        row = assemble_row(config, dec_id).as_dict()
+        # Chain union sees the stub-shaped root's startup rows — and ONLY
+        # those: the real-wrapped outsider's exposure stays out. The
+        # segment's own on-demand pull buckets as onthefly, untouched.
+        assert set(row["context"]["cited_startup_only_ids"]) == {
+            "n-rootnote1",
+        }
+        assert set(row["context"]["cited_onthefly_ids"]) == {"n-segpull11"}
+
     def test_session_without_retrieval_log_is_graceful(
         self, config: Config, vault: VaultManager
     ):

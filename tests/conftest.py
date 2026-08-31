@@ -75,6 +75,50 @@ SYMLINK_SKIP_REASON = (
 )
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    """Parsed rows of a JSONL file; [] when the file is missing."""
+    if not path.exists():
+        return []
+    return [
+        json.loads(ln)
+        for ln in path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+
+
+def write_session_md(folder: Path, body: str = "", **fm) -> Path:
+    """One session.md in ``folder`` (created if needed).
+
+    Frontmatter renders exactly like the hand-rolled writers it replaces:
+    scalars as plain unquoted ``k: v``, booleans lowercase, lists as block
+    sequences of their items' reprs. Returns the folder.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = ["---"]
+    for k, v in fm.items():
+        if isinstance(v, (list, tuple)):
+            lines.append(f"{k}:")
+            lines += [f"  - {item}" for item in v]
+        elif isinstance(v, bool):
+            lines.append(f"{k}: {'true' if v else 'false'}")
+        else:
+            lines.append(f"{k}: {v}")
+    lines.append("---")
+    (folder / "session.md").write_text(
+        "\n".join(lines) + "\n" + body, encoding="utf-8"
+    )
+    return folder
+
+
+def write_transcript(tmp_path: Path, rows: list[dict]) -> Path:
+    """One harness transcript (``transcript.jsonl``) holding ``rows``."""
+    f = tmp_path / "transcript.jsonl"
+    f.write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+    )
+    return f
+
+
 @functools.cache
 def symlinks_creatable() -> bool:
     """Probe *once* whether this process can actually create a symlink.

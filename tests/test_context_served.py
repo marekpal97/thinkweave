@@ -251,6 +251,55 @@ class TestLoopPrimeProjection:
         assert [(r["note_id"], r["source"]) for r in rows] == [("n-p1", "loop-prime")]
 
 
+class TestServeTelemetryProjection:
+    def test_skipped_lifecycle_event_projects_nothing(
+        self, config: Config, vault: VaultManager
+    ):
+        """Serve-once (#175 rework): a resume/compact delivery buffers only
+        a zero-id ``skipped_lifecycle`` telemetry event — no context_served
+        rows, exposure stays counted once."""
+        sess_id, _ = _seed_session(vault, [
+            {"ts": "2026-08-31T09:00:00Z", "type": "startup",
+             "returned_ids": ["n-aaa111aa"], "token_est": 100},
+            {"ts": "2026-08-31T10:00:00Z", "type": "startup",
+             "lifecycle": "compact", "disposition": "skipped_lifecycle",
+             "returned_ids": [], "token_est": 0},
+        ])
+        idx = Indexer(config=config)
+        try:
+            idx.rebuild(full=True)
+            rows = _select_all(idx, sess_id)
+        finally:
+            idx.close()
+        assert [(r["note_id"], r["source"]) for r in rows] == [
+            ("n-aaa111aa", "startup"),
+        ]
+
+    def test_skipped_replay_event_projects_nothing(
+        self, config: Config, vault: VaultManager
+    ):
+        """#175 AC6: a skipped_replay telemetry event carries no note ids,
+        so replays never double-count context exposure."""
+        sess_id, _ = _seed_session(vault, [
+            {"ts": "2026-08-30T09:00:00Z", "type": "startup",
+             "returned_ids": ["n-aaa111aa"], "token_est": 100,
+             "delivery_id": "session_start:u:startup:deadbeef"},
+            {"ts": "2026-08-30T09:00:01Z", "type": "startup",
+             "lifecycle": "startup", "disposition": "skipped_replay",
+             "returned_ids": [], "token_est": 0,
+             "replay_of": "session_start:u:startup:deadbeef"},
+        ])
+        idx = Indexer(config=config)
+        try:
+            idx.rebuild(full=True)
+            rows = _select_all(idx, sess_id)
+        finally:
+            idx.close()
+        assert [(r["note_id"], r["source"]) for r in rows] == [
+            ("n-aaa111aa", "startup"),
+        ]
+
+
 class TestIndexFileProjection:
     def test_index_file_on_session_projects_log(
         self, config: Config, vault: VaultManager

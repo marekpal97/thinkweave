@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.conftest import write_transcript
 from thinkweave.core.config import Config
 from thinkweave.surfaces.hooks.handler import (
     _buffer_event,
@@ -2111,14 +2112,15 @@ class TestDuplicateDeliveryPolicy:
         prompts = [e for e in self._buffered(cfg) if e.get("type") == "prompt"]
         assert [e["text"] for e in prompts] == ["continue", "continue"]
 
-    def test_resume_and_compact_still_inject_context(
+    def test_resume_and_compact_skip_by_policy_not_by_accident(
         self, tmp_path: Path, monkeypatch, capsys
     ):
-        """The blocker: SessionStart dedup made resume a context-less session.
-
-        Receipts are never reopened, so a session id whose ``startup`` was
-        already recorded would have gone permanently un-oriented on every
-        later re-entry.
+        """Serve-once (#175 rework, PR #203 review): the initial context is
+        served exactly once — on ``startup`` — and a re-entered session gets
+        NOTHING, by policy: resume replays the transcript, compaction is
+        followed by on-demand ``weave_*`` retrieval. The distinction from
+        #161's silent-dedup blocker is that every skipped delivery leaves a
+        visible ``skipped_lifecycle`` telemetry event, not a silent hole.
         """
         from thinkweave.surfaces.hooks import handler as handler_mod
 
@@ -2136,11 +2138,12 @@ class TestDuplicateDeliveryPolicy:
                 emitted.get("hookSpecificOutput", {}).get("additionalContext", "")
             )
 
-        assert all("ses-1" in ctx for ctx in served), (
-            "a re-entered session was left without project context"
-        )
+        assert "ses-1" in served[0]
+        assert served[1] == "" and served[2] == ""
         starts = [e for e in self._buffered(cfg) if e.get("type") == "startup"]
-        assert len(starts) == 3
+        assert [e.get("disposition") for e in starts] == [
+            "served_full", "skipped_lifecycle", "skipped_lifecycle",
+        ]
 
     def test_receipts_are_cleared_with_the_buffer(self, tmp_path: Path):
         from thinkweave.core.buffer import session_state_dir
@@ -2221,3 +2224,164 @@ class TestFailureDiagnosticRateLimit:
 
         emitted = json.loads(capsys.readouterr().out or "{}")
         assert "not persisted" in emitted.get("systemMessage", "")
+
+
+class TestLogicalSessionKey:
+    """#180 — the cross-segment chain key.
+
+    claude.ai/code splits one logical session across several harness
+    session UUIDs (one per context compaction). The only durable link the
+    harness provides (#180 investigation, 2026-08-30) is the
+    ``bridge-session`` transcript row near the top of EVERY segment's
+    transcript: its ``bridgeSessionId`` (``cse_…``) is the cloud session id
+    all segments share. The hooks lift it into each segment note's
+    frontmatter as ``logical_session`` so the wrap verdict join can
+    resolve the chain.
+    """
+
+    def _transcript(self, tmp_path: Path, rows: list[dict]) -> Path:
+        return write_transcript(tmp_path, rows)
+
+    def test_key_read_from_bridge_session_row(self, tmp_path: Path):
+        from thinkweave.surfaces.hooks.handler import _logical_session_key
+
+        t = self._transcript(tmp_path, [
+            {"type": "mode", "sessionId": "seg-1"},
+            {"type": "bridge-session", "sessionId": "seg-1",
+             "bridgeSessionId": "cse_ABC123"},
+        ])
+        assert (
+            _logical_session_key({"transcript_path": str(t)}) == "cse_ABC123"
+        )
+
+    def test_no_bridge_row_or_transcript_is_empty(self, tmp_path: Path):
+        # Interactive CLI sessions, Codex, and missing/garbled transcripts
+        # all degrade to "" — the stamp is best-effort, never blocking.
+        from thinkweave.surfaces.hooks.handler import _logical_session_key
+
+        t = self._transcript(
+            tmp_path, [{"type": "mode", "sessionId": "seg-1"}]
+        )
+        (tmp_path / "garbled.jsonl").write_text(
+            "not json\n", encoding="utf-8"
+        )
+        assert _logical_session_key({"transcript_path": str(t)}) == ""
+        assert _logical_session_key(
+            {"transcript_path": str(tmp_path / "missing.jsonl")}
+        ) == ""
+        assert _logical_session_key(
+            {"transcript_path": str(tmp_path / "garbled.jsonl")}
+        ) == ""
+        assert _logical_session_key({}) == ""
+
+    def test_bridge_row_near_transcript_end_is_found(self, tmp_path: Path):
+        # Fix round 2 minor: ~18% of real bridged transcripts carry the
+        # bridge row only near the END (measured ~1MB in) — the scan reads
+        # a bounded tail chunk as well as the head.
+        from thinkweave.surfaces.hooks.handler import _logical_session_key
+
+        f = tmp_path / "transcript.jsonl"
+        filler = json.dumps({"type": "user", "text": "x" * 200}) + "\n"
+        f.write_text(
+            filler * 500
+            + json.dumps({
+                "type": "bridge-session", "bridgeSessionId": "cse_TAIL",
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+        assert f.stat().st_size > 65536
+        assert _logical_session_key({"transcript_path": str(f)}) == "cse_TAIL"
+
+    def test_stop_backfills_missing_logical_session(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Fix round 2 minor: the creation-time stamp misses a bridge row
+        # that only exists later in the transcript — the Stop hook (which
+        # rewrites the note frontmatter anyway) backfills it.
+        from thinkweave.core.schemas import NoteType
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        vm.create_note(
+            NoteType.SESSION, "S", project="t",
+            extra_frontmatter={"source_session": "seg-uuid-late"},
+        )
+        buf_dir = cfg.weave_dir / "buffer"
+        buf_dir.mkdir(parents=True, exist_ok=True)
+        (buf_dir / "seg-uuid-late.jsonl").write_text(
+            json.dumps({
+                "ts": "2026-08-30T10:00:00+00:00", "type": "prompt",
+                "text": "hello", "session_id": "seg-uuid-late",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        t = self._transcript(tmp_path, [
+            {"type": "bridge-session", "bridgeSessionId": "cse_LATE"},
+        ])
+        handler_mod._handle_stop({
+            "session_id": "seg-uuid-late", "transcript_path": str(t),
+            "cwd": str(tmp_path),
+        })
+        path = handler_mod._find_session_note(vm, "seg-uuid-late")
+        assert path is not None
+        note = vm.read_note(path)
+        assert note.frontmatter.get("logical_session") == "cse_LATE"
+        assert note.frontmatter.get("processed") is True
+
+    def test_invalid_utf8_transcript_never_escapes(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Fix round 1 blocker: invalid UTF-8 in the transcript raised
+        # UnicodeDecodeError (a ValueError, not OSError) out of the head
+        # read, unwinding through _ensure_session into the prompt/post
+        # handlers — no session note, failure banner on every prompt.
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        t = tmp_path / "transcript.jsonl"
+        t.write_bytes(
+            b'\xff\xfe{"type":"bridge-session","bridgeSessionId":"cse_X"}\n'
+        )
+        assert handler_mod._logical_session_key(
+            {"transcript_path": str(t)}
+        ) == ""
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+        handler_mod._ensure_session(cfg, "seg-uuid-bad", {
+            "session_id": "seg-uuid-bad",
+            "transcript_path": str(t),
+            "cwd": str(tmp_path),
+        })
+        vm = VaultManager(config=cfg)
+        assert handler_mod._find_session_note(vm, "seg-uuid-bad") is not None
+
+    def test_ensure_session_stamps_logical_session(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+        t = self._transcript(tmp_path, [
+            {"type": "bridge-session", "sessionId": "seg-uuid-1",
+             "bridgeSessionId": "cse_stamp1"},
+        ])
+        handler_mod._ensure_session(cfg, "seg-uuid-1", {
+            "session_id": "seg-uuid-1",
+            "transcript_path": str(t),
+            "cwd": str(tmp_path),
+        })
+        vm = VaultManager(config=cfg)
+        path = handler_mod._find_session_note(vm, "seg-uuid-1")
+        assert path is not None
+        note = vm.read_note(path)
+        assert note.frontmatter["logical_session"] == "cse_stamp1"
