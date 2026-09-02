@@ -1455,7 +1455,9 @@ class Indexer:
         ``source='startup'``. Each ``retrieval`` event contributes one per
         ``returned_id`` with ``source='onthefly'``. If the same note appears
         in both, both rows persist — the export-side code decides precedence
-        (onthefly wins over startup-only).
+        (onthefly wins over startup-only). ``skipped_replay`` /
+        ``skipped_lifecycle`` telemetry events (#175 serve-once) carry no
+        ids and therefore project nothing.
 
         Returns the number of rows upserted; 0 if the log file is missing.
         Tolerates malformed lines line-by-line.

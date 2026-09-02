@@ -72,8 +72,14 @@ def is_orphan(
     3. ``events.jsonl`` is missing OR smaller than ``EVENTS_MIN_BYTES``
     4. Frontmatter ``files_touched`` is missing or empty
     5. Frontmatter ``commits`` is missing or empty
-    6. Folder age > ``min_age_seconds`` (by frontmatter date or mtime)
-    7. Frontmatter ``source_session`` does not match ``current_session_id``
+    6. Neither frontmatter ``source_session`` / ``id`` nor the folder-name
+       prefix matches ``current_session_id``
+    7. Folder age > ``min_age_seconds`` (by frontmatter date or mtime)
+
+    Folders the current wrap resolved events into are NOT handled here:
+    wrap-finalize filters its whole segment chain out of the
+    ``find_orphans`` result itself (#181/#180 — they can belong to sibling
+    notes whose id fields match nothing this predicate sees).
 
     Returns False on any IO error — conservative: if we can't tell, don't delete.
     """
@@ -95,7 +101,7 @@ def is_orphan(
         if events_file.exists() and events_file.stat().st_size >= EVENTS_MIN_BYTES:
             return False
 
-        # Parse frontmatter once for conditions 4, 5, 6, 7
+        # Parse frontmatter once for conditions 4-7
         text = session_md.read_text(encoding="utf-8")
         fm, _body = parse_frontmatter(text)
 
@@ -109,11 +115,20 @@ def is_orphan(
         if commits:
             return False
 
-        # Condition 7: not the current wrap
-        if current_session_id and fm.get("source_session") == current_session_id:
+        # Condition 6: not the current wrap. Finalize passes either the
+        # source UUID (matches source_session) or the minted ses- id (#181
+        # — matches the frontmatter id, or the folder-name prefix for
+        # ses-named catch-up folders). The live-wrap folder is named after
+        # the UUID with `id: ses-XXXX` inside, so the id clause is the one
+        # that protects it.
+        if current_session_id and (
+            fm.get("source_session") == current_session_id
+            or fm.get("id") == current_session_id
+            or session_dir.name.startswith(current_session_id)
+        ):
             return False
 
-        # Condition 6: old enough
+        # Condition 7: old enough
         if now is None:
             now = time.time()
         age = _folder_age_seconds(session_dir, fm, now)

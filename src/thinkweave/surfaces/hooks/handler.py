@@ -23,12 +23,18 @@ Duplicate deliveries (#161): when a lifecycle event arrives carrying a
   wire id the harness minted for it (``tool_use_id`` / ``turn_id``), the
   buffer write is guarded by a delivery receipt so two registrations of
   the same hook persist the event once. Events with NO wire id — Claude
-  Code's UserPromptSubmit, SessionStart, a PostToolUse without a
-  ``tool_use_id`` — are deliberately NOT deduped: nothing on the wire
-  distinguishes "the same delivery twice" from "the user really did send
-  `continue` twice", and guessing via a content hash gets both wrong.
-  Their cure is single-owner registration (`surfaces/hooks/install.py`),
-  not a receipt.
+  Code's UserPromptSubmit, a PostToolUse without a ``tool_use_id`` —
+  are deliberately NOT deduped: nothing on the wire distinguishes "the
+  same delivery twice" from "the user really did send `continue` twice",
+  and guessing via a content hash gets both wrong. Their cure is
+  single-owner registration (`surfaces/hooks/install.py`), not a receipt.
+  SessionStart is the exception (#175): its delivery is pure system
+  output, so (session, lifecycle source, served id set) IS its identity —
+  an identical redelivery injects nothing (``skipped_replay``). Serve-once
+  (#175 rework, PR #203 review): only ``startup``/``clear`` serve at all;
+  ``resume``/``compact`` inject nothing ever (``skipped_lifecycle``) — the
+  initial context goes out once, anything further is agent-pulled via the
+  weave_* MCP/CLI retrieval surface.
 
 Note: an earlier PreToolUse(Write|Edit) handler injected "Related vault
 notes" before each file edit. It was redundant with SessionStart context
@@ -513,6 +519,208 @@ def _find_session_note(vm, session_id: str) -> Path | None:
     return None
 
 
+# Bytes scanned at each end of the transcript for the bridge-session row.
+_BRIDGE_SCAN_BYTES = 65536
+
+
+def _logical_session_key(hook_input: dict) -> str:
+    """The stable cross-segment session key, when the harness provides one.
+
+    claude.ai/code splits one logical session across several harness
+    session UUIDs — each context compaction starts a new segment with its
+    own ``session_id``. The only durable link between segments (#180
+    investigation, 2026-08-30) is the ``bridge-session`` row every
+    segment's transcript carries within its first few lines: its
+    ``bridgeSessionId`` (``cse_…``) is the cloud session id all segments
+    share. Bounded head-read; "" when absent (interactive CLI sessions,
+    Codex, missing transcript) — the stamp is best-effort by design.
+    """
+    path = hook_input.get("transcript_path", "")
+    if not path:
+        return ""
+    try:
+        # Byte-capped head + tail scan (binary, decoded with replace: a
+        # transcript can hold invalid UTF-8, and a UnicodeDecodeError here
+        # would unwind through _ensure_session and break the whole hook
+        # delivery). The row usually sits in the first few lines, but a
+        # measured ~18% of bridged transcripts carry it only near the END
+        # (~1MB in) — hence the tail chunk; its first line may be a
+        # partial row, which simply fails the JSON parse.
+        with open(path, "rb") as fh:
+            head = fh.read(_BRIDGE_SCAN_BYTES)
+            size = fh.seek(0, os.SEEK_END)
+            tail = b""
+            if size > _BRIDGE_SCAN_BYTES:
+                fh.seek(size - _BRIDGE_SCAN_BYTES)
+                tail = fh.read(_BRIDGE_SCAN_BYTES)
+        for chunk in (head, tail):
+            for line in chunk.decode("utf-8", errors="replace").splitlines():
+                if "bridge-session" not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(row, dict)
+                    and row.get("type") == "bridge-session"
+                ):
+                    return str(row.get("bridgeSessionId") or "")
+    except (OSError, ValueError):
+        return ""
+    return ""
+
+
+# Post-archival own-folder lookup budget — a just-archived session's folder
+# is among the newest few by trailing date, but the SAME-DAY tiebreak is a
+# random uuid: the production vault (measured, review round 3) has days with
+# up to 30 folders. Budget sits above the observed peak. Bounded because
+# SessionStart must never walk the whole sessions dir (a full-folder scan
+# measured 4.9s on a 567-folder DrvFs vault, pure syscall count).
+_OWN_SCAN_RECENT = 48
+
+
+def _read_session_fm(session_md: Path) -> dict | None:
+    """Module-level alias over :func:`core.vault.read_session_fm`.
+
+    Kept as a def so tests can count how many folders a scan actually
+    opens by monkeypatching it — the SessionStart latency budget is
+    syscall-shaped (#175 review) — and so the import stays lazy (hook
+    startup cost).
+    """
+    from thinkweave.core.vault import read_session_fm
+
+    return read_session_fm(session_md)
+
+
+# Session folders are named ``{session_id}-{YYYY-MM-DD}`` (core/vault.py
+# ``_session_dir``): the LEADING component is a random uuid, so a bare name
+# sort orders by coin flip (review round 2 measured 4/40 overlap with true
+# recency on the production vault). Recency lives in the trailing date.
+_DIR_DATE_RE = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
+
+
+def _recent_session_dirs(sessions_dir: Path, limit: int) -> list[Path]:
+    """The newest ``limit`` session folders — one readdir, no stats.
+
+    Sorted by the trailing ``-YYYY-MM-DD`` of the folder name (descending),
+    bare name as the same-day tiebreak; folders with no date suffix rank
+    oldest. Chosen over st_mtime deliberately: names are durable across
+    restore/copy, mtimes are not.
+    """
+    try:
+        entries = [
+            e
+            for e in os.scandir(sessions_dir)
+            if e.is_dir() and e.name != "misc"
+        ]
+    except OSError:
+        return []
+
+    def key(e) -> tuple[str, str]:
+        m = _DIR_DATE_RE.search(e.name)
+        return (m.group(1) if m else "", e.name)
+
+    entries.sort(key=key, reverse=True)
+    return [Path(e.path) for e in entries[:limit]]
+
+
+def _jsonl_events(path: Path):
+    """Yield ``(raw_line, parsed_or_None)`` per non-empty line of a JSONL file.
+
+    Yields nothing when the file is unreadable; a malformed line comes
+    through with ``None`` so each consumer keeps its own semantics for it
+    (count it, skip it, prefilter on the raw text).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            yield line, json.loads(line)
+        except json.JSONDecodeError:
+            yield line, None
+
+
+def _read_serve_streams(streams: list[Path]) -> tuple[set[str], set[str]]:
+    """(served_ids, delivery_ids) across event streams.
+
+    Reads raw buffer / retrieval_log JSONL rather than the ``context_served``
+    SQLite projection deliberately: the projection lags behind (it runs at
+    index-rebuild/wrap time), while the streams are current the moment an
+    event is buffered — and they are the files the projection rebuilds from.
+    ``skipped_*`` telemetry contributes nothing (no ids, no delivery_id).
+    """
+    served: set[str] = set()
+    delivery_ids: set[str] = set()
+    for path in streams:
+        for _raw, event in _jsonl_events(path):
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") not in ("startup", "retrieval"):
+                continue
+            served.update(
+                i
+                for i in event.get("returned_ids") or []
+                if isinstance(i, str) and i
+            )
+            if event.get("type") != "startup":
+                continue
+            did = event.get("delivery_id")
+            if did:
+                delivery_ids.add(str(did))
+    return served, delivery_ids
+
+
+def _own_session_dir(cfg, session_id: str, project: str) -> Path | None:
+    """This session's archived folder among the newest ``_OWN_SCAN_RECENT``.
+
+    A just-archived folder is recent by trailing date; None when nothing
+    within the budget matches this session's identity.
+    """
+    if not project:
+        return None
+    sessions_dir = cfg.vault_root / "projects" / project / "sessions"
+    for d in _recent_session_dirs(sessions_dir, _OWN_SCAN_RECENT):
+        fm = _read_session_fm(d / "session.md")
+        if fm is None:
+            continue
+        if fm.get("source_session") == session_id or fm.get("id") == session_id:
+            return d
+    return None
+
+
+def _own_serve_state(cfg, session_id: str, project: str) -> tuple[set[str], set[str]]:
+    """(served_ids, delivery_ids) from THIS session's own streams only.
+
+    The startup/clear replay check — the serve-once guarantee: the live
+    buffer when it exists, else (post-archival replay) this session's own
+    folder. A fresh session pays at most the bounded lookup.
+    """
+    live = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
+    if live.exists():
+        return _read_serve_streams([live])
+    d = _own_session_dir(cfg, session_id, project)
+    if d is not None:
+        return _read_serve_streams([d / "retrieval_log.jsonl"])
+    return set(), set()
+
+
+def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str) -> bool:
+    """True when the live buffer already holds a skip event for this replay
+    — bounds telemetry to one line per (session, replay_of)."""
+    buf = weave_dir / "buffer" / f"{session_id}.jsonl"
+    for raw, event in _jsonl_events(buf):
+        if delivery_id not in raw:
+            continue
+        if isinstance(event, dict) and event.get("replay_of") == delivery_id:
+            return True
+    return False
+
+
 def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     """Create session note on first event, index it once for MCP discoverability."""
     if not session_id:
@@ -528,11 +736,17 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
         return
 
     project = _detect_project(hook_input)
+    extra_fm: dict = {"source_session": session_id}
+    # #180: stamp the compaction-segment chain key so the wrap verdict
+    # join can resolve sibling segments of the same logical session.
+    logical = _logical_session_key(hook_input)
+    if logical:
+        extra_fm["logical_session"] = logical
     session_path = vm.create_note(
         NoteType.SESSION,
         f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         project=project,
-        extra_frontmatter={"source_session": session_id},
+        extra_frontmatter=extra_fm,
     )
 
     # Index once so MCP tools (weave_search) can find this session mid-conversation
@@ -1161,6 +1375,14 @@ def _handle_stop(hook_input: dict) -> None:
         fm["processed"] = True
         fm["processed_at"] = today
         fm["auto_extracted"] = True
+        # #180: backfill the segment-chain key when creation-time stamping
+        # missed it (the bridge row can appear later in the transcript) —
+        # Stop rewrites the frontmatter anyway, so this costs one bounded
+        # transcript scan only while the key is absent.
+        if not fm.get("logical_session"):
+            logical = _logical_session_key(hook_input)
+            if logical:
+                fm["logical_session"] = logical
         if result.files_touched:
             fm["files_touched"] = result.files_touched
         if result.commits:
@@ -1237,6 +1459,20 @@ def _handle_session_start(hook_input: dict) -> None:
     built by ``thinkweave.retrieval.context.build_project_context``. Never blocks;
     exceptions produce a valid hook response with an actionable diagnostic.
 
+    Serve-once (#175, reworked per the PR #203 review): the initial context
+    is served exactly once per session — ``startup``/``clear`` (or absent —
+    legacy harnesses) get the full snapshot; ``resume``/``compact`` inject
+    NOTHING and record a zero-id ``skipped_lifecycle`` telemetry event. On
+    resume the harness replays the transcript, so the context is still in
+    the window; after compaction the agent retrieves what it needs on
+    demand through the weave_* MCP/CLI surface. A redelivery of the
+    startup/clear serve (double registration, post-archival replay)
+    likewise injects nothing and records ``skipped_replay``. The replay
+    receipt is the ``delivery_id`` on the buffered startup event itself —
+    #161's "no wire id" objection is answered by keying on (session,
+    lifecycle, served id set): a later SessionStart serving different
+    notes always serves.
+
     Also records a single ``type: startup`` event in the session buffer with
     the set of note IDs the payload contains and the token estimate. This
     feeds the RLVR substrate's ``startup`` source — distinct from
@@ -1253,69 +1489,33 @@ def _handle_session_start(hook_input: dict) -> None:
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
         cfg = load_config()
-        project = _detect_project(hook_input)
-        payload = build_project_context(
-            cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
+        session_id = hook_input.get(
+            "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
         )
+        lifecycle = str(hook_input.get("source") or "")
 
-        # Served note ids — computed once, reused for the RLVR startup event
-        # AND the memory-seam guard. (Parsed from the payload *before* the
-        # guard is prepended, so the guard's own [[twin]] wikilinks — which
-        # reference already-served notes — don't double-count.)
-        served_ids = parse_returned_ids(payload)
-
-        # Memory-seam serving lens — NOT a whole-seam dump. Cross-matches the
-        # served notes against the flagged-twin index and injects a small
-        # guard ONLY when a note in this session's context is the twin of a
-        # durable CC memory flagged stale/diverged. Empty string = inject
-        # nothing (the common case). Best-effort; never blocks the payload.
-        capture_error: Exception | None = None
-        try:
-            from thinkweave.synthesis.memory_seam import session_guard_section
-
-            guard = session_guard_section(cfg, served_ids)
-        except Exception as e:
-            _log_error("session_start_seam", e)
-            guard = ""
-
-        # Record the startup event regardless of whether we emit the payload —
-        # an empty payload (cold vault) is itself a fact the RLVR row should
-        # carry (n_retrievals_onthefly stays 0, startup_token_est = 0).
-        try:
-            session_id = hook_input.get(
-                "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
-            )
-            if session_id:
-                event = {
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "type": "startup",
-                    "returned_ids": served_ids,
-                    # Rough token estimate — matches the SessionStart budget
-                    # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
-                    "token_est": len(payload) // 4,
-                }
-                # Which harness served it. The indexer projects this to its
-                # own `context_served.source`; why that split exists is on the
-                # CHECK in core/indexer.py's SCHEMA_SQL.
-                surface = _hook_harness()
-                if surface:
-                    event["surface"] = surface
-                # Deliberately un-deduped (#161 review). SessionStart carries
-                # no wire id, and every discriminator available here is wrong:
-                # keyed on session_id alone the *second* SessionStart for a
-                # session — a resume, a compact, a /clear — injects nothing,
-                # silently costing the session its context for good (receipts
-                # are never re-opened). Adding `source` only narrows that to
-                # repeated resumes and compacts, which are routine. Duplicate
-                # startup rows are the cheaper failure, and the registration
-                # single-owner sweep in surfaces/hooks/install.py is what
-                # actually stops them being produced.
-                _buffer_event(cfg.weave_dir, session_id, event)
-        except Exception as e:
-            _log_error("session_start_capture", e)
-            capture_error = e
-
-        if not payload.strip() and not guard:
+        if lifecycle in ("resume", "compact"):
+            # Serve-once: nothing is injected, nothing is even built. The
+            # zero-id telemetry event keeps exposure accounting honest (it
+            # projects no context_served rows) and makes the skip visible.
+            capture_error = None
+            try:
+                if session_id:
+                    skip_event = {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "type": "startup",
+                        "returned_ids": [],
+                        "token_est": 0,
+                        "disposition": "skipped_lifecycle",
+                        "lifecycle": lifecycle,
+                    }
+                    surface = _hook_harness()
+                    if surface:
+                        skip_event["surface"] = surface
+                    _buffer_event(cfg.weave_dir, session_id, skip_event)
+            except Exception as e:
+                _log_error("session_start_capture", e)
+                capture_error = e
             _output(
                 system_message=(
                     _report_failure(
@@ -1327,17 +1527,138 @@ def _handle_session_start(hook_input: dict) -> None:
             )
             return
 
+        project = _detect_project(hook_input)
+        payload = build_project_context(
+            cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
+        )
+
+        # Served note ids — computed once, reused for the RLVR startup event
+        # AND the memory-seam guard. (Parsed from the payload *before* the
+        # guard is prepended, so the guard's own [[twin]] wikilinks — which
+        # reference already-served notes — don't double-count.)
+        served_ids = parse_returned_ids(payload)
+
+        disposition = "served_full"
+        prior_ids: set[str] = set()
+        prior_deliveries: set[str] = set()
+        if session_id:
+            try:
+                # Replay receipts come from this session's own streams only
+                # (#175 review: a whole-vault scan was a 4.9s hook).
+                prior_ids, prior_deliveries = _own_serve_state(
+                    cfg, session_id, project
+                )
+            except Exception as e:
+                _log_error("session_start_chain", e)
+
+        # Record the startup event regardless of whether we emit the payload —
+        # an empty payload (cold vault) is itself a fact the RLVR row should
+        # carry (n_retrievals_onthefly stays 0, startup_token_est = 0).
+        capture_error: Exception | None = None
+        replayed = False
+        try:
+            if session_id:
+                event = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "type": "startup",
+                    "returned_ids": served_ids,
+                    # Rough token estimate — matches the SessionStart budget
+                    # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
+                    "token_est": len(payload) // 4,
+                    "disposition": disposition,
+                }
+                if lifecycle:
+                    event["lifecycle"] = lifecycle
+                # Which harness served it. The indexer projects this to its
+                # own `context_served.source`; why that split exists is on the
+                # CHECK in core/indexer.py's SCHEMA_SQL.
+                surface = _hook_harness()
+                if surface:
+                    event["surface"] = surface
+                # Replay guard: identity is (session, lifecycle, served id
+                # set) — NOT raw payload bytes, whose minute-resolution
+                # header timestamp would split identity across a minute
+                # boundary; and not the seam guard section either, which
+                # varies with seam state, not with what this delivery
+                # serves. prior_deliveries catches replays whose buffer was
+                # already archived (the delivery_id rides inside the event
+                # line into retrieval_log.jsonl); _buffer_event's O_EXCL
+                # receipt catches two live registrations racing.
+                delivery_id = "session_start:{}:{}:{}".format(
+                    session_id,
+                    lifecycle,
+                    hashlib.sha256(
+                        "\n".join(sorted(served_ids)).encode("utf-8")
+                    ).hexdigest()[:16],
+                )
+                event["delivery_id"] = delivery_id
+                if delivery_id in prior_deliveries:
+                    replayed = True
+                else:
+                    replayed = not _buffer_event(cfg.weave_dir, session_id, event)
+                if replayed and not _replay_already_recorded(
+                    cfg.weave_dir, session_id, delivery_id
+                ):
+                    skip_event = {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "type": "startup",
+                        "returned_ids": [],
+                        "token_est": 0,
+                        "disposition": "skipped_replay",
+                        # NOT delivery_id: a receipt field here would let
+                        # _buffer_event drop the telemetry line itself.
+                        "replay_of": delivery_id,
+                    }
+                    if lifecycle:
+                        skip_event["lifecycle"] = lifecycle
+                    if surface:
+                        skip_event["surface"] = surface
+                    _buffer_event(cfg.weave_dir, session_id, skip_event)
+        except Exception as e:
+            _log_error("session_start_capture", e)
+            capture_error = e
+
+        # Memory-seam serving lens — NOT a whole-seam dump. Cross-matches the
+        # served notes against the flagged-twin index and injects a small
+        # guard ONLY when a note in this session's context is the twin of a
+        # durable CC memory flagged stale/diverged. Empty string = inject
+        # nothing (the common case). Best-effort; never blocks the payload.
+        # Runs on everything the session relies on — the ids delivered now
+        # UNION this session's own prior serves. Computed on the replay path
+        # too: a correctness interrupt outweighs the skip's no-op purity.
+        try:
+            from thinkweave.synthesis.memory_seam import session_guard_section
+
+            guard = session_guard_section(
+                cfg, sorted(set(served_ids) | prior_ids)
+            )
+        except Exception as e:
+            _log_error("session_start_seam", e)
+            guard = ""
+
+        sysmsg = (
+            _report_failure("session_start_capture", hook_input, capture_error)
+            if capture_error
+            else ""
+        )
+
+        if replayed:
+            _output(
+                system_message=sysmsg,
+                additional_context=guard,
+                hook_event_name="SessionStart",
+            )
+            return
+
+        if not payload.strip() and not guard:
+            _output(system_message=sysmsg)
+            return
+
         # Guard rides at the TOP — it's a correctness interrupt on notes the
         # model is about to rely on, so it must be seen before the context.
         full = f"{guard}\n{payload}" if guard else payload
         _output(
-            system_message=(
-                _report_failure(
-                    "session_start_capture", hook_input, capture_error
-                )
-                if capture_error
-                else ""
-            ),
+            system_message=sysmsg,
             additional_context=full,
             hook_event_name="SessionStart",
         )

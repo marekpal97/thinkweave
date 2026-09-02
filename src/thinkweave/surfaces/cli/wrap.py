@@ -64,7 +64,7 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     if result.verdicts_written or result.verdicts_skipped or result.verdicts_unmatched:
         print(
             f"  verdicts: {result.verdicts_written} written, "
-            f"{result.verdicts_skipped} already present, "
+            f"{result.verdicts_skipped} skipped, "
             f"{result.verdicts_unmatched} unmatched"
         )
     if result.orphans_pruned:
@@ -91,6 +91,10 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         )
         if parts:
             print(f"  timing:  {parts}")
+    if result.warnings:
+        print("  warnings:")
+        for w in result.warnings:
+            print(f"    ~ {w}")
     if result.errors:
         print("  errors:")
         for e in result.errors:

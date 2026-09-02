@@ -48,7 +48,11 @@ from typing import Iterator
 
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
-from thinkweave.core.vault import VaultManager, extract_wikilink_ids
+from thinkweave.core.vault import (
+    VaultManager,
+    extract_wikilink_ids,
+    is_chain_sibling,
+)
 from thinkweave.synthesis.prediction import read_history
 
 # Same prefix family as operations/retrieval_log.py:_ID_RE. `fullmatch` here —
@@ -139,10 +143,13 @@ def _days_between(start: str, end: str) -> int:
 
 
 def _read_startup_token_est(log_path: Path) -> int:
-    """Read the first ``type: startup`` event from a retrieval log and pull token_est.
+    """Token estimate of the first startup event that actually served.
 
-    Returns 0 when the log is missing, malformed, or contains no startup event.
-    Single-pass: only the first matching line wins (we only emit one per session).
+    Returns 0 when the log is missing, malformed, or contains no startup
+    event. #175 emits several startup-type events per log (full serve,
+    later deltas, ``skipped_replay`` telemetry): replays record
+    ``token_est: 0`` and must not shadow the real serve, so the first
+    non-replay startup line wins.
     """
     if not log_path.exists():
         return 0
@@ -153,11 +160,60 @@ def _read_startup_token_est(log_path: Path) -> int:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if ev.get("type") == "startup":
+                if (
+                    ev.get("type") == "startup"
+                    and ev.get("disposition") != "skipped_replay"
+                ):
                     return int(ev.get("token_est", 0) or 0)
     except OSError:
         pass
     return 0
+
+
+def _chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
+    """The session plus every session note sharing its ``logical_session``.
+
+    #175 chain union: a compaction-segment chain is one logical
+    conversation, and under serve-once only its FIRST segment receives the
+    startup snapshot — a decision minted in a later segment still relied on
+    it, so exposure lookups span the chain. Returns just ``{session_id}``
+    for unknown or unchained sessions. The LIKE is a prefilter (``_``
+    over-matches harmlessly); the json parse confirms.
+
+    Membership applies the shared real-wrap exclusion
+    (``core.vault.is_chain_sibling``, key-only here — no ``segments:``
+    union): a separately-worked, separately-wrapped session's exposure
+    would inflate the RLVR context signal. The decision's own session is
+    always in.
+    """
+    ids = {session_id}
+    row = idx.db.execute(
+        "SELECT frontmatter FROM notes WHERE id = ?", (session_id,)
+    ).fetchone()
+    key = ""
+    if row and row["frontmatter"]:
+        try:
+            key = str(
+                (json.loads(row["frontmatter"]) or {}).get("logical_session")
+                or ""
+            )
+        except json.JSONDecodeError:
+            key = ""
+    if not key:
+        return ids
+    for r in idx.db.execute(
+        "SELECT id, frontmatter FROM notes "
+        "WHERE type = 'session' AND frontmatter LIKE ?",
+        (f"%{key}%",),
+    ):
+        try:
+            fm = json.loads(r["frontmatter"]) or {}
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not is_chain_sibling(fm, {key}):
+            continue
+        ids.add(r["id"])
+    return ids
 
 
 def _assemble_with_indexer(
@@ -193,9 +249,16 @@ def _assemble_with_indexer(
     startup_ids: set[str] = set()
     n_retrievals_onthefly = 0
     if session_id:
+        # #175 serve-once: only the chain's first segment receives the
+        # startup snapshot. A decision minted in a later segment must still
+        # see that exposure, so the lookup unions context_served across
+        # every session note sharing this session's logical_session.
+        session_ids = sorted(_chain_session_ids(idx, session_id))
+        placeholders = ",".join("?" * len(session_ids))
         rows = idx.db.execute(
-            "SELECT note_id, source FROM context_served WHERE session_id = ?",
-            (session_id,),
+            f"SELECT note_id, source FROM context_served "
+            f"WHERE session_id IN ({placeholders})",
+            session_ids,
         ).fetchall()
         for r in rows:
             if r["source"] == "onthefly":
@@ -207,9 +270,9 @@ def _assemble_with_indexer(
         # Retrieval-event count = distinct ts among onthefly rows. One MCP
         # call → one ts → multiple note_ids share that ts.
         n_row = idx.db.execute(
-            "SELECT COUNT(DISTINCT ts) AS n FROM context_served "
-            "WHERE session_id = ? AND source = 'onthefly'",
-            (session_id,),
+            f"SELECT COUNT(DISTINCT ts) AS n FROM context_served "
+            f"WHERE session_id IN ({placeholders}) AND source = 'onthefly'",
+            session_ids,
         ).fetchone()
         n_retrievals_onthefly = int(n_row["n"] or 0) if n_row else 0
 
