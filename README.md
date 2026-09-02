@@ -176,6 +176,17 @@ separate `weave install` MCP-registration step — distinct from the `weave` CLI
 prerequisite above) and ships the subagent workers that `/dream` and `/drain`
 fan out to.
 
+No manual `uv sync` is needed on this route: the very first launcher that
+fires (MCP server, hook, or a skill's `weave` call) sees the fresh clone has
+no installed `thinkweave` distribution and runs the one-time bootstrap
+`uv sync --extra all` itself. **First launch can take several minutes** on a
+cold uv cache (the `all` extras pull numpy, lxml, and friends), and hooks may
+hit their timeouts and be killed while it converges — each attempt logs a
+`first-run bootstrap` line to stderr and resumes where the last one stopped
+(uv caches every downloaded wheel), so a restart or two of Claude Code lands
+on a fully populated venv. Launchers never sync after that — an installed
+distribution skips the bootstrap entirely.
+
 **Namespacing.** Claude Code registers plugin commands under the plugin's
 namespace: type `/thinkweave:onboard`, not `/onboard` (tab-complete after
 `/thinkweave:` lists everything). `weave schedule` renders namespaced cron lines

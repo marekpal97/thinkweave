@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" session_start",
+            "command": "\"«REPO»/bin/weave-hook-launch\" session_start",
             "timeout": 300
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" user_prompt_submit",
+            "command": "\"«REPO»/bin/weave-hook-launch\" user_prompt_submit",
             "timeout": 30
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" post_tool_use",
+            "command": "\"«REPO»/bin/weave-hook-launch\" post_tool_use",
             "timeout": 30
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" post_tool_use",
+            "command": "\"«REPO»/bin/weave-hook-launch\" post_tool_use",
             "timeout": 30
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" stop",
+            "command": "\"«REPO»/bin/weave-hook-launch\" stop",
             "timeout": 30
           }
         ]

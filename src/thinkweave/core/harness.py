@@ -16,9 +16,10 @@ a future ``--harness`` flag use.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -31,11 +32,35 @@ from thinkweave.core.plugin_route import PLUGIN_NAME, namespace_prompt, plugin_n
 # file with no error (#107).
 SESSION_START_BUDGET_TOKENS = 10_000
 
+#: The canonical lifecycle vocabulary — Claude Code's, exactly the events
+#: authored in ``hooks/hooks.json`` (the conformance suite pins them equal).
+#: E3 shims translate other harnesses' native names onto these
+#: (dec-5a076384); ``operations.hook_events`` is the swap.
+CANONICAL_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
+
 _NUDGE = (
     "If `weave_*` MCP tools are available, thinkweave (Obsidian-native memory "
     "layer) is your durable memory for this session. Prefer `weave_search` / "
     "`weave_context` / `weave_graph` over filesystem search"
 )
+
+
+@dataclass(frozen=True)
+class Degradation:
+    """One capability this harness does not deliver, stated out loud.
+
+    The epic's anti-goal is a capability silently faked; a profile therefore
+    carries its gaps as data, rendered into install output and the generated
+    HARNESSES.md matrix — never implied by an absent feature (#191).
+    """
+
+    capability: str
+    mode: str
+    """``documented`` — the gap has a stated manual fallback. ``refuse`` — the
+    operation errors out rather than writing config that never fires."""
+    note: str
+    upstream_ref: str = ""
+    """The evidence: an issue, a blueprint note id, or a doc section."""
 
 
 @dataclass(frozen=True)
@@ -75,7 +100,14 @@ class HarnessProfile:
     A Claude Code block ends "run ``/wrap`` before ``/clear``"; on a harness
     with no slash commands and no session-end hook that is an instruction the
     model cannot follow, so its block names the explicit ``weave_extract`` call
-    instead — the epic's "documented degradation, not a broken promise"."""
+    instead — the epic's "documented degradation, not a broken promise".
+
+    A ``{weave}`` placeholder is substituted at install time with the absolute
+    ``bin/weave`` launcher path (``install._render_claude_md_block``): bare
+    ``weave`` only resolves inside Claude Code's plugin shell, so a CLI
+    fallback the block names must carry a path any harness shell can run —
+    and every fallback it names is conformance-pinned against the real
+    argparse, because documented fallback commands rot (review r3)."""
 
     mcp_config: Path
     """Where an MCP server registration is read from / written to. The *format*
@@ -184,11 +216,154 @@ class HarnessProfile:
     :attr:`headless_slash`, which is about one-shot *invocation* rather than
     whether the skills exist at all; flip this when the export lands."""
 
+    # --- dispatch-contract data (#191, dec-5a076384) ----------------------
+    # The flat fields above predate the re-scope and group as the decision's
+    # install/runtime sub-records in spirit; folding them into nested records
+    # is rename-only churn across every consumer, deliberately not paid.
+
+    eligibility: str = "E0"
+    """Where this harness sits on the ladder (dec-5a076384): ``E0`` steerable
+    (skills dir + instructions file + rendered degradations — an OFFICIAL
+    supported tier per dec-2fa074a0), ``E1`` headless worker, ``E2``
+    dispatcher, ``E3`` captured (lifecycle hooks feed the vault)."""
+
+    detect_dir: Path | None = None
+    """The directory whose existence signals this harness is installed on the
+    machine — what an auto-detector probes, and what ``weave doctor`` can name."""
+
+    hook_mechanism: str = "none"
+    """How lifecycle hooks reach this harness: ``plugin`` (an active plugin
+    manifest owns registration, settings files are swept — Claude Code),
+    ``file`` (the installer writes the settings file — Codex), ``none`` (no
+    hook path exists or none is shipped yet; capture degrades to explicit
+    ``/wrap``-style invocation). Must agree with :attr:`hooks`."""
+
+    hook_events: dict[str, str | None] = field(default_factory=dict)
+    """Canonical event name → this harness's native one (None: no native
+    equivalent is *verified* to exist — refusing to guess is the lesson of
+    claude-mem's silently-dead OpenCode plugin, #2462). Claude Code's
+    vocabulary is canonical; ``operations.hook_events`` does the swapping."""
+
+    fires_verified: dict[str, str] = field(default_factory=dict)
+    """Canonical event → ISO date a real run was *observed* firing it. Absent
+    key = wired but unobserved (Codex ``Stop``), never assumed."""
+
+    context_channel: str = ""
+    """How the SessionStart payload reaches the model: ``additionalContext``
+    (hook reply field), ``context-injection`` (Pi's context-handler message
+    prepend), ``message-transform`` (OpenCode's transform hook)."""
+
+    transcript_glob: str = ""
+    """Absolute glob over this harness's on-disk session transcripts."""
+
+    transcript_format: str = ""
+    """Open enum tag naming the transcript's shape. Format-plural on purpose —
+    #199's SQLite-backed store is one more tag, not a rewrite."""
+
+    transcript_parser: str = ""
+    """Entry point of this format's parser as ``module:callable``, or empty
+    while no importer exists (then a ``transcript``/``import`` degradation
+    must say so — conformance-enforced). A dotted path rather than an import:
+    the parsers live in ``onboarding``/``acquisition``, which the package-edge
+    contract keeps out of every ranked package's import graph, and the profile
+    stays pure data either way. Resolve via :meth:`load_transcript_parser`;
+    the conformance suite pins the exact modules these strings may reach."""
+
+    transcript_importer: str = ""
+    """Entry point of the batch importer behind ``weave import <id>``, as
+    ``module:callable`` taking ``(cfg, sessions_root=…, **filters)``. Empty
+    while none exists — the install next-steps then must not name the
+    command. Resolve via :meth:`load_transcript_importer`."""
+
+    evidence: str = ""
+    """Provenance of this row's facts, rendered into the generated matrix:
+    measured against a live harness (say when/where) or declared from a
+    blueprint note (say which, and that it is unverified). Facts presented in
+    the same register regardless of provenance are the quiet cousin of a
+    capability silently faked."""
+
+    context_served_source: str = "startup"
+    """``context_served.source`` value for this harness's SessionStart
+    payload. Codex delivers the payload under a materially different contract
+    (visible developer message, spill cap) so it logs distinctly; anything
+    else pools into plain ``startup``. Values must stay inside the closed
+    CHECK in ``core/indexer.py`` — a NEW distinct value needs that table's
+    drop+recreate migration, not just a row edit here."""
+
+    session_id_scheme: str = ""
+    """How the harness mints session ids, for importers and dedup keys."""
+
+    native_memory_artifact: Path | None = None
+    """The on-disk memory corpus the seam reconciles, or None. Must agree
+    with :attr:`native_memory` — the seam gates on a *declared artifact*, not
+    a bare boolean promise (#109)."""
+
+    harness_flag: str = ""
+    """Argv suffix telling a ``weave`` subprocess which harness drives it
+    (``--harness codex``). Empty on Claude Code only: it is the vocabulary's
+    authored shape, and its hook commands stay byte-identical to
+    ``hooks/hooks.json`` so the plugin route keeps agreeing with the
+    installer (docs/HARNESSES.md §"Why the handler reads argv")."""
+
+    windows_cli_shim: bool = False
+    """This harness's sandbox cannot reach the repo venv's ``weave`` on
+    native Windows, so ``weave install`` writes a machine-scope ``weave.cmd``
+    launcher for it (Codex; Claude Code resolves through Git Bash)."""
+
+    mcp_servers_key: str = ""
+    """The key its MCP config nests server entries under. Usually implied by
+    the file format (``mcpServers``/``mcp_servers``) — OpenCode is the
+    counterexample that makes this a profile fact: JSON file, ``mcp`` key."""
+
+    mcp_entry_shape: str = "command-args"
+    """Which documented body ``mcp_config.canonical`` renders the server
+    entry into — one of ``mcp_config.ENTRY_SHAPES``.
+
+    ``command-args`` — Claude Code's authored split shape (``type: stdio``,
+    ``command`` string, ``args`` list, ``env`` map). Pi documents the same
+    split ``mcpServers`` block (``command``/``args``/``env``, blueprint
+    n-a1d3beba §4), and Codex's TOML differs only by the format-level trims
+    the writer already applies. ``argv-array`` — OpenCode's documented
+    ``mcp`` body (opencode.ai/docs/mcp-servers/, fetched 2026-08-24 into
+    blueprint n-767d66b4 §4): ``type: local``, launcher and argv merged into
+    ONE ``command`` array, optional ``environment`` map. A harness's own
+    published schema is a truth source for declared profile data
+    (dec-2fa074a0, owner override 2026-08-29); whether the written entry
+    PARSES on a live install stays owed to #114/#195."""
+
+    mcp_via_cli: str = ""
+    """The harness-native registration command (``claude mcp add`` /
+    ``codex mcp add``) when one exists — preferred over hand-splicing where
+    the writer does not already reproduce its output byte-for-byte."""
+
+    degradations: tuple[Degradation, ...] = ()
+
     @property
     def dev_link(self) -> Path:
         """Where ``weave dev-link`` symlinks a checkout so the harness loads it
         as a plugin."""
         return self.skills_dir / PLUGIN_NAME
+
+    @property
+    def transcript_root(self) -> Path:
+        """The static directory prefix of :attr:`transcript_glob` — where a
+        walker starts. Derived, so glob and root cannot drift apart."""
+        return Path(self.transcript_glob.split("*", 1)[0].rstrip("/\\"))
+
+    @staticmethod
+    def _load_entry(ref: str) -> Callable | None:
+        if not ref:
+            return None
+        module, name = ref.split(":")
+        return getattr(importlib.import_module(module), name)
+
+    def load_transcript_parser(self) -> Callable[[Path], object] | None:
+        """Resolve :attr:`transcript_parser`, or None when no parser exists."""
+        return self._load_entry(self.transcript_parser)
+
+    def load_transcript_importer(self) -> Callable | None:
+        """Resolve :attr:`transcript_importer`, or None when none exists."""
+        return self._load_entry(self.transcript_importer)
 
     def namespace(self) -> str | None:
         """The plugin namespace skill tokens must carry, or None for bare names.
@@ -275,6 +450,30 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         bypass_permissions_flag="--dangerously-skip-permissions",
         headless_model="sonnet",
         ships_skills=True,
+        eligibility="E3",
+        detect_dir=cc,
+        hook_mechanism="plugin",
+        hook_events={e: e for e in CANONICAL_EVENTS},
+        # Literal per-event entries, not a comprehension: each date is one
+        # recorded observation (here: all four seen firing in live sessions
+        # on the dev machine on 2026-08-29) and future re-verifications must
+        # be able to move independently.
+        fires_verified={
+            "SessionStart": "2026-08-29",
+            "UserPromptSubmit": "2026-08-29",
+            "PostToolUse": "2026-08-29",
+            "Stop": "2026-08-29",
+        },
+        context_channel="additionalContext",
+        transcript_glob=str(cc / "projects" / "*" / "*.jsonl"),
+        transcript_format="jsonl-flat",
+        transcript_parser="thinkweave.onboarding.claude_code_seed:parse_session",
+        transcript_importer="thinkweave.onboarding.claude_code_seed:import_claude_code",
+        session_id_scheme="uuid4",
+        native_memory_artifact=cc / "projects",
+        mcp_servers_key="mcpServers",
+        mcp_via_cli="claude mcp add",
+        evidence="measured — daily live use on the dev machine; suite drives the handler end-to-end",
     )
 
 
@@ -381,12 +580,286 @@ def codex(home: Path | None = None) -> HarnessProfile:
         # without this a Windows Codex user's hooks get a `#!/bin/sh` script
         # handed to cmd.exe.
         hook_windows_command_key="commandWindows",
+        eligibility="E3",
+        detect_dir=cx,
+        hook_mechanism="file",
+        hook_events={e: e for e in CANONICAL_EVENTS},
+        # The 2026-08-02 credential-less spike observed exactly these two;
+        # Stop and PostToolUse are wired but unobserved on a live Codex run
+        # (docs/HARNESSES.md §"Spike answers") and must not be claimed.
+        fires_verified={
+            "SessionStart": "2026-08-02",
+            "UserPromptSubmit": "2026-08-02",
+        },
+        context_channel="additionalContext",
+        transcript_glob=str(
+            cx / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl"
+        ),
+        transcript_format="jsonl-rollout",
+        transcript_parser="thinkweave.acquisition.importers.codex:parse_rollout",
+        transcript_importer="thinkweave.acquisition.importers.codex:import_codex",
+        session_id_scheme="uuid7",
+        harness_flag="--harness codex",
+        windows_cli_shim=True,
+        mcp_servers_key="mcp_servers",
+        mcp_via_cli="codex mcp add",
+        context_served_source="codex-startup",
+        evidence="measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md)",
+        degradations=(
+            Degradation(
+                "Stop capture",
+                "documented",
+                "wired but unobserved on a live run — the 2026-08-02 spike "
+                "aborted at auth before any turn completed; SessionEnd did "
+                "fire and is the fallback if Stop proves unreliable headlessly",
+                "docs/HARNESSES.md §Spike answers",
+            ),
+            Degradation(
+                "SessionStart context delivery",
+                "documented",
+                "additionalContext renders as a visible developer message, "
+                "not a silent system one",
+                "openai/codex#16933",
+            ),
+            Degradation(
+                "headless skill invocation",
+                "documented",
+                "codex exec resolves no slash commands; a $name mention is a "
+                "hint the model acts on by reading the skill file itself",
+                "docs/HARNESSES.md §Q2",
+            ),
+        ),
     )
 
 
-PROFILES: dict[str, Callable[[], HarnessProfile]] = {
+def pi(home: Path | None = None) -> HarnessProfile:
+    """Pi (badlogic/pi-mono) — an official E0 (steerable) row.
+
+    Every fact is distilled from the evidence blueprint n-a1d3beba
+    (2026-08-24: upstream docs + four working extensions read in code).
+    Nothing here is measured against a live Pi install — ``fires_verified``
+    is empty and the degradations say what does not run until the extension
+    shim ships (#114). The ``hook_events`` map is the blueprint's translation
+    table, carried as data so the shim and the conformance suite share it.
+    """
+    h = home or Path.home()
+    agent = h / ".pi" / "agent"
+    return HarnessProfile(
+        id="pi",
+        display_name="Pi",
+        hooks=False,
+        subagents=False,
+        native_memory=False,
+        headless_slash=False,
+        instructions_file=agent / "AGENTS.md",
+        instructions_block_body=(
+            f"{_NUDGE}. This harness fires no thinkweave lifecycle hooks, so "
+            "call `weave_extract` yourself before you finish — it is what "
+            "persists the session's insights and decisions into the vault. "
+            "If the `weave_*` tools did not load, fall back to the CLI: "
+            "`{weave} add <title> -t note -p <project> -b <body>` persists "
+            "a note (`-t decision` for a decision) and "
+            "`{weave} search <query>` retrieves."
+        ),
+        # NB: mcp_config, user_settings and installed_plugins all resolve to
+        # this one settings.json. Safe while every writer is key-scoped or
+        # gated off (hooks=False); when #114 flips hooks on, the hook writer
+        # merges into the same document the MCP entry lives in — merge, never
+        # regenerate.
+        mcp_config=agent / "settings.json",
+        skills_dir=agent / "skills",
+        plugins_root=agent / "extensions",
+        plugins_cache=agent / "extensions" / "cache",
+        installed_plugins=agent / "settings.json",
+        plugin_manifest_relpath=Path("package.json"),
+        user_settings=agent / "settings.json",
+        project_settings_relpath=Path(".pi") / "settings.json",
+        project_mcp_config_relpath=Path(".pi") / "settings.json",
+        project_plugins_relpath=Path(".pi") / "extensions",
+        pause_marker=agent / "thinkweave_paused.json",
+        memory_projects_root=agent / "projects",
+        memory_global_dir=agent / "memory",
+        cli_bin="pi",
+        model_flag="--model",
+        prompt_flag="-p",
+        bypass_permissions_flag="",
+        eligibility="E0",
+        detect_dir=h / ".pi",
+        hook_events={
+            "SessionStart": "session_start",
+            "UserPromptSubmit": "before_agent_start",
+            "PostToolUse": "tool_result",
+            "Stop": "agent_end",
+        },
+        context_channel="context-injection",
+        transcript_glob=str(agent / "sessions" / "*" / "*.jsonl"),
+        transcript_format="jsonl-tree",
+        session_id_scheme="uuid (session-header id)",
+        harness_flag="--harness pi",
+        mcp_servers_key="mcpServers",
+        evidence="declared — blueprint n-a1d3beba (2026-08-24); NOT verified on a live install",
+        degradations=(
+            Degradation(
+                "lifecycle hooks",
+                "documented",
+                "the Pi extension shim is not yet shipped, so passive capture "
+                "does not run; end sessions with an explicit weave_extract",
+                "#114",
+            ),
+            Degradation(
+                "MCP registration",
+                "documented",
+                "the written entry follows Pi's documented mcpServers block "
+                "(command string + args list + env map, n-a1d3beba §4) apart "
+                "from an extra `type: stdio` key Pi's field list does not "
+                "name; NOT yet verified to parse on a live install — #114 "
+                "owns the live verification",
+                "n-a1d3beba §4",
+            ),
+            Degradation(
+                "subagent fan-out",
+                "documented",
+                "Pi ships no first-party subagent tool, so the /drain and "
+                "/dream worker topology has nothing to dispatch onto",
+                "n-a1d3beba §2",
+            ),
+            Degradation(
+                "skill invocation",
+                "documented",
+                "no Skill tool — /skill:name is prompt-expansion, and the "
+                "bootstrap must say read-the-SKILL.md, not invoke",
+                "n-a1d3beba §4",
+            ),
+            Degradation(
+                "transcript import",
+                "documented",
+                "session files are parentId trees, not flat JSONL; no "
+                "importer walks them yet",
+                "n-a1d3beba §6",
+            ),
+        ),
+    )
+
+
+def opencode(home: Path | None = None) -> HarnessProfile:
+    """OpenCode (sst/opencode) — an official E0 (steerable) row.
+
+    Distilled from the evidence blueprint n-767d66b4 (2026-08-24: upstream
+    docs + three working plugins read in code). Not measured against a live
+    install; the plugin shim is #195. XDG env overrides of the config/data
+    homes are deliberately ignored here — the profile takes one ``home`` knob,
+    like every other row.
+    """
+    h = home or Path.home()
+    cfg = h / ".config" / "opencode"
+    data = h / ".local" / "share" / "opencode"
+    return HarnessProfile(
+        id="opencode",
+        display_name="OpenCode",
+        hooks=False,
+        subagents=False,
+        native_memory=False,
+        headless_slash=False,
+        instructions_file=cfg / "AGENTS.md",
+        instructions_block_body=(
+            f"{_NUDGE}. This harness fires no thinkweave lifecycle hooks, so "
+            "call `weave_extract` yourself before you finish — it is what "
+            "persists the session's insights and decisions into the vault. "
+            "If the `weave_*` tools did not load, fall back to the CLI: "
+            "`{weave} add <title> -t note -p <project> -b <body>` persists "
+            "a note (`-t decision` for a decision) and "
+            "`{weave} search <query>` retrieves."
+        ),
+        # NB: mcp_config, user_settings and installed_plugins all resolve to
+        # this one opencode.json — same merge-never-regenerate constraint as
+        # the Pi row when #195 flips hooks on.
+        mcp_config=cfg / "opencode.json",
+        skills_dir=cfg / "skills",
+        plugins_root=cfg / "plugins",
+        plugins_cache=h / ".cache" / "opencode" / "node_modules",
+        installed_plugins=cfg / "opencode.json",
+        plugin_manifest_relpath=Path("package.json"),
+        user_settings=cfg / "opencode.json",
+        project_settings_relpath=Path("opencode.json"),
+        project_mcp_config_relpath=Path("opencode.json"),
+        project_plugins_relpath=Path(".opencode") / "plugins",
+        pause_marker=cfg / "thinkweave_paused.json",
+        memory_projects_root=cfg / "projects",
+        memory_global_dir=cfg / "memory",
+        cli_bin="opencode",
+        model_flag="--model",
+        prompt_flag="",
+        exec_subcommand="run",
+        bypass_permissions_flag="--auto",
+        eligibility="E0",
+        detect_dir=cfg,
+        hook_events={
+            "SessionStart": "experimental.chat.messages.transform",
+            "UserPromptSubmit": "chat.message",
+            "PostToolUse": "tool.execute.after",
+            # Only session.idle / session.deleted are *confirmed* bus events;
+            # a Stop mapping stays None until one is proven to fire.
+            "Stop": None,
+        },
+        context_channel="message-transform",
+        transcript_glob=str(data / "storage" / "session" / "*" / "*.json"),
+        transcript_format="json-records",
+        session_id_scheme="ses_<12-hex><14-base62> (ULID-style sortable)",
+        harness_flag="--harness opencode",
+        mcp_servers_key="mcp",
+        mcp_entry_shape="argv-array",
+        evidence="declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install",
+        degradations=(
+            Degradation(
+                "lifecycle hooks",
+                "documented",
+                "the OpenCode plugin shim is not yet shipped, so passive "
+                "capture does not run; end sessions with an explicit "
+                "weave_extract",
+                "#195",
+            ),
+            Degradation(
+                "MCP registration",
+                "documented",
+                "weave install writes OpenCode's documented schema under the "
+                "`mcp` key (type local, command as one array, environment "
+                "map when non-empty — opencode.ai/docs/mcp-servers/ via "
+                "n-767d66b4 §4); NOT yet verified to parse on a live "
+                "install — #195 owns the live verification",
+                "n-767d66b4 §4",
+            ),
+            Degradation(
+                "Stop capture",
+                "documented",
+                "no verified Stop-equivalent event — claude-mem's plugin "
+                "subscribed to bus events that never fire and captured "
+                "nothing silently; only session.idle/session.deleted are "
+                "confirmed real",
+                "claude-mem#2462",
+            ),
+            Degradation(
+                "subagent fan-out",
+                "documented",
+                "no hook fires on subagent dispatch/completion in the docs "
+                "or any reference plugin",
+                "n-767d66b4 §2",
+            ),
+            Degradation(
+                "transcript import",
+                "documented",
+                "sessions are per-record JSON files (session/message/part); "
+                "no importer reads them yet",
+                "n-767d66b4 §6",
+            ),
+        ),
+    )
+
+
+PROFILES: dict[str, Callable[..., HarnessProfile]] = {
     "claude-code": claude_code,
     "codex": codex,
+    "pi": pi,
+    "opencode": opencode,
 }
 
 #: In-process override. ``None`` means "derive from the environment".

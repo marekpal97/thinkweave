@@ -156,7 +156,7 @@ def _hook_harness() -> str:
 
     The value is unvalidated on purpose and that is safe: it is only ever
     stamped onto the buffer as ``surface``, and its one consumer looks it up
-    in the closed ``indexer._STARTUP_SOURCES`` map, where anything unrecognised
+    by ``indexer._startup_source`` (profile data), where anything unrecognised
     falls back to plain ``'startup'``. An argv nobody but this repo's installer
     writes therefore cannot reach the ``context_served`` CHECK constraint.
     """

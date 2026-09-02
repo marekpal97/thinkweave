@@ -18,6 +18,7 @@ import json
 import sys
 from pathlib import Path
 
+from thinkweave.core.fswrite import atomic_write_text
 from thinkweave.core.harness import active as active_harness
 from thinkweave.core.plugin_route import plugin_namespace
 
@@ -106,19 +107,19 @@ def _localize_command(command: str, root: Path) -> str:
 
 def _stamp_harness(command: str, profile) -> str:
     """Second per-route transformation: tell the handler which harness fired
-    it, by appending ``--harness <id>``.
+    it, by appending the profile's ``harness_flag``.
 
     Why argv and not :func:`thinkweave.core.harness.active` is
     docs/HARNESSES.md § "Why the handler reads argv, not the profile".
     ``bin/weave-hook-launch`` forwards ``"$@"`` untouched.
 
-    Claude Code is the shape ``hooks/hooks.json`` is authored in, so its
-    command is left byte-identical and the plugin route (which loads that file
-    directly, unstamped) keeps agreeing with what this writes.
+    Claude Code's flag is empty — ``hooks/hooks.json`` is authored in its
+    shape, so its command is left byte-identical and the plugin route (which
+    loads that file directly, unstamped) keeps agreeing with what this writes.
     """
-    if profile.id == "claude-code":
+    if not profile.harness_flag:
         return command
-    return f"{command} --harness {profile.id}"
+    return f"{command} {profile.harness_flag}"
 
 
 def _windows_command(command: str) -> str:
@@ -209,9 +210,7 @@ def _converge_to_plugin_ownership(project_dir: str, dry_run: bool) -> None:
             print(f"Would remove stale manual hooks from: {target}")
             print(_settings_diff(existing, planned, target), end="")
         else:
-            target.write_text(
-                json.dumps(planned, indent=2) + "\n", encoding="utf-8"
-            )
+            atomic_write_text(target, json.dumps(planned, indent=2) + "\n")
 
     print("The active thinkweave plugin owns lifecycle registration.")
     if not cleaned:
@@ -359,17 +358,22 @@ def install_hooks(
     # support is pointed at manual `/wrap`, not handed a file it never reads.
     profile = active_harness()
     if not profile.hooks:
+        # `/wrap` would be advice this harness cannot follow — the E0 rows
+        # have no slash commands either. `weave_extract` is what their
+        # instructions blocks already tell the model to call.
         print(
             f"error: the {profile.id!r} harness has no lifecycle hooks, so there is\n"
-            "nothing to install. Run `/wrap` explicitly at the end of a session\n"
-            "instead — it does the same extraction the Stop hook would trigger.",
+            "nothing to install. Have the session call the `weave_extract` MCP tool\n"
+            "before it ends instead — it does the same extraction the Stop hook\n"
+            "would trigger.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    # Claude Code loads the canonical hooks file from an active plugin. A
-    # second settings-file registration would deliver every event twice.
-    if profile.id == "claude-code" and plugin_namespace(
+    # A plugin-mechanism harness loads the canonical hooks file from its
+    # active plugin, which then owns registration outright — a second
+    # settings-file registration would deliver every event twice.
+    if profile.hook_mechanism == "plugin" and plugin_namespace(
         manifest=profile.installed_plugins,
         dev_link=profile.dev_link,
     ):
@@ -409,10 +413,7 @@ def install_hooks(
             print("(no changes)")
         return
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(
-        json.dumps(planned, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(settings_path, json.dumps(planned, indent=2) + "\n")
     print(
         f"Hooks installed at {settings_path} (scope={scope})\n"
         "  SessionStart hook will inject ~7–10k tokens of project context "
@@ -452,9 +453,7 @@ def uninstall_hooks(
             print("(no changes)")
         return
 
-    settings_path.write_text(
-        json.dumps(planned, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(settings_path, json.dumps(planned, indent=2) + "\n")
     print(f"Hooks removed from {settings_path} (scope={scope})")
 
 

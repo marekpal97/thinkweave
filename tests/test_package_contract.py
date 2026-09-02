@@ -231,7 +231,6 @@ EDGE_BASELINE: frozenset[tuple[str, str]] = frozenset(
         # (the profile owns the namespace rule). Same count, same package.
         ("thinkweave.scheduling.registry", "thinkweave.core.harness"),
         ("thinkweave.scheduling.taskscheduler", "thinkweave.core.config"),
-        ("thinkweave.surfaces.cli.index", "thinkweave.onboarding.claude_code_seed"),
         ("thinkweave.surfaces.cli.index", "thinkweave.onboarding.enrich_batch"),
         ("thinkweave.surfaces.cli.schedule", "thinkweave.scheduling"),
         ("thinkweave.surfaces.cli.schedule", "thinkweave.scheduling.cron"),

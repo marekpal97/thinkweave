@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-29T10:00:00Z","cwd":"/home/u/proj","gitBranch":"main","message":{"content":"hello weave"}}
+{"type":"assistant","timestamp":"2026-08-29T10:00:05Z","message":{"content":[{"type":"text","text":"hi — indexed."}]}}

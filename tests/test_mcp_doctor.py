@@ -269,6 +269,21 @@ class TestRegistrationScopes:
         assert not result.passed
 
 
+class TestKeyFingerprint:
+    """OpenCode's documented body carries ONE ``command`` array (launcher +
+    argv merged, blueprint n-767d66b4 §4); every other shape splits the
+    launcher string from an ``args`` list. ``_key`` must fingerprint the two
+    as the same invocation or a machine entry beside an OpenCode-shaped one
+    reads as a phantom cross-scope conflict."""
+
+    def test_argv_array_and_split_shapes_fingerprint_identically(self):
+        merged = {
+            "type": "local",
+            "command": [CANONICAL_ENTRY["command"], *CANONICAL_ENTRY["args"]],
+        }
+        assert md._key(merged) == md._key(CANONICAL_ENTRY)
+
+
 class TestMcpServersNarrowing:
     """``_mcp_servers`` narrows the manifest block to something dict-shaped."""
 
@@ -305,6 +320,11 @@ class TestRunMcpDoctor:
             raise subprocess.TimeoutExpired(cmd="uv", timeout=5.0)
 
         monkeypatch.setattr(md.subprocess, "run", fake_run)
+        # Hermetic: the venv-extras check must not depend on which extras the
+        # suite's own venv happens to have synced (`--extra mcp` in CI).
+        monkeypatch.setattr(
+            md, "_EXTRA_MODULES", (("json", "stdlib", "always present"),)
+        )
 
         result = md.run_mcp_doctor(cwd=tmp_path)
         assert result.passed
@@ -574,3 +594,37 @@ class TestVenvExtrasCheck:
         assert not result.passed
         assert "no_such_module_xyz [news]" in result.detail
         assert "--extra all" in result.fix
+
+    def test_dotted_module_with_absent_parent_reports_missing(self, monkeypatch):
+        """``find_spec("google.genai")`` RAISES ModuleNotFoundError when the
+        parent package is absent — it only returns None when the parent
+        exists. The check must report the extra missing, never crash on the
+        very condition it exists to detect (#164)."""
+        monkeypatch.setattr(
+            md,
+            "_EXTRA_MODULES",
+            (("no_such_parent_xyz.child", "gemini", "podcast transcription"),),
+        )
+        result = md.check_venv_extras()
+        assert not result.passed
+        assert "no_such_parent_xyz.child [gemini]" in result.detail
+        assert "--extra all" in result.fix
+
+    def test_broken_module_reports_missing_not_crash(self, monkeypatch):
+        """``find_spec`` can raise beyond ModuleNotFoundError: it imports a
+        dotted name's parent (whose ``__init__`` may raise anything), and a
+        sys.modules entry with ``__spec__ = None`` raises ValueError. A
+        present-but-broken extra must report as missing — the doctor's job
+        is diagnosing a damaged venv, never crashing on one."""
+        import sys
+        import types
+
+        broken = types.ModuleType("broken_extra_xyz")
+        broken.__spec__ = None
+        monkeypatch.setitem(sys.modules, "broken_extra_xyz", broken)
+        monkeypatch.setattr(
+            md, "_EXTRA_MODULES", (("broken_extra_xyz", "news", "news rss_poll"),)
+        )
+        result = md.check_venv_extras()
+        assert not result.passed
+        assert "broken_extra_xyz [news]" in result.detail

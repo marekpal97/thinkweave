@@ -95,6 +95,10 @@ class CodexSession:
     turns: list[tuple[str, str]] = field(default_factory=list)
     file_path: Path | None = None
 
+    @property
+    def turn_count(self) -> int:
+        return len(self.turns)
+
     def count(self, role: str) -> int:
         return sum(1 for r, _ in self.turns if r == role)
 

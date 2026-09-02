@@ -1,0 +1,4 @@
+[mcp_servers.thinkweave]
+command = "/pinned/bin/uv"
+args = ["run", "--no-sync", "--project", "/pinned/thinkweave", "--extra", "mcp", "python", "-m", "thinkweave.surfaces.mcp.server"]
+env = { "THINKWEAVE_VAULT" = "/pinned/vault" }

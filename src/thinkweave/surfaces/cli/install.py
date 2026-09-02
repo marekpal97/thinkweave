@@ -40,7 +40,7 @@ import sysconfig
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from thinkweave.core import mcp_config
+from thinkweave.core import fswrite, harness_docs, mcp_config
 from thinkweave.core.harness import active as _profile
 
 SERVER_NAME = "thinkweave"
@@ -133,9 +133,10 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     2026-08-03: editing ``pyproject.toml`` with a session running did exactly
     that. Module execution depends only on the package being importable, which is
     what ``uv run`` already guarantees. The result is
-    normalised to whatever the harness's config *format* stores — Codex's TOML
-    carries no ``type`` key — so that a re-read compares equal and a repeat
-    install is a genuine no-op.
+    normalised to the active profile's documented entry shape and config
+    format — Codex's TOML carries no ``type`` key, OpenCode's body merges the
+    argv into one ``command`` array — so that a re-read compares equal and a
+    repeat install is a genuine no-op.
 
     ``--no-sync`` is safe *here specifically* because ``cmd_install`` has
     already run :func:`_uv_sync` eagerly, so the environment this entry launches
@@ -145,10 +146,11 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     ``.venv\\Scripts\\weave-mcp.exe``, which fails with a sharing violation
     while a previously-spawned server still holds that image open.
 
-    The portable launchers deliberately do NOT pass it. On the plugin route
-    nothing ever runs ``weave install``, so the launcher's implicit sync is that
-    route's only dependency bootstrap; ``mcp_doctor._key`` normalises the flag
-    away so the two shapes still fingerprint as one invocation.
+    The portable launchers pass it too (#156); on the plugin route, where
+    nothing ever runs ``weave install``, their guarded one-time bootstrap
+    (#164) owns the first sync instead. ``mcp_doctor._key`` normalises the
+    flag away so entry shapes with and without it fingerprint as one
+    invocation.
     """
     args = [
         "run",
@@ -169,7 +171,9 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     }
     if vault_root:
         entry["env"]["THINKWEAVE_VAULT"] = vault_root
-    return mcp_config.canonical(_mcp_config(), entry)
+    return mcp_config.canonical(
+        _mcp_config(), entry, shape=_profile().mcp_entry_shape
+    )
 
 
 class ScriptsCheck(NamedTuple):
@@ -464,7 +468,7 @@ def _codex_windows_launcher() -> Path:
 
 def _install_codex_windows_cli(project_root: Path) -> Path | None:
     """Install Codex's sandbox-safe bare ``weave`` command on Windows."""
-    if not _is_windows() or _profile().id != "codex":
+    if not _is_windows() or not _profile().windows_cli_shim:
         return None
     target = _codex_windows_launcher()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -528,8 +532,20 @@ def _diff_lines(old: dict, new: dict) -> list[str]:
 
 
 def _render_claude_md_block() -> str:
-    """The exact bytes we want between the sentinels (no trailing newline)."""
+    """The exact bytes we want between the sentinels (no trailing newline).
+
+    A ``{weave}`` placeholder in the profile's body becomes this install's
+    absolute ``bin/weave`` launcher: bare ``weave`` only resolves inside
+    Claude Code's plugin shell, and the E0 rows' CLI fallback must be
+    invocable from any harness shell — the launcher self-bootstraps its venv
+    (#164). Baking an absolute path is correct here because the block is
+    rendered per install, unlike the committed manifests.
+    """
     body = _profile().instructions_block_body
+    if "{weave}" in body:
+        body = body.replace(
+            "{weave}", str(_detect_project_root() / "bin" / "weave")
+        )
     return f"{CLAUDE_MD_BLOCK_START}\n{body}\n{CLAUDE_MD_BLOCK_END}"
 
 
@@ -545,15 +561,16 @@ def _extract_claude_md_block(text: str) -> str | None:
 
 
 def _splice_claude_md_block(text: str, new_block: str) -> str:
-    """Replace an existing block in place, or append a new one. Never edits
-    bytes outside the sentinels — hand-edits adjacent to the block survive."""
-    start = text.find(CLAUDE_MD_BLOCK_START)
-    end = text.find(CLAUDE_MD_BLOCK_END, max(start, 0))
-    if start == -1 or end == -1:
-        # absent or only one sentinel (corrupt) — append a fresh block
-        sep = "" if text == "" or text.endswith("\n") else "\n"
-        return f"{text}{sep}\n{new_block}\n"
-    return text[:start] + new_block + text[end + len(CLAUDE_MD_BLOCK_END) :]
+    """Replace an existing block in place, or append a new one (absent or
+    single-sentinel-corrupt file). Never edits bytes outside the sentinels —
+    hand-edits adjacent to the block survive."""
+    return fswrite.replace_between(
+        text,
+        CLAUDE_MD_BLOCK_START,
+        CLAUDE_MD_BLOCK_END,
+        new_block,
+        on_missing="append",
+    )
 
 
 def _install_claude_md_block(yes: bool) -> None:
@@ -599,22 +616,34 @@ def _install_claude_md_block(yes: bool) -> None:
         print("Re-run with --yes to apply, or --no-claude-md to skip.")
         sys.exit(1)
 
-    mcp_config._atomic_write(_instructions(), _splice_claude_md_block(text, new_block))
+    fswrite.atomic_write_text(_instructions(), _splice_claude_md_block(text, new_block))
     print()
     verb = "Updated" if existing is not None else "Appended"
     print(f"{verb} thinkweave block in {_instructions()}.")
 
 
+def _servers_key() -> str:
+    """The active harness's declared MCP servers key. Passed to every
+    ``mcp_config`` call in this module: the suffix-derived default agrees for
+    most harnesses, but OpenCode is a JSON file whose key is ``mcp`` — writing
+    the default there registers a server the harness never reads (r1)."""
+    return _profile().mcp_servers_key
+
+
 def _remove_mcp_entry() -> bool:
     """Remove the thinkweave MCP entry from the harness's config. Other
     servers and top-level keys survive. Returns False if nothing to do."""
-    return mcp_config.remove_entry(_mcp_config(), SERVER_NAME)
+    return mcp_config.remove_entry(
+        _mcp_config(), SERVER_NAME, servers_key=_servers_key()
+    )
 
 
 def _restore_mcp_entry() -> None:
     """Re-register the thinkweave MCP entry. Used by ``weave resume``."""
     entry = _build_server_entry(_detect_project_root(), vault_root=None)
-    mcp_config.write_entry(_mcp_config(), SERVER_NAME, entry)
+    mcp_config.write_entry(
+        _mcp_config(), SERVER_NAME, entry, servers_key=_servers_key()
+    )
 
 
 def _remove_claude_md_block() -> bool:
@@ -649,22 +678,35 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
     """
     path = _mcp_config()
 
+    # Degrade out loud (dec-5a076384, r2): on a row whose MCP registration is
+    # itself a documented degradation — the body follows the harness's
+    # documented schema but no live install has verified it parses (#114/
+    # #195) — the success line carries the profile's provenance instead of an
+    # unqualified "Registered". Measured rows (CC, Codex) keep their exact
+    # pre-#191 lines.
+    qualifier = ""
+    if any(
+        "mcp registration" in d.capability.lower()
+        for d in _profile().degradations
+    ):
+        qualifier = f" [{_profile().evidence} — see the degradations listed below]"
+
     if not path.exists():
         if not args.yes:
             print(f"{path} does not exist. `weave install` will create it.")
             print("Re-run with --yes to proceed.")
             sys.exit(1)
-        mcp_config.write_entry(path, SERVER_NAME, new_entry)
-        print(f"Wrote {path} with thinkweave MCP entry.")
+        mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
+        print(f"Wrote {path} with thinkweave MCP entry.{qualifier}")
         return
 
     # A MalformedConfig from here (or from either write below) carries its own
     # remedy and is turned into a clean exit by the CLI's error boundary.
-    existing = mcp_config.read_entry(path, SERVER_NAME)
+    existing = mcp_config.read_entry(path, SERVER_NAME, servers_key=_servers_key())
 
     if existing is None:
-        mcp_config.write_entry(path, SERVER_NAME, new_entry)
-        print(f"Registered thinkweave MCP server in {path}.")
+        mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
+        print(f"Registered thinkweave MCP server in {path}.{qualifier}")
         return
 
     if existing == new_entry:
@@ -678,8 +720,8 @@ def _write_mcp_entry(args: argparse.Namespace, new_entry: dict) -> None:
     if not args.yes:
         print(f"Re-run with --yes to overwrite, or edit {path} by hand.")
         sys.exit(1)
-    mcp_config.write_entry(path, SERVER_NAME, new_entry)
-    print(f"Updated thinkweave MCP entry in {path}.")
+    mcp_config.write_entry(path, SERVER_NAME, new_entry, servers_key=_servers_key())
+    print(f"Updated thinkweave MCP entry in {path}.{qualifier}")
 
 
 def cmd_install(args: argparse.Namespace) -> None:
@@ -714,10 +756,8 @@ def cmd_install(args: argparse.Namespace) -> None:
             )
         # Eager `uv sync` is skipped on the plugin route — the plugin's
         # source path (`${CLAUDE_PLUGIN_ROOT}`) is resolved by the plugin
-        # runtime, not by `weave`. NOTE: nothing syncs lazily either — all
-        # launchers run `uv run --no-sync` (#156/#164), so a fresh plugin
-        # checkout needs a manual `uv sync --extra all` before the MCP
-        # server can start. First-sync ownership is tracked in #198.
+        # runtime, not by `weave`; the launchers' guarded one-time bootstrap
+        # (#164) owns the route's first sync.
         if not getattr(args, "no_claude_md", False):
             _install_claude_md_block(args.yes)
         _print_next_steps()
@@ -744,7 +784,7 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         and CLAUDE_MD_BLOCK_START in _instructions().read_text(encoding="utf-8")
     )
     mcp_present = _raw_mcp_entry_present()
-    launcher = _codex_windows_launcher() if _profile().id == "codex" else None
+    launcher = _codex_windows_launcher() if _profile().windows_cli_shim else None
 
     to_remove: list[str] = []
     if mcp_present:
@@ -812,13 +852,28 @@ def _print_next_steps() -> None:
 
     # No skills on this harness — spell out the same steps as CLI commands,
     # without naming the skill: a user reading this cannot run it, so mentioning
-    # it only invites them to try.
+    # it only invites them to try. The SAME rule gates each step on the
+    # profile: `weave hooks install` exits 1 on a hooks-less harness and
+    # `weave import <id>` needs an importer, so naming either to an E0 user
+    # is the rot this screen was rewritten to remove (r1).
     name = profile.display_name or profile.id
-    print(f"  3. weave init               # vault wiring ({name} has no thinkweave skills)")
-    print(f"  4. weave hooks install --scope user --harness {profile.id}")
-    if profile.hooks_install_caveat:
-        print("     (then trust the hooks — see the note printed by that command)")
-    print(f"  5. weave import {profile.id} --enrich   # backfill prior sessions")
+    step = 3
+    print(f"  {step}. weave init               # vault wiring ({name} has no thinkweave skills)")
+    if profile.hooks:
+        step += 1
+        print(f"  {step}. weave hooks install --scope user {profile.harness_flag}".rstrip())
+        if profile.hooks_install_caveat:
+            print("     (then trust the hooks — see the note printed by that command)")
+    if profile.load_transcript_importer() is not None:
+        step += 1
+        print(f"  {step}. weave import {profile.id} --enrich   # backfill prior sessions")
+    # Degrade OUT LOUD at the point of action (dec-5a076384): what this
+    # harness does not deliver is stated here, not discovered later.
+    degraded = harness_docs.render_degradations(profile)
+    if degraded:
+        print()
+        print(f"{name} degradations — documented, not silently faked:")
+        print(degraded)
     print()
     print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
     print("MCP server entry now; `weave init` will otherwise ask and persist it.")
@@ -830,7 +885,12 @@ def _raw_mcp_entry_present() -> bool:
     warn: the plugin manifest already declares the server, so a leftover raw
     entry would make the harness spawn ``thinkweave`` twice."""
     try:
-        return mcp_config.read_entry(_mcp_config(), SERVER_NAME) is not None
+        return (
+            mcp_config.read_entry(
+                _mcp_config(), SERVER_NAME, servers_key=_servers_key()
+            )
+            is not None
+        )
     except mcp_config.MalformedConfig:
         return False
 

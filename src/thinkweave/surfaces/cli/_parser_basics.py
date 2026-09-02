@@ -244,7 +244,11 @@ def add_index_subparsers(sub) -> None:
     p_import = sub.add_parser("import", help="Import from external sources")
     p_import.add_argument(
         "source",
-        choices=["claude-code", "codex", "claude-history", "file", "chatgpt", "messenger"],
+        # The harness half derives from the profile registry, like --harness
+        # above — harness N+1 must not need an edit here (r2). A registered
+        # harness without an importer gets cmd_import's clean no-importer
+        # message rather than an argparse rejection.
+        choices=[*sorted(PROFILES), "claude-history", "file", "chatgpt", "messenger"],
     )
     p_import.add_argument("path", nargs="?", default="", help="File path (for 'file'/'chatgpt' source)")
     p_import.add_argument("--source-type", default="article", help="Source type for file import")

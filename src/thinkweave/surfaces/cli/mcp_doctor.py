@@ -96,11 +96,16 @@ def _mcp_servers(data: dict[str, Any]) -> dict[str, Any]:
 
 def _safe_read_entry(path: Path) -> dict | None:
     """The thinkweave block from a harness MCP config, in whatever format that
-    harness uses (JSON for Claude Code, TOML for Codex). A malformed file reads
-    as "absent" — the doctor reports the missing registration rather than
-    aborting on someone else's syntax error."""
+    harness uses (JSON for Claude Code, TOML for Codex) and under whatever
+    servers key the profile declares (``mcp`` on OpenCode). A malformed file
+    reads as "absent" — the doctor reports the missing registration rather
+    than aborting on someone else's syntax error. Only the profile's own
+    machine/project files come through here; plugin manifests are read
+    elsewhere and always use Claude Code's ``mcpServers`` shape."""
     try:
-        return mcp_config.read_entry(path, SERVER_NAME)
+        return mcp_config.read_entry(
+            path, SERVER_NAME, servers_key=_profile().mcp_servers_key
+        )
     except mcp_config.MalformedConfig:
         return None
 
@@ -205,13 +210,17 @@ def _key(entry: dict) -> tuple:
     differing only by which scope is launching it.
 
     ``--no-sync`` is dropped for the same reason: it changes how uv *prepares*
-    the environment, not what gets launched into it. The machine-scope entry
-    passes it (``weave install`` has already synced) and the portable launchers
-    do not (they bootstrap the plugin route), so without this the two would
-    report a phantom cross-scope conflict.
+    the environment, not what gets launched into it. Every current entry shape
+    passes it (#156; the plugin route's first sync is the launchers' guarded
+    bootstrap, #164), but legacy entries without it must not report a phantom
+    cross-scope conflict.
+
+    ``mcp_config.invocation`` first folds OpenCode's merged argv-array body
+    onto the split shape, so both spellings of one invocation fingerprint
+    alike.
     """
-    cmd = _command_stem(entry.get("command", ""))
-    raw_args = list(entry.get("args", []))
+    launcher, raw_args = mcp_config.invocation(entry)
+    cmd = _command_stem(launcher)
     norm: list[str] = []
     i = 0
     while i < len(raw_args):
@@ -266,7 +275,7 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
         # defaults to Claude Code, so handing a Codex user the bare command
         # would write the registration into the wrong home.
         harness_flag = (
-            "" if _profile().id == "claude-code" else f" --harness {_profile().id}"
+            f" {_profile().harness_flag}" if _profile().harness_flag else ""
         )
         return CheckResult(
             name="registration scopes",
@@ -485,8 +494,9 @@ def check_launcher_resolves(cwd: Path, timeout_s: float = 5.0) -> CheckResult:
             fix="register thinkweave first (see scope check above)",
         )
 
-    raw_cmd = entry.get("command", "")
-    args = list(entry.get("args", []))
+    # `invocation` folds OpenCode's merged argv-array body onto the split
+    # shape, so the probe launches it like any other entry.
+    raw_cmd, args = mcp_config.invocation(entry)
 
     # Expand env vars in the command AND args (notably ${CLAUDE_PLUGIN_ROOT}
     # for plugins — since #52 the plugin command is
@@ -762,23 +772,29 @@ _EXTRA_MODULES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _extra_importable(mod: str) -> bool:
+    """``find_spec`` on a dotted name RAISES ModuleNotFoundError when the
+    parent package is absent (``google.genai`` without ``google``); it only
+    returns None when the parent exists. It also *imports* the parent, whose
+    ``__init__`` may raise anything, and raises ValueError for a sys.modules
+    entry with ``__spec__ = None``. ``except Exception`` is deliberate: this
+    check's one job is diagnosing a damaged venv, so any failure to resolve
+    the module IS the finding — report it missing, never crash the doctor."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(mod) is not None
+    except Exception:
+        return False
+
+
 def check_venv_extras() -> CheckResult:
     """Every optional extra the acquisition + dream crons import must be
     importable from *this* interpreter. Harness-independent."""
-    import importlib.util
-
-    def _importable(mod: str) -> bool:
-        # find_spec on a dotted name imports the parent package; an absent
-        # parent raises instead of returning None (e.g. google.genai).
-        try:
-            return importlib.util.find_spec(mod) is not None
-        except (ModuleNotFoundError, ImportError):
-            return False
-
     missing = [
         (mod, extra, lanes)
         for mod, extra, lanes in _EXTRA_MODULES
-        if not _importable(mod)
+        if not _extra_importable(mod)
     ]
     if not missing:
         return CheckResult(

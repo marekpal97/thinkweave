@@ -43,6 +43,19 @@ else
     exit 127
 fi
 
+# One-time bootstrap (#164): no installed thinkweave dist-info → run the one
+# sanctioned `uv sync --extra all` (dec-3d4f8ce9); sentinel is dist-info,
+# never console scripts. Full rationale: docs/HARNESSES.md.
+installed=no
+for marker in "$root"/.venv/lib/python*/site-packages/thinkweave-*.dist-info \
+              "$root"/.venv/Lib/site-packages/thinkweave-*.dist-info; do
+    if [ -e "$marker" ]; then installed=yes; fi
+done
+if [ "$installed" = no ]; then
+    echo 'weave-hook-launch: first-run bootstrap: uv sync --extra all (a cold cache can take minutes; a killed attempt resumes at the next launch)' >&2
+    "$uv_bin" sync --project "$root" --extra all 1>&2
+fi
+
 # Hooks are runtime callbacks, never an environment-management surface.
 # Module invocation remains available when weave-hook.exe is stale or absent.
 exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.hooks.handler "$@"

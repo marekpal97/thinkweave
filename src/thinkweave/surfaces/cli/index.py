@@ -281,12 +281,15 @@ def _count_chatgpt_conversations(path: Path, limit: int) -> int:
 def cmd_import(args: argparse.Namespace) -> None:
     cfg = load_config()
 
-    # claude-code and codex are the two session-transcript harnesses: separate
-    # walkers, one downstream `--enrich` pass (it consumes the session note,
-    # not the transcript format) and one stats/print shape. `--enrich` is
-    # per-harness end-to-end — `source` scopes the pending set, so neither
-    # invocation ever drains the other's imported sessions.
-    if args.source in ("claude-code", "codex"):
+    # A source naming a registered harness imports session transcripts:
+    # per-harness walkers behind one profile-declared entry point, one
+    # downstream `--enrich` pass (it consumes the session note, not the
+    # transcript format) and one stats/print shape. `--enrich` is per-harness
+    # end-to-end — `source` scopes the pending set, so neither invocation
+    # ever drains the other's imported sessions.
+    from thinkweave.core import harness
+
+    if args.source in harness.PROFILES:
         if getattr(args, "enrich", False):
             from thinkweave.onboarding.enrich_batch import (
                 find_pending_sessions,
@@ -348,28 +351,21 @@ def cmd_import(args: argparse.Namespace) -> None:
             "since": args.since,
             "limit": effective_limit,
         }
-        if args.source == "codex":
-            from thinkweave.acquisition.importers.codex import (
-                DEFAULT_CODEX_SESSIONS_ROOT,
-                import_codex,
-            )
-
-            stats = import_codex(
-                cfg,
-                sessions_root=Path(args.cc_root) if args.cc_root else DEFAULT_CODEX_SESSIONS_ROOT,
-                **common,
-            )
-        else:
-            from thinkweave.onboarding.claude_code_seed import (
-                DEFAULT_CC_PROJECTS_ROOT,
-                import_claude_code,
-            )
-
-            stats = import_claude_code(
-                cfg,
-                claude_projects_root=Path(args.cc_root) if args.cc_root else DEFAULT_CC_PROJECTS_ROOT,
-                **common,
-            )
+        # The walker and its default root are the profile's transcript facts —
+        # one source of truth with the conformance suite, not a fork per
+        # harness (r1: this block used to hardcode both).
+        profile = harness.PROFILES[args.source]()
+        importer = profile.load_transcript_importer()
+        if importer is None:
+            # The argparse choices derive from the same registry, so an E0
+            # row without an importer lands here (`weave import pi`).
+            print(f"No transcript importer exists for {args.source} yet.")
+            return
+        stats = importer(
+            cfg,
+            sessions_root=Path(args.cc_root) if args.cc_root else profile.transcript_root,
+            **common,
+        )
         label = "Would materialize" if args.dry_run else "Materialized"
         print(
             f"{label}: {stats['materialized']} session(s) across "

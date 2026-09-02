@@ -39,9 +39,22 @@ else
     exit 127
 fi
 
+# One-time bootstrap (#164): no installed thinkweave dist-info → run the one
+# sanctioned `uv sync --extra all` (dec-3d4f8ce9); sentinel is dist-info,
+# never console scripts. Full rationale: docs/HARNESSES.md.
+installed=no
+for marker in "$root"/.venv/lib/python*/site-packages/thinkweave-*.dist-info \
+              "$root"/.venv/Lib/site-packages/thinkweave-*.dist-info; do
+    if [ -e "$marker" ]; then installed=yes; fi
+done
+if [ "$installed" = no ]; then
+    echo 'weave: first-run bootstrap: uv sync --extra all (a cold cache can take minutes; a killed attempt resumes at the next launch)' >&2
+    "$uv_bin" sync --project "$root" --extra all 1>&2
+fi
+
 # --no-sync + module entry (matches bin/weave-{hook,mcp}-launch, #156/#164):
 # a plain `uv run --extra mcp weave` re-syncs the venv to ONLY the mcp extra on
 # every call, silently uninstalling news/embeddings/gemini/youtube deps — this
 # killed the news pull on 2026-08-11 and the embed/dream crons on 2026-08-22.
-# Sync happens once, explicitly: `uv sync --extra all` (see README).
+# Sync happens once, explicitly: `uv sync --extra all` (bootstrap above / README).
 exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave "$@"

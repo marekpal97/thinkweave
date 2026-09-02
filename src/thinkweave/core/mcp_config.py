@@ -5,8 +5,10 @@ the active harness keeps its config in.
 and deliberately says nothing about its format — that is this module's job.
 Claude Code keeps JSON (``~/.claude.json``, servers under ``mcpServers``);
 Codex keeps TOML (``$CODEX_HOME/config.toml``, servers under ``mcp_servers``).
-The key name follows from the format rather than needing its own profile field:
-each harness names the table the way its format's conventions do.
+The servers key usually follows the format's convention, but it is ultimately
+the profile's fact (``mcp_servers_key``): OpenCode keeps a JSON file whose key
+is ``mcp``, so every production caller passes the declared key through the
+``servers_key=`` parameter and the suffix-derived default is only a fallback.
 
 Two rules shape everything here:
 
@@ -25,15 +27,20 @@ re-parses the result and refuses to save if anything outside our key moved.
 from __future__ import annotations
 
 import json
-import os
 import re
-import stat
 import tomllib
 from pathlib import Path
 from typing import Any
 
+from thinkweave.core.fswrite import atomic_write_text
+
 TOML_SERVERS_KEY = "mcp_servers"
 JSON_SERVERS_KEY = "mcpServers"
+
+#: The documented entry bodies :func:`canonical` can render — the vocabulary a
+#: profile's ``mcp_entry_shape`` must come from (pinned by the conformance
+#: suite, so a row cannot declare a tag no interpreter branch dispatches on).
+ENTRY_SHAPES = ("command-args", "argv-array")
 
 
 class MalformedConfig(ValueError):
@@ -45,21 +52,72 @@ def _is_toml(path: Path) -> bool:
     return path.suffix == ".toml"
 
 
-def canonical(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
-    """The entry as this format stores it.
+def canonical(
+    path: Path, entry: dict[str, Any], *, shape: str = "command-args"
+) -> dict[str, Any]:
+    """The entry as this harness's documented schema stores it.
 
-    Callers build one entry shape and pass it through here so that what they
-    later compare against :func:`read_entry` is like-for-like — otherwise every
-    ``weave install`` on a TOML harness would report phantom drift.
+    Callers build one entry shape (Claude Code's split ``command``/``args``/
+    ``env``) and pass it through here so that what they later compare against
+    :func:`read_entry` is like-for-like — otherwise every repeat ``weave
+    install`` would report phantom drift.
 
-    Codex infers the transport from the presence of ``command`` vs ``url``, has
-    no ``type`` key, and ``codex exec --strict-config`` errors out on the
-    unknown field. An empty ``env`` is dropped for the same reason ``codex mcp
-    add`` omits it — it is noise, and its absence is what a re-read returns.
+    ``shape`` is the profile's ``mcp_entry_shape``: a harness's own published
+    schema is a truth source for declared profile data (dec-2fa074a0, owner
+    override 2026-08-29), so a differing documented body is rendered here —
+    keyed off profile data, never a per-harness writer fork. Whether the
+    written entry parses on a live install remains #114/#195's verification.
+
+    ``argv-array`` (OpenCode, blueprint n-767d66b4 §4): ``type: local``,
+    launcher and argv merged into ONE ``command`` array, and an
+    ``environment`` map — omitted when empty, as the docs mark it optional.
+
+    ``command-args`` keeps the split shape and then normalises by file
+    format: Codex infers the transport from the presence of ``command`` vs
+    ``url``, has no ``type`` key, and ``codex exec --strict-config`` errors
+    out on the unknown field. An empty ``env`` is dropped for the same reason
+    ``codex mcp add`` omits it — it is noise, and its absence is what a
+    re-read returns.
     """
+    if shape not in ENTRY_SHAPES:
+        raise ValueError(
+            f"unknown mcp_entry_shape {shape!r}; expected one of {ENTRY_SHAPES}"
+        )
+    if shape == "argv-array":
+        merged: dict[str, Any] = {
+            "type": "local",
+            "command": [entry["command"], *entry.get("args", [])],
+        }
+        if entry.get("env"):
+            merged["environment"] = dict(entry["env"])
+        # `enabled` is optional in the docs, whose own example sets it true
+        # (opencode.ai/docs/mcp-servers/ via n-767d66b4 §4). Written
+        # explicitly because a wrong guess about its default is the silent
+        # registered-but-never-started failure (review r3 advisory).
+        merged["enabled"] = True
+        # ponytail: the shape dispatch returns here, BEFORE the file-format
+        # trims below — shape and format are ordered, not composed. Safe
+        # while the only argv-array row writes JSON; a TOML harness
+        # declaring argv-array would need the trims moved after the
+        # dispatch.
+        return merged
     if not _is_toml(path):
         return entry
     return {k: v for k, v in entry.items() if k != "type" and v != {}}
+
+
+def invocation(entry: dict[str, Any]) -> tuple[str, list[Any]]:
+    """The ``(command, args)`` pair an entry launches, whichever shape holds it.
+
+    The ``argv-array`` body carries one merged ``command`` array and no
+    ``args`` key; every other shape splits a launcher string from an ``args``
+    list. Readers — the doctor's fingerprint and its launch probe — come
+    through here so both shapes compare, and run, as the same invocation.
+    """
+    cmd = entry.get("command", "")
+    if isinstance(cmd, list):
+        return (cmd[0] if cmd else "", list(cmd[1:]))
+    return (cmd, list(entry.get("args", [])))
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +136,16 @@ def _load(path: Path) -> dict[str, Any] | None:
         raise MalformedConfig(f"{path} is not valid {path.suffix.lstrip('.') or 'JSON'}: {exc}") from exc
 
 
-def _servers_key(path: Path) -> str:
-    return TOML_SERVERS_KEY if _is_toml(path) else JSON_SERVERS_KEY
+def _servers_key(path: Path, override: str = "") -> str:
+    """The key server entries nest under — the format's convention, unless
+    the harness profile declares otherwise (``mcp_servers_key``: OpenCode is
+    a JSON file whose key is ``mcp``, not ``mcpServers``)."""
+    return override or (TOML_SERVERS_KEY if _is_toml(path) else JSON_SERVERS_KEY)
 
 
-def read_entry(path: Path, name: str) -> dict[str, Any] | None:
+def read_entry(
+    path: Path, name: str, *, servers_key: str = ""
+) -> dict[str, Any] | None:
     """The named server's block, or None when the file or the entry is absent.
 
     Raises :class:`MalformedConfig` on an unparseable file.
@@ -90,7 +153,7 @@ def read_entry(path: Path, name: str) -> dict[str, Any] | None:
     doc = _load(path)
     if doc is None:
         return None
-    return doc.get(_servers_key(path), {}).get(name)
+    return doc.get(_servers_key(path, servers_key), {}).get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -98,50 +161,38 @@ def read_entry(path: Path, name: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-def write_entry(path: Path, name: str, entry: dict[str, Any]) -> None:
+def write_entry(
+    path: Path, name: str, entry: dict[str, Any], *, servers_key: str = ""
+) -> None:
     """Register (or converge) the named server, leaving the rest of the file
     alone. Creates the file when it does not exist."""
     if _is_toml(path):
-        _toml_write(path, name, entry)
+        _toml_write(path, name, entry, servers_key)
     else:
-        _json_write(path, name, entry)
+        _json_write(path, name, entry, servers_key)
 
 
-def remove_entry(path: Path, name: str) -> bool:
+def remove_entry(path: Path, name: str, *, servers_key: str = "") -> bool:
     """Drop the named server. Returns False when there was nothing to remove."""
-    if read_entry(path, name) is None:
+    if read_entry(path, name, servers_key=servers_key) is None:
         return False
     if _is_toml(path):
-        _toml_write(path, name, None)
+        _toml_write(path, name, None, servers_key)
     else:
-        _json_write(path, name, None)
+        _json_write(path, name, None, servers_key)
     return True
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    """tempfile + os.replace, so an interrupted write cannot leave the user's
-    harness config truncated.
-
-    The replacement inherits the original's permissions: Codex creates
-    ``config.toml`` 0600 and it can carry env secrets, so falling back to the
-    umask default would quietly widen it.
-    """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    if path.exists():
-        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
-    os.replace(tmp, path)
-
-
-def _json_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
+def _json_write(
+    path: Path, name: str, entry: dict[str, Any] | None, key: str = ""
+) -> None:
     doc = _load(path) or {}
-    servers = doc.setdefault(JSON_SERVERS_KEY, {})
+    servers = doc.setdefault(_servers_key(path, key), {})
     if entry is None:
         servers.pop(name, None)
     else:
         servers[name] = entry
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, json.dumps(doc, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(doc, indent=2) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +205,10 @@ def _json_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
 _HEADER = re.compile(r"^[ \t]*\[\[?(?P<key>[^\]]*)\]\]?[ \t]*(?:#.*)?$")
 
 
-def _owns(header_key: str, name: str) -> bool:
+def _owns(header_key: str, name: str, key: str) -> bool:
     """True for our table and any of its sub-tables (``…thinkweave.env``)."""
     parts = [p.strip().strip("\"'") for p in header_key.split(".")]
-    return parts[:2] == [TOML_SERVERS_KEY, name]
+    return parts[:2] == [key, name]
 
 
 def _toml_scalar(value: Any) -> str:
@@ -179,15 +230,15 @@ def _toml_scalar(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _toml_table(name: str, entry: dict[str, Any]) -> str:
+def _toml_table(name: str, entry: dict[str, Any], key: str) -> str:
     """Our table, rendered as one contiguous block (``env`` inlined, so the
     whole entry is a single splice unit)."""
-    lines = [f"[{TOML_SERVERS_KEY}.{name}]"]
+    lines = [f"[{key}.{name}]"]
     lines += [f"{k} = {_toml_scalar(v)}" for k, v in entry.items()]
     return "\n".join(lines) + "\n"
 
 
-def _splice(text: str, name: str, block: str | None) -> str:
+def _splice(text: str, name: str, block: str | None, key: str) -> str:
     """Replace our table (and its sub-tables) with ``block``, or drop it when
     ``block`` is None. Appends when the table is absent.
 
@@ -219,7 +270,7 @@ def _splice(text: str, name: str, block: str | None) -> str:
     for line in text.splitlines(keepends=True):
         header = _HEADER.match(line)
         if header:
-            was_ours, ours = ours, _owns(header.group("key"), name)
+            was_ours, ours = ours, _owns(header.group("key"), name, key)
             if was_ours and not ours:
                 # A comment sitting directly above a header documents *that*
                 # header, so the run trailing our table is not ours to delete.
@@ -260,11 +311,16 @@ def _splice(text: str, name: str, block: str | None) -> str:
     return "".join(out)
 
 
-def _toml_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
+def _toml_write(
+    path: Path, name: str, entry: dict[str, Any] | None, key: str = ""
+) -> None:
+    key = _servers_key(path, key)
     before = _load(path) or {}
     text = path.read_text(encoding="utf-8") if path.exists() else ""
 
-    after = _splice(text, name, _toml_table(name, entry) if entry is not None else None)
+    after = _splice(
+        text, name, _toml_table(name, entry, key) if entry is not None else None, key
+    )
 
     # Independent check that the splice did what it claimed: re-parse and
     # compare against the document we meant to produce. A line-oriented cut
@@ -275,27 +331,26 @@ def _toml_write(path: Path, name: str, entry: dict[str, Any] | None) -> None:
     # unsplice-able config is refused and the user edits it by hand. Upgrade
     # path is a real TOML round-tripper (tomlkit), a dependency this project
     # does not otherwise need.
-    servers = {k: v for k, v in before.get(TOML_SERVERS_KEY, {}).items() if k != name}
+    servers = {k: v for k, v in before.get(key, {}).items() if k != name}
     if entry is not None:
         servers[name] = entry
     expected = {**before}
     if servers:
-        expected[TOML_SERVERS_KEY] = servers
+        expected[key] = servers
     else:
-        expected.pop(TOML_SERVERS_KEY, None)
+        expected.pop(key, None)
 
     try:
         got = tomllib.loads(after)
     except tomllib.TOMLDecodeError as exc:
         raise MalformedConfig(
             f"editing {path} would have produced invalid TOML ({exc}); "
-            f"left untouched — edit the [{TOML_SERVERS_KEY}.{name}] table by hand"
+            f"left untouched — edit the [{key}.{name}] table by hand"
         ) from exc
     if got != expected:
         raise MalformedConfig(
             f"could not edit {path} without disturbing the rest of the file; "
-            f"left untouched — edit the [{TOML_SERVERS_KEY}.{name}] table by hand"
+            f"left untouched — edit the [{key}.{name}] table by hand"
         )
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, after)
+    atomic_write_text(path, after)

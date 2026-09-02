@@ -1,16 +1,78 @@
 # Harnesses
 
-> **Scope note.** This file is owned by #105 (W1b), which will carry the full
-> capability matrix across every harness. #107 (W2b) created it early because
-> its spike answers had to land somewhere citable. Everything below is the
-> **Codex** section plus the spike results; #105 should absorb it and add the
-> Claude Code column rather than treat this shape as settled.
-
 Per-harness facts live in code, in one place: `HarnessProfile`
-(`src/thinkweave/core/harness.py`). This document is the *evidence* behind the
-data in those profiles — what was measured, against which version, and what is
-still unknown. When the two disagree, the profile is what runs; fix whichever
-is wrong.
+(`src/thinkweave/core/harness.py`). The capability matrix below is
+**generated** from those profiles (#191, subsuming the hand-written half of
+#105) — the conformance suite fails when it goes stale. Everything after it
+is the *evidence* behind the data in the profiles — what was measured,
+against which version, and what is still unknown. When the two disagree, the
+profile is what runs; fix whichever is wrong.
+
+<!-- weave:harness-matrix:start — GENERATED from core/harness.py profiles; edit the profile, then `uv run python -m thinkweave.core.harness_docs --write` -->
+
+## Capability matrix
+
+| | Claude Code | Codex | Pi | OpenCode |
+|---|---|---|---|---|
+| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md) | declared — blueprint n-a1d3beba (2026-08-24); NOT verified on a live install | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
+| eligibility (dec-5a076384 ladder) | E3 | E3 | E0 | E0 |
+| detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
+| lifecycle hooks | plugin | file | none | none |
+| subagent fan-out | yes | yes | no | no |
+| headless slash skills | yes | no | no | no |
+| native memory seam | `~/.claude/projects` | — | — | — |
+| context channel | `additionalContext` | `additionalContext` | `context-injection` | `message-transform` |
+| dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
+| transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/storage/session/*/*.json` (json-records) |
+| session ids | `uuid4` | `uuid7` | `uuid (session-header id)` | `ses_<12-hex><14-base62> (ULID-style sortable)` |
+| MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/settings.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
+| MCP native CLI | `claude mcp add` | `codex mcp add` | — | — |
+| instructions file | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` | `~/.pi/agent/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
+| skills dir | `~/.claude/skills` | `~/.codex/skills` | `~/.pi/agent/skills` | `~/.config/opencode/skills` |
+
+### Hook events (canonical → native, with observed-fire dates)
+
+| canonical | Claude Code | Codex | Pi | OpenCode |
+|---|---|---|---|---|
+| SessionStart | ✓ 2026-08-29 | ✓ 2026-08-02 | `session_start` (declared) | `experimental.chat.messages.transform` (declared) |
+| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-08-02 | `before_agent_start` (declared) | `chat.message` (declared) |
+| PostToolUse | ✓ 2026-08-29 | wired, unverified | `tool_result` (declared) | `tool.execute.after` (declared) |
+| Stop | ✓ 2026-08-29 | wired, unverified | `agent_end` (declared) | — (no verified equivalent) |
+
+### Documented degradations
+
+Nothing below is silently faked (#103 anti-goal): a listed capability
+degrades exactly as stated. On a **measured** row (see the evidence
+row above) everything unlisted works as on Claude Code; on a
+**declared** row, unlisted means *not yet checked*, not *works*.
+
+#### Claude Code
+
+None — the reference harness.
+
+#### Codex
+
+- **Stop capture** — documented: wired but unobserved on a live run — the 2026-08-02 spike aborted at auth before any turn completed; SessionEnd did fire and is the fallback if Stop proves unreliable headlessly (docs/HARNESSES.md §Spike answers)
+- **SessionStart context delivery** — documented: additionalContext renders as a visible developer message, not a silent system one (openai/codex#16933)
+- **headless skill invocation** — documented: codex exec resolves no slash commands; a $name mention is a hint the model acts on by reading the skill file itself (docs/HARNESSES.md §Q2)
+
+#### Pi
+
+- **lifecycle hooks** — documented: the Pi extension shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#114)
+- **MCP registration** — documented: the written entry follows Pi's documented mcpServers block (command string + args list + env map, n-a1d3beba §4) apart from an extra `type: stdio` key Pi's field list does not name; NOT yet verified to parse on a live install — #114 owns the live verification (n-a1d3beba §4)
+- **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
+- **skill invocation** — documented: no Skill tool — /skill:name is prompt-expansion, and the bootstrap must say read-the-SKILL.md, not invoke (n-a1d3beba §4)
+- **transcript import** — documented: session files are parentId trees, not flat JSONL; no importer walks them yet (n-a1d3beba §6)
+
+#### OpenCode
+
+- **lifecycle hooks** — documented: the OpenCode plugin shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#195)
+- **MCP registration** — documented: weave install writes OpenCode's documented schema under the `mcp` key (type local, command as one array, environment map when non-empty — opencode.ai/docs/mcp-servers/ via n-767d66b4 §4); NOT yet verified to parse on a live install — #195 owns the live verification (n-767d66b4 §4)
+- **Stop capture** — documented: no verified Stop-equivalent event — claude-mem's plugin subscribed to bus events that never fire and captured nothing silently; only session.idle/session.deleted are confirmed real (claude-mem#2462)
+- **subagent fan-out** — documented: no hook fires on subagent dispatch/completion in the docs or any reference plugin (n-767d66b4 §2)
+- **transcript import** — documented: sessions are per-record JSON files (session/message/part); no importer reads them yet (n-767d66b4 §6)
+
+<!-- weave:harness-matrix:end -->
 
 ## Codex
 
@@ -390,6 +452,38 @@ launcher can never recover from on its own. Every launch surface therefore runs
 which is what `uv run` already guarantees. This was Codex's original
 recommendation, initially rejected here as churn on the grounds that the console
 script worked at the time; the lock failure is the case that argument missed.
+
+**Amended 2026-08-29 (#164) — unconditional `--no-sync` deleted the plugin
+route's only dependency bootstrap, so the launchers now carry a guarded one.**
+"The launchers must keep syncing" (above) and "the launchers pass `--no-sync`
+unconditionally" (the 2026-08-03 amendment) were each half right: the implicit
+sync WAS the marketplace clone's only bootstrap, and removing it meant
+`uv run --no-sync` on a venv-less clone fabricated an empty venv and died with
+`ModuleNotFoundError`. The resolution is a third state: every launcher (three
+POSIX + the two `.cmd` twins) checks for an installed thinkweave distribution
+and, only when none exists, runs the one sanctioned sync
+(`uv sync --extra all`, dec-3d4f8ce9) before its unchanged `--no-sync` exec.
+
+The sentinel is `site-packages/thinkweave-*.dist-info` (either venv layout),
+**not** the console scripts, for exactly the reason this section records: the
+2026-08-03 incident showed uv deletes the shims *first* during a reinstall,
+leaving a venv that imports fine but has no `weave-hook.exe` — a state
+`python -m` survives, and which therefore must not re-trigger a sync while
+live servers hold the shims. dist-info is the marker both editable installs
+(what `uv sync` produces on the dev and plugin routes — there is no
+`site-packages/thinkweave/` then) and regular installs share. A sync killed
+mid-flight can transiently remove dist-info too; the bootstrap then re-fires
+on the next launch and converges via uv's venv lock and wheel cache.
+
+A cold `uv sync --extra all` routinely outlives hook timeouts, so
+`hooks/hooks.json` raises SessionStart from 60s to 300s: SessionStart is the
+first hook to fire on a fresh clone and the natural place for the bootstrap to
+converge, a healthy SessionStart still finishes in about a second (the ceiling
+only binds when the hook genuinely runs long, which was previously a
+guaranteed kill), and the 30s hooks stay put — by the time they fire, the venv
+has either converged or the cache is warm enough that the next attempt
+finishes. Each attempt logs a `first-run bootstrap` breadcrumb to stderr so a
+hook killed at its timeout is diagnosable rather than silent.
 
 ### A latent bug this surfaced
 
