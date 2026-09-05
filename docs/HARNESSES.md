@@ -14,7 +14,7 @@ profile is what runs; fix whichever is wrong.
 
 | | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md) | measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, settings-MCP falsified, n-fb74c7d0) + events probe 2026-09-05; adapter route read from pi-mcp-adapter 2.32.1 source, thinkweave tools not yet observed through it | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
+| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md) | measured — Pi 0.84.4: live trial 2026-09-03 (E0 floor verified, settings-MCP falsified, n-fb74c7d0), headless events probe 2026-09-05 (all four native events fired), and an interactive session 2026-09-05 through pi-mcp-adapter 2.32.1 (17 bare-named weave_* tools, direct calls, /skill:wrap end-to-end on a hook-captured session) | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
 | eligibility (dec-5a076384 ladder) | E3 | E3 | E3 | E0 |
 | detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
 | lifecycle hooks | plugin | file | extension | none |
@@ -34,10 +34,10 @@ profile is what runs; fix whichever is wrong.
 
 | canonical | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| SessionStart | ✓ 2026-08-29 | ✓ 2026-08-02 | wired, unverified | `experimental.chat.messages.transform` (declared) |
-| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-08-02 | wired, unverified | `chat.message` (declared) |
-| PostToolUse | ✓ 2026-08-29 | wired, unverified | wired, unverified | `tool.execute.after` (declared) |
-| Stop | ✓ 2026-08-29 | wired, unverified | wired, unverified | — (no verified equivalent) |
+| SessionStart | ✓ 2026-08-29 | ✓ 2026-08-02 | `session_start` ✓ 2026-09-05 | `experimental.chat.messages.transform` (declared) |
+| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-08-02 | `before_agent_start` ✓ 2026-09-05 | `chat.message` (declared) |
+| PostToolUse | ✓ 2026-08-29 | wired, unverified | `tool_result` ✓ 2026-09-05 | `tool.execute.after` (declared) |
+| Stop | ✓ 2026-08-29 | wired, unverified | `agent_end` ✓ 2026-09-05 | — (no verified equivalent) |
 
 ### Documented degradations
 
@@ -58,6 +58,7 @@ None — the reference harness.
 
 #### Pi
 
+- **hook latency** — documented: shim-core's 800 ms telemetry budget sits below this launcher's floor on the dev machine (a no-op Stop is ~1.8 s warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim carries per-event budgets (UserPromptSubmit 2.5 s, Stop 6 s); a hook that still outlives its budget finishes as shim-core's documented orphan — capture is complete, Pi shows one 'hook timeout' notice per event per session, and only the prompt-time enrichment block that reply would have carried is lost (#114, docs/HARNESSES.md §Pi)
 - **MCP registration** — documented: Pi core ships no MCP client — a settings.json mcpServers block parses and is silently ignored (falsified live on 0.84.4, 2026-09-03). The registration is served through the community pi-mcp-adapter extension instead: `weave install --harness pi` writes the standard mcpServers block (plus lifecycle/directTools/toolPrefix) to ~/.pi/agent/mcp.json, the adapter also reads the project .mcp.json, and `weave doctor --mcp --harness pi` fails with `pi install npm:pi-mcp-adapter` when the package is absent; the CLI fallback in the instructions block covers a session where the tools still did not load (#114, n-fb74c7d0)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
 - **skill invocation** — documented: no Skill tool — /skill:<name> is prompt expansion. Skills are root-file links `weave install --harness pi` creates in ~/.pi/agent/skills, one <name>.md per canonical commands/*.md; worker-backed commands (/drain, /dream, /news, /newsletter, /podcast, /youtube, /seed-enrich, …) are not linked because Pi has no subagents to run them (Pi docs/skills.md §Locations)
@@ -425,17 +426,58 @@ persistence path. The block does not reuse the shared `_NUDGE` opener: its
 "if available" hedge is wrong on a row whose tools are served by a named
 extension, and the text is the one verified live on the dev machine.
 
+### Live interactive run (2026-09-05)
+
+`[measured]` One interactive session on the dev machine (Pi 0.84.4,
+pi-mcp-adapter 2.32.1, model claude-sonnet-5) after `weave install --harness
+pi`-equivalent wiring: the adapter's startup notice reported the thinkweave
+server connected with **17 tools**, `/mcp tools` listed them under their bare
+`weave_*` names (the `toolPrefix: "none"` key is what makes that so — the
+adapter's default would have exposed `thinkweave_weave_search`), and the model
+called `weave_search`, `weave_timeline`, `weave_prompts`, `weave_read`,
+`weave_create`, `weave_concepts` and `weave_extract` directly, never through
+the adapter's `mcp` proxy tool. `/skill:wrap` loaded the root-file link to
+`commands/wrap.md`, called `weave_extract` once and `weave wrap-finalize`
+once, and made no mid-session extraction call on the earlier turns. The
+session folder it wrote holds the prompt events the `before_agent_start`
+capture had buffered and `agent_end` had materialised — passive capture and
+the explicit wrap met on the same session id (Pi's `PI_SESSION_ID`).
+
+### Hook budgets vs the measured floor
+
+`[measured]` The same session logged one "thinkweave UserPromptSubmit hook
+timeout" and one "Stop hook timeout" notice, and `hooks.log` gained 44
+`[Errno 32] Broken pipe` entries in the day (22 stop, 20 user_prompt_submit,
+2 post_tool_use). Both are one mechanism: shim-core reaps the launcher at its
+800 ms telemetry budget and destroys its pipes; the Python handler finishes
+the work as the documented orphan, then its final reply write hits the closed
+pipe. Nothing was lost — the archived events prove the captures landed — but
+the routine case was being reported as a failure. Measured on this host
+(WSL2, vault on `/mnt/c`): a no-op Stop through `bin/weave-hook-launch` costs
+~1.8 s warm and ~6 s under load; `uv run` itself is 0.02 s and the handler
+import 0.07 s, so the floor is vault I/O and index access, not process spawn.
+Two changes follow: the handler swallows `BrokenPipeError` on its reply write
+(the harness already gave up; there is nothing to report), and the Pi shim
+passes per-event budgets above the floor (UserPromptSubmit 2.5 s, Stop 6 s).
+The orphan policy is unchanged — a hook that outlives even those still
+completes; only the notice and the prompt-time enrichment reply are what a
+timeout costs.
+
 ### What is NOT verified here
 
-The adapter route is read from source, not observed end to end: **no live Pi
-session has yet been seen calling a `weave_*` tool through `pi-mcp-adapter`
-with the entry `weave install --harness pi` writes.** The row's evidence
-string says so. What is measured is the negative (settings-route MCP is
-dead), the E0 floor, and the four hook events; what is read is the adapter's
-config precedence, its `isServerEntry`, and the three option keys. The first
-live run should confirm that bare `weave_search` appears in Pi's tool list
-(not `thinkweave_weave_search`, not only `mcp`) and that the eager server is
-up before the first prompt.
+- **SessionStart injection in the interactive run.** The headless events
+  probe (2026-09-05, #114) saw the injected payload quoted back by the model;
+  the interactive session's `context_served` rows could not be tied to its
+  Pi session id after the fact, so whether the startup payload reached that
+  particular session is unconfirmed. The 5 s SessionStart budget in the shim
+  is the suspect if it did not.
+- **PostToolUse through the adapter's tools.** The Pi `tool_result` event
+  fires for adapter-served `weave_*` tools under their bare names; the shim
+  now restores the `mcp__thinkweave__` namespace the handler's retrieval gate
+  keys on, but no session has yet been observed producing retrieval-log rows
+  from Pi. The archived events of the interactive run held prompt events only.
+- **The `pi -p` print-mode path** with the raised budgets — only the
+  interactive TUI was driven.
 
 ## Native Windows
 

@@ -87,6 +87,30 @@ const TOOL_NAMES: Record<string, string> = {
   write: "Write",
 };
 
+// Thinkweave's MCP tools reach Pi through pi-mcp-adapter with
+// `toolPrefix: "none"`, so Pi reports them under their bare names. The
+// handler's gates key on the MCP namespacing every other harness uses
+// (`mcp__<server>__<tool>`), so the namespace is restored here — casing and
+// naming only, the handler still decides what each call means.
+const MCP_SERVER = "thinkweave";
+const MCP_TOOL_PREFIX = "weave_";
+function canonicalToolName(native: string): string {
+  if (native.startsWith(MCP_TOOL_PREFIX)) return `mcp__${MCP_SERVER}__${native}`;
+  return TOOL_NAMES[native] ?? native;
+}
+
+// Per-event budgets (ms) where shim-core's defaults (800 ms telemetry) sit
+// below this launcher's measured floor: a no-op Stop costs ~1.8 s warm and
+// ~6 s under load on the dev machine (WSL2, vault on /mnt/c, 2026-09-05), so
+// the defaults timed out on every turn — one TUI notice per event per
+// session, and an EPIPE in hooks.log when the orphan wrote its reply. The
+// orphan policy still bounds the harness; these only stop the routine case
+// from being reported as a failure.
+const BUDGET_MS = {
+  UserPromptSubmit: 2500,
+  Stop: 6000,
+} as const;
+
 // Pi's session_start reasons vs the handler's lifecycle vocabulary
 // (startup|clear|resume|compact — serve-once serves the first two only).
 // Pi has no compact reason here; compaction is its own event below.
@@ -246,7 +270,7 @@ export default function thinkweavePi(pi: any) {
     // Awaited: the reply can carry the prompt-time enrichment block, and the
     // `context` event that could deliver it fires immediately after this
     // handler. Capture itself also lands before a print-mode exit this way.
-    const reply = await call("UserPromptSubmit", { prompt });
+    const reply = await call("UserPromptSubmit", { prompt }, BUDGET_MS.UserPromptSubmit);
     queueInjection(reply.hookSpecificOutput?.additionalContext ?? "");
   });
 
@@ -256,7 +280,7 @@ export default function thinkweavePi(pi: any) {
     if (!native) return undefined;
     // Fire-and-forget telemetry — the tool loop never waits on capture.
     void call("PostToolUse", {
-      tool_name: TOOL_NAMES[native] ?? native,
+      tool_name: canonicalToolName(native),
       tool_input:
         event?.input && typeof event.input === "object" ? event.input : {},
       tool_response: {
@@ -272,10 +296,10 @@ export default function thinkweavePi(pi: any) {
   pi.on("agent_end", async (event: any, ctx: any) => {
     lastCtx = ctx;
     pendingInjections.length = 0;
-    // Stop reconstructs the session note and indexes — usually slower than
-    // the 800ms telemetry budget. The await keeps the happy path ordered;
-    // past the budget the launcher is reaped and the python grandchild
-    // finishes the materialisation as runHook's documented orphan.
-    await call("Stop", {});
+    // Stop reconstructs the session note and indexes — slower than the
+    // shim-core telemetry default, hence BUDGET_MS. The await keeps the happy
+    // path ordered; past the budget the launcher is reaped and the python
+    // grandchild finishes the materialisation as runHook's documented orphan.
+    await call("Stop", {}, BUDGET_MS.Stop);
   });
 }

@@ -822,12 +822,37 @@ def pi(home: Path | None = None) -> HarnessProfile:
         harness_flag="--harness pi",
         mcp_servers_key="mcpServers",
         evidence=(
-            "measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, "
-            "settings-MCP falsified, n-fb74c7d0) + events probe 2026-09-05; "
-            "adapter route read from pi-mcp-adapter 2.32.1 source, "
-            "thinkweave tools not yet observed through it"
+            "measured — Pi 0.84.4: live trial 2026-09-03 (E0 floor verified, "
+            "settings-MCP falsified, n-fb74c7d0), headless events probe "
+            "2026-09-05 (all four native events fired), and an interactive "
+            "session 2026-09-05 through pi-mcp-adapter 2.32.1 (17 bare-named "
+            "weave_* tools, direct calls, /skill:wrap end-to-end on a "
+            "hook-captured session)"
         ),
+        # Headless events probe 2026-09-05 (all four; SessionStart injection
+        # quoted real note ids back) + interactive session 2026-09-05 (prompt
+        # events archived, Stop materialised the folder /skill:wrap extended).
+        fires_verified={
+            "SessionStart": "2026-09-05",
+            "UserPromptSubmit": "2026-09-05",
+            "PostToolUse": "2026-09-05",
+            "Stop": "2026-09-05",
+        },
         degradations=(
+            Degradation(
+                "hook latency",
+                "documented",
+                "shim-core's 800 ms telemetry budget sits below this "
+                "launcher's floor on the dev machine (a no-op Stop is ~1.8 s "
+                "warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim "
+                "carries per-event budgets (UserPromptSubmit 2.5 s, Stop 6 s); "
+                "a hook that still outlives its budget finishes as shim-core's "
+                "documented orphan — capture is complete, Pi shows one "
+                "'hook timeout' notice per event per session, and only the "
+                "prompt-time enrichment block that reply would have carried "
+                "is lost",
+                "#114, docs/HARNESSES.md §Pi",
+            ),
             Degradation(
                 "MCP registration",
                 "documented",
