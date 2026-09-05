@@ -68,8 +68,19 @@ class TestSchemaInvariants:
         assert profile.eligibility in ("E0", "E1", "E2", "E3")
 
     def test_hook_mechanism_enum_and_hooks_flag_agree(self, profile):
-        assert profile.hook_mechanism in ("file", "plugin", "none")
+        assert profile.hook_mechanism in ("file", "plugin", "extension", "none")
         assert profile.hooks == (profile.hook_mechanism != "none")
+
+    def test_extension_mechanism_declares_its_shim_source(self, profile):
+        # An extension row without a shim path (or vice versa) is a stub the
+        # installer cannot write — the same parses-but-never-fires class.
+        assert bool(profile.hook_extension_source) == (
+            profile.hook_mechanism == "extension"
+        )
+        if profile.hook_extension_source:
+            assert (REPO_ROOT / profile.hook_extension_source).is_file(), (
+                f"{profile.id}.hook_extension_source names a missing module"
+            )
 
     def test_native_memory_flag_and_artifact_agree(self, profile):
         # dec-5a076384: the seam gates on a *detected artifact*, so a profile
@@ -144,15 +155,13 @@ class TestPiRow:
         assert p.instructions_file == agent / "AGENTS.md"
         assert p.project_mcp_config_relpath == Path(".pi") / "settings.json"
 
-    def test_tier_zero_row_is_accepted_without_hooks_or_importer(
-        self, tmp_path: Path
-    ):
-        # dec-2fa074a0: E0 is an OFFICIAL tier — skills dir + instructions
-        # file + rendered degradations, no hooks, no transcript importer.
+    def test_captured_row_rides_the_extension_shim(self, tmp_path: Path):
+        # #114: lifecycle capture ships via the extension stub the installer
+        # writes; subagents and headless slash resolution remain honest gaps.
         p = _build("pi", tmp_path)
-        assert p.eligibility == "E0"
-        assert p.hook_mechanism == "none" and not p.hooks
-        assert p.fires_verified == {}
+        assert p.eligibility == "E3"
+        assert p.hook_mechanism == "extension" and p.hooks
+        assert p.hook_extension_source == "shims/pi/thinkweave-pi.ts"
         assert not p.subagents and not p.headless_slash
 
     def test_dispatch_shape(self, tmp_path: Path):
@@ -461,10 +470,16 @@ class TestMcpInstallSurface:
         self._install(inst)
         out = capsys.readouterr().out
         line = f"Registered thinkweave MCP server in {profile.mcp_config}"
-        if profile.evidence.startswith("declared"):
+        if any(
+            "mcp registration" in d.capability.lower()
+            for d in profile.degradations
+        ):
+            # The qualifier keys on the degradation, not the evidence prefix:
+            # Pi's route is MEASURED — measured to be falsified — and that
+            # provenance must ride the success line all the same.
             assert f"{line}. [{profile.evidence}" in out
         else:
-            # Measured rows keep the exact pre-#191 line — byte-identical.
+            # Rows with a working registration keep the exact pre-#191 line.
             assert f"{line}.\n" in out
             assert profile.evidence not in out
 
@@ -565,6 +580,7 @@ class TestNoHarnessForks:
         allowed = {
             ("src/thinkweave/onboarding/claude_code_seed.py", "claude-code"),
             ("src/thinkweave/acquisition/importers/codex.py", "codex"),
+            ("src/thinkweave/acquisition/importers/pi.py", "pi"),
         }
         offenders: list[str] = []
 
@@ -686,6 +702,7 @@ class TestTranscriptFormats:
         allowed = {
             "thinkweave.onboarding.claude_code_seed",
             "thinkweave.acquisition.importers.codex",
+            "thinkweave.acquisition.importers.pi",
         }
         for loaded in (
             profile.load_transcript_parser(),

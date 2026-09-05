@@ -1,0 +1,9 @@
+{"type":"session","version":3,"id":"0199bbbb-0000-7000-8000-000000000001","timestamp":"2026-09-05T10:00:00.000Z","cwd":"/home/user/projects/demo"}
+{"type":"model_change","id":"e-model","parentId":null,"timestamp":"2026-09-05T10:00:00.100Z","provider":"anthropic","modelId":"claude-opus-4-7"}
+{"type":"message","id":"e-inject","parentId":"e-model","timestamp":"2026-09-05T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"[thinkweave session context]\nInjected project context — harness plumbing, must be filtered."}]}}
+{"type":"message","id":"e-u1","parentId":"e-inject","timestamp":"2026-09-05T10:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"What does the demo module do?"}]}}
+{"type":"message","id":"e-a1","parentId":"e-u1","timestamp":"2026-09-05T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"operational block, not conversation"},{"type":"toolCall","id":"toolu_01","name":"bash","arguments":{"command":"ls demo/"}},{"type":"text","text":"It renders the demo dashboard from the config."}]}}
+{"type":"message","id":"e-t1","parentId":"e-a1","timestamp":"2026-09-05T10:00:06.000Z","message":{"role":"toolResult","toolCallId":"toolu_01","toolName":"bash","content":[{"type":"text","text":"dashboard.py  config.yaml"}]}}
+{"type":"message","id":"e-u2-dead","parentId":"e-t1","timestamp":"2026-09-05T10:00:10.000Z","message":{"role":"user","content":[{"type":"text","text":"Abandoned fork branch — must NOT appear in the import."}]}}
+{"type":"message","id":"e-u2-live","parentId":"e-t1","timestamp":"2026-09-05T10:00:20.000Z","message":{"role":"user","content":[{"type":"text","text":"Add a --verbose flag to it."}]}}
+{"type":"message","id":"e-a2-live","parentId":"e-u2-live","timestamp":"2026-09-05T10:00:25.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Done — the flag now toggles debug logging in dashboard.py."}]}}
