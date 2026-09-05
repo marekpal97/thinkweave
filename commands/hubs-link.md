@@ -1,4 +1,5 @@
 ---
+name: hubs-link
 description: Inline temporal-DAG linkage for concept hubs — walk hubs lacking agrees/contradicts/extends flags and rewrite via the running model. The `weave hubs link --via inline` path; pairs with `--via batch` which fans out via the API wrapper.
 allowed-tools: Read, Bash, mcp__thinkweave__weave_read, mcp__thinkweave__weave_update
 ---

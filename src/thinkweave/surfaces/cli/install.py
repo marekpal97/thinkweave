@@ -171,9 +171,14 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     }
     if vault_root:
         entry["env"]["THINKWEAVE_VAULT"] = vault_root
-    return mcp_config.canonical(
+    shaped = mcp_config.canonical(
         _mcp_config(), entry, shape=_profile().mcp_entry_shape
     )
+    # Client-specific options ride beside the launch fields (pi-mcp-adapter's
+    # lifecycle/directTools/toolPrefix). Merged after shaping so the shape
+    # dispatch stays about the launch body only; the doctor's fingerprint
+    # ignores these keys (`mcp_doctor._key` reads command + args).
+    return {**shaped, **_profile().mcp_entry_extras}
 
 
 class ScriptsCheck(NamedTuple):
@@ -646,6 +651,161 @@ def _restore_mcp_entry() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# legacy registration location (profile.legacy_mcp_config)
+# ---------------------------------------------------------------------------
+
+
+def _legacy_mcp_entry_present() -> bool:
+    """True when the profile names a legacy registration file AND our entry is
+    still in it. A malformed file reads as absent — it is someone else's
+    document and the sweep must not be the thing that fails on it."""
+    legacy = _profile().legacy_mcp_config
+    if legacy is None:
+        return False
+    try:
+        return (
+            mcp_config.read_entry(legacy, SERVER_NAME, servers_key=_servers_key())
+            is not None
+        )
+    except mcp_config.MalformedConfig:
+        return False
+
+
+def _sweep_legacy_mcp_entry() -> bool:
+    """Remove our entry from the profile's legacy registration file (Pi's
+    ``settings.json``, where an earlier row wrote a block the harness parses
+    and ignores). Key-scoped like every other write here; every other key in
+    the file survives. Returns False when there was nothing to sweep."""
+    if not _legacy_mcp_entry_present():
+        return False
+    legacy = _profile().legacy_mcp_config
+    assert legacy is not None
+    return mcp_config.remove_entry(legacy, SERVER_NAME, servers_key=_servers_key())
+
+
+# ---------------------------------------------------------------------------
+# root-file skills (profile.root_file_skills)
+# ---------------------------------------------------------------------------
+
+
+def _root_file_skill_links() -> list[tuple[Path, Path]]:
+    """``(link, target)`` pairs — one ``<skills_dir>/<name>.md`` per canonical
+    command whose frontmatter declares no ``workers:``.
+
+    The contracts come from ``skill_projection.iter_command_contracts``, the
+    same parser the Codex projector uses, so "worker-backed" means the same
+    thing on every harness. Targets are the canonical ``commands/*.md``
+    files themselves — never the Codex ``skills/`` bundle, whose relative
+    ``../../docs`` pointer resolves to nothing from the harness's skills dir.
+    A harness with subagents would link everything; none of the current
+    root-file-skill rows has them, and a worker-backed contract handed to a
+    harness that cannot dispatch it is a skill that fails on first use.
+    """
+    from thinkweave.core.skill_projection import iter_command_contracts
+
+    root = _detect_project_root()
+    profile = _profile()
+    links: list[tuple[Path, Path]] = []
+    for contract in iter_command_contracts(root / "commands", root / "agents"):
+        if contract.workers and not profile.subagents:
+            continue
+        links.append((_skills_dir() / f"{contract.name}.md", root / contract.source_relpath))
+    return links
+
+
+def _is_command_link(path: Path) -> bool:
+    """A symlink this installer created: its target is a ``commands/…/<same
+    basename>`` file. Matched on the link's own shape rather than the current
+    checkout so an uninstall from a different clone still recognises it."""
+    if not path.is_symlink():
+        return False
+    target = Path(os.readlink(path))
+    return "commands" in target.parts and target.name == path.name
+
+
+def _is_codex_bundle_link(path: Path) -> bool:
+    """A ``thinkweave-*`` symlink into the Codex projection bundle (a dir
+    carrying ``SKILL.md`` + ``agents/openai.yaml``), or a dangling one of that
+    name. These were hand-made before the root-file route existed and BREAK
+    under Pi — swept on install, whichever checkout they point into."""
+    if not (path.is_symlink() and path.name.startswith("thinkweave-")):
+        return False
+    target = Path(os.readlink(path))
+    if not target.is_absolute():
+        target = path.parent / target
+    if not target.exists():
+        return True
+    return (target / "SKILL.md").is_file() and (target / "agents" / "openai.yaml").is_file()
+
+
+def _install_root_file_skills() -> None:
+    """Converge ``skills_dir`` to exactly the current root-file links.
+
+    Idempotent: a link already aimed at its target is kept; one aimed
+    elsewhere is re-pointed; a stale command link (its command gained
+    workers or was removed) goes; a Codex-bundle link is swept; a regular
+    file in the way is left alone and reported — it is the user's.
+    """
+    skills = _skills_dir()
+    skills.mkdir(parents=True, exist_ok=True)
+    wanted = _root_file_skill_links()
+    wanted_paths = {link for link, _ in wanted}
+
+    swept = [p for p in skills.iterdir() if _is_codex_bundle_link(p)]
+    stale = [
+        p for p in skills.iterdir() if _is_command_link(p) and p not in wanted_paths
+    ]
+    for p in (*swept, *stale):
+        p.unlink()
+
+    linked = kept = 0
+    skipped: list[Path] = []
+    for link, target in wanted:
+        if link.is_symlink():
+            if Path(os.readlink(link)) == target:
+                kept += 1
+                continue
+            link.unlink()
+        elif link.exists():
+            skipped.append(link)
+            continue
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            # Windows without the symlink privilege: say so and keep going —
+            # the rest of the install (MCP entry, hooks) is still worth having.
+            print(f"warning: could not link {link} -> {target}: {exc}")
+            continue
+        linked += 1
+
+    prefix = _profile().skill_prefix
+    print(
+        f"Skills in {skills}: {linked} linked, {kept} already current"
+        + (f", {len(stale)} stale removed" if stale else "")
+        + (f", {len(swept)} Codex-bundle link(s) swept" if swept else "")
+        + f" — invoke as {prefix}<name> (e.g. {prefix}wrap)."
+    )
+    for p in skipped:
+        print(f"  skipped {p}: a file that is not a thinkweave link is already there")
+
+
+def _installed_command_links() -> list[Path]:
+    skills = _skills_dir()
+    if not skills.is_dir():
+        return []
+    return sorted(p for p in skills.iterdir() if _is_command_link(p))
+
+
+def _uninstall_root_file_skills() -> int:
+    """Remove every command link from ``skills_dir``; the user's own skills
+    (anything that is not our link shape) are untouched. Returns the count."""
+    links = _installed_command_links()
+    for p in links:
+        p.unlink()
+    return len(links)
+
+
 def _remove_claude_md_block() -> bool:
     """Strip the sentinel-wrapped block (plus surrounding blank lines)
     from ``~/.claude/CLAUDE.md``. Returns False if no block present."""
@@ -768,8 +928,19 @@ def cmd_install(args: argparse.Namespace) -> None:
     new_entry = _build_server_entry(project_root, vault_root=args.vault)
 
     _write_mcp_entry(args, new_entry)
+    # Converge, not just add: a registration an earlier row wrote where the
+    # harness never reads it is config that parses and never fires.
+    if _sweep_legacy_mcp_entry():
+        print(
+            f"Removed the dead thinkweave MCP entry from "
+            f"{_profile().legacy_mcp_config} (never read by "
+            f"{_profile().display_name}; the registration now lives in "
+            f"{_mcp_config()})."
+        )
     _uv_sync(project_root)
     _install_codex_windows_cli(project_root)
+    if _profile().root_file_skills:
+        _install_root_file_skills()
     if not getattr(args, "no_claude_md", False):
         _install_claude_md_block(args.yes)
     _print_next_steps()
@@ -784,17 +955,28 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         and CLAUDE_MD_BLOCK_START in _instructions().read_text(encoding="utf-8")
     )
     mcp_present = _raw_mcp_entry_present()
+    legacy_present = _legacy_mcp_entry_present()
     launcher = _codex_windows_launcher() if _profile().windows_cli_shim else None
+    skill_links = _installed_command_links() if _profile().root_file_skills else []
 
     to_remove: list[str] = []
     if mcp_present:
         to_remove.append(f"thinkweave MCP entry in {_mcp_config()}")
+    if legacy_present:
+        to_remove.append(
+            f"legacy thinkweave MCP entry in {_profile().legacy_mcp_config}"
+        )
     if md_block_present:
         to_remove.append(f"thinkweave block in {_instructions()}")
     if _marker().exists():
         to_remove.append(f"pause marker {_marker()}")
     if launcher is not None and launcher.exists():
         to_remove.append(f"Codex CLI launcher {launcher} (and its user PATH entry)")
+    if skill_links:
+        to_remove.append(
+            f"{len(skill_links)} skill link(s) in {_skills_dir()} "
+            f"({', '.join(p.name for p in skill_links)})"
+        )
 
     if not to_remove:
         print("Nothing to remove — `weave install` has not touched this machine.")
@@ -814,6 +996,11 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
 
     if _remove_mcp_entry():
         print(f"Removed MCP entry from {_mcp_config()}.")
+    if _sweep_legacy_mcp_entry():
+        print(f"Removed legacy MCP entry from {_profile().legacy_mcp_config}.")
+    if skill_links:
+        n = _uninstall_root_file_skills()
+        print(f"Removed {n} skill link(s) from {_skills_dir()}.")
     if _remove_claude_md_block():
         print(f"Removed thinkweave block from {_instructions()}.")
     if _marker().exists():
@@ -841,24 +1028,37 @@ def _print_next_steps() -> None:
     cli = profile.cli_bin
     print()
     print("Next:")
-    print(f"  1. Restart {cli}            # MCP server only spawns on session start")
-    print(f"  2. cd <repo> && {cli}       # open a project")
+    step = 0
+    if profile.mcp_client_package:
+        # No built-in MCP client: the registration just written is read by
+        # an extension the user has to install first, or nothing spawns.
+        step += 1
+        print(
+            f"  {step}. {profile.mcp_client_install_cmd}   # MCP client "
+            f"extension ({profile.display_name or profile.id} core has none)"
+        )
+    step += 1
+    print(f"  {step}. Restart {cli}            # MCP server only spawns on session start")
+    step += 1
+    print(f"  {step}. cd <repo> && {cli}       # open a project")
     if profile.ships_skills:
-        print("  3. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
+        step += 1
+        print(f"  {step}. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
         print()
         print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
         print("MCP server entry now; otherwise `/onboard` will ask and persist it.")
         return
 
-    # No skills on this harness — spell out the same steps as CLI commands,
-    # without naming the skill: a user reading this cannot run it, so mentioning
-    # it only invites them to try. The SAME rule gates each step on the
-    # profile: `weave hooks install` exits 1 on a hooks-less harness and
-    # `weave import <id>` needs an importer, so naming either to an E0 user
-    # is the rot this screen was rewritten to remove (r1).
+    # No /onboard on this harness — spell out the same steps as CLI commands,
+    # without naming a skill the user cannot run (or, on a root-file-skills
+    # row, one whose contract is Claude-Code-shaped). The SAME rule gates each
+    # step on the profile: `weave hooks install` exits 1 on a hooks-less
+    # harness and `weave import <id>` needs an importer, so naming either to
+    # an E0 user is the rot this screen was rewritten to remove (r1).
     name = profile.display_name or profile.id
-    step = 3
-    print(f"  {step}. weave init               # vault wiring ({name} has no thinkweave skills)")
+    step += 1
+    no_skills = "" if profile.root_file_skills else f" ({name} has no thinkweave skills)"
+    print(f"  {step}. weave init               # vault wiring{no_skills}")
     if profile.hooks:
         step += 1
         print(f"  {step}. weave hooks install --scope user {profile.harness_flag}".rstrip())
@@ -867,6 +1067,12 @@ def _print_next_steps() -> None:
     if profile.load_transcript_importer() is not None:
         step += 1
         print(f"  {step}. weave import {profile.id} --enrich   # backfill prior sessions")
+    if profile.root_file_skills:
+        step += 1
+        print(
+            f"  {step}. {profile.skill_prefix}wrap                # at the end of "
+            f"every session (skills linked into {profile.skills_dir})"
+        )
     # Degrade OUT LOUD at the point of action (dec-5a076384): what this
     # harness does not deliver is stated here, not discovered later.
     degraded = harness_docs.render_degradations(profile)

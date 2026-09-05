@@ -814,6 +814,94 @@ def check_venv_extras() -> CheckResult:
     )
 
 
+def _package_name(spec: Any) -> str | None:
+    """The bare package name inside one entry of a harness's ``packages``
+    array, or None for anything that is not an npm spec.
+
+    Pi records what ``pi install`` installed as ``npm:<name>[@version]``
+    strings, or objects carrying the same string under ``source`` (the
+    filtering form, docs/packages.md §Package Filtering). Scoped names keep
+    their leading ``@`` (``npm:@scope/name@1.2.3``), so the version separator
+    is the LAST ``@`` past position 0.
+    """
+    source = spec.get("source") if isinstance(spec, dict) else spec
+    if not isinstance(source, str) or not source.startswith("npm:"):
+        return None
+    name = source[len("npm:"):]
+    at = name.rfind("@")
+    return name[:at] if at > 0 else name
+
+
+def _settings_lists_package(path: Path, package: str) -> str | None:
+    """The full (possibly scoped) name under which ``package`` is listed in
+    ``path``'s ``packages`` array, or None."""
+    data = _safe_load_json(path)
+    if not data:
+        return None
+    for spec in data.get("packages") or []:
+        name = _package_name(spec)
+        if name is not None and (name == package or name.endswith(f"/{package}")):
+            return name
+    return None
+
+
+def check_mcp_client_extension(cwd: Path) -> CheckResult:
+    """FAIL when the harness's MCP client — an extension, not core — is not
+    installed, so no registration anywhere would spawn the server.
+
+    Only rows declaring ``mcp_client_package`` get this row (Pi: the
+    community ``pi-mcp-adapter``). Pi core parses an ``mcpServers`` block and
+    ignores it without a word (falsified live 2026-09-03, n-fb74c7d0), which
+    is the exact silent failure the doctor exists to name. Detection reads
+    what ``pi install`` writes: the ``packages`` array in the machine-scope
+    settings (or the project's), corroborated against the unpacked package
+    dir when the profile documents one.
+    """
+    profile = _profile()
+    package = profile.mcp_client_package
+    listed: list[tuple[Path, str]] = []
+    for path in (profile.user_settings, cwd / profile.project_settings_relpath):
+        name = _settings_lists_package(path, package)
+        if name is not None:
+            listed.append((path, name))
+    fix = profile.mcp_client_install_cmd or f"install {package}"
+    if not listed:
+        return CheckResult(
+            name="MCP client extension",
+            passed=False,
+            detail=(
+                f"{package} is not listed in {profile.user_settings} "
+                f"(`packages`) — {profile.display_name or profile.id} core has "
+                "no MCP client, so the thinkweave registration is never read"
+            ),
+            fix=f"run `{fix}`, then restart {profile.cli_bin}",
+        )
+    where = ", ".join(str(p) for p, _ in listed)
+    root = profile.packages_root
+    if root is not None and any(p == profile.user_settings for p, _ in listed):
+        unpacked = root / next(n for p, n in listed if p == profile.user_settings)
+        if not (unpacked / "package.json").is_file():
+            return CheckResult(
+                name="MCP client extension",
+                passed=False,
+                detail=(
+                    f"{package} is listed in {where} but not unpacked under "
+                    f"{unpacked}"
+                ),
+                fix=f"re-run `{fix}`",
+            )
+        return CheckResult(
+            name="MCP client extension",
+            passed=True,
+            detail=f"{package} listed in {where}; unpacked at {unpacked}",
+        )
+    return CheckResult(
+        name="MCP client extension",
+        passed=True,
+        detail=f"{package} listed in {where}",
+    )
+
+
 # ---------- top-level driver ----------
 
 
@@ -821,6 +909,10 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     """Run every MCP-wiring check and return a structured result."""
     cwd = cwd or Path.cwd()
     result = DoctorResult()
+    # First on a row whose MCP client is an extension: with it absent every
+    # registration below is a file nobody reads.
+    if _profile().mcp_client_package:
+        result.checks.append(check_mcp_client_extension(cwd))
     result.checks.append(check_registration_scopes(cwd))
     # Launcher probe is only meaningful if at least one scope registers.
     if result.checks[-1].passed and "not registered" not in result.checks[-1].detail:

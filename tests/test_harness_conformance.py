@@ -145,15 +145,47 @@ class TestSchemaInvariants:
 
 
 class TestPiRow:
-    """Facts from blueprint n-a1d3beba, declared-not-verified where marked."""
+    """Facts measured on Pi 0.84.4 (2026-09-03/05) and read from the
+    pi-mcp-adapter 2.32.1 source; blueprint n-a1d3beba where still current."""
 
     def test_install_topology(self, tmp_path: Path):
         p = _build("pi", tmp_path)
         agent = tmp_path / ".pi" / "agent"
         assert p.skills_dir == agent / "skills"
-        assert p.mcp_config == agent / "settings.json"
+        # Pi core has no MCP client (n-fb74c7d0); the adapter's Pi-global
+        # file is mcp.json, and the project file is the standard .mcp.json.
+        assert p.mcp_config == agent / "mcp.json"
+        assert p.legacy_mcp_config == agent / "settings.json"
+        assert p.project_mcp_config_relpath == Path(".mcp.json")
         assert p.instructions_file == agent / "AGENTS.md"
-        assert p.project_mcp_config_relpath == Path(".pi") / "settings.json"
+        assert p.user_settings == agent / "settings.json"
+        assert p.packages_root == agent / "npm" / "node_modules"
+
+    def test_mcp_client_is_the_adapter_extension(self, tmp_path: Path):
+        p = _build("pi", tmp_path)
+        assert p.mcp_client_package == "pi-mcp-adapter"
+        assert p.mcp_client_install_cmd == "pi install npm:pi-mcp-adapter"
+        # Adapter-only keys (types.ts ServerEntry): bare `weave_*` names need
+        # directTools + toolPrefix none; eager so the first retrieval does
+        # not pay the server's cold start.
+        assert p.mcp_entry_extras == {
+            "lifecycle": "eager",
+            "directTools": True,
+            "toolPrefix": "none",
+        }
+
+    def test_skills_are_root_file_links(self, tmp_path: Path):
+        p = _build("pi", tmp_path)
+        assert p.root_file_skills and p.skill_prefix == "/skill:"
+        assert not p.ships_skills  # /onboard is Claude-Code-shaped
+
+    def test_e3_posture_in_the_instructions_block(self, tmp_path: Path):
+        body = _build("pi", tmp_path).instructions_block_body
+        assert "NEVER call `weave_extract`" in body
+        assert "/skill:wrap" in body
+        assert "pi-mcp-adapter" in body
+        assert "never crawl the filesystem" in body
+        assert "{weave} add" in body and "{weave} search" in body
 
     def test_captured_row_rides_the_extension_shim(self, tmp_path: Path):
         # #114: lifecycle capture ships via the extension stub the installer
@@ -515,7 +547,21 @@ class TestMcpInstallSurface:
             # `codex mcp add`'s own 2026-08-02 output: no type key, empty
             # env omitted (format-level trims, still the split shape).
             assert entry == {"command": "/uv", "args": uv_args}
-        else:  # claude-code, pi — Claude Code's authored split shape.
+        elif profile.id == "pi":
+            # The standard split shape pi-mcp-adapter reads from mcp.json
+            # (its isServerEntry accepts any record, so `type` is harmless)
+            # plus the three adapter-only keys that expose bare `weave_*`
+            # tools eagerly (types.ts ServerEntry, 2.32.1).
+            assert entry == {
+                "type": "stdio",
+                "command": "/uv",
+                "args": uv_args,
+                "env": {},
+                "lifecycle": "eager",
+                "directTools": True,
+                "toolPrefix": "none",
+            }
+        else:  # claude-code — the authored split shape.
             assert entry == {
                 "type": "stdio",
                 "command": "/uv",
