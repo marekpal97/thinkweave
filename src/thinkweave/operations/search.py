@@ -179,19 +179,20 @@ def _project_buffer_session_ids(cfg: Config, project: str) -> set[str]:
     except Exception:
         pass
 
-    # Fallback: index unavailable → bounded vault walk (legacy path).
+    # Fresh/index-less vault fallback: inspect only this project's session
+    # directories.  This preserves active-buffer retrieval without restoring
+    # the old vault-wide recursive Markdown crawl.
     try:
-        from thinkweave.core.schemas import NoteType
         from thinkweave.core.vault import VaultManager
 
         vm = VaultManager(config=cfg)
-        for note in vm.list_notes(note_type=NoteType.SESSION, limit=500):
-            if note.project != project:
-                continue
+        sessions_dir = cfg.vault_root / "projects" / project / "sessions"
+        for session_file in sessions_dir.glob("*/session.md"):
+            note = vm.read_note(session_file)
             src = note.frontmatter.get("source_session", "")
             if src:
                 out.add(str(src))
-    except Exception:
+    except (OSError, ValueError, KeyError):
         pass
     return out
 
