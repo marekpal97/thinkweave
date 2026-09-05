@@ -1,9 +1,12 @@
 ---
 name: thinkweave-recall
-description: Retrieve durable ThinkWeave memory for prior work, decisions, project history, known gotchas, or cross-session context. Use when the user asks what happened before, why something was chosen, what is known about a topic, or to ground substantial work in existing memory. Keep this workflow read-only unless the user separately asks to capture or update memory.
+description: Explicit, read-only ThinkWeave recall workflow. Use only when the user invokes `$thinkweave-recall` or explicitly asks to use the recall skill. For ordinary history or context questions, call the available `weave_*` tools directly without loading this skill.
 ---
 
 # ThinkWeave Recall
+
+This is an opt-in workflow, not a wrapper required for ordinary retrieval. The
+MCP/CLI tool descriptions already provide the default routing contract.
 
 Use the `weave_*` MCP tools. If they are unavailable, tell the user to restart Codex and verify `codex mcp get thinkweave`; do not replace durable-memory retrieval with a broad filesystem crawl.
 

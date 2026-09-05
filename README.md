@@ -257,8 +257,10 @@ What Codex gets: the `weave_*` MCP tools, the instructions nudge, and — via
 `weave hooks install --scope user --harness codex` — the same four lifecycle
 hooks Claude Code runs. Codex gates hooks on trust, so open a session and trust
 the entries via `/hooks` after installing, and re-trust after every reinstall.
-Until you do, nothing fires: the installed AGENTS.md block therefore still
-tells the model to run `weave_extract` explicitly before ending a session.
+The installed AGENTS.md block keeps extraction boundary-scoped: never call
+`weave_extract` during ordinary work; use `$thinkweave-wrap` once at a genuine
+session boundary for rich synthesis. Raw `weave_extract` is only the fallback
+when the wrap skill is unavailable and session-end hooks are not trusted.
 
 The repository carries the complete supported Codex skill surface under
 `skills/`, projected from the same `commands/**/*.md` contracts Claude Code

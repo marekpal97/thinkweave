@@ -1,6 +1,6 @@
 interface:
   display_name: "ThinkWeave Recall"
-  short_description: "Retrieve prior work and durable memory"
+  short_description: "Explicit durable-memory recall workflow"
   default_prompt: "Use $thinkweave-recall to recover relevant prior decisions and project context."
 dependencies:
   tools:

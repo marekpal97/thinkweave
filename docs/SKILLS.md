@@ -50,8 +50,10 @@ interactive workflows. Claude Code consumes those contracts directly as
 `/<name>` (or `/thinkweave:<name>` on the plugin route). Codex discovers the
 generated adapters under `skills/` as `$thinkweave-<name>`; each adapter links
 back to its canonical command and translates only tool and invocation
-vocabulary. `thinkweave-recall` is an additional read-only Codex convenience
-skill rather than a second definition of an existing command.
+vocabulary. `thinkweave-recall` is an opt-in, read-only Codex convenience skill
+rather than a wrapper around ordinary retrieval: history and context questions
+use the described `weave_*` tools directly unless the user explicitly invokes
+the skill.
 
 Worker fan-out is **declared, never inferred**: a command that spawns workers
 lists them in a `workers:` frontmatter key, and the projector validates each
