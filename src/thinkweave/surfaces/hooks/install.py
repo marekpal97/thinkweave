@@ -328,6 +328,68 @@ def _settings_diff(before: dict, after: dict, target: Path) -> str:
     return "".join(diff)
 
 
+def _extension_stub_path(profile, scope: str, project_dir: str = "") -> Path:
+    """Where the extension-mechanism loader stub lives, per scope.
+
+    ``user`` — the harness's global extensions dir (auto-discovered every
+    session). ``project`` — the repo-local extensions dir (auto-discovered
+    once the project is trusted)."""
+    if scope == "user":
+        return profile.plugins_root / "thinkweave.ts"
+    root = Path(project_dir) if project_dir else Path.cwd()
+    return root / profile.project_plugins_relpath / "thinkweave.ts"
+
+
+def _extension_stub_text(profile) -> str:
+    """The one-line loader stub — the ONLY artifact carrying machine state.
+
+    It re-exports the repo's shim module (``hook_extension_source``), so a
+    dev-relink or shim edit needs no reinstall and a reinstall rewrites one
+    file. The shim resolves the hook launcher relative to its own repo
+    location; nothing else is baked in."""
+    source = (_repo_root() / profile.hook_extension_source).as_posix()
+    return (
+        "// installed by thinkweave (`weave hooks install`); a reinstall "
+        "overwrites this file.\n"
+        "// The shim itself lives in the repo checkout below — add your own "
+        "extensions beside\n"
+        "// this file, never inside it.\n"
+        f'export {{ default }} from "{source}";\n'
+    )
+
+
+def _install_extension_stub(
+    profile, scope: str, project_dir: str, dry_run: bool
+) -> None:
+    """``install_hooks``, extension-mechanism variant: write the loader stub.
+
+    Fails loud when the shim source is missing from the checkout — a stub
+    pointing at nothing would be config that parses and never fires."""
+    source = _repo_root() / profile.hook_extension_source
+    if not source.is_file():
+        print(
+            f"error: shim source {source} not found — the "
+            f"{profile.id!r} extension stub would re-export a missing module. "
+            "Run from a complete thinkweave checkout.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    stub = _extension_stub_path(profile, scope, project_dir)
+    text = _extension_stub_text(profile)
+    if dry_run:
+        print(f"Would write: {stub}")
+        print(text, end="")
+        return
+    atomic_write_text(stub, text)
+    print(
+        f"Hooks installed at {stub} (scope={scope})\n"
+        "  SessionStart hook will inject ~7–10k tokens of project context "
+        "on the next session."
+        + profile.hooks_install_caveat
+    )
+
+
 def install_hooks(
     project_dir: str = "",
     scope: str = "project",
@@ -369,6 +431,12 @@ def install_hooks(
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # An extension-mechanism harness reads no hooks from any settings file:
+    # its whole registration is the loader stub in its extensions dir.
+    if profile.hook_mechanism == "extension":
+        _install_extension_stub(profile, scope, project_dir, dry_run)
+        return
 
     # A plugin-mechanism harness loads the canonical hooks file from its
     # active plugin, which then owns registration outright — a second
@@ -433,8 +501,20 @@ def uninstall_hooks(
     ``weave pause`` uninstalls before removing the MCP entry and writing its
     marker, so exiting would strand pause half-done.
     """
-    if not active_harness().hooks:
+    profile = active_harness()
+    if not profile.hooks:
         print("No hooks on this harness — nothing to remove.")
+        return
+    if profile.hook_mechanism == "extension":
+        stub = _extension_stub_path(profile, scope, project_dir)
+        if not stub.exists():
+            print("No extension stub found.")
+            return
+        if dry_run:
+            print(f"Would remove: {stub}")
+            return
+        stub.unlink()
+        print(f"Hooks removed: {stub} (scope={scope})")
         return
     settings_path = _settings_path_for_scope(scope, project_dir)
     if not settings_path.exists():

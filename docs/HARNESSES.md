@@ -14,10 +14,10 @@ profile is what runs; fix whichever is wrong.
 
 | | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md) | declared — blueprint n-a1d3beba (2026-08-24); NOT verified on a live install | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
-| eligibility (dec-5a076384 ladder) | E3 | E3 | E0 | E0 |
+| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md) | measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, settings-MCP falsified) + events probe 2026-09-05; blueprint n-a1d3beba | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
+| eligibility (dec-5a076384 ladder) | E3 | E3 | E3 | E0 |
 | detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
-| lifecycle hooks | plugin | file | none | none |
+| lifecycle hooks | plugin | file | extension | none |
 | subagent fan-out | yes | yes | no | no |
 | headless slash skills | yes | no | no | no |
 | native memory seam | `~/.claude/projects` | — | — | — |
@@ -34,10 +34,10 @@ profile is what runs; fix whichever is wrong.
 
 | canonical | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| SessionStart | ✓ 2026-08-29 | ✓ 2026-08-02 | `session_start` (declared) | `experimental.chat.messages.transform` (declared) |
-| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-08-02 | `before_agent_start` (declared) | `chat.message` (declared) |
-| PostToolUse | ✓ 2026-08-29 | wired, unverified | `tool_result` (declared) | `tool.execute.after` (declared) |
-| Stop | ✓ 2026-08-29 | wired, unverified | `agent_end` (declared) | — (no verified equivalent) |
+| SessionStart | ✓ 2026-08-29 | ✓ 2026-08-02 | wired, unverified | `experimental.chat.messages.transform` (declared) |
+| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-08-02 | wired, unverified | `chat.message` (declared) |
+| PostToolUse | ✓ 2026-08-29 | wired, unverified | wired, unverified | `tool.execute.after` (declared) |
+| Stop | ✓ 2026-08-29 | wired, unverified | wired, unverified | — (no verified equivalent) |
 
 ### Documented degradations
 
@@ -58,11 +58,9 @@ None — the reference harness.
 
 #### Pi
 
-- **lifecycle hooks** — documented: the Pi extension shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#114)
-- **MCP registration** — documented: the written entry follows Pi's documented mcpServers block (command string + args list + env map, n-a1d3beba §4) apart from an extra `type: stdio` key Pi's field list does not name; NOT yet verified to parse on a live install — #114 owns the live verification (n-a1d3beba §4)
+- **MCP registration** — documented: FALSIFIED live on 0.84.4 (2026-09-03): the written mcpServers entry parses but Pi core ships no MCP client, so no server is spawned and no error is raised; the CLI fallback in the instructions block is the verified retrieval path until extension-mediated tool exposure ships (#114)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
 - **skill invocation** — documented: no Skill tool — /skill:name is prompt-expansion, and the bootstrap must say read-the-SKILL.md, not invoke (n-a1d3beba §4)
-- **transcript import** — documented: session files are parentId trees, not flat JSONL; no importer walks them yet (n-a1d3beba §6)
 
 #### OpenCode
 
