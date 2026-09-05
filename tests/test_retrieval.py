@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import pytest
 
+from thinkweave import retrieval
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
-from thinkweave import retrieval
-from thinkweave.retrieval.search import Search, SearchResult
 from thinkweave.core.vault import VaultManager
+from thinkweave.retrieval.search import Search, SearchResult
 
 
 # ---------------------------------------------------------------------------
@@ -792,12 +792,13 @@ class TestRrfKFromConfig:
 
 def test_timeline_surfaces_recent_sessions_on_large_vault(
     vault_factory,
+    monkeypatch,
 ):
-    """#81 (criterion-1 timeline half): `handle_timeline` calls
-    `list_notes(SESSION, limit=100)`; on a vault with >100 sessions the older,
-    out-of-window ones must not crowd the recent in-window ones out of the
-    truncation window. With the sort-before-truncate fix the 100 newest are
-    kept, so every recent in-window session renders.
+    """Timeline stays correct on >100 sessions without crawling Markdown.
+
+    #81 fixed arbitrary filesystem ordering by sorting the entire vault before
+    truncating.  This regression also pins the follow-up invariant: retrieval
+    reads the derived index and never calls the filesystem-truth list_notes.
     """
     from datetime import date
 
@@ -811,14 +812,80 @@ def test_timeline_surfaces_recent_sessions_on_large_vault(
     # ones (>100 total) that occupy truncation slots in arbitrary rglob order.
     recent_titles = [f"recent-{i}" for i in range(50)]
     for title in recent_titles:
-        vm.create_note(NoteType.SESSION, title, project="p",
-                       extra_frontmatter={"date": today})
+        vm.create_note(NoteType.SESSION, title, project="p", extra_frontmatter={"date": today})
     for i in range(80):
-        vm.create_note(NoteType.SESSION, f"old-{i}", project="p",
-                       extra_frontmatter={"date": "2025-01-01"})
+        vm.create_note(
+            NoteType.SESSION, f"old-{i}", project="p", extra_frontmatter={"date": "2025-01-01"}
+        )
+    handle.indexed()
+    monkeypatch.setattr(
+        VaultManager,
+        "list_notes",
+        lambda *args, **kwargs: pytest.fail("retrieval crawled vault Markdown"),
+    )
 
     out = handle_timeline(handle.config, {"project": "p", "days": 7})
     text = "\n".join(tc.text for tc in out)
 
     missing = [t for t in recent_titles if t not in text]
     assert not missing, f"recent in-window sessions dropped by truncation: {missing}"
+
+
+def test_indexed_note_listing_preserves_metadata_and_filters(
+    vault: VaultManager,
+    indexer: Indexer,
+    config: Config,
+):
+    today = "2026-09-05"
+    vault.create_note(
+        NoteType.SESSION,
+        "Indexed session",
+        body="summary",
+        project="p1",
+        tags=["wrapped"],
+        extra_frontmatter={"date": today, "source_session": "source-1"},
+    )
+    vault.create_note(
+        NoteType.SESSION,
+        "Other project",
+        project="p2",
+        extra_frontmatter={"date": today},
+    )
+    indexer.rebuild(full=True)
+
+    search = Search(config=config)
+    try:
+        notes = search.list_notes(
+            note_type=NoteType.SESSION,
+            project="p1",
+            since=today,
+            source_sessions=["source-1"],
+            limit=10,
+        )
+    finally:
+        search.close()
+
+    assert [note.title for note in notes] == ["Indexed session"]
+    assert notes[0].frontmatter["source_session"] == "source-1"
+    assert notes[0].tags == ["wrapped"]
+    assert notes[0].body.endswith("summary")
+
+
+def test_retrieval_surfaces_never_use_filesystem_note_listing():
+    """Keep full-vault Markdown scans out of latency-sensitive surfaces."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    retrieval_surfaces = [
+        "src/thinkweave/surfaces/mcp/tools/search.py",
+        "src/thinkweave/surfaces/cli/parity.py",
+        "src/thinkweave/operations/search.py",
+        "src/thinkweave/synthesis/landing.py",
+    ]
+    offenders = []
+    for relative_path in retrieval_surfaces:
+        text = (repo / relative_path).read_text(encoding="utf-8")
+        if "vm.list_notes(" in text or '.rglob("*.md")' in text:
+            offenders.append(relative_path)
+
+    assert not offenders, f"retrieval surfaces crawl vault Markdown: {offenders}"

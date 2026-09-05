@@ -41,7 +41,6 @@ def cmd_unlink(args: argparse.Namespace) -> None:
 
 def cmd_timeline(args: argparse.Namespace) -> None:
     from thinkweave.core.schemas import NoteType
-    from thinkweave.core.vault import VaultManager
     from thinkweave.retrieval.search import Search
 
     cfg = load_config()
@@ -71,11 +70,12 @@ def cmd_timeline(args: argparse.Namespace) -> None:
         return
 
     cutoff = (date.today() - timedelta(days=days)).isoformat()
-    vm = VaultManager(config=cfg)
-    sessions = [
-        n for n in vm.list_notes(note_type=NoteType.SESSION, limit=100)
-        if n.project == project and n.date >= cutoff
-    ]
+    sessions = s.list_notes(
+        note_type=NoteType.SESSION,
+        project=project,
+        since=cutoff,
+        limit=100,
+    )
     sessions.sort(key=lambda n: n.date)
     s.close()
 
