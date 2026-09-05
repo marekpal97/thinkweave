@@ -10,6 +10,7 @@ import sqlite3
 from dataclasses import dataclass, field
 
 from thinkweave.core.config import Config, load_config
+from thinkweave.core.schemas import NoteMeta, NoteType
 from thinkweave.retrieval import SemanticSearchUnavailable
 
 
@@ -72,6 +73,80 @@ class Search:
         if self._db:
             self._db.close()
             self._db = None
+
+    def list_notes(
+        self,
+        note_type: NoteType | str | None = None,
+        project: str = "",
+        since: str = "",
+        until: str = "",
+        source_sessions: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[NoteMeta]:
+        """List note metadata from the derived index, newest first.
+
+        Retrieval surfaces must use this instead of ``VaultManager.list_notes``:
+        the latter deliberately reads and parses every Markdown file because it
+        is a filesystem-truth API.  On mounted or large vaults that turns a
+        bounded retrieval into an unbounded vault crawl.
+        """
+        conditions: list[str] = []
+        params: list[object] = []
+
+        if note_type:
+            conditions.append("type = ?")
+            params.append(note_type.value if isinstance(note_type, NoteType) else note_type)
+        if project:
+            conditions.append("project = ?")
+            params.append(project)
+        if since:
+            conditions.append("date >= ?")
+            params.append(since)
+        if until:
+            conditions.append("date <= ?")
+            params.append(until)
+        if source_sessions:
+            placeholders = ",".join("?" for _ in source_sessions)
+            conditions.append(f"json_extract(frontmatter, '$.source_session') IN ({placeholders})")
+            params.extend(source_sessions)
+
+        where = " AND ".join(conditions) or "1=1"
+        rows = self.db.execute(
+            f"""
+            SELECT id, type, title, path, project, date, tags,
+                   frontmatter, body_text
+            FROM notes
+            WHERE {where}
+            ORDER BY date DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+
+        notes: list[NoteMeta] = []
+        for row in rows:
+            try:
+                frontmatter = json.loads(row["frontmatter"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                frontmatter = {}
+            try:
+                tags = json.loads(row["tags"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            notes.append(
+                NoteMeta(
+                    id=row["id"],
+                    type=NoteType(row["type"]),
+                    title=row["title"],
+                    path=row["path"],
+                    project=row["project"] or "",
+                    date=row["date"] or "",
+                    tags=tags,
+                    frontmatter=frontmatter,
+                    body=row["body_text"] or "",
+                )
+            )
+        return notes
 
     def search(
         self,

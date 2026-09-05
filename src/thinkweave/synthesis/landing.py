@@ -464,15 +464,20 @@ def _gather_prompt_probes(
     buffer_root = config.weave_dir / "buffer"
     if buffer_root.exists():
         try:
-            from thinkweave.core.schemas import NoteType
-            from thinkweave.core.vault import VaultManager
-
-            vm = VaultManager(config=config)
             session_to_project: dict[str, str] = {}
-            for note in vm.list_notes(note_type=NoteType.SESSION, limit=200):
-                src = note.frontmatter.get("source_session", "")
-                if src:
-                    session_to_project[str(src)] = note.project or ""
+            db = _get_db(config)
+            try:
+                rows = db.execute(
+                    "SELECT project, frontmatter FROM notes "
+                    "WHERE type = 'session' ORDER BY date DESC LIMIT 200"
+                ).fetchall()
+                for row in rows:
+                    fm = json.loads(row["frontmatter"] or "{}")
+                    src = fm.get("source_session", "")
+                    if src:
+                        session_to_project[str(src)] = row["project"] or ""
+            finally:
+                db.close()
         except Exception:
             session_to_project = {}
 
