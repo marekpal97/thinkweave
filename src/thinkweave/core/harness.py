@@ -234,9 +234,19 @@ class HarnessProfile:
     hook_mechanism: str = "none"
     """How lifecycle hooks reach this harness: ``plugin`` (an active plugin
     manifest owns registration, settings files are swept — Claude Code),
-    ``file`` (the installer writes the settings file — Codex), ``none`` (no
-    hook path exists or none is shipped yet; capture degrades to explicit
-    ``/wrap``-style invocation). Must agree with :attr:`hooks`."""
+    ``file`` (the installer writes the settings file — Codex), ``extension``
+    (the installer writes a one-line loader stub into the harness's
+    extensions dir that re-exports the repo's shim module,
+    :attr:`hook_extension_source` — Pi), ``none`` (no hook path exists or
+    none is shipped yet; capture degrades to explicit ``/wrap``-style
+    invocation). Must agree with :attr:`hooks`."""
+
+    hook_extension_source: str = ""
+    """Repo-relative path of the shim module an ``extension``-mechanism
+    harness loads (``shims/pi/thinkweave-pi.ts``). The installed stub is one
+    re-export line carrying the absolute repo path — the only
+    machine-state artifact, so a reinstall rewrites the stub and nothing
+    else. Empty on every other mechanism."""
 
     hook_events: dict[str, str | None] = field(default_factory=dict)
     """Canonical event name → this harness's native one (None: no native
@@ -633,29 +643,36 @@ def codex(home: Path | None = None) -> HarnessProfile:
 
 
 def pi(home: Path | None = None) -> HarnessProfile:
-    """Pi (badlogic/pi-mono) — an official E0 (steerable) row.
+    """Pi (badlogic/pi-mono) — an E3 (captured) row.
 
-    Every fact is distilled from the evidence blueprint n-a1d3beba
-    (2026-08-24: upstream docs + four working extensions read in code).
-    Nothing here is measured against a live Pi install — ``fires_verified``
-    is empty and the degradations say what does not run until the extension
-    shim ships (#114). The ``hook_events`` map is the blueprint's translation
-    table, carried as data so the shim and the conformance suite share it.
+    Blueprint n-a1d3beba (2026-08-24) distilled the facts; two live rounds
+    against Pi 0.84.4 then measured them: the 2026-09-03 trial verified the
+    E0 floor (AGENTS.md read and acted on, CLI fallback, universal skills
+    dir) and FALSIFIED the settings-route MCP claim, and the 2026-09-05
+    events probe observed every native event in ``hook_events`` firing in a
+    headless run. Lifecycle capture rides the extension shim
+    (``shims/pi/thinkweave-pi.ts``, #114) on the shim-core kernel; the
+    ``hook_events`` map is the translation table the shim and the
+    conformance suite share.
     """
     h = home or Path.home()
     agent = h / ".pi" / "agent"
     return HarnessProfile(
         id="pi",
         display_name="Pi",
-        hooks=False,
+        hooks=True,
         subagents=False,
         native_memory=False,
         headless_slash=False,
         instructions_file=agent / "AGENTS.md",
+        # Hooks exist but only fire once the extension stub is installed —
+        # same honesty rule as Codex's trust gate: the model must not assume
+        # a Stop hook captured anything.
         instructions_block_body=(
-            f"{_NUDGE}. This harness fires no thinkweave lifecycle hooks, so "
-            "call `weave_extract` yourself before you finish — it is what "
-            "persists the session's insights and decisions into the vault. "
+            f"{_NUDGE}. This harness fires thinkweave lifecycle hooks only "
+            "once the extension shim is installed (`{weave} hooks install "
+            "--harness pi`), so call `weave_extract` yourself before you "
+            "finish if capture is not active. "
             "If the `weave_*` tools did not load, fall back to the CLI: "
             "`{weave} add <title> -t note -p <project> -b <body>` persists "
             "a note (`-t decision` for a decision) and "
@@ -683,8 +700,14 @@ def pi(home: Path | None = None) -> HarnessProfile:
         model_flag="--model",
         prompt_flag="-p",
         bypass_permissions_flag="",
-        eligibility="E0",
+        hooks_install_caveat=(
+            "\n  The extension loads on the next Pi session; sessions already "
+            "running keep\n  going without it."
+        ),
+        eligibility="E3",
         detect_dir=h / ".pi",
+        hook_mechanism="extension",
+        hook_extension_source="shims/pi/thinkweave-pi.ts",
         hook_events={
             "SessionStart": "session_start",
             "UserPromptSubmit": "before_agent_start",
@@ -694,27 +717,26 @@ def pi(home: Path | None = None) -> HarnessProfile:
         context_channel="context-injection",
         transcript_glob=str(agent / "sessions" / "*" / "*.jsonl"),
         transcript_format="jsonl-tree",
+        transcript_parser="thinkweave.acquisition.importers.pi:parse_session",
+        transcript_importer="thinkweave.acquisition.importers.pi:import_pi",
         session_id_scheme="uuid (session-header id)",
         harness_flag="--harness pi",
         mcp_servers_key="mcpServers",
-        evidence="declared — blueprint n-a1d3beba (2026-08-24); NOT verified on a live install",
+        evidence=(
+            "measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, "
+            "settings-MCP falsified) + events probe 2026-09-05; blueprint "
+            "n-a1d3beba"
+        ),
         degradations=(
-            Degradation(
-                "lifecycle hooks",
-                "documented",
-                "the Pi extension shim is not yet shipped, so passive capture "
-                "does not run; end sessions with an explicit weave_extract",
-                "#114",
-            ),
             Degradation(
                 "MCP registration",
                 "documented",
-                "the written entry follows Pi's documented mcpServers block "
-                "(command string + args list + env map, n-a1d3beba §4) apart "
-                "from an extra `type: stdio` key Pi's field list does not "
-                "name; NOT yet verified to parse on a live install — #114 "
-                "owns the live verification",
-                "n-a1d3beba §4",
+                "FALSIFIED live on 0.84.4 (2026-09-03): the written "
+                "mcpServers entry parses but Pi core ships no MCP client, so "
+                "no server is spawned and no error is raised; the CLI "
+                "fallback in the instructions block is the verified "
+                "retrieval path until extension-mediated tool exposure ships",
+                "#114",
             ),
             Degradation(
                 "subagent fan-out",
@@ -729,13 +751,6 @@ def pi(home: Path | None = None) -> HarnessProfile:
                 "no Skill tool — /skill:name is prompt-expansion, and the "
                 "bootstrap must say read-the-SKILL.md, not invoke",
                 "n-a1d3beba §4",
-            ),
-            Degradation(
-                "transcript import",
-                "documented",
-                "session files are parentId trees, not flat JSONL; no "
-                "importer walks them yet",
-                "n-a1d3beba §6",
             ),
         ),
     )
