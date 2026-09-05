@@ -151,12 +151,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # https://www.youtube.com/feeds/videos.xml?channel_id=<id>.
             # Empty list + no URL paste = nothing to do.
             # Gemini Flash handles transcript + summary from the video URL
-            # directly; no audio download or transcription needed.
+            # directly (primary since 2026-09-03 — the captions endpoint
+            # IP-blocks this network); no audio download needed.
             "queue": "vault/.weave/queues/youtube-events.jsonl",
             "drain_strategy": "subagent",
             "subagent_type": "research-youtube-worker",
             "subagent_model": "sonnet",
-            "drain_parallelism": 4,
+            # Parallelism 1: the Gemini free tier allows 250K input
+            # tokens/min per model, and one video at LOW media resolution
+            # (~107 tokens/s) is most of that budget — two concurrent
+            # videos 429 each other (verified live 2026-09-03). Raise
+            # per-vault in sources.yaml only on a paid-tier key.
+            "drain_parallelism": 1,
             "drain_batch_max": 20,
             "channels": [],
             "lookback_days": 7,
@@ -175,9 +181,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "url_patterns": ["youtube.com/watch", "youtu.be/", "youtube.com/shorts"],
             "research_skill": "research-youtube",
             "post_batch_hooks": [],
-            # No `triage_model` — admission is the channel allowlist.
-            # /drain Path B treats every queue item as keep_unfiled.
+            # Gemini classes first (primary path); captions classes kept
+            # for the fallback path.
             "allowed_failure_prefixes": [
+                "gemini_refused",
+                "api_error",
+                "invalid_response",
                 "transcripts_disabled",
                 "no_transcripts",
                 "video_unavailable",
@@ -194,7 +203,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "drain_strategy": "subagent",
             "subagent_type": "research-youtube-worker",
             "subagent_model": "sonnet",
-            "drain_parallelism": 4,
+            # Parallelism 1 — same Gemini free-tier 250K-tokens/min budget
+            # as youtube-events (see that block's comment).
+            "drain_parallelism": 1,
             "drain_batch_max": 20,
             "channels": [],
             "lookback_days": 30,
@@ -211,6 +222,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "research_skill": "research-youtube",
             "post_batch_hooks": [],
             "allowed_failure_prefixes": [
+                "gemini_refused",
+                "api_error",
+                "invalid_response",
                 "transcripts_disabled",
                 "no_transcripts",
                 "video_unavailable",

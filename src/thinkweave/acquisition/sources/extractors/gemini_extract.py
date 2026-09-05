@@ -54,6 +54,15 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 # episodes don't silently lose half their content.
 MAX_OUTPUT_TOKENS = 65536
 
+# YouTube-URL requests tokenise the video frames as input. At the default
+# media resolution a 31-min video came in over the free tier's
+# 250K-input-tokens/min quota (GenerateContentInputTokensPerModelPerMinute)
+# and 429'd structurally — the same video at LOW resolution measured
+# 202K input tokens (~107 tokens/s, verified live 2026-09-03). The brief
+# is transcript-driven, so high-res frames buy nothing; LOW lifts the
+# free-tier per-request ceiling to roughly a 40-minute video.
+YOUTUBE_MEDIA_RESOLUTION = "MEDIA_RESOLUTION_LOW"
+
 # Error classes returned in failure payloads. Workers branch on this
 # field to choose a `fetch_failed.reason` for their JSON outcome line.
 ERR_MISSING_SDK = "missing_sdk"
@@ -633,6 +642,7 @@ def _call_gemini_for_youtube(api_key: str, model: str, url: str) -> str:
             response_mime_type="application/json",
             max_output_tokens=MAX_OUTPUT_TOKENS,
             temperature=0.2,
+            media_resolution=YOUTUBE_MEDIA_RESOLUTION,
         ),
     )
     return getattr(response, "text", "") or ""
@@ -705,7 +715,10 @@ def _parse_json(text: str) -> dict[str, Any] | None:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     try:
-        result = json.loads(stripped)
+        # strict=False: Gemini emits literal control characters inside JSON
+        # strings (observed live 2026-09-03 on a YouTube extraction) —
+        # strict-mode json.loads rejects an otherwise-good payload.
+        result = json.loads(stripped, strict=False)
     except json.JSONDecodeError:
         return None
     return result if isinstance(result, dict) else None
