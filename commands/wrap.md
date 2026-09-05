@@ -28,14 +28,16 @@ The steps below cover both. Step 1 + 2 differ in source material; everything fro
 
 ## 1. Find the session note (or note its absence)
 
-**Live wrap with no prior session note** (the common case — hooks haven't yet created one, or this is a non-code conversation): skip this step. Mint an ID (`<slug>-<date>` or `CLAUDE_SESSION_ID`) and go to step 3; `weave_extract` auto-creates the note. No `weave search` round-trip.
+**Resolve by exact identity, in both modes.** The hooks stamp the harness session id (`$CLAUDE_SESSION_ID`, a UUID) as `source_session:` on the session note's frontmatter, and `weave_extract(session_id=<that raw UUID>)` resolves the note through that stamp — auto-creating one only if no note carries the id. So pass the raw `$CLAUDE_SESSION_ID` as `session_id` at step 3 and you land on *this* session's note by construction. Read it if you want its material (`commits`, `files_touched`, sometimes `## Candidate Insights`): `weave show $CLAUDE_SESSION_ID` resolves the same way. If it is `processed: true` + `auto_extracted: true` you are in catch-up mode by definition; pass `force=true` at step 3.
 
-**Catch-up wrap** (headless, or you suspect an auto-extracted session note already exists):
+Never search for the session note by recency when you have an id. Several Claude Code sessions share one checkout and one vault; "most recent session in this project" returns whichever concurrent session wrote last, and a `force=true` extract onto it overwrites another session's note.
+
+**No session id at all** (headless invocation with `$CLAUDE_SESSION_ID` unset) — only then fall back to recency:
 ```
 weave search --type session --project <project> --limit 1
 ```
-- **Session note exists** → read it. Frontmatter has `commits`, `files_touched`, sometimes `## Candidate Insights`. If `processed: true` and `auto_extracted: true` you're in catch-up mode by definition; pass `force=true` to `weave_extract` at step 3.
-- **No session note** → mint an ID and proceed.
+- **Session note exists** → **identity guard first.** Read its `source_session`. If it is set and does not match your session id, this is someone else's note: do not touch it — mint a fresh ID and proceed. Same if the note is already `processed: true` / `auto_extracted: true` and you cannot confirm the match; a wrong `force=true` here is unrecoverable.
+- **No session note** → mint an ID (`<slug>-<date>`) and proceed.
 
 Optionally add a `## Summary` section to an existing session note (2–3 sentences) by editing the markdown directly. Skip for tiny non-code conversations — `weave_extract` will set the summary from its `summary=` argument.
 
@@ -51,7 +53,7 @@ Apply the §C content rules below: load the concept vocabulary (`weave_concepts(
 
 ```
 weave_extract(
-  session_id   = <ses-id or minted id>,
+  session_id   = <$CLAUDE_SESSION_ID, else the ses-id or minted id>,
   project      = <project>,                  # required if no session note exists
   summary      = "<≤400 chars — see C0>",
   insights     = [ {title, body, concepts, tags?}, ... ],   # capped at extract.insights_cap, default 3 (todos count)

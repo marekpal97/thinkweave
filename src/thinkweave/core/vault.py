@@ -137,6 +137,82 @@ def read_session_fm(session_md: Path) -> dict | None:
         return None
 
 
+def find_session_note_by_source(vm: VaultManager, session_id: str) -> Path | None:
+    """Find the session note stamped with ``source_session: <session_id>``.
+
+    The exact-identity resolver for a harness session id (a Claude Code
+    UUID). Session folder names are ``<slug>-<date>`` (see
+    :meth:`VaultManager._find_session_dir`), never derived from the UUID, so
+    frontmatter is the only place that id lives — a name match is impossible.
+
+    Fast path: SQL probe against the indexer's ``notes`` table for any
+    ``type='session'`` row whose ``frontmatter`` blob contains
+    ``"source_session": "<id>"``. O(rows-with-type-session) substring match,
+    no markdown reads, no rglob. Substring LIKE is safe here: the
+    ``type='session'`` filter is selective and ``source_session`` values are
+    UUIDs, so the match is unambiguous. The connection is read-only so a
+    contended write lock (``weave index`` running concurrently) never blocks.
+
+    Slow path: a bounded, sessions-only glob —
+    ``projects/*/sessions/*/session.md`` — never a vault-wide walk.
+    Candidates are checked newest-first with a hard cap: this path is only
+    reached when the index DB is missing, locked, or stale (session note was
+    just created and hasn't been indexed yet), and in that just-created case
+    the note we want is the most recently modified one, so the common case is
+    a single frontmatter read. A miss under the cap means "not found" —
+    creation dedupes on ``source_session``, so the worst case is a rare
+    duplicate session note, not data loss.
+
+    Measured 16s for the fallback this replaced (``vm.list_notes(
+    note_type=SESSION, limit=20)``) on a ~1k-note vault over WSL2's 9P
+    filesystem — that helper's ``rglob("*.md")`` parses EVERY note's
+    frontmatter across the whole vault until it accumulates ``limit``
+    session matches.
+
+    Lives in ``core`` because both the hooks handler and ``extract_session``
+    resolve identity this way, and a surfaces↔operations import would
+    violate the layer contract.
+    """
+    if not session_id:
+        return None
+
+    try:
+        import sqlite3
+
+        cfg = vm.config
+        if cfg.index_db.exists():
+            uri = f"file:{cfg.index_db}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=1.0) as db:
+                row = db.execute(
+                    "SELECT path FROM notes "
+                    "WHERE type='session' AND frontmatter LIKE ? "
+                    "LIMIT 1",
+                    (f'%"source_session": "{session_id}"%',),
+                ).fetchone()
+                if row and row[0]:
+                    p = Path(row[0])
+                    abs_p = p if p.is_absolute() else vm.root / p
+                    if abs_p.exists():
+                        return abs_p
+    except Exception:
+        # Fall through to the bounded glob on any DB issue.
+        pass
+
+    try:
+        candidates = sorted(
+            vm.root.glob("projects/*/sessions/*/session.md"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    for note_path in candidates[:15]:
+        fm = read_session_fm(note_path)
+        if fm and fm.get("source_session") == session_id:
+            return note_path
+    return None
+
+
 def is_chain_sibling(
     fm: dict, keys: set[str], segment_ids: set[str] = frozenset()
 ) -> bool:

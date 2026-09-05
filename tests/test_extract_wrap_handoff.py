@@ -280,3 +280,83 @@ class TestExtractFormatReport:
         # No created notes/decisions → no project surfaced from those — fine.
         assert f"weave wrap-finalize {out.session_note_id}" in report
         assert "--project" not in report
+
+
+class TestResolvesExistingNoteBySourceSession:
+    """A raw harness UUID must land on the note the hooks already stamped.
+
+    Under concurrency the alternative — minting a second note, or the skill
+    falling back to a "most recent session in this project" search — writes
+    one session's insights onto another session's note.
+    """
+
+    def _hook_created_note(self, vault: VaultManager, cc_uuid: str) -> Path:
+        return vault.create_note(
+            NoteType.SESSION,
+            "hooked",
+            body="## Summary\n\n## Events\n",
+            project="t",
+            extra_frontmatter={"source_session": cc_uuid, "processed": False},
+        )
+
+    def test_uuid_resolves_indexed_note_instead_of_minting(
+        self, config: Config, vault: VaultManager
+    ):
+        cc_uuid = "11111111-2222-3333-4444-555555555555"
+        existing = self._hook_created_note(vault, cc_uuid)
+        existing_id = vault.read_note(existing).id
+        _index(config)
+
+        out = extract_session(
+            config, session_id=cc_uuid, project="t",
+            summary="ok", insights=[], decisions=[],
+        )
+        assert out.error == ""
+        assert out.session_note_id == existing_id
+        assert len(list((vault.root / "projects/t/sessions").iterdir())) == 1
+
+    def test_uuid_resolves_via_glob_when_index_is_stale(
+        self, config: Config, vault: VaultManager
+    ):
+        # The just-created-not-yet-indexed window the hooks routinely leave.
+        cc_uuid = "66666666-7777-8888-9999-000000000000"
+        existing = self._hook_created_note(vault, cc_uuid)
+        existing_id = vault.read_note(existing).id
+        _index(config)
+        # Drop the session row so only the bounded glob can answer.
+        idx = Indexer(config=config)
+        idx.db.execute("DELETE FROM notes WHERE type='session'")
+        idx.db.commit()
+        idx.close()
+
+        out = extract_session(
+            config, session_id=cc_uuid, project="t",
+            summary="ok", insights=[], decisions=[],
+        )
+        assert out.error == ""
+        assert out.session_note_id == existing_id
+
+    def test_unknown_uuid_still_mints(self, config: Config, vault: VaultManager):
+        self._hook_created_note(vault, "aaaaaaaa-0000-0000-0000-000000000001")
+        _index(config)
+
+        out = extract_session(
+            config, session_id="bbbbbbbb-0000-0000-0000-000000000002",
+            project="t", summary="ok", insights=[], decisions=[],
+        )
+        assert out.error == ""
+        assert len(list((vault.root / "projects/t/sessions").iterdir())) == 2
+
+    def test_weave_read_resolves_a_raw_session_uuid(
+        self, config: Config, vault: VaultManager
+    ):
+        from thinkweave.operations.notes import read_note
+
+        cc_uuid = "cccccccc-0000-0000-0000-000000000003"
+        existing_id = vault.read_note(self._hook_created_note(vault, cc_uuid)).id
+        _index(config)
+
+        note, raw = read_note(config, cc_uuid)
+        assert note is not None and note.id == existing_id
+        assert raw is not None and cc_uuid in raw
+        assert read_note(config, "dddddddd-0000-0000-0000-000000000004") == (None, None)

@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from thinkweave.core._utils import as_list
@@ -129,7 +130,7 @@ def evaluate_decision(
         blame_lines = -1
 
     # Check if files still exist (not reverted/deleted)
-    files_exist = all(Path(fp).exists() for fp in file_paths) if file_paths else True
+    files_exist = _files_still_exist(file_paths)
 
     # Check test status from source session
     tested = _check_tested(session_meta, file_paths) if session_meta else False
@@ -222,6 +223,114 @@ def _check_re_edited(
     return None
 
 
+@lru_cache(maxsize=32)
+def _repo_root(cwd: str) -> str:
+    """The git worktree root for ``cwd``; "" when it isn't a repo.
+
+    Cached per cwd: judging a wrap's decisions calls this once per decision
+    and the answer can't change mid-run.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _integration_ref(repo_root: str) -> str:
+    """``origin/<default-branch>`` when that ref is resolvable, else ""."""
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=repo_root,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return f"origin/{result.stdout.strip().rsplit('/', 1)[-1]}"
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "origin/main"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=repo_root,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return "origin/main"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return ""
+
+
+def _files_still_exist(file_paths: list[str], repo_root: str = "") -> bool:
+    """Whether every declared file survives — on disk, at HEAD, or upstream.
+
+    ``file_paths`` are repo-relative, so resolving them against ``Path.cwd()``
+    silently answers a different question when the judge runs from a
+    subdirectory, and answers it *wrongly* when several agents share one
+    checkout: a worktree parked on an unrelated branch has never had the
+    files, and the disk check alone then writes a false ``reverted`` /
+    ``deprecated`` on work that is merged on the integration branch.
+
+    A false "reverted" is the harmful direction — a decision wrongly kept is
+    merely stale — so the check is deliberately generous: a path counts as
+    surviving if it exists under the repo root, OR is tracked at ``HEAD``, OR
+    is tracked on the integration branch. Falls back to the plain disk check
+    when there is no git repo at all.
+    """
+    if not file_paths:
+        return True
+    root = repo_root or _repo_root(str(Path.cwd()))
+    base = Path(root) if root else Path.cwd()
+    missing = [fp for fp in file_paths if not (base / fp).exists()]
+    if not missing:
+        return True
+    if not root:
+        return False
+    return _tracked_in_git(missing, root)
+
+
+def _tracked_in_git(file_paths: list[str], repo_root: str) -> bool:
+    """True when every path is a tracked blob at HEAD or on the integration ref.
+
+    One ``git cat-file --batch-check`` for all ``<ref>:<path>`` probes rather
+    than a spawn per path; git echoes ``<probe> missing`` for unknown objects
+    and one line per input, in order.
+    """
+    refs = ["HEAD"]
+    integration = _integration_ref(repo_root)
+    if integration:
+        refs.append(integration)
+    probes = [f"{ref}:{fp}" for fp in file_paths for ref in refs]
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "--batch-check"],
+            input="\n".join(probes) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=repo_root,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != len(probes):
+        return False
+    resolved = {
+        probe for probe, line in zip(probes, lines) if not line.endswith(" missing")
+    }
+    return all(
+        any(f"{ref}:{fp}" in resolved for ref in refs) for fp in file_paths
+    )
+
+
 def _check_committed_via_git(
     file_paths: list[str], since_date: str,
 ) -> dict[str, list[str]]:
@@ -238,6 +347,10 @@ def _check_committed_via_git(
     of O(N). The window is bounded by --since, so the parsed stream is
     proportional to "commits since the decision", which is small for live
     judging and reasonable even for backfill.
+
+    ``--all`` walks every ref, not just the checked-out branch: when agents
+    share a checkout the judge routinely runs on a branch the decision's
+    commit never reached, and a missed commit reads as "not committed".
     """
     if not since_date or not file_paths:
         return {}
@@ -249,6 +362,7 @@ def _check_committed_via_git(
         result = subprocess.run(
             [
                 "git", "log",
+                "--all",
                 f"--since={since_date}",
                 "--name-only",
                 "--pretty=format:%h",
