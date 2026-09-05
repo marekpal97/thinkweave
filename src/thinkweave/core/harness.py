@@ -97,10 +97,9 @@ class HarnessProfile:
     """What goes between the sentinels there.
 
     Per-harness because the nudge has to name things the harness actually has.
-    A Claude Code block ends "run ``/wrap`` before ``/clear``"; on a harness
-    with no slash commands and no session-end hook that is an instruction the
-    model cannot follow, so its block names the explicit ``weave_extract`` call
-    instead — the epic's "documented degradation, not a broken promise".
+    Rich extraction belongs to the harness's wrap workflow at a genuine session
+    boundary; raw ``weave_extract`` is only the fallback when neither that
+    workflow nor a trusted session-end hook is available.
 
     A ``{weave}`` placeholder is substituted at install time with the absolute
     ``bin/weave`` launcher path (``install._render_claude_md_block``): bare
@@ -535,14 +534,18 @@ def codex(home: Path | None = None) -> HarnessProfile:
         # `codex exec` resolves no slash commands; skill tokens stay bare.
         headless_slash=False,
         instructions_file=cx / "AGENTS.md",
-        # #107 gave this harness hooks, but they are trust-gated and off until
-        # installed *and* trusted, so the model still cannot assume a Stop hook
-        # captured anything.
+        # #107 gave this harness hooks, but they are trust-gated. Routine thin
+        # capture belongs to Stop; rich synthesis belongs to the wrap skill.
+        # Keep raw extraction as a boundary-only fallback, never an ambient
+        # mid-session obligation.
         instructions_block_body=(
-            f"{_NUDGE}. This harness only fires a session-end hook once its "
-            "hooks are installed and trusted, so call `weave_extract` yourself "
-            "before you finish — it is what persists the session's insights "
-            "and decisions into the vault."
+            f"{_NUDGE}. Do not call `weave_extract` during ordinary or "
+            "mid-session work. Routine capture belongs to the trusted "
+            "session-end hook; rich insight and decision synthesis belongs to "
+            "`$thinkweave-wrap`, used once at a genuine session boundary. If "
+            "that skill is unavailable and session-end hooks are not installed "
+            "and trusted, call `weave_extract` once at the boundary as the "
+            "fallback."
         ),
         mcp_config=cx / "config.toml",
         skills_dir=cx / "skills",

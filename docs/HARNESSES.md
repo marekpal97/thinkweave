@@ -111,6 +111,13 @@ fires alongside the plugin's and delivers every event twice (#161). On the
 MCP-only/manual route the installer owns registration. Codex has no shipped
 ThinkWeave plugin, so its machine-scope `hooks.json` remains installer-owned.
 
+**Extraction ownership.** The installed AGENTS.md nudge never asks Codex to
+extract during ordinary or mid-session work. A trusted Stop hook owns routine
+thin capture; `$thinkweave-wrap` owns rich insight/decision synthesis once at a
+genuine session boundary. Direct `weave_extract` is retained only as the
+boundary fallback when the wrap skill is unavailable and the session-end hooks
+are not installed and trusted.
+
 The handler deduplicates replayed envelopes by delivery receipt, but only for
 events that carry the harness's own per-delivery id (`tool_use_id`,
 `turn_id`) — that is a defence against harness retry, not a second registrar.

@@ -747,11 +747,12 @@ class TestAgentsMdBlock:
         # naming either is an instruction the model cannot act on.
         assert token not in harness.active().instructions_block_body
 
-    def test_body_spells_out_the_missing_session_end_hook(self, codex_home: Path):
-        """The epic's anti-goal is a silently faked capability. Codex has no
-        Stop hook wired (#107), so the block has to name the explicit call that
-        replaces it rather than promising automatic extraction."""
-        assert "weave_extract" in harness.active().instructions_block_body
+    def test_body_reserves_extraction_for_the_session_boundary(self, codex_home: Path):
+        body = harness.active().instructions_block_body
+        assert "Do not call `weave_extract`" in body
+        assert "mid-session" in body
+        assert "`$thinkweave-wrap`" in body
+        assert "once at the boundary as the fallback" in body
 
     def test_splice_preserves_the_users_own_agents_md(
         self, codex_home: Path, installable
