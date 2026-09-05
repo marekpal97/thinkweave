@@ -183,3 +183,5 @@ def test_codex_only_recall_skill_remains_valid() -> None:
     skill_file = SKILLS_ROOT / "thinkweave-recall" / "SKILL.md"
     metadata = _frontmatter(skill_file.read_text(encoding="utf-8"))
     assert metadata["name"] == "thinkweave-recall"
+    assert "Use only when the user invokes" in metadata["description"]
+    assert "ordinary history" in metadata["description"]
