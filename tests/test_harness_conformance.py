@@ -247,10 +247,12 @@ class TestEventsFireProbe:
         cc = _build("claude-code", tmp_path)
         assert set(cc.fires_verified) == set(hook_events.CANONICAL_EVENTS)
         codex = _build("codex", tmp_path)
-        # The 2026-08-02 spike observed SessionStart and UserPromptSubmit
-        # pre-auth; Stop and PostToolUse remain unobserved on a live Codex
-        # (docs/HARNESSES.md §Spike answers) and must not be claimed.
+        # SessionStart and UserPromptSubmit: observed pre-auth 2026-08-02 and
+        # live 2026-09-05. Stop and PostToolUse left artefacts on 2026-09-05
+        # (docs/HARNESSES.md §"2026-09-05 live sessions") but no raw envelope
+        # was captured; they stay unclaimed until one run dumps them.
         assert set(codex.fires_verified) == {"SessionStart", "UserPromptSubmit"}
+        assert codex.fires_verified["SessionStart"] >= "2026-09-05"
         for date in {**cc.fires_verified, **codex.fires_verified}.values():
             assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
 

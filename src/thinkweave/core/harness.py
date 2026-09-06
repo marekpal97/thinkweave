@@ -597,12 +597,18 @@ def codex(home: Path | None = None) -> HarnessProfile:
         detect_dir=cx,
         hook_mechanism="file",
         hook_events={e: e for e in CANONICAL_EVENTS},
-        # The 2026-08-02 credential-less spike observed exactly these two;
-        # Stop and PostToolUse are wired but unobserved on a live Codex run
-        # (docs/HARNESSES.md §"Spike answers") and must not be claimed.
+        # Observed live on 2026-09-05 (two interactive, authenticated
+        # codex-cli 0.146.0 sessions on the dev machine; first seen in the
+        # 2026-08-02 credential-less spike). Stop and PostToolUse also left
+        # artefacts that day — Codex-minted `exec-<uuid>` tool_use_ids in a
+        # vault events.jsonl, `hook/started` at each `task_complete` in
+        # Codex's own log — but no raw envelope was captured for either, so
+        # they stay unclaimed here; docs/HARNESSES.md §"2026-09-05 live
+        # sessions" holds the evidence and what one run must dump to flip
+        # them.
         fires_verified={
-            "SessionStart": "2026-08-02",
-            "UserPromptSubmit": "2026-08-02",
+            "SessionStart": "2026-09-05",
+            "UserPromptSubmit": "2026-09-05",
         },
         context_channel="additionalContext",
         transcript_glob=str(
@@ -617,15 +623,32 @@ def codex(home: Path | None = None) -> HarnessProfile:
         mcp_servers_key="mcp_servers",
         mcp_via_cli="codex mcp add",
         context_served_source="codex-startup",
-        evidence="measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md)",
+        evidence=(
+            "measured — codex-cli 0.146.0: credential-less spike 2026-08-02, "
+            "two live interactive sessions 2026-09-05 (docs/HARNESSES.md)"
+        ),
         degradations=(
             Degradation(
                 "Stop capture",
                 "documented",
-                "wired but unobserved on a live run — the 2026-08-02 spike "
-                "aborted at auth before any turn completed; SessionEnd did "
-                "fire and is the fallback if Stop proves unreliable headlessly",
-                "docs/HARNESSES.md §Spike answers",
+                "fires at every turn end (Codex log: hook/started at each "
+                "task_complete, 2026-09-05) and the first one materialises "
+                "the note; later turns are folded in place. The TUI-exit Stop "
+                "is not separable from a wrap, no raw envelope was captured, "
+                "and headless (`codex exec`) Stop is still unobserved — "
+                "SessionEnd remains the fallback there",
+                "docs/HARNESSES.md §2026-09-05 live sessions",
+            ),
+            Degradation(
+                "PostToolUse capture",
+                "documented",
+                "fires for code-mode exec_command (as `Bash`) and apply_patch — "
+                "Codex-minted `exec-<uuid>` tool_use_ids landed in the vault "
+                "on 2026-09-05 — but the `tool_response` shape is inferred "
+                "from upstream source, not a captured envelope; a command "
+                "that outlives its code-mode yield reports its output via "
+                "`wait`, which is not hooked",
+                "docs/HARNESSES.md §2026-09-05 live sessions",
             ),
             Degradation(
                 "SessionStart context delivery",

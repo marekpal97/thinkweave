@@ -361,19 +361,35 @@ def cmd_import(args: argparse.Namespace) -> None:
             # row without an importer lands here (`weave import pi`).
             print(f"No transcript importer exists for {args.source} yet.")
             return
+        # `--include-subagents` is a Codex-shaped concern (sidecar rollouts);
+        # an importer that has no notion of it is told so rather than being
+        # handed a kwarg it cannot take.
+        if getattr(args, "include_subagents", False):
+            import inspect
+
+            if "include_subagents" in inspect.signature(importer).parameters:
+                common["include_subagents"] = True
+            else:
+                print(f"--include-subagents does not apply to {args.source}; ignored.")
         stats = importer(
             cfg,
             sessions_root=Path(args.cc_root) if args.cc_root else profile.transcript_root,
             **common,
         )
         label = "Would materialize" if args.dry_run else "Materialized"
+        subagent_note = (
+            f"  skipped_subagent={stats['skipped_subagent']}"
+            if stats.get("skipped_subagent")
+            else ""
+        )
         print(
             f"{label}: {stats['materialized']} session(s) across "
             f"{len(stats['per_project'])} project(s).\n"
             f"  discovered={stats['discovered']}  "
             f"skipped_no_content={stats['skipped_no_content']}  "
             f"skipped_filter={stats['skipped_filter']}  "
-            f"skipped_already_imported={stats['skipped_already_imported']}\n"
+            f"skipped_already_imported={stats['skipped_already_imported']}"
+            f"{subagent_note}\n"
         )
         if stats["per_project"]:
             print("  per-project breakdown:")

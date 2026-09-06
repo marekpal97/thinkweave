@@ -59,6 +59,7 @@ weave steering {evidence [--module PATH] | gate --proposals-json FILE} [--json] 
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
 weave import {claude-code|codex|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
                                               # --enrich synthesises pending sessions imported by the named source only — no cross-harness draining
+                                              # codex: subagent sidecar rollouts (guardian approval judge, spawn_agent workers — session_meta.source carries a `subagent` key) are skipped and counted as skipped_subagent; --include-subagents imports them stamped `codex_subagent: <kind>`
 weave intake {enumerate|archive}              # drop-folder helpers for /substack and friends
 weave discover [--project X]                  # cross-project research gap analysis
 weave show <id>                               # render a single note
