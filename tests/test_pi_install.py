@@ -330,6 +330,170 @@ class TestDoctorAdapterCheck:
         assert "MCP client extension" not in names
 
 
+class TestDoctorExtensionStub:
+    """The loader stub is one absolute re-export line. Switch the checkout it
+    names to a branch without ``shims/pi/`` and Pi loads nothing, says
+    nothing, and captures nothing (twice in one day, 2026-09-06)."""
+
+    SOURCE = "shims/pi/thinkweave-pi.ts"
+
+    def _checkout(self, tmp_path: Path, branch: str = "main", with_shim: bool = True) -> Path:
+        root = tmp_path / "checkout"
+        (root / ".git").mkdir(parents=True)
+        (root / ".git" / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
+        (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        if with_shim:
+            shim = root / self.SOURCE
+            shim.parent.mkdir(parents=True)
+            shim.write_text("export default {}\n", encoding="utf-8")
+        return root
+
+    def _stub(self, pi_home: Path, target: Path) -> Path:
+        stub = pi_home / "extensions" / "thinkweave.ts"
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(
+            "// installed by thinkweave\n"
+            f'export {{ default }} from "{target.as_posix()}";\n',
+            encoding="utf-8",
+        )
+        return stub
+
+    def test_missing_stub_is_a_passing_warn_naming_the_install(
+        self, pi_home: Path, tmp_path: Path
+    ):
+        r = md.check_extension_stub(tmp_path)
+        assert r.passed and r.warn
+        assert str(pi_home / "extensions" / "thinkweave.ts") in r.detail
+        assert "weave hooks install --harness pi --scope user" in r.detail
+
+    def test_resolving_stub_passes(self, pi_home: Path, tmp_path: Path):
+        root = self._checkout(tmp_path)
+        self._stub(pi_home, root / self.SOURCE)
+        r = md.check_extension_stub(tmp_path)
+        assert r.passed and not r.warn
+        assert (root / self.SOURCE).as_posix() in r.detail
+
+    def test_dangling_stub_fails_naming_checkout_branch_and_reinstall(
+        self, pi_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        root = self._checkout(tmp_path, branch="no-shims-here", with_shim=False)
+        stub = self._stub(pi_home, root / self.SOURCE)
+        # The running checkout (where `weave` was launched from) has the shim.
+        monkeypatch.setattr(md, "_running_checkout", lambda: REPO_ROOT)
+
+        r = md.check_extension_stub(tmp_path)
+
+        assert not r.passed and not r.warn
+        assert str(stub) in r.detail
+        assert str(root) in r.detail and "'no-shims-here'" in r.detail
+        assert "does not exist" in r.detail
+        assert "weave hooks install --harness pi --scope user" in r.fix
+        assert str(REPO_ROOT) in r.fix  # the checkout that has the shim
+        assert "rewrites the stub" in r.fix
+
+    def test_worktree_git_file_resolves_the_branch(self, pi_home: Path, tmp_path: Path):
+        """A linked worktree's ``.git`` is a file pointing at the real gitdir."""
+        root = tmp_path / "wt"
+        root.mkdir()
+        gitdir = tmp_path / "main" / ".git" / "worktrees" / "wt"
+        gitdir.mkdir(parents=True)
+        (gitdir / "HEAD").write_text("ref: refs/heads/feature-x\n", encoding="utf-8")
+        (root / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+        self._stub(pi_home, root / self.SOURCE)
+
+        r = md.check_extension_stub(tmp_path)
+
+        assert not r.passed and "'feature-x'" in r.detail
+
+    def test_hand_edited_stub_without_reexport_fails(self, pi_home: Path, tmp_path: Path):
+        stub = pi_home / "extensions" / "thinkweave.ts"
+        stub.parent.mkdir(parents=True)
+        stub.write_text("// nothing here\n", encoding="utf-8")
+        r = md.check_extension_stub(tmp_path)
+        assert not r.passed and "no re-export line" in r.detail
+
+    def test_project_scope_stub_is_checked_too(self, pi_home: Path, tmp_path: Path):
+        project = tmp_path / "proj"
+        stub = project / ".pi" / "extensions" / "thinkweave.ts"
+        stub.parent.mkdir(parents=True)
+        stub.write_text('export { default } from "/gone/shims/pi/thinkweave-pi.ts";\n')
+        r = md.check_extension_stub(project)
+        assert not r.passed and "project stub" in r.detail
+
+    def test_the_check_runs_on_pi_and_fails_the_lane(
+        self, pi_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ):
+        monkeypatch.setattr(md, "_EXTRA_MODULES", (("json", "stdlib", "always"),))
+        root = self._checkout(tmp_path, with_shim=False)
+        self._stub(pi_home, root / self.SOURCE)
+        result = md.run_mcp_doctor(tmp_path)
+        assert "extension stub" in [c.name for c in result.checks if not c.passed]
+        assert not result.passed
+        out = capsys.readouterr().out
+        assert "[FAIL] extension stub" in out
+        # Absent on a row whose hooks are not an extension.
+        monkeypatch.setattr(harness, "_OVERRIDE", harness.claude_code(home=tmp_path))
+        names = [c.name for c in md.run_mcp_doctor(tmp_path).checks]
+        assert "extension stub" not in names
+
+    def test_missing_stub_prints_warn_not_fail(
+        self, pi_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ):
+        monkeypatch.setattr(md, "_EXTRA_MODULES", (("json", "stdlib", "always"),))
+        md.run_mcp_doctor(tmp_path)
+        out = capsys.readouterr().out
+        assert "[WARN] extension stub" in out
+        assert "[FAIL] extension stub" not in out
+
+
+# --------------------------------------------------------------------------- #
+# dev-link is the Claude Code plugin route, not Pi's
+# --------------------------------------------------------------------------- #
+
+
+class TestDevLinkRefusedOnPi:
+    """Pi discovers SKILL.md dirs recursively, so a whole-checkout symlink in
+    ~/.pi/agent/skills would re-expose the Codex ``skills/thinkweave-*``
+    bundle — the original breakage. Before this gate the command died on the
+    missing ``package.json`` manifest with "run from a thinkweave checkout",
+    which lied about the cause."""
+
+    @pytest.fixture
+    def at_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(inst, "_detect_project_root", lambda: REPO_ROOT)
+
+    def test_refuses_and_points_at_install(self, pi_home: Path, at_repo, capsys):
+        with pytest.raises(SystemExit) as exc:
+            inst.cmd_dev_link(argparse.Namespace(force=False))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "weave install --harness pi" in err
+        assert "weave hooks install --harness pi --scope user" in err
+        assert "skills/thinkweave-*" in err
+        assert not (pi_home / "skills" / "thinkweave").exists()
+        assert not (pi_home / "skills").exists()  # touched nothing
+
+    def test_force_does_not_override(self, pi_home: Path, at_repo, capsys):
+        with pytest.raises(SystemExit):
+            inst.cmd_dev_link(argparse.Namespace(force=True))
+        assert not (pi_home / "skills" / "thinkweave").exists()
+
+    def test_existing_whole_checkout_link_is_named_and_unlinkable(
+        self, pi_home: Path, at_repo, requires_symlinks, capsys
+    ):
+        skills = pi_home / "skills"
+        skills.mkdir(parents=True)
+        (skills / "thinkweave").symlink_to(REPO_ROOT)
+        with pytest.raises(SystemExit):
+            inst.cmd_dev_link(argparse.Namespace(force=False))
+        err = capsys.readouterr().err
+        assert str(skills / "thinkweave") in err and "dev-unlink" in err
+        # The cleanup path still works on Pi.
+        inst.cmd_dev_unlink(argparse.Namespace())
+        assert not (skills / "thinkweave").is_symlink()
+        assert "Removed dev-link" in capsys.readouterr().out
+
+
 # --------------------------------------------------------------------------- #
 # what the user is told
 # --------------------------------------------------------------------------- #

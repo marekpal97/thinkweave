@@ -368,6 +368,18 @@ The adapter also reads the `~/.config/mcp` and `~/.agents` files, which the
 doctor does not scan — a registration living only there reports as
 "not registered" while working.
 
+The same report carries an `extension stub` row on every
+`hook_mechanism == "extension"` harness. `weave hooks install --harness pi`
+writes one loader line, `export { default } from "<repo>/shims/pi/thinkweave-pi.ts"`
+(absolute path), into `~/.pi/agent/extensions/thinkweave.ts`; the doctor
+parses that path back out and **FAILs** when the file is gone, naming the
+checkout and branch the stub points at and the reinstall that rewrites it.
+No stub at all is a passing **WARN** ("hooks not installed"), consistent
+with how the doctor treats an uninstalled registration elsewhere. The row
+exists because the dev checkout was twice in one day switched to a branch
+without `shims/pi/`, and Pi loaded the stub, found nothing, and ran without
+capture and without a word.
+
 ### Skills are root-file links
 
 `[docs]` Pi discovers **root `*.md` files** in `~/.pi/agent/skills/` (and
@@ -402,6 +414,17 @@ checkout, drops links to commands that no longer exist, sweeps
 `thinkweave-*` links into the Codex bundle, and leaves any file that is not
 one of its links alone. `weave uninstall --harness pi` removes exactly the
 command links.
+
+`weave dev-link` refuses on this row and points at `weave install --harness
+pi`. dev-link is the Claude Code plugin route — one whole-checkout symlink
+that the plugin runtime turns into MCP + hooks + commands — and Pi has no
+plugin runtime; what it would do instead is discover every `SKILL.md`
+directory under the linked checkout recursively, re-exposing the Codex
+bundle by the back door. The install command already gives the property
+dev-link exists for (links straight into the working tree, live edits).
+Before the gate, dev-link on Pi died on the missing `package.json` manifest
+with "run from a thinkweave checkout" — a refusal by accident, and a wrong
+message.
 
 A known cosmetic gap: `commands/learn.md` carries one relative doc pointer
 (`../docs/LIFECYCLES.md`), which does not resolve from the Pi skills dir. It
@@ -465,19 +488,38 @@ timeout costs.
 
 ### What is NOT verified here
 
-- **SessionStart injection in the interactive run.** The headless events
-  probe (2026-09-05, #114) saw the injected payload quoted back by the model;
-  the interactive session's `context_served` rows could not be tied to its
-  Pi session id after the fact, so whether the startup payload reached that
-  particular session is unconfirmed. The 5 s SessionStart budget in the shim
-  is the suspect if it did not.
-- **PostToolUse through the adapter's tools.** The Pi `tool_result` event
-  fires for adapter-served `weave_*` tools under their bare names; the shim
-  now restores the `mcp__thinkweave__` namespace the handler's retrieval gate
-  keys on, but no session has yet been observed producing retrieval-log rows
-  from Pi. The archived events of the interactive run held prompt events only.
+Two earlier entries in this list were written before the run's index rows
+had been tied back to its Pi session id; the evidence gathered afterwards
+closes them, and it is recorded here rather than silently deleted:
+
+- **SessionStart injection in the interactive run — now verified.** The
+  index's `context_served` table holds 45 `startup` rows stamped
+  `2026-09-05T22:05:36Z` under session note `ses-887e3f7c`, whose frontmatter
+  `source_session` is the Pi session id `01a07399-4e6f-70b0-8e69-46bb56d87142`.
+  The startup payload reached that session; the 5 s SessionStart budget was
+  not the problem.
+- **PostToolUse on Pi — now verified as capture.** The two hook-materialised
+  notes of that session, `ses-887e3f7c` and `ses-9ec873ae` (same
+  `source_session`), report "2 tool events recorded" and "1 tool events
+  recorded": the `tool_result` event fired and the handler wrote the events.
+  What remains unverified is narrower — whether adapter-served `weave_*`
+  calls reach the **retrieval log** (`retrieval_log.jsonl`) under the
+  `mcp__thinkweave__` namespace the shim now restores, i.e. whether the
+  handler's retrieval gate classifies them as retrieval rather than as plain
+  tool events. No Pi session has yet been inspected for retrieval-log rows.
+- **Session fragmentation.** That one Pi session produced **three** session
+  notes: two hook-materialised ones 7 s apart (`ses-887e3f7c` at 22:05:40 and
+  `ses-9ec873ae` at 22:05:47) plus the wrap's `ses-e108081f`. This is the
+  class PR #209 (open, `fix(wrap,judge): resolve session notes by exact id`)
+  and #183's logical-session chain address, not a Pi-specific defect; it is
+  not fixed here and is the next Pi gap to close once those land.
 - **The `pi -p` print-mode path** with the raised budgets — only the
   interactive TUI was driven.
+- **Stub staleness in a real branch switch** is covered by the doctor's
+  `extension stub` row (below), not by a hook that re-points itself: a Pi
+  session started while the dev checkout sits on a branch without
+  `shims/pi/` still runs without capture until `weave doctor --mcp --harness
+  pi` is consulted or the stub is rewritten.
 
 ## Native Windows
 

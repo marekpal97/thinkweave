@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,8 @@ from thinkweave.core.harness import active as _profile
 # Borrowed from the installer so the doctor's Windows gate and the remedy it
 # prints are the same ones the installer acts on.
 from thinkweave.surfaces.cli.install import _detect_project_root, _is_windows
+from thinkweave.surfaces.hooks.install import _extension_stub_path
+from thinkweave.surfaces.hooks.install import _repo_root as _running_checkout
 
 SERVER_NAME = "thinkweave"
 
@@ -54,6 +57,9 @@ class CheckResult:
     passed: bool
     detail: str
     fix: str = ""
+    # A passing check that still deserves the operator's eye (something is
+    # not installed rather than broken). Never fails the lane.
+    warn: bool = False
 
 
 @dataclass
@@ -902,6 +908,126 @@ def check_mcp_client_extension(cwd: Path) -> CheckResult:
     )
 
 
+# ---------- extension-mechanism loader stub ----------
+
+# What `_extension_stub_text` writes: one ES re-export line naming the shim by
+# absolute path. The stub is the ONLY artifact carrying machine state, which
+# is also why it is the one that goes stale.
+_STUB_REEXPORT = re.compile(r"""from\s+["']([^"']+)["']""")
+
+_GIT_DIR = ".git"
+
+
+def _git_branch(root: Path) -> str:
+    """Best-effort branch of the checkout at ``root``, read from ``HEAD`` in
+    its git dir (following a linked worktree's ``gitdir:`` pointer) — no
+    subprocess, and an empty string when there is nothing to read."""
+    git = root / _GIT_DIR
+    try:
+        if git.is_file():
+            pointer = git.read_text(encoding="utf-8").strip()
+            git = (root / pointer.removeprefix("gitdir:").strip()).resolve()
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if head.startswith("ref: refs/heads/"):
+        return head.removeprefix("ref: refs/heads/")
+    return f"detached {head[:12]}" if head else ""
+
+
+def _stub_checkout_root(target: Path, source_relpath: str) -> Path | None:
+    """The checkout a stub's re-export path lives in. The installer writes
+    ``<repo>/<hook_extension_source>``, so peel that suffix first; fall back
+    to walking up to a ``pyproject.toml`` / git dir for a hand-edited path."""
+    posix = target.as_posix()
+    if posix.endswith("/" + source_relpath):
+        return Path(posix[: -len(source_relpath) - 1])
+    for parent in target.parents:
+        if (parent / "pyproject.toml").is_file() or (parent / _GIT_DIR).exists():
+            return parent
+    return None
+
+
+def check_extension_stub(cwd: Path) -> CheckResult:
+    """FAIL when the extension-mechanism loader stub re-exports a file that
+    does not exist; WARN (passing) when no stub is installed at all.
+
+    Only ``hook_mechanism == "extension"`` rows get this row (Pi). The stub
+    is a one-line ``export { default } from "<repo>/shims/…"``, so switching
+    the checkout it names to a branch without the shim leaves the harness
+    loading a module that is not there — it runs, with no capture and no
+    error anywhere (twice in one day on the dev machine, 2026-09-06). The
+    detail names the checkout and branch the stub points at; the fix names
+    the reinstall that rewrites it. A missing stub is the "hooks not
+    installed" state, which the doctor reports elsewhere as a fact, not a
+    failure — hence WARN.
+    """
+    profile = _profile()
+    name = "extension stub"
+    harness = profile.display_name or profile.id
+    flag = f" {profile.harness_flag}" if profile.harness_flag else ""
+    install_cmd = f"weave hooks install{flag} --scope user"
+    user_stub = _extension_stub_path(profile, "user")
+    candidates = (
+        ("user", user_stub),
+        ("project", _extension_stub_path(profile, "project", str(cwd))),
+    )
+    stubs = [(scope, path) for scope, path in candidates if path.is_file()]
+    if not stubs:
+        return CheckResult(
+            name=name,
+            passed=True,
+            warn=True,
+            detail=(
+                f"no loader stub at {user_stub} — {harness} runs without "
+                f"thinkweave hooks (no capture) until `{install_cmd}`"
+            ),
+        )
+
+    source = profile.hook_extension_source
+    healthy: list[str] = []
+    broken: list[str] = []
+    for scope, stub in stubs:
+        try:
+            match = _STUB_REEXPORT.search(stub.read_text(encoding="utf-8"))
+        except OSError:
+            match = None
+        if match is None:
+            broken.append(f"{scope} stub {stub} carries no re-export line")
+            continue
+        target = Path(match.group(1))
+        if target.is_file():
+            healthy.append(f"{scope}: {stub} → {target}")
+            continue
+        root = _stub_checkout_root(target, source)
+        branch = _git_branch(root) if root is not None else ""
+        where = (
+            f"checkout {root}" + (f" on branch {branch!r}" if branch else "")
+            if root is not None
+            else str(target.parent)
+        )
+        broken.append(
+            f"{scope} stub {stub} re-exports {target}, which does not exist "
+            f"({where} has no {source})"
+        )
+
+    if broken:
+        here = _running_checkout()
+        hint = f" (this checkout, {here}, has it)" if (here / source).is_file() else ""
+        return CheckResult(
+            name=name,
+            passed=False,
+            detail="; ".join(broken),
+            fix=(
+                f"{harness} loads the stub, finds nothing, and runs without "
+                "thinkweave hooks — either switch that checkout to a branch "
+                f"carrying {source}, or re-run `{install_cmd}` from one that "
+                f"has it{hint}; the reinstall rewrites the stub"
+            ),
+        )
+    return CheckResult(name=name, passed=True, detail="; ".join(healthy))
+
+
 # ---------- top-level driver ----------
 
 
@@ -922,6 +1048,10 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     if _profile().hooks_global_only:
         result.checks.append(check_hook_scope(cwd))
         result.checks.append(check_weave_cli())
+    # An extension-mechanism row's whole hook registration is one loader
+    # stub naming a file in a checkout; a stale checkout breaks it silently.
+    if _profile().hook_mechanism == "extension":
+        result.checks.append(check_extension_stub(cwd))
     # Harness-independent: the dangling link is a fact about the checkout, not
     # about which harness is reading it.
     result.checks.append(check_command_symlinks(cwd))
@@ -936,7 +1066,10 @@ def _print_doctor_report(result: DoctorResult) -> None:
     print("weave doctor --mcp")
     print("=" * 60)
     for check in result.checks:
-        mark = "PASS" if check.passed else "FAIL"
+        if not check.passed:
+            mark = "FAIL"
+        else:
+            mark = "WARN" if check.warn else "PASS"
         print(f"  [{mark}] {check.name}: {check.detail}")
         if not check.passed and check.fix:
             print(f"         fix: {check.fix}")

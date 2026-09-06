@@ -1124,7 +1124,39 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
     a leftover raw ``~/.claude.json`` entry would double-register the server.
     """
     repo = _detect_project_root()
-    manifest_rel = _profile().plugin_manifest_relpath
+    profile = _profile()
+    # A root-file-skills row (Pi) has no plugin runtime to hand a checkout to,
+    # and discovers `SKILL.md` dirs recursively: the whole-checkout symlink
+    # would re-expose the Codex `skills/thinkweave-*` bundle, whose relative
+    # ../../docs pointers break outside the repo (the breakage that led to the
+    # root-file route). The install command already gives the dev-link
+    # property — links straight into this working tree — so refuse and point.
+    if profile.root_file_skills:
+        name = profile.display_name or profile.id
+        flag = f" {profile.harness_flag}" if profile.harness_flag else ""
+        existing = (
+            f"\n  A whole-checkout link already exists at {_dev_link()} — "
+            f"`THINKWEAVE_HARNESS={profile.id} weave dev-unlink` removes it."
+            if _dev_link().is_symlink()
+            else ""
+        )
+        print(
+            "error: `weave dev-link` is the Claude Code plugin route (one symlink; "
+            "the plugin\n"
+            f"  manifest registers MCP + hooks + commands). {name} has no plugin "
+            "runtime and\n"
+            "  discovers SKILL.md directories recursively, so linking the whole "
+            f"checkout into\n  {_dev_link()} would re-expose the Codex "
+            "`skills/thinkweave-*` bundle, whose\n"
+            "  relative ../../docs links break there.\n"
+            f"  Use `weave install{flag}` (root-file skill links + MCP entry, live "
+            "against this\n"
+            f"  checkout) and `weave hooks install{flag} --scope user`.{existing}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    manifest_rel = profile.plugin_manifest_relpath
     if not (repo / manifest_rel).exists():
         print(
             f"error: no {manifest_rel.as_posix()} under {repo}.\n"
