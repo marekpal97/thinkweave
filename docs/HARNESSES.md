@@ -14,7 +14,7 @@ profile is what runs; fix whichever is wrong.
 
 | | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0: credential-less spike 2026-08-02, two live interactive sessions 2026-09-05 (docs/HARNESSES.md) | measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, settings-MCP falsified) + events probe 2026-09-05; blueprint n-a1d3beba | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
+| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0: credential-less spike 2026-08-02, two live interactive sessions 2026-09-05, two instrumented headless sessions 2026-09-07 with every envelope captured raw (docs/HARNESSES.md) | measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, settings-MCP falsified) + events probe 2026-09-05; blueprint n-a1d3beba | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
 | eligibility (dec-5a076384 ladder) | E3 | E3 | E3 | E0 |
 | detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
 | lifecycle hooks | plugin | file | extension | none |
@@ -36,8 +36,8 @@ profile is what runs; fix whichever is wrong.
 |---|---|---|---|---|
 | SessionStart | ✓ 2026-08-29 | ✓ 2026-09-05 | wired, unverified | `experimental.chat.messages.transform` (declared) |
 | UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-09-05 | wired, unverified | `chat.message` (declared) |
-| PostToolUse | ✓ 2026-08-29 | wired, unverified | wired, unverified | `tool.execute.after` (declared) |
-| Stop | ✓ 2026-08-29 | wired, unverified | wired, unverified | — (no verified equivalent) |
+| PostToolUse | ✓ 2026-08-29 | ✓ 2026-09-07 | wired, unverified | `tool.execute.after` (declared) |
+| Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | wired, unverified | — (no verified equivalent) |
 
 ### Documented degradations
 
@@ -52,8 +52,7 @@ None — the reference harness.
 
 #### Codex
 
-- **Stop capture** — documented: fires at every turn end (Codex log: hook/started at each task_complete, 2026-09-05) and the first one materialises the note; later turns are folded in place. The TUI-exit Stop is not separable from a wrap, no raw envelope was captured, and headless (`codex exec`) Stop is still unobserved — SessionEnd remains the fallback there (docs/HARNESSES.md §2026-09-05 live sessions)
-- **PostToolUse capture** — documented: fires for code-mode exec_command (as `Bash`) and apply_patch — Codex-minted `exec-<uuid>` tool_use_ids landed in the vault on 2026-09-05 — but the `tool_response` shape is inferred from upstream source, not a captured envelope; a command that outlives its code-mode yield reports its output via `wait`, which is not hooked (docs/HARNESSES.md §2026-09-05 live sessions)
+- **Stop capture** — documented: fires at every turn end — measured interactively 2026-09-05 (hook/started at each task_complete) and headless 2026-09-07 (raw envelope with last_assistant_message; SessionEnd ~2 s later, which thinkweave does not hook). The first Stop materialises the note and later turns fold in place. Still unmeasured: whether an interactive TUI exit delivers a final Stop of its own beyond the last turn's, so a rich end-of-session capture in the TUI still rides `$thinkweave-wrap` (docs/HARNESSES.md §2026-09-07 instrumented headless run)
 - **SessionStart context delivery** — documented: additionalContext renders as a visible developer message, not a silent system one (openai/codex#16933)
 - **headless skill invocation** — documented: codex exec resolves no slash commands; a $name mention is a hint the model acts on by reading the skill file itself (docs/HARNESSES.md §Q2)
 
@@ -76,14 +75,19 @@ None — the reference harness.
 ## Codex
 
 All findings verified against **codex-cli 0.146.0** on **2026-08-02**, on Linux
-(WSL2), and re-checked against two live authenticated sessions on
-**2026-09-05** (§"2026-09-05 live sessions" below, which supersedes the
-"unobserved" claims made earlier in this section). Sources are labelled: `[manual]` =
+(WSL2), re-checked against two live authenticated interactive sessions on
+**2026-09-05** (§"2026-09-05 live sessions"), and closed out by two
+instrumented authenticated headless sessions on **2026-09-07** whose every
+hook envelope was captured raw (§"2026-09-07 instrumented headless run" —
+the fixture is `tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl`).
+Later sections supersede the "unobserved"/"inferred" claims made earlier in
+this one. Sources are labelled: `[manual]` =
 <https://learn.chatgpt.com/docs/codex-manual.md> / `/docs/hooks`; `[binary]` =
 strings & embedded JSON schemas extracted from the 0.146.0 executable;
-`[measured]` = observed from a real CLI run against a throwaway `$CODEX_HOME`
-with no credentials (every such run terminates in a 401 — no model was
-invoked).
+`[measured]` = observed from a real CLI run — on 2026-08-02 against a
+throwaway `$CODEX_HOME` with no credentials (every such run terminated in a
+401 — no model was invoked); on 2026-09-05 and 2026-09-07 authenticated, model
+`gpt-5.6-sol`.
 
 ### Hooks
 
@@ -214,13 +218,20 @@ run with sentinel hooks fired `SessionStart`, `UserPromptSubmit` and
 `SessionEnd`, all before the 401. `--strict-config` also accepted the hook
 config, so the written artifact validates.
 
-*Still open (2026-08-02):* `Stop` did **not** fire in that run, and neither did
-`PostToolUse` — but the turn aborted at auth before any tool ran or any turn
-completed, so this is not evidence that `Stop` never fires; it is simply
-unobserved. Note `SessionEnd` *did* fire and is a plausible fallback if
-`Stop` turns out unreliable headlessly. *Update 2026-09-05:* both fire
-interactively, per turn — see §"2026-09-05 live sessions". **Whether a Codex
-cron (`codex exec`) completes its capture is still unverified.**
+*2026-08-02:* `Stop` did **not** fire in that run, and neither did
+`PostToolUse` — the turn aborted at auth before any tool ran or any turn
+completed, so both were simply unobserved. *2026-09-05:* both fire
+interactively, per turn (§"2026-09-05 live sessions"). ***Settled
+2026-09-07:*** in two authenticated headless `codex exec` sessions with a
+sentinel hook teeing stdin, `Stop` fired at turn completion in both (keys
+`session_id`, `turn_id`, `transcript_path`, `cwd`, `hook_event_name`,
+`model`, `permission_mode`, `stop_hook_active: false`,
+`last_assistant_message`), and `SessionEnd` followed ~2 s later
+(`reason: "other"`); `PostToolUse` fired for every unified-exec command (as
+`Bash`, once, on completion — including a 20 s one) and for the MCP
+`weave_search` call. A Codex cron (`codex exec`) therefore completes its
+capture on `Stop`; `SessionEnd` is not a hook thinkweave installs and is not
+needed as a fallback. See §"2026-09-07 instrumented headless run".
 
 **Q2 — Can a skill be invoked from `codex exec`? Only as a hint.** `[manual]`
 Codex uses `$name` mentions, not `/name` ("ChatGPT supports `@` mentions, while
@@ -288,14 +299,15 @@ named `exec` whose JavaScript calls `tools.exec_command`, `tools.apply_patch`
 and `tools.mcp__thinkweave__*`). Sources for this section: the rollouts under
 `~/.codex/sessions/2026/09/05/`, Codex's own `~/.codex/logs_2.sqlite`, the
 vault's session folders and `context_served` projection, and the handler's
-`hooks.log`. No hook envelope was dumped raw — that gap is listed at the end.
+`hooks.log`. No hook envelope was dumped raw in these sessions — the
+2026-09-07 run (next section) closed that gap.
 
 | Event | What was observed | Status in the profile |
 |---|---|---|
 | SessionStart | 45 `context_served` rows, `source='codex-startup'`, at 19:39:39Z and 19:59:33Z — one per session, seconds after each `session_meta` | verified, dated 2026-09-05 |
 | UserPromptSubmit | prompt events with `delivery_id: user_prompt_submit:<uuid7>:<turn_id>` in both sessions' `events.jsonl` | verified, dated 2026-09-05 |
-| PostToolUse | 43 tool events in session A's `events.jsonl`, `delivery_id: post_tool_use:<uuid7>:exec-<uuid>:<n>` — `apply_patch` fan-out to `Edit` rows and `Bash` rows (`pytest`, `git push`), each within 1s of the rollout's `patch_apply_end` / `custom_tool_call_output`. Codex's log shows `hook/started` 1:1 with `exec_command` completions in the window where its app-server trace was on (20:06–20:08Z: 10 exec + 1 MCP + UPS + Stop = 13) | **still unclaimed** — fires, but see the `tool_response` caveat |
-| Stop | `hook/started` at both `task_complete` timestamps of session B (20:03:00Z, 20:08:29Z); session A's first turn archived its startup + first prompt into a session folder that only a Stop writes | **still unclaimed** — per-turn firing measured; the TUI-exit Stop is not separable from a wrap and `codex exec` Stop is unobserved |
+| PostToolUse | 43 tool events in session A's `events.jsonl`, `delivery_id: post_tool_use:<uuid7>:exec-<uuid>:<n>` — `apply_patch` fan-out to `Edit` rows and `Bash` rows (`pytest`, `git push`), each within 1s of the rollout's `patch_apply_end` / `custom_tool_call_output`. Codex's log shows `hook/started` 1:1 with `exec_command` completions in the window where its app-server trace was on (20:06–20:08Z: 10 exec + 1 MCP + UPS + Stop = 13) | fires; raw envelope captured 2026-09-07 → verified, dated 2026-09-07 |
+| Stop | `hook/started` at both `task_complete` timestamps of session B (20:03:00Z, 20:08:29Z); session A's first turn archived its startup + first prompt into a session folder that only a Stop writes | fires per turn; raw headless envelope captured 2026-09-07 → verified, dated 2026-09-07 |
 
 **PostToolUse was never dead.** The 2026-09-05 diagnosis that opened this
 section read `files_touched: []` and an absent first prompt as "PostToolUse
@@ -331,30 +343,26 @@ the hook:
    invisible from `files_touched`.
 
 What PostToolUse *did* lose: no `test_run` on any Codex `pytest` row and no
-commit parse. Codex's unified exec returns one JSON object — measured verbatim
-in the rollouts' `custom_tool_call_output` bodies —
-
-```json
-{"chunk_id":"af9bd6","wall_time_seconds":0.27,"exit_code":4,
- "original_token_count":23,"output":"…combined stdout+stderr…"}
-```
-
-and upstream `JsonToolOutput::post_tool_use_response` (`codex-rs/tools/src/
-tool_output.rs`) hands that value to hooks unchanged, so `tool_response` for a
-code-mode `Bash` call is that object. `_extract_tool_output_text` knew only
-`stdout`/`stderr` and returned `""`. It now also reads a string `output`
-(Claude Code's `Write`/`Edit` echoes carry no such key, so the file-echo hazard
-below is untouched). A second, quieter gap sat in front of it: every Codex
-test command was `PYTHONPATH=src /repo/.venv/bin/pytest -q …`, which the
-`pytest`-prefix classifiers never matched — the rows were kept only because
-`"pythonpath…".startswith("python")`. `_command_head` now strips leading
-`VAR=value` tokens and basenames the executable before the significant /
-test / git-commit prefix checks. Two residual caveats: the envelope shape is inferred
-from upstream source, not a captured envelope; and a command that outlives
-its code-mode `yield_time_ms` returns `Script running with cell ID N` and
-delivers its output through `wait`, which is not a hooked tool — `[manual]`
-says a later poll "can deliver the original command's PostToolUse when that
-command finishes", unverified.
+commit parse. This section's first draft blamed the response shape: the
+rollouts' `custom_tool_call_output` bodies show the model receiving one JSON
+object (`{"chunk_id","wall_time_seconds","exit_code","original_token_count",
+"output"}`) and upstream `JsonToolOutput::post_tool_use_response` appeared to
+hand that value to hooks unchanged. **The 2026-09-07 raw capture falsified
+that inference** — `tool_response` for a unified-exec `Bash` call is the plain
+combined-output *string* (next section), which `_extract_tool_output_text`
+already returned as-is. The gap that actually mattered sat in front of it:
+every Codex test command was `PYTHONPATH=src /repo/.venv/bin/pytest -q …`,
+which the `pytest`-prefix classifiers never matched — the rows were kept only
+because `"pythonpath…".startswith("python")`, and never classified as a test
+run. `_command_head` now strips leading `VAR=value` tokens and basenames the
+executable before the significant / test / git-commit prefix checks. The
+helper also still reads a dict with a string `output` — Codex's `apply_patch`
+reply takes that shape, and so would a harness build that forwards the
+unified-exec object (Claude Code's `Write`/`Edit` echoes carry no such key, so
+the file-echo hazard below is untouched). The other 2026-09-05 caveat — a
+command that outlives its code-mode `yield_time_ms` delivering its output via
+an unhooked `wait` — was tested with a 20 s command on 2026-09-07: PostToolUse
+fired exactly once, on completion, with the full output.
 
 **Guardian sidecars.** Codex 0.146 spawns an approval-judge thread per parent
 session with its own rollout — `session_meta.payload.source ==
@@ -374,38 +382,81 @@ would land on the parent's buffer; the vault folders show no trace of one.
 five-second prompt→stop cadence is a concurrent Claude Code flow whose reader
 closed early; the two `post_tool_use` lines at 20:17:54Z are in that cluster.
 
-**What one authenticated run must still show.** With a sentinel `PostToolUse`
-hook that `tee`s stdin to a file (matcher `Bash|apply_patch`), one code-mode
-`exec_command` and one `apply_patch`: (a) the raw envelope, to confirm
-`tool_response` for `Bash` is the unified-exec object above rather than a
-string or a wrapped `{"output": …}` of the *code-mode cell*; (b) whether a
-command that outlives its yield fires PostToolUse when `wait` completes; (c)
-a `Stop` envelope at TUI exit vs. `SessionEnd`, to decide whether the final
-capture belongs on `Stop` at all. That run flips `PostToolUse` and `Stop` in
-`fires_verified` and retires the two "still unclaimed" rows above.
+The instrumented run this section asked for — a sentinel hook teeing every
+envelope, a long-running command, a `Stop` vs `SessionEnd` comparison — was
+done on 2026-09-07; it is the next section.
+
+### 2026-09-07 instrumented headless run
+
+Two authenticated **codex-cli 0.146.0** sessions, `codex exec
+--dangerously-bypass-hook-trust --skip-git-repo-check -s workspace-write`
+from the repo checkout, model `gpt-5.6-sol`, session ids
+`01a07a9d-ddb5-78b2-bf6d-7a4ad816b26f` (A) and
+`01a07a9e-2262-7073-a264-48408a2d46fe` (B). A sentinel hook registered
+alongside thinkweave's `tee`d the raw stdin of **every** event to a file;
+the file is committed verbatim as
+`tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl` (one
+`{"probe_event","probe_ts","envelope"}` object per line) and
+`tests/test_codex_hooks.py` drives the handler with those envelopes
+unmodified. The prompt asked for exactly three actions and no edits: a pytest
+run, `sleep 20; echo waited-ok`, and one `weave_search` MCP call. Census: 1
+SessionStart + 1 UserPromptSubmit (session A's opening envelopes were lost to
+a file reset in the probe itself), 4 PostToolUse `Bash`, 2 PostToolUse
+`mcp__thinkweave__weave_search`, 2 Stop, 2 SessionEnd.
+
+| Event | Measured | Consequence |
+|---|---|---|
+| PostToolUse (unified exec, `Bash`) | `tool_input: {"command": "PYTHONPATH=src .venv/bin/pytest tests/test_shim_core.py -q"}`, **`tool_response` is a plain string** `"....  [100%]\n4 passed in 0.06s\n"`, `tool_use_id: "exec-<uuid>"`, plus `session_id`/`turn_id`/`model`/`permission_mode`/`transcript_path`/`cwd` | The `{chunk_id, exit_code, output, …}` object this PR first inferred from upstream source is what the *model* sees, not what hooks get. `_extract_tool_output_text`'s string branch is the Codex path; `_command_head` is what makes the row a `test_run`. |
+| PostToolUse, slow command | `sleep 20; echo waited-ok` → exactly one envelope per session, ~26 s after the previous tool's, `tool_response: "waited-ok\n"`; no partial or second envelope | A command that outlives any code-mode yield still yields one PostToolUse on completion with its full output. Nothing rides `wait`. (The handler then drops it as insignificant — correct.) |
+| PostToolUse (MCP) | `tool_name: "mcp__thinkweave__weave_search"`, `tool_input` = the raw arguments dict `{"query": "pi-mcp-adapter", "mode": "fts", "limit": 2}`, `tool_response: {"content": [{"type": "text", "text": "…"}], "isError": false}` | The MCP-shape question in the old "NOT verified" paragraph is closed: `retrieval_log.response_text` mined it live — both sessions' `retrieval_log.jsonl` carry `returned_ids: ["dec-e3525a07", "n-a1d3beba"]`. |
+| Stop | fired in both sessions at turn completion, keys `session_id`, `turn_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, `permission_mode`, `stop_hook_active: false`, `last_assistant_message` (the model's final answer) | Headless `codex exec` capture completes on `Stop`. `fires_verified["Stop"] = 2026-09-07`. |
+| SessionEnd | ~2 s after each Stop; keys `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `reason: "other"` | Not a thinkweave hook (no `session_end` branch in the handler, none registered in `hooks/hooks.json`); nothing rides it. |
+| SessionStart / UserPromptSubmit (session B) | same shapes as 2026-08-02, `permission_mode: "default"`, `source: "startup"`; the prompt arrives verbatim under `prompt` | unchanged, dates stay 2026-09-05 |
+
+**Live capture on the pre-#212 handler** (the main checkout's, read-only
+evidence; the vault is not touched by this PR). The index holds one session
+note per probe session — `ses-78b81a0a` (A, 06:46:11Z) and `ses-566031c4`
+(B, 06:46:28Z), `source_session` set to the Codex uuid, `processed: true` —
+each with 45 `codex-startup` and 2 `onthefly` `context_served` rows. Each
+folder's `events.jsonl` has exactly two rows, the prompt and the pytest
+`Bash` row (`delivery_id: post_tool_use:<uuid7>:exec-<uuid>:0`, ~100 ms after
+the envelope's `probe_ts`); the `sleep` row was dropped as insignificant. Each
+`retrieval_log.jsonl` has a `startup` row and the `weave_search` `retrieval`
+row with the two note ids above. `files_touched: []` is correct (the prompt
+forbade edits). What the live handler did *not* produce is a `test_run` on the
+pytest row — the `PYTHONPATH=src .venv/bin/pytest` head is exactly the
+`_command_head` gap this PR closes; `TestMeasuredHeadlessReplay` replays the
+same envelopes through the fixed handler and gets `test_runs: [{"command":
+…, "passed": 4}]`. So end to end: one Codex session → one note, kept by Stop,
+with prompt, tool, retrieval and (now) test evidence.
 
 ### What is NOT verified here
 
-The RLVR retrieval-served `PostToolUse` gate: Codex namespaces MCP tools with
-the same `mcp__thinkweave__weave_search` strings the closed `RETRIEVAL_TOOLS`
-set already holds, and the handler is tested against a Codex-shaped MCP
-envelope, so the gate is verified at that seam. What is *not* measured is
-Codex's real `tool_response` shape for an MCP call — the 0.146.0 schema types
-it "any JSON" `[binary]`; the 2026-09-05 sessions ran `weave_extract` and
-`weave_create` (not retrieval tools) through the MCP matcher, so no retrieval
-row was produced. `retrieval_log.response_text` therefore hardcodes no key list
-and harvests every string in the object, whatever its shape; if a live run
-shows Codex wrapping results in something that still defeats note-id
-extraction, the symptom will be retrieval rows with an empty `returned_ids`,
-and that is where to look.
+**The interactive TUI exit.** Every Stop measured so far is a *turn-end* Stop
+(interactive 2026-09-05, headless 2026-09-07). Whether quitting the TUI
+delivers a further Stop of its own — as opposed to only `SessionEnd`, which
+thinkweave does not hook — is unmeasured. Nothing is lost by it (the last
+turn's Stop has already folded the session's evidence, and the note is kept
+current turn by turn), but a rich end-of-session synthesis in the TUI still
+rides `$thinkweave-wrap` rather than a hook. This is the one remaining Codex
+degradation in the profile.
 
-That recovery is scoped to the retrieval path only. The action path keeps
-`_extract_tool_output_text`, which recognises `stdout`/`stderr` and a string
-`output` and returns `""` for anything else — Claude Code's `Write`/`Edit`
-`tool_response` echoes back the file just written (`content`,
-`originalFile`), so mining it for text would feed whole files to
-`_extract_insight_blocks` and re-capture any `★ Insight` block living in the
-source on every single touch.
+**`apply_patch`'s raw envelope.** The 2026-09-07 prompt forbade edits, so no
+`apply_patch` PostToolUse was captured raw. Its vault footprint is measured
+(the 2026-09-05 `Edit`/`Write` rows fanned out from one `apply_patch`
+delivery, above), and the handler's parser is pinned to the 0.146.0 binary's
+patch markers, but the `tool_response` for it (`{"output": "Success. Updated
+the following files: …"}` per the manual) is documented, not captured.
+
+The action path keeps `_extract_tool_output_text`, which recognises a bare
+string, `stdout`/`stderr`, and a string `output`, and returns `""` for
+anything else — Claude Code's `Write`/`Edit` `tool_response` echoes back the
+file just written (`content`, `originalFile`), so mining it for text would
+feed whole files to `_extract_insight_blocks` and re-capture any `★ Insight`
+block living in the source on every single touch. The retrieval path stays
+shape-agnostic (`retrieval_log.response_text` harvests every string in the
+object); the measured MCP shape above is one it handles, not the only one it
+would.
 
 ## Native Windows
 

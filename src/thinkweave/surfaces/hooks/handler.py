@@ -907,18 +907,19 @@ def _extract_tool_output_text(hook_input: dict) -> str:
        harness build or test fixture that still uses it.
 
     Codex's ``Bash`` (unified exec, ``exec_command``) does not split
-    stdout/stderr. Its result is the JSON object the model also sees
-    (measured in the 2026-09-05 rollouts' ``custom_tool_call_output``
-    bodies; upstream ``JsonToolOutput::post_tool_use_response`` hands the
-    same value to hooks unchanged)::
-
-        {"chunk_id": "af9bd6", "wall_time_seconds": 0.27, "exit_code": 4,
-         "original_token_count": 23, "output": "…combined text…"}
-
-    so a dict with a string ``output`` is read as the tool's text. Until this
-    landed every Codex ``pytest`` run buffered without a ``test_run`` and no
-    Codex commit could be parsed (docs/HARNESSES.md §"2026-09-05 live
-    sessions").
+    stdout/stderr, and — measured raw on 2026-09-07 (codex-cli 0.146.0,
+    headless ``codex exec``, sentinel hook teeing stdin; fixture
+    ``tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl``) —
+    its ``tool_response`` is the **plain combined-output string**, e.g.
+    ``"....  [100%]\n4 passed in 0.06s\n"``. It is *not* the
+    ``{chunk_id, wall_time_seconds, exit_code, output}`` object the model
+    sees in the rollout's ``custom_tool_call_output``; that inference from
+    upstream source was wrong. The string branch below is therefore the
+    Codex path. A dict carrying a string ``output`` is still read, for any
+    harness build that does hand the object over. Before ``_command_head``
+    stripped the ``PYTHONPATH=src /abs/.venv/bin/`` prefix every Codex
+    ``pytest`` run buffered without a ``test_run`` (docs/HARNESSES.md
+    §"2026-09-07 instrumented headless run").
 
     Returns an empty string when nothing usable is present, which downstream
     parsers already treat as a clean no-op.
@@ -944,9 +945,12 @@ def _extract_tool_output_text(hook_input: dict) -> str:
         if stdout or stderr:
             return stdout or stderr
 
-        # Codex unified exec: one combined `output` string (see docstring).
-        # Claude Code's Write/Edit echoes carry no `output` key, so this
-        # cannot reach the file-echo hazard guarded below.
+        # A wrapped `{"output": "…"}` object — Codex's `apply_patch` reply
+        # takes this shape, and it is what a harness build that forwards the
+        # unified-exec JSON object would send (Codex 0.146.0 headless sends
+        # the bare string instead; see docstring). Claude Code's Write/Edit
+        # echoes carry no `output` key, so this cannot reach the file-echo
+        # hazard guarded below.
         output = raw.get("output")
         if isinstance(output, str):
             return output

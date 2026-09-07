@@ -255,7 +255,9 @@ class HarnessProfile:
 
     fires_verified: dict[str, str] = field(default_factory=dict)
     """Canonical event → ISO date a real run was *observed* firing it. Absent
-    key = wired but unobserved (Codex ``Stop``), never assumed."""
+    key = wired but unobserved (Pi's events until the shim probe lands a
+    dated capture), never assumed. Codex's ``Stop`` sat here for a month
+    until the 2026-09-07 raw capture dated it — that is the bar."""
 
     context_channel: str = ""
     """How the SessionStart payload reaches the model: ``additionalContext``
@@ -597,18 +599,20 @@ def codex(home: Path | None = None) -> HarnessProfile:
         detect_dir=cx,
         hook_mechanism="file",
         hook_events={e: e for e in CANONICAL_EVENTS},
-        # Observed live on 2026-09-05 (two interactive, authenticated
-        # codex-cli 0.146.0 sessions on the dev machine; first seen in the
-        # 2026-08-02 credential-less spike). Stop and PostToolUse also left
-        # artefacts that day — Codex-minted `exec-<uuid>` tool_use_ids in a
-        # vault events.jsonl, `hook/started` at each `task_complete` in
-        # Codex's own log — but no raw envelope was captured for either, so
-        # they stay unclaimed here; docs/HARNESSES.md §"2026-09-05 live
-        # sessions" holds the evidence and what one run must dump to flip
-        # them.
+        # SessionStart/UserPromptSubmit: observed live on 2026-09-05 (two
+        # interactive, authenticated codex-cli 0.146.0 sessions; first seen
+        # in the 2026-08-02 credential-less spike). PostToolUse/Stop: raw
+        # envelopes captured on 2026-09-07 by a sentinel hook teeing stdin
+        # in two headless `codex exec` sessions (exec `Bash` incl. a 20 s
+        # command, MCP `weave_search`, Stop with `last_assistant_message`,
+        # SessionEnd ~2 s later) — fixture
+        # tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl,
+        # docs/HARNESSES.md §"2026-09-07 instrumented headless run".
         fires_verified={
             "SessionStart": "2026-09-05",
             "UserPromptSubmit": "2026-09-05",
+            "PostToolUse": "2026-09-07",
+            "Stop": "2026-09-07",
         },
         context_channel="additionalContext",
         transcript_glob=str(
@@ -625,30 +629,24 @@ def codex(home: Path | None = None) -> HarnessProfile:
         context_served_source="codex-startup",
         evidence=(
             "measured — codex-cli 0.146.0: credential-less spike 2026-08-02, "
-            "two live interactive sessions 2026-09-05 (docs/HARNESSES.md)"
+            "two live interactive sessions 2026-09-05, two instrumented "
+            "headless sessions 2026-09-07 with every envelope captured raw "
+            "(docs/HARNESSES.md)"
         ),
         degradations=(
             Degradation(
                 "Stop capture",
                 "documented",
-                "fires at every turn end (Codex log: hook/started at each "
-                "task_complete, 2026-09-05) and the first one materialises "
-                "the note; later turns are folded in place. The TUI-exit Stop "
-                "is not separable from a wrap, no raw envelope was captured, "
-                "and headless (`codex exec`) Stop is still unobserved — "
-                "SessionEnd remains the fallback there",
-                "docs/HARNESSES.md §2026-09-05 live sessions",
-            ),
-            Degradation(
-                "PostToolUse capture",
-                "documented",
-                "fires for code-mode exec_command (as `Bash`) and apply_patch — "
-                "Codex-minted `exec-<uuid>` tool_use_ids landed in the vault "
-                "on 2026-09-05 — but the `tool_response` shape is inferred "
-                "from upstream source, not a captured envelope; a command "
-                "that outlives its code-mode yield reports its output via "
-                "`wait`, which is not hooked",
-                "docs/HARNESSES.md §2026-09-05 live sessions",
+                "fires at every turn end — measured interactively 2026-09-05 "
+                "(hook/started at each task_complete) and headless 2026-09-07 "
+                "(raw envelope with last_assistant_message; SessionEnd ~2 s "
+                "later, which thinkweave does not hook). The first Stop "
+                "materialises the note and later turns fold in place. Still "
+                "unmeasured: whether an interactive TUI exit delivers a "
+                "final Stop of its own beyond the last turn's, so a rich "
+                "end-of-session capture in the TUI still rides "
+                "`$thinkweave-wrap`",
+                "docs/HARNESSES.md §2026-09-07 instrumented headless run",
             ),
             Degradation(
                 "SessionStart context delivery",
