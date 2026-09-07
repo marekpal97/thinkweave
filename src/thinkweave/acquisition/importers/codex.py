@@ -37,6 +37,17 @@ the same worktree-stripping and homedir → ``_unscoped`` rules the Claude Code
 seed applies, so a repo worked on from both harnesses lands in one vault
 project.
 
+**Subagent sidecars are not sessions.** Codex 0.146 spawns helper threads with
+their own rollout files — the guardian approval judge gets one per parent
+session (``session_meta.payload.source == {"subagent": {"other": "guardian"}}``,
+``thread_source == "subagent"``, ``parent_thread_id`` set), and so does every
+``spawn_agent`` worker. Their "conversation" is the parent's transcript pasted
+in as a prompt plus a one-line verdict; imported as sessions they read as the
+user asking Codex to judge Codex. :func:`_peek_session_meta` reads just the
+first line to tell, so a sidecar is skipped (``skipped_subagent``) without
+being parsed. ``include_subagents=True`` imports them anyway, stamped
+``codex_subagent: <kind>``.
+
 Idempotency: ``vault/.weave/onboarding/codex.json``, keyed by rollout id.
 Already-imported rollouts are skipped *before* parsing, so a re-run never
 re-reads a multi-gigabyte file.
@@ -94,6 +105,10 @@ class CodexSession:
     ended_at: datetime | None
     turns: list[tuple[str, str]] = field(default_factory=list)
     file_path: Path | None = None
+    #: Sidecar kind (``"guardian"``, a ``spawn_agent`` role, …) when this
+    #: rollout belongs to a Codex-spawned subagent thread; ``""`` for a
+    #: user-facing session. See :func:`subagent_kind`.
+    subagent: str = ""
 
     @property
     def turn_count(self) -> int:
@@ -183,6 +198,53 @@ def _iter_lines(path: Path) -> Iterator[str]:
                 dropping = True
     if buf and not dropping:
         yield bytes(buf).decode("utf-8", errors="replace")
+
+
+def subagent_kind(meta_payload: dict) -> str:
+    """The sidecar kind a ``session_meta`` payload declares, or ``""``.
+
+    Two independent markers, either suffices (both observed on the
+    2026-09-05 guardian rollouts, codex-cli 0.146.0):
+
+    - ``source`` is an object with a ``subagent`` key. Its value names the
+      kind — ``{"other": "guardian"}`` for the approval judge; a
+      ``spawn_agent`` role is expected to arrive as a string or a one-key
+      object the same way. Whatever shape, the innermost string is the kind.
+    - ``thread_source == "subagent"`` (user sessions say ``"user"``).
+
+    A user-facing session's ``source`` is a plain string (``"cli"``,
+    ``"vscode"``, ``"exec"``) and yields ``""``.
+    """
+    source = meta_payload.get("source")
+    kind = ""
+    if isinstance(source, dict) and "subagent" in source:
+        inner = source["subagent"]
+        while isinstance(inner, dict) and inner:
+            inner = next(iter(inner.values()))
+        kind = inner if isinstance(inner, str) and inner else "subagent"
+    elif meta_payload.get("thread_source") == "subagent":
+        kind = "subagent"
+    return kind
+
+
+def _peek_session_meta(path: Path) -> dict:
+    """The ``session_meta`` payload, reading as little of the rollout as
+    possible. Codex writes it as the first line; a handful of lines are
+    scanned in case a future build prepends anything. ``{}`` when absent."""
+    for i, line in enumerate(_iter_lines(path)):
+        if i > 8:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "session_meta":
+            payload = ev.get("payload")
+            return payload if isinstance(payload, dict) else {}
+    return {}
 
 
 def _extract_text(payload: dict) -> str:
@@ -288,6 +350,7 @@ def parse_rollout(path: Path) -> CodexSession | None:
     """
     cwd = ""
     git_branch = ""
+    subagent = ""
     started_at: datetime | None = None
     ended_at: datetime | None = None
     turns = _ReplayFilter()
@@ -317,6 +380,7 @@ def parse_rollout(path: Path) -> CodexSession | None:
             git = payload.get("git")
             if not git_branch and isinstance(git, dict) and isinstance(git.get("branch"), str):
                 git_branch = git["branch"]
+            subagent = subagent or subagent_kind(payload)
             continue
 
         if ev.get("type") != "response_item" or payload.get("type") != "message":
@@ -342,6 +406,7 @@ def parse_rollout(path: Path) -> CodexSession | None:
         ended_at=ended_at,
         turns=recorded,
         file_path=path,
+        subagent=subagent,
     )
 
 
@@ -384,6 +449,8 @@ def materialize_session(vm: VaultManager, session: CodexSession) -> str:
         extra_fm["source_cwd"] = session.cwd
     if session.git_branch:
         extra_fm["git_branch"] = session.git_branch
+    if session.subagent:
+        extra_fm["codex_subagent"] = session.subagent
     if session.started_at:
         extra_fm["started_at"] = session.started_at.isoformat()
     if session.ended_at:
@@ -412,6 +479,7 @@ def import_codex(
     sessions_root: Path | None = None,
     since: str = "",
     limit: int = 0,
+    include_subagents: bool = False,
 ) -> dict:
     """Walk Codex rollouts and materialise them as vault session notes.
 
@@ -426,8 +494,13 @@ def import_codex(
             never opened.
         limit: Cap on materialised sessions (0 = unbounded). Rollouts are
             always walked newest-first, so the cap keeps the most recent work.
+        include_subagents: Also import Codex-spawned sidecar threads (the
+            guardian approval judge, ``spawn_agent`` workers). Off by default
+            — they are tallied as ``skipped_subagent`` after a first-line
+            peek and never parsed. See the module docstring.
 
-    Returns the same stats shape as ``import_claude_code``.
+    Returns the same stats shape as ``import_claude_code`` plus
+    ``skipped_subagent``.
     """
     cfg = cfg or load_config()
     root = sessions_root or DEFAULT_CODEX_SESSIONS_ROOT
@@ -438,6 +511,7 @@ def import_codex(
         "skipped_filter": 0,
         "skipped_already_imported": 0,
         "skipped_since": 0,
+        "skipped_subagent": 0,
         "materialized": 0,
         "per_project": {},
         "errors": [],
@@ -473,6 +547,17 @@ def import_codex(
             started = _filename_date(path)
             if started is not None and started < since_dt:
                 stats["skipped_since"] += 1
+                continue
+
+        # Sidecar gate: one line read, not a parse. Not recorded in the
+        # manifest, so a later `--include-subagents` run can still pick it up.
+        if not include_subagents:
+            try:
+                if subagent_kind(_peek_session_meta(path)):
+                    stats["skipped_subagent"] += 1
+                    continue
+            except OSError as e:
+                stats["errors"].append(f"{path}: {type(e).__name__}: {e}")
                 continue
 
         try:

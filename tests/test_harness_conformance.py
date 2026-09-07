@@ -247,10 +247,18 @@ class TestEventsFireProbe:
         cc = _build("claude-code", tmp_path)
         assert set(cc.fires_verified) == set(hook_events.CANONICAL_EVENTS)
         codex = _build("codex", tmp_path)
-        # The 2026-08-02 spike observed SessionStart and UserPromptSubmit
-        # pre-auth; Stop and PostToolUse remain unobserved on a live Codex
-        # (docs/HARNESSES.md §Spike answers) and must not be claimed.
-        assert set(codex.fires_verified) == {"SessionStart", "UserPromptSubmit"}
+        # SessionStart and UserPromptSubmit: observed pre-auth 2026-08-02 and
+        # live 2026-09-05. PostToolUse and Stop: raw envelopes captured on
+        # 2026-09-07 by a sentinel hook teeing stdin in two headless
+        # `codex exec` sessions (01a07a9d-…, 01a07a9e-…; codex-cli 0.146.0) —
+        # tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl,
+        # docs/HARNESSES.md §"2026-09-07 instrumented headless run". All
+        # four canonical events are now dated, as on Claude Code.
+        assert set(codex.fires_verified) == set(hook_events.CANONICAL_EVENTS)
+        assert codex.fires_verified["SessionStart"] >= "2026-09-05"
+        assert codex.fires_verified["UserPromptSubmit"] >= "2026-09-05"
+        assert codex.fires_verified["PostToolUse"] == "2026-09-07"
+        assert codex.fires_verified["Stop"] == "2026-09-07"
         for date in {**cc.fires_verified, **codex.fires_verified}.values():
             assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
 

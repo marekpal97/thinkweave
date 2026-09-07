@@ -328,6 +328,16 @@ def add_index_subparsers(sub) -> None:
         ),
     )
     p_import.add_argument("--no-resolve", action="store_true", help="Skip Facebook URL resolution (messenger)")
+    p_import.add_argument(
+        "--include-subagents",
+        action="store_true",
+        help=(
+            "codex: also import harness-spawned sidecar threads (the guardian "
+            "approval judge, spawn_agent workers). Skipped by default and "
+            "tallied as skipped_subagent — they are the parent transcript "
+            "re-pasted as a prompt, not a conversation."
+        ),
+    )
 
 
 def add_admin_subparsers(sub) -> None:
