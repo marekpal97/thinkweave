@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
@@ -11,6 +14,8 @@ from thinkweave.synthesis.judge import (
     _check_blame_survival,
     _check_re_edited,
     _check_tested,
+    _files_still_exist,
+    _integration_ref,
     evaluate_decision,
     find_decisions,
 )
@@ -709,3 +714,117 @@ class TestFindDecisions:
         found = find_decisions(idx.db, vm, session_id=sid)
         idx.close()
         assert len(found) == 120
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    """A worktree parked on a branch that lacks files merged on origin/main.
+
+    Reproduces the shared-checkout shape that made the judge write false
+    `reverted` verdicts: several agents on one checkout, so the branch the
+    judge happens to see is not the branch the work landed on.
+
+    Layout on branch `other` (checked out):
+      - src/merged.py    — on origin/main only (deleted on this branch)
+      - src/at_head.py   — committed at HEAD, deleted from the worktree
+      - src/live.py      — present on disk
+      - src/never.py     — nowhere
+    """
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "-c", "init.defaultBranch=main", "init", "--bare", str(origin)],
+        check=True,
+        capture_output=True,
+    )
+    repo = tmp_path / "work"
+    (repo / "src").mkdir(parents=True)
+    subprocess.run(
+        ["git", "-c", "init.defaultBranch=main", "init", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    _git(repo, "config", "user.email", "judge@test.invalid")
+    _git(repo, "config", "user.name", "judge")
+    _git(repo, "remote", "add", "origin", str(origin))
+
+    (repo / "src" / "merged.py").write_text("merged\n")
+    (repo / "src" / "live.py").write_text("live\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "main work")
+    _git(repo, "push", "-u", "origin", "main")
+
+    _git(repo, "checkout", "-b", "other")
+    (repo / "src" / "merged.py").unlink()
+    (repo / "src" / "at_head.py").write_text("at head\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "other branch")
+    (repo / "src" / "at_head.py").unlink()
+    return repo
+
+
+class TestFilesStillExist:
+    """`_files_still_exist` must not equate "not on this branch" with reverted."""
+
+    def test_present_on_disk(self, git_repo):
+        assert _files_still_exist(["src/live.py"], str(git_repo)) is True
+
+    def test_absent_from_worktree_but_at_head(self, git_repo):
+        assert _files_still_exist(["src/at_head.py"], str(git_repo)) is True
+
+    def test_absent_from_worktree_and_head_but_on_origin_main(self, git_repo):
+        assert _files_still_exist(["src/merged.py"], str(git_repo)) is True
+
+    def test_absent_everywhere(self, git_repo):
+        assert _files_still_exist(["src/never.py"], str(git_repo)) is False
+
+    def test_one_missing_file_sinks_the_set(self, git_repo):
+        assert _files_still_exist(["src/live.py", "src/never.py"], str(git_repo)) is False
+
+    def test_all_recoverable_across_different_refs(self, git_repo):
+        assert _files_still_exist(
+            ["src/live.py", "src/at_head.py", "src/merged.py"], str(git_repo)
+        ) is True
+
+    def test_no_file_paths(self):
+        assert _files_still_exist([]) is True
+
+    def test_no_git_repo_falls_back_to_disk(self, tmp_path, monkeypatch):
+        plain = tmp_path / "plain"
+        (plain / "src").mkdir(parents=True)
+        (plain / "src" / "here.py").write_text("x\n")
+        monkeypatch.chdir(plain)
+        assert _files_still_exist(["src/here.py"]) is True
+        assert _files_still_exist(["src/gone.py"]) is False
+
+    def test_paths_resolve_against_root_not_subdirectory_cwd(
+        self, git_repo, monkeypatch
+    ):
+        """Repo-relative paths are meaningless against a nested cwd."""
+        monkeypatch.chdir(git_repo / "src")
+        assert _files_still_exist(["src/live.py"]) is True
+
+    def test_integration_ref_prefers_origin_head(self, git_repo):
+        _git(git_repo, "remote", "set-head", "origin", "main")
+        assert _integration_ref(str(git_repo)) == "origin/main"
+
+
+class TestEvaluateDecisionAcrossBranches:
+    def test_merged_file_missing_from_branch_is_not_reverted(
+        self, git_repo, monkeypatch
+    ):
+        monkeypatch.chdir(git_repo)
+        dec = _make_decision(committed=True, file_paths=["src/merged.py"])
+        with patch("thinkweave.synthesis.judge._check_blame_survival", return_value=0):
+            result = evaluate_decision(dec, [dec])
+        assert result["verdict"] == "kept"
+
+    def test_file_absent_everywhere_is_reverted(self, git_repo, monkeypatch):
+        monkeypatch.chdir(git_repo)
+        dec = _make_decision(committed=True, file_paths=["src/never.py"])
+        with patch("thinkweave.synthesis.judge._check_blame_survival", return_value=0):
+            result = evaluate_decision(dec, [dec])
+        assert result["verdict"] == "reverted"

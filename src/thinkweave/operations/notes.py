@@ -15,7 +15,7 @@ from typing import NamedTuple
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import EDGE_TYPE_TO_FIELD, Indexer
 from thinkweave.core.schemas import NoteMeta, NoteType
-from thinkweave.core.vault import VaultManager
+from thinkweave.core.vault import VaultManager, find_session_note_by_source
 
 logger = logging.getLogger(__name__)
 
@@ -257,10 +257,16 @@ def read_note(cfg: Config, note_id: str) -> tuple[NoteMeta | None, str | None]:
     s = Search(config=cfg)
     row = s.get_note_by_id(note_id)
     s.close()
-    if not row:
-        return None, None
 
     vm = VaultManager(config=cfg)
+    if not row:
+        # A harness session id (Claude Code UUID) names a session note by its
+        # `source_session` stamp, not by `id` — resolve it rather than 404.
+        by_source = find_session_note_by_source(vm, note_id)
+        if by_source is None:
+            return None, None
+        return vm.read_note(by_source), by_source.read_text(encoding="utf-8")
+
     full_path = vm.root / row["path"]
     if not full_path.exists():
         return vm.read_note(full_path) if False else None, None

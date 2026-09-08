@@ -23,6 +23,7 @@ from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteMeta, NoteType
 from thinkweave.core.vault import (
     VaultManager,
+    find_session_note_by_source,
     parse_frontmatter,
     render_frontmatter,
     strip_section,
@@ -213,7 +214,21 @@ def extract_session(
 
     vm = VaultManager(config=cfg)
 
-    if not session_row:
+    # A harness session id (Claude Code UUID) is stamped as `source_session`
+    # on the note the hooks created, never as its `id` — so the id lookup
+    # above misses and, without this, /wrap would mint a duplicate note or
+    # fall back to a "most recent in project" search that under concurrency
+    # lands on another live session's note.
+    by_source = None if session_row else find_session_note_by_source(vm, session_id)
+
+    if session_row:
+        session_path = vm.root / session_row["path"]
+        if not session_path.exists():
+            outcome.error = f"Session file not found: {session_row['path']}"
+            return outcome
+    elif by_source is not None:
+        session_path = by_source
+    else:
         proj = project or cfg.default_project
         title = (summary or "")[:60] or "conversation"
         session_path = vm.create_note(
@@ -226,11 +241,6 @@ def extract_session(
         idx = Indexer(config=cfg)
         idx.index_file(session_path)
         idx.close()
-    else:
-        session_path = vm.root / session_row["path"]
-        if not session_path.exists():
-            outcome.error = f"Session file not found: {session_row['path']}"
-            return outcome
 
     session_note = vm.read_note(session_path)
     # Surface the canonical (auto-minted or pre-existing) thinkweave id

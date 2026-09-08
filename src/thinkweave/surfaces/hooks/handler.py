@@ -441,82 +441,13 @@ def _prompt_time_enrichment(
 def _find_session_note(vm, session_id: str) -> Path | None:
     """Find an existing session note for this Claude Code session.
 
-    Fast path: SQL probe against the indexer's ``notes`` table for any
-    ``type='session'`` row whose ``frontmatter`` blob contains
-    ``"source_session": "<id>"``. O(rows-with-type-session) substring
-    match, no markdown reads, no rglob.
-
-    Slow path: a bounded, sessions-only glob —
-    ``projects/*/sessions/*/session.md`` — never a vault-wide walk.
-    Candidates are checked newest-first with a hard cap: this path is only
-    reached when the index DB is missing, locked, or stale (session note was
-    just created and hasn't been indexed yet), and in that just-created case
-    the note we want is the most recently modified one, so the common case
-    is a single frontmatter read. Session folder names are ``<slug>-<date>``
-    (see ``VaultManager``), never derived from the Claude Code session UUID,
-    so a name match is impossible — frontmatter is the only place the id
-    lives.
-
-    Measured 16s for the previous fallback (``vm.list_notes(note_type=
-    SESSION, limit=20)``) on a ~1k-note vault over WSL2's 9P filesystem —
-    that helper's ``rglob("*.md")`` reads and parses EVERY note's
-    frontmatter across the whole vault (decisions, sources, themes, ...)
-    until it accumulates ``limit`` session matches. Scoping the glob to the
-    ``sessions/<id>/session.md`` shape skips every non-session note's
-    content entirely, bounding the scan to the sessions that actually exist
-    instead of the whole vault.
+    Thin delegation: the resolver lives in ``core.vault`` because
+    ``operations.extract`` needs the same exact-identity lookup, and a
+    surfaces→operations import would invert the layer contract.
     """
-    if not session_id:
-        return None
+    from thinkweave.core.vault import find_session_note_by_source
 
-    # Fast path — SQLite probe. Substring LIKE on frontmatter is fine here:
-    # ``type='session'`` filter is selective (sessions are a tiny fraction
-    # of the notes table) and ``source_session`` values are UUIDs, so the
-    # match is unambiguous. We open a read-only connection so a contended
-    # write lock (e.g. ``weave index`` running concurrently) never blocks us.
-    try:
-        import sqlite3
-
-        cfg = vm.config
-        if cfg.index_db.exists():
-            uri = f"file:{cfg.index_db}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=1.0) as db:
-                row = db.execute(
-                    "SELECT path FROM notes "
-                    "WHERE type='session' AND frontmatter LIKE ? "
-                    "LIMIT 1",
-                    (f'%"source_session": "{session_id}"%',),
-                ).fetchone()
-                if row and row[0]:
-                    p = Path(row[0])
-                    abs_p = p if p.is_absolute() else vm.root / p
-                    if abs_p.exists():
-                        return abs_p
-    except Exception:
-        # Fall through to the bounded glob on any DB issue.
-        pass
-
-    # Slow path — sessions-only glob, no vault-wide rglob of any kind.
-    # Newest-first, capped: the stale-index window this backstop covers is
-    # "created moments ago", so the target is at (or near) the front. A miss
-    # under the cap means "not found" — creation dedupes on source_session,
-    # so the worst case is a rare duplicate session note, not data loss.
-    try:
-        candidates = sorted(
-            vm.root.glob("projects/*/sessions/*/session.md"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return None
-    for note_path in candidates[:15]:
-        try:
-            note = vm.read_note(note_path)
-            if note.frontmatter.get("source_session") == session_id:
-                return note_path
-        except Exception:
-            continue
-    return None
+    return find_session_note_by_source(vm, session_id)
 
 
 # Bytes scanned at each end of the transcript for the bridge-session row.
