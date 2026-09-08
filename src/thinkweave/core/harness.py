@@ -261,7 +261,9 @@ class HarnessProfile:
 
     fires_verified: dict[str, str] = field(default_factory=dict)
     """Canonical event → ISO date a real run was *observed* firing it. Absent
-    key = wired but unobserved (Codex ``Stop``), never assumed."""
+    key = wired but unobserved (Pi's events until the shim probe lands a
+    dated capture), never assumed. Codex's ``Stop`` sat here for a month
+    until the 2026-09-07 raw capture dated it — that is the bar."""
 
     context_channel: str = ""
     """How the SessionStart payload reaches the model: ``additionalContext``
@@ -656,12 +658,20 @@ def codex(home: Path | None = None) -> HarnessProfile:
         detect_dir=cx,
         hook_mechanism="file",
         hook_events={e: e for e in CANONICAL_EVENTS},
-        # The 2026-08-02 credential-less spike observed exactly these two;
-        # Stop and PostToolUse are wired but unobserved on a live Codex run
-        # (docs/HARNESSES.md §"Spike answers") and must not be claimed.
+        # SessionStart/UserPromptSubmit: observed live on 2026-09-05 (two
+        # interactive, authenticated codex-cli 0.146.0 sessions; first seen
+        # in the 2026-08-02 credential-less spike). PostToolUse/Stop: raw
+        # envelopes captured on 2026-09-07 by a sentinel hook teeing stdin
+        # in two headless `codex exec` sessions (exec `Bash` incl. a 20 s
+        # command, MCP `weave_search`, Stop with `last_assistant_message`,
+        # SessionEnd ~2 s later) — fixture
+        # tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl,
+        # docs/HARNESSES.md §"2026-09-07 instrumented headless run".
         fires_verified={
-            "SessionStart": "2026-08-02",
-            "UserPromptSubmit": "2026-08-02",
+            "SessionStart": "2026-09-05",
+            "UserPromptSubmit": "2026-09-05",
+            "PostToolUse": "2026-09-07",
+            "Stop": "2026-09-07",
         },
         context_channel="additionalContext",
         transcript_glob=str(
@@ -676,15 +686,26 @@ def codex(home: Path | None = None) -> HarnessProfile:
         mcp_servers_key="mcp_servers",
         mcp_via_cli="codex mcp add",
         context_served_source="codex-startup",
-        evidence="measured — codex-cli 0.146.0 spike, 2026-08-02 (docs/HARNESSES.md)",
+        evidence=(
+            "measured — codex-cli 0.146.0: credential-less spike 2026-08-02, "
+            "two live interactive sessions 2026-09-05, two instrumented "
+            "headless sessions 2026-09-07 with every envelope captured raw "
+            "(docs/HARNESSES.md)"
+        ),
         degradations=(
             Degradation(
                 "Stop capture",
                 "documented",
-                "wired but unobserved on a live run — the 2026-08-02 spike "
-                "aborted at auth before any turn completed; SessionEnd did "
-                "fire and is the fallback if Stop proves unreliable headlessly",
-                "docs/HARNESSES.md §Spike answers",
+                "fires at every turn end — measured interactively 2026-09-05 "
+                "(hook/started at each task_complete) and headless 2026-09-07 "
+                "(raw envelope with last_assistant_message; SessionEnd ~2 s "
+                "later, which thinkweave does not hook). The first Stop "
+                "materialises the note and later turns fold in place. Still "
+                "unmeasured: whether an interactive TUI exit delivers a "
+                "final Stop of its own beyond the last turn's, so a rich "
+                "end-of-session capture in the TUI still rides "
+                "`$thinkweave-wrap`",
+                "docs/HARNESSES.md §2026-09-07 instrumented headless run",
             ),
             Degradation(
                 "SessionStart context delivery",

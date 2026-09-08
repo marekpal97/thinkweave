@@ -906,6 +906,21 @@ def _extract_tool_output_text(hook_input: dict) -> str:
     2. ``tool_output`` — legacy key, kept for back-compat with any older
        harness build or test fixture that still uses it.
 
+    Codex's ``Bash`` (unified exec, ``exec_command``) does not split
+    stdout/stderr, and — measured raw on 2026-09-07 (codex-cli 0.146.0,
+    headless ``codex exec``, sentinel hook teeing stdin; fixture
+    ``tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl``) —
+    its ``tool_response`` is the **plain combined-output string**, e.g.
+    ``"....  [100%]\n4 passed in 0.06s\n"``. It is *not* the
+    ``{chunk_id, wall_time_seconds, exit_code, output}`` object the model
+    sees in the rollout's ``custom_tool_call_output``; that inference from
+    upstream source was wrong. The string branch below is therefore the
+    Codex path. A dict carrying a string ``output`` is still read, for any
+    harness build that does hand the object over. Before ``_command_head``
+    stripped the ``PYTHONPATH=src /abs/.venv/bin/`` prefix every Codex
+    ``pytest`` run buffered without a ``test_run`` (docs/HARNESSES.md
+    §"2026-09-07 instrumented headless run").
+
     Returns an empty string when nothing usable is present, which downstream
     parsers already treat as a clean no-op.
 
@@ -929,6 +944,16 @@ def _extract_tool_output_text(hook_input: dict) -> str:
             return stdout + "\n" + stderr
         if stdout or stderr:
             return stdout or stderr
+
+        # A wrapped `{"output": "…"}` object — Codex's `apply_patch` reply
+        # takes this shape, and it is what a harness build that forwards the
+        # unified-exec JSON object would send (Codex 0.146.0 headless sends
+        # the bare string instead; see docstring). Claude Code's Write/Edit
+        # echoes carry no `output` key, so this cannot reach the file-echo
+        # hazard guarded below.
+        output = raw.get("output")
+        if isinstance(output, str):
+            return output
 
         # Any other dict shape is deliberately *not* mined for text. Write's
         # and Edit's `tool_response` echo back what was written (`content`,
@@ -1152,14 +1177,42 @@ def _build_auto_summary(
 from thinkweave.core.buffer import (  # noqa: E402, F401
     archive_buffer,
     cleanup_buffer,
+    mirror_buffer_events,
     session_state_dir,
 )
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
+
+
+def _command_head(segment: str) -> str:
+    """A shell segment normalised for prefix classification.
+
+    Leading ``VAR=value`` assignments are dropped and the executable is
+    reduced to its basename, so ``PYTHONPATH=src /repo/.venv/bin/pytest -q``
+    classifies as ``pytest -q``. That is the shape Codex's code-mode
+    ``exec_command`` calls took on 2026-09-05 — every one of the session's
+    pytest runs was kept only because ``"pythonpath…".startswith("python")``
+    and none was recognised as a test run. Lower-cased; classifiers compare
+    against lower-case prefixes.
+    """
+    seg = segment.strip()
+    while True:
+        stripped = _ENV_ASSIGNMENT_RE.sub("", seg, count=1)
+        if stripped == seg:
+            break
+        seg = stripped
+    if not seg:
+        return ""
+    head, sep, rest = seg.partition(" ")
+    head = head.rsplit("/", 1)[-1]
+    return (head + sep + rest).lower()
 
 
 def _is_significant_command(command: str) -> bool:
     """Only capture meaningful bash commands, not noise."""
     significant = ["git commit", "git push", "pytest", "python", "uv run", "make", "npm", "deploy"]
-    cmd_lower = command.lower().strip()
+    cmd_lower = _command_head(command)
     return any(cmd_lower.startswith(s) for s in significant)
 
 
@@ -1189,7 +1242,7 @@ def _first_meaningful_line(text: str) -> str:
 
 def _is_git_commit(command: str) -> bool:
     """Check if a bash command is a git commit."""
-    cmd = command.strip().lower()
+    cmd = _command_head(command)
     return cmd.startswith("git commit") and "--amend" not in cmd
 
 
@@ -1252,8 +1305,8 @@ def _is_test_command(command: str) -> bool:
     """
     _TEST_PREFIXES = ("pytest", "python -m pytest", "uv run pytest", "uv run python -m pytest")
     # Split on shell chain operators (&&, ||, ;) and check each segment
-    segments = re.split(r"\s*(?:&&|\|\||;)\s*", command.strip().lower())
-    return any(seg.startswith(p) for seg in segments for p in _TEST_PREFIXES)
+    segments = re.split(r"\s*(?:&&|\|\||;)\s*", command.strip())
+    return any(_command_head(seg).startswith(p) for seg in segments for p in _TEST_PREFIXES)
 
 
 def _parse_test_result(command: str, output: str) -> dict | None:
@@ -1352,13 +1405,22 @@ def _handle_stop(hook_input: dict) -> None:
 
         note = vm.read_note(session_path)
 
-        # Already processed → nothing to do
+        source_session = note.frontmatter.get("source_session", session_id)
+
+        # Already processed → fold, don't rewrite. Both harnesses fire Stop
+        # at the end of EVERY turn, so this branch is the common case from
+        # turn 2 on; see _fold_processed_session for what it keeps current.
         if note.frontmatter.get("processed"):
-            _output()
+            diagnostic = ""
+            try:
+                _fold_processed_session(cfg, vm, session_path, source_session)
+            except Exception as e:
+                _log_error("stop/fold", e)
+                diagnostic = _report_failure("stop/fold", hook_input, e)
+            _output(system_message=diagnostic)
             return
 
         # Reconstruct session from JSONL buffer
-        source_session = note.frontmatter.get("source_session", session_id)
         events = _read_buffer(cfg.weave_dir, source_session)
 
         if not events:
@@ -1450,6 +1512,105 @@ def _handle_stop(hook_input: dict) -> None:
     except Exception as e:
         _log_error("stop", e)
         _output(system_message=_report_failure("stop", hook_input, e))
+
+
+def _merge_evidence(existing, fresh: list) -> list:
+    """Order-preserving union of two evidence lists (strings or dicts)."""
+    merged: list = []
+    seen: list = []
+    for item in [*(existing or []), *fresh]:
+        if item in seen:
+            continue
+        seen.append(item)
+        merged.append(item)
+    return merged
+
+
+def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) -> None:
+    """Per-turn Stop on an already-processed note: keep the ONE note current.
+
+    Why this exists (2026-09-05 Codex sessions, docs/HARNESSES.md §"2026-09-05
+    live sessions"): Stop fires at every turn end on Codex exactly as on
+    Claude Code, and the first Stop marks the note ``processed`` and archives
+    the buffer. Every later turn's prompts and tool events then accumulated
+    in a fresh live buffer that nothing folded back — the note kept turn 1's
+    ``files_touched: []`` for a session that went on to open two PRs, and
+    that empty evidence is precisely what let ``prune.is_orphan`` delete the
+    folder (events.jsonl < 500 bytes, no files_touched, > 1h old) once a
+    wrap minted a second note. A census of the dev machine's buffer dir on
+    2026-09-06 found 677 live buffers, 568 older than 30 days: the stranding
+    is harness-agnostic.
+
+    What it does, deliberately narrow:
+
+    - Recomputes the deterministic evidence (``core.events.extract_
+      deterministic``) over the archived ``events.jsonl`` UNION the live
+      buffer, and writes only the evidence fields — ``files_touched``,
+      ``commits``, ``test_runs``, ``git_branch``, ``has_failures``. Lists
+      are union-merged so anything a wrap wrote survives. The body is never
+      touched: a wrap's LLM summary must not be clobbered by a later turn.
+    - Mirrors the buffer's action/prompt lines into ``events.jsonl``
+      (append-unique) so prompts project at the next index. The buffer
+      itself stays live — it is the prompt-time enrichment ledger, and the
+      wrap's ``archive_buffer`` retires it (skipping mirrored lines).
+    - Re-indexes the note.
+
+    ``processed`` / ``processed_at`` are left alone — they mean "a Stop
+    materialised this note", which is still true.
+    """
+    from thinkweave.core.events import extract_deterministic
+    from thinkweave.core.indexer import Indexer
+    from thinkweave.core.vault import parse_frontmatter, render_frontmatter
+
+    live = _read_buffer(cfg.weave_dir, source_session)
+    if not live:
+        return
+
+    session_dir = session_path.parent
+    archived_raw: set[str] = set()
+    events: list[dict] = []
+    for raw, parsed in _jsonl_events(session_dir / "events.jsonl"):
+        archived_raw.add(raw)
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    for ev in live:
+        if json.dumps(ev, ensure_ascii=False) in archived_raw:
+            continue
+        events.append(ev)
+
+    result = extract_deterministic(events)
+    fm = vm.read_note(session_path).frontmatter
+    updates: dict = {}
+    if result.files_touched:
+        updates["files_touched"] = _merge_evidence(
+            fm.get("files_touched"), result.files_touched
+        )
+    if result.commits:
+        updates["commits"] = _merge_evidence(fm.get("commits"), result.commits)
+    if result.test_runs:
+        updates["test_runs"] = _merge_evidence(fm.get("test_runs"), result.test_runs)
+    if result.git_branch:
+        updates["git_branch"] = result.git_branch
+    if result.failure_signals:
+        updates["has_failures"] = True
+
+    # Replace-not-merge: update_note's own list union only handles hashable
+    # members, and the merged values above are already the union.
+    if updates:
+        text = session_path.read_text(encoding="utf-8")
+        cur_fm, body = parse_frontmatter(text)
+        cur_fm.update(updates)
+        session_path.write_text(
+            render_frontmatter(cur_fm) + "\n\n" + body, encoding="utf-8", newline="\n"
+        )
+
+    mirrored = mirror_buffer_events(cfg.weave_dir, source_session, session_dir)
+    if updates or mirrored:
+        idx = Indexer(config=cfg)
+        try:
+            idx.index_file(session_path)
+        finally:
+            idx.close()
 
 
 def _handle_session_start(hook_input: dict) -> None:
