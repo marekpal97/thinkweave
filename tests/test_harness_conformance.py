@@ -145,15 +145,47 @@ class TestSchemaInvariants:
 
 
 class TestPiRow:
-    """Facts from blueprint n-a1d3beba, declared-not-verified where marked."""
+    """Facts measured on Pi 0.84.4 (2026-09-03/05) and read from the
+    pi-mcp-adapter 2.32.1 source; blueprint n-a1d3beba where still current."""
 
     def test_install_topology(self, tmp_path: Path):
         p = _build("pi", tmp_path)
         agent = tmp_path / ".pi" / "agent"
         assert p.skills_dir == agent / "skills"
-        assert p.mcp_config == agent / "settings.json"
+        # Pi core has no MCP client (n-fb74c7d0); the adapter's Pi-global
+        # file is mcp.json, and the project file is the standard .mcp.json.
+        assert p.mcp_config == agent / "mcp.json"
+        assert p.legacy_mcp_config == agent / "settings.json"
+        assert p.project_mcp_config_relpath == Path(".mcp.json")
         assert p.instructions_file == agent / "AGENTS.md"
-        assert p.project_mcp_config_relpath == Path(".pi") / "settings.json"
+        assert p.user_settings == agent / "settings.json"
+        assert p.packages_root == agent / "npm" / "node_modules"
+
+    def test_mcp_client_is_the_adapter_extension(self, tmp_path: Path):
+        p = _build("pi", tmp_path)
+        assert p.mcp_client_package == "pi-mcp-adapter"
+        assert p.mcp_client_install_cmd == "pi install npm:pi-mcp-adapter"
+        # Adapter-only keys (types.ts ServerEntry): bare `weave_*` names need
+        # directTools + toolPrefix none; eager so the first retrieval does
+        # not pay the server's cold start.
+        assert p.mcp_entry_extras == {
+            "lifecycle": "eager",
+            "directTools": True,
+            "toolPrefix": "none",
+        }
+
+    def test_skills_are_root_file_links(self, tmp_path: Path):
+        p = _build("pi", tmp_path)
+        assert p.root_file_skills and p.skill_prefix == "/skill:"
+        assert not p.ships_skills  # /onboard is Claude-Code-shaped
+
+    def test_e3_posture_in_the_instructions_block(self, tmp_path: Path):
+        body = _build("pi", tmp_path).instructions_block_body
+        assert "NEVER call `weave_extract`" in body
+        assert "/skill:wrap" in body
+        assert "pi-mcp-adapter" in body
+        assert "never crawl the filesystem" in body
+        assert "{weave} add" in body and "{weave} search" in body
 
     def test_captured_row_rides_the_extension_shim(self, tmp_path: Path):
         # #114: lifecycle capture ships via the extension stub the installer
@@ -247,10 +279,18 @@ class TestEventsFireProbe:
         cc = _build("claude-code", tmp_path)
         assert set(cc.fires_verified) == set(hook_events.CANONICAL_EVENTS)
         codex = _build("codex", tmp_path)
-        # The 2026-08-02 spike observed SessionStart and UserPromptSubmit
-        # pre-auth; Stop and PostToolUse remain unobserved on a live Codex
-        # (docs/HARNESSES.md §Spike answers) and must not be claimed.
-        assert set(codex.fires_verified) == {"SessionStart", "UserPromptSubmit"}
+        # SessionStart and UserPromptSubmit: observed pre-auth 2026-08-02 and
+        # live 2026-09-05. PostToolUse and Stop: raw envelopes captured on
+        # 2026-09-07 by a sentinel hook teeing stdin in two headless
+        # `codex exec` sessions (01a07a9d-…, 01a07a9e-…; codex-cli 0.146.0) —
+        # tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl,
+        # docs/HARNESSES.md §"2026-09-07 instrumented headless run". All
+        # four canonical events are now dated, as on Claude Code.
+        assert set(codex.fires_verified) == set(hook_events.CANONICAL_EVENTS)
+        assert codex.fires_verified["SessionStart"] >= "2026-09-05"
+        assert codex.fires_verified["UserPromptSubmit"] >= "2026-09-05"
+        assert codex.fires_verified["PostToolUse"] == "2026-09-07"
+        assert codex.fires_verified["Stop"] == "2026-09-07"
         for date in {**cc.fires_verified, **codex.fires_verified}.values():
             assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
 
@@ -515,7 +555,21 @@ class TestMcpInstallSurface:
             # `codex mcp add`'s own 2026-08-02 output: no type key, empty
             # env omitted (format-level trims, still the split shape).
             assert entry == {"command": "/uv", "args": uv_args}
-        else:  # claude-code, pi — Claude Code's authored split shape.
+        elif profile.id == "pi":
+            # The standard split shape pi-mcp-adapter reads from mcp.json
+            # (its isServerEntry accepts any record, so `type` is harmless)
+            # plus the three adapter-only keys that expose bare `weave_*`
+            # tools eagerly (types.ts ServerEntry, 2.32.1).
+            assert entry == {
+                "type": "stdio",
+                "command": "/uv",
+                "args": uv_args,
+                "env": {},
+                "lifecycle": "eager",
+                "directTools": True,
+                "toolPrefix": "none",
+            }
+        else:  # claude-code — the authored split shape.
             assert entry == {
                 "type": "stdio",
                 "command": "/uv",

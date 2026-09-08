@@ -625,6 +625,435 @@ class TestCodexSessionEndToEnd:
 
 
 # ---------------------------------------------------------------------------
+# 2026-09-07 instrumented headless run (docs/HARNESSES.md §"2026-09-07
+# instrumented headless run"): every envelope Codex sent, captured raw.
+# ---------------------------------------------------------------------------
+#
+# Two authenticated codex-cli 0.146.0 sessions, `codex exec
+# --dangerously-bypass-hook-trust --skip-git-repo-check -s workspace-write`
+# from the repo, model gpt-5.6-sol, with a sentinel hook teeing stdin for
+# every event. One JSON object per line: {"probe_event", "probe_ts",
+# "envelope"}; `envelope` is the exact stdin. Census: 1 SessionStart,
+# 1 UserPromptSubmit (session A's early envelopes were lost to a file reset),
+# 4 PostToolUse `Bash`, 2 PostToolUse `mcp__thinkweave__weave_search`, 2 Stop,
+# 2 SessionEnd. Tests below drive the handler with these VERBATIM.
+MEASURED_ENVELOPES = (
+    Path(__file__).parent
+    / "fixtures"
+    / "harness_envelopes"
+    / "codex"
+    / "envelopes-2026-09-07.jsonl"
+)
+PROBE_A = "01a07a9d-ddb5-78b2-bf6d-7a4ad816b26f"
+PROBE_B = "01a07a9e-2262-7073-a264-48408a2d46fe"
+
+
+def _measured(
+    event: str | None = None, tool: str | None = None, session: str | None = None
+) -> list[dict]:
+    """The captured envelopes, in probe order, optionally filtered."""
+    out = []
+    for line in MEASURED_ENVELOPES.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        env = json.loads(line)["envelope"]
+        if event and env.get("hook_event_name") != event:
+            continue
+        if tool and env.get("tool_name") != tool:
+            continue
+        if session and env.get("session_id") != session:
+            continue
+        out.append(env)
+    return out
+
+
+# The measured unified-exec `Bash` envelope for a pytest run — session A's.
+CODEX_UNIFIED_EXEC_PYTEST = next(
+    e
+    for e in _measured("PostToolUse", "Bash", PROBE_A)
+    if "pytest" in e["tool_input"]["command"]
+)
+
+# The shape PR #212 originally INFERRED from upstream
+# `JsonToolOutput::post_tool_use_response` — the JSON object the model sees in
+# the rollout's `custom_tool_call_output`. Codex 0.146.0 does NOT send it to
+# hooks (see the measured envelope above); kept only so a harness build that
+# does forward the object still parses.
+CODEX_UNIFIED_EXEC_OBJECT = {
+    **CODEX_UNIFIED_EXEC_PYTEST,
+    "tool_response": {
+        "chunk_id": "70f18b",
+        "wall_time_seconds": 4.62778358,
+        "exit_code": 0,
+        "original_token_count": 25,
+        "output": "................................  [100%]\n48 passed in 4.11s\n",
+    },
+}
+
+
+class TestUnifiedExecResponse:
+    """Every Codex `pytest` row captured on 2026-09-05 buffered without a
+    `test_run`. The 2026-09-07 raw capture shows why: `tool_response` for a
+    unified-exec `Bash` call is the PLAIN combined-output string (not the
+    JSON object inferred from upstream source), and the command arrives as
+    `PYTHONPATH=src .venv/bin/pytest …`, which no `pytest`-prefix classifier
+    matched until `_command_head`."""
+
+    def test_measured_envelope_is_a_plain_string(self):
+        env = CODEX_UNIFIED_EXEC_PYTEST
+        assert env["tool_use_id"].startswith("exec-")
+        assert env["tool_input"] == {
+            "command": "PYTHONPATH=src .venv/bin/pytest tests/test_shim_core.py -q"
+        }
+        assert isinstance(env["tool_response"], str)
+        assert env["tool_response"].endswith("4 passed in 0.06s\n")
+        assert handler_mod._extract_tool_output_text(env) == env["tool_response"]
+
+    def test_pytest_run_is_parsed_from_the_measured_envelope(self, hook_vault):
+        cfg = hook_vault.config
+
+        handler_mod._handle_post("Bash", CODEX_UNIFIED_EXEC_PYTEST)
+
+        buffered = handler_mod._read_buffer(cfg.weave_dir, PROBE_A)
+        assert len(buffered) == 1
+        assert buffered[0]["tool"] == "Bash"
+        assert buffered[0]["test_run"]["passed"] == 4
+        assert "failed" not in buffered[0]["test_run"]
+
+    def test_slow_command_fires_exactly_once_on_completion(self, hook_vault):
+        """`sleep 20; echo waited-ok` — the case the 2026-09-05 notes flagged
+        as possibly split across a code-mode yield and an unhooked `wait`.
+        Measured: one PostToolUse per session, on completion, carrying the
+        full output. The handler then drops it as an insignificant command,
+        which is the same verdict Claude Code's `sleep` would get."""
+        cfg = hook_vault.config
+        for session in (PROBE_A, PROBE_B):
+            slow = [
+                e
+                for e in _measured("PostToolUse", "Bash", session)
+                if e["tool_input"]["command"] == "sleep 20; echo waited-ok"
+            ]
+            assert len(slow) == 1
+            assert slow[0]["tool_response"] == "waited-ok\n"
+            handler_mod._handle_post("Bash", slow[0])
+            assert handler_mod._read_buffer(cfg.weave_dir, session) == []
+
+    def test_wrapped_output_object_is_still_read(self):
+        text = handler_mod._extract_tool_output_text(CODEX_UNIFIED_EXEC_OBJECT)
+        assert text.endswith("48 passed in 4.11s\n")
+
+    def test_claude_code_shapes_are_unchanged(self):
+        """stdout/stderr still win, and a Write/Edit echo still yields
+        nothing — `output` is not a key those envelopes carry, so the
+        file-echo hazard `_extract_tool_output_text` guards is untouched."""
+        cc_bash = {"tool_response": {"stdout": "[main abc1234] x", "stderr": ""}}
+        assert handler_mod._extract_tool_output_text(cc_bash) == "[main abc1234] x"
+        cc_write = {
+            "tool_response": {
+                "type": "create",
+                "filePath": "src/a.py",
+                "content": "★ Insight ─────\nnot output\n",
+                "structuredPatch": [],
+            }
+        }
+        assert handler_mod._extract_tool_output_text(cc_write) == ""
+
+
+class TestMeasuredRetrievalEnvelope:
+    """The MCP PostToolUse shape, measured 2026-09-07: `tool_input` is the raw
+    arguments dict and `tool_response` is
+    `{"content": [{"type": "text", "text": …}], "isError": false}`. The live
+    handler (main's, pre-#212) already mined it — both probe sessions'
+    `retrieval_log.jsonl` carry a `retrieval` row with
+    `returned_ids: [dec-e3525a07, n-a1d3beba]` and 2 `onthefly`
+    context_served rows each. This pins the same result on the fixture."""
+
+    def test_weave_search_response_yields_returned_ids(self, hook_vault):
+        cfg = hook_vault.config
+        env = _measured("PostToolUse", "mcp__thinkweave__weave_search", PROBE_A)[0]
+        assert env["tool_input"] == {"query": "pi-mcp-adapter", "mode": "fts", "limit": 2}
+        assert set(env["tool_response"]) == {"content", "isError"}
+        assert env["tool_response"]["isError"] is False
+        assert env["tool_response"]["content"][0]["type"] == "text"
+
+        handler_mod._handle_post("mcp__thinkweave__weave_search", env)
+
+        buffered = handler_mod._read_buffer(cfg.weave_dir, PROBE_A)
+        assert len(buffered) == 1
+        assert buffered[0]["type"] == "retrieval"
+        assert buffered[0]["tool"] == "mcp__thinkweave__weave_search"
+        assert buffered[0]["returned_ids"] == ["dec-e3525a07", "n-a1d3beba"]
+        assert buffered[0]["delivery_id"] == (
+            f"post_tool_use:{PROBE_A}:{env['tool_use_id']}:0"
+        )
+
+
+class TestMeasuredHeadlessReplay:
+    """Replay each probe session's captured envelopes, in order, through the
+    real handler: one note per session, the pytest run as `test_runs`, the
+    slow command dropped, the MCP call as a retrieval row. Mirrors what the
+    live (pre-#212) handler produced for `ses-566031c4` / `ses-78b81a0a` on
+    2026-09-07, minus the `test_runs` it could not classify then."""
+
+    @staticmethod
+    def _dispatch(env: dict) -> None:
+        event = env["hook_event_name"]
+        if event == "SessionStart":
+            handler_mod._handle_session_start(env)
+        elif event == "UserPromptSubmit":
+            handler_mod._handle_user_prompt_submit(env)
+        elif event == "PostToolUse":
+            handler_mod._handle_post(env["tool_name"], env)
+        elif event == "Stop":
+            handler_mod._handle_stop(env)
+        elif event == "SessionEnd":
+            # Not a thinkweave hook: `main()` has no `session_end` branch and
+            # hooks/hooks.json registers none. Measured ~2 s after Stop with
+            # reason="other"; nothing to replay.
+            pass
+        else:  # pragma: no cover — census above is closed
+            raise AssertionError(event)
+
+    def _note_for(self, hook_vault, session: str):
+        vm = hook_vault.vault
+        notes = [
+            n
+            for n in vm.list_notes(note_type=NoteType.SESSION, limit=10)
+            if n.frontmatter.get("source_session") == session
+        ]
+        assert len(notes) == 1, [n.id for n in notes]
+        return notes[0]
+
+    def test_stop_envelope_shape(self):
+        for session in (PROBE_A, PROBE_B):
+            (stop,) = _measured("Stop", session=session)
+            assert set(stop) == {
+                "session_id", "turn_id", "transcript_path", "cwd",
+                "hook_event_name", "model", "permission_mode",
+                "stop_hook_active", "last_assistant_message",
+            }
+            assert stop["stop_hook_active"] is False
+            assert "waited-ok" in stop["last_assistant_message"]
+            (end,) = _measured("SessionEnd", session=session)
+            assert set(end) == {
+                "session_id", "transcript_path", "cwd", "hook_event_name", "reason"
+            }
+            assert end["reason"] == "other"
+
+    def test_full_session_yields_one_note_with_all_evidence(self, hook_vault, serves):
+        """Session B — the one whose SessionStart and UserPromptSubmit survived."""
+        cfg = hook_vault.config
+        serves("## Recent\n- [[n-1|n-1]]\n")
+        envelopes = _measured(session=PROBE_B)
+        assert [e["hook_event_name"] for e in envelopes] == [
+            "SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUse",
+            "PostToolUse", "Stop", "SessionEnd",
+        ]
+
+        for env in envelopes:
+            self._dispatch(env)
+
+        note = self._note_for(hook_vault, PROBE_B)
+        fm = note.frontmatter
+        assert fm.get("processed") is True
+        assert fm.get("files_touched") == []  # the probe prompt forbade edits
+        assert fm.get("test_runs") == [
+            {
+                "command": "PYTHONPATH=src .venv/bin/pytest tests/test_shim_core.py -q",
+                "passed": 4,
+            }
+        ]
+
+        session_dir = (cfg.vault_root / note.path).parent
+        events = [
+            json.loads(line)
+            for line in (session_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [e.get("type") or e.get("tool") for e in events] == ["prompt", "Bash"]
+        retrievals = [
+            json.loads(line)
+            for line in (session_dir / "retrieval_log.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [r["type"] for r in retrievals] == ["startup", "retrieval"]
+        assert retrievals[1]["returned_ids"] == ["dec-e3525a07", "n-a1d3beba"]
+
+    def test_session_missing_its_opening_envelopes_still_lands(self, hook_vault):
+        """Session A — first envelopes lost to the probe's file reset, so the
+        replay opens on a PostToolUse. The action-tool path materialises the
+        note; Stop still closes it with the same evidence."""
+        envelopes = _measured(session=PROBE_A)
+        assert envelopes[0]["hook_event_name"] == "PostToolUse"
+
+        for env in envelopes:
+            self._dispatch(env)
+
+        fm = self._note_for(hook_vault, PROBE_A).frontmatter
+        assert fm.get("processed") is True
+        assert fm.get("test_runs") == [
+            {
+                "command": "PYTHONPATH=src .venv/bin/pytest tests/test_shim_core.py -q",
+                "passed": 4,
+            }
+        ]
+
+
+class TestPerTurnStopFold:
+    """Stop fires at the end of EVERY turn (measured on Codex 2026-09-05:
+    hook/started at each task_complete; identical on Claude Code). The first
+    Stop marks the note processed and archives the buffer; before this fix
+    every later turn's events sat in a fresh live buffer that nothing folded
+    back, so the note carried turn 1's evidence for the whole session — and
+    `files_touched: []` is exactly what lets prune.is_orphan delete a real
+    session's folder."""
+
+    SECOND_PATCH = {
+        **CODEX_APPLY_PATCH,
+        "turn_id": "019fc43a-c000-7000-8000-000000000002",
+        "tool_use_id": "exec-2nd-turn-0000-4000-8000-000000000002",
+        "tool_input": {
+            "command": (
+                "*** Begin Patch\n"
+                "*** Update File: src/thinkweave/core/buffer.py\n"
+                "@@\n-a\n+b\n"
+                "*** End Patch\n"
+            )
+        },
+    }
+    SECOND_PROMPT = {
+        **CODEX_USER_PROMPT_SUBMIT,
+        "turn_id": "019fc43a-c000-7000-8000-000000000002",
+        "prompt": "now fix the buffer too",
+    }
+    # The measured 2026-09-07 unified-exec pytest envelope, re-keyed to this
+    # session's second turn.
+    SECOND_PYTEST = {
+        **CODEX_UNIFIED_EXEC_PYTEST,
+        "session_id": CODEX_SESSION_ID,
+        "turn_id": "019fc43a-c000-7000-8000-000000000002",
+        "tool_use_id": "exec-2nd-turn-0000-4000-8000-000000000003",
+    }
+
+    def _note(self, vm):
+        return next(
+            n
+            for n in vm.list_notes(note_type=NoteType.SESSION, limit=10)
+            if n.frontmatter.get("source_session") == CODEX_SESSION_ID
+        )
+
+    def _two_turns(self, hook_vault, serves):
+        serves("## Recent\n- [[n-1|n-1]]\n")
+        handler_mod._handle_session_start(CODEX_SESSION_START)
+        handler_mod._handle_user_prompt_submit(CODEX_USER_PROMPT_SUBMIT)
+        handler_mod._handle_post("apply_patch", CODEX_APPLY_PATCH)
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+        # Turn 2 — the note is already `processed`.
+        handler_mod._handle_user_prompt_submit(self.SECOND_PROMPT)
+        handler_mod._handle_post("apply_patch", self.SECOND_PATCH)
+        handler_mod._handle_post("Bash", self.SECOND_PYTEST)
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+
+    def test_second_turn_evidence_folds_into_the_one_note(self, hook_vault, serves):
+        cfg, vm = hook_vault.config, hook_vault.vault
+
+        self._two_turns(hook_vault, serves)
+
+        notes = [
+            n
+            for n in vm.list_notes(note_type=NoteType.SESSION, limit=10)
+            if n.frontmatter.get("source_session") == CODEX_SESSION_ID
+        ]
+        assert len(notes) == 1, "one Codex session → one session note"
+        fm = notes[0].frontmatter
+        assert fm.get("processed") is True
+        assert fm.get("files_touched") == [
+            "src/thinkweave/core/harness.py",
+            "docs/HARNESSES.md",
+            "src/thinkweave/core/buffer.py",
+        ]
+        assert fm.get("test_runs") == [
+            {
+                "command": "PYTHONPATH=src .venv/bin/pytest tests/test_shim_core.py -q",
+                "passed": 4,
+            }
+        ]
+
+        # The folder is current too: both prompts and all three files.
+        session_dir = (cfg.vault_root / notes[0].path).parent
+        events = [
+            json.loads(line)
+            for line in (session_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [e["text"] for e in events if e.get("type") == "prompt"] == [
+            "say hi",
+            "now fix the buffer too",
+        ]
+        assert len([e for e in events if e.get("file")]) == 3
+
+    def test_fold_keeps_the_live_buffer_and_the_wrap_archive_stays_exact(
+        self, hook_vault, serves
+    ):
+        """The buffer is the prompt-time enrichment ledger, so the fold copies
+        rather than moves; the wrap's archive_buffer then retires it without
+        duplicating a single mirrored line."""
+        cfg, vm = hook_vault.config, hook_vault.vault
+
+        self._two_turns(hook_vault, serves)
+
+        buf = cfg.weave_dir / "buffer" / f"{CODEX_SESSION_ID}.jsonl"
+        assert buf.exists(), "fold must not retire the live buffer"
+
+        note = self._note(vm)
+        session_dir = (cfg.vault_root / note.path).parent
+        before = (session_dir / "events.jsonl").read_text(encoding="utf-8")
+        handler_mod.archive_buffer(cfg.weave_dir, CODEX_SESSION_ID, session_dir)
+        after = (session_dir / "events.jsonl").read_text(encoding="utf-8")
+        assert after == before
+        assert not buf.exists()
+
+    def test_fold_never_rewrites_the_body(self, hook_vault, serves):
+        """A wrap's LLM summary lives in the body; a later turn's Stop must
+        touch evidence fields only."""
+        cfg, vm = hook_vault.config, hook_vault.vault
+        serves("## Recent\n- [[n-1|n-1]]\n")
+        handler_mod._handle_session_start(CODEX_SESSION_START)
+        handler_mod._handle_user_prompt_submit(CODEX_USER_PROMPT_SUBMIT)
+        handler_mod._handle_post("apply_patch", CODEX_APPLY_PATCH)
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+
+        note = self._note(vm)
+        path = cfg.vault_root / note.path
+        wrapped = (
+            path.read_text(encoding="utf-8").split("\n---\n", 1)[0]
+            + "\n---\n\n# Wrapped\n\n## Summary\nThe wrap wrote this.\n"
+        )
+        path.write_text(wrapped, encoding="utf-8")
+
+        handler_mod._handle_user_prompt_submit(self.SECOND_PROMPT)
+        handler_mod._handle_post("apply_patch", self.SECOND_PATCH)
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+
+        text = path.read_text(encoding="utf-8")
+        assert "The wrap wrote this." in text
+        assert "src/thinkweave/core/buffer.py" in text
+
+    def test_processed_note_with_no_live_buffer_is_a_no_op(self, hook_vault, serves):
+        cfg, vm = hook_vault.config, hook_vault.vault
+        serves("")
+        handler_mod._handle_user_prompt_submit(CODEX_USER_PROMPT_SUBMIT)
+        handler_mod._handle_post("apply_patch", CODEX_APPLY_PATCH)
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+        note = self._note(vm)
+        path = cfg.vault_root / note.path
+        before = path.read_text(encoding="utf-8")
+
+        handler_mod._handle_stop({"session_id": CODEX_SESSION_ID})
+
+        assert path.read_text(encoding="utf-8") == before
+
+
+# ---------------------------------------------------------------------------
 # The serving surface: context_served.source
 # ---------------------------------------------------------------------------
 

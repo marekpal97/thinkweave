@@ -1,6 +1,6 @@
 ---
 name: research-youtube-worker
-description: Write a brief from a single YouTube queue item. Stage-2 of the YouTube pipeline — admission is settled upstream (curated channel allowlist or explicit /research URL paste); this worker pulls YouTube's own captions via youtube-transcript-api, extracts concepts, attaches a theme for event-grain items, writes the brief, and creates the source note. Returns a JSON outcome line.
+description: Write a brief from a single YouTube queue item. Stage-2 of the YouTube pipeline — admission is settled upstream (curated channel allowlist or explicit /research URL paste); this worker hands the video URL to Gemini Flash server-side (primary; falls back to youtube-transcript-api captions), extracts concepts, attaches a theme for event-grain items, writes the brief, and creates the source note. Returns a JSON outcome line.
 tools: Read, Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_search, mcp__thinkweave__weave_create, mcp__thinkweave__weave_link, mcp__thinkweave__weave_update
 model: sonnet
 color: red
@@ -63,19 +63,43 @@ If a result comes back whose frontmatter includes the same `video_id`, short-cir
 
 This is a success — the orchestrator will archive the queue item as `done`. **Do not** call `weave_create` after a hit.
 
-### 3. Extract transcript via youtube-transcript-api
+### 3. Extract via Gemini Flash (primary), captions fallback
 
-Call the transcript-extraction helper. It pulls YouTube's own captions (auto-generated or human-authored) plus per-segment timings — no API key, no auth, no rate-limit pain.
+#### 3a. Primary — Gemini YouTube-URL extraction
+
+Call the Gemini helper. It passes the video URL straight to Gemini Flash as `file_data` — **Google fetches the video server-side**, so this machine never contacts YouTube (which is the point: the captions endpoint IP-blocks this network — switched 2026-09-03).
+
+```bash
+uv run python -m thinkweave.acquisition.sources.extractors.gemini_extract youtube "<url>"
+```
+
+The command prints **exactly one JSON line** on stdout. Parse it and branch on the `ok` field.
+
+**On success** (`ok: true`) the payload carries a **pre-structured brief**:
+
+```
+{"ok": true,
+ "summary": "<3-5 dense paragraphs>",
+ "key_developments": [{"point": "...", "evidence": "..."}, ...],
+ "key_moments": [{"timestamp": "MM:SS", "description": "..."}, ...],
+ "mentioned_links": [{"url": "...", "context": "..."}, ...],
+ "topic_tags": ["...", ...],
+ "duration_sec": 1880,
+ "model": "gemini-2.5-flash"}
+```
+
+Unlike the captions payload (3b), there is no raw transcript — Gemini already did the structuring. In step 6 you compose the brief from these fields directly (the podcast worker's pattern): `key_moments` feeds `## Key Moments` as-is, `topic_tags` are hints for step 4's concept extraction.
+
+**On failure** (`ok: false`): the payload has `error` (`missing_api_key`, `missing_sdk`, `gemini_refused`, `api_error`, `invalid_response`) and `reason`. **Before giving up, try the captions fallback (3b)** — it's free and instant when it works.
+
+#### 3b. Fallback — youtube-transcript-api captions
 
 ```bash
 uv run python -m thinkweave.acquisition.sources.extractors.transcript_extract youtube "<url>"
 ```
 
-The command prints **exactly one JSON line** on stdout. Parse it and branch on the `ok` field:
+Same one-JSON-line contract. On success (`ok: true`) the payload carries **raw transcript + segment timings only**:
 
-**On success** (`ok: true`):
-
-The payload looks like:
 ```
 {"ok": true,
  "transcript": "<full plaintext, segments joined by spaces>",
@@ -86,24 +110,27 @@ The payload looks like:
  "model": "youtube-transcript-api"}
 ```
 
-Unlike the prior Gemini-based extractor, this payload carries **raw transcript text + segment timings only** — there are no pre-extracted `summary` / `key_developments` / `key_moments` / `mentioned_links` / `topic_tags` fields. You derive those structured sections yourself in step 6 by reasoning over the transcript (Sonnet handles 15-30K-char conference talks comfortably). Use the segment timings to anchor `## Key Moments` to real `MM:SS` marks rather than inventing them — pick a moment, find the closest segment, format its `start` field as `MM:SS`.
+No pre-extracted sections — you derive `summary` / `key_developments` / `key_moments` / `mentioned_links` yourself in step 6 by reasoning over the transcript (Sonnet handles 15-30K-char conference talks comfortably). Use the segment timings to anchor `## Key Moments` to real `MM:SS` marks — pick a moment, find the closest segment, format its `start` field as `MM:SS`. **Do not invent timestamps.**
 
-**On failure** (`ok: false`): the payload has `error` (one of `missing_sdk`, `transcripts_disabled`, `no_transcripts`, `video_unavailable`, `empty_transcript`, `transcript_api_failed`) and `reason`. Map to a `fetch_failed` outcome — do not proceed:
+#### 3c. Both failed — map to a `fetch_failed` outcome
 
-| `error` field | Worker's `fetch_failed.reason` prefix | Behavior |
+Report the **primary (Gemini) error class** — it decides retry-vs-archive; mention the fallback's error inside the reason text:
+
+| Gemini `error` | Worker's `fetch_failed.reason` prefix | Behavior |
 |---|---|---|
-| `transcripts_disabled` | `transcripts_disabled:` | Channel owner disabled captions. Archive as `failed` — no retry. |
-| `no_transcripts` | `no_transcripts:` | No transcript for any preferred language. Archive as `failed`. |
-| `video_unavailable` | `video_unavailable:` | Private / removed / region-blocked. Archive as `failed`. |
-| `empty_transcript` | `empty_transcript:` | Transcript shorter than 500 chars (mostly music / non-verbal). Archive as `failed`. |
-| `missing_sdk` | `transcript_api_failed: missing_sdk` | `pip install thinkweave[youtube]`. Orchestrator surfaces in report. |
-| `transcript_api_failed` | `transcript_api_failed:` (with reason) | Transient SDK / network error. Orchestrator may retry on the next drain. |
+| `gemini_refused` | `gemini_refused:` | Private / age-gated / region-blocked / removed. Archive as `failed` — no retry. |
+| `api_error` | `api_error:` (with reason) | Transient — includes 429 free-tier quota (`RESOURCE_EXHAUSTED`, ~40-min video ceiling) and 5xx. Orchestrator retries on the next drain. |
+| `invalid_response` | `invalid_response:` | Gemini returned unparseable JSON. Retryable. |
+| `missing_api_key` | `api_error: missing_api_key` | `GOOGLE_API_KEY` not in env/.env. Orchestrator surfaces in report. |
+| `missing_sdk` | `api_error: missing_sdk` | `pip install thinkweave[gemini]`. Orchestrator surfaces in report. |
+
+Exception: if the fallback failed with a *permanent* captions class (`transcripts_disabled`, `no_transcripts`, `video_unavailable`, `empty_transcript`) **and** Gemini's class was also permanent (`gemini_refused`), use whichever prefix is more specific. A retryable Gemini class always wins the mapping — never archive a quota-hit video as `failed`.
 
 Don't retry inside this worker — the orchestrator handles the queue lifecycle. Return the JSON outcome line and stop.
 
 ### 4. Concept extraction (ontology-gated)
 
-Identify ≥3 concepts that fit the video by reading the transcript text from step 3. **Strict rule:** only ontology-listed concepts go in `concepts:`. Anything new goes in `proposed_concepts:`.
+Identify ≥3 concepts that fit the video by reading the step-3 payload (Gemini's `summary` + `key_developments` + `topic_tags`, or the raw transcript on the captions-fallback path). **Strict rule:** only ontology-listed concepts go in `concepts:`. Anything new goes in `proposed_concepts:`.
 
 Concepts are **for graph + concept-hub catalysts**. Extract liberally and specifically — pick concepts that genuinely describe what the video is about, grounded in what the speaker actually says (not just the title). For `youtube-events`, lean on the event-shaped domains of the vault's ontology (e.g. `finance-*`, `macro-*`, `geo-*` prefix families — think news recap / market recap channels). For `youtube-concepts`, lean on the technique/methodology domains (e.g. `ml-*`, `swe-*` — think paper explainers, engineering channels, lecture series).
 
@@ -129,12 +156,12 @@ No theme catalog read. Concepts flow to hubs via the `concepts:` frontmatter reg
 
 `Read` `<vault_root>/config/note_formats/youtube.md` for the brief's section skeleton — it carries both grain blocks (`youtube-events` and `youtube-concepts`); compose to the one matching this item's `source_type`. That file is seeded at init and user-editable. Dense, evidence-rich, ~400–700 words.
 
-The transcript from step 3 is raw text — you derive each structured section by reading it carefully:
+On the Gemini path the payload is pre-structured — compose the sections from its fields. On the captions-fallback path the transcript is raw text and you derive each section yourself:
 
 - **`## Lead`** — one sentence stating what the video argues / explains. Frame it as the angle the presenter is pushing, not "the video discusses X".
-- **`## Key Developments`** — 4-8 bullets, each `- <point> — <evidence>`. **Quote the speaker verbatim** for the evidence half (look for short, sharp lines in the transcript and keep them as-is in quotes). Capture distinct claims, not paraphrases of one claim.
-- **`## Key Moments`** — **REQUIRED, never omit.** This is the YouTube brief's signature section and the one a reader scrubs to. 5-10 bullets, each `` - `MM:SS` — <description> ``. You derive these yourself from the raw `segments` (there is no pre-extracted `key_moments` field on the transcript-api payload — unlike the podcast/Gemini path): scan `segments` from step 3 for each moment, take its `start` value, format as `MM:SS` (or `HH:MM:SS` for videos over an hour: `start // 3600 : (start % 3600) // 60 : start % 60`). **Do not invent timestamps** — pick segments that exist in the payload. Skipping this section because deriving it is more work than a pre-structured payload is a contract violation.
-- **`## Follow-ups`** — every URL the speaker cites verbally (the transcript may not contain hyperlinks; URLs spoken out loud or shown on slides referenced as "you can read it at example.com / ..." are what you're catching). Each becomes `- [link](url) — <context>`. Skip the section if there are none.
+- **`## Key Developments`** — 4-8 bullets, each `- <point> — <evidence>`. Gemini path: map `key_developments` `{point, evidence}` pairs directly. Captions path: **quote the speaker verbatim** for the evidence half (look for short, sharp lines in the transcript and keep them as-is in quotes). Capture distinct claims, not paraphrases of one claim.
+- **`## Key Moments`** — **REQUIRED, never omit.** This is the YouTube brief's signature section and the one a reader scrubs to. 5-10 bullets, each `` - `MM:SS` — <description> ``. Gemini path: use the payload's `key_moments` as-is. Captions path: derive them from the raw `segments` — scan `segments` from step 3 for each moment, take its `start` value, format as `MM:SS` (or `HH:MM:SS` for videos over an hour: `start // 3600 : (start % 3600) // 60 : start % 60`). **Do not invent timestamps** — pick moments that exist in the payload. Skipping this section because deriving it is more work than a pre-structured payload is a contract violation.
+- **`## Follow-ups`** — every URL the speaker cites verbally or on screen. Gemini path: map `mentioned_links` `{url, context}` pairs. Captions path: catch URLs spoken out loud or referenced as "you can read it at example.com / ...". Each becomes `- [link](url) — <context>`. Skip the section if there are none.
 - **`## Why It Matters`** (concept-grain) or **`## Market / Signal Implication`** (event-grain) — 2-4 sentences synthesising where this fits in the broader space (concept-grain) or which sectors/timeframes the signal touches (event-grain).
 
 ### 7. Create the note
@@ -155,9 +182,9 @@ weave_create(
     "published_date": "<published>",
     "video_id": "<video_id>",           # MANDATORY — primary idempotency key. The step-2 re-read guard matches on THIS frontmatter field; omit it and a re-run writes a duplicate. Never drop it.
     "temporal_grain": "<event|concept from input>",  # MANDATORY — carries the grain forward; concept-grain reaches concept hubs, event-grain floats themes.
-    "duration_sec": <from transcript payload>,
-    "extraction_model": "<transcript payload's model field, e.g. youtube-transcript-api>",
-    "transcript_language": "<transcript payload's language field>",
+    "duration_sec": <from step-3 payload>,
+    "extraction_model": "<step-3 payload's model field, e.g. gemini-2.5-flash or youtube-transcript-api>",
+    "transcript_language": "<captions payload's language field; omit key on the Gemini path (no language field)>",
     "queue_item_id": "<q-XXXX>",
     "proposed_concepts": [<new ones>],
     # event-grain only (exactly one of the three applies):
@@ -218,11 +245,14 @@ For failures:
 
 **Restricted `fetch_failed` reason vocabulary.** YouTube workers have a fixed set:
 
-- `transcripts_disabled:` — channel owner disabled captions on this video. Archive as failed; do not retry.
-- `no_transcripts:` — no transcript available for any preferred language. Archive as failed.
-- `video_unavailable:` — private / removed / region-blocked. Archive as failed.
-- `empty_transcript:` — transcript fetched but body under 500 chars (mostly music / silent demo). Archive as failed.
-- `transcript_api_failed:` — any other SDK error (missing_sdk, missing_api_key analog, network). Orchestrator may retry on the next drain.
+- `gemini_refused:` — Gemini reports the video private / age-gated / region-blocked / removed. Archive as failed; do not retry.
+- `api_error:` — transient Gemini error (429 quota, 5xx, missing_api_key, missing_sdk). Orchestrator may retry on the next drain.
+- `invalid_response:` — Gemini returned unparseable JSON. Retryable.
+- `transcripts_disabled:` — (fallback path) channel owner disabled captions. Archive as failed only when Gemini also failed permanently.
+- `no_transcripts:` — (fallback path) no transcript for any preferred language.
+- `video_unavailable:` — private / removed / region-blocked per the captions API.
+- `empty_transcript:` — transcript fetched but body under 500 chars (mostly music / silent demo).
+- `transcript_api_failed:` — (fallback path) any other captions SDK error, e.g. IpBlocked. Retryable.
 - `weave_create:` — the actual exception text from a failed write (step 7).
 
 If you cannot produce a reason starting with one of those, you do not have a failure — go back and complete the write.
@@ -246,7 +276,8 @@ Connections`.
 
 ## Failure-handling notes
 
-- **youtube-transcript-api SDK missing** (`missing_sdk`) → return `fetch_failed: transcript_api_failed: missing_sdk`. The user needs to `pip install thinkweave[youtube]`. Orchestrator will surface this as a recurring failure until fixed.
+- **google-genai SDK or GOOGLE_API_KEY missing** (`missing_sdk` / `missing_api_key` from 3a) → try the captions fallback; if that also fails, return `fetch_failed: api_error: missing_sdk` (or `missing_api_key`). The user needs `pip install thinkweave[gemini]` / `GOOGLE_API_KEY` in `.env`. Orchestrator will surface this as a recurring failure until fixed.
+- **429 quota** (`api_error` with `RESOURCE_EXHAUSTED`) → expected occasionally on the free tier (250K input tokens/min; videos over ~40 min exceed it individually). Leave in queue — never archive as failed.
 - **`weave_create` failure** → return `{"status": "fetch_failed", "reason": "weave_create: <err text>"}`. Don't retry; the orchestrator leaves the queue item for the next drain.
 - **Ontology read failure** → fall back to `weave_concepts(action="list")` for the canonical set. If both fail, write the note with whatever concepts you extracted (they'll go to `proposed_concepts:` automatically via the server-side gate).
 - **THEMES.md missing or empty `## Catalog (active)`** (event-grain only) → set `theme_unfiled: true` for the item; never fail the worker for this.
@@ -257,6 +288,7 @@ You process exactly one item per invocation. Keep the response tight — the orc
 
 ## What this worker does NOT do
 
-- Download the video or audio. Caption data comes from YouTube's own transcript endpoint via youtube-transcript-api; no local file storage.
+- Download the video or audio. The Gemini path hands YouTube URLs to Google server-side; the captions fallback reads YouTube's transcript endpoint. No local file storage either way.
 - Run admission triage. YouTube subscriptions are pre-curated by the user's channel allowlist; the user already decided "this channel is worth watching" by adding it.
-- Fall back to Gemini Flash on transcripts-disabled videos. The previous PR had Gemini as the primary path — empirically the refusal rate was very high on captioned conference content (3/3 on an AI Engineer sample), and YouTube's own auto-captions cover essentially all English uploads. Videos without captions (`transcripts_disabled` / `no_transcripts`) are archived as failed for now; the `gemini_extract` module is still present and can be re-engaged as a fallback by editing step 3 to chain it after a transcripts failure.
+
+**Backend history.** Gemini was the original primary, demoted 2026-06 after a 3/3 refusal sample on AI Engineer conference videos; captions ran as primary until 2026-09-03, when YouTube's persistent `IpBlocked` on this network starved the lane for a week (zero landings since 08-24). Gemini re-promoted to primary — re-tested clean on current queue items (2/2 videos extracted; the historical refusals did not reproduce) — with captions retained as the free fallback for the day the block lifts.

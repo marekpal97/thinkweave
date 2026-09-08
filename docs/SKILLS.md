@@ -55,6 +55,21 @@ rather than a wrapper around ordinary retrieval: history and context questions
 use the described `weave_*` tools directly unless the user explicitly invokes
 the skill.
 
+Pi consumes `commands/*.md` **directly**, with no projection layer: Pi
+discovers root `*.md` files in `~/.pi/agent/skills/` as individual skills when
+they carry `name` + `description` frontmatter (which every command does), so
+`weave install --harness pi` links each worker-less command there by name —
+`~/.pi/agent/skills/wrap.md -> <repo>/commands/wrap.md`, invoked as
+`/skill:wrap` (prompt expansion; Pi has no Skill tool). The Codex bundle under
+`skills/` must **not** be what Pi gets: a Codex projection says "read
+`../../docs/CODEX-SKILL-PROJECTION.md`", and Pi resolves relative paths from
+the skill's own directory, which under `~/.pi/agent/skills` is nothing — the
+installer sweeps any such `thinkweave-*` links it finds. Worker-backed commands
+(`/drain`, `/dream`, `/news`, `/newsletter`, `/podcast`, `/youtube`,
+`/seed-enrich`, `/research-podcast`, `/research-youtube`) are not linked
+because Pi has no subagents to dispatch them onto. `weave uninstall --harness
+pi` reverses the links. See [HARNESSES.md §Pi](HARNESSES.md#pi).
+
 Worker fan-out is **declared, never inferred**: a command that spawns workers
 lists them in a `workers:` frontmatter key, and the projector validates each
 name against `agents/*.md`. Prose that merely names a worker declares nothing —

@@ -30,6 +30,10 @@ weave graph <id>                              # local graph
 weave context "q" [--type X]                  # 3-layer retrieval (FTS → concept → recency)
 weave stats                                   # vault health (deprecated → weave doctor)
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
+weave doctor --mcp [--harness X]              # MCP wiring: registration scopes, launcher probe, venv
+                                            # extras; on a harness whose MCP client is an
+                                            # extension (Pi: pi-mcp-adapter) also checks that
+                                            # package is installed and names its install command
 weave health [--json]                         # jobs/queues/hooks/digest; exit 1 on flag; --json is /brief's contract
 weave learn check --note <id>                 # learn-note frontmatter contract; exit 1 on problems
 weave learn probe --session <uuid|ses-id> --text "…"  # unanswered question → probe row
@@ -59,6 +63,7 @@ weave steering {evidence [--module PATH] | gate --proposals-json FILE} [--json] 
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
 weave import {claude-code|codex|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
                                               # --enrich synthesises pending sessions imported by the named source only — no cross-harness draining
+                                              # codex: subagent sidecar rollouts (guardian approval judge, spawn_agent workers — session_meta.source carries a `subagent` key) are skipped and counted as skipped_subagent; --include-subagents imports them stamped `codex_subagent: <kind>`
 weave intake {enumerate|archive}              # drop-folder helpers for /substack and friends
 weave discover [--project X]                  # cross-project research gap analysis
 weave show <id>                               # render a single note

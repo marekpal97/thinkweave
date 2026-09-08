@@ -79,6 +79,65 @@ def cleanup_buffer(weave_dir: Path, session_id: str) -> None:
     clear_session_state(weave_dir, session_id)
 
 
+def _partition_buffer(buf_file: Path) -> tuple[list[str], list[str]]:
+    """Split a live buffer into ``(action_lines, retrieval_lines)``.
+
+    Malformed lines stay in the action catch-all, so nothing a hook wrote is
+    ever dropped on the floor by the archive step.
+    """
+    action_lines: list[str] = []
+    retrieval_lines: list[str] = []
+    with open(buf_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            etype = ""
+            try:
+                etype = (json.loads(line) or {}).get("type", "")
+            except json.JSONDecodeError:
+                pass  # malformed lines stay in the action catch-all
+            if etype in _RETRIEVAL_LOG_TYPES:
+                retrieval_lines.append(line)
+            else:
+                action_lines.append(line)
+    return action_lines, retrieval_lines
+
+
+def mirror_buffer_events(weave_dir: Path, session_id: str, session_dir: Path) -> int:
+    """Copy the buffer's action/prompt lines into ``events.jsonl`` — buffer kept.
+
+    The per-turn Stop hook's fold (``handler._fold_processed_session``) uses
+    this so the session folder is current after every turn, not only after
+    the first one. The live buffer is deliberately left in place: it is the
+    prompt-time enrichment ledger (``operations/prompt_time_retrieval``
+    dedups served ids against the *live* buffer only), so retiring it per
+    turn would reset that ledger every turn. :func:`archive_buffer` still
+    retires the buffer at wrap time, and its append-unique write skips every
+    line already mirrored here.
+
+    Retrieval/startup lines are not mirrored — ``retrieval_log.jsonl`` is
+    projected into ``context_served`` at index time and stays an archive-time
+    artefact. Returns the number of lines appended.
+    """
+    buf_file = weave_dir / "buffer" / f"{session_id}.jsonl"
+    if not buf_file.exists():
+        return 0
+    action_lines, _retrieval = _partition_buffer(buf_file)
+    if not action_lines:
+        return 0
+    events_dest = session_dir / "events.jsonl"
+    seen = (
+        set(events_dest.read_text(encoding="utf-8").splitlines())
+        if events_dest.exists()
+        else set()
+    )
+    pending = [line for line in action_lines if line not in seen]
+    session_dir.mkdir(parents=True, exist_ok=True)
+    _append_unique_lines(events_dest, pending)
+    return len(pending)
+
+
 def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
     """Move the buffer file into the session folder, partitioning by type.
 
@@ -99,22 +158,7 @@ def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
 
     # Any failure propagates and leaves the live buffer in place. The next
     # Stop/wrap can retry; silently deleting lifecycle evidence cannot.
-    action_lines: list[str] = []
-    retrieval_lines: list[str] = []
-    with open(buf_file, encoding="utf-8") as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            etype = ""
-            try:
-                etype = (json.loads(line) or {}).get("type", "")
-            except json.JSONDecodeError:
-                pass  # malformed lines stay in the action catch-all
-            if etype in _RETRIEVAL_LOG_TYPES:
-                retrieval_lines.append(line)
-            else:
-                action_lines.append(line)
+    action_lines, retrieval_lines = _partition_buffer(buf_file)
 
     session_dir.mkdir(parents=True, exist_ok=True)
     if action_lines:

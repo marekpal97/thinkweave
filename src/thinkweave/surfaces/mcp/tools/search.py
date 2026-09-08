@@ -237,7 +237,6 @@ def handle_timeline(cfg: Config, args: dict):
     from mcp.types import TextContent
 
     from thinkweave.core.schemas import NoteType
-    from thinkweave.core.vault import VaultManager
     from thinkweave.retrieval.search import Search
 
     project = args.get("project", "") or ""
@@ -260,18 +259,28 @@ def handle_timeline(cfg: Config, args: dict):
         return [TextContent(type="text", text="\n".join(lines))]
 
     cutoff = (date.today() - timedelta(days=days)).isoformat()
-    vm = VaultManager(config=cfg)
-
-    sessions = []
-    for note in vm.list_notes(note_type=NoteType.SESSION, limit=100):
-        if note.project == project and note.date >= cutoff:
-            sessions.append(note)
+    sessions = s.list_notes(
+        note_type=NoteType.SESSION,
+        project=project,
+        since=cutoff,
+        limit=100,
+    )
 
     sessions.sort(key=lambda n: n.date)
 
     if not sessions:
         s.close()
         return [TextContent(type="text", text=f"No sessions found for project '{project}' in the last {days} days.")]
+
+    decisions_by_session: dict[str, list] = {}
+    for note in s.list_notes(
+        note_type=NoteType.DECISION,
+        source_sessions=[session.id for session in sessions],
+        limit=max(1, len(sessions) * 50),
+    ):
+        source_session = note.frontmatter.get("source_session")
+        if source_session:
+            decisions_by_session.setdefault(str(source_session), []).append(note)
 
     lines = []
     for sess in sessions:
@@ -301,10 +310,7 @@ def handle_timeline(cfg: Config, args: dict):
                 f_ = t.get("failed", 0)
                 lines.append(f"Tests: {p} passed, {f_} failed")
 
-        decisions = []
-        for note in vm.list_notes(note_type=NoteType.DECISION, limit=50):
-            if note.frontmatter.get("source_session") == sess.id:
-                decisions.append(note)
+        decisions = decisions_by_session.get(sess.id, [])
 
         if decisions:
             lines.append("Decisions:")

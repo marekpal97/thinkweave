@@ -148,16 +148,17 @@ The `/research` router classifies pasted URLs by `url_patterns` and dispatches t
 
 ## Prerequisites
 
-The transcript-extraction step (inside `research-youtube-worker`) requires:
+The extraction step (inside `research-youtube-worker`) requires:
 
-1. `pip install thinkweave[youtube]` — installs `youtube-transcript-api`. No API key, no auth.
+1. `pip install thinkweave[gemini]` + `GOOGLE_API_KEY` in `.env` — the primary path hands the video URL to Gemini Flash server-side (same key the podcast lane uses).
+2. `pip install thinkweave[youtube]` — installs `youtube-transcript-api` for the free captions fallback. No API key.
 
-If the SDK is missing, drain workers return `transcript_api_failed: missing_sdk` — surface in the report and leave the queue items pending until installed.
+If the Gemini SDK or key is missing, drain workers return `api_error: missing_sdk` / `api_error: missing_api_key` — surface in the report and leave the queue items pending until installed.
 
 `feedparser` is required by the rss_poll strategy. Install via `uv add --optional news feedparser` (already a transitive dep of the `[news]` extra).
 
-### Why transcripts over Gemini Flash?
+### Why Gemini Flash over transcripts? (backend history)
 
-The previous PR routed every YT video through Gemini Flash, which gave back pre-extracted `summary` / `key_developments` / `key_moments` in one call. The empirical refusal rate on captioned conference content turned out to be much higher than the spec's ~5% assumption (3/3 on an AI Engineer sample). YouTube's own auto-captions cover essentially all English uploads, so the transcripts route gets you (a) a lower-cost zero-API path and (b) a much higher success rate on the channels you actually subscribe to. The trade is that the worker now derives `key_developments` / `key_moments` from the raw transcript itself (Sonnet handles 15-30K-char talks fine) rather than dropping in Gemini's structured payload.
+Gemini was the original primary, demoted 2026-06 after a 3/3 refusal sample on AI Engineer conference content — captions ran as primary from then ("free, no API, high success"). That held until YouTube started IP-blocking this network's caption fetches (`transcript_api_failed: IpBlocked`, persistent from ~2026-08-24; the lane landed zero videos for a week while the queue grew). Gemini was re-promoted to primary on 2026-09-03 — re-tested clean on live queue items, the historical refusals did not reproduce — because its fetch happens **on Google's servers**, so no local IP ever touches YouTube. Captions remain wired in as the free fallback the worker tries when Gemini fails.
 
-The `gemini_extract` module is still present and tested — re-engage it as a fallback for `transcripts_disabled` videos by editing `research-youtube-worker.md` step 3 to chain a Gemini call after a transcripts failure.
+Free-tier constraints baked into the defaults: `drain_parallelism: 1` (250K input tokens/min per model — one video at LOW media resolution is most of that budget) and a ~40-minute per-video ceiling (longer videos 429 as retryable `api_error`; a paid-tier key lifts both, override parallelism per-vault in sources.yaml).
