@@ -1858,8 +1858,20 @@ def _output(
             "hookEventName": hook_event_name,
             "additionalContext": additional_context,
         }
-    json.dump(result, sys.stdout)
-    sys.stdout.flush()
+    try:
+        json.dump(result, sys.stdout)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The harness stopped listening: a shim reaped the launcher at its
+        # per-event budget (shim-core's documented orphan policy) and this
+        # process finished the work as the orphan. Everything above has
+        # already landed; the reply is best-effort, so there is nothing to
+        # log — and stdout is redirected so the interpreter's exit-time
+        # flush does not raise the same EPIPE a second time.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

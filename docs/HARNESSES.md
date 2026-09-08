@@ -14,7 +14,7 @@ profile is what runs; fix whichever is wrong.
 
 | | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0: credential-less spike 2026-08-02, two live interactive sessions 2026-09-05, two instrumented headless sessions 2026-09-07 with every envelope captured raw (docs/HARNESSES.md) | measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, settings-MCP falsified) + events probe 2026-09-05; blueprint n-a1d3beba | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
+| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0: credential-less spike 2026-08-02, two live interactive sessions 2026-09-05, two instrumented headless sessions 2026-09-07 with every envelope captured raw (docs/HARNESSES.md) | measured — Pi 0.84.4: live trial 2026-09-03 (E0 floor verified, settings-MCP falsified, n-fb74c7d0), headless events probe 2026-09-05 (all four native events fired), and an interactive session 2026-09-05 through pi-mcp-adapter 2.32.1 (17 bare-named weave_* tools, direct calls, /skill:wrap end-to-end on a hook-captured session) | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
 | eligibility (dec-5a076384 ladder) | E3 | E3 | E3 | E0 |
 | detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
 | lifecycle hooks | plugin | file | extension | none |
@@ -25,7 +25,7 @@ profile is what runs; fix whichever is wrong.
 | dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
 | transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/storage/session/*/*.json` (json-records) |
 | session ids | `uuid4` | `uuid7` | `uuid (session-header id)` | `ses_<12-hex><14-base62> (ULID-style sortable)` |
-| MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/settings.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
+| MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/mcp.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
 | MCP native CLI | `claude mcp add` | `codex mcp add` | — | — |
 | instructions file | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` | `~/.pi/agent/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
 | skills dir | `~/.claude/skills` | `~/.codex/skills` | `~/.pi/agent/skills` | `~/.config/opencode/skills` |
@@ -34,10 +34,10 @@ profile is what runs; fix whichever is wrong.
 
 | canonical | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| SessionStart | ✓ 2026-08-29 | ✓ 2026-09-05 | wired, unverified | `experimental.chat.messages.transform` (declared) |
-| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-09-05 | wired, unverified | `chat.message` (declared) |
-| PostToolUse | ✓ 2026-08-29 | ✓ 2026-09-07 | wired, unverified | `tool.execute.after` (declared) |
-| Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | wired, unverified | — (no verified equivalent) |
+| SessionStart | ✓ 2026-08-29 | ✓ 2026-09-05 | `session_start` ✓ 2026-09-05 | `experimental.chat.messages.transform` (declared) |
+| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-09-05 | `before_agent_start` ✓ 2026-09-05 | `chat.message` (declared) |
+| PostToolUse | ✓ 2026-08-29 | ✓ 2026-09-07 | `tool_result` ✓ 2026-09-05 | `tool.execute.after` (declared) |
+| Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | `agent_end` ✓ 2026-09-05 | — (no verified equivalent) |
 
 ### Documented degradations
 
@@ -58,9 +58,10 @@ None — the reference harness.
 
 #### Pi
 
-- **MCP registration** — documented: FALSIFIED live on 0.84.4 (2026-09-03): the written mcpServers entry parses but Pi core ships no MCP client, so no server is spawned and no error is raised; the CLI fallback in the instructions block is the verified retrieval path until extension-mediated tool exposure ships (#114)
+- **hook latency** — documented: shim-core's 800 ms telemetry budget sits below this launcher's floor on the dev machine (a no-op Stop is ~1.8 s warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim carries per-event budgets (UserPromptSubmit 2.5 s, Stop 6 s); a hook that still outlives its budget finishes as shim-core's documented orphan — capture is complete, Pi shows one 'hook timeout' notice per event per session, and only the prompt-time enrichment block that reply would have carried is lost (#114, docs/HARNESSES.md §Pi)
+- **MCP registration** — documented: Pi core ships no MCP client — a settings.json mcpServers block parses and is silently ignored (falsified live on 0.84.4, 2026-09-03). The registration is served through the community pi-mcp-adapter extension instead: `weave install --harness pi` writes the standard mcpServers block (plus lifecycle/directTools/toolPrefix) to ~/.pi/agent/mcp.json, the adapter also reads the project .mcp.json, and `weave doctor --mcp --harness pi` fails with `pi install npm:pi-mcp-adapter` when the package is absent; the CLI fallback in the instructions block covers a session where the tools still did not load (#114, n-fb74c7d0)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
-- **skill invocation** — documented: no Skill tool — /skill:name is prompt-expansion, and the bootstrap must say read-the-SKILL.md, not invoke (n-a1d3beba §4)
+- **skill invocation** — documented: no Skill tool — /skill:<name> is prompt expansion. Skills are root-file links `weave install --harness pi` creates in ~/.pi/agent/skills, one <name>.md per canonical commands/*.md; worker-backed commands (/drain, /dream, /news, /newsletter, /podcast, /youtube, /seed-enrich, …) are not linked because Pi has no subagents to run them (Pi docs/skills.md §Locations)
 
 #### OpenCode
 
@@ -457,6 +458,219 @@ block living in the source on every single touch. The retrieval path stays
 shape-agnostic (`retrieval_log.response_text` harvests every string in the
 object); the measured MCP shape above is one it handles, not the only one it
 would.
+
+## Pi
+
+Verified against **Pi 0.84.4** (badlogic/pi-mono `@earendil-works/pi-coding-agent`)
+on Linux (WSL2). Sources are labelled: `[docs]` = the package's own
+`docs/*.md` (`packages.md`, `skills.md`, `extensions.md`); `[adapter]` = the
+`pi-mcp-adapter` **2.32.1** README and source read from its installed package
+(`config.ts`, `types.ts`); `[measured]` = observed on a live Pi run — the
+2026-09-03 trial (vault note **n-fb74c7d0**) and the 2026-09-05 events probe
+that landed the E3 shim (PR #207).
+
+### No native MCP client
+
+`[measured]` A `mcpServers` block in `~/.pi/agent/settings.json` parses and is
+**silently ignored**: no server is spawned, no tool appears, no error is raised.
+The 2026-08-24 blueprint (n-a1d3beba) had asserted the settings route from a
+Pi issue titled "Add MCP *extension* example" — desk research read the word
+"extension" past. Ten minutes of `npm i -g` plus one session falsified it
+(n-fb74c7d0), which is also why the row's evidence is labelled *measured* and
+why `weave doctor` gained a check nothing else would have raised.
+
+### The adapter route
+
+`[adapter]` MCP on Pi is the community extension `pi-mcp-adapter`
+(`pi install npm:pi-mcp-adapter`). It reads the standard `{"mcpServers": {…}}`
+JSON from, lowest to highest precedence: `~/.config/mcp/mcp.json`,
+`~/.agents/mcp.json`, `~/.agents/mcp/mcp.json`, `~/.pi/agent/mcp.json`,
+project `.mcp.json`, project `.pi/mcp.json`. Later files overlay earlier ones
+**per field**, so the repo's committed `.mcp.json` (relative
+`bin/weave-mcp-launch`) wins on `command` inside the checkout while
+inheriting the adapter-only keys from the global file.
+
+thinkweave's row therefore puts `mcp_config` at **`~/.pi/agent/mcp.json`**
+(the adapter's Pi-global file) and `project_mcp_config_relpath` at the
+standard `.mcp.json`. `settings.json` is kept as `legacy_mcp_config`: `weave
+install --harness pi` and `weave uninstall --harness pi` both sweep a
+thinkweave entry out of it, so the dead block the earlier row wrote does not
+outlive that row. `settings.json` remains `user_settings` /
+`installed_plugins` (it is where `pi install` records `packages`).
+
+The entry body is Claude Code's split shape plus three adapter keys carried
+as profile data (`mcp_entry_extras`): `"lifecycle": "eager"` (SessionStart
+already spawns the handler; a lazy server would add its cold start to the
+first retrieval instead), `"directTools": true` (without it the server hides
+behind one `mcp` proxy tool), `"toolPrefix": "none"` (with `directTools` the
+adapter otherwise names tools `thinkweave_weave_search`; the skills name bare
+`weave_*`). The extra `"type": "stdio"` key is tolerated — `isServerEntry`
+is `isRecord` in `config.ts`, transport being chosen from `command`/`url` —
+so the writer keeps Claude Code's shape unchanged.
+
+**Doctor.** `weave doctor --mcp --harness pi` leads with an `MCP client
+extension` row. `[docs]` `pi install npm:<pkg>` appends `"npm:<pkg>[@ver]"`
+to the `packages` array of `~/.pi/agent/settings.json` (or `.pi/settings.json`
+with `-l`) and unpacks it under `~/.pi/agent/npm/node_modules/<pkg>`. The
+check reads those two arrays (string or `{"source": …}` filtering form,
+scoped names allowed) and, for a machine-scope listing, corroborates the
+unpacked `package.json`; it FAILs naming `pi install npm:pi-mcp-adapter`.
+The adapter also reads the `~/.config/mcp` and `~/.agents` files, which the
+doctor does not scan — a registration living only there reports as
+"not registered" while working.
+
+The same report carries an `extension stub` row on every
+`hook_mechanism == "extension"` harness. `weave hooks install --harness pi`
+writes one loader line, `export { default } from "<repo>/shims/pi/thinkweave-pi.ts"`
+(absolute path), into `~/.pi/agent/extensions/thinkweave.ts`; the doctor
+parses that path back out and **FAILs** when the file is gone, naming the
+checkout and branch the stub points at and the reinstall that rewrites it.
+No stub at all is a passing **WARN** ("hooks not installed"), consistent
+with how the doctor treats an uninstalled registration elsewhere. The row
+exists because the dev checkout was twice in one day switched to a branch
+without `shims/pi/`, and Pi loaded the stub, found nothing, and ran without
+capture and without a word.
+
+### Skills are root-file links
+
+`[docs]` Pi discovers **root `*.md` files** in `~/.pi/agent/skills/` (and
+`.pi/skills/`) as individual skills when they carry `name` + non-empty
+`description` frontmatter, alongside the usual `<dir>/SKILL.md` layout.
+Skills are invoked as `/skill:<name>` — **prompt expansion**; there is no
+Skill tool — and *relative paths inside a skill resolve from the skill's
+directory*.
+
+That last rule is what broke the first attempt: the Codex projections under
+`skills/thinkweave-*/SKILL.md` say "read `../../docs/CODEX-SKILL-PROJECTION.md`",
+which from `~/.pi/agent/skills/thinkweave-wrap/` is nothing. Symlinking the
+Codex bundle into Pi therefore produced 31 skills that each failed on first
+use. The Codex bundle is untouched for Codex; it just must not be what Pi
+gets.
+
+`weave install --harness pi` (the command that already owns per-harness
+machine wiring — Codex's Windows launcher, the instructions block — with a
+previewed `uninstall` that reverses it) now links the **canonical**
+`commands/<name>.md` files: `~/.pi/agent/skills/<name>.md -> <repo>/commands/<name>.md`,
+one per command whose frontmatter declares no `workers:` (via
+`skill_projection.iter_command_contracts`, the same parser the Codex projector
+uses). Nested commands (`commands/research/research-article.md`) link flat by
+their own name. `hubs-link`, `import-chatgpt` and `seed-enrich` gained a
+`name:` key for this — Pi names a nameless root file from its parent
+directory, and two files named `skills` collide. Worker-backed commands
+(`/drain`, `/dream`, `/news`, `/newsletter`, `/podcast`, `/youtube`,
+`/seed-enrich`, `/research-podcast`, `/research-youtube`) are skipped because
+Pi has no subagents (`subagents=False` on the row; a row that had them would
+link everything). The install is idempotent, re-points links aimed at an old
+checkout, drops links to commands that no longer exist, sweeps
+`thinkweave-*` links into the Codex bundle, and leaves any file that is not
+one of its links alone. `weave uninstall --harness pi` removes exactly the
+command links.
+
+`weave dev-link` refuses on this row and points at `weave install --harness
+pi`. dev-link is the Claude Code plugin route — one whole-checkout symlink
+that the plugin runtime turns into MCP + hooks + commands — and Pi has no
+plugin runtime; what it would do instead is discover every `SKILL.md`
+directory under the linked checkout recursively, re-exposing the Codex
+bundle by the back door. The install command already gives the property
+dev-link exists for (links straight into the working tree, live edits).
+Before the gate, dev-link on Pi died on the missing `package.json` manifest
+with "run from a thinkweave checkout" — a refusal by accident, and a wrong
+message.
+
+A known cosmetic gap: `commands/learn.md` carries one relative doc pointer
+(`../docs/LIFECYCLES.md`), which does not resolve from the Pi skills dir. It
+is a reference for humans, not a load-bearing read; nothing in the contract
+depends on it.
+
+### E3 posture
+
+`[measured]` All four lifecycle events fire through the extension shim
+(`shims/pi/thinkweave-pi.ts`, PR #207): `session_start → SessionStart`,
+`before_agent_start → UserPromptSubmit`, `tool_result → PostToolUse`,
+`agent_end → Stop`, with the SessionStart payload prepended as a synthetic
+user message by the `context` handler (Pi has no `additionalContext`
+channel). Capture is therefore passive, exactly as on Claude Code, and the
+instructions block (`~/.pi/agent/AGENTS.md`, `[measured]` read and acted on
+unprompted in the 2026-09-03 trial) says so: the model must **never** call
+`weave_extract` mid-session or per turn; end-of-session extraction is the
+explicit `/skill:wrap`; retrieval is `weave_search` / `weave_context` /
+`weave_graph`, never a filesystem crawl; and if the `weave_*` tools are absent
+the CLI fallback (`<repo>/bin/weave add …` / `search …`, absolute path) is the
+persistence path. The block does not reuse the shared `_NUDGE` opener: its
+"if available" hedge is wrong on a row whose tools are served by a named
+extension, and the text is the one verified live on the dev machine.
+
+### Live interactive run (2026-09-05)
+
+`[measured]` One interactive session on the dev machine (Pi 0.84.4,
+pi-mcp-adapter 2.32.1, model claude-sonnet-5) after `weave install --harness
+pi`-equivalent wiring: the adapter's startup notice reported the thinkweave
+server connected with **17 tools**, `/mcp tools` listed them under their bare
+`weave_*` names (the `toolPrefix: "none"` key is what makes that so — the
+adapter's default would have exposed `thinkweave_weave_search`), and the model
+called `weave_search`, `weave_timeline`, `weave_prompts`, `weave_read`,
+`weave_create`, `weave_concepts` and `weave_extract` directly, never through
+the adapter's `mcp` proxy tool. `/skill:wrap` loaded the root-file link to
+`commands/wrap.md`, called `weave_extract` once and `weave wrap-finalize`
+once, and made no mid-session extraction call on the earlier turns. The
+session folder it wrote holds the prompt events the `before_agent_start`
+capture had buffered and `agent_end` had materialised — passive capture and
+the explicit wrap met on the same session id (Pi's `PI_SESSION_ID`).
+
+### Hook budgets vs the measured floor
+
+`[measured]` The same session logged one "thinkweave UserPromptSubmit hook
+timeout" and one "Stop hook timeout" notice, and `hooks.log` gained 44
+`[Errno 32] Broken pipe` entries in the day (22 stop, 20 user_prompt_submit,
+2 post_tool_use). Both are one mechanism: shim-core reaps the launcher at its
+800 ms telemetry budget and destroys its pipes; the Python handler finishes
+the work as the documented orphan, then its final reply write hits the closed
+pipe. Nothing was lost — the archived events prove the captures landed — but
+the routine case was being reported as a failure. Measured on this host
+(WSL2, vault on `/mnt/c`): a no-op Stop through `bin/weave-hook-launch` costs
+~1.8 s warm and ~6 s under load; `uv run` itself is 0.02 s and the handler
+import 0.07 s, so the floor is vault I/O and index access, not process spawn.
+Two changes follow: the handler swallows `BrokenPipeError` on its reply write
+(the harness already gave up; there is nothing to report), and the Pi shim
+passes per-event budgets above the floor (UserPromptSubmit 2.5 s, Stop 6 s).
+The orphan policy is unchanged — a hook that outlives even those still
+completes; only the notice and the prompt-time enrichment reply are what a
+timeout costs.
+
+### What is NOT verified here
+
+Two earlier entries in this list were written before the run's index rows
+had been tied back to its Pi session id; the evidence gathered afterwards
+closes them, and it is recorded here rather than silently deleted:
+
+- **SessionStart injection in the interactive run — now verified.** The
+  index's `context_served` table holds 45 `startup` rows stamped
+  `2026-09-05T22:05:36Z` under session note `ses-887e3f7c`, whose frontmatter
+  `source_session` is the Pi session id `01a07399-4e6f-70b0-8e69-46bb56d87142`.
+  The startup payload reached that session; the 5 s SessionStart budget was
+  not the problem.
+- **PostToolUse on Pi — now verified as capture.** The two hook-materialised
+  notes of that session, `ses-887e3f7c` and `ses-9ec873ae` (same
+  `source_session`), report "2 tool events recorded" and "1 tool events
+  recorded": the `tool_result` event fired and the handler wrote the events.
+  What remains unverified is narrower — whether adapter-served `weave_*`
+  calls reach the **retrieval log** (`retrieval_log.jsonl`) under the
+  `mcp__thinkweave__` namespace the shim now restores, i.e. whether the
+  handler's retrieval gate classifies them as retrieval rather than as plain
+  tool events. No Pi session has yet been inspected for retrieval-log rows.
+- **Session fragmentation.** That one Pi session produced **three** session
+  notes: two hook-materialised ones 7 s apart (`ses-887e3f7c` at 22:05:40 and
+  `ses-9ec873ae` at 22:05:47) plus the wrap's `ses-e108081f`. This is the
+  class PR #209 (open, `fix(wrap,judge): resolve session notes by exact id`)
+  and #183's logical-session chain address, not a Pi-specific defect; it is
+  not fixed here and is the next Pi gap to close once those land.
+- **The `pi -p` print-mode path** with the raised budgets — only the
+  interactive TUI was driven.
+- **Stub staleness in a real branch switch** is covered by the doctor's
+  `extension stub` row (below), not by a hook that re-points itself: a Pi
+  session started while the dev checkout sits on a branch without
+  `shims/pi/` still runs without capture until `weave doctor --mcp --harness
+  pi` is consulted or the stub is rewritten.
 
 ## Native Windows
 

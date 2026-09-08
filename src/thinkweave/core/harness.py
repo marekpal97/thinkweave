@@ -213,7 +213,13 @@ class HarnessProfile:
     regardless — a next step a Codex user could not take, on the one screen whose
     whole job is telling them what to do next. Distinct from
     :attr:`headless_slash`, which is about one-shot *invocation* rather than
-    whether the skills exist at all; flip this when the export lands."""
+    whether the skills exist at all; flip this when the export lands.
+
+    Pi keeps it False as well, deliberately: its skills ARE exported (as
+    root-file links, :attr:`root_file_skills`), but ``/onboard``'s contract
+    is Claude-Code-shaped (hook wiring without ``--harness``, Claude Code
+    history import), so the next-steps screen lists the CLI equivalents and
+    names only ``/skill:wrap``."""
 
     # --- dispatch-contract data (#191, dec-5a076384) ----------------------
     # The flat fields above predate the re-scope and group as the decision's
@@ -331,10 +337,13 @@ class HarnessProfile:
     entry into — one of ``mcp_config.ENTRY_SHAPES``.
 
     ``command-args`` — Claude Code's authored split shape (``type: stdio``,
-    ``command`` string, ``args`` list, ``env`` map). Pi documents the same
-    split ``mcpServers`` block (``command``/``args``/``env``, blueprint
-    n-a1d3beba §4), and Codex's TOML differs only by the format-level trims
-    the writer already applies. ``argv-array`` — OpenCode's documented
+    ``command`` string, ``args`` list, ``env`` map). Pi's MCP client is the
+    ``pi-mcp-adapter`` extension, which reads the same standard ``.mcp.json``
+    shape and accepts any record as a server entry (``isServerEntry`` is
+    ``isRecord`` in its ``config.ts``, 2.32.1) — the ``type`` key is simply
+    ignored, transport being inferred from ``command`` vs ``url``. Codex's
+    TOML differs only by the format-level trims the writer already applies.
+    ``argv-array`` — OpenCode's documented
     ``mcp`` body (opencode.ai/docs/mcp-servers/, fetched 2026-08-24 into
     blueprint n-767d66b4 §4): ``type: local``, launcher and argv merged into
     ONE ``command`` array, optional ``environment`` map. A harness's own
@@ -346,6 +355,56 @@ class HarnessProfile:
     """The harness-native registration command (``claude mcp add`` /
     ``codex mcp add``) when one exists — preferred over hand-splicing where
     the writer does not already reproduce its output byte-for-byte."""
+
+    legacy_mcp_config: Path | None = None
+    """A file an EARLIER version of this row wrote the registration into and
+    the harness never read (Pi's ``settings.json`` ``mcpServers`` key —
+    parsed, silently ignored, falsified live 2026-09-03, n-fb74c7d0).
+    ``weave install`` and ``weave uninstall`` both sweep the thinkweave entry
+    out of it, so a dead block does not outlive the row that wrote it. None
+    when the location never moved."""
+
+    mcp_client_package: str = ""
+    """The harness ships NO MCP client of its own; this names the package
+    (its own package-manager vocabulary, e.g. an npm name) that supplies one
+    as an extension. ``weave doctor --mcp`` then adds a check that the
+    package is installed — a registration nobody reads is the silent
+    failure this module exists to prevent. Empty when the client is
+    built in."""
+
+    mcp_client_install_cmd: str = ""
+    """The one-line remedy the doctor prints when :attr:`mcp_client_package`
+    is missing (``pi install npm:pi-mcp-adapter``)."""
+
+    mcp_entry_extras: dict[str, object] = field(default_factory=dict)
+    """Client-specific keys merged onto the canonical server entry after
+    :func:`mcp_config.canonical` shapes it — options the harness's MCP
+    client documents beside ``command``/``args`` (pi-mcp-adapter's
+    ``lifecycle`` / ``directTools`` / ``toolPrefix``). Empty for a client
+    that needs none. The doctor's fingerprint ignores them: they configure
+    how the client exposes the server, not what it launches."""
+
+    packages_root: Path | None = None
+    """Where the harness unpacks installed packages (Pi: ``~/.pi/agent/npm/
+    node_modules``), so the doctor can corroborate a settings entry against
+    the files on disk. None when no such directory is documented."""
+
+    root_file_skills: bool = False
+    """The harness discovers root-level ``*.md`` files in :attr:`skills_dir`
+    as individual skills when they carry ``name`` + ``description``
+    frontmatter (Pi docs/skills.md §Locations). ``weave install`` then links
+    every worker-less ``commands/<name>.md`` there by its own name —
+    pointing at the canonical contract, NOT at the Codex ``skills/`` bundle:
+    a Codex projection says "read ../../docs/CODEX-SKILL-PROJECTION.md" and
+    resolves that path from the skill's directory, which under
+    ``~/.pi/agent/skills`` is nothing (the 2026-09-05 breakage that
+    motivated the flag). Worker-backed commands are skipped when
+    :attr:`subagents` is False — there is nothing to dispatch them onto."""
+
+    skill_prefix: str = "/"
+    """How a user invokes a shipped skill by name: ``/`` on Claude Code,
+    ``/skill:`` on Pi (prompt expansion, no Skill tool). Used wherever
+    post-install text names one."""
 
     degradations: tuple[Degradation, ...] = ()
 
@@ -672,12 +731,26 @@ def pi(home: Path | None = None) -> HarnessProfile:
     Blueprint n-a1d3beba (2026-08-24) distilled the facts; two live rounds
     against Pi 0.84.4 then measured them: the 2026-09-03 trial verified the
     E0 floor (AGENTS.md read and acted on, CLI fallback, universal skills
-    dir) and FALSIFIED the settings-route MCP claim, and the 2026-09-05
-    events probe observed every native event in ``hook_events`` firing in a
-    headless run. Lifecycle capture rides the extension shim
+    dir) and FALSIFIED the settings-route MCP claim (n-fb74c7d0), and the
+    2026-09-05 events probe observed every native event in ``hook_events``
+    firing in a headless run. Lifecycle capture rides the extension shim
     (``shims/pi/thinkweave-pi.ts``, #114) on the shim-core kernel; the
     ``hook_events`` map is the translation table the shim and the
     conformance suite share.
+
+    MCP is not Pi's: the community ``pi-mcp-adapter`` extension supplies
+    the client and reads the standard ``mcpServers`` JSON from (lowest to
+    highest precedence) ``~/.config/mcp/mcp.json``, ``~/.agents/mcp.json``,
+    ``~/.pi/agent/mcp.json``, project ``.mcp.json``, project
+    ``.pi/mcp.json`` (its README, 2.32.1). The row registers into the
+    Pi-global file and reads the project ``.mcp.json`` this repo commits.
+
+    Skills: Pi discovers root ``*.md`` files in ``~/.pi/agent/skills`` as
+    individual skills (docs/skills.md §Locations) and expands
+    ``/skill:<name>`` as a prompt. The installer links the canonical
+    ``commands/*.md`` there directly — the Codex ``skills/`` bundle must
+    NOT be what Pi gets, its relative ``../../docs`` pointer breaks from
+    the Pi skills dir.
     """
     h = home or Path.home()
     agent = h / ".pi" / "agent"
@@ -689,25 +762,32 @@ def pi(home: Path | None = None) -> HarnessProfile:
         native_memory=False,
         headless_slash=False,
         instructions_file=agent / "AGENTS.md",
-        # Hooks exist but only fire once the extension stub is installed —
-        # same honesty rule as Codex's trust gate: the model must not assume
-        # a Stop hook captured anything.
+        # E3 posture: the extension shim captures passively, so the block's
+        # job is to keep the model OUT of the capture path — no per-turn
+        # weave_extract — and to name the one explicit boundary skill. Not
+        # built on _NUDGE: its "if available" hedge is wrong here (the tools
+        # are served, by a named extension), and the text is the one
+        # live-verified on the dev machine's AGENTS.md (2026-09-05).
         instructions_block_body=(
-            f"{_NUDGE}. This harness fires thinkweave lifecycle hooks only "
-            "once the extension shim is installed (`{weave} hooks install "
-            "--harness pi`), so call `weave_extract` yourself before you "
-            "finish if capture is not active. "
-            "If the `weave_*` tools did not load, fall back to the CLI: "
+            "Thinkweave (Obsidian-native memory layer) is your durable "
+            "memory. Its `weave_*` tools are served through the "
+            "pi-mcp-adapter extension. Prefer `weave_search` / "
+            "`weave_context` / `weave_graph` over filesystem search; never "
+            "crawl the filesystem with find/grep/ls looking for thinkweave "
+            "or vault files. Lifecycle hooks capture this session passively "
+            "(context at start, prompts, tool events, session note at stop). "
+            "NEVER call `weave_extract` mid-session or per turn; "
+            "end-of-session extraction is the explicit `/skill:wrap`. If "
+            "`weave_*` tools are absent, fall back to the CLI: "
             "`{weave} add <title> -t note -p <project> -b <body>` persists "
-            "a note (`-t decision` for a decision) and "
-            "`{weave} search <query>` retrieves."
+            "a note and `{weave} search <query>` retrieves."
         ),
-        # NB: mcp_config, user_settings and installed_plugins all resolve to
-        # this one settings.json. Safe while every writer is key-scoped or
-        # gated off (hooks=False); when #114 flips hooks on, the hook writer
-        # merges into the same document the MCP entry lives in — merge, never
-        # regenerate.
-        mcp_config=agent / "settings.json",
+        # The adapter's Pi-global file. settings.json stays the home of
+        # `packages` (installed_plugins) and any hook-ish settings, and is
+        # swept as the LEGACY registration location: the pre-2026-09-05 row
+        # wrote a `mcpServers` block there that Pi core parses and ignores.
+        mcp_config=agent / "mcp.json",
+        legacy_mcp_config=agent / "settings.json",
         skills_dir=agent / "skills",
         plugins_root=agent / "extensions",
         plugins_cache=agent / "extensions" / "cache",
@@ -715,8 +795,24 @@ def pi(home: Path | None = None) -> HarnessProfile:
         plugin_manifest_relpath=Path("package.json"),
         user_settings=agent / "settings.json",
         project_settings_relpath=Path(".pi") / "settings.json",
-        project_mcp_config_relpath=Path(".pi") / "settings.json",
+        project_mcp_config_relpath=Path(".mcp.json"),
         project_plugins_relpath=Path(".pi") / "extensions",
+        packages_root=agent / "npm" / "node_modules",
+        mcp_client_package="pi-mcp-adapter",
+        mcp_client_install_cmd="pi install npm:pi-mcp-adapter",
+        # Adapter-only keys (types.ts ServerEntry, 2.32.1): without
+        # `directTools` the server hides behind one `mcp` proxy tool, and with
+        # it the tools come out as `thinkweave_weave_search` unless
+        # `toolPrefix: none` — the skills name bare `weave_*`. `eager`
+        # because SessionStart already spawns the handler; a lazy server
+        # would add its cold start to the first retrieval instead.
+        mcp_entry_extras={
+            "lifecycle": "eager",
+            "directTools": True,
+            "toolPrefix": "none",
+        },
+        root_file_skills=True,
+        skill_prefix="/skill:",
         pause_marker=agent / "thinkweave_paused.json",
         memory_projects_root=agent / "projects",
         memory_global_dir=agent / "memory",
@@ -747,20 +843,52 @@ def pi(home: Path | None = None) -> HarnessProfile:
         harness_flag="--harness pi",
         mcp_servers_key="mcpServers",
         evidence=(
-            "measured — Pi 0.84.4 live trial 2026-09-03 (E0 floor verified, "
-            "settings-MCP falsified) + events probe 2026-09-05; blueprint "
-            "n-a1d3beba"
+            "measured — Pi 0.84.4: live trial 2026-09-03 (E0 floor verified, "
+            "settings-MCP falsified, n-fb74c7d0), headless events probe "
+            "2026-09-05 (all four native events fired), and an interactive "
+            "session 2026-09-05 through pi-mcp-adapter 2.32.1 (17 bare-named "
+            "weave_* tools, direct calls, /skill:wrap end-to-end on a "
+            "hook-captured session)"
         ),
+        # Headless events probe 2026-09-05 (all four; SessionStart injection
+        # quoted real note ids back) + interactive session 2026-09-05 (prompt
+        # events archived, Stop materialised the folder /skill:wrap extended).
+        fires_verified={
+            "SessionStart": "2026-09-05",
+            "UserPromptSubmit": "2026-09-05",
+            "PostToolUse": "2026-09-05",
+            "Stop": "2026-09-05",
+        },
         degradations=(
+            Degradation(
+                "hook latency",
+                "documented",
+                "shim-core's 800 ms telemetry budget sits below this "
+                "launcher's floor on the dev machine (a no-op Stop is ~1.8 s "
+                "warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim "
+                "carries per-event budgets (UserPromptSubmit 2.5 s, Stop 6 s); "
+                "a hook that still outlives its budget finishes as shim-core's "
+                "documented orphan — capture is complete, Pi shows one "
+                "'hook timeout' notice per event per session, and only the "
+                "prompt-time enrichment block that reply would have carried "
+                "is lost",
+                "#114, docs/HARNESSES.md §Pi",
+            ),
             Degradation(
                 "MCP registration",
                 "documented",
-                "FALSIFIED live on 0.84.4 (2026-09-03): the written "
-                "mcpServers entry parses but Pi core ships no MCP client, so "
-                "no server is spawned and no error is raised; the CLI "
-                "fallback in the instructions block is the verified "
-                "retrieval path until extension-mediated tool exposure ships",
-                "#114",
+                "Pi core ships no MCP client — a settings.json mcpServers "
+                "block parses and is silently ignored (falsified live on "
+                "0.84.4, 2026-09-03). The registration is served through the "
+                "community pi-mcp-adapter extension instead: `weave install "
+                "--harness pi` writes the standard mcpServers block (plus "
+                "lifecycle/directTools/toolPrefix) to ~/.pi/agent/mcp.json, "
+                "the adapter also reads the project .mcp.json, and `weave "
+                "doctor --mcp --harness pi` fails with `pi install "
+                "npm:pi-mcp-adapter` when the package is absent; the CLI "
+                "fallback in the instructions block covers a session where "
+                "the tools still did not load",
+                "#114, n-fb74c7d0",
             ),
             Degradation(
                 "subagent fan-out",
@@ -772,9 +900,13 @@ def pi(home: Path | None = None) -> HarnessProfile:
             Degradation(
                 "skill invocation",
                 "documented",
-                "no Skill tool — /skill:name is prompt-expansion, and the "
-                "bootstrap must say read-the-SKILL.md, not invoke",
-                "n-a1d3beba §4",
+                "no Skill tool — /skill:<name> is prompt expansion. Skills "
+                "are root-file links `weave install --harness pi` creates in "
+                "~/.pi/agent/skills, one <name>.md per canonical "
+                "commands/*.md; worker-backed commands (/drain, /dream, "
+                "/news, /newsletter, /podcast, /youtube, /seed-enrich, …) are "
+                "not linked because Pi has no subagents to run them",
+                "Pi docs/skills.md §Locations",
             ),
         ),
     )
