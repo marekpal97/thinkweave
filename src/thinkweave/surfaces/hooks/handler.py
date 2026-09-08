@@ -168,6 +168,26 @@ def _hook_harness() -> str:
     return ""
 
 
+def _env_session_id() -> str:
+    """Session id from the firing harness's own env var — the last resort when
+    a hook payload omits ``session_id``.
+
+    Harness-neutral: reads the env var name the firing harness's profile
+    declares (``HarnessProfile.session_id_env``: ``CLAUDE_SESSION_ID`` on
+    Claude Code, ``PI_SESSION_ID`` on Pi, none on Codex/OpenCode), resolved
+    from our own argv like :func:`_hook_harness` rather than the Claude-only
+    literal the earlier code assumed. Every harness's hook envelope carries
+    ``session_id`` as a payload field, so this is genuinely a backstop — but
+    on the harnesses that do export a var it now backstops correctly.
+    """
+    from thinkweave.core import harness
+
+    hid = _hook_harness()
+    profile = harness.PROFILES[hid]() if hid in harness.PROFILES else harness.active()
+    env = profile.session_id_env
+    return os.environ.get(env, "") if env else ""
+
+
 def main() -> None:
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
@@ -245,7 +265,7 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
 
         cfg = load_config()
 
-        session_id = hook_input.get("session_id", os.environ.get("CLAUDE_SESSION_ID", ""))
+        session_id = hook_input.get("session_id") or _env_session_id()
         now = datetime.now(timezone.utc).isoformat()
 
         # Buffer the event (crash-safe, append-only). Retrieval and action
@@ -313,9 +333,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
 
         cfg = load_config()
 
-        session_id = hook_input.get(
-            "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
-        )
+        session_id = hook_input.get("session_id") or _env_session_id()
         prompt_text = hook_input.get("prompt", hook_input.get("user_prompt", ""))
         if not session_id or not prompt_text:
             _output()
@@ -1303,7 +1321,7 @@ def _handle_stop(hook_input: dict) -> None:
     insights), writes the session note once, archives the buffer, and
     indexes once. This is the only place that materializes buffer → note.
     """
-    session_id = hook_input.get("session_id", os.environ.get("CLAUDE_SESSION_ID", ""))
+    session_id = hook_input.get("session_id") or _env_session_id()
     if not session_id:
         _output()
         return
@@ -1581,9 +1599,7 @@ def _handle_session_start(hook_input: dict) -> None:
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
         cfg = load_config()
-        session_id = hook_input.get(
-            "session_id", os.environ.get("CLAUDE_SESSION_ID", "")
-        )
+        session_id = hook_input.get("session_id") or _env_session_id()
         lifecycle = str(hook_input.get("source") or "")
 
         if lifecycle in ("resume", "compact"):

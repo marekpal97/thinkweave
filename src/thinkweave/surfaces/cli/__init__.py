@@ -68,6 +68,7 @@ from thinkweave.surfaces.cli.util import (
     cmd_init,
     cmd_mcp,
     cmd_prune_orphans,
+    cmd_session_id,
     cmd_sources,
 )
 from thinkweave.surfaces.cli.wrap import cmd_wrap_finalize
@@ -86,6 +87,7 @@ _DISPATCH = {
     # in context_served — dec-696bacfb). hubs / landing / judge / health
     # double as admin surfaces.
     "wrap-finalize": cmd_wrap_finalize,
+    "session-id": cmd_session_id,
     "health": cmd_health,
     "hubs": cmd_hubs,
     "landing": cmd_landing,

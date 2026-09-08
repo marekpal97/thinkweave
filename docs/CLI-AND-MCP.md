@@ -11,7 +11,7 @@ The full CLI subcommand reference, the MCP tool surface, the CLI↔MCP surface c
 
 ## CLI reference
 
-The CLI exposes **50 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
+The CLI exposes **51 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
 
 Consolidations to keep in mind: wikilink materialisation lives under `weave index --materialize-links` (was `weave connect`, deleted 2026-05-21); the `weave_concepts*` MCP tools are folded into `weave_concepts(action=...)`; `weave_source_lens` + `weave_decisions_for_file` are folded into `weave_graph(filter=...)`. The Phase-4-C deprecation aliases for both CLI and MCP names were removed 2026-05-21 — call the canonical names.
 
@@ -55,6 +55,7 @@ weave schedule {list|install|uninstall}       # render scheduling.yaml onto the 
 weave skill {list|show <name>}                # inspect commands/*.md frontmatter
 weave sources {list|show <slug>}              # inspect source-type registry
 weave prune-orphans [--yes]                   # delete abandoned session folders (used by /wrap)
+weave session-id                              # print the running harness's session id (its session_id_env value: CLAUDE_SESSION_ID / PI_SESSION_ID); exit 1 empty on Codex/headless. /wrap reads it to land on the hook-created note, harness-neutrally (#103)
 weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: verdicts→prune→index→judge→landing→drift (--json for headless; --verdicts '<json>' appends the wrap LLM's prompt verdicts — feedback registers + probe labels — as events, #101)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
@@ -84,9 +85,9 @@ The MCP server (id `thinkweave`, so tools are addressed `mcp__thinkweave__weave_
 
 ## Surface contract — CLI ↔ MCP
 
-The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus a small set of narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`, `weave judge --rejudge/--drain`, `weave learn` (the `/learn` rail, #171), and `weave health --json`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
+The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus a small set of narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave session-id` (the harness-neutral session-id resolver `/wrap` reads, #103), `weave hubs apply-linkage`, `weave landing --doc`, `weave judge --rejudge/--drain`, `weave learn` (the `/learn` rail, #171), and `weave health --json`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-Full inventory — 50 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the CLI carve-outs):
+Full inventory — 51 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the CLI carve-outs):
 
 | Operation | CLI subcommand | MCP tool | Audience |
 |---|---|---|---|
@@ -108,6 +109,7 @@ Full inventory — 50 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Acquisition-queue inspection | `weave queue` | `weave_queue` | both |
 | Source-type registry | `weave sources` | `weave_sources_config` | both |
 | /wrap deterministic tail | `weave wrap-finalize` | — | **agent-Bash** |
+| Harness session-id resolver | `weave session-id` | — | **agent-Bash** |
 | Hub backfill / linkage | `weave hubs` | — | admin-cron — `apply-linkage` is **agent-Bash** |
 | Decision ledger lookup | `weave decisions` | — | admin-cron |
 | Todo backlog | `weave backlog` | — | admin-cron |
