@@ -310,6 +310,19 @@ class HarnessProfile:
     session_id_scheme: str = ""
     """How the harness mints session ids, for importers and dedup keys."""
 
+    session_id_env: str = ""
+    """Environment variable the harness exports carrying the current session's
+    id — ``CLAUDE_SESSION_ID`` on Claude Code, ``PI_SESSION_ID`` on Pi. Empty
+    when the harness sets none: Codex passes ``session_id`` only as a hook
+    *payload* field (docs/HARNESSES.md §Codex Q4), never an env var, and
+    OpenCode has none either. This is what a wrap running as a *model turn*
+    reads to land on the note the hooks already created: there is no
+    ``--harness`` argv in that turn, and ``$THINKWEAVE_HARNESS`` is usually
+    unset, so the env var each harness exports is the actual signal. Resolved
+    harness-neutrally by ``weave session-id``; a harness that declares none
+    falls back to recency + the #209 identity guard rather than minting a
+    fresh slug for a live session that already has a note."""
+
     native_memory_artifact: Path | None = None
     """The on-disk memory corpus the seam reconciles, or None. Must agree
     with :attr:`native_memory` — the seam gates on a *declared artifact*, not
@@ -540,6 +553,7 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         transcript_parser="thinkweave.onboarding.claude_code_seed:parse_session",
         transcript_importer="thinkweave.onboarding.claude_code_seed:import_claude_code",
         session_id_scheme="uuid4",
+        session_id_env="CLAUDE_SESSION_ID",
         native_memory_artifact=cc / "projects",
         mcp_servers_key="mcpServers",
         mcp_via_cli="claude mcp add",
@@ -681,6 +695,10 @@ def codex(home: Path | None = None) -> HarnessProfile:
         transcript_parser="thinkweave.acquisition.importers.codex:parse_rollout",
         transcript_importer="thinkweave.acquisition.importers.codex:import_codex",
         session_id_scheme="uuid7",
+        # session_id_env stays empty: an env-dumping SessionStart hook saw no
+        # CODEX_SESSION_ID or equivalent (docs/HARNESSES.md §Codex Q4) — Codex
+        # delivers session_id only as a hook payload field, which a wrap model
+        # turn cannot read, so wrap falls back to recency + the #209 guard.
         harness_flag="--harness codex",
         windows_cli_shim=True,
         mcp_servers_key="mcp_servers",
@@ -840,6 +858,9 @@ def pi(home: Path | None = None) -> HarnessProfile:
         transcript_parser="thinkweave.acquisition.importers.pi:parse_session",
         transcript_importer="thinkweave.acquisition.importers.pi:import_pi",
         session_id_scheme="uuid (session-header id)",
+        # Live env dump 2026-09-05: Pi exports PI_SESSION_ID (the session uuid,
+        # what the shim also stamps as source_session) and PI_SESSION_FILE.
+        session_id_env="PI_SESSION_ID",
         harness_flag="--harness pi",
         mcp_servers_key="mcpServers",
         evidence=(

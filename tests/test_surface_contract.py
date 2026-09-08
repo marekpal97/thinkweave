@@ -140,7 +140,11 @@ class TestCliSurface:
         # entirely: retrieval is the skills' job, MCP calls land in
         # context_served on their own, and a brief's citations are not
         # served-context demand.
-        assert len(_DISPATCH) == 50
+        # `weave session-id` (harness-neutral session-id resolver — /wrap reads
+        # it to land on the hook-created note instead of the Claude-only
+        # $CLAUDE_SESSION_ID, closing the mint-a-detached-slug fragmentation on
+        # Pi/Codex, issue #103) added 2026-09-08: 50 → 51.
+        assert len(_DISPATCH) == 51
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():

@@ -272,10 +272,20 @@ enforcement boundary."
 **Q4 (not asked, needed anyway) — Is there a session-id environment variable?
 No.** `[measured]` An env-dumping SessionStart hook saw no `CODEX_SESSION_ID`
 or equivalent; the only Codex variable present was `CODEX_HOME`, and it was
-inherited from the invoking shell. This is a non-issue: `session_id` is a
-*required* field on every Codex hook input `[binary]`, so the handler's
-`CLAUDE_SESSION_ID` fallback is simply never reached. No profile-declared env
-var is needed — which is what the issue text proposed.
+inherited from the invoking shell. For the *hook handler* this is a non-issue:
+`session_id` is a *required* field on every Codex hook input `[binary]`, so the
+handler's env-var fallback is never reached.
+
+It **does** matter for `/wrap`, which runs as a model turn — not a hook — and
+so cannot read the hook payload. `HarnessProfile.session_id_env` is `None` for
+Codex accordingly (`CLAUDE_SESSION_ID` for Claude Code, `PI_SESSION_ID` for Pi),
+and `weave session-id` returns empty here. A Codex wrap therefore falls back to
+recency **with** the #209 identity guard, never to minting a fresh slug for a
+live session that already has a hook-created note. See [§Session identity and
+the wrap resolver](#session-identity-and-the-wrap-resolver). This closes the
+mint-a-detached-slug fragmentation observed on Codex (2026-09-05:
+`codex-diagnose-mcp-startup-20260905` → ses-dec974a7, a second note beside the
+hook-created one).
 
 ### Why the handler reads argv, not the profile
 
@@ -291,6 +301,58 @@ the installer writes `--harness <id>` into the command it generates, and the
 handler reads its own argv. Claude Code's command is left unstamped, so the
 plugin route — which loads `hooks/hooks.json` directly, unstamped — keeps
 agreeing with what the installer writes.
+
+### Session identity and the wrap resolver
+
+The hooks stamp the *harness* session id as `source_session:` on the session
+note, and `weave_extract(session_id=<that raw id>)` resolves the note through
+that stamp — auto-creating one only when no note carries the id. So a wrap that
+passes the current harness session id lands on the hook-created note by
+construction; a wrap that passes the *wrong* id (or an invented slug) takes the
+auto-CREATE branch and produces a second, detached note, leaving the real one
+without the insights and `wrap-finalize --verdicts` with no `events.jsonl` to
+match.
+
+The id lives in a **different environment variable per harness**, held as
+`HarnessProfile.session_id_env`:
+
+| Harness | `session_id_env` | Notes |
+|---|---|---|
+| Claude Code | `CLAUDE_SESSION_ID` | uuid4 |
+| Pi | `PI_SESSION_ID` | the session uuid; also `PI_SESSION_FILE` (path). The shim stamps `PI_SESSION_ID` as `source_session` |
+| Codex | *(none)* | `session_id` arrives as a hook *payload* field only (§Codex Q4); a model turn cannot read it |
+| OpenCode | *(none)* | no session-id env var documented |
+
+A wrap runs as a **model turn**, not a hook: there is no `--harness` argv, and
+`$THINKWEAVE_HARNESS` is usually unset, so `harness.active()` reports Claude
+Code regardless of the real harness. `/wrap` therefore does **not** read
+`$CLAUDE_SESSION_ID` — that is Claude Code's variable alone, and reading it on
+Pi/Codex silently minted the detached note. Instead the skill calls the
+harness-neutral resolver `weave session-id`, which tries the active profile
+first (honouring `$THINKWEAVE_HARNESS` when set) and then scans every registered
+profile, printing the first declared `session_id_env` that carries a value —
+and exiting non-zero with empty output when none does.
+
+**Wrap resolution order** (`commands/wrap.md` step 1):
+
+1. `id=$(weave session-id)` → **non-empty**: pass that raw id to
+   `weave_extract` and land on the hook-created note by construction.
+2. **empty** (`weave session-id` exited non-zero — Codex, or a genuinely
+   headless run): fall back to `weave search --type session --limit 1` **with**
+   the #209 identity guard — check `source_session` before any `force=true`,
+   and mint a fresh id only when no session note exists at all. Never mint for
+   a live session that already has a hook-created note.
+
+The hook *handler* keeps its own resolution (`session_id` payload field, with
+`session_id_env` as a harness-neutral backstop resolved from its `--harness`
+argv) — the handler always has the payload, so its fallback is rarely reached;
+the wrap resolver is the path that actually needed fixing.
+
+This closed the mint-a-detached-slug fragmentation observed on both non-Claude
+harnesses: Pi 2026-09-08 (`wrap-pi-harness-scope-2026-09-08` → ses-e5a02d7a,
+beside the hook-created ses-851a2f5c whose `source_session` equals
+`$PI_SESSION_ID`; verdicts came back 0 written / 3 unmatched) and Codex
+2026-09-05 (`codex-diagnose-mcp-startup-20260905` → ses-dec974a7).
 
 ### 2026-09-05 live sessions
 
@@ -616,6 +678,14 @@ once, and made no mid-session extraction call on the earlier turns. The
 session folder it wrote holds the prompt events the `before_agent_start`
 capture had buffered and `agent_end` had materialised — passive capture and
 the explicit wrap met on the same session id (Pi's `PI_SESSION_ID`).
+
+That "met on the same session id" is what the wrap resolver now guarantees
+harness-neutrally. When `/wrap` still read the Claude-only `$CLAUDE_SESSION_ID`
+directly it read empty on Pi and minted a detached slug instead
+(2026-09-08: `wrap-pi-harness-scope-2026-09-08` → ses-e5a02d7a beside the
+hook-created ses-851a2f5c). `commands/wrap.md` now resolves the id with
+`weave session-id`, which reads Pi's `session_id_env` (`PI_SESSION_ID`). See
+[§Session identity and the wrap resolver](#session-identity-and-the-wrap-resolver).
 
 ### Hook budgets vs the measured floor
 

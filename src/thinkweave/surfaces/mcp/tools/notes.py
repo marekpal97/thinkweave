@@ -104,7 +104,8 @@ def tool_schemas() -> list:
                         "type": "string",
                         "description": (
                             "Optional session ID — either a session note ID "
-                            "(e.g. ses-a1b2c3d4) or CLAUDE_SESSION_ID UUID. "
+                            "(e.g. ses-a1b2c3d4) or the harness session id "
+                            "(the CLAUDE_SESSION_ID / PI_SESSION_ID UUID). "
                             "Places the note inside that session's folder, "
                             "creating it eagerly if needed. "
                             "If omitted, standalone notes go to sessions/misc/."

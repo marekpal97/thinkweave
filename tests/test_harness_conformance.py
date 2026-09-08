@@ -102,6 +102,23 @@ class TestSchemaInvariants:
         # facts were measured or merely declared from a blueprint.
         assert profile.evidence
 
+    def test_session_id_env_declared_per_profile(self, profile):
+        # The wrap resolver (`weave session-id`) reads this env var to land on
+        # the note the hooks already created; a wrong/absent value is exactly
+        # the mint-a-detached-slug fragmentation the field exists to close
+        # (Pi 2026-09-08, Codex 2026-09-05). Codex/OpenCode declare none — they
+        # export no session-id env var — and fall back to recency + guard.
+        expected = {
+            "claude-code": "CLAUDE_SESSION_ID",
+            "codex": "",
+            "pi": "PI_SESSION_ID",
+            "opencode": "",
+        }
+        assert profile.session_id_env == expected[profile.id]
+        if profile.session_id_env:
+            # A declared value is an env-var NAME, not a session id.
+            assert profile.session_id_env.isupper()
+
     def test_harness_flag_is_empty_or_names_this_harness(self, profile):
         # Claude Code is the authored canonical shape and stays unstamped;
         # every other harness's flag must name itself, never another harness.
