@@ -27,14 +27,36 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
     # profile declares, before each case sets exactly what it needs.
     monkeypatch.setattr(harness, "_OVERRIDE", None)
     monkeypatch.delenv("THINKWEAVE_HARNESS", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     monkeypatch.delenv("PI_SESSION_ID", raising=False)
 
 
-def test_claude_code_prints_its_env_var(monkeypatch, capsys):
-    monkeypatch.setenv("CLAUDE_SESSION_ID", "cc-uuid-123")
+def test_claude_code_prints_current_build_var(monkeypatch, capsys):
+    # The 2026-09-15 regression: the profile declared only the legacy
+    # CLAUDE_SESSION_ID, but the shipping Claude Code build exports the id as
+    # CLAUDE_CODE_SESSION_ID (verified equal to the note's source_session), so
+    # `weave session-id` came up empty on the reference harness itself.
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cc-uuid-123")
     main(["session-id"])
     assert capsys.readouterr().out.strip() == "cc-uuid-123"
+
+
+def test_claude_code_legacy_var_still_resolves(monkeypatch, capsys):
+    # Older builds exported CLAUDE_SESSION_ID; kept as a fallback name.
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "cc-legacy-789")
+    main(["session-id"])
+    assert capsys.readouterr().out.strip() == "cc-legacy-789"
+
+
+def test_claude_code_profile_lists_the_current_build_var():
+    # Regression guard: the resolver reads env-var NAMES from the profile, and
+    # the running build's name must be among them or the reference harness
+    # silently falls back to recency. This asserts the name, not a live value,
+    # so it holds in CI where no session var is set.
+    from thinkweave.core import harness
+
+    assert "CLAUDE_CODE_SESSION_ID" in harness.claude_code().session_id_envs
 
 
 def test_pi_var_resolves_even_without_thinkweave_harness(monkeypatch, capsys):

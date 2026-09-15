@@ -50,6 +50,7 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
     monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
     monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     monkeypatch.setattr(
         "thinkweave.retrieval.context.build_project_context",

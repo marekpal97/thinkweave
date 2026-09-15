@@ -64,7 +64,7 @@ def cmd_session_id(args: argparse.Namespace) -> None:
     its insights on a second session note while the real hook-created one kept
     none (Pi 2026-09-08, Codex 2026-09-05).
 
-    Env-var knowledge lives in the profiles (``HarnessProfile.session_id_env``),
+    Env-var knowledge lives in the profiles (``HarnessProfile.session_id_envs``),
     never here: a wrap runs as a model turn with no ``--harness`` argv and
     usually no ``$THINKWEAVE_HARNESS``, so the actual signal is whichever
     session-id env var is set. We try the active profile first (honouring
@@ -85,14 +85,14 @@ def cmd_session_id(args: argparse.Namespace) -> None:
     ]
     seen: set[str] = set()
     for profile in ordered:
-        env = profile.session_id_env
-        if not env or env in seen:
-            continue
-        seen.add(env)
-        value = os.environ.get(env, "").strip()
-        if value:
-            print(value)
-            return
+        for env in profile.session_id_envs:
+            if not env or env in seen:
+                continue
+            seen.add(env)
+            value = os.environ.get(env, "").strip()
+            if value:
+                print(value)
+                return
     # No harness exports a session id we can read from this process — silent
     # non-zero so `id=$(weave session-id)` leaves $id empty and the skill
     # branches to its recency fallback.

@@ -109,15 +109,15 @@ class TestSchemaInvariants:
         # (Pi 2026-09-08, Codex 2026-09-05). Codex/OpenCode declare none — they
         # export no session-id env var — and fall back to recency + guard.
         expected = {
-            "claude-code": "CLAUDE_SESSION_ID",
-            "codex": "",
-            "pi": "PI_SESSION_ID",
-            "opencode": "",
+            "claude-code": ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"),
+            "codex": (),
+            "pi": ("PI_SESSION_ID",),
+            "opencode": (),
         }
-        assert profile.session_id_env == expected[profile.id]
-        if profile.session_id_env:
-            # A declared value is an env-var NAME, not a session id.
-            assert profile.session_id_env.isupper()
+        assert profile.session_id_envs == expected[profile.id]
+        for name in profile.session_id_envs:
+            # Each declared value is an env-var NAME, not a session id.
+            assert name.isupper()
 
     def test_harness_flag_is_empty_or_names_this_harness(self, profile):
         # Claude Code is the authored canonical shape and stays unstamped;

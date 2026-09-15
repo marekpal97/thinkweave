@@ -239,7 +239,9 @@ class TestSessionStartCapture:
     def test_no_session_id_skips_capture(self, tmp_path: Path, monkeypatch):
         # Defensive: hook input without a session_id can't be buffered.
         monkeypatch.setenv("THINKWEAVE_VAULT", str(tmp_path / "vault"))
-        # Clear env var so the missing session_id can't be backfilled.
+        # Clear every declared session-id env var so the missing session_id
+        # can't be backfilled (the shipping build exports CLAUDE_CODE_SESSION_ID).
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
         monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
         from thinkweave.surfaces.hooks import handler as h
 

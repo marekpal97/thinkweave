@@ -310,7 +310,7 @@ class HarnessProfile:
     session_id_scheme: str = ""
     """How the harness mints session ids, for importers and dedup keys."""
 
-    session_id_env: str = ""
+    session_id_envs: tuple[str, ...] = ()
     """Environment variable the harness exports carrying the current session's
     id — ``CLAUDE_SESSION_ID`` on Claude Code, ``PI_SESSION_ID`` on Pi. Empty
     when the harness sets none: Codex passes ``session_id`` only as a hook
@@ -553,7 +553,7 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         transcript_parser="thinkweave.onboarding.claude_code_seed:parse_session",
         transcript_importer="thinkweave.onboarding.claude_code_seed:import_claude_code",
         session_id_scheme="uuid4",
-        session_id_env="CLAUDE_SESSION_ID",
+        session_id_envs=("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"),
         native_memory_artifact=cc / "projects",
         mcp_servers_key="mcpServers",
         mcp_via_cli="claude mcp add",
@@ -695,7 +695,7 @@ def codex(home: Path | None = None) -> HarnessProfile:
         transcript_parser="thinkweave.acquisition.importers.codex:parse_rollout",
         transcript_importer="thinkweave.acquisition.importers.codex:import_codex",
         session_id_scheme="uuid7",
-        # session_id_env stays empty: an env-dumping SessionStart hook saw no
+        # session_id_envs stays empty: an env-dumping SessionStart hook saw no
         # CODEX_SESSION_ID or equivalent (docs/HARNESSES.md §Codex Q4) — Codex
         # delivers session_id only as a hook payload field, which a wrap model
         # turn cannot read, so wrap falls back to recency + the #209 guard.
@@ -860,7 +860,7 @@ def pi(home: Path | None = None) -> HarnessProfile:
         session_id_scheme="uuid (session-header id)",
         # Live env dump 2026-09-05: Pi exports PI_SESSION_ID (the session uuid,
         # what the shim also stamps as source_session) and PI_SESSION_FILE.
-        session_id_env="PI_SESSION_ID",
+        session_id_envs=("PI_SESSION_ID",),
         harness_flag="--harness pi",
         mcp_servers_key="mcpServers",
         evidence=(

@@ -173,8 +173,9 @@ def _env_session_id() -> str:
     a hook payload omits ``session_id``.
 
     Harness-neutral: reads the env var name the firing harness's profile
-    declares (``HarnessProfile.session_id_env``: ``CLAUDE_SESSION_ID`` on
-    Claude Code, ``PI_SESSION_ID`` on Pi, none on Codex/OpenCode), resolved
+    declares (``HarnessProfile.session_id_envs``: ``CLAUDE_CODE_SESSION_ID``
+    then legacy ``CLAUDE_SESSION_ID`` on Claude Code, ``PI_SESSION_ID`` on Pi,
+    none on Codex/OpenCode), resolved
     from our own argv like :func:`_hook_harness` rather than the Claude-only
     literal the earlier code assumed. Every harness's hook envelope carries
     ``session_id`` as a payload field, so this is genuinely a backstop — but
@@ -184,8 +185,12 @@ def _env_session_id() -> str:
 
     hid = _hook_harness()
     profile = harness.PROFILES[hid]() if hid in harness.PROFILES else harness.active()
-    env = profile.session_id_env
-    return os.environ.get(env, "") if env else ""
+    envs = profile.session_id_envs
+    for env in envs:
+        value = os.environ.get(env, "")
+        if value:
+            return value
+    return ""
 
 
 def main() -> None:

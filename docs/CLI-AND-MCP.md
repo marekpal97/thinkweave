@@ -55,7 +55,7 @@ weave schedule {list|install|uninstall}       # render scheduling.yaml onto the 
 weave skill {list|show <name>}                # inspect commands/*.md frontmatter
 weave sources {list|show <slug>}              # inspect source-type registry
 weave prune-orphans [--yes]                   # delete abandoned session folders (used by /wrap)
-weave session-id                              # print the running harness's session id (its session_id_env value: CLAUDE_SESSION_ID / PI_SESSION_ID); exit 1 empty on Codex/headless. /wrap reads it to land on the hook-created note, harness-neutrally (#103)
+weave session-id                              # print the running harness's session id (its session_id_envs value: CLAUDE_CODE_SESSION_ID / PI_SESSION_ID); exit 1 empty on Codex/headless. /wrap reads it to land on the hook-created note, harness-neutrally (#103)
 weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: verdicts→prune→index→judge→landing→drift (--json for headless; --verdicts '<json>' appends the wrap LLM's prompt verdicts — feedback registers + probe labels — as events, #101)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
