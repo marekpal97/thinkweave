@@ -41,7 +41,9 @@ def tool_schemas() -> list:
                     "session_id": {
                         "type": "string",
                         "description": (
-                            "Session note ID (e.g. 'ses-a1b2c3d4') or CLAUDE_SESSION_ID. "
+                            "Session note ID (e.g. 'ses-a1b2c3d4') or the harness "
+                            "session id (CLAUDE_SESSION_ID / PI_SESSION_ID; resolve "
+                            "it harness-neutrally with `weave session-id`). "
                             "If no matching session note exists, one is auto-created."
                         ),
                     },

@@ -586,6 +586,17 @@ def add_admin_subparsers(sub) -> None:
         help="Minimum session age in seconds to be eligible (default: 3600)",
     )
 
+    sub.add_parser(
+        "session-id",
+        help=(
+            "Print the current harness session id (the value of the active "
+            "harness's session-id env var — CLAUDE_SESSION_ID on Claude Code, "
+            "PI_SESSION_ID on Pi). Harness-neutral resolver /wrap uses to land "
+            "on the hook-created note. Exits 1 with empty output when none is "
+            "set (Codex, headless), so /wrap falls back to recency + guard."
+        ),
+    )
+
     p_wrap_finalize = sub.add_parser(
         "wrap-finalize",
         help=(

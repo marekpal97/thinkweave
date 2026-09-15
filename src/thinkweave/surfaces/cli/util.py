@@ -53,6 +53,52 @@ def cmd_config(args: argparse.Namespace) -> None:
     print(f"initialized: {'yes' if is_vault_initialized(cfg) else 'no'}")
 
 
+def cmd_session_id(args: argparse.Namespace) -> None:
+    """Print the current harness session id — the value of the running
+    harness's session-id env var — and exit 0; exit 1 with empty stdout when
+    none is set.
+
+    This is the harness-neutral resolver ``/wrap`` step 1 uses instead of a
+    literal ``$CLAUDE_SESSION_ID``: that variable is Claude Code's alone, so
+    on Pi/Codex a wrap read an empty value and minted a detached slug, landing
+    its insights on a second session note while the real hook-created one kept
+    none (Pi 2026-09-08, Codex 2026-09-05).
+
+    Env-var knowledge lives in the profiles (``HarnessProfile.session_id_env``),
+    never here: a wrap runs as a model turn with no ``--harness`` argv and
+    usually no ``$THINKWEAVE_HARNESS``, so the actual signal is whichever
+    session-id env var is set. We try the active profile first (honouring
+    ``$THINKWEAVE_HARNESS`` when it *is* set), then every other registered
+    profile, and print the first declared var that carries a value. None
+    resolvable (Codex, which exports no such var, or a genuinely headless run)
+    → exit 1, and the caller falls back to recency + the #209 identity guard.
+    """
+    import os
+
+    from thinkweave.core import harness
+
+    active = harness.active()
+    ordered = [active] + [
+        factory()
+        for name, factory in harness.PROFILES.items()
+        if name != active.id
+    ]
+    seen: set[str] = set()
+    for profile in ordered:
+        env = profile.session_id_env
+        if not env or env in seen:
+            continue
+        seen.add(env)
+        value = os.environ.get(env, "").strip()
+        if value:
+            print(value)
+            return
+    # No harness exports a session id we can read from this process — silent
+    # non-zero so `id=$(weave session-id)` leaves $id empty and the skill
+    # branches to its recency fallback.
+    sys.exit(1)
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     """Run the thinkweave MCP server over stdio.
 
