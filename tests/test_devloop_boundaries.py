@@ -65,8 +65,13 @@ deliberate acts rather than accidents.
    nothing in thinkweave changed. Expected, not a regression — read the diff,
    confirm it is only the added key, and re-capture.
 
-Either way, re-capture deliberately and say why in the commit:
-``python scripts/issue_loop.py config > tests/devloop_golden_config.json``.
+Either way, re-capture deliberately and say why in the commit, dropping the
+machine-specific ``constitution`` path::
+
+    python -c "import json,subprocess,sys; c=json.loads(subprocess.check_output(
+        [sys.executable,'scripts/issue_loop.py','config'])); c.pop('constitution');
+        print(json.dumps(c, indent=2))" > tests/devloop_golden_config.json
+
 Any *other* diff is what this test exists to catch.
 """
 
@@ -87,10 +92,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SHIM = REPO_ROOT / "scripts" / "issue_loop.py"
 GOLDEN = REPO_ROOT / "tests" / "devloop_golden_config.json"
 
-# The full subcommand surface. The issue says "8"; `validate` (#99) made it 9 —
-# pinned by enumeration so a silently dropped verb fails rather than shrinks.
+# The full subcommand surface, pinned by enumeration so a silently dropped
+# verb fails rather than shrinks. `board` and `pack` arrived with the devloop
+# revisit (funloops #9, #28).
 SUBCOMMANDS = ["plan", "claim", "release", "config", "check", "validate",
-               "prime", "triage", "trajectory"]
+               "prime", "triage", "trajectory", "board", "pack"]
 
 # ---------------------------------------------------------------------------
 # 1. Schema pin — devloop's SQL against an index built by the real indexer
@@ -197,23 +203,37 @@ def test_devloop_is_an_installed_package_not_a_directory_in_this_tree():
     assert "funloops" in origin.get("url", ""), origin
 
 
-def test_shim_config_is_byte_identical_to_the_pre_carve_capture():
-    """AC2. ``tests/devloop_golden_config.json`` is the independent oracle: it
-    is the literal stdout of this command at thinkweave@de35d9c, captured
-    before the package could resolve from anywhere but the tree.
+def _resolved_config(argv: list[str]) -> tuple[dict, list[str]]:
+    """Run a config front door from the repo root; return the config without
+    its `constitution` entry, and that entry. The entry is an absolute path
+    into this machine's venv, so it is asserted on shape, never on bytes."""
+    out = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+    cfg = json.loads(out.stdout)
+    return cfg, cfg.pop("constitution")
 
-    Byte-identical, not shape-equal: nothing about *thinkweave's* gate pipeline
-    was supposed to change, so any diff is a regression. (funloops keeps the
-    same bytes as its own carve-out golden but compares only the shape — it
-    legitimately re-configured itself for funloops.)
+
+def test_shim_config_is_byte_identical_to_the_golden_capture():
+    """AC2. ``tests/devloop_golden_config.json`` is the independent oracle:
+    the resolved config, re-captured deliberately on each intentional change
+    (the pin-update dance above).
+
+    Every key but ``constitution`` is byte-identical: nothing about
+    *thinkweave's* gate pipeline is supposed to move between captures, so
+    any diff is a regression. ``constitution`` is the packaged file's
+    absolute path inside the installed package and is checked as a shape.
 
     Runs the shim in a subprocess from the repo root, so what is under test is
     the real invocation crons and muscle memory use — including devloop's
     cwd-upward ``find_config`` walk landing on thinkweave's ``loop.toml``.
     """
-    out = subprocess.run([sys.executable, str(SHIM), "config"], cwd=REPO_ROOT,
-                         capture_output=True, text=True, check=True)
-    assert out.stdout == GOLDEN.read_text(encoding="utf-8")
+    cfg, constitution = _resolved_config([sys.executable, str(SHIM), "config"])
+    assert cfg == json.loads(GOLDEN.read_text(encoding="utf-8"))
+    # The rules ship with the package and thinkweave carries no overlay: one
+    # file, inside the installed devloop, present on disk.
+    assert len(constitution) == 1, constitution
+    packaged = Path(constitution[0])
+    assert packaged.is_file(), packaged
+    assert packaged.name == "constitution.md" and "devloop" in packaged.parts, packaged
 
 
 def test_every_subcommand_dispatches_through_the_shim():
@@ -228,8 +248,8 @@ def test_every_subcommand_dispatches_through_the_shim():
 def test_python_m_devloop_reaches_the_same_rail():
     """The packaged entry point works at thinkweave's repo root. Pre-carve this
     could not work: the in-tree ``devloop/`` shadowed the package and had no
-    ``__main__``. Byte-equal to the golden (the shim is pinned to it above) —
-    one rail, two front doors."""
-    mod = subprocess.run([sys.executable, "-m", "devloop", "config"], cwd=REPO_ROOT,
-                         capture_output=True, text=True, check=True)
-    assert mod.stdout == GOLDEN.read_text(encoding="utf-8")
+    ``__main__``. Equal to the golden and to the shim's own output — one
+    rail, two front doors."""
+    via_module, _ = _resolved_config([sys.executable, "-m", "devloop", "config"])
+    via_shim, _ = _resolved_config([sys.executable, str(SHIM), "config"])
+    assert via_module == via_shim == json.loads(GOLDEN.read_text(encoding="utf-8"))
