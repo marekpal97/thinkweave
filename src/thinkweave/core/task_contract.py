@@ -1,0 +1,319 @@
+"""The ``kind: task`` note contract — one durable task shape shared by every
+execution route (in-session subagents, devloop runs, headless workers, solo
+declared work).
+
+A task note is a structured ledger, never narrative: closed key sets reject
+prose fields, and every field is a join key into substrate that already
+exists (sessions, decisions, ``context_served``, the feedback register,
+commits, envelope return files). ``validate_task_note`` and
+``validate_envelope`` return a list of error strings; an empty list means
+the shape conforms. A malformed value is always an error naming its field
+and position, never a silent pass.
+
+The discriminator is ``kind: task`` on ``type: note`` — there is no task
+NoteType. Task ids are vault-minted (``tsk-`` + 8 hex); harness session ids
+never anchor identity and travel only as a qualified ``{harness, kind,
+value}`` triple under ``session_ref``. Devloop's execution trace (review
+``rounds``, ``criteria``, ``simplify``, ``skills``) nests inside one
+work-grain entry of the note's ``rounds[]`` ledger, never at top level.
+"""
+
+from __future__ import annotations
+
+import re
+
+TASK_KIND = "task"
+TASK_STATUSES = frozenset({"open", "closed"})
+# Note grain: one note per homogeneous fan-out (batch, N envelope rows),
+# one note per dispatch, or one accreting work-grain note whose rounds[]
+# spans sessions.
+TASK_GRAINS = frozenset({"batch", "per-dispatch", "work"})
+TASK_ID_RE = re.compile(r"^tsk-[0-9a-f]{8}$")
+
+SESSION_REF_KEYS = frozenset({"harness", "kind", "value"})
+
+# Devloop's trace vocabulary; valid only inside a work-grain round entry.
+DEVLOOP_TRACE_KEYS = frozenset({"rounds", "criteria", "simplify", "skills"})
+
+# Reserved on feedback events for task attribution; optional, no consumer
+# reads it yet.
+FEEDBACK_TASK_REF_FIELD = "task_ref"
+
+
+def envelope_return_name(task_id: str) -> str:
+    """The return file a dispatch appends its envelope rows to."""
+    return f"{task_id}.jsonl"
+
+
+def validate_task_note(fm: object) -> list[str]:
+    """Validate one task note's frontmatter mapping; [] means it conforms."""
+    if not isinstance(fm, dict):
+        return ["task note: frontmatter is not a mapping"]
+    if fm.get("type") != "note" or fm.get("kind") != TASK_KIND:
+        return [
+            "task note: requires type: note with kind: task "
+            f"(got type: {fm.get('type')!r}, kind: {fm.get('kind')!r})"
+        ]
+    errors = [
+        f"task note: missing required field {key!r}"
+        for key in _TOP_REQUIRED
+        if key not in fm
+    ]
+    grain = fm.get("grain")
+    for key, value in fm.items():
+        if key in ("type", "kind"):
+            continue
+        if key == "rounds":
+            errors += _rounds_errors(value, grain)
+        elif key in DEVLOOP_TRACE_KEYS:
+            errors.append(
+                f"task note: {key!r} is a devloop trace field; it nests "
+                "inside a work-grain round entry, not at top level"
+            )
+        elif key in _TOP_CHECKERS:
+            errors += _TOP_CHECKERS[key](value, f"task note.{key}")
+        else:
+            errors.append(f"task note: unknown field {key!r}")
+    return errors
+
+
+def validate_envelope(row: object, where: str = "envelope") -> list[str]:
+    """Validate one unified envelope row; [] means it conforms."""
+    if not isinstance(row, dict):
+        return [f"{where}: not a mapping"]
+    errors = [
+        f"{where}: missing required field {key!r}"
+        for key in ("task_id", "outcome")
+        if not row.get(key)
+    ]
+    for key, value in row.items():
+        if key not in _ENVELOPE_CHECKERS:
+            errors.append(f"{where}: unknown field {key!r}")
+            continue
+        errors += _ENVELOPE_CHECKERS[key](value, f"{where}.{key}")
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Field checkers (value, where) -> errors
+
+
+def _str(value, where):
+    return [] if isinstance(value, str) else [f"{where}: expected a string"]
+
+
+def _str_list(value, where):
+    if not isinstance(value, list):
+        return [f"{where}: expected a list of strings"]
+    return [
+        f"{where}[{i}]: expected a string"
+        for i, v in enumerate(value)
+        if not isinstance(v, str)
+    ]
+
+
+def _int(value, where):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return [f"{where}: expected an integer"]
+    return []
+
+
+def _number(value, where):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return [f"{where}: expected a number"]
+    return []
+
+
+def _task_id(value, where):
+    if not isinstance(value, str) or not TASK_ID_RE.match(value):
+        return [f"{where}: expected a vault-minted task id (tsk- + 8 hex)"]
+    return []
+
+
+def _enum(allowed):
+    def check(value, where):
+        if value not in allowed:
+            return [f"{where}: expected one of {sorted(allowed)}"]
+        return []
+
+    return check
+
+
+def _session_ref(value, where):
+    if isinstance(value, str):
+        return [
+            f"{where}: bare-string session ref; harness ids ride as a "
+            "{harness, kind, value} triple"
+        ]
+    if not isinstance(value, dict):
+        return [f"{where}: expected a {{harness, kind, value}} triple"]
+    errors = [
+        f"{where}: triple missing {key!r}"
+        for key in sorted(SESSION_REF_KEYS - value.keys())
+    ]
+    errors += [
+        f"{where}: unknown triple field {key!r}"
+        for key in sorted(value.keys() - SESSION_REF_KEYS)
+    ]
+    errors += [
+        f"{where}.{key}: expected a string"
+        for key in SESSION_REF_KEYS & value.keys()
+        if not isinstance(value[key], str)
+    ]
+    return errors
+
+
+def _closed_dict(spec):
+    """A mapping whose keys are a subset of ``spec`` (key -> checker)."""
+
+    def check(value, where):
+        if not isinstance(value, dict):
+            return [f"{where}: expected a mapping"]
+        errors = []
+        for key, v in value.items():
+            if key not in spec:
+                errors.append(f"{where}: unknown field {key!r}")
+            else:
+                errors += spec[key](v, f"{where}.{key}")
+        return errors
+
+    return check
+
+
+def _dict_list(spec):
+    """A list of mappings, each checked by :func:`_closed_dict`."""
+    entry = _closed_dict(spec)
+
+    def check(value, where):
+        if not isinstance(value, list):
+            return [f"{where}: expected a list"]
+        errors = []
+        for i, v in enumerate(value):
+            errors += entry(v, f"{where}[{i}]")
+        return errors
+
+    return check
+
+
+def _envelopes(value, where):
+    if not isinstance(value, list):
+        return [f"{where}: expected a list"]
+    errors = []
+    for i, row in enumerate(value):
+        errors += validate_envelope(row, f"{where}[{i}]")
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Shape tables
+
+_COST = _closed_dict({"tokens": _number, "duration": _number})
+
+_ENVELOPE_CHECKERS = {
+    "task_id": _task_id,
+    "outcome": _str,
+    "session_ref": _session_ref,
+    "harness": _str,
+    "model": _str,
+    "role": _str,
+    "ts": _str,
+    "outputs": _str_list,
+    "error": _str,
+    "cost": _COST,
+}
+
+# Devloop's trace shapes, as its trajectory normalizers emit them.
+_TRACE_CHECKERS = {
+    "rounds": _dict_list({
+        "gate": _str,
+        "finding": _str,
+        "severity": _str,
+        "disposition": _str,
+        "fixed_by": _str,
+    }),
+    "criteria": _dict_list({
+        "id": _str,
+        "verdict": _str,
+        "flipped_by_round": _int,
+    }),
+    "simplify": _closed_dict({
+        "outcome": _str,
+        "cuts": _dict_list({"what": _str, "why": _str}),
+        "kept": _dict_list({"what": _str, "why": _str}),
+        "lines_delta": _int,
+    }),
+    "skills": _dict_list({
+        "id": _str,
+        "role": _str,
+        "outcome": _str,
+        "fix_rounds_attributed": _int,
+    }),
+}
+
+# One round entry: what a single /wrap (or devloop run) compiles into the
+# ledger — session ref, envelope rows, context served, outputs delta,
+# decision lifecycle, feedback refs.
+_ROUND_CHECKERS = {
+    "session_ref": _session_ref,
+    "envelopes": _envelopes,
+    "served": _str_list,
+    "did": _closed_dict(
+        {"paths": _str_list, "commits": _str_list, "attempts": _int}
+    ),
+    "decisions": _closed_dict(
+        {"minted": _str_list, "re_served": _str_list, "reverted": _str_list}
+    ),
+    "feedback": _dict_list(
+        {"register": _str, "prompt_ref": _str, "ts": _str}
+    ),
+    "cost": _COST,
+}
+
+_TOP_REQUIRED = ("type", "kind", "id", "status", "grain", "rounds")
+
+_TOP_CHECKERS = {
+    "id": _task_id,
+    "status": _enum(TASK_STATUSES),
+    "grain": _enum(TASK_GRAINS),
+    "title": _str,
+    "date": _str,
+    "project": _str,
+    "parent": _str,
+    "harness": _str,
+    "model": _str,
+    "role": _str,
+    "asked": _str,
+    "aliases": _str_list,
+    "concepts": _str_list,
+    "proposed_concepts": _str_list,
+    "tags": _str_list,
+    "consumes": _str_list,
+    "outcome": _dict_list(
+        {"label": _str, "judged_at": _str, "evidence": _str}
+    ),
+}
+
+
+def _rounds_errors(value, grain) -> list[str]:
+    if not isinstance(value, list):
+        return ["task note.rounds: expected a list of round entries"]
+    errors = []
+    for i, entry in enumerate(value):
+        where = f"task note.rounds[{i}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{where}: expected a mapping")
+            continue
+        for key, v in entry.items():
+            if key in _ROUND_CHECKERS:
+                errors += _ROUND_CHECKERS[key](v, f"{where}.{key}")
+            elif key in _TRACE_CHECKERS:
+                if grain == "work":
+                    errors += _TRACE_CHECKERS[key](v, f"{where}.{key}")
+                else:
+                    errors.append(
+                        f"{where}: devloop trace field {key!r} is valid "
+                        "only on a work-grain round entry"
+                    )
+            else:
+                errors.append(f"{where}: unknown field {key!r}")
+    return errors
