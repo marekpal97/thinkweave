@@ -29,6 +29,11 @@ class EdgeType(str, Enum):
     IMPLEMENTS = "implements"
     RELATES_TO = "relates_to"
     CITES = "cites"
+    # Task-contract edges: a task consumes the notes it drew on; a feedback
+    # note points at the task it judges (the feedback note owns the edge —
+    # the sealed task record is never mutated).
+    CONSUMES = "consumes"
+    FEEDBACK_FOR = "feedback_for"
 
 
 class DecisionStatus(str, Enum):
@@ -103,6 +108,8 @@ LIST_FRONTMATTER_KEYS: frozenset[str] = frozenset({
     "supersedes",
     "implements",
     "cites",
+    "consumes",
+    "feedback_for",
     # Git + file tracking (decisions, sessions) — always list[str]
     "file_paths",
     "files_touched",

@@ -263,6 +263,8 @@ EDGE_FIELD_MAP: dict[str, str] = {
     "cites": "cites",
     "implements": "implements",
     "builds_on": "builds_on",
+    "consumes": "consumes",
+    "feedback_for": "feedback_for",
 }
 
 # Reverse map: edge_type -> frontmatter field name

@@ -27,7 +27,7 @@ logs for join/analytics use; the JSONL stays truth.
 | Table | Purpose | Key columns | Defined at |
 |---|---|---|---|
 | `notes` | Every vault note (one row per markdown file). The spine all other tables hang off. | `id` PK, `type`, `path` UNIQUE, `project`, `date`, `content_hash` (incremental-skip), `body_text`, `frontmatter` (JSON) | `indexer.py:40` |
-| `edges` | Typed graph edges between notes (`derived_from`, `supersedes`, `relates_to`, `cites`, `implements`, `builds_on`, plus concept/tag co-occurrence). `weight` carries tie-strength for ranked graph walks. | `(source, target, edge_type)` PK, `weight`, `metadata` (JSON) | `indexer.py:59` |
+| `edges` | Typed graph edges between notes (`derived_from`, `supersedes`, `relates_to`, `cites`, `implements`, `builds_on`, `consumes`, `feedback_for`, plus concept/tag co-occurrence). `weight` carries tie-strength for ranked graph walks. | `(source, target, edge_type)` PK, `weight`, `metadata` (JSON) | `indexer.py:59` |
 | `note_concepts` | Note ↔ concept (many-to-many). Drives concept-hub catalysts and concept-walk graph queries. | `(note_id, concept)` PK, `domain` | `indexer.py:77` |
 | `decision_files` | Decision ↔ file-path, from decision frontmatter `file_paths`. One JOIN answers "every decision that touched this file." | `(decision_id, file_path)` PK | `indexer.py:92` |
 | `note_tags` | Note ↔ tag (many-to-many). Broad filter facets, distinct from concepts. | `(note_id, tag)` PK | `indexer.py:101` |
