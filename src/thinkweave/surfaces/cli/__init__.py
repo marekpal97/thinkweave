@@ -59,6 +59,7 @@ from thinkweave.surfaces.cli.queue import cmd_queue
 from thinkweave.surfaces.cli.rlvr import cmd_rlvr
 from thinkweave.surfaces.cli.schedule import cmd_schedule
 from thinkweave.surfaces.cli.seam import cmd_seam
+from thinkweave.surfaces.cli.task import cmd_task
 from thinkweave.surfaces.cli.skill import cmd_skill
 from thinkweave.surfaces.cli.steering import cmd_steering
 from thinkweave.surfaces.cli.themes import cmd_themes
@@ -124,6 +125,7 @@ _DISPATCH = {
     "drain": cmd_drain,
     "intake": cmd_intake,
     "seam": cmd_seam,
+    "task": cmd_task,
     "queue": cmd_queue,
     "flow": cmd_flow,
     "concepts": cmd_concepts,

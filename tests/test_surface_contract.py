@@ -144,7 +144,11 @@ class TestCliSurface:
         # it to land on the hook-created note instead of the Claude-only
         # $CLAUDE_SESSION_ID, closing the mint-a-detached-slug fragmentation on
         # Pi/Codex, issue #103) added 2026-09-08: 50 → 51.
-        assert len(_DISPATCH) == 51
+        # `weave task` (open / close / render — the dispatch seam's headless
+        # route: mint the task stub + register row, record the boundary
+        # close and compile the round, re-emit the descriptor, issue #187)
+        # added 2026-09-23: 51 → 52.
+        assert len(_DISPATCH) == 52
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():
