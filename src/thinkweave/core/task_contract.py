@@ -45,6 +45,62 @@ def envelope_return_name(task_id: str) -> str:
     return f"{task_id}.jsonl"
 
 
+def normalize_devloop_run(payload: object, *, task_id: str) -> dict:
+    """Compile one devloop run's emitted trajectory payload into a
+    work-grain task note: each stage-dispatch record becomes one envelope
+    row, and the semantic trace nests inside the single round entry the run
+    compiles to. Keys the emitter dropped are simply absent; the result is
+    validated against the contract and a value that cannot land raises
+    ``ValueError`` naming the field. The note stays ``status: open`` —
+    closure for loop work is the PR merge, never this compile."""
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("frontmatter"), dict
+    ):
+        raise ValueError(
+            "devloop payload: expected the emitted trajectory payload "
+            "with a frontmatter mapping"
+        )
+    src = payload["frontmatter"]
+    stages = src.get("skills") or []
+    entry: dict = {
+        "envelopes": [_stage_envelope(s, task_id) for s in stages],
+        "did": {
+            "paths": list(src.get("files_touched") or []),
+            "attempts": int(src.get("fix_rounds") or 0),
+        },
+    }
+    if "served" in src:
+        entry["served"] = list(src["served"])
+    trace = src.get("trace") or {}
+    for key in ("rounds", "criteria", "simplify"):
+        if key in trace:
+            entry[key] = _drop_nones(trace[key])
+    if stages:
+        entry["skills"] = [
+            {
+                "id": s.get("id", ""),
+                "role": s.get("role", ""),
+                "outcome": s.get("outcome", ""),
+                "fix_rounds_attributed": int(s.get("fix_rounds_attributed") or 0),
+            }
+            for s in stages
+        ]
+    fm = {
+        "type": "note",
+        "kind": TASK_KIND,
+        "id": task_id,
+        "title": str(payload.get("title", "")),
+        "status": "open",
+        "grain": "work",
+        "asked": f"#{src.get('issue', '')}",
+        "rounds": [entry],
+    }
+    errors = validate_task_note(fm)
+    if errors:
+        raise ValueError("devloop payload does not land in the contract: " + "; ".join(errors))
+    return fm
+
+
 def validate_task_note(fm: object) -> list[str]:
     """Validate one task note's frontmatter mapping; [] means it conforms."""
     if not isinstance(fm, dict):
@@ -92,6 +148,43 @@ def validate_envelope(row: object, where: str = "envelope") -> list[str]:
             continue
         errors += _ENVELOPE_CHECKERS[key](value, f"{where}.{key}")
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Devloop projection plumbing
+
+
+def _stage_envelope(stage: dict, task_id: str) -> dict:
+    """One stage-dispatch record as one execution-grain envelope row; the
+    dispatch join keys it carries ride along, a bare session id is
+    qualified into the session_ref triple."""
+    row: dict = {"task_id": task_id, "outcome": stage.get("outcome", "")}
+    for key in ("role", "harness", "model"):
+        if stage.get(key):
+            row[key] = stage[key]
+    if stage.get("session_ref"):
+        row["session_ref"] = {
+            "harness": stage.get("harness", ""),
+            "kind": "session_id",
+            "value": stage["session_ref"],
+        }
+    cost = {
+        key: stage[emitted]
+        for key, emitted in (("tokens", "tokens"), ("duration", "duration_sec"))
+        if emitted in stage
+    }
+    if cost:
+        row["cost"] = cost
+    return row
+
+
+def _drop_nones(value):
+    """Strip null-valued keys the emitter writes for absent nullable counts."""
+    if isinstance(value, dict):
+        return {k: _drop_nones(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_drop_nones(v) for v in value]
+    return value
 
 
 # ---------------------------------------------------------------------------

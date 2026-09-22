@@ -1,0 +1,20 @@
+{
+  "type": "note",
+  "title": "loop trajectory #218: drop the dead flag",
+  "tags": ["loop-run"],
+  "frontmatter": {
+    "issue": 218,
+    "issue_url": "",
+    "pr_url": "",
+    "run_id": "",
+    "branch": "fix/dead-flag",
+    "outcome": "shipped",
+    "fix_rounds": 0,
+    "commits": 1,
+    "files_touched": [],
+    "gates": [],
+    "skills": []
+  },
+  "body_skeleton": "",
+  "concept_hints": []
+}
