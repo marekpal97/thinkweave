@@ -46,6 +46,30 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" subagent_start",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" subagent_stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",

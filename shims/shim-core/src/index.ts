@@ -17,20 +17,22 @@ import { spawn } from "node:child_process";
 
 /**
  * The canonical lifecycle vocabulary — exactly the tuple
- * `core.harness.CANONICAL_EVENTS` declares on the Python side: the four
- * phases the Python hook handler actually implements. This is deliberately
- * narrower than both issue #194's event list (SubagentStart/Stop,
- * SessionEnd, PreCompact — aspirational until the Python side handles them)
- * and what Claude Code natively fires (it also emits PreToolUse, SessionEnd,
- * PreCompact — those have no thinkweave destination today, so shipping their
- * names here would be a capability silently faked). Both suites pin this
- * module against the shared `canonical-events.json` fixture, so the TS
- * vocabulary and the Python normaliser cannot drift apart silently.
+ * `core.harness.CANONICAL_EVENTS` declares on the Python side: the phases
+ * the Python hook handler actually implements (SubagentStart/SubagentStop
+ * are the dispatch seam's task-boundary capture). This is deliberately
+ * narrower than what Claude Code natively fires (it also emits PreToolUse,
+ * SessionEnd, PreCompact — those have no thinkweave destination today, so
+ * shipping their names here would be a capability silently faked). Both
+ * suites pin this module against the shared `canonical-events.json`
+ * fixture, so the TS vocabulary and the Python normaliser cannot drift
+ * apart silently.
  */
 export const CANONICAL_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
   "PostToolUse",
+  "SubagentStart",
+  "SubagentStop",
   "Stop",
 ] as const;
 
@@ -45,6 +47,8 @@ export const EVENT_PHASES: Record<CanonicalEvent, string> = {
   SessionStart: "session_start",
   UserPromptSubmit: "user_prompt_submit",
   PostToolUse: "post_tool_use",
+  SubagentStart: "subagent_start",
+  SubagentStop: "subagent_stop",
   Stop: "stop",
 };
 

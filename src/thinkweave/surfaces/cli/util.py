@@ -73,26 +73,12 @@ def cmd_session_id(args: argparse.Namespace) -> None:
     resolvable (Codex, which exports no such var, or a genuinely headless run)
     → exit 1, and the caller falls back to recency + the #209 identity guard.
     """
-    import os
-
     from thinkweave.core import harness
 
-    active = harness.active()
-    ordered = [active] + [
-        factory()
-        for name, factory in harness.PROFILES.items()
-        if name != active.id
-    ]
-    seen: set[str] = set()
-    for profile in ordered:
-        for env in profile.session_id_envs:
-            if not env or env in seen:
-                continue
-            seen.add(env)
-            value = os.environ.get(env, "").strip()
-            if value:
-                print(value)
-                return
+    value = harness.env_session_id()
+    if value:
+        print(value)
+        return
     # No harness exports a session id we can read from this process — silent
     # non-zero so `id=$(weave session-id)` leaves $id empty and the skill
     # branches to its recency fallback.

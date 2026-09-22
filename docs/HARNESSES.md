@@ -37,6 +37,8 @@ profile is what runs; fix whichever is wrong.
 | SessionStart | ✓ 2026-08-29 | ✓ 2026-09-05 | `session_start` ✓ 2026-09-05 | `experimental.chat.messages.transform` (declared) |
 | UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-09-05 | `before_agent_start` ✓ 2026-09-05 | `chat.message` (declared) |
 | PostToolUse | ✓ 2026-08-29 | ✓ 2026-09-07 | `tool_result` ✓ 2026-09-05 | `tool.execute.after` (declared) |
+| SubagentStart | wired, unverified | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
+| SubagentStop | wired, unverified | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
 | Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | `agent_end` ✓ 2026-09-05 | — (no verified equivalent) |
 
 ### Documented degradations
@@ -61,6 +63,7 @@ None — the reference harness.
 - **hook latency** — documented: shim-core's 800 ms telemetry budget sits below this launcher's floor on the dev machine (a no-op Stop is ~1.8 s warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim carries per-event budgets (UserPromptSubmit 2.5 s, Stop 6 s); a hook that still outlives its budget finishes as shim-core's documented orphan — capture is complete, Pi shows one 'hook timeout' notice per event per session, and only the prompt-time enrichment block that reply would have carried is lost (#114, docs/HARNESSES.md §Pi)
 - **MCP registration** — documented: Pi core ships no MCP client — a settings.json mcpServers block parses and is silently ignored (falsified live on 0.84.4, 2026-09-03). The registration is served through the community pi-mcp-adapter extension instead: `weave install --harness pi` writes the standard mcpServers block (plus lifecycle/directTools/toolPrefix) to ~/.pi/agent/mcp.json, the adapter also reads the project .mcp.json, and `weave doctor --mcp --harness pi` fails with `pi install npm:pi-mcp-adapter` when the package is absent; the CLI fallback in the instructions block covers a session where the tools still did not load (#114, n-fb74c7d0)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
+- **SubagentStart/SubagentStop task capture** — documented: no subagent bus events exist to map the dispatch seam onto, so live task-boundary capture does not run; task correlation degrades to task-id-only via `weave task open`/`close` (the id rides the dispatch descriptor) (n-a1d3beba §2)
 - **skill invocation** — documented: no Skill tool — /skill:<name> is prompt expansion. Skills are root-file links `weave install --harness pi` creates in ~/.pi/agent/skills, one <name>.md per canonical commands/*.md; worker-backed commands (/drain, /dream, /news, /newsletter, /podcast, /youtube, /seed-enrich, …) are not linked because Pi has no subagents to run them (Pi docs/skills.md §Locations)
 
 #### OpenCode
