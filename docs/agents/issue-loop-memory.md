@@ -60,7 +60,7 @@ wrap-coverage guarantee for headless runs. It is not duplicated here.
 carries `skills[]` — the loop's stage-dispatch log, one entry per dispatched
 stage skill as `{id, role, outcome, fix_rounds_attributed}`. A stage skill is
 effectively a gate/subagent the loop already dispatches (implementer,
-acceptance judge, reviewer, and future ponytail/tdd), so this is a
+judge, simplify), so this is a
 frontmatter extension, not new hooks — it keeps the lightweight /
 no-pre-action-injection doctrine. `fix_rounds_attributed` makes fix-round
 attribution explicit: which gate/skill caused each round (the total stays in
@@ -166,14 +166,10 @@ pure recency. Served ids are the *insight* ids — that is what the run received
   prompt-time retrieval uses; context_served stays a pure projection of
   `retrieval_log.jsonl`). Served ids are recoverable per run from the index by
   both routes.
-- **Deliberate holdout.** Some runs dispatch **unprimed**, marked
-  `primed: false` with no served ids. Selection is stateless
-  1-in-`prime_holdout`-in-expectation sampling (`sha1(run_id) % N == 0`;
-  `loop.toml` knob, default 5, `--set`-overridable) — deterministic per run-id
-  and date/random-free, but a sample, NOT a counter that fires on literally
-  every Nth run. Loop runs are numerous, comparable,
-  and gate-scored, so regressing #60's `outcome` against `primed`/served
-  context separates "context helped" from "easy issue".
+- **No holdout.** Every run is primed; the rail always serves what it
+  finds. The `prime_holdout` knob and its unprimed sample were removed in
+  the devloop revisit, so `primed: false` now means the index served
+  nothing, not a deliberate skip.
 
 **Deliberately not built** (until felt): serving is retrieval-only today —
 no learned ranking of which prior lessons help most (the holdout regression is

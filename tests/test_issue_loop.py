@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from devloop import cli
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,17 +42,17 @@ def test_repo_loop_toml_parses_and_gate_ids_unique():
     cfg = cli.load_config()
     ids = [g["id"] for g in cfg["gates"]]
     assert len(ids) == len(set(ids)) and len(ids) >= 4
-    assert all(g["kind"] in {"command", "diff", "acceptance", "review", "simplify"}
+    assert all(g["kind"] in {"command", "diff", "judge", "simplify"}
                for g in cfg["gates"])
 
 
 def test_gate_pipeline_order_is_pinned():
-    """The full pipeline order is a contract: diff-guard → tests → acceptance
-    → review → simplify. simplify runs LAST, after review, so it only ever
-    shrinks an already-verified diff."""
+    """The full pipeline order is a contract: diff-guard → tests → judge →
+    simplify. The deterministic guards run first, then the one judge, then
+    the trim, so simplify only ever shrinks an already-verified diff."""
     cfg = cli.load_config()
     ids = [g["id"] for g in cfg["gates"]]
-    assert ids == ["diff-guard", "tests", "acceptance", "review", "simplify"]
+    assert ids == ["diff-guard", "tests", "judge", "simplify"]
 
 
 def test_simplify_gate_shape():
@@ -67,9 +66,9 @@ def test_simplify_gate_shape():
     # required=false: simplify can never fail the pipeline — its failure ships
     # the pre-simplify diff (documented in issue-loop.command.md §1c-simplify).
     assert gate["required"] is False
-    # It re-verifies the shrunk diff against exactly the deterministic +
-    # behavioral gates, in order.
-    assert gate["rerun"] == ["tests", "acceptance"]
+    # It re-verifies the shrunk diff against the tests gate only; there is
+    # no second judge.
+    assert gate["rerun"] == ["tests"]
     assert "simplify-reverted" in gate["revert_note"]
     # The delete-list comes from the ponytail-review skill, which the
     # orchestrator reads from funloops (packages/devloop/docs/agents/).
@@ -83,28 +82,6 @@ def test_committed_hooks_carry_no_ponytail_entries():
     UserPromptSubmit hook)."""
     hooks = (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
     assert "ponytail" not in hooks.lower()
-
-
-def test_dispatch_persona_knob_defaults_on():
-    """[dispatch] persona = true is the default AND file-backed in loop.toml
-    (3-edit config pattern: file entry + DEFAULT_CONFIG + override path)."""
-    cfg = cli.load_config()
-    assert cfg["dispatch"]["persona"] is True
-    assert cli.DEFAULT_CONFIG["dispatch"]["persona"] is True
-    toml_text = (REPO_ROOT / "docs" / "agents" / "loop.toml").read_text(
-        encoding="utf-8"
-    )
-    assert "[dispatch]" in toml_text
-    assert "persona = true" in toml_text
-
-
-def test_dispatch_persona_overridable_per_run():
-    """--set dispatch.persona=false flips the knob for one run; an unknown key
-    in [dispatch] stays a hard error (typo protection, same as every section)."""
-    cfg = cli.apply_overrides(cli.load_config(), ["dispatch.persona=false"])
-    assert cfg["dispatch"]["persona"] is False
-    with pytest.raises(ValueError):
-        cli.apply_overrides(cli.load_config(), ["dispatch.personna=false"])
 
 
 def test_plan_distill_fork_gate_requires_both_conditions():
