@@ -28,6 +28,7 @@ SECTIONS = (
     "header",
     "tools",
     "sessions",
+    "tasks",
     "state",
     "backlog",
     "decisions",
@@ -120,6 +121,8 @@ def _build_section(key: str, cfg: Config, project: str) -> Section | None:
         return _build_tools_manifest()
     if key == "sessions":
         return _build_recent_sessions(cfg, project, n=5)
+    if key == "tasks":
+        return _build_open_tasks(cfg, project)
     if key == "state":
         return _build_state_excerpt(cfg, project, max_chars=12000)
     if key == "backlog":
@@ -144,6 +147,7 @@ def _default_title(key: str) -> str:
         "header": "Header",
         "tools": "Available MCP Tools",
         "sessions": "Recent Wrapped Sessions",
+        "tasks": "Open Tasks",
         "state": "State of Play",
         "backlog": "Backlog (Open Items)",
         "decisions": "Recent Decisions",
@@ -333,6 +337,65 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
         title=_default_title("sessions"),
         body="\n\n".join(chunks),
         soft_budget_chars=9000,
+    )
+
+
+def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
+    """Open ``kind: task`` work-grain notes — the continuation cue.
+
+    One line per open task: id, title, issue ref (``asked``), status.
+    Returns None (section omitted entirely) when nothing is open — an
+    empty placeholder would dilute the cue.
+    """
+    if _index_missing(cfg):
+        return None
+
+    import sqlite3
+
+    db = sqlite3.connect(str(cfg.index_db))
+    db.row_factory = sqlite3.Row
+    try:
+        rows = db.execute(
+            """
+            SELECT id, title, frontmatter
+            FROM notes
+            WHERE type = 'note'
+              AND id LIKE 'tsk-%'
+              AND (? = '' OR project = ?)
+            ORDER BY date DESC
+            LIMIT ?
+            """,
+            (project, project, n),
+        ).fetchall()
+    finally:
+        db.close()
+
+    lines = []
+    for row in rows:
+        try:
+            fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
+        except json.JSONDecodeError:
+            continue
+        if fm.get("kind") != "task" or fm.get("status") != "open":
+            continue
+        title = fm.get("title") or row["title"] or row["id"]
+        asked = fm.get("asked") or ""
+        ref = f" {asked}" if asked else ""
+        lines.append(f"- `{row['id']}` **{title}**{ref} (open)")
+
+    if not lines:
+        return None
+
+    preamble = (
+        "Open work-grain tasks. If this session continues one, declare "
+        "`continuing <tsk-id>` — /wrap proposes matches, never merges "
+        "silently."
+    )
+    return Section(
+        key="tasks",
+        title=_default_title("tasks"),
+        body=preamble + "\n\n" + "\n".join(lines),
+        soft_budget_chars=1600,
     )
 
 

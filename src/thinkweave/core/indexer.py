@@ -145,11 +145,16 @@ CREATE INDEX IF NOT EXISTS idx_ch_ancestor ON concept_hierarchy(ancestor);
 -- developer message, spills it to a temp file above additionalContextLimit,
 -- and drops it entirely until the hook is trusted — so it must not be weighed
 -- as Claude Code's 'startup'.
+-- 'open-tasks' is the SessionStart open-tasks serving row: task ids (tsk-)
+-- in a startup payload split off from the surrounding 'startup' rows so the
+-- continuation cue stays a distinct exposure signal. The split is by id
+-- prefix at projection time and applies to every startup-family harness;
+-- an agent-pulled task note stays 'onthefly'.
 -- Rebuildable from retrieval_log.jsonl — markdown stays truth.
 CREATE TABLE IF NOT EXISTS context_served (
     session_id TEXT NOT NULL,
     note_id    TEXT NOT NULL,
-    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime', 'loop-prime', 'codex-startup')),
+    source     TEXT NOT NULL CHECK(source IN ('startup', 'onthefly', 'prompttime', 'loop-prime', 'codex-startup', 'open-tasks')),
     ts         TEXT,
     PRIMARY KEY (session_id, note_id, source)
 );
@@ -367,12 +372,13 @@ class Indexer:
             self.db.commit()
 
         # context_served's `source` CHECK has widened over time (R2 added
-        # 'prompttime'; #57 added 'loop-prime'; #107 added 'codex-startup').
+        # 'prompttime'; #57 added 'loop-prime'; #107 added 'codex-startup';
+        # #184 added 'open-tasks').
         # Older vaults created the table with a narrower CHECK that rejects the
         # new-source INSERTs. SQLite can't ALTER a CHECK, but the table is 100%
         # derived from retrieval_log.jsonl — drop, let SCHEMA_SQL recreate it
         # with the current constraint, and re-project every session right here.
-        # Gate on the newest token: any table lacking 'codex-startup' predates
+        # Gate on the newest token: any table lacking 'open-tasks' predates
         # the current schema.
         #
         # The re-projection is not deferred to the caller's rebuild: only
@@ -386,7 +392,7 @@ class Indexer:
             "WHERE type='table' AND name='context_served'"
         ).fetchone()
         cs_sql = cs_sql_row[0] if cs_sql_row else None
-        if cs_sql and "codex-startup" not in cs_sql:
+        if cs_sql and "open-tasks" not in cs_sql:
             self.db.execute("DROP TABLE context_served")
             self.db.executescript(SCHEMA_SQL)
             self._rebuild_context_served()
@@ -1502,10 +1508,18 @@ class Indexer:
                 for nid in returned_ids:
                     if not isinstance(nid, str) or not nid:
                         continue
+                    # Task ids in a startup payload are the open-tasks
+                    # serving row — split off by id prefix so the
+                    # continuation cue stays a distinct exposure signal
+                    # (see the CHECK's docstring in SCHEMA_SQL).
+                    if etype == "startup" and nid.startswith("tsk-"):
+                        nid_src = "open-tasks"
+                    else:
+                        nid_src = src
                     self.db.execute(
                         "INSERT OR REPLACE INTO context_served "
                         "(session_id, note_id, source, ts) VALUES (?, ?, ?, ?)",
-                        (session_id, nid, src, ts),
+                        (session_id, nid, nid_src, ts),
                     )
                     upserted += 1
         return upserted
