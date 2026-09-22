@@ -355,6 +355,10 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
     db = sqlite3.connect(str(cfg.index_db))
     db.row_factory = sqlite3.Row
     try:
+        # No SQL LIMIT: status lives in frontmatter and is filtered in
+        # Python (avoids reliance on SQLite JSON1), so a cap before the
+        # filter would let newer closed tasks crowd out an older open one.
+        # The open set is small by nature; the cap applies after.
         rows = db.execute(
             """
             SELECT id, title, frontmatter
@@ -363,9 +367,8 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
               AND id LIKE 'tsk-%'
               AND (? = '' OR project = ?)
             ORDER BY date DESC
-            LIMIT ?
             """,
-            (project, project, n),
+            (project, project),
         ).fetchall()
     finally:
         db.close()
@@ -382,6 +385,8 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
         asked = fm.get("asked") or ""
         ref = f" {asked}" if asked else ""
         lines.append(f"- `{row['id']}` **{title}**{ref} (open)")
+        if len(lines) >= n:
+            break
 
     if not lines:
         return None

@@ -87,6 +87,22 @@ class TestOpenTasksSection:
         # Closed tasks never surface.
         assert "tsk-bbbb2222" not in payload
 
+    def test_open_task_older_than_many_closed_tasks_still_serves(
+        self, config: Config, vault: VaultManager
+    ):
+        """Regression: the status filter must run before any row cap. An open
+        task created before 20+ newer closed tasks must still serve — a cap
+        applied over all tsk- rows by recency would crowd it out."""
+        _seed_task(vault, "tsk-aaaa1111", "Old but open", asked="#218")
+        for i in range(25):
+            _seed_task(vault, f"tsk-c{i:03d}0000", f"Closed {i}", status="closed")
+        _reindex(config)
+
+        payload = build_project_context(config, "t")
+
+        assert "## Open Tasks" in payload
+        assert "tsk-aaaa1111" in payload
+
     def test_section_omitted_when_no_open_tasks(
         self, config: Config, vault: VaultManager
     ):
