@@ -355,7 +355,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
         session_ref=ref,
     )
     _output(
-        additional_context=dispatch.context_block(),
+        additional_context=json.dumps({"thinkweave_task": dispatch.to_dict()}),
         hook_event_name="SubagentStart",
     )
 

@@ -30,6 +30,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from thinkweave.core.events import iter_jsonl
 from thinkweave.core.harness import CANONICAL_EVENTS as CANONICAL_EVENTS
 
 if TYPE_CHECKING:
@@ -105,19 +106,7 @@ def task_rows(path: Path) -> list[dict]:
     works on a live buffer or an archived ``events.jsonl``, skips malformed
     lines, returns ``[]`` for an absent file.
     """
-    if not path.exists():
-        return []
-    rows: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row, dict) and row.get("type") in TASK_EVENT_TYPES:
-            rows.append(row)
-    return rows
+    return [r for r in iter_jsonl(path) if r.get("type") in TASK_EVENT_TYPES]
 
 
 class UnknownHookEvent(ValueError):

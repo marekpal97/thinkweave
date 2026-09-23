@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,17 +41,7 @@ class TaskDispatch:
     title: str
 
     def to_dict(self) -> dict:
-        return {
-            "task_id": self.task_id,
-            "grain": self.grain,
-            "envelope_return": self.envelope_return,
-            "note": self.note,
-            "title": self.title,
-        }
-
-    def context_block(self) -> str:
-        """The descriptor as the harness's context-injection payload."""
-        return json.dumps({"thinkweave_task": self.to_dict()})
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -256,9 +246,7 @@ def find_stub(cfg, task_id: str) -> Path | None:
     files); closes are rare next to retrieval traffic. The upgrade path is
     the SQLite index once stubs are indexed at open.
     """
-    for path in cfg.vault_root.rglob(f"{task_id}.md"):
-        return path
-    return None
+    return next(cfg.vault_root.rglob(f"{task_id}.md"), None)
 
 
 def _now() -> str:

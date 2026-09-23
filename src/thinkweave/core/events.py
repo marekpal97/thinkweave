@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -446,6 +446,24 @@ def match_probe_concepts(text: str, vocabulary: Iterable[str]) -> set[str]:
 # predates #101 and downstream consumers (export, projections) key on it.
 
 
+def iter_jsonl(path: Path) -> Iterator[dict]:
+    """Tolerantly iterate the dict rows of an append-only JSONL file.
+
+    Skips blank and malformed lines; yields nothing for an absent file.
+    """
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            yield row
+
+
 def feedback_events(events_jsonl: Path) -> list[dict]:
     """Enumerate ``type == "feedback"`` events from a session's events JSONL.
 
@@ -459,18 +477,7 @@ def feedback_events(events_jsonl: Path) -> list[dict]:
     is resolved here: consumers fuzzy-join on timestamp adjacency within
     the session (post-#101 rows reuse the prompt event's exact ``ts``).
     """
-    if not events_jsonl.exists():
-        return []
-    out: list[dict] = []
-    for line in events_jsonl.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row, dict) and row.get("type") == "feedback":
-            out.append(row)
+    out = [r for r in iter_jsonl(events_jsonl) if r.get("type") == "feedback"]
     return _collapse_echoes(
         out,
         identity=lambda r: (

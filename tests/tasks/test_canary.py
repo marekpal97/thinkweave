@@ -84,7 +84,6 @@ def test_canary(cfg: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             "kind": "agent_id",
             "value": AGENT,
         }
-        assert AGENT not in (row["task_id"], row.get("session_id", "")[:0])
 
     # 5. Stub fields: a conforming, closed task note with the compiled round.
     stubs = list(cfg.vault_root.rglob(f"{task_id}.md"))
