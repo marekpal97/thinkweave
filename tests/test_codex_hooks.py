@@ -87,6 +87,8 @@ class TestInstalledArtifact:
             "SessionStart",
             "UserPromptSubmit",
             "PostToolUse",
+            "SubagentStart",
+            "SubagentStop",
             "Stop",
         }
         for event, groups in doc["hooks"].items():
@@ -128,7 +130,7 @@ class TestInstalledArtifact:
                         "weave-hook-launch", "weave-hook-launch.cmd", 1
                     )
                     seen += 1
-        assert seen == 5, f"expected 5 handlers, saw {seen}"
+        assert seen == 7, f"expected 7 handlers, saw {seen}"
 
     def test_matchers_are_carried_over_verbatim(self, codex_home: Path):
         """Codex's regex vocabulary already covers both canonical matchers:

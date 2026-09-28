@@ -249,6 +249,12 @@ def _build_installed_settings(
     limit = profile.additional_context_limit
 
     for event, canonical_entries in canonical.items():
+        # A canonical event the profile maps to None has no verified native
+        # equivalent on this harness — writing its entry would be config
+        # that parses and never fires, so it is skipped (and the profile
+        # documents the gap as a degradation).
+        if event in profile.hook_events and not profile.hook_events[event]:
+            continue
         entries = hooks.setdefault(event, [])
         # Slot disambiguation is only needed when one event owns several
         # thinkweave entries (PostToolUse: action gate + MCP gate) — the

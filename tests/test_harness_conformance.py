@@ -223,6 +223,10 @@ class TestPiRow:
             "SessionStart": "session_start",
             "UserPromptSubmit": "before_agent_start",
             "PostToolUse": "tool_result",
+            # No subagent bus events exist on Pi — the None mappings are the
+            # declared refusal, and the profile documents the degradation.
+            "SubagentStart": None,
+            "SubagentStop": None,
             "Stop": "agent_end",
         }
 
@@ -283,18 +287,30 @@ class TestEventsFireProbe:
             assert profile.hook_mechanism != "none"
 
     def test_hooked_harnesses_map_every_installed_event(self, profile):
-        # `weave hooks install` writes every canonical event's entry; a
-        # harness that cannot fire one of them must not get that config.
+        # `weave hooks install` writes an entry per canonical event the
+        # profile maps (a None mapping is skipped by the installer); an
+        # unmapped event on a hooked harness must be documented as a
+        # degradation, never silently absent.
         if profile.hook_mechanism != "none":
             for event in CANONICAL_HOOKS:
-                assert profile.hook_events.get(event), (
-                    f"{profile.id} installs a {event} hook but declares no "
-                    "native event for it — config that parses and never fires"
+                if profile.hook_events.get(event):
+                    continue
+                assert any(
+                    event.lower() in d.capability.lower()
+                    for d in profile.degradations
+                ), (
+                    f"{profile.id} cannot fire {event} and documents no "
+                    "degradation for it — a capability silently faked"
                 )
+
+    # The dispatch-seam events (SubagentStart/SubagentStop) are wired but
+    # carry no dated observation yet — fires_verified only ever grows by a
+    # real run's evidence, never by wiring.
+    DATED_EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
 
     def test_shipped_harnesses_carry_dated_verification(self, tmp_path: Path):
         cc = _build("claude-code", tmp_path)
-        assert set(cc.fires_verified) == set(hook_events.CANONICAL_EVENTS)
+        assert set(cc.fires_verified) == self.DATED_EVENTS
         codex = _build("codex", tmp_path)
         # SessionStart and UserPromptSubmit: observed pre-auth 2026-08-02 and
         # live 2026-09-05. PostToolUse and Stop: raw envelopes captured on
@@ -303,7 +319,7 @@ class TestEventsFireProbe:
         # tests/fixtures/harness_envelopes/codex/envelopes-2026-09-07.jsonl,
         # docs/HARNESSES.md §"2026-09-07 instrumented headless run". All
         # four canonical events are now dated, as on Claude Code.
-        assert set(codex.fires_verified) == set(hook_events.CANONICAL_EVENTS)
+        assert set(codex.fires_verified) == self.DATED_EVENTS
         assert codex.fires_verified["SessionStart"] >= "2026-09-05"
         assert codex.fires_verified["UserPromptSubmit"] >= "2026-09-05"
         assert codex.fires_verified["PostToolUse"] == "2026-09-07"

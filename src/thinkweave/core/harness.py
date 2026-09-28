@@ -36,7 +36,17 @@ SESSION_START_BUDGET_TOKENS = 10_000
 #: authored in ``hooks/hooks.json`` (the conformance suite pins them equal).
 #: E3 shims translate other harnesses' native names onto these
 #: (dec-5a076384); ``operations.hook_events`` is the swap.
-CANONICAL_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
+#: SubagentStart/SubagentStop are the dispatch seam: task boundaries are
+#: captured live at these edges, and a harness that lacks them degrades to
+#: task-id-only correlation (:attr:`HarnessProfile.task_correlation`).
+CANONICAL_EVENTS = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+)
 
 _NUDGE = (
     "If `weave_*` MCP tools are available, thinkweave (Obsidian-native memory "
@@ -420,6 +430,23 @@ class HarnessProfile:
     post-install text names one."""
 
     degradations: tuple[Degradation, ...] = ()
+
+    @property
+    def task_correlation(self) -> str:
+        """This harness's task-capture tier at the dispatch seam.
+
+        ``boundary`` — SubagentStart/SubagentStop are mapped, so task open
+        and close are captured live at the real task edges. ``task-id-only``
+        — no dispatch-seam events: correlation degrades to the vault-minted
+        task id riding the descriptor (``weave task open`` / ``close``), and
+        only the boundary automation is lost.
+        """
+        if all(
+            self.hook_events.get(e)
+            for e in ("SubagentStart", "SubagentStop")
+        ):
+            return "boundary"
+        return "task-id-only"
 
     @property
     def dev_link(self) -> Path:
@@ -850,6 +877,11 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "SessionStart": "session_start",
             "UserPromptSubmit": "before_agent_start",
             "PostToolUse": "tool_result",
+            # No native subagent bus events exist (subagents=False): the
+            # dispatch seam degrades to task-id-only correlation, stated
+            # below as a degradation rather than guessed at.
+            "SubagentStart": None,
+            "SubagentStop": None,
             "Stop": "agent_end",
         },
         context_channel="context-injection",
@@ -916,6 +948,15 @@ def pi(home: Path | None = None) -> HarnessProfile:
                 "documented",
                 "Pi ships no first-party subagent tool, so the /drain and "
                 "/dream worker topology has nothing to dispatch onto",
+                "n-a1d3beba §2",
+            ),
+            Degradation(
+                "SubagentStart/SubagentStop task capture",
+                "documented",
+                "no subagent bus events exist to map the dispatch seam "
+                "onto, so live task-boundary capture does not run; task "
+                "correlation degrades to task-id-only via `weave task "
+                "open`/`close` (the id rides the dispatch descriptor)",
                 "n-a1d3beba §2",
             ),
             Degradation(
@@ -1091,3 +1132,24 @@ def active() -> HarnessProfile:
     return _build(
         os.environ.get("THINKWEAVE_HARNESS") or "claude-code", "$THINKWEAVE_HARNESS"
     )
+
+
+def env_session_id() -> str:
+    """The current harness session id, read from whichever declared
+    session-id env var carries a value — active profile first, then every
+    other registered one. ``""`` when no harness exports one (Codex, or a
+    genuinely headless run); callers fall back to their own scheme.
+    """
+    ordered = [active()] + [
+        factory() for name, factory in PROFILES.items() if name != active().id
+    ]
+    seen: set[str] = set()
+    for profile in ordered:
+        for env in profile.session_id_envs:
+            if not env or env in seen:
+                continue
+            seen.add(env)
+            value = os.environ.get(env, "").strip()
+            if value:
+                return value
+    return ""

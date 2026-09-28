@@ -1,0 +1,65 @@
+{
+  "type": "note",
+  "title": "loop trajectory #217: devloop envelope normalizer",
+  "tags": ["loop-run"],
+  "frontmatter": {
+    "issue": 217,
+    "issue_url": "https://github.com/marekpal97/thinkweave/issues/217",
+    "pr_url": "https://github.com/marekpal97/thinkweave/pull/999",
+    "run_id": "run-42",
+    "branch": "loop/dag-184",
+    "outcome": "shipped",
+    "fix_rounds": 2,
+    "commits": 3,
+    "files_touched": ["src/thinkweave/core/task_contract.py"],
+    "gates": [{"id": "tests", "passed": true, "summary": "42 passed"}],
+    "skills": [
+      {
+        "id": "implementer",
+        "role": "implementer",
+        "outcome": "ok",
+        "fix_rounds_attributed": 1,
+        "transport": "agent-tool",
+        "harness": "claude-code",
+        "model": "claude-fable-5",
+        "session_ref": "56c88c16-ae09-4cb6-ad3c-076ea2be3a4e",
+        "duration_sec": 1260,
+        "tokens": 184000
+      },
+      {
+        "id": "judge",
+        "role": "judge",
+        "outcome": "ok",
+        "fix_rounds_attributed": 1
+      }
+    ],
+    "primed": true,
+    "served": ["dec-1c903854", "dec-ba94712f"],
+    "trace": {
+      "rounds": [
+        {
+          "gate": "review",
+          "finding": "trace fields at top level",
+          "severity": "major",
+          "disposition": "fixed",
+          "fixed_by": "2"
+        }
+      ],
+      "criteria": [
+        {"id": "AC1", "verdict": "met", "flipped_by_round": 1},
+        {"id": "AC2", "verdict": "met", "flipped_by_round": null}
+      ],
+      "simplify": {
+        "outcome": "applied",
+        "cuts": [{"what": "helper dataclass", "why": "one consumer"}],
+        "kept": [{"what": "closed key tables", "why": "the contract surface"}],
+        "lines_delta": -42
+      },
+      "stack_simplify": {"outcome": "skipped", "cuts": [], "kept": [], "lines_delta": 0},
+      "edge_cases": ["empty stage log"],
+      "tdd": {"red_confirmed": true}
+    }
+  },
+  "body_skeleton": "## What\n<1-2 sentences: the slice delivered>\n\n## How it went\n<fix rounds and why; seams chosen; surprises>",
+  "concept_hints": ["epic-184"]
+}

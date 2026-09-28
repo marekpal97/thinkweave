@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from thinkweave.core.harness import PROFILES
 from thinkweave.core.schemas import EdgeType, NoteType
+from thinkweave.core.task_contract import TASK_GRAINS
 
 
 def _add_harness_flag(*parsers) -> None:
@@ -1057,6 +1058,46 @@ def add_admin_subparsers(sub) -> None:
         "--json", action="store_true",
         help="Emit raw JSON result on stdout",
     )
+
+    # --- Dispatch-seam task lifecycle -------------------------------------
+    p_task = sub.add_parser(
+        "task",
+        help=(
+            "Dispatch-seam task lifecycle: open (mint stub + register row, "
+            "prints the task id), close (record the boundary close, compile "
+            "the round), render (re-emit the dispatch descriptor JSON)."
+        ),
+    )
+    task_sub = p_task.add_subparsers(dest="task_action")
+    p_task_open = task_sub.add_parser(
+        "open", help="Mint a task at a dispatch boundary; prints the task id."
+    )
+    p_task_open.add_argument("--project", "-p", default="")
+    p_task_open.add_argument(
+        "--session", default="",
+        help=(
+            "Events-register key (default: the harness session-id env var, "
+            "else 'unattributed')."
+        ),
+    )
+    p_task_open.add_argument("--title", default="")
+    p_task_open.add_argument(
+        "--grain", default="per-dispatch", choices=sorted(TASK_GRAINS)
+    )
+    p_task_open.add_argument("--role", default="")
+    p_task_close = task_sub.add_parser(
+        "close",
+        help=(
+            "Record the boundary close; compiles the envelope return file "
+            "into the stub's rounds[]. Correlates by task id alone."
+        ),
+    )
+    p_task_close.add_argument("task_id")
+    p_task_close.add_argument("--session", default="")
+    p_task_render = task_sub.add_parser(
+        "render", help="Re-emit an existing task's dispatch descriptor JSON."
+    )
+    p_task_render.add_argument("task_id")
 
     # --- C24: CLI parity for MCP-only tools -------------------------------
     p_unlink = sub.add_parser(

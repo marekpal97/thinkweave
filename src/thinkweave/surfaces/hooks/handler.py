@@ -223,6 +223,10 @@ def main() -> None:
             _handle_session_start(hook_input)
         elif hook_type == "user_prompt_submit":
             _handle_user_prompt_submit(hook_input)
+        elif hook_type == "subagent_start":
+            _handle_subagent_start(hook_input)
+        elif hook_type == "subagent_stop":
+            _handle_subagent_stop(hook_input)
         else:
             # Includes legacy `pre_tool_use` invocations from settings.json
             # entries written before that hook was retired. Falls through
@@ -318,6 +322,76 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
     except Exception as e:
         _log_error("post_tool_use", e)
         _output(system_message=_report_failure("post_tool_use", hook_input, e))
+
+
+def _handle_subagent_start(hook_input: dict) -> None:
+    """SubagentStart: mint the task at the dispatch boundary.
+
+    The stub note and the ``task_open`` register row are written by the
+    seam (``operations.task_seam``); the minted task id rides back to the
+    subagent inside the dispatch descriptor via ``additionalContext``, and
+    names the envelope return file the performer appends to. The agent id
+    is recorded only as a qualified ``session_ref`` triple — never a join
+    key, never a filename.
+    """
+    from thinkweave.core.config import load_config
+    from thinkweave.operations import task_seam
+
+    cfg = load_config()
+    session_id = hook_input.get("session_id") or _env_session_id()
+    if not session_id:
+        _output()
+        return
+    _ensure_session(cfg, session_id, hook_input)
+    harness = _hook_harness() or "claude-code"
+    agent_id = str(hook_input.get("agent_id", ""))
+    ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
+    dispatch = task_seam.open_task(
+        cfg,
+        session_key=session_id,
+        project=_detect_project(hook_input),
+        role=str(hook_input.get("agent_type", "")),
+        harness=harness,
+        session_ref=ref,
+    )
+    _output(
+        additional_context=json.dumps({"thinkweave_task": dispatch.to_dict()}),
+        hook_event_name="SubagentStart",
+    )
+
+
+def _handle_subagent_stop(hook_input: dict) -> None:
+    """SubagentStop: record the boundary close, flag the unpairable.
+
+    The matching open is resolved from the session's register by the
+    qualified agent ref; the close row itself correlates by task id alone.
+    A stop with no unclosed open is recorded as an orphan row — wrap
+    reconciles, this hook only detects.
+    """
+    from thinkweave.core.config import load_config
+    from thinkweave.operations import hook_events, task_seam
+
+    cfg = load_config()
+    session_id = hook_input.get("session_id") or _env_session_id()
+    if not session_id:
+        _output()
+        return
+    harness = _hook_harness() or "claude-code"
+    agent_id = str(hook_input.get("agent_id", ""))
+    ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
+    rows = hook_events.task_rows(
+        hook_events.register_path(cfg.weave_dir, session_id)
+    )
+    task_id = task_seam.pending_open(rows, ref) if ref else ""
+    if task_id:
+        task_seam.close_task(
+            cfg, task_id, session_key=session_id, session_ref=ref
+        )
+    else:
+        task_seam.record_orphan_stop(
+            cfg, session_key=session_id, session_ref=ref
+        )
+    _output()
 
 
 def _handle_user_prompt_submit(hook_input: dict) -> None:

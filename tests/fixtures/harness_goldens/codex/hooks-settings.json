@@ -52,6 +52,32 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"«REPO»/bin/weave-hook-launch\" subagent_start --harness codex",
+            "timeout": 30,
+            "commandWindows": "\"«REPO»/bin/weave-hook-launch.cmd\" subagent_start --harness codex"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"«REPO»/bin/weave-hook-launch\" subagent_stop --harness codex",
+            "timeout": 30,
+            "commandWindows": "\"«REPO»/bin/weave-hook-launch.cmd\" subagent_stop --harness codex"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",

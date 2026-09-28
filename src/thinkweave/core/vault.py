@@ -672,6 +672,7 @@ class VaultManager:
         extra_frontmatter: dict | None = None,
         output_dir: Path | None = None,
         session_id: str = "",
+        note_id: str = "",
     ) -> Path:
         """Create a new note file in the vault. Returns the file path.
 
@@ -681,8 +682,11 @@ class VaultManager:
                 extraction to put derived notes inside a session folder.
             session_id: When provided, place the note in this session's
                 folder instead of the default misc/ catch-all.
+            note_id: When provided, use this id instead of minting one —
+                for callers whose id scheme carries its own prefix (task
+                stubs' ``tsk-``).
         """
-        note_id = self.generate_id(note_type)
+        note_id = note_id or self.generate_id(note_type)
         today = datetime.now(timezone.utc).isoformat()
         # Canonicalize so `trade-ideas` and `trade_ideas` can't become two
         # separate project folders. The config default is already

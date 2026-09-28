@@ -46,11 +46,12 @@ RETRIEVAL_TOOLS: frozenset[str] = frozenset({
 })
 
 # Note-ID regex. Prefix list is the canonical set from
-# core/schemas.NOTE_ID_PREFIXES plus theme-candidates (`cand-`) and
-# concept-hub IDs (`cncpt-`). All prefixes are reserved tokens — no prose
-# false-positives.
+# core/schemas.NOTE_ID_PREFIXES plus theme-candidates (`cand-`),
+# concept-hub IDs (`cncpt-`), and vault-minted task ids (`tsk-`, whose
+# startup serving projects to its own context_served source). All prefixes
+# are reserved tokens — no prose false-positives.
 _ID_RE = re.compile(
-    r"\b((?:n|ses|dec|thm|src|cand|cncpt)-[a-z0-9]{6,})\b"
+    r"\b((?:n|ses|dec|thm|src|cand|cncpt|tsk)-[a-z0-9]{6,})\b"
 )
 
 # Per-tool whitelist of args worth keeping. Keeps the buffer small and
