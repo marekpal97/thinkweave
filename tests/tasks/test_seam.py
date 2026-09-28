@@ -111,6 +111,17 @@ class TestLedger:
         ]
         assert task_seam.pending_open(rows, ref) == ""
 
+    def test_closed_task_matches_the_ref_of_a_paired_close(self):
+        ref = task_seam.agent_ref("claude-code", "agent-a")
+        rows = [
+            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref},
+            {"type": "task_close", "task_id": "tsk-aaaaaaaa"},
+        ]
+        assert task_seam.closed_task(rows, ref) == "tsk-aaaaaaaa"
+        other = task_seam.agent_ref("claude-code", "agent-b")
+        assert task_seam.closed_task(rows, other) == ""
+        assert task_seam.closed_task(rows[:1], ref) == ""  # still open
+
 
 # ---------------------------------------------------------------------------
 # open / close at the operations seam (the hook-less, task-id-only route)
@@ -134,6 +145,10 @@ class TestOpenClose:
         rows = register_rows(cfg, "s-1")
         assert [r["type"] for r in rows] == ["task_open"]
         assert rows[0]["task_id"] == dispatch.task_id
+
+        # The return directory exists at open — the performer's first append
+        # must not fail on a fresh deployment.
+        assert Path(dispatch.envelope_return).parent.is_dir()
 
     def test_close_compiles_the_round_and_flips_status(self, cfg: Config):
         dispatch = task_seam.open_task(cfg, session_key="s-1", project="proj")
@@ -296,6 +311,23 @@ class TestHookHandlers:
             task_seam.find_stub(cfg, closed[0]).read_text(encoding="utf-8")
         )
         assert fm["status"] == "closed"
+
+    def test_second_stop_for_a_closed_task_is_not_an_orphan(
+        self, cfg: Config, monkeypatch, tmp_path: Path
+    ):
+        # Claude Code fires SubagentStop twice per subagent (observed live
+        # 2026-09-28): the second stop carries the same agent_id, seconds
+        # after its task was closed. It must not land as a spurious orphan.
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "canary")
+        run_hook(monkeypatch, "subagent_start", self._start_payload(tmp_path, "agent-a1"))
+        stop = dict(self._start_payload(tmp_path, "agent-a1"))
+        stop["hook_event_name"] = "SubagentStop"
+        run_hook(monkeypatch, "subagent_stop", stop)
+        run_hook(monkeypatch, "subagent_stop", dict(stop))
+
+        rows = register_rows(cfg, SESSION)
+        assert [r["type"] for r in rows] == ["task_open", "task_close"]
+        assert not any(r.get("orphan") for r in rows)
 
     def test_unmatched_stop_is_flagged_as_orphan(
         self, cfg: Config, monkeypatch, tmp_path: Path

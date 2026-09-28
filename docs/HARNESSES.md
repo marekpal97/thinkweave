@@ -37,8 +37,8 @@ profile is what runs; fix whichever is wrong.
 | SessionStart | ✓ 2026-08-29 | ✓ 2026-09-05 | `session_start` ✓ 2026-09-05 | `experimental.chat.messages.transform` (declared) |
 | UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-09-05 | `before_agent_start` ✓ 2026-09-05 | `chat.message` (declared) |
 | PostToolUse | ✓ 2026-08-29 | ✓ 2026-09-07 | `tool_result` ✓ 2026-09-05 | `tool.execute.after` (declared) |
-| SubagentStart | wired, unverified | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
-| SubagentStop | wired, unverified | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
+| SubagentStart | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
+| SubagentStop | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
 | Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | `agent_end` ✓ 2026-09-05 | — (no verified equivalent) |
 
 ### Documented degradations
@@ -50,7 +50,7 @@ row above) everything unlisted works as on Claude Code; on a
 
 #### Claude Code
 
-None — the reference harness.
+- **lifecycle hooks in print mode** — documented: SessionStart, SubagentStart and SubagentStop do not fire under `claude -p` (verified live 2026-09-28), so hook-route task capture is interactive-only; headless dispatch records its boundaries via `weave task open`/`close`
 
 #### Codex
 

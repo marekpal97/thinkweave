@@ -113,6 +113,10 @@ def open_task(
     if errors:
         raise ValueError(f"task stub does not conform: {errors}")
 
+    # The return path is handed out here, so the directory it names must
+    # exist here — a performer's first append never creates directories.
+    envelope_path(cfg, task_id).parent.mkdir(parents=True, exist_ok=True)
+
     hook_events.append_task_event(
         cfg.weave_dir,
         session_key,
@@ -234,6 +238,24 @@ def pending_open(rows: list[dict], session_ref: dict) -> str:
     for task_id, entry in task_ledger(rows).items():
         opened = entry["open"]
         if opened and not entry["close"]:
+            if opened.get("session_ref") == session_ref:
+                return task_id
+    return ""
+
+
+def closed_task(rows: list[dict], session_ref: dict) -> str:
+    """The task id of the already-closed open annotated with this ref, or ``""``.
+
+    Claude Code delivers SubagentStop twice per subagent (observed live
+    2026-09-28: a second stop with the same agent_id ~9 s after the close).
+    A stop whose ref resolves here is that duplicate — the boundary is
+    already recorded, so the handler skips it instead of writing a spurious
+    orphan row. A stop matching neither an open nor a closed task still
+    lands as an orphan.
+    """
+    for task_id, entry in task_ledger(rows).items():
+        opened = entry["open"]
+        if opened and entry["close"]:
             if opened.get("session_ref") == session_ref:
                 return task_id
     return ""

@@ -565,13 +565,17 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         hook_mechanism="plugin",
         hook_events={e: e for e in CANONICAL_EVENTS},
         # Literal per-event entries, not a comprehension: each date is one
-        # recorded observation (here: all four seen firing in live sessions
-        # on the dev machine on 2026-08-29) and future re-verifications must
-        # be able to move independently.
+        # recorded observation (the first four seen firing in live sessions
+        # on the dev machine on 2026-08-29; SubagentStart/SubagentStop in
+        # live interactive sessions on 2026-09-28 — single and parallel
+        # dispatch, agent_id present and identical in both payloads) and
+        # future re-verifications must be able to move independently.
         fires_verified={
             "SessionStart": "2026-08-29",
             "UserPromptSubmit": "2026-08-29",
             "PostToolUse": "2026-08-29",
+            "SubagentStart": "2026-09-28",
+            "SubagentStop": "2026-09-28",
             "Stop": "2026-08-29",
         },
         context_channel="additionalContext",
@@ -585,6 +589,16 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         mcp_servers_key="mcpServers",
         mcp_via_cli="claude mcp add",
         evidence="measured — daily live use on the dev machine; suite drives the handler end-to-end",
+        degradations=(
+            Degradation(
+                "lifecycle hooks in print mode",
+                "documented",
+                "SessionStart, SubagentStart and SubagentStop do not fire "
+                "under `claude -p` (verified live 2026-09-28), so hook-route "
+                "task capture is interactive-only; headless dispatch records "
+                "its boundaries via `weave task open`/`close`",
+            ),
+        ),
     )
 
 
