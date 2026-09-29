@@ -640,11 +640,12 @@ def add_admin_subparsers(sub) -> None:
         help=(
             "Path to the task declaration file the wrap LLM composed "
             "(JSON: {sparsity, declared: [{continuing|title, asked, grain, "
-            "root, done, consumes, round}]}). Drives the wrap task pass: "
-            "solo-lane mint or one appended round per open work-grain "
-            "task, consumes edges, continuation proposals, explicit-done "
-            "closure, orphan flags, root re-parenting. The dream-wrap "
-            "catch-up runs the same pass at declared sparsity."
+            "done, consumes, children, round}]}). The model's judgment, "
+            "applied verbatim: mint or one appended round per open "
+            "work-grain task, explicit-done closure, declared seam-child "
+            "attachment, decision task_id stamps, orphan flags at boundary "
+            "sparsity. The dream-wrap catch-up runs the same pass at "
+            "task-id-only sparsity."
         ),
     )
 
@@ -1077,7 +1078,8 @@ def add_admin_subparsers(sub) -> None:
         help=(
             "Dispatch-seam task lifecycle: open (mint stub + register row, "
             "prints the task id), close (record the boundary close, compile "
-            "the round), render (re-emit the dispatch descriptor JSON)."
+            "the round), render (re-emit the dispatch descriptor JSON), "
+            "ledger (list a session's task boundaries as JSON)."
         ),
     )
     task_sub = p_task.add_subparsers(dest="task_action")
@@ -1110,6 +1112,15 @@ def add_admin_subparsers(sub) -> None:
         "render", help="Re-emit an existing task's dispatch descriptor JSON."
     )
     p_task_render.add_argument("task_id")
+    p_task_ledger = task_sub.add_parser(
+        "ledger",
+        help=(
+            "List one session's task boundaries (id, grain, title, status, "
+            "open/closed) as JSON — the wrap declaration composer's view of "
+            "the seam children it may attach."
+        ),
+    )
+    p_task_ledger.add_argument("--session", default="")
 
     # --- C24: CLI parity for MCP-only tools -------------------------------
     p_unlink = sub.add_parser(

@@ -58,7 +58,7 @@ weave prune-orphans [--yes]                   # delete abandoned session folders
 weave session-id                              # print the running harness's session id (its session_id_envs value: CLAUDE_CODE_SESSION_ID / PI_SESSION_ID); exit 1 empty on Codex/headless. /wrap reads it to land on the hook-created note, harness-neutrally (#103)
 weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: verdicts→prune→index→judge→landing→drift (--json for headless; --verdicts '<json>' appends the wrap LLM's prompt verdicts — feedback registers + probe labels — as events, #101)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
-weave task {open|close <id>|render <id>}      # dispatch-seam task lifecycle: mint stub + task_open register row (prints the task id), record the boundary close + compile the envelope round, re-emit the dispatch descriptor JSON (#187)
+weave task {open|close <id>|render <id>|ledger}  # dispatch-seam task lifecycle: mint stub + task_open register row (prints the task id), record the boundary close + compile the envelope round, re-emit the dispatch descriptor JSON (#187); ledger lists one session's task boundaries as JSONL — the wrap declaration composer's view of the seam children (#189)
                                             # render prints the bare descriptor JSON; only the hook
                                             # route wraps it in a `thinkweave_task` key for context
                                             # injection
