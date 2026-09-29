@@ -59,6 +59,9 @@ weave session-id                              # print the running harness's sess
 weave wrap-finalize <ses-id> [--project X]    # deterministic tail of /wrap: verdicts→prune→index→judge→landing→drift (--json for headless; --verdicts '<json>' appends the wrap LLM's prompt verdicts — feedback registers + probe labels — as events, #101)
 weave seam {surface|commit}                   # memory-seam (CC auto-memory ↔ vault): dirty-diff + write durable map (dream-seam-worker's hands)
 weave task {open|close <id>|render <id>}      # dispatch-seam task lifecycle: mint stub + task_open register row (prints the task id), record the boundary close + compile the envelope round, re-emit the dispatch descriptor JSON (#187)
+                                            # render prints the bare descriptor JSON; only the hook
+                                            # route wraps it in a `thinkweave_task` key for context
+                                            # injection
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
 weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic issue-loop trajectory outcome judge (phase-2 dream-outcome-worker rail)
 weave steering {evidence [--module PATH] | gate --proposals-json FILE} [--json]  # evidence-gated steering: per-module signals + drop-no-evidence/budget-cap gate the slow loop #61 calls

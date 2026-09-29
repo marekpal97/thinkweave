@@ -1044,6 +1044,7 @@ def _print_next_steps() -> None:
     if profile.ships_skills:
         step += 1
         print(f"  {step}. /onboard                 # vault wiring, hooks, CC backfill, ontology, sources, smoke test")
+        _print_degradations(profile)
         print()
         print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
         print("MCP server entry now; otherwise `/onboard` will ask and persist it.")
@@ -1073,16 +1074,23 @@ def _print_next_steps() -> None:
             f"  {step}. {profile.skill_prefix}wrap                # at the end of "
             f"every session (skills linked into {profile.skills_dir})"
         )
-    # Degrade OUT LOUD at the point of action (dec-5a076384): what this
-    # harness does not deliver is stated here, not discovered later.
-    degraded = harness_docs.render_degradations(profile)
-    if degraded:
-        print()
-        print(f"{name} degradations — documented, not silently faked:")
-        print(degraded)
+    _print_degradations(profile)
     print()
     print("Tip: pass `--vault PATH` to `weave install` to bake the vault path into the")
     print("MCP server entry now; `weave init` will otherwise ask and persist it.")
+
+
+def _print_degradations(profile) -> None:
+    """Degrade OUT LOUD at the point of action (dec-5a076384): what this
+    harness does not deliver is stated on the closing screen — every branch
+    of it — not discovered later."""
+    degraded = harness_docs.render_degradations(profile)
+    if not degraded:
+        return
+    name = profile.display_name or profile.id
+    print()
+    print(f"{name} degradations — documented, not silently faked:")
+    print(degraded)
 
 
 def _raw_mcp_entry_present() -> bool:

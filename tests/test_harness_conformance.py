@@ -303,14 +303,19 @@ class TestEventsFireProbe:
                     "degradation for it — a capability silently faked"
                 )
 
-    # The dispatch-seam events (SubagentStart/SubagentStop) are wired but
+    # The dispatch-seam events (SubagentStart/SubagentStop) are dated on
+    # Claude Code (live interactive runs, 2026-09-28: single and parallel
+    # dispatch, agent_id in both payloads); on Codex they are wired but
     # carry no dated observation yet — fires_verified only ever grows by a
     # real run's evidence, never by wiring.
     DATED_EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
+    SEAM_EVENTS = {"SubagentStart", "SubagentStop"}
 
     def test_shipped_harnesses_carry_dated_verification(self, tmp_path: Path):
         cc = _build("claude-code", tmp_path)
-        assert set(cc.fires_verified) == self.DATED_EVENTS
+        assert set(cc.fires_verified) == self.DATED_EVENTS | self.SEAM_EVENTS
+        for event in self.SEAM_EVENTS:
+            assert cc.fires_verified[event] == "2026-09-28"
         codex = _build("codex", tmp_path)
         # SessionStart and UserPromptSubmit: observed pre-auth 2026-08-02 and
         # live 2026-09-05. PostToolUse and Stop: raw envelopes captured on

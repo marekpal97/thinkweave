@@ -366,7 +366,11 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     The matching open is resolved from the session's register by the
     qualified agent ref; the close row itself correlates by task id alone.
     A stop with no unclosed open is recorded as an orphan row — wrap
-    reconciles, this hook only detects.
+    reconciles, this hook only detects. One exception: Claude Code fires
+    SubagentStop twice per subagent (observed live 2026-09-28), so a stop
+    whose ref matches a task this register already closed is the duplicate
+    delivery — skipped with a hooks-log line, never an orphan row, so real
+    orphans stay legible.
     """
     from thinkweave.core.config import load_config
     from thinkweave.operations import hook_events, task_seam
@@ -383,9 +387,16 @@ def _handle_subagent_stop(hook_input: dict) -> None:
         hook_events.register_path(cfg.weave_dir, session_id)
     )
     task_id = task_seam.pending_open(rows, ref) if ref else ""
+    duplicate_of = task_seam.closed_task(rows, ref) if ref and not task_id else ""
     if task_id:
         task_seam.close_task(
             cfg, task_id, session_key=session_id, session_ref=ref
+        )
+    elif duplicate_of:
+        _log_info(
+            "subagent_stop",
+            f"duplicate SubagentStop for closed task {duplicate_of} "
+            f"(agent {agent_id}); skipped",
         )
     else:
         task_seam.record_orphan_stop(
