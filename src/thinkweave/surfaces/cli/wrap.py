@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from thinkweave.core.config import load_config
 
@@ -48,12 +49,30 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             )
             sys.exit(2)
 
+    tasks: dict | None = None
+    if getattr(args, "tasks", ""):
+        try:
+            tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(
+                f"error: --tasks declaration unreadable: {e}", file=sys.stderr
+            )
+            sys.exit(2)
+        if not isinstance(tasks, dict):
+            print(
+                "error: --tasks must be a JSON object "
+                '{"sparsity": ..., "declared": [...]}.',
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     result = finalize_wrap(
         cfg,
         session_id=args.session_id,
         project=project,
         prune=not args.no_prune,
         verdicts=verdicts,
+        tasks=tasks,
     )
 
     if args.json:
@@ -67,6 +86,20 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             f"{result.verdicts_skipped} skipped, "
             f"{result.verdicts_unmatched} unmatched"
         )
+    if result.tasks:
+        t = result.tasks
+        print(
+            f"  tasks:   {len(t['minted'])} minted, "
+            f"{len(t['appended'])} round(s) appended, "
+            f"{len(t['closed'])} closed, {len(t['orphaned'])} orphaned, "
+            f"{len(t['reparented'])} re-parented, {t['stamped']} stamped"
+        )
+        for proposal in t["proposals"]:
+            print(
+                f"    ? continuation of {proposal['task_id']} "
+                f"(consumes overlap: {', '.join(proposal['overlap'])}) — "
+                "not merged"
+            )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)
         print(f"  prune:   {result.orphans_pruned} orphan folder(s), {mb:.1f} MB freed")
@@ -86,7 +119,10 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     if result.timings:
         parts = " · ".join(
             f"{k} {result.timings[k]:.1f}s"
-            for k in ("verdicts", "prune", "index", "judge", "landing", "drift")
+            for k in (
+                "verdicts", "tasks", "prune", "index", "judge",
+                "landing", "drift",
+            )
             if k in result.timings
         )
         if parts:

@@ -635,6 +635,18 @@ def add_admin_subparsers(sub) -> None:
             "for downstream consumers."
         ),
     )
+    p_wrap_finalize.add_argument(
+        "--tasks", default="",
+        help=(
+            "Path to the task declaration file the wrap LLM composed "
+            "(JSON: {sparsity, declared: [{continuing|title, asked, grain, "
+            "root, done, consumes, round}]}). Drives the wrap task pass: "
+            "solo-lane mint or one appended round per open work-grain "
+            "task, consumes edges, continuation proposals, explicit-done "
+            "closure, orphan flags, root re-parenting. The dream-wrap "
+            "catch-up runs the same pass at declared sparsity."
+        ),
+    )
 
     p_judge = sub.add_parser(
         "judge",
