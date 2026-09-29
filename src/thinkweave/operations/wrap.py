@@ -51,6 +51,9 @@ class WrapFinalizeResult:
     # Compaction-segment chain (#180): the harness session UUIDs this wrap
     # spanned, chronological. Empty for single-segment sessions.
     segments: list[str] = field(default_factory=list)
+    # The task pass (#189): TaskPassResult.as_dict(), empty when no
+    # declaration file was passed.
+    tasks: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     # Benign anomalies worth surfacing without flipping the exit code
     # (e.g. two verdicts resolving to one prompt).
@@ -77,6 +80,7 @@ class WrapFinalizeResult:
             "verdicts_skipped": self.verdicts_skipped,
             "verdicts_unmatched": self.verdicts_unmatched,
             "segments": self.segments,
+            "tasks": self.tasks,
             "errors": self.errors,
             "warnings": self.warnings,
             "timings": self.timings,
@@ -497,6 +501,7 @@ def finalize_wrap(
     project: str = "",
     prune: bool = True,
     verdicts: list[dict] | None = None,
+    tasks: dict | None = None,
 ) -> WrapFinalizeResult:
     """Run the deterministic post-extraction chain in one process.
 
@@ -506,6 +511,10 @@ def finalize_wrap(
        registers + probe labels) as events (:func:`_append_verdict_events`).
        Runs first so the events land before any archival/indexing the
        later steps trigger.
+    0.5. **tasks** — the wrap task pass (#189,
+       :func:`thinkweave.operations.task_seam.reconcile_tasks`) over the
+       declaration file the wrap LLM composed. Before the reindex, so the
+       stubs it writes land in the same index pass.
     1. **prune** orphan session folders (conservative GC; ``session_id`` is
        protected). Done first so the reindex in step 2 also drops their rows.
     2. **index** — incremental rebuild. Picks up the notes ``weave_extract`` just
@@ -549,6 +558,33 @@ def finalize_wrap(
             # flip the exit code after successful verdict writes
             result.warnings.append(f"segments: {e}")
         result.timings["verdicts"] = time.perf_counter() - _t
+
+    # 0.5. wrap task pass (#189) -------------------------------------------
+    if tasks is not None:
+        _t = time.perf_counter()
+        try:
+            from thinkweave.operations import hook_events
+            from thinkweave.operations.task_seam import reconcile_tasks
+
+            streams = [ev for ev, _d, _fm in chain] or [
+                hook_events.register_path(cfg.weave_dir, session_id)
+            ]
+            folders = [d for _ev, d, _fm in chain if d is not None]
+            pass_result = reconcile_tasks(
+                cfg,
+                tasks,
+                session_key=session_id,
+                project=project,
+                streams=streams,
+                folders=folders,
+            )
+            result.tasks = pass_result.as_dict()
+            result.errors.extend(f"tasks: {e}" for e in pass_result.errors)
+            result.warnings.extend(f"tasks: {w}" for w in pass_result.warnings)
+        except Exception as e:  # noqa: BLE001
+            result.errors.append(f"tasks: {e}")
+        finally:
+            result.timings["tasks"] = time.perf_counter() - _t
 
     # 1. prune orphan session folders -------------------------------------
     if prune:

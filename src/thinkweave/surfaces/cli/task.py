@@ -1,6 +1,6 @@
 """``weave task`` — the dispatch seam's CLI verbs (the headless route).
 
-Three actions over :mod:`thinkweave.operations.task_seam`:
+Four actions over :mod:`thinkweave.operations.task_seam`:
 
 - ``weave task open`` — mint a task at a dispatch boundary: stub note plus
   a ``task_open`` row in the events register. Prints the minted task id.
@@ -9,6 +9,9 @@ Three actions over :mod:`thinkweave.operations.task_seam`:
   that fail the schema are reported on stderr and the exit code is 1; the
   close row is recorded either way.
 - ``weave task render <task-id>`` — re-emit the dispatch descriptor JSON.
+- ``weave task ledger`` — list one session's task boundaries as JSON. The
+  hooks mint seam children silently, so this is how the wrap declaration
+  composer learns their ids before declaring ``children``.
 
 Open and close correlate by the task id alone — a harness without hooks
 runs exactly this route and loses only the boundary automation.
@@ -38,8 +41,10 @@ def cmd_task(args: argparse.Namespace) -> None:
         _cmd_close(args)
     elif action == "render":
         _cmd_render(args)
+    elif action == "ledger":
+        _cmd_ledger(args)
     else:
-        print("Usage: weave task {open|close|render}", file=sys.stderr)
+        print("Usage: weave task {open|close|render|ledger}", file=sys.stderr)
         sys.exit(2)
 
 
@@ -84,3 +89,29 @@ def _cmd_render(args: argparse.Namespace) -> None:
 
     dispatch = task_seam.render_descriptor(_load_config(), args.task_id)
     print(json.dumps(dispatch.to_dict(), indent=2))
+
+
+def _cmd_ledger(args: argparse.Namespace) -> None:
+    from thinkweave.core.vault import parse_frontmatter
+    from thinkweave.operations import hook_events, task_seam
+
+    cfg = _load_config()
+    rows = hook_events.task_rows(
+        hook_events.register_path(cfg.weave_dir, _session_key(args))
+    )
+    for task_id, entry in task_seam.task_ledger(rows).items():
+        opened = entry["open"] or {}
+        item = {
+            "task_id": task_id,
+            "grain": str(opened.get("grain", "")),
+            "opened": str(opened.get("ts", "")),
+            "closed": bool(entry["close"]),
+        }
+        stub = task_seam.find_stub(cfg, task_id)
+        if stub is not None:
+            fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+            item["title"] = str(fm.get("title", ""))
+            item["status"] = str(fm.get("status", ""))
+            if fm.get("parent"):
+                item["parent"] = str(fm["parent"])
+        print(json.dumps(item))

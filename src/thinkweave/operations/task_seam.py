@@ -11,13 +11,19 @@ dependence. The task id is minted at open, rides the dispatch descriptor
 (:class:`TaskDispatch`), and names the envelope return file the performer
 appends to; at close those rows compile into one entry of the stub note's
 ``rounds[]`` ledger.
+
+:func:`reconcile_tasks` is the other half of the same system: the wrap
+task pass, run by ``weave wrap-finalize`` (and by the dream-wrap catch-up
+through the same verb) over the declaration file the wrap LLM composed.
+Wrap reconciles only what the seam cannot see — declaration is not
+inference.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,18 +74,17 @@ def agent_ref(harness: str, agent_id: str) -> dict:
     return {"harness": harness, "kind": "agent_id", "value": agent_id}
 
 
-def open_task(
+def _mint_stub(
     cfg,
     *,
     session_key: str,
-    project: str = "",
-    title: str = "",
-    grain: str = "per-dispatch",
+    project: str,
+    title: str,
+    grain: str,
     role: str = "",
     harness: str = "",
-    session_ref: dict | None = None,
-) -> TaskDispatch:
-    """Mint the task at the dispatch boundary: stub note + register row."""
+) -> tuple[str, Path, str]:
+    """Mint one conforming stub note; returns (task_id, path, title)."""
     from thinkweave.core.schemas import NoteType
     from thinkweave.core.vault import VaultManager, parse_frontmatter
 
@@ -112,7 +117,30 @@ def open_task(
     errors = validate_task_note(written)
     if errors:
         raise ValueError(f"task stub does not conform: {errors}")
+    return task_id, note_path, fm["title"]
 
+
+def open_task(
+    cfg,
+    *,
+    session_key: str,
+    project: str = "",
+    title: str = "",
+    grain: str = "per-dispatch",
+    role: str = "",
+    harness: str = "",
+    session_ref: dict | None = None,
+) -> TaskDispatch:
+    """Mint the task at the dispatch boundary: stub note + register row."""
+    task_id, note_path, title = _mint_stub(
+        cfg,
+        session_key=session_key,
+        project=project,
+        title=title,
+        grain=grain,
+        role=role,
+        harness=harness,
+    )
     # The return path is handed out here, so the directory it names must
     # exist here — a performer's first append never creates directories.
     envelope_path(cfg, task_id).parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +161,7 @@ def open_task(
         grain=grain,
         envelope_return=str(envelope_path(cfg, task_id)),
         note=str(note_path),
-        title=fm["title"],
+        title=title,
     )
 
 
@@ -259,6 +287,297 @@ def closed_task(rows: list[dict], session_ref: dict) -> str:
             if opened.get("session_ref") == session_ref:
                 return task_id
     return ""
+
+
+@dataclass
+class TaskPassResult:
+    """What one wrap task pass reconciled — folded into the wrap report."""
+
+    minted: list[str] = field(default_factory=list)
+    appended: list[str] = field(default_factory=list)
+    closed: list[str] = field(default_factory=list)
+    orphaned: list[str] = field(default_factory=list)
+    attached: list[str] = field(default_factory=list)
+    stamped: int = 0
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "minted": self.minted,
+            "appended": self.appended,
+            "closed": self.closed,
+            "orphaned": self.orphaned,
+            "attached": self.attached,
+            "stamped": self.stamped,
+            "errors": self.errors,
+            "warnings": self.warnings,
+        }
+
+
+def reconcile_tasks(
+    cfg,
+    declaration: object,
+    *,
+    session_key: str,
+    project: str,
+    streams: list[Path],
+    folders: list[Path] | None = None,
+) -> TaskPassResult:
+    """Apply the wrap declaration: the model judged, this pass writes.
+
+    The declaration is the model's judgment about the session's work,
+    composed during the ``/wrap`` turn. This pass makes no decisions of
+    its own — it validates the declaration
+    (``validate_wrap_declaration``; an invalid file aborts with no
+    writes), applies each entry, and enforces the contract's invariants.
+
+    For each declared entry:
+
+    - ``continuing: tsk-…`` — the work continues that task. Its
+      ``round`` appends to the existing open work-grain note. Never a
+      second note; a closed task cannot be reopened.
+    - no ``continuing`` — new work. A stub is minted (``title``
+      required) and the ``round``, if present, is its first entry.
+    - ``done: true`` — the user said the task is finished, so the note
+      closes. This is the only closure wrap performs. ``outcome`` is
+      never written — the dream judge owns it.
+    - ``children: [tsk-…]`` — the per-dispatch seam tasks this task's
+      work dispatched. Attachment is declared, never inferred:
+      timestamps cannot attribute a dispatch when independent tasks run
+      concurrently, so only the model that dispatched can say which
+      task a child served.
+    - ``round.decisions.minted`` — those decisions are stamped with the
+      task id.
+
+    After the entries land, one mechanical check runs: orphan flags at
+    ``boundary`` sparsity (a per-dispatch open with no id-matched close).
+    At ``task-id-only`` sparsity — a catch-up declarer that was not
+    present — an absent close is not evidence, so nothing is flagged.
+    Every touched note is re-validated against the contract before the
+    pass returns.
+    """
+    from thinkweave.core.task_contract import validate_wrap_declaration
+    from thinkweave.core.vault import VaultManager, parse_frontmatter
+
+    result = TaskPassResult()
+    errors = validate_wrap_declaration(declaration)
+    if errors:
+        result.errors.extend(errors)
+        return result
+    assert isinstance(declaration, dict)
+    sparsity = declaration.get("sparsity", "boundary")
+    primary = streams[0] if streams else hook_events.register_path(
+        cfg.weave_dir, session_key
+    )
+
+    vm = VaultManager(config=cfg)
+    vm.ensure_dirs()
+    touched: list[Path] = []
+    now = _now()
+    for entry in declaration["declared"]:
+        continuing = str(entry.get("continuing") or "")
+        if continuing:
+            stub = find_stub(cfg, continuing)
+            if stub is None:
+                result.errors.append(f"declared: no task stub for {continuing}")
+                continue
+            fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+            if fm.get("status") != "open":
+                result.errors.append(
+                    f"declared: {continuing} is closed — a continuation "
+                    "cannot reopen it"
+                )
+                continue
+            if fm.get("grain") != "work":
+                result.errors.append(
+                    f"declared: {continuing} is not work grain — rounds "
+                    "accrete on work-grain notes only"
+                )
+                continue
+            task_id = continuing
+        else:
+            task_id, stub, _title = _mint_stub(
+                cfg,
+                session_key=session_key,
+                project=project,
+                title=str(entry.get("title", "")),
+                grain=str(entry.get("grain", "work")),
+            )
+            _append_rows(
+                primary,
+                [
+                    hook_events.task_open_event(
+                        task_id,
+                        now,
+                        session_id=session_key,
+                        grain=str(entry.get("grain", "work")),
+                    )
+                ],
+            )
+            result.minted.append(task_id)
+
+        updates: dict = {}
+        if entry.get("asked"):
+            updates["asked"] = entry["asked"]
+        if entry.get("consumes"):
+            updates["consumes"] = list(entry["consumes"])
+        if "round" in entry:
+            fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+            updates["rounds"] = list(fm.get("rounds") or []) + [entry["round"]]
+            if continuing:
+                result.appended.append(task_id)
+        if entry.get("done"):
+            updates["status"] = "closed"
+            _append_rows(
+                primary,
+                [hook_events.task_close_event(task_id, now, session_id=session_key)],
+            )
+            result.closed.append(task_id)
+        if updates:
+            vm.update_note(stub, frontmatter_updates=updates)
+        touched.append(stub)
+        _stamp_decisions(vm, entry, task_id, folders or [], result)
+        _attach_children(cfg, vm, entry, task_id, result, touched)
+
+    if sparsity == "boundary":
+        _flag_orphans(cfg, vm, streams, result, touched)
+
+    for stub in dict.fromkeys(touched):
+        fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+        result.errors.extend(
+            f"{stub.name}: {e}" for e in validate_task_note(fm)
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Wrap-pass plumbing
+
+
+def _attach_children(
+    cfg, vm, entry: dict, task_id: str, result: TaskPassResult,
+    touched: list[Path],
+) -> None:
+    """Write the declared child → parent edges.
+
+    A child is a per-dispatch task the hook seam minted mechanically;
+    which declared task it served is the model's call. Work-grain notes
+    are peers, never children. A child already attached to a different
+    task is an error, not an overwrite — two declarers must not fight
+    over one child silently.
+    """
+    from thinkweave.core.vault import parse_frontmatter
+
+    for child_id in entry.get("children") or []:
+        if child_id == task_id:
+            result.errors.append(f"children: {child_id} cannot be its own parent")
+            continue
+        stub = find_stub(cfg, child_id)
+        if stub is None:
+            result.errors.append(f"children: no task stub for {child_id}")
+            continue
+        fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+        if fm.get("grain") == "work":
+            result.errors.append(
+                f"children: {child_id} is work grain — work-grain tasks are "
+                "peers, never children"
+            )
+            continue
+        parent = str(fm.get("parent") or "")
+        if parent == task_id:
+            continue
+        if parent:
+            result.errors.append(
+                f"children: {child_id} is already attached to {parent}"
+            )
+            continue
+        vm.update_note(stub, frontmatter_updates={"parent": task_id})
+        result.attached.append(child_id)
+        touched.append(stub)
+
+
+def _stamp_decisions(
+    vm, entry: dict, task_id: str, folders: list[Path], result: TaskPassResult
+) -> None:
+    """Stamp each decision the round declares minted with the task id."""
+    from thinkweave.core.vault import parse_frontmatter
+
+    minted = ((entry.get("round") or {}).get("decisions") or {}).get("minted")
+    for dec_id in minted or []:
+        for path in _folder_notes(folders):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            if fm.get("id") == dec_id:
+                vm.update_note(path, frontmatter_updates={"task_id": task_id})
+                result.stamped += 1
+                break
+        else:
+            result.warnings.append(
+                f"decision {dec_id} not found in the session chain — "
+                "task_id stamp skipped"
+            )
+
+
+def _flag_orphans(
+    cfg, vm, streams: list[Path], result: TaskPassResult, touched: list[Path]
+) -> None:
+    """An open with no id-matched close in the register is an orphan.
+
+    Work-grain notes stay open across sessions by design and are never
+    orphans; ids this pass just touched carry their own boundary truth.
+    """
+    from thinkweave.core.vault import parse_frontmatter
+
+    rows: list[dict] = []
+    for stream in streams:
+        rows.extend(hook_events.task_rows(stream))
+    skip = set(result.minted + result.appended + result.closed)
+    for task_id, entry in task_ledger(rows).items():
+        opened = entry["open"]
+        if entry["close"] or opened is None or task_id in skip:
+            continue
+        if opened.get("grain") == "work":
+            continue
+        stub = find_stub(cfg, task_id)
+        if stub is None:
+            result.warnings.append(f"orphan open {task_id} has no stub")
+            continue
+        fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+        if fm.get("status") == "open" and not fm.get("orphan"):
+            vm.update_note(stub, frontmatter_updates={"orphan": True})
+            result.orphaned.append(task_id)
+            touched.append(stub)
+
+
+def _folder_notes(folders: list[Path]):
+    for folder in folders:
+        yield from folder.rglob("*.md")
+
+
+def _all_stubs(cfg) -> list[tuple[Path, dict]]:
+    """Every task stub in the vault with its frontmatter.
+
+    ponytail: one rglob over the vault per pass, O(vault files) — same
+    ceiling and upgrade path (the SQLite index) as :func:`find_stub`.
+    """
+    from thinkweave.core.vault import parse_frontmatter
+
+    out: list[tuple[Path, dict]] = []
+    for path in cfg.vault_root.rglob("tsk-*.md"):
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if fm.get("kind") == TASK_KIND:
+            out.append((path, fm))
+    return out
+
+
+def _append_rows(path: Path, rows: list[dict]) -> None:
+    """Append lifecycle rows to the stream that holds this session's
+    register — the resolved chain file, which may be an archived
+    ``events.jsonl`` rather than the key-named live buffer."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def find_stub(cfg, task_id: str) -> Path | None:

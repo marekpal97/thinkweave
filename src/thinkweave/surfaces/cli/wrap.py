@@ -15,14 +15,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-
-from thinkweave.core.config import load_config
+from pathlib import Path
 
 
 def cmd_wrap_finalize(args: argparse.Namespace) -> None:
+    # Deliberately resolved at call time: an import-time binding freezes the
+    # config before a test (or embedder) can redirect it, and this command
+    # writes to the vault that resolution names.
+    from thinkweave.core import config as config_module
     from thinkweave.operations.wrap import finalize_wrap
 
-    cfg = load_config()
+    cfg = config_module.load_config()
     project = args.project or cfg.default_project or ""
     if not project:
         print(
@@ -48,12 +51,30 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             )
             sys.exit(2)
 
+    tasks: dict | None = None
+    if getattr(args, "tasks", ""):
+        try:
+            tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(
+                f"error: --tasks declaration unreadable: {e}", file=sys.stderr
+            )
+            sys.exit(2)
+        if not isinstance(tasks, dict):
+            print(
+                "error: --tasks must be a JSON object "
+                '{"sparsity": ..., "declared": [...]}.',
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     result = finalize_wrap(
         cfg,
         session_id=args.session_id,
         project=project,
         prune=not args.no_prune,
         verdicts=verdicts,
+        tasks=tasks,
     )
 
     if args.json:
@@ -66,6 +87,14 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             f"  verdicts: {result.verdicts_written} written, "
             f"{result.verdicts_skipped} skipped, "
             f"{result.verdicts_unmatched} unmatched"
+        )
+    if result.tasks:
+        t = result.tasks
+        print(
+            f"  tasks:   {len(t['minted'])} minted, "
+            f"{len(t['appended'])} round(s) appended, "
+            f"{len(t['closed'])} closed, {len(t['orphaned'])} orphaned, "
+            f"{len(t['attached'])} child(ren) attached, {t['stamped']} stamped"
         )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)
@@ -86,7 +115,10 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     if result.timings:
         parts = " · ".join(
             f"{k} {result.timings[k]:.1f}s"
-            for k in ("verdicts", "prune", "index", "judge", "landing", "drift")
+            for k in (
+                "verdicts", "tasks", "prune", "index", "judge",
+                "landing", "drift",
+            )
             if k in result.timings
         )
         if parts:

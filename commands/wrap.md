@@ -77,7 +77,7 @@ If the session note has a `## Candidate Insights` section (populated when hooks 
 ## 4. Run `weave wrap-finalize` (one Bash call)
 
 ```
-weave wrap-finalize <ses-id> --project <project> [--verdicts '<json>']
+weave wrap-finalize <ses-id> --project <project> [--verdicts '<json>'] [--tasks <file>]
 ```
 
 Copy the `▶ To finalize:` line `weave_extract` printed **verbatim** — it
@@ -92,6 +92,21 @@ harness session id (the `weave session-id` / `$CLAUDE_SESSION_ID` UUID).
 ```
 
 `prompt` is matched case-insensitively as a prefix against the session's captured prompt events; wrap-finalize appends the events idempotently (re-wraps never double-write) — feedback registers in the frozen `feedback` schema, `probe` as the classification event that powers probe pressure and `/discover`. No verdicts → omit the flag entirely. In catch-up mode the prompt texts are the `type: "prompt"` rows of `events.jsonl`.
+
+**Task declaration (#189) — you judge, the pass applies.** The declaration records the session's work at task grain: which open task this session continued, what new work it started, what the user declared done. The pass makes no decisions — apply §C6, write the JSON to a temp file (`mktemp`), pass `--tasks <path>`:
+
+```json
+{"sparsity": "boundary", "declared": [
+  {"continuing": "tsk-…",              // this session continued that open task…
+   "title": "…", "asked": "#NNN",      // …OR a mint: title required, no continuing
+   "done": false,                      // true ONLY on the user's explicit done
+   "consumes": ["dec-…", "src-…"],
+   "children": ["tsk-…"],              // seam children this task dispatched (see below)
+   "round": {"did": {"paths": […], "commits": […], "attempts": N}}}
+]}
+```
+
+Your two inputs: the **open tasks** served at SessionStart (continuing candidates), and the **seam children** — the per-dispatch tasks the hooks minted for this session's subagents, listed by `weave task ledger --session "$id"` (one JSON row each). Attribute each child to the declared task whose work dispatched it; timestamps cannot do this under concurrent tasks, which is why it is your call. A child you cannot attribute confidently: leave undeclared — unattached is truthful, guessed is not. No task-shaped work this session → omit the flag entirely. Catch-up mode → `"sparsity": "task-id-only"`, no `children`, no `done` (you were not present; declare only what the events show).
 
 **CLI resolution — PATH-independent by design (#47).** The `weave` above (and in every other Bash call in this skill) is the committed launcher `bin/weave` from the thinkweave checkout: it self-locates the repo and resolves uv via the same ladder as the MCP server's `bin/weave-mcp-launch`, so it works without the venv on PATH. On the plugin route Claude Code puts the plugin's `bin/` on the Bash PATH, so the bare call just resolves. If `command -v weave` comes up empty (dev checkout wired via `.mcp.json`, or a pip install whose venv scripts dir isn't on PATH), invoke the launcher by path — `<thinkweave-repo>/bin/weave wrap-finalize …` — where `<thinkweave-repo>` is the checkout you're working in, or the `--project` value in the registered thinkweave MCP server entry (`.mcp.json` / `~/.claude.json`). Never fall back to hoping the venv's console script is on PATH: that is the asymmetry where the MCP half of `/wrap` works while the finalize half silently fails.
 
@@ -181,3 +196,10 @@ If you cannot name the referent from session context — generic courtesy ("than
 
 - Machine-generated prompt text never gets a verdict: `<task-notification>`, `<agent-message>`, `<system-reminder>`, pasted logs/output, slash-command boilerplate.
 - Most sessions have zero or few non-neutral prompts. That's the expected output, not a failure.
+
+### C6. Task declaration — continuity is your judgment, take the user's cue
+A work-grain task is a durable unit of work that outlives sessions — "ship the wrap task pass", not "answer a question". Most conversations have **zero or one**; a declaration with three mints is usually over-slicing.
+- **Continuing vs mint**: if this session advanced an open task from the SessionStart open-tasks list, declare `continuing` with its id — the round appends to that note; a second note for the same work poisons playback. Mint only for genuinely new work. The user's framing wins: "back to X" = continuing, even if the angle changed; a user saying a task is finished = `done: true`, and nothing else closes a task.
+- **`round.did`** is the segment's ledger: files actually touched, commit hashes this task produced (from the session note's `commits` frontmatter — attribute per task when the session interleaved several), fix-round count in `attempts`.
+- **`children`**: attribution, not bookkeeping — say which declared task each dispatched subagent served. Confidence rule as in step 4: unattributable children stay undeclared.
+- **Never**: fill `outcome` (the dream judge owns it), reopen a closed task, or declare tasks for pure Q&A sessions to have something to declare.

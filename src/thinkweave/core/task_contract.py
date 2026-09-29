@@ -30,6 +30,11 @@ TASK_STATUSES = frozenset({"open", "closed"})
 TASK_GRAINS = frozenset({"batch", "per-dispatch", "work"})
 TASK_ID_RE = re.compile(r"^tsk-[0-9a-f]{8}$")
 
+# Capture-richness tiers — the same vocabulary HarnessProfile.task_correlation
+# declares. The wrap pass gates evidence-dependent duties on it: an absent
+# close is orphan evidence only at "boundary" richness.
+SPARSITY_TIERS = frozenset({"boundary", "task-id-only"})
+
 SESSION_REF_KEYS = frozenset({"harness", "kind", "value"})
 
 # Devloop's trace vocabulary; valid only inside a work-grain round entry.
@@ -133,6 +138,53 @@ def validate_task_note(fm: object) -> list[str]:
     return errors
 
 
+def validate_wrap_declaration(decl: object) -> list[str]:
+    """Validate one wrap declaration's mapping; [] means it conforms.
+
+    The declaration is the model's judgment about the session's work,
+    written as data so the deterministic tail can apply it without prose
+    parsing. ``declared`` holds one entry per task the model judged:
+    ``continuing: tsk-…`` appends to that open task, otherwise ``title``
+    mints a new one; ``done: true`` closes; ``children`` names the seam
+    children this task dispatched; ``round`` is the segment's ledger
+    entry. ``sparsity`` states how much the declarer could see —
+    ``boundary`` for a model that was present, ``task-id-only`` for a
+    catch-up declarer, which suppresses orphan judgment downstream.
+    """
+    if not isinstance(decl, dict):
+        return ["declaration: not a mapping"]
+    errors = []
+    for key in decl:
+        if key not in ("sparsity", "declared"):
+            errors.append(f"declaration: unknown field {key!r}")
+    if decl.get("sparsity", "boundary") not in SPARSITY_TIERS:
+        errors.append(
+            f"declaration.sparsity: expected one of {sorted(SPARSITY_TIERS)}"
+        )
+    declared = decl.get("declared")
+    if not isinstance(declared, list):
+        return errors + ["declaration.declared: expected a list of entries"]
+    for i, entry in enumerate(declared):
+        where = f"declaration.declared[{i}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{where}: expected a mapping")
+            continue
+        for key, value in entry.items():
+            if key not in _DECLARED_CHECKERS:
+                errors.append(f"{where}: unknown field {key!r}")
+            elif key != "round":
+                errors += _DECLARED_CHECKERS[key](value, f"{where}.{key}")
+        if not entry.get("continuing") and not str(entry.get("title", "")):
+            errors.append(f"{where}: a mint needs a title (no continuing id)")
+        if "round" in entry:
+            errors += _rounds_errors(
+                [entry["round"]],
+                entry.get("grain", "work"),
+                where=f"{where}.round",
+            )
+    return errors
+
+
 def validate_envelope(row: object, where: str = "envelope") -> list[str]:
     """Validate one unified envelope row; [] means it conforms."""
     if not isinstance(row, dict):
@@ -211,6 +263,10 @@ def _int(value, where):
     return []
 
 
+def _bool(value, where):
+    return [] if isinstance(value, bool) else [f"{where}: expected a boolean"]
+
+
 def _number(value, where):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return [f"{where}: expected a number"]
@@ -221,6 +277,12 @@ def _task_id(value, where):
     if not isinstance(value, str) or not TASK_ID_RE.match(value):
         return [f"{where}: expected a vault-minted task id (tsk- + 8 hex)"]
     return []
+
+
+def _task_id_list(value, where):
+    if not isinstance(value, list):
+        return [f"{where}: expected a list of task ids"]
+    return [e for i, v in enumerate(value) for e in _task_id(v, f"{where}[{i}]")]
 
 
 def _enum(allowed):
@@ -381,32 +443,48 @@ _TOP_CHECKERS = {
     "proposed_concepts": _str_list,
     "tags": _str_list,
     "consumes": _str_list,
+    # Evidence-backed flag, never a status: an open whose close the register
+    # does not hold, stamped by the wrap pass at boundary sparsity.
+    "orphan": _bool,
     "outcome": _dict_list(
         {"label": _str, "judged_at": _str, "evidence": _str}
     ),
 }
 
+# One wrap-declaration entry (``validate_wrap_declaration``); ``round`` is
+# dispatched to the round checkers under the entry's grain.
+_DECLARED_CHECKERS = {
+    "continuing": _task_id,
+    "title": _str,
+    "asked": _str,
+    "grain": _enum(TASK_GRAINS),
+    "done": _bool,
+    "consumes": _str_list,
+    "children": _task_id_list,
+    "round": None,
+}
 
-def _rounds_errors(value, grain) -> list[str]:
+
+def _rounds_errors(value, grain, where="task note.rounds") -> list[str]:
     if not isinstance(value, list):
-        return ["task note.rounds: expected a list of round entries"]
+        return [f"{where}: expected a list of round entries"]
     errors = []
     for i, entry in enumerate(value):
-        where = f"task note.rounds[{i}]"
+        at = f"{where}[{i}]"
         if not isinstance(entry, dict):
-            errors.append(f"{where}: expected a mapping")
+            errors.append(f"{at}: expected a mapping")
             continue
         for key, v in entry.items():
             if key in _ROUND_CHECKERS:
-                errors += _ROUND_CHECKERS[key](v, f"{where}.{key}")
+                errors += _ROUND_CHECKERS[key](v, f"{at}.{key}")
             elif key in _TRACE_CHECKERS:
                 if grain == "work":
-                    errors += _TRACE_CHECKERS[key](v, f"{where}.{key}")
+                    errors += _TRACE_CHECKERS[key](v, f"{at}.{key}")
                 else:
                     errors.append(
-                        f"{where}: devloop trace field {key!r} is valid "
+                        f"{at}: devloop trace field {key!r} is valid "
                         "only on a work-grain round entry"
                     )
             else:
-                errors.append(f"{where}: unknown field {key!r}")
+                errors.append(f"{at}: unknown field {key!r}")
     return errors

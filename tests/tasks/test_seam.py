@@ -251,6 +251,24 @@ class TestCli:
         ledger = task_seam.task_ledger(register_rows(cfg, "s-1"))
         assert ledger[task_id]["open"] and ledger[task_id]["close"]
 
+    def test_ledger_lists_the_sessions_boundaries(self, cfg: Config, capsys):
+        self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
+        open_id = capsys.readouterr().out.strip()
+        self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
+        closed_id = capsys.readouterr().out.strip()
+        self._dispatch(["task", "close", closed_id, "--session", "s-1"])
+        capsys.readouterr()
+
+        self._dispatch(["task", "ledger", "--session", "s-1"])
+        items = {
+            row["task_id"]: row
+            for row in map(json.loads, capsys.readouterr().out.splitlines())
+        }
+        assert items[open_id]["closed"] is False
+        assert items[closed_id]["closed"] is True
+        assert items[open_id]["grain"] == "per-dispatch"
+        assert items[open_id]["status"] == "open"
+
     def test_close_exits_nonzero_on_envelope_errors(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
         task_id = capsys.readouterr().out.strip()
