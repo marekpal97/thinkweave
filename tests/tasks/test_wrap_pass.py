@@ -1,13 +1,12 @@
-"""The wrap task pass (#189): fixture-driven declaration reconciliation.
+"""The wrap task pass (#189): the model judges, the pass applies.
 
-/wrap is the reconciler, never the collector — the pass runs inside
-``weave wrap-finalize`` on a declaration file the wrap LLM composed
-(canned here; no model call). It mints the solo lane's declared boundary,
-appends one round per segment to open work-grain notes, writes consumes
-edges, flags orphans at boundary sparsity, re-parents seam children by
-interval containment from the session chain root, and stamps minted
-decisions with the task id. It never fills ``outcome`` and never merges a
-continuation silently.
+The pass runs inside ``weave wrap-finalize`` on a declaration file the
+wrap LLM composed (canned here; no model call). Each declared entry
+mints a task or appends a round to a continuing one, closes on explicit
+done, attaches declared seam children, and stamps minted decisions with
+the task id. Orphan flags are the one mechanical check, at boundary
+sparsity only. The pass never fills ``outcome``, never reopens a closed
+task, and never attributes a child by inference.
 """
 
 from __future__ import annotations
@@ -84,13 +83,6 @@ def seed_stub(cfg: Config, task_id: str, *, grain: str, consumes=None, parent=""
     )
 
 
-def write_rows(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Declaration shape — declared contract, rejected loudly
 
@@ -107,14 +99,9 @@ class TestDeclarationShape:
         decl = {"declared": [{"continuing": "not-a-task-id"}]}
         assert any("continuing" in e for e in validate_wrap_declaration(decl))
 
-    def test_rejects_two_roots(self):
-        decl = {
-            "declared": [
-                {"title": "a", "root": True},
-                {"title": "b", "root": True},
-            ]
-        }
-        assert any("root" in e for e in validate_wrap_declaration(decl))
+    def test_rejects_malformed_children_ids(self):
+        decl = {"declared": [{"title": "a", "children": ["nope"]}]}
+        assert any("children" in e for e in validate_wrap_declaration(decl))
 
     def test_rejects_mint_without_title(self):
         assert any(
@@ -154,6 +141,8 @@ class TestSoloLaneMint:
         assert fm["rounds"][0]["did"]["paths"] == [
             "src/thinkweave/operations/task_seam.py"
         ]
+        # The declared ledger lands verbatim — commits included (#228).
+        assert fm["rounds"][0]["did"]["commits"] == ["4885b78"]
 
         rows = hook_events.task_rows(stream(cfg))
         assert [r["type"] for r in rows] == ["task_open"]
@@ -282,103 +271,54 @@ class TestOrphans:
 
 
 # ---------------------------------------------------------------------------
-# Root-task segmentation — children re-parent by interval containment
+# Declared children — the model attributes dispatches, never timestamps
 
 
-class TestReparenting:
-    def test_children_inside_the_activity_interval_reparent(self, cfg: Config):
-        seed_stub(cfg, "tsk-11111111", grain="per-dispatch", parent="ses-old")
-        seed_stub(cfg, "tsk-22222222", grain="per-dispatch", parent="ses-old")
-        write_rows(
-            stream(cfg),
-            [
-                {"ts": "2026-09-22T10:00:00+00:00", "type": "prompt", "text": "go"},
-                {
-                    "ts": "2026-09-22T09:00:00+00:00", "type": "task_open",
-                    "task_id": "tsk-22222222", "session_id": SESSION,
-                    "grain": "per-dispatch",
-                },
-                {
-                    "ts": "2026-09-22T10:30:00+00:00", "type": "task_open",
-                    "task_id": "tsk-11111111", "session_id": SESSION,
-                    "grain": "per-dispatch",
-                },
-                {
-                    "ts": "2026-09-22T10:40:00+00:00", "type": "task_close",
-                    "task_id": "tsk-11111111", "session_id": SESSION,
-                },
-                {"ts": "2026-09-22T11:00:00+00:00", "type": "prompt", "text": "ok"},
-            ],
+class TestChildren:
+    def declaration_with_children(self, children: list[str]) -> dict:
+        decl = load_declaration()
+        decl["declared"][0]["children"] = children
+        return decl
+
+    def test_declared_children_attach_to_the_declared_task(self, cfg: Config):
+        seed_stub(cfg, "tsk-11111111", grain="per-dispatch")
+        seed_stub(cfg, "tsk-22222222", grain="per-dispatch")
+        result = reconcile(
+            cfg, self.declaration_with_children(["tsk-11111111"])
         )
-        result = reconcile(cfg, load_declaration())
-        root = result.minted[0]
-        assert result.reparented == ["tsk-11111111"]
-        notes = task_notes(cfg)
-        assert notes["tsk-11111111"]["parent"] == root
-        # Opened before the segment's first activity: outside the chain.
-        assert notes["tsk-22222222"]["parent"] == "ses-old"
-
-    def test_work_grain_peers_are_never_reparented(self, cfg: Config):
-        seed_stub(cfg, "tsk-33333333", grain="work", parent="ses-old")
-        write_rows(
-            stream(cfg),
-            [
-                {"ts": "2026-09-22T10:00:00+00:00", "type": "prompt", "text": "go"},
-                {
-                    "ts": "2026-09-22T10:30:00+00:00", "type": "task_open",
-                    "task_id": "tsk-33333333", "session_id": SESSION,
-                    "grain": "work",
-                },
-            ],
-        )
-        reconcile(cfg, load_declaration())
-        assert task_notes(cfg)["tsk-33333333"]["parent"] == "ses-old"
-
-    def test_no_declared_root_means_no_reparenting(self, cfg: Config):
-        seed_stub(cfg, "tsk-11111111", grain="per-dispatch", parent="ses-old")
-        write_rows(
-            stream(cfg),
-            [
-                {"ts": "2026-09-22T10:00:00+00:00", "type": "prompt", "text": "go"},
-                {
-                    "ts": "2026-09-22T10:30:00+00:00", "type": "task_open",
-                    "task_id": "tsk-11111111", "session_id": SESSION,
-                    "grain": "per-dispatch",
-                },
-            ],
-        )
-        result = reconcile(cfg, {"declared": []})
-        assert result.reparented == []
-        assert task_notes(cfg)["tsk-11111111"]["parent"] == "ses-old"
-
-
-# ---------------------------------------------------------------------------
-# Continuation proposals — from consumes overlap, never a silent merge
-
-
-class TestContinuationProposal:
-    def test_consumes_overlap_proposes_but_still_mints(self, cfg: Config):
-        seed_stub(
-            cfg, "tsk-44444444", grain="work",
-            consumes=["dec-c839fb4e", "dec-other"],
-        )
-        result = reconcile(cfg, load_declaration())
         assert result.errors == []
-        assert len(result.minted) == 1  # the mint still happens
-        assert result.appended == []  # nothing merged silently
-        assert result.proposals == [
-            {
-                "task_id": "tsk-44444444",
-                "overlap": ["dec-c839fb4e"],
-                "declared_title": "wire the wrap task pass",
-            }
-        ]
-        assert task_notes(cfg)["tsk-44444444"]["rounds"] == []
+        assert result.attached == ["tsk-11111111"]
+        notes = task_notes(cfg)
+        assert notes["tsk-11111111"]["parent"] == result.minted[0]
+        # Undeclared children stay unattached — no timestamp guessing.
+        assert "parent" not in notes["tsk-22222222"]
 
-    def test_no_overlap_no_proposal(self, cfg: Config):
-        seed_stub(cfg, "tsk-44444444", grain="work", consumes=["dec-other"])
-        result = reconcile(cfg, load_declaration())
-        assert result.proposals == []
+    def test_work_grain_peers_are_never_children(self, cfg: Config):
+        seed_stub(cfg, "tsk-33333333", grain="work")
+        result = reconcile(
+            cfg, self.declaration_with_children(["tsk-33333333"])
+        )
+        assert any("work grain" in e for e in result.errors)
+        assert result.attached == []
+        assert "parent" not in task_notes(cfg)["tsk-33333333"]
+
+    def test_child_attached_elsewhere_is_an_error_not_an_overwrite(
+        self, cfg: Config
+    ):
+        seed_stub(
+            cfg, "tsk-11111111", grain="per-dispatch", parent="tsk-99999999"
+        )
+        result = reconcile(
+            cfg, self.declaration_with_children(["tsk-11111111"])
+        )
+        assert any("already attached" in e for e in result.errors)
+        assert task_notes(cfg)["tsk-11111111"]["parent"] == "tsk-99999999"
+
+    def test_unknown_child_is_an_error(self, cfg: Config):
+        result = reconcile(
+            cfg, self.declaration_with_children(["tsk-deadbeef"])
+        )
+        assert any("tsk-deadbeef" in e for e in result.errors)
 
 
 # ---------------------------------------------------------------------------

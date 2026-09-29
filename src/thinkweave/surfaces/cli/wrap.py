@@ -17,13 +17,15 @@ import json
 import sys
 from pathlib import Path
 
-from thinkweave.core.config import load_config
-
 
 def cmd_wrap_finalize(args: argparse.Namespace) -> None:
+    # Deliberately resolved at call time: an import-time binding freezes the
+    # config before a test (or embedder) can redirect it, and this command
+    # writes to the vault that resolution names.
+    from thinkweave.core import config as config_module
     from thinkweave.operations.wrap import finalize_wrap
 
-    cfg = load_config()
+    cfg = config_module.load_config()
     project = args.project or cfg.default_project or ""
     if not project:
         print(
@@ -92,14 +94,8 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             f"  tasks:   {len(t['minted'])} minted, "
             f"{len(t['appended'])} round(s) appended, "
             f"{len(t['closed'])} closed, {len(t['orphaned'])} orphaned, "
-            f"{len(t['reparented'])} re-parented, {t['stamped']} stamped"
+            f"{len(t['attached'])} child(ren) attached, {t['stamped']} stamped"
         )
-        for proposal in t["proposals"]:
-            print(
-                f"    ? continuation of {proposal['task_id']} "
-                f"(consumes overlap: {', '.join(proposal['overlap'])}) — "
-                "not merged"
-            )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)
         print(f"  prune:   {result.orphans_pruned} orphan folder(s), {mb:.1f} MB freed")

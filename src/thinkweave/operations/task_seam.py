@@ -297,8 +297,7 @@ class TaskPassResult:
     appended: list[str] = field(default_factory=list)
     closed: list[str] = field(default_factory=list)
     orphaned: list[str] = field(default_factory=list)
-    reparented: list[str] = field(default_factory=list)
-    proposals: list[dict] = field(default_factory=list)
+    attached: list[str] = field(default_factory=list)
     stamped: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -309,8 +308,7 @@ class TaskPassResult:
             "appended": self.appended,
             "closed": self.closed,
             "orphaned": self.orphaned,
-            "reparented": self.reparented,
-            "proposals": self.proposals,
+            "attached": self.attached,
             "stamped": self.stamped,
             "errors": self.errors,
             "warnings": self.warnings,
@@ -326,25 +324,38 @@ def reconcile_tasks(
     streams: list[Path],
     folders: list[Path] | None = None,
 ) -> TaskPassResult:
-    """The wrap task pass — reconcile what the seam cannot see.
+    """Apply the wrap declaration: the model judged, this pass writes.
 
-    Driven entirely by the declaration file the wrap LLM composed
-    (``validate_wrap_declaration`` is the gate; an invalid file aborts the
-    pass with no writes). Declaration by the model that was present is
-    permitted; retroactive inference over exhaust stays banned — every
-    other duty here reads only the register and the stubs.
+    The declaration is the model's judgment about the session's work,
+    composed during the ``/wrap`` turn. This pass makes no decisions of
+    its own — it validates the declaration
+    (``validate_wrap_declaration``; an invalid file aborts with no
+    writes), applies each entry, and enforces the contract's invariants.
 
-    Duties, in order: solo-lane boundary declaration (mint or one appended
-    round on the open work-grain note — never a second note), consumes
-    edges, continuation proposals from consumes overlap (proposed in the
-    result, never merged silently), explicit-done closure (the only
-    closure wrap may perform; ``outcome`` is never written — the dream
-    judge owns it), decision ``task_id`` stamps, orphan flags at boundary
-    sparsity (an open with no id-matched close; at task-id-only sparsity
-    an absent close is not evidence), and root-task re-parenting of seam
-    children by interval containment over the session chain's streams
-    (a child's open inside a segment's activity span — first non-task row
-    to last row — re-parents under the declared root).
+    For each declared entry:
+
+    - ``continuing: tsk-…`` — the work continues that task. Its
+      ``round`` appends to the existing open work-grain note. Never a
+      second note; a closed task cannot be reopened.
+    - no ``continuing`` — new work. A stub is minted (``title``
+      required) and the ``round``, if present, is its first entry.
+    - ``done: true`` — the user said the task is finished, so the note
+      closes. This is the only closure wrap performs. ``outcome`` is
+      never written — the dream judge owns it.
+    - ``children: [tsk-…]`` — the per-dispatch seam tasks this task's
+      work dispatched. Attachment is declared, never inferred:
+      timestamps cannot attribute a dispatch when independent tasks run
+      concurrently, so only the model that dispatched can say which
+      task a child served.
+    - ``round.decisions.minted`` — those decisions are stamped with the
+      task id.
+
+    After the entries land, one mechanical check runs: orphan flags at
+    ``boundary`` sparsity (a per-dispatch open with no id-matched close).
+    At ``task-id-only`` sparsity — a catch-up declarer that was not
+    present — an absent close is not evidence, so nothing is flagged.
+    Every touched note is re-validated against the contract before the
+    pass returns.
     """
     from thinkweave.core.task_contract import validate_wrap_declaration
     from thinkweave.core.vault import VaultManager, parse_frontmatter
@@ -362,10 +373,6 @@ def reconcile_tasks(
 
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
-    open_stubs = [
-        (p, fm) for p, fm in _all_stubs(cfg) if fm.get("status") == "open"
-    ]
-    root_id = ""
     touched: list[Path] = []
     now = _now()
     for entry in declaration["declared"]:
@@ -390,7 +397,6 @@ def reconcile_tasks(
                 continue
             task_id = continuing
         else:
-            _propose_continuations(entry, open_stubs, result)
             task_id, stub, _title = _mint_stub(
                 cfg,
                 session_key=session_key,
@@ -430,15 +436,12 @@ def reconcile_tasks(
             result.closed.append(task_id)
         if updates:
             vm.update_note(stub, frontmatter_updates=updates)
-        if entry.get("root"):
-            root_id = task_id
         touched.append(stub)
         _stamp_decisions(vm, entry, task_id, folders or [], result)
+        _attach_children(cfg, vm, entry, task_id, result, touched)
 
     if sparsity == "boundary":
         _flag_orphans(cfg, vm, streams, result, touched)
-    if root_id:
-        _reparent_children(cfg, vm, streams, root_id, result, touched)
 
     for stub in dict.fromkeys(touched):
         fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
@@ -452,22 +455,46 @@ def reconcile_tasks(
 # Wrap-pass plumbing
 
 
-def _propose_continuations(
-    entry: dict, open_stubs: list[tuple[Path, dict]], result: TaskPassResult
+def _attach_children(
+    cfg, vm, entry: dict, task_id: str, result: TaskPassResult,
+    touched: list[Path],
 ) -> None:
-    """Consumes overlap with an open task is a continuation *proposal* —
-    surfaced for the user, never an implicit merge."""
-    declared = set(entry.get("consumes") or [])
-    for _path, fm in open_stubs:
-        overlap = sorted(declared & set(fm.get("consumes") or []))
-        if overlap:
-            result.proposals.append(
-                {
-                    "task_id": str(fm.get("id", "")),
-                    "overlap": overlap,
-                    "declared_title": str(entry.get("title", "")),
-                }
+    """Write the declared child → parent edges.
+
+    A child is a per-dispatch task the hook seam minted mechanically;
+    which declared task it served is the model's call. Work-grain notes
+    are peers, never children. A child already attached to a different
+    task is an error, not an overwrite — two declarers must not fight
+    over one child silently.
+    """
+    from thinkweave.core.vault import parse_frontmatter
+
+    for child_id in entry.get("children") or []:
+        if child_id == task_id:
+            result.errors.append(f"children: {child_id} cannot be its own parent")
+            continue
+        stub = find_stub(cfg, child_id)
+        if stub is None:
+            result.errors.append(f"children: no task stub for {child_id}")
+            continue
+        fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+        if fm.get("grain") == "work":
+            result.errors.append(
+                f"children: {child_id} is work grain — work-grain tasks are "
+                "peers, never children"
             )
+            continue
+        parent = str(fm.get("parent") or "")
+        if parent == task_id:
+            continue
+        if parent:
+            result.errors.append(
+                f"children: {child_id} is already attached to {parent}"
+            )
+            continue
+        vm.update_note(stub, frontmatter_updates={"parent": task_id})
+        result.attached.append(child_id)
+        touched.append(stub)
 
 
 def _stamp_decisions(
@@ -522,42 +549,6 @@ def _flag_orphans(
             touched.append(stub)
 
 
-def _reparent_children(
-    cfg, vm, streams: list[Path], root_id: str,
-    result: TaskPassResult, touched: list[Path],
-) -> None:
-    """Compile the tree: a seam child whose open falls inside a segment's
-    activity span re-parents under the declared root task. Work-grain rows
-    are peers, never children; a row outside the span (stale buffer
-    carry-over) stays where it is."""
-    from thinkweave.core.vault import parse_frontmatter
-
-    for stream in streams:
-        rows = _stream_rows(stream)
-        span = _activity_span(rows)
-        if span is None:
-            continue
-        start, end = span
-        for row in rows:
-            if row.get("type") != hook_events.TASK_OPEN:
-                continue
-            task_id = str(row.get("task_id") or "")
-            if not task_id or task_id == root_id or row.get("grain") == "work":
-                continue
-            ts = _parse_ts(row.get("ts"))
-            if ts is None or not (start <= ts <= end):
-                continue
-            stub = find_stub(cfg, task_id)
-            if stub is None:
-                result.warnings.append(f"child {task_id} has no stub")
-                continue
-            fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
-            if fm.get("parent") != root_id:
-                vm.update_note(stub, frontmatter_updates={"parent": root_id})
-                result.reparented.append(task_id)
-                touched.append(stub)
-
-
 def _folder_notes(folders: list[Path]):
     for folder in folders:
         yield from folder.rglob("*.md")
@@ -587,46 +578,6 @@ def _append_rows(path: Path, rows: list[dict]) -> None:
     with path.open("a", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _stream_rows(path: Path) -> list[dict]:
-    """Every row of one register stream, tolerant of malformed lines."""
-    if not path.exists():
-        return []
-    rows: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
-
-
-def _activity_span(rows: list[dict]):
-    """(start, end) of one segment's activity: first non-task row to last
-    row of the stream. ``None`` for an empty or timestamp-less stream."""
-    all_ts = [t for t in (_parse_ts(r.get("ts")) for r in rows) if t]
-    activity = [
-        t
-        for r in rows
-        if (t := _parse_ts(r.get("ts")))
-        and r.get("type") not in hook_events.TASK_EVENT_TYPES
-    ]
-    if not all_ts:
-        return None
-    return min(activity or all_ts), max(all_ts)
-
-
-def _parse_ts(value) -> datetime | None:
-    try:
-        ts = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
 def find_stub(cfg, task_id: str) -> Path | None:

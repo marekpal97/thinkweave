@@ -139,15 +139,17 @@ def validate_task_note(fm: object) -> list[str]:
 
 
 def validate_wrap_declaration(decl: object) -> list[str]:
-    """Validate one wrap task-declaration file's mapping; [] means it
-    conforms. The wrap LLM composes it; the deterministic pass consumes it
-    — data between stages travels as this declared shape, never prose.
+    """Validate one wrap declaration's mapping; [] means it conforms.
 
-    ``sparsity`` is the session's capture tier; ``declared`` holds one
-    entry per solo-lane boundary the model that was present declares. An
-    entry either continues an open task (``continuing: tsk-…``) or mints
-    one (``title`` required). At most one entry is the ``root`` the seam
-    children re-parent under.
+    The declaration is the model's judgment about the session's work,
+    written as data so the deterministic tail can apply it without prose
+    parsing. ``declared`` holds one entry per task the model judged:
+    ``continuing: tsk-…`` appends to that open task, otherwise ``title``
+    mints a new one; ``done: true`` closes; ``children`` names the seam
+    children this task dispatched; ``round`` is the segment's ledger
+    entry. ``sparsity`` states how much the declarer could see —
+    ``boundary`` for a model that was present, ``task-id-only`` for a
+    catch-up declarer, which suppresses orphan judgment downstream.
     """
     if not isinstance(decl, dict):
         return ["declaration: not a mapping"]
@@ -162,7 +164,6 @@ def validate_wrap_declaration(decl: object) -> list[str]:
     declared = decl.get("declared")
     if not isinstance(declared, list):
         return errors + ["declaration.declared: expected a list of entries"]
-    roots = 0
     for i, entry in enumerate(declared):
         where = f"declaration.declared[{i}]"
         if not isinstance(entry, dict):
@@ -173,8 +174,6 @@ def validate_wrap_declaration(decl: object) -> list[str]:
                 errors.append(f"{where}: unknown field {key!r}")
             elif key != "round":
                 errors += _DECLARED_CHECKERS[key](value, f"{where}.{key}")
-        if entry.get("root") is True:
-            roots += 1
         if not entry.get("continuing") and not str(entry.get("title", "")):
             errors.append(f"{where}: a mint needs a title (no continuing id)")
         if "round" in entry:
@@ -183,8 +182,6 @@ def validate_wrap_declaration(decl: object) -> list[str]:
                 entry.get("grain", "work"),
                 where=f"{where}.round",
             )
-    if roots > 1:
-        errors.append("declaration: at most one entry may be the root")
     return errors
 
 
@@ -280,6 +277,12 @@ def _task_id(value, where):
     if not isinstance(value, str) or not TASK_ID_RE.match(value):
         return [f"{where}: expected a vault-minted task id (tsk- + 8 hex)"]
     return []
+
+
+def _task_id_list(value, where):
+    if not isinstance(value, list):
+        return [f"{where}: expected a list of task ids"]
+    return [e for i, v in enumerate(value) for e in _task_id(v, f"{where}[{i}]")]
 
 
 def _enum(allowed):
@@ -455,9 +458,9 @@ _DECLARED_CHECKERS = {
     "title": _str,
     "asked": _str,
     "grain": _enum(TASK_GRAINS),
-    "root": _bool,
     "done": _bool,
     "consumes": _str_list,
+    "children": _task_id_list,
     "round": None,
 }
 

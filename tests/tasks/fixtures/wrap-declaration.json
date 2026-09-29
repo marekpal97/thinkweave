@@ -5,11 +5,14 @@
       "title": "wire the wrap task pass",
       "asked": "#189",
       "grain": "work",
-      "root": true,
       "done": false,
       "consumes": ["dec-c839fb4e", "src-77778888"],
       "round": {
-        "did": {"paths": ["src/thinkweave/operations/task_seam.py"], "attempts": 1},
+        "did": {
+          "paths": ["src/thinkweave/operations/task_seam.py"],
+          "commits": ["4885b78"],
+          "attempts": 1
+        },
         "decisions": {"minted": ["dec-aaaa1111"]}
       }
     }
