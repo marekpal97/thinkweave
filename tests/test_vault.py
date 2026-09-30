@@ -668,6 +668,27 @@ class TestDirectoryStructure:
         )
         assert note_path.parent == session_path.parent
 
+    def test_session_id_finds_uuid_named_folder_by_note_id(
+        self, vault: VaultManager
+    ):
+        """A ses- note id resolves the folder the hook named after the UUID."""
+        vault.create_note(
+            NoteType.NOTE, "Hook-time Note", project="proj",
+            session_id="real-uuid-here",
+        )
+        session_path = vault.create_note(
+            NoteType.SESSION, "Existing Session", project="proj",
+            extra_frontmatter={"source_session": "real-uuid-here"},
+        )
+        fm, _ = parse_frontmatter(session_path.read_text(encoding="utf-8"))
+        assert session_path.parent.name.startswith("real-uuid-here")
+
+        note_path = vault.create_note(
+            NoteType.NOTE, "Wrap-time Note", project="proj",
+            session_id=fm["id"],
+        )
+        assert note_path.parent == session_path.parent
+
     def test_misc_dir_created_on_demand(self, vault: VaultManager):
         misc_dir = vault.root / "projects" / "proj" / "sessions" / "misc"
         assert not misc_dir.exists()

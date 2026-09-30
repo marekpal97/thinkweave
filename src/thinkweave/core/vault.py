@@ -588,7 +588,8 @@ class VaultManager:
         """Find or create a session folder by session note ID or source_session UUID.
 
         Searches by folder name prefix first, then falls back to checking
-        source_session in session.md frontmatter. If no match is found,
+        session.md's ``source_session`` and ``id``: a folder the hooks named
+        after the harness UUID is still found by its ``ses-`` note id. If no match is found,
         creates the folder eagerly so notes created mid-session land in
         the right place before the session note is written at wrap time.
         """
@@ -605,7 +606,7 @@ class VaultManager:
                 if sm.exists():
                     try:
                         fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-                        if fm.get("source_session") == session_id:
+                        if session_id in (fm.get("source_session"), fm.get("id")):
                             return d
                     except Exception:
                         continue
