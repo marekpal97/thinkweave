@@ -802,7 +802,18 @@ _EPHEMERAL_CWD_RE = re.compile(r"^(agent-[a-f0-9]{12,}|[a-f0-9-]{32,})$")
 def _detect_project(hook_input: dict) -> str:
     """Detect the current project from env var, git, or cwd.
 
-    Priority: THINKWEAVE_PROJECT env var > git repo name > cwd directory name.
+    Priority: THINKWEAVE_PROJECT env var > git repo name > cwd directory name,
+    normalized the way every vault write normalizes it (``tw-dogfood`` is
+    stored as ``tw_dogfood``), so reads find what writes stored.
+    """
+    from thinkweave.core.config import normalize_project_name
+
+    raw = _raw_project(hook_input)
+    return raw if raw == "_unscoped" else normalize_project_name(raw)
+
+
+def _raw_project(hook_input: dict) -> str:
+    """The project name before normalization: env var, git repo, or cwd.
 
     When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
     cloud-agent run, or a bare UUID), fall through to ``_unscoped`` instead

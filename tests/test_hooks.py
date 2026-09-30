@@ -78,7 +78,7 @@ class TestHookHelpers:
     def test_detect_project(self, tmp_path: Path):
         # Env var takes priority
         with patch.dict("os.environ", {"THINKWEAVE_PROJECT": "from-env"}):
-            assert _detect_project({"cwd": "/anywhere"}) == "from-env"
+            assert _detect_project({"cwd": "/anywhere"}) == "from_env"  # normalized like every vault write
 
         # Git repo detection: walk up to .git
         repo = tmp_path / "my_project" / "src" / "pkg"

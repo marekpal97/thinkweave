@@ -17,7 +17,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from thinkweave.core.config import Config, load_config
+from thinkweave.core.config import Config, load_config, normalize_project_name
 
 # Rough approximation: 1 token ≈ 4 characters for English markdown. Used
 # to convert caller-facing token budgets into char budgets.
@@ -83,8 +83,7 @@ def build_project_context(
         a single failure cannot corrupt the whole payload.
     """
     cfg = cfg or load_config()
-    if not project:
-        project = cfg.default_project or ""
+    project = normalize_project_name(project or cfg.default_project or "")
 
     wanted = list(sections) if sections else list(SECTIONS)
 
@@ -379,7 +378,11 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
             fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
         except json.JSONDecodeError:
             continue
-        if fm.get("kind") != "task" or fm.get("status") != "open":
+        if (
+            fm.get("kind") != "task"
+            or fm.get("status") != "open"
+            or fm.get("grain") != "work"
+        ):
             continue
         title = fm.get("title") or row["title"] or row["id"]
         asked = fm.get("asked") or ""
@@ -392,9 +395,8 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
         return None
 
     preamble = (
-        "Open work-grain tasks. If this session continues one, declare "
-        "`continuing <tsk-id>` — /wrap proposes matches, never merges "
-        "silently."
+        "Open work-grain tasks. If this session continues one, /wrap "
+        "declares `continuing: <tsk-id>` for it."
     )
     return Section(
         key="tasks",
