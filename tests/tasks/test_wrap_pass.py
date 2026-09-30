@@ -172,7 +172,10 @@ class TestRoundAppend:
                 }
             ]
         }
-        result = reconcile(cfg, cont)
+        result = task_seam.reconcile_tasks(
+            cfg, cont, session_key="s-2", project="t",
+            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+        )
         assert result.errors == []
         assert result.appended == [task_id]
         assert result.minted == []
@@ -192,12 +195,61 @@ class TestRoundAppend:
                 {"continuing": task_id, "round": {"did": {"attempts": 2}}}
             ]
         }
-        r2 = finalize_wrap(cfg, session_id=SESSION, project="t", tasks=cont)
+        r2 = finalize_wrap(cfg, session_id="s-2", project="t", tasks=cont)
         assert r2.tasks["appended"] == [task_id]
         assert r2.tasks["minted"] == []
         notes = task_notes(cfg)
         assert list(notes) == [task_id]
         assert len(notes[task_id]["rounds"]) == 2
+
+    def test_rewrap_of_a_mint_reuses_the_note_and_replaces_its_round(
+        self, cfg: Config
+    ):
+        first = reconcile(cfg, load_declaration())
+        again = reconcile(cfg, load_declaration())
+        assert again.errors == []
+        assert again.minted == []
+        notes = task_notes(cfg)
+        assert list(notes) == first.minted
+        assert len(notes[first.minted[0]]["rounds"]) == 1
+        opens = [
+            r for r in hook_events.task_rows(stream(cfg))
+            if r["type"] == "task_open"
+        ]
+        assert len(opens) == 1
+
+    def test_rewrap_of_a_continuation_replaces_this_sessions_round(
+        self, cfg: Config
+    ):
+        task_id = reconcile(cfg, load_declaration()).minted[0]
+        cont = {
+            "declared": [
+                {"continuing": task_id, "round": {"did": {"attempts": 2}}}
+            ]
+        }
+        task_seam.reconcile_tasks(
+            cfg, cont, session_key="s-2", project="t",
+            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+        )
+        cont["declared"][0]["round"] = {"did": {"attempts": 3}}
+        task_seam.reconcile_tasks(
+            cfg, cont, session_key="s-2", project="t",
+            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+        )
+        rounds = task_notes(cfg)[task_id]["rounds"]
+        assert [r["did"]["attempts"] for r in rounds] == [1, 3]
+
+    def test_rewrap_of_done_records_one_close(self, cfg: Config):
+        task_id = reconcile(cfg, load_declaration()).minted[0]
+        done = {"declared": [{"continuing": task_id, "done": True}]}
+        reconcile(cfg, done)
+        again = reconcile(cfg, done)
+        assert again.errors == []
+        closes = [
+            r for r in hook_events.task_rows(stream(cfg))
+            if r["type"] == "task_close"
+        ]
+        assert len(closes) == 1
 
     def test_continuing_unknown_task_is_an_error(self, cfg: Config):
         result = reconcile(
