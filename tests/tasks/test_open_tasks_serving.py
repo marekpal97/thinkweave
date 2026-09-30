@@ -44,11 +44,13 @@ def _seed_task(
     *,
     status: str = "open",
     asked: str = "",
+    grain: str = "work",
+    project: str = "t",
 ) -> None:
     fm: dict = {
         "kind": "task",
         "status": status,
-        "grain": "work",
+        "grain": grain,
         "rounds": [],
         "title": title,
     }
@@ -57,7 +59,7 @@ def _seed_task(
     vault.create_note(
         NoteType.NOTE,
         title=task_id,
-        project="t",
+        project=project,
         extra_frontmatter=fm,
         note_id=task_id,
     )
@@ -101,6 +103,32 @@ class TestOpenTasksSection:
         payload = build_project_context(config, "t")
 
         assert "## Open Tasks" in payload
+        assert "tsk-aaaa1111" in payload
+
+    def test_dispatch_tasks_are_not_served(
+        self, config: Config, vault: VaultManager
+    ):
+        """Only work-grain tasks are continuation candidates; a subagent's
+        per-dispatch stub left open by a missed close must not crowd them."""
+        _seed_task(vault, "tsk-aaaa1111", "Ship the serving row")
+        _seed_task(vault, "tsk-dddd4444", "Task tsk-dddd4444", grain="per-dispatch")
+        _reindex(config)
+
+        payload = build_project_context(config, "t")
+
+        assert "tsk-aaaa1111" in payload
+        assert "tsk-dddd4444" not in payload
+
+    def test_hyphenated_project_name_reaches_its_normalized_notes(
+        self, config: Config, vault: VaultManager
+    ):
+        """Notes are written under the normalized project key (tw_dogfood2);
+        a caller naming the repo directory (tw-dogfood2) must still get them."""
+        _seed_task(vault, "tsk-aaaa1111", "Greet CLI", project="tw-dogfood2")
+        _reindex(config)
+
+        payload = build_project_context(config, "tw-dogfood2")
+
         assert "tsk-aaaa1111" in payload
 
     def test_section_omitted_when_no_open_tasks(
@@ -209,3 +237,14 @@ class TestOpenTasksProjection:
         finally:
             idx.close()
         assert rows == [("tsk-aaaa1111", "open-tasks")]
+
+
+def test_hook_project_detection_normalizes_like_writes(tmp_path: Path, monkeypatch):
+    from thinkweave.surfaces.hooks import handler
+
+    repo = tmp_path / "tw-dogfood2"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.delenv("THINKWEAVE_PROJECT", raising=False)
+    monkeypatch.delenv("PERSONAL_MEM_PROJECT", raising=False)
+
+    assert handler._detect_project({"cwd": str(repo)}) == "tw_dogfood2"
