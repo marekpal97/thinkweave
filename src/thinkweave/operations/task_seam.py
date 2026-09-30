@@ -33,6 +33,7 @@ from thinkweave.core.task_contract import (
     validate_envelope,
     validate_task_note,
 )
+from thinkweave.core import harness
 from thinkweave.operations import hook_events
 
 
@@ -350,6 +351,11 @@ def reconcile_tasks(
     - ``round.decisions.minted`` — those decisions are stamped with the
       task id.
 
+    Re-running the pass for the same session re-applies rather than
+    duplicates: each round carries the wrapping session's ref and replaces
+    that session's earlier round, a mint whose title this session already
+    minted reuses that note, and a repeated ``done`` is a no-op.
+
     After the entries land, one mechanical check runs: orphan flags at
     ``boundary`` sparsity (a per-dispatch open with no id-matched close).
     At ``task-id-only`` sparsity — a catch-up declarer that was not
@@ -375,27 +381,36 @@ def reconcile_tasks(
     vm.ensure_dirs()
     touched: list[Path] = []
     now = _now()
+    wrap_ref = {
+        "harness": harness.active().id,
+        "kind": "session_id",
+        "value": session_key,
+    }
+    minted_here = _minted_by_this_session(cfg, streams, session_key)
     for entry in declaration["declared"]:
         continuing = str(entry.get("continuing") or "")
-        if continuing:
-            stub = find_stub(cfg, continuing)
+        existing = continuing or minted_here.get(str(entry.get("title", "")), "")
+        if existing:
+            stub = find_stub(cfg, existing)
             if stub is None:
-                result.errors.append(f"declared: no task stub for {continuing}")
+                result.errors.append(f"declared: no task stub for {existing}")
                 continue
             fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
             if fm.get("status") != "open":
+                if entry.get("done"):
+                    continue
                 result.errors.append(
-                    f"declared: {continuing} is closed — a continuation "
+                    f"declared: {existing} is closed — a continuation "
                     "cannot reopen it"
                 )
                 continue
-            if fm.get("grain") != "work":
+            if fm.get("grain") != "work" and continuing:
                 result.errors.append(
                     f"declared: {continuing} is not work grain — rounds "
                     "accrete on work-grain notes only"
                 )
                 continue
-            task_id = continuing
+            task_id = existing
         else:
             task_id, stub, _title = _mint_stub(
                 cfg,
@@ -424,7 +439,12 @@ def reconcile_tasks(
             updates["consumes"] = list(entry["consumes"])
         if "round" in entry:
             fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
-            updates["rounds"] = list(fm.get("rounds") or []) + [entry["round"]]
+            round_entry = {"session_ref": wrap_ref, **entry["round"]}
+            kept = [
+                r for r in fm.get("rounds") or []
+                if r.get("session_ref") != round_entry["session_ref"]
+            ]
+            updates["rounds"] = kept + [round_entry]
             if continuing:
                 result.appended.append(task_id)
         if entry.get("done"):
@@ -554,19 +574,29 @@ def _folder_notes(folders: list[Path]):
         yield from folder.rglob("*.md")
 
 
-def _all_stubs(cfg) -> list[tuple[Path, dict]]:
-    """Every task stub in the vault with its frontmatter.
+def _minted_by_this_session(
+    cfg, streams: list[Path], session_key: str
+) -> dict[str, str]:
+    """{title: task_id} for tasks an earlier wrap of this session minted.
 
-    ponytail: one rglob over the vault per pass, O(vault files) — same
-    ceiling and upgrade path (the SQLite index) as :func:`find_stub`.
+    The pass writes its own opens without an agent ref; hook-seam opens
+    always carry one, so they never match a declared title here.
     """
     from thinkweave.core.vault import parse_frontmatter
 
-    out: list[tuple[Path, dict]] = []
-    for path in cfg.vault_root.rglob("tsk-*.md"):
-        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        if fm.get("kind") == TASK_KIND:
-            out.append((path, fm))
+    out: dict[str, str] = {}
+    for stream in streams:
+        for row in hook_events.task_rows(stream):
+            if (
+                row.get("type") != hook_events.TASK_OPEN
+                or row.get("session_id") != session_key
+                or row.get("session_ref")
+            ):
+                continue
+            stub = find_stub(cfg, str(row.get("task_id", "")))
+            if stub is not None:
+                fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+                out.setdefault(str(fm.get("title", "")), str(fm.get("id", "")))
     return out
 
 

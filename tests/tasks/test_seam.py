@@ -269,6 +269,27 @@ class TestCli:
         assert items[open_id]["grain"] == "per-dispatch"
         assert items[open_id]["status"] == "open"
 
+    def test_ledger_reads_the_archived_stream_after_wrap(
+        self, cfg: Config, capsys
+    ):
+        self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        folder = cfg.vault_root / "projects" / "p" / "sessions" / "some-slug"
+        folder.mkdir(parents=True)
+        (folder / "session.md").write_text(
+            "---\ntype: session\nsource_session: s-1\n---\n", encoding="utf-8"
+        )
+        hook_events.register_path(cfg.weave_dir, "s-1").rename(
+            folder / "events.jsonl"
+        )
+
+        self._dispatch(["task", "ledger", "--session", "s-1"])
+        rows = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+        ]
+        assert [r["task_id"] for r in rows] == [task_id]
+
     def test_close_exits_nonzero_on_envelope_errors(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
         task_id = capsys.readouterr().out.strip()
