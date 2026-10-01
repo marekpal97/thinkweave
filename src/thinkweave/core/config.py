@@ -748,6 +748,19 @@ def normalize_project_name(name: str) -> str:
     return stripped or normalized
 
 
+def worktree_repo_root(cwd: str) -> str:
+    """``cwd`` with any ``.claude/worktrees/<branch>[/...]`` tail stripped.
+
+    Separators come back normalized to ``/``, so a Windows cwd parses the
+    same as a POSIX one.
+    """
+    parts = PurePosixPath(cwd.replace("\\", "/")).parts
+    for i in range(len(parts) - 1):
+        if parts[i] == ".claude" and parts[i + 1] == "worktrees":
+            return str(PurePosixPath(*parts[:i])) if i else ""
+    return cwd.replace("\\", "/")
+
+
 def normalize_project(cwd: str) -> str:
     """Derive a vault project name from a coding-agent session's cwd.
 
@@ -767,14 +780,7 @@ def normalize_project(cwd: str) -> str:
     # and a POSIX cwd parse identically, regardless of which OS runs the
     # import. PurePosixPath then gives consistent ``.parts`` semantics on
     # the normalized string (a drive like ``C:`` becomes a leading part).
-    parts = list(PurePosixPath(cwd.replace("\\", "/").rstrip("/")).parts)
-
-    # Strip a trailing ``.claude/worktrees/<branch>[/...]`` — we want the
-    # repo root, not the worktree branch dir.
-    for i in range(len(parts) - 1):
-        if parts[i] == ".claude" and parts[i + 1] == "worktrees":
-            parts = parts[:i]
-            break
+    parts = list(PurePosixPath(worktree_repo_root(cwd).rstrip("/")).parts)
 
     # Drop sessions whose cwd is the homedir, ``~/.claude``, or the root.
     home_parts = PurePosixPath(str(Path.home()).replace("\\", "/")).parts

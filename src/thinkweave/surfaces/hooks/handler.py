@@ -338,13 +338,16 @@ def _handle_subagent_start(hook_input: dict) -> None:
     from thinkweave.operations import task_seam
 
     cfg = load_config()
-    session_id = hook_input.get("session_id") or _env_session_id()
-    if not session_id:
-        _output()
-        return
+    session_id = _subagent_session_id(hook_input)
     _ensure_session(cfg, session_id, hook_input)
     harness = _hook_harness() or "claude-code"
     agent_id = str(hook_input.get("agent_id", ""))
+    if not agent_id:
+        _log_info(
+            "subagent_start",
+            "payload carries no agent_id; the task opens without an agent "
+            "ref and its SubagentStop cannot pair",
+        )
     ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
     dispatch = task_seam.open_task(
         cfg,
@@ -373,19 +376,14 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     orphans stay legible.
     """
     from thinkweave.core.config import load_config
-    from thinkweave.operations import hook_events, task_seam
+    from thinkweave.operations import task_seam
 
     cfg = load_config()
-    session_id = hook_input.get("session_id") or _env_session_id()
-    if not session_id:
-        _output()
-        return
+    session_id = _subagent_session_id(hook_input)
     harness = _hook_harness() or "claude-code"
     agent_id = str(hook_input.get("agent_id", ""))
     ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
-    rows = hook_events.task_rows(
-        hook_events.register_path(cfg.weave_dir, session_id)
-    )
+    rows = task_seam.session_task_rows(cfg, session_id)
     task_id = task_seam.pending_open(rows, ref) if ref else ""
     duplicate_of = task_seam.closed_task(rows, ref) if ref and not task_id else ""
     if task_id:
@@ -403,6 +401,18 @@ def _handle_subagent_stop(hook_input: dict) -> None:
             cfg, session_key=session_id, session_ref=ref
         )
     _output()
+
+
+def _subagent_session_id(hook_input: dict) -> str:
+    """The session a task boundary belongs to; raises when there is none.
+
+    A boundary with no session has no register to land in, so it fails
+    loudly through :func:`main` rather than vanishing.
+    """
+    session_id = hook_input.get("session_id") or _env_session_id()
+    if not session_id:
+        raise ValueError("no session id in payload or env; task boundary not recorded")
+    return session_id
 
 
 def _handle_user_prompt_submit(hook_input: dict) -> None:
@@ -815,7 +825,8 @@ def _detect_project(hook_input: dict) -> str:
 def _raw_project(hook_input: dict) -> str:
     """The project name before normalization: env var, git repo, or cwd.
 
-    When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
+    A ``.claude/worktrees/<name>`` cwd resolves to its parent repo, never to
+    the worktree's own directory name. When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
     cloud-agent run, or a bare UUID), fall through to ``_unscoped`` instead
     of letting the runtime's session-id leak in as a project name.
     """
@@ -824,8 +835,10 @@ def _raw_project(hook_input: dict) -> str:
     if env_proj:
         return env_proj
 
+    from thinkweave.core.config import worktree_repo_root
+
     cwd = hook_input.get("cwd", os.getcwd())
-    cwd_path = Path(cwd)
+    cwd_path = Path(worktree_repo_root(cwd) or cwd)
 
     # Walk up to find a .git directory — use that repo's directory name
     for parent in [cwd_path, *cwd_path.parents]:

@@ -382,10 +382,57 @@ class TestHookHandlers:
         assert rows[0]["task_id"] == ""
         assert rows[0]["session_ref"]["value"] == "agent-never-opened"
 
-    def test_missing_session_id_is_a_noop(self, cfg: Config, monkeypatch, tmp_path):
+    def test_stop_after_the_parent_turn_archived_the_register_still_closes(
+        self, cfg: Config, monkeypatch, tmp_path: Path
+    ):
+        # Background dispatch: the parent's turn ends (Stop archives the live
+        # buffer into the session folder) while both subagents still run.
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "canary")
+        run_hook(monkeypatch, "subagent_start", self._start_payload(tmp_path, "agent-a1"))
+        run_hook(monkeypatch, "subagent_start", self._start_payload(tmp_path, "agent-a2"))
+        run_hook(monkeypatch, "stop", {"session_id": SESSION, "cwd": str(tmp_path)})
+        assert not hook_events.register_path(cfg.weave_dir, SESSION).exists()
+
+        for agent in ("agent-a1", "agent-a2"):
+            stop = self._start_payload(tmp_path, agent)
+            stop["hook_event_name"] = "SubagentStop"
+            run_hook(monkeypatch, "subagent_stop", stop)
+
+        rows = task_seam.session_task_rows(cfg, SESSION)
+        assert not any(r.get("orphan") for r in rows)
+        ledger = task_seam.task_ledger(rows)
+        assert len(ledger) == 2
+        for task_id, entry in ledger.items():
+            assert entry["close"], task_id
+            fm, _ = parse_frontmatter(
+                task_seam.find_stub(cfg, task_id).read_text(encoding="utf-8")
+            )
+            assert fm["status"] == "closed"
+
+    def test_worktree_subagent_files_its_stub_under_the_parent_repo(
+        self, cfg: Config, monkeypatch, tmp_path: Path
+    ):
+        monkeypatch.delenv("THINKWEAVE_PROJECT", raising=False)
+        monkeypatch.delenv("PERSONAL_MEM_PROJECT", raising=False)
+        repo = tmp_path / "tw-dogfood2"
+        (repo / ".git").mkdir(parents=True)
+        worktree = repo / ".claude" / "worktrees" / "agent-a8c6a44dd35bd23d8"
+        worktree.mkdir(parents=True)
+        (worktree / ".git").write_text("gitdir: ../../../.git/worktrees/x\n")
+
+        payload = self._start_payload(worktree / "src")
+        reply = run_hook(monkeypatch, "subagent_start", payload)
+        note = json.loads(reply["hookSpecificOutput"]["additionalContext"])[
+            "thinkweave_task"
+        ]["note"]
+        assert Path(note).is_relative_to(cfg.vault_root / "projects" / "tw_dogfood2")
+
+    def test_missing_session_id_announces_the_dropped_open(
+        self, cfg: Config, monkeypatch, tmp_path
+    ):
         reply = run_hook(monkeypatch, "subagent_start", {"cwd": str(tmp_path)})
-        assert reply == {}
-        assert not (cfg.weave_dir / "buffer").exists()
+        assert "subagent_start" in reply["systemMessage"]
+        assert "session id" in (cfg.weave_dir / "hooks.log").read_text()
 
 
 # ---------------------------------------------------------------------------

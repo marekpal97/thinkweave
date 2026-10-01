@@ -262,6 +262,24 @@ def task_ledger(rows: list[dict]) -> dict[str, dict]:
     return ledger
 
 
+def session_task_rows(cfg, session_key: str) -> list[dict]:
+    """Every task row one session has recorded: archived stream plus live buffer.
+
+    The first Stop of a session archives the live buffer into the session
+    folder, and a background subagent outlives that turn — so the live
+    register alone misses opens recorded before the archive.
+    """
+    from thinkweave.core.vault import VaultManager, find_session_note_by_source
+
+    rows: list[dict] = []
+    note = find_session_note_by_source(VaultManager(config=cfg), session_key)
+    if note is not None:
+        rows = hook_events.task_rows(note.parent / "events.jsonl")
+    return rows + hook_events.task_rows(
+        hook_events.register_path(cfg.weave_dir, session_key)
+    )
+
+
 def pending_open(rows: list[dict], session_ref: dict) -> str:
     """The task id of the unclosed open annotated with this ref, or ``""``."""
     for task_id, entry in task_ledger(rows).items():

@@ -92,22 +92,11 @@ def _cmd_render(args: argparse.Namespace) -> None:
 
 
 def _cmd_ledger(args: argparse.Namespace) -> None:
-    from thinkweave.core.vault import (
-        VaultManager,
-        find_session_note_by_source,
-        parse_frontmatter,
-    )
-    from thinkweave.operations import hook_events, task_seam
+    from thinkweave.core.vault import parse_frontmatter
+    from thinkweave.operations import task_seam
 
     cfg = _load_config()
-    key = _session_key(args)
-    rows = hook_events.task_rows(hook_events.register_path(cfg.weave_dir, key))
-    # A wrap archives the live buffer into the session folder, so the
-    # register alone reads empty for exactly the session being wrapped —
-    # union the archived stream rather than fail open as "no tasks".
-    note = find_session_note_by_source(VaultManager(config=cfg), key)
-    if note is not None and (archived := note.parent / "events.jsonl").exists():
-        rows = rows + hook_events.task_rows(archived)
+    rows = task_seam.session_task_rows(cfg, _session_key(args))
     for task_id, entry in task_seam.task_ledger(rows).items():
         opened = entry["open"] or {}
         item = {
