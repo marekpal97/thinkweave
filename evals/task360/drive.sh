@@ -188,6 +188,7 @@ s['labels'].setdefault('$label', {}).update(harness='$kind', name='$name', pane=
   if ! herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 60000 >/dev/null 2>&1; then
     _answer_trust "$label" || { echo "$label: start failed"; screen "$label" 40; return 1; }
   fi
+  _steady "$label"
   echo "$label: $kind started in workspace $(_get workspace), pane $pane"
 }
 
@@ -249,7 +250,9 @@ prompt() { cat "$HERE/prompts/$1.txt"; }
 # ---------------------------------------------------------------------------
 # Plumbing
 
-_name() { echo "t360-$(tr '[:upper:]' '[:lower:]' <<<"$1")"; }
+_name() {  # the herdr agent name: unique per run, since herdr keeps names after exit
+  echo "t360-$(_get workspace | tr -d :)-$(tr '[:upper:]' '[:lower:]' <<<"$1")" | tr '[:upper:]' '[:lower:]'
+}
 
 _status() { herdr agent get "$1" | jq -r '.result.agent.agent_status // empty'; }
 
@@ -272,6 +275,16 @@ _answer_trust() {  # answer a harness's one-time folder-trust dialog, then wait 
   for ((i = 0; i < downs; i++)); do keys+=(down); done
   herdr agent send-keys "$name" "${keys[@]}" enter >/dev/null
   herdr agent wait "$name" --until idle --timeout 120000 >/dev/null
+}
+
+_steady() {  # wait until the pane stops changing: herdr reports ready while a
+  # harness still initialises, and a prompt pasted then is silently dropped
+  local prev="" cur i
+  for ((i = 0; i < 30; i++)); do
+    cur=$(herdr pane read "$(_get "labels.$1.pane")" --source visible)
+    [ "$cur" = "$prev" ] && return 0
+    prev=$cur; sleep 3
+  done
 }
 
 _shells() {  # count shell commands still running anywhere under process $1
