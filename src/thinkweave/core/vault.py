@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import uuid
 from datetime import date, datetime, timezone
@@ -137,7 +138,110 @@ def read_session_fm(session_md: Path) -> dict | None:
         return None
 
 
-def find_session_note_by_source(vm: VaultManager, session_id: str) -> Path | None:
+# Frontmatter-read budget for the session-folder resolver's fallback scan.
+# A just-created-but-unindexed session folder is among the newest few by
+# trailing date; the same-day tiebreak is a random uuid and the production
+# vault has days with up to 30 folders, so the budget sits above that peak.
+# Bounded because the resolver runs on the FIRST prompt of every session
+# (``_ensure_session``) under the 30s UserPromptSubmit hook timeout: an
+# unbounded ``session.md`` read over every folder measured 7-17s warm and
+# >30s cold on a ~920-folder DrvFs vault (2026-10-03). Latency on that
+# filesystem is syscall count, not bytes.
+SESSION_DIR_SCAN_RECENT = 48
+
+# Per-project folder budget for ``find_session_note_by_source``'s fallback:
+# it only runs when the index misses (DB missing, locked, or the note was
+# just created and not indexed yet), and in that just-created case the note
+# is among the newest — so the common fallback case is a handful of reads.
+_SOURCE_SESSION_SCAN_RECENT = 15
+
+# Session folders are named ``{session_id}-{YYYY-MM-DD}``: the LEADING
+# component is a random uuid, so recency lives in the trailing date.
+_SESSION_DIR_DATE_RE = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
+
+
+def recent_session_dirs(sessions_dir: Path, limit: int) -> list[Path]:
+    """The newest ``limit`` session folders — one readdir, stats only on winners.
+
+    Sorted by the trailing ``-YYYY-MM-DD`` of the folder name (descending),
+    bare name as the same-day tiebreak; names with no date suffix rank
+    oldest. Chosen over st_mtime deliberately: names are durable across
+    restore/copy, mtimes are not. ``is_dir`` is checked lazily on the sorted
+    candidates so a 9P/DrvFs mount pays one stat per returned folder, not
+    one per entry.
+    """
+    try:
+        names = [n for n in os.listdir(sessions_dir) if n != "misc"]
+    except OSError:
+        return []
+
+    def key(name: str) -> tuple[str, str]:
+        m = _SESSION_DIR_DATE_RE.search(name)
+        return (m.group(1) if m else "", name)
+
+    names.sort(key=key, reverse=True)
+    out: list[Path] = []
+    for name in names:
+        if len(out) >= limit:
+            break
+        d = sessions_dir / name
+        if d.is_dir():
+            out.append(d)
+    return out
+
+
+def _index_probe(cfg: Config, sql: str, params: tuple) -> Path | None:
+    """One read-only query against the indexer's ``notes`` table → abs path.
+
+    Returns ``None`` when the index is missing, locked, or the row's file is
+    gone, so callers fall through to their bounded filesystem path. The
+    connection is read-only so a contended write lock (``weave index``
+    running concurrently) never blocks a hook.
+    """
+    try:
+        import sqlite3
+
+        if not cfg.index_db.exists():
+            return None
+        uri = f"file:{cfg.index_db}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=1.0) as db:
+            row = db.execute(sql, params).fetchone()
+        if not (row and row[0]):
+            return None
+        p = Path(row[0])
+        abs_p = p if p.is_absolute() else cfg.vault_root / p
+        return abs_p if abs_p.exists() else None
+    except Exception:
+        return None
+
+
+def indexed_note_path(cfg: Config, note_id: str) -> Path | None:
+    """The indexed file for a note id (``notes.id`` is the primary key)."""
+    if not note_id:
+        return None
+    return _index_probe(cfg, "SELECT path FROM notes WHERE id = ? LIMIT 1", (note_id,))
+
+
+def indexed_session_path(cfg: Config, session_id: str) -> Path | None:
+    """The indexed ``session.md`` whose ``id`` OR ``source_session`` is this id.
+
+    Substring LIKE on the frontmatter blob is safe here: the
+    ``type='session'`` filter is selective and ``source_session`` values are
+    UUIDs, so the match is unambiguous.
+    """
+    if not session_id:
+        return None
+    return _index_probe(
+        cfg,
+        "SELECT path FROM notes WHERE type='session' "
+        "AND (id = ? OR frontmatter LIKE ?) LIMIT 1",
+        (session_id, f'%"source_session": "{session_id}"%'),
+    )
+
+
+def find_session_note_by_source(
+    vm: VaultManager, session_id: str, project: str = ""
+) -> Path | None:
     """Find the session note stamped with ``source_session: <session_id>``.
 
     The exact-identity resolver for a harness session id (a Claude Code
@@ -153,15 +257,17 @@ def find_session_note_by_source(vm: VaultManager, session_id: str) -> Path | Non
     UUIDs, so the match is unambiguous. The connection is read-only so a
     contended write lock (``weave index`` running concurrently) never blocks.
 
-    Slow path: a bounded, sessions-only glob —
-    ``projects/*/sessions/*/session.md`` — never a vault-wide walk.
-    Candidates are checked newest-first with a hard cap: this path is only
-    reached when the index DB is missing, locked, or stale (session note was
-    just created and hasn't been indexed yet), and in that just-created case
-    the note we want is the most recently modified one, so the common case is
-    a single frontmatter read. A miss under the cap means "not found" —
-    creation dedupes on ``source_session``, so the worst case is a rare
-    duplicate session note, not data loss.
+    Slow path: the newest ``_SOURCE_SESSION_SCAN_RECENT`` folders of each
+    project's ``sessions/`` dir by trailing folder date (one readdir per
+    project, no stats) — never a vault-wide walk. This path is only reached
+    when the index DB is missing, locked, or stale (session note was just
+    created and hasn't been indexed yet), and in that just-created case the
+    note we want is among the newest, so the common case is a handful of
+    frontmatter reads. A miss under the cap means "not found" — creation
+    dedupes on ``source_session``, so the worst case is a rare duplicate
+    session note, not data loss. ``project`` (already normalized) narrows the
+    fallback to that project's ``sessions/`` dir — the hooks know it from the
+    cwd, and a session's note never lives under another project.
 
     Measured 16s for the fallback this replaced (``vm.list_notes(
     note_type=SESSION, limit=20)``) on a ~1k-note vault over WSL2's 9P
@@ -176,40 +282,26 @@ def find_session_note_by_source(vm: VaultManager, session_id: str) -> Path | Non
     if not session_id:
         return None
 
-    try:
-        import sqlite3
+    hit = indexed_session_path(vm.config, session_id)
+    if hit is not None:
+        return hit
 
-        cfg = vm.config
-        if cfg.index_db.exists():
-            uri = f"file:{cfg.index_db}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=1.0) as db:
-                row = db.execute(
-                    "SELECT path FROM notes "
-                    "WHERE type='session' AND frontmatter LIKE ? "
-                    "LIMIT 1",
-                    (f'%"source_session": "{session_id}"%',),
-                ).fetchone()
-                if row and row[0]:
-                    p = Path(row[0])
-                    abs_p = p if p.is_absolute() else vm.root / p
-                    if abs_p.exists():
-                        return abs_p
-    except Exception:
-        # Fall through to the bounded glob on any DB issue.
-        pass
-
-    try:
-        candidates = sorted(
-            vm.root.glob("projects/*/sessions/*/session.md"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return None
-    for note_path in candidates[:15]:
-        fm = read_session_fm(note_path)
-        if fm and fm.get("source_session") == session_id:
-            return note_path
+    # Newest folders per project by trailing date — one readdir per project,
+    # no stat on the losers. The st_mtime sort this replaces stat-ed every
+    # session folder before truncating (measured 8.8s over ~1500 folders on
+    # a DrvFs vault, 2026-10-03) and ran on the FIRST prompt of every session.
+    if project:
+        session_roots = [vm.root / "projects" / project / "sessions"]
+    else:
+        try:
+            session_roots = list(vm.root.glob("projects/*/sessions"))
+        except OSError:
+            return None
+    for sessions_dir in session_roots:
+        for d in recent_session_dirs(sessions_dir, _SOURCE_SESSION_SCAN_RECENT):
+            fm = read_session_fm(d / "session.md")
+            if fm and fm.get("source_session") == session_id:
+                return d / "session.md"
     return None
 
 
@@ -587,29 +679,46 @@ class VaultManager:
     def _find_session_dir(self, project: str, session_id: str) -> Path:
         """Find or create a session folder by session note ID or source_session UUID.
 
-        Searches by folder name prefix first, then falls back to checking
-        session.md's ``source_session`` and ``id``: a folder the hooks named
-        after the harness UUID is still found by its ``ses-`` note id. If no match is found,
-        creates the folder eagerly so notes created mid-session land in
-        the right place before the session note is written at wrap time.
+        Resolution order, each step cheaper than a full folder scan:
+
+        1. Folder-name prefix — one readdir, no stat on non-matching names.
+           Hook-created folders are named after the harness UUID.
+        2. The SQLite index — a session note whose ``id`` or
+           ``source_session`` is this id (``indexed_session_path``). This is
+           how a ``ses-`` note id resolves the UUID-named folder the hooks
+           created, without opening any file.
+        3. A bounded frontmatter read over the newest
+           ``SESSION_DIR_SCAN_RECENT`` folders — the index can be missing,
+           locked, or stale (note just created, not indexed yet), and in
+           that case the folder we want is among the newest.
+
+        No match → create the folder eagerly so notes created mid-session
+        land in the right place before the session note is written at wrap
+        time. A miss under the budget creates a duplicate folder in the
+        worst case, never data loss; the unbounded scan this replaces blew
+        the UserPromptSubmit hook timeout on a DrvFs vault.
         """
         sessions_dir = self.root / "projects" / project / "sessions"
         if sessions_dir.exists():
-            for d in sessions_dir.iterdir():
-                if not d.is_dir() or d.name == "misc":
+            try:
+                names = os.listdir(sessions_dir)
+            except OSError:
+                names = []
+            for name in sorted(names):
+                if name == "misc" or not name.startswith(session_id):
                     continue
-                # Direct prefix match (works for both ses-xxxx and UUID folder names)
-                if d.name.startswith(session_id):
+                d = sessions_dir / name
+                if d.is_dir():
                     return d
-                # Check source_session in session.md frontmatter
-                sm = d / "session.md"
-                if sm.exists():
-                    try:
-                        fm, _ = parse_frontmatter(sm.read_text(encoding="utf-8"))
-                        if session_id in (fm.get("source_session"), fm.get("id")):
-                            return d
-                    except Exception:
-                        continue
+
+            hit = indexed_session_path(self.config, session_id)
+            if hit is not None and hit.parent.parent == sessions_dir:
+                return hit.parent
+
+            for d in recent_session_dirs(sessions_dir, SESSION_DIR_SCAN_RECENT):
+                fm = read_session_fm(d / "session.md")
+                if fm and session_id in (fm.get("source_session"), fm.get("id")):
+                    return d
         # Create eagerly — session.md will be added at wrap/stop time
         today = date.today().isoformat()
         session_dir = sessions_dir / f"{session_id}-{today}"

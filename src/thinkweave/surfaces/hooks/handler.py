@@ -565,7 +565,7 @@ def _prompt_time_enrichment(
         return None
 
 
-def _find_session_note(vm, session_id: str) -> Path | None:
+def _find_session_note(vm, session_id: str, project: str = "") -> Path | None:
     """Find an existing session note for this Claude Code session.
 
     Thin delegation: the resolver lives in ``core.vault`` because
@@ -574,7 +574,7 @@ def _find_session_note(vm, session_id: str) -> Path | None:
     """
     from thinkweave.core.vault import find_session_note_by_source
 
-    return find_session_note_by_source(vm, session_id)
+    return find_session_note_by_source(vm, session_id, project)
 
 
 # Bytes scanned at each end of the transcript for the bridge-session row.
@@ -651,36 +651,16 @@ def _read_session_fm(session_md: Path) -> dict | None:
     return read_session_fm(session_md)
 
 
-# Session folders are named ``{session_id}-{YYYY-MM-DD}`` (core/vault.py
-# ``_session_dir``): the LEADING component is a random uuid, so a bare name
-# sort orders by coin flip (review round 2 measured 4/40 overlap with true
-# recency on the production vault). Recency lives in the trailing date.
-_DIR_DATE_RE = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
-
-
 def _recent_session_dirs(sessions_dir: Path, limit: int) -> list[Path]:
-    """The newest ``limit`` session folders — one readdir, no stats.
+    """The newest ``limit`` session folders by trailing date.
 
-    Sorted by the trailing ``-YYYY-MM-DD`` of the folder name (descending),
-    bare name as the same-day tiebreak; folders with no date suffix rank
-    oldest. Chosen over st_mtime deliberately: names are durable across
-    restore/copy, mtimes are not.
+    Thin delegate over :func:`core.vault.recent_session_dirs` — the same
+    bounded scan ``VaultManager._find_session_dir`` uses, so SessionStart
+    and the first-prompt session resolver share one recency story.
     """
-    try:
-        entries = [
-            e
-            for e in os.scandir(sessions_dir)
-            if e.is_dir() and e.name != "misc"
-        ]
-    except OSError:
-        return []
+    from thinkweave.core.vault import recent_session_dirs
 
-    def key(e) -> tuple[str, str]:
-        m = _DIR_DATE_RE.search(e.name)
-        return (m.group(1) if m else "", e.name)
-
-    entries.sort(key=key, reverse=True)
-    return [Path(e.path) for e in entries[:limit]]
+    return recent_session_dirs(sessions_dir, limit)
 
 
 def _jsonl_events(path: Path):
@@ -790,10 +770,13 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
 
-    if _find_session_note(vm, session_id):
+    # Project first: it narrows the resolver's fallback scan to this
+    # project's sessions dir (the first prompt of every session lands here,
+    # under the 30s UserPromptSubmit timeout).
+    project = _detect_project(hook_input)
+    if _find_session_note(vm, session_id, project):
         return
 
-    project = _detect_project(hook_input)
     extra_fm: dict = {"source_session": session_id}
     # #180: stamp the compaction-segment chain key so the wrap verdict
     # join can resolve sibling segments of the same logical session.

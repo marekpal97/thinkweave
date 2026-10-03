@@ -770,3 +770,96 @@ class TestSeedVaultTemplates:
         # (retired 2026-06-13) — they must no longer be seeded.
         for gone in ("news_feeds.yaml", "podcast_events_feeds.yaml", "podcast_concepts_feeds.yaml"):
             assert not (config_dir / gone).exists(), f"{gone} should not be seeded"
+
+
+class TestSessionDirResolutionBudget:
+    """``_find_session_dir`` runs on the FIRST prompt of every session under the
+    30s UserPromptSubmit hook timeout. It must resolve through the index and
+    never read more than ``SESSION_DIR_SCAN_RECENT`` frontmatters — the
+    unbounded scan it replaces blew the timeout on a ~920-folder DrvFs vault."""
+
+    @pytest.fixture
+    def vault(self, tmp_path):
+        cfg = Config(vault_root=tmp_path / "vault", default_project="proj")
+        v = VaultManager(config=cfg)
+        v.ensure_dirs()
+        return v
+
+    @staticmethod
+    def _flood(vault: VaultManager, count: int, day: str) -> None:
+        """``count`` newer session folders, each with a non-matching session.md."""
+        sessions = vault.root / "projects" / "proj" / "sessions"
+        for i in range(count):
+            d = sessions / f"{i:08x}-filler-{day}"
+            d.mkdir(parents=True)
+            (d / "session.md").write_text(
+                render_frontmatter({"type": "session", "id": f"ses-{i:08x}",
+                                    "source_session": f"other-{i}"}),
+                encoding="utf-8",
+            )
+
+    @staticmethod
+    def _count_fm_reads(monkeypatch) -> list[Path]:
+        import thinkweave.core.vault as vault_mod
+
+        seen: list[Path] = []
+        real = vault_mod.read_session_fm
+
+        def counting(p: Path):
+            seen.append(p)
+            return real(p)
+
+        monkeypatch.setattr(vault_mod, "read_session_fm", counting)
+        return seen
+
+    def test_ses_id_resolves_through_index_without_reading_frontmatter(
+        self, vault: VaultManager, monkeypatch
+    ):
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.vault import SESSION_DIR_SCAN_RECENT
+
+        session_path = vault.create_note(
+            NoteType.SESSION, "Old Session", project="proj",
+            extra_frontmatter={"source_session": "harness-uuid-old"},
+        )
+        # Rename the folder's date far into the past so the flood outranks it.
+        old_dir = session_path.parent.with_name(
+            session_path.parent.name.rsplit("-", 3)[0] + "-2020-01-01"
+        )
+        session_path.parent.rename(old_dir)
+        idx = Indexer(config=vault.config)
+        idx.index_file(old_dir / "session.md")
+        idx.close()
+        fm, _ = parse_frontmatter((old_dir / "session.md").read_text(encoding="utf-8"))
+        self._flood(vault, SESSION_DIR_SCAN_RECENT + 20, "2030-01-01")
+
+        reads = self._count_fm_reads(monkeypatch)
+        # Neither the ses- id nor the harness uuid is a folder-name prefix:
+        # both resolve only through the index.
+        assert vault._find_session_dir("proj", fm["id"]) == old_dir
+        assert vault._find_session_dir("proj", "harness-uuid-old") == old_dir
+        assert reads == []
+
+    def test_fallback_scan_is_bounded(self, vault: VaultManager, monkeypatch):
+        from thinkweave.core.vault import SESSION_DIR_SCAN_RECENT
+
+        self._flood(vault, SESSION_DIR_SCAN_RECENT + 20, "2030-01-01")
+        assert not vault.config.index_db.exists()
+
+        reads = self._count_fm_reads(monkeypatch)
+        created = vault._find_session_dir("proj", "brand-new-uuid")
+        assert created.name.startswith("brand-new-uuid-")
+        assert created.is_dir()
+        assert len(reads) == SESSION_DIR_SCAN_RECENT
+
+    def test_recent_session_dirs_orders_by_trailing_date(self, vault: VaultManager):
+        from thinkweave.core.vault import recent_session_dirs
+
+        sessions = vault.root / "projects" / "proj" / "sessions"
+        for name in ("zzz-2026-01-01", "aaa-2026-03-01", "mmm-2026-02-01", "nodate"):
+            (sessions / name).mkdir(parents=True)
+        (sessions / "misc").mkdir()
+        (sessions / "stray.md").write_text("", encoding="utf-8")
+        got = [p.name for p in recent_session_dirs(sessions, 3)]
+        assert got == ["aaa-2026-03-01", "mmm-2026-02-01", "zzz-2026-01-01"]
+        assert [p.name for p in recent_session_dirs(sessions, 10)][-1] == "nodate"

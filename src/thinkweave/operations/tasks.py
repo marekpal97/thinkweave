@@ -47,6 +47,7 @@ from thinkweave.core.task_contract import (
 from thinkweave.core.vault import (
     VaultManager,
     find_session_note_by_source,
+    indexed_note_path,
     parse_frontmatter,
     render_frontmatter,
 )
@@ -179,7 +180,27 @@ class Task:
         self.path.write_text(
             render_frontmatter(fm) + "\n\n" + body, encoding="utf-8", newline="\n"
         )
+        _index_now(vm, self.path)
         return warnings
+
+
+def _index_now(vm: VaultManager, path: Path) -> None:
+    """Index one just-written note so id lookups resolve without a walk.
+
+    Best-effort: a locked or missing index never fails the write — the
+    markdown is the truth, the index is derived and the next ``weave index``
+    pass catches up.
+    """
+    try:
+        from thinkweave.core.indexer import Indexer
+
+        idx = Indexer(config=vm.config)
+        try:
+            idx.index_file(path)
+        finally:
+            idx.close()
+    except Exception:
+        pass
 
 
 class TaskStore:
@@ -191,15 +212,27 @@ class TaskStore:
     def get(self, task_id: str) -> Task | None:
         """The task note filed under this id.
 
-        ponytail: one exact-name rglob over the vault per lookup; the
-        upgrade path is the SQLite index once task notes index at write.
+        Index first: ``Task.save`` indexes at write, so ``notes.id`` resolves
+        the path in one query. The fallback is a glob bounded to the folders
+        task notes are ever filed in (``projects/*/sessions/*/``), never a
+        vault-wide ``rglob`` — a miss on that walk measured 29s on a DrvFs
+        vault (2026-10-03), which is the UserPromptSubmit hook timeout when a
+        dispatched prompt names an id.
         """
-        path = next(self.cfg.vault_root.rglob(f"{task_id}.md"), None) if task_id else None
+        if not task_id:
+            return None
+        path = indexed_note_path(self.cfg, task_id) or next(
+            self._filed(f"{task_id}.md"), None
+        )
         return Task.load(path) if path else None
+
+    def _filed(self, pattern: str):
+        """Task-note files matching ``pattern`` in every filing folder."""
+        return self.cfg.vault_root.glob(f"projects/*/sessions/*/{pattern}")
 
     def open_by_ref(self, asked: str) -> Task | None:
         """The open work-grain task whose ``asked`` is this tracker ref."""
-        for path in self.cfg.vault_root.rglob("tsk-*.md"):
+        for path in self._filed("tsk-*.md"):
             fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
             if fm.get("asked") == asked and accepts_round(fm, "session"):
                 return Task(fm, path)

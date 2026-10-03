@@ -474,3 +474,45 @@ class TestHarnessTier:
         assert tiers["codex"] == "boundary"
         assert tiers["pi"] == "task-id-only"
         assert tiers["opencode"] == "task-id-only"
+
+
+class TestTaskStoreLookup:
+    """``TaskStore.get`` runs inside UserPromptSubmit when a dispatched prompt
+    names a task id. It resolves through the index that ``Task.save`` writes,
+    and its fallback is bounded to the task filing folders — never a
+    vault-wide walk (a miss on that measured 29s on a DrvFs vault)."""
+
+    def test_saved_task_resolves_through_the_index(self, cfg: Config, monkeypatch):
+        dispatch = tasks.open_child(
+            cfg, session_key="s-1", project="proj", title="count beans"
+        )
+        assert cfg.index_db.exists()
+
+        def no_walk(self, *a, **k):
+            raise AssertionError("TaskStore.get must not glob the vault")
+
+        monkeypatch.setattr(Path, "glob", no_walk)
+        monkeypatch.setattr(Path, "rglob", no_walk)
+        task = TaskStore(cfg).get(dispatch.task_id)
+        assert task is not None and task.id == dispatch.task_id
+
+    def test_unindexed_task_falls_back_to_the_filing_folders(
+        self, cfg: Config, monkeypatch
+    ):
+        dispatch = tasks.open_child(
+            cfg, session_key="s-1", project="proj", title="count beans"
+        )
+        cfg.index_db.unlink()
+        monkeypatch.setattr(
+            Path, "rglob", lambda *a, **k: pytest.fail("vault-wide rglob")
+        )
+        task = TaskStore(cfg).get(dispatch.task_id)
+        assert task is not None and task.id == dispatch.task_id
+
+    def test_miss_never_walks_outside_the_filing_folders(self, cfg: Config):
+        # A note outside projects/*/sessions/*/ is not a task filing location.
+        stray = cfg.vault_root / "sources" / "tsk-deadbeef.md"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_text("---\nid: tsk-deadbeef\n---\n", encoding="utf-8")
+        assert TaskStore(cfg).get("tsk-deadbeef") is None
+        assert TaskStore(cfg).get("") is None
