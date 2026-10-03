@@ -30,6 +30,17 @@
     ],
     "red_min_diff_lines": 800
   },
+  "dispatch": {
+    "implementer": {
+      "transport": "agent-tool"
+    },
+    "judge": {
+      "transport": "agent-tool"
+    },
+    "simplify": {
+      "transport": "agent-tool"
+    }
+  },
   "gates": [
     {
       "id": "diff-guard",
@@ -62,7 +73,9 @@
       "rerun": [
         "tests"
       ],
-      "revert_note": "\u26a0 simplify-reverted"
+      "revert_note": "\u26a0 simplify-reverted",
+      "min_diff_lines": 0
     }
-  ]
+  ],
+  "tier": "base"
 }
