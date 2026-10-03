@@ -46,40 +46,48 @@ def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
 
 
 def migrate_task_notes_to_ledger(config: Config) -> int:
-    """Bring ``kind: task`` notes to the ledger shape (2026-10 redesign).
+    """Bring ``kind: task`` notes to the ledger shape.
 
     Work-grain rounds without a ``route`` gain one (``devloop`` when the
     round nests a devloop trace, else ``session``), ``asked`` takes its
-    normalized tracker ref, and the body is re-rendered from the rounds.
-    Idempotent. Returns the count of notes rewritten.
+    normalized tracker ref, the unwritten ``outcome`` field goes, and the
+    body is re-rendered from the rounds. Idempotent. Returns the count of
+    notes rewritten.
     """
-    from thinkweave.core.task_contract import DEVLOOP_TRACE_KEYS, normalize_tracker_ref
-    from thinkweave.operations.task_seam import current_repo, render_ledger_body
+    from dataclasses import replace
+
+    from thinkweave.core.task_contract import normalize_tracker_ref
+    from thinkweave.operations.tasks import Task, current_repo
 
     repo = current_repo()
     vm = VaultManager(config)
     changed = 0
     for path in config.vault_root.rglob("tsk-*.md"):
-        fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        before = path.read_text(encoding="utf-8")
+        fm, _ = parse_frontmatter(before)
         if fm.get("kind") != "task":
             continue
-        rounds = [dict(r) for r in fm.get("rounds") or []]
-        if fm.get("grain") == "work":
-            for entry in rounds:
-                if "route" not in entry:
-                    traced = DEVLOOP_TRACE_KEYS & entry.keys()
-                    entry["route"] = "devloop" if traced else "session"
-        updates: dict = {"rounds": rounds}
-        if "outcome" in fm:
-            updates["outcome"] = None
+        fm.pop("outcome", None)
+        task = Task(fm, path)
+        if task.grain == "work":
+            task.rounds = [
+                r if r.route else replace(r, route=_legacy_route(r))
+                for r in task.rounds
+            ]
         if fm.get("asked"):
-            updates["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
-        new_body = render_ledger_body(config, {**fm, **updates})
-        if updates == {k: fm.get(k) for k in updates} and body.strip() == new_body.strip():
-            continue
-        vm.update_note(path, frontmatter_updates=updates, body=new_body)
-        changed += 1
+            task.frontmatter["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
+        task.save(vm)
+        changed += path.read_text(encoding="utf-8") != before
     return changed
+
+
+def _legacy_route(entry) -> str:
+    """A route-less work-grain round's route: ``devloop`` when it nests a
+    devloop trace, else ``session``."""
+    from thinkweave.core.task_contract import DEVLOOP_TRACE_KEYS
+
+    traced = any(getattr(entry, key) is not None for key in DEVLOOP_TRACE_KEYS)
+    return "devloop" if traced else "session"
 
 
 def migrate_todo_research_to_queue(vault_root: Path) -> int:

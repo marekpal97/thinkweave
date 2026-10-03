@@ -1,14 +1,13 @@
-"""``weave task`` — the dispatch seam's CLI verbs (the headless route).
+"""``weave task`` — the task routes' CLI verbs (the headless route).
 
-Five actions over :mod:`thinkweave.operations.task_seam`:
+Five actions over :mod:`thinkweave.operations.tasks`:
 
-- ``weave task open`` — mint a task at a dispatch boundary: stub note plus
-  a ``task_open`` row in the events register. Prints the minted task id.
-- ``weave task close <task-id>`` — record the boundary close, compile the
-  performer's envelope rows into the stub's ``rounds[]``, and digest the
-  transcript of the session a prompt bound to the task. Envelope rows
-  that fail the schema are reported on stderr and the exit code is 1; the
-  close row is recorded either way.
+- ``weave task open`` — mint a child task at a dispatch boundary. Prints
+  the minted task id.
+- ``weave task close <task-id>`` — close it: the performer's envelope rows
+  and the digest of the session a prompt bound to it become its round.
+  Envelope rows that fail the schema are reported on stderr and the exit
+  code is 1; the close row is recorded either way.
 - ``weave task render <task-id>`` — re-emit the dispatch descriptor JSON.
 - ``weave task ledger`` — list one session's task boundaries as JSON. The
   hooks mint seam children silently, so this is how the wrap declaration
@@ -29,8 +28,7 @@ import sys
 
 def _load_config():
     # Late-bound so a test's patched ``core.config.load_config`` (temp
-    # vault) governs the verbs — an import-time binding here once let a
-    # test write into the live vault.
+    # vault) governs the verbs and never the live vault.
     from thinkweave.core.config import load_config
 
     return load_config()
@@ -63,9 +61,9 @@ def _session_key(args: argparse.Namespace) -> str:
 
 
 def _cmd_open(args: argparse.Namespace) -> None:
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
-    dispatch = task_seam.open_task(
+    dispatch = tasks.open_child(
         _load_config(),
         session_key=_session_key(args),
         project=args.project,
@@ -78,11 +76,15 @@ def _cmd_open(args: argparse.Namespace) -> None:
 
 
 def _cmd_close(args: argparse.Namespace) -> None:
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
-    result = task_seam.close_task(
-        _load_config(), args.task_id, session_key=_session_key(args)
-    )
+    try:
+        result = tasks.close_child(
+            _load_config(), args.task_id, session_key=_session_key(args)
+        )
+    except ValueError as exc:
+        print(f"close: {exc}", file=sys.stderr)
+        sys.exit(2)
     for error in result.errors:
         print(error, file=sys.stderr)
     for gap in result.gaps:
@@ -96,44 +98,28 @@ def _cmd_close(args: argparse.Namespace) -> None:
 
 
 def _cmd_render(args: argparse.Namespace) -> None:
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
-    dispatch = task_seam.render_descriptor(_load_config(), args.task_id)
+    dispatch = tasks.dispatch_descriptor(_load_config(), args.task_id)
     print(json.dumps(dispatch.to_dict(), indent=2))
 
 
 def _cmd_ledger(args: argparse.Namespace) -> None:
-    from thinkweave.core.vault import parse_frontmatter
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
-    cfg = _load_config()
-    rows = task_seam.session_task_rows(cfg, _session_key(args))
-    for task_id, entry in task_seam.task_ledger(rows).items():
-        opened = entry["open"] or {}
-        item = {
-            "task_id": task_id,
-            "grain": str(opened.get("grain", "")),
-            "opened": str(opened.get("ts", "")),
-            "closed": bool(entry["close"]),
-        }
-        stub = task_seam.find_stub(cfg, task_id)
-        if stub is not None:
-            fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
-            item["title"] = str(fm.get("title", ""))
-            item["status"] = str(fm.get("status", ""))
-            if fm.get("parent"):
-                item["parent"] = str(fm["parent"])
-        print(json.dumps(item))
+    register = tasks.Register(_load_config(), _session_key(args))
+    for entry in register.listing():
+        print(json.dumps(entry.to_dict()))
 
 
 def _cmd_record_run(args: argparse.Namespace) -> None:
     from pathlib import Path
 
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
     try:
         payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
-        task_id = task_seam.record_devloop_run(
+        landed = tasks.record_run(
             _load_config(),
             payload,
             project=args.project,
@@ -143,4 +129,6 @@ def _cmd_record_run(args: argparse.Namespace) -> None:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"record-run: {exc}", file=sys.stderr)
         sys.exit(2)
-    print(task_id)
+    for warning in landed.warnings:
+        print(f"record-run: {warning}", file=sys.stderr)
+    print(landed.task_id)

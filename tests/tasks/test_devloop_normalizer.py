@@ -16,7 +16,9 @@ from thinkweave.core.task_contract import (
     validate_task_note,
 )
 from thinkweave.core.vault import parse_frontmatter
-from thinkweave.operations import task_seam
+from thinkweave.core.buffer import buffer_path
+from thinkweave.operations import tasks
+from thinkweave.operations.tasks import TaskStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TASK_ID = "tsk-217aaaaa"
@@ -34,12 +36,16 @@ def work_note(entry: Round) -> dict:
     }
 
 
+def note_fm(cfg, task_id: str) -> dict:
+    task = TaskStore(cfg).get(task_id)
+    assert task is not None and task.path is not None
+    return parse_frontmatter(task.path.read_text(encoding="utf-8"))[0]
+
+
 def recorded(cfg, name: str, **kwargs) -> dict:
     """Record one run through the route; returns its task note frontmatter."""
-    task_id = task_seam.record_devloop_run(cfg, payload(name), project="t", **kwargs)
-    return parse_frontmatter(
-        task_seam.find_stub(cfg, task_id).read_text(encoding="utf-8")
-    )[0]
+    landed = tasks.record_run(cfg, payload(name), project="t", **kwargs)
+    return note_fm(cfg, landed.task_id)
 
 
 @pytest.fixture()
@@ -165,7 +171,7 @@ class TestRefusals:
 
     def test_a_refused_payload_writes_nothing(self, cfg):
         with pytest.raises(ValueError):
-            task_seam.record_devloop_run(cfg, {"title": "x"}, project="t")
+            tasks.record_run(cfg, {"title": "x"}, project="t")
         assert not list(cfg.vault_root.rglob("tsk-*.md"))
 
 
@@ -195,12 +201,10 @@ class TestLedgerRoute:
         assert "outputs" not in thin
 
     def test_a_run_and_a_later_wrap_on_the_same_ref_build_one_task(self, cfg):
-        from thinkweave.operations import hook_events
-
-        run = task_seam.record_devloop_run(
+        run = tasks.record_run(
             cfg, payload("devloop-run-rich.json"), project="t",
             trajectory="n-7a7a7a7a",
-        )
+        ).task_id
         decl = {
             "declared": [
                 {
@@ -210,26 +214,23 @@ class TestLedgerRoute:
                 }
             ]
         }
-        result = task_seam.reconcile_tasks(
+        result = tasks.apply_declaration(
             cfg, decl, session_key="s-9", project="t",
-            streams=[hook_events.register_path(cfg.weave_dir, "s-9")],
+            streams=[buffer_path(cfg.weave_dir, "s-9")],
         )
         assert result.minted == [] and result.appended == [run]
-        tasks = list(cfg.vault_root.rglob("tsk-*.md"))
-        assert len(tasks) == 1
-        fm, _ = parse_frontmatter(tasks[0].read_text(encoding="utf-8"))
+        notes = list(cfg.vault_root.rglob("tsk-*.md"))
+        assert len(notes) == 1
+        fm, _ = parse_frontmatter(notes[0].read_text(encoding="utf-8"))
         assert validate_task_note(fm) == []
         assert [r.get("route") for r in fm["rounds"]] == ["devloop", "session"]
 
     def test_rerecording_a_run_replaces_its_round(self, cfg):
         args = (cfg, payload("devloop-run-rich.json"))
-        first = task_seam.record_devloop_run(*args, project="t", trajectory="n-7a7a7a7a")
-        again = task_seam.record_devloop_run(*args, project="t", trajectory="n-7a7a7a7a")
-        assert first == again
-        fm, _ = parse_frontmatter(
-            task_seam.find_stub(cfg, first).read_text(encoding="utf-8")
-        )
-        assert len(fm["rounds"]) == 1
+        first = tasks.record_run(*args, project="t", trajectory="n-7a7a7a7a")
+        again = tasks.record_run(*args, project="t", trajectory="n-7a7a7a7a")
+        assert first.task_id == again.task_id
+        assert len(note_fm(cfg, first.task_id)["rounds"]) == 1
 
     def test_the_cli_records_a_run_from_its_payload_file(self, cfg, capsys):
         from thinkweave.surfaces.cli.parser import build_parser
@@ -241,4 +242,35 @@ class TestLedgerRoute:
         ])
         cmd_task(args)
         task_id = capsys.readouterr().out.strip()
-        assert task_seam.find_stub(cfg, task_id) is not None
+        assert TaskStore(cfg).get(task_id) is not None
+
+    def test_a_run_with_no_session_writes_no_register_row(self, cfg):
+        landed = tasks.record_run(cfg, payload("devloop-run-rich.json"), project="t")
+        assert not list(cfg.weave_dir.rglob("*.jsonl"))
+        _, body = parse_frontmatter(
+            TaskStore(cfg).get(landed.task_id).path.read_text(encoding="utf-8")
+        )
+        assert body.startswith("## Rounds") and "- devloop" in body
+
+    def test_a_run_with_a_session_records_its_open_there(self, cfg):
+        from thinkweave.operations.tasks import Register
+
+        landed = tasks.record_run(
+            cfg, payload("devloop-run-rich.json"), project="t", session_key="s-loop"
+        )
+        rows = Register(cfg, "s-loop", [buffer_path(cfg.weave_dir, "s-loop")]).rows()
+        assert [(r["type"], r["task_id"]) for r in rows] == [("task_open", landed.task_id)]
+
+    def test_an_unresolvable_bare_issue_ref_is_announced(
+        self, cfg, tmp_path, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.cli.parser import build_parser
+        from thinkweave.surfaces.cli.task import cmd_task
+
+        monkeypatch.chdir(tmp_path)  # no git remote to resolve "#218" against
+        cmd_task(build_parser().parse_args([
+            "task", "record-run", str(FIXTURES / "devloop-run-thin.json"), "--project", "t",
+        ]))
+        out = capsys.readouterr()
+        assert "#218" in out.err and "kept bare" in out.err
+        assert note_fm(cfg, out.out.strip())["asked"] == "#218"

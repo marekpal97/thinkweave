@@ -325,23 +325,18 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
 
 
 def _handle_subagent_start(hook_input: dict) -> None:
-    """SubagentStart: mint the task at the dispatch boundary.
+    """SubagentStart: mint the child task at the dispatch boundary.
 
-    The stub note and the ``task_open`` register row are written by the
-    seam (``operations.task_seam``); the minted task id rides back to the
-    subagent inside the dispatch descriptor via ``additionalContext``, and
-    names the envelope return file the performer appends to. The agent id
-    is recorded only as a qualified ``session_ref`` triple — never a join
-    key, never a filename.
+    The minted task id rides back to the subagent inside the dispatch
+    descriptor via ``additionalContext``; the agent id is recorded only as
+    a qualified session ref — never a join key, never a filename.
     """
     from thinkweave.core.config import load_config
-    from thinkweave.core.task_contract import SessionRef
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
     cfg = load_config()
     session_id = _subagent_session_id(hook_input)
     _ensure_session(cfg, session_id, hook_input)
-    harness = _hook_harness() or "claude-code"
     agent_id = str(hook_input.get("agent_id", ""))
     if not agent_id:
         _log_info(
@@ -349,14 +344,13 @@ def _handle_subagent_start(hook_input: dict) -> None:
             "payload carries no agent_id; the task opens without an agent "
             "ref and its SubagentStop cannot pair",
         )
-    ref = SessionRef.agent(harness, agent_id) if agent_id else None
-    dispatch = task_seam.open_task(
+    dispatch = tasks.open_child(
         cfg,
         session_key=session_id,
         project=_detect_project(hook_input),
         role=str(hook_input.get("agent_type", "")),
-        harness=harness,
-        session_ref=ref,
+        harness=_hook_harness() or "claude-code",
+        agent_id=agent_id,
     )
     _output(
         additional_context=json.dumps({"thinkweave_task": dispatch.to_dict()}),
@@ -365,58 +359,36 @@ def _handle_subagent_start(hook_input: dict) -> None:
 
 
 def _handle_subagent_stop(hook_input: dict) -> None:
-    """SubagentStop: record the boundary close, flag the unpairable.
+    """SubagentStop: close the child the stop ends, or record the unpairable.
 
-    The matching open is resolved from the session's register by the
-    qualified agent ref; the close row itself correlates by task id alone.
-    A stop with no unclosed open is recorded as an orphan row — wrap
-    reconciles, this hook only detects. One exception: Claude Code fires
-    SubagentStop twice per subagent (observed live 2026-09-28), so a stop
-    whose ref matches a task this register already closed is the duplicate
-    delivery — skipped with a hooks-log line, never an orphan row, so real
-    orphans stay legible.
+    The hook only detects; ``tasks.stop_child`` pairs the stop with the
+    session's register, and wrap reconciles what stays unpaired.
     """
     from thinkweave.core.config import load_config
-    from thinkweave.core.task_contract import SessionRef
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
     cfg = load_config()
-    session_id = _subagent_session_id(hook_input)
-    harness = _hook_harness() or "claude-code"
     agent_id = str(hook_input.get("agent_id", ""))
-    ref = SessionRef.agent(harness, agent_id) if agent_id else None
-    rows = task_seam.session_task_rows(cfg, session_id)
-    task_id = task_seam.pending_open(rows, ref) if ref else ""
-    duplicate_of = task_seam.closed_task(rows, ref) if ref and not task_id else ""
-    if task_id:
-        closed = task_seam.close_task(
-            cfg, task_id, session_key=session_id, session_ref=ref,
-            transcript=_agent_transcript(hook_input),
+    source = tasks.TranscriptSource.agent_file(
+        _hook_harness() or "claude-code",
+        agent_id,
+        agent_transcript=str(hook_input.get("agent_transcript_path") or ""),
+        parent_transcript=str(hook_input.get("transcript_path") or ""),
+    )
+    stop = tasks.stop_child(
+        cfg, session_key=_subagent_session_id(hook_input), source=source
+    )
+    if stop.closed and stop.closed.gaps:
+        _log_info(
+            "subagent_stop", f"{stop.task_id} digest gaps: {'; '.join(stop.closed.gaps)}"
         )
-        if closed.gaps:
-            _log_info("subagent_stop", f"{task_id} digest gaps: {'; '.join(closed.gaps)}")
-    elif duplicate_of:
+    elif stop.kind == "duplicate":
         _log_info(
             "subagent_stop",
-            f"duplicate SubagentStop for closed task {duplicate_of} "
+            f"duplicate SubagentStop for closed task {stop.task_id} "
             f"(agent {agent_id}); skipped",
         )
-    else:
-        task_seam.record_orphan_stop(
-            cfg, session_key=session_id, session_ref=ref
-        )
     _output()
-
-
-def _agent_transcript(hook_input: dict) -> Path | None:
-    """The stopping subagent's transcript: the payload's own path, else the
-    ``subagents/agent-<id>.jsonl`` file beside the parent's transcript."""
-    if hook_input.get("agent_transcript_path"):
-        return Path(hook_input["agent_transcript_path"])
-    parent, agent_id = hook_input.get("transcript_path"), hook_input.get("agent_id")
-    if not parent or not agent_id:
-        return None
-    return Path(parent).with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl"
 
 
 def _subagent_session_id(hook_input: dict) -> str:
@@ -514,18 +486,20 @@ def _bind_dispatched_session(
     cfg, session_id: str, prompt_text: str, now: str, hook_input: dict
 ) -> None:
     """A prompt naming a task id binds this session's transcript to it."""
-    from thinkweave.core.task_contract import TASK_ID_RE, SessionRef
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
     transcript = hook_input.get("transcript_path", "")
     if not transcript:
         return
-    ref = SessionRef.session(_hook_harness() or "claude-code", session_id)
-    for task_id in dict.fromkeys(TASK_ID_RE.findall(prompt_text)):
-        if task_seam.bind_session(
-            cfg, task_id, transcript_path=transcript, since=now, session_ref=ref
-        ):
-            _log_info("user_prompt_submit", f"bound {task_id} to session {session_id}")
+    for task_id in tasks.bind_session(
+        cfg,
+        prompt_text,
+        harness=_hook_harness() or "claude-code",
+        session_key=session_id,
+        transcript_path=transcript,
+        since=now,
+    ):
+        _log_info("user_prompt_submit", f"bound {task_id} to session {session_id}")
 
 
 def _prompt_time_enrichment(

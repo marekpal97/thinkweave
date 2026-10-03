@@ -1,4 +1,4 @@
-"""The wrap task pass (#189): the model judges, the pass applies.
+"""The wrap task pass: the model judges, the pass applies.
 
 The pass runs inside ``weave wrap-finalize`` on a declaration file the
 wrap LLM composed (canned here; no model call). Each declared entry
@@ -24,7 +24,9 @@ from thinkweave.core.task_contract import (
     validate_wrap_declaration,
 )
 from thinkweave.core.vault import VaultManager, parse_frontmatter
-from thinkweave.operations import hook_events, task_seam
+from thinkweave.core.buffer import buffer_path
+from thinkweave.operations import tasks
+from thinkweave.operations.tasks import Register, TaskStore
 from thinkweave.operations.wrap import finalize_wrap
 from thinkweave.surfaces.cli.parser import build_parser
 from thinkweave.surfaces.cli.wrap import cmd_wrap_finalize
@@ -40,11 +42,21 @@ def load_declaration() -> dict:
 
 
 def stream(cfg: Config) -> Path:
-    return hook_events.register_path(cfg.weave_dir, SESSION)
+    return buffer_path(cfg.weave_dir, SESSION)
+
+
+def stream_rows(cfg: Config) -> list[dict]:
+    return Register(cfg, SESSION, [stream(cfg)]).rows()
+
+
+def note_path(cfg: Config, task_id: str) -> Path:
+    task = TaskStore(cfg).get(task_id)
+    assert task is not None and task.path is not None
+    return task.path
 
 
 def reconcile(cfg: Config, declaration: dict, folders: list[Path] | None = None):
-    return task_seam.reconcile_tasks(
+    return tasks.apply_declaration(
         cfg,
         declaration,
         session_key=SESSION,
@@ -141,10 +153,10 @@ class TestSoloLaneMint:
         assert fm["rounds"][0]["did"]["paths"] == [
             "src/thinkweave/operations/task_seam.py"
         ]
-        # The declared ledger lands verbatim — commits included (#228).
+        # The declared ledger lands verbatim — commits included.
         assert fm["rounds"][0]["did"]["commits"] == ["4885b78"]
 
-        rows = hook_events.task_rows(stream(cfg))
+        rows = stream_rows(cfg)
         assert [r["type"] for r in rows] == ["task_open"]
         assert rows[0]["task_id"] == task_id
 
@@ -172,9 +184,9 @@ class TestRoundAppend:
                 }
             ]
         }
-        result = task_seam.reconcile_tasks(
+        result = tasks.apply_declaration(
             cfg, cont, session_key="s-2", project="t",
-            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
         )
         assert result.errors == []
         assert result.appended == [task_id]
@@ -213,7 +225,7 @@ class TestRoundAppend:
         assert list(notes) == first.minted
         assert len(notes[first.minted[0]]["rounds"]) == 1
         opens = [
-            r for r in hook_events.task_rows(stream(cfg))
+            r for r in stream_rows(cfg)
             if r["type"] == "task_open"
         ]
         assert len(opens) == 1
@@ -227,14 +239,14 @@ class TestRoundAppend:
                 {"continuing": task_id, "round": {"did": {"attempts": 2}}}
             ]
         }
-        task_seam.reconcile_tasks(
+        tasks.apply_declaration(
             cfg, cont, session_key="s-2", project="t",
-            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
         )
         cont["declared"][0]["round"] = {"did": {"attempts": 3}}
-        task_seam.reconcile_tasks(
+        tasks.apply_declaration(
             cfg, cont, session_key="s-2", project="t",
-            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
         )
         rounds = task_notes(cfg)[task_id]["rounds"]
         assert [r["did"]["attempts"] for r in rounds] == [1, 3]
@@ -246,7 +258,7 @@ class TestRoundAppend:
         again = reconcile(cfg, done)
         assert again.errors == []
         closes = [
-            r for r in hook_events.task_rows(stream(cfg))
+            r for r in stream_rows(cfg)
             if r["type"] == "task_close"
         ]
         assert len(closes) == 1
@@ -280,7 +292,7 @@ class TestClosure:
         )
         assert result.closed == [task_id]
         assert task_notes(cfg)[task_id]["status"] == "closed"
-        types = [r["type"] for r in hook_events.task_rows(stream(cfg))]
+        types = [r["type"] for r in stream_rows(cfg)]
         assert types == ["task_open", "task_close"]
 
 
@@ -291,14 +303,14 @@ class TestClosure:
 class TestOrphans:
     def _seed_ledger(self, cfg: Config) -> tuple[str, str, str]:
         """Two per-dispatch opens (one closed) and one work-grain open."""
-        hanging = task_seam.open_task(
+        hanging = tasks.open_child(
             cfg, session_key=SESSION, project="t", grain="per-dispatch"
         ).task_id
-        paired = task_seam.open_task(
+        paired = tasks.open_child(
             cfg, session_key=SESSION, project="t", grain="per-dispatch"
         ).task_id
-        task_seam.close_task(cfg, paired, session_key=SESSION)
-        work = task_seam.open_task(
+        tasks.close_child(cfg, paired, session_key=SESSION)
+        work = tasks.open_child(
             cfg, session_key=SESSION, project="t", grain="work"
         ).task_id
         return hanging, paired, work
@@ -365,6 +377,20 @@ class TestChildren:
         )
         assert any("already attached" in e for e in result.errors)
         assert task_notes(cfg)["tsk-11111111"]["parent"] == "tsk-99999999"
+
+    def test_a_round_child_whose_note_is_gone_is_announced(self, cfg: Config):
+        seed_stub(cfg, "tsk-11111111", grain="per-dispatch")
+        task_id = reconcile(
+            cfg, self.declaration_with_children(["tsk-11111111"])
+        ).minted[0]
+        note_path(cfg, "tsk-11111111").unlink()
+        cont = {"declared": [{"continuing": task_id, "round": {"did": {"attempts": 2}}}]}
+        result = tasks.apply_declaration(
+            cfg, cont, session_key="s-2", project="t",
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        assert result.errors == []
+        assert any("tsk-11111111" in w and "no task note" in w for w in result.warnings)
 
     def test_unknown_child_is_an_error(self, cfg: Config):
         result = reconcile(
@@ -469,14 +495,14 @@ def seed_session(cfg: Config) -> tuple[Path, dict[str, str]]:
 
 
 def reconcile_session(cfg: Config, declaration: dict, folder: Path, key: str = SESSION):
-    return task_seam.reconcile_tasks(
+    return tasks.apply_declaration(
         cfg, declaration, session_key=key, project="t",
         streams=[folder / "events.jsonl"], folders=[folder],
     )
 
 
 def task_body(cfg: Config, task_id: str) -> str:
-    path = task_seam.find_stub(cfg, task_id)
+    path = note_path(cfg, task_id)
     return parse_frontmatter(path.read_text(encoding="utf-8"))[1]
 
 
@@ -538,9 +564,9 @@ class TestLedgerRound:
         folder, ids = seed_session(cfg)
         task_id = reconcile_session(cfg, load_declaration(), folder).minted[0]
         cont = {"declared": [{"continuing": task_id, "round": {"did": {"attempts": 2}}}]}
-        task_seam.reconcile_tasks(  # a later session with no session note
+        tasks.apply_declaration(  # a later session with no session note
             cfg, cont, session_key="s-2", project="t",
-            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
         )
         lines = round_lines(task_body(cfg, task_id))
         assert len(lines) == 2
@@ -572,8 +598,8 @@ class TestLedgerRound:
         self, cfg: Config
     ):
         folder, _ids = seed_session(cfg)
-        child = task_seam.open_task(cfg, session_key=SESSION, project="t").task_id
-        stub = task_seam.find_stub(cfg, child)
+        child = tasks.open_child(cfg, session_key=SESSION, project="t").task_id
+        stub = note_path(cfg, child)
         VaultManager(config=cfg).update_note(
             stub,
             frontmatter_updates={
@@ -609,9 +635,9 @@ class TestTrackerIdentity:
                 }
             ]
         }
-        result = task_seam.reconcile_tasks(
+        result = tasks.apply_declaration(
             cfg, decl, session_key="s-2", project="t",
-            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
         )
         assert result.minted == []
         assert result.appended == [first]
@@ -649,7 +675,7 @@ class TestLedgerMigration:
             fm, _ = parse_frontmatter(text)
             (folder / f"{fm['id']}.md").write_text(text, encoding="utf-8")
         seed_stub(cfg, "tsk-0dd0dd00", grain="work")
-        stub = task_seam.find_stub(cfg, "tsk-0dd0dd00")
+        stub = note_path(cfg, "tsk-0dd0dd00")
         VaultManager(config=cfg).update_note(
             stub,
             frontmatter_updates={

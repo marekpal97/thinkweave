@@ -351,6 +351,8 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
 
     import sqlite3
 
+    from thinkweave.core.task_contract import accepts_round
+
     db = sqlite3.connect(str(cfg.index_db))
     db.row_factory = sqlite3.Row
     try:
@@ -378,11 +380,7 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
             fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
         except json.JSONDecodeError:
             continue
-        if (
-            fm.get("kind") != "task"
-            or fm.get("status") != "open"
-            or fm.get("grain") != "work"
-        ):
+        if not accepts_round(fm, "session"):
             continue
         title = fm.get("title") or row["title"] or row["id"]
         asked = fm.get("asked") or ""

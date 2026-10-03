@@ -1,5 +1,5 @@
-"""The dispatch seam (#187): task lifecycle event writers, the register
-ledger projection, `weave task open|close|render`, and the
+"""The child-dispatch route: the session register's task rows and their
+pairing, `weave task open|close|render|ledger`, and the
 SubagentStart/SubagentStop hook handlers driven by synthetic payloads."""
 
 from __future__ import annotations
@@ -10,58 +10,69 @@ from pathlib import Path
 import pytest
 
 from tests.tasks.conftest import run_hook
+from thinkweave.core.buffer import buffer_path
 from thinkweave.core.config import Config
 from thinkweave.core.harness import PROFILES
 from thinkweave.core.task_contract import TASK_ID_RE, SessionRef, validate_task_note
 from thinkweave.core.vault import parse_frontmatter
-from thinkweave.operations import hook_events, task_seam
+from thinkweave.operations import tasks
+from thinkweave.operations.tasks import ChildStop, Register, Task, TaskStore
 from thinkweave.surfaces.cli.parser import build_parser
 from thinkweave.surfaces.cli.task import cmd_task
 
 
 def register_rows(cfg: Config, key: str) -> list[dict]:
-    return hook_events.task_rows(hook_events.register_path(cfg.weave_dir, key))
+    """The task rows in one session's live buffer."""
+    return Register(cfg, key, [buffer_path(cfg.weave_dir, key)]).rows()
+
+
+def note_path(cfg: Config, task_id: str) -> Path:
+    task = TaskStore(cfg).get(task_id)
+    assert task is not None and task.path is not None
+    return task.path
+
+
+def a_task(task_id: str = "tsk-0a1b2c3d", grain: str = "per-dispatch") -> Task:
+    return Task({
+        "type": "note", "kind": "task", "id": task_id,
+        "status": "open", "grain": grain, "rounds": [],
+    })
+
+
+def write_rows(path: Path, rows: list[dict]) -> Path:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return path
 
 
 # ---------------------------------------------------------------------------
-# Event writers
+# The register: task rows in the session's shared event log
 
 
-class TestEventWriters:
-    def test_open_and_close_rows_carry_the_declared_shape(self):
+class TestRegisterRows:
+    def test_open_and_close_rows_carry_the_declared_shape(self, cfg: Config):
+        register = Register(cfg, "s-1")
         ref = SessionRef.agent("claude-code", "agent-abc")
-        opened = hook_events.task_open_event(
-            "tsk-0a1b2c3d",
-            "2026-09-22T10:00:00+00:00",
-            session_id="s-1",
-            grain="per-dispatch",
-            session_ref=ref.to_dict(),
-        )
-        assert opened["type"] == hook_events.TASK_OPEN
+        register.open(a_task(), ref)
+        register.close(a_task())
+        opened, closed = register_rows(cfg, "s-1")
+        assert opened["type"] == tasks.TASK_OPEN
         assert opened["task_id"] == "tsk-0a1b2c3d"
+        assert opened["session_id"] == "s-1"
         assert opened["grain"] == "per-dispatch"
         assert opened["session_ref"] == {
             "harness": "claude-code",
             "kind": "agent_id",
             "value": "agent-abc",
         }
+        assert closed["type"] == tasks.TASK_CLOSE
+        assert "orphan" not in closed and "session_ref" not in closed
 
-        closed = hook_events.task_close_event(
-            "tsk-0a1b2c3d", "2026-09-22T10:05:00+00:00", session_id="s-1"
-        )
-        assert closed["type"] == hook_events.TASK_CLOSE
-        assert "orphan" not in closed
+    def test_rows_land_in_the_session_buffer_only(self, cfg: Config):
+        Register(cfg, "s-1").open(a_task())
+        files = list(cfg.weave_dir.rglob("*.jsonl"))
+        assert files == [cfg.weave_dir / "buffer" / "s-1.jsonl"]
 
-    def test_append_lands_in_the_session_register_only(self, cfg: Config):
-        event = hook_events.task_open_event(
-            "tsk-0a1b2c3d", "2026-09-22T10:00:00+00:00",
-            session_id="s-1", grain="per-dispatch",
-        )
-        path = hook_events.append_task_event(cfg.weave_dir, "s-1", event)
-        assert path == cfg.weave_dir / "buffer" / "s-1.jsonl"
-        assert hook_events.task_rows(path) == [event]
-
-    def test_task_rows_skips_foreign_and_malformed_lines(self, tmp_path: Path):
+    def test_rows_skip_foreign_and_malformed_lines(self, cfg: Config, tmp_path: Path):
         path = tmp_path / "events.jsonl"
         path.write_text(
             json.dumps({"type": "prompt", "text": "hi"})
@@ -70,57 +81,53 @@ class TestEventWriters:
             + "\n",
             encoding="utf-8",
         )
-        rows = hook_events.task_rows(path)
+        rows = Register(cfg, "s-1", [path]).rows()
         assert [r["type"] for r in rows] == ["task_open"]
-        assert hook_events.task_rows(tmp_path / "absent.jsonl") == []
+        assert Register(cfg, "s-1", [tmp_path / "absent.jsonl"]).rows() == []
 
 
 # ---------------------------------------------------------------------------
-# Ledger projection — pairing by task id, never by order or timing
+# Pairing — by task id, never by order or timing
 
 
-class TestLedger:
+class TestPairing:
     OPEN = {"type": "task_open", "task_id": "tsk-0a1b2c3d"}
     CLOSE = {"type": "task_close", "task_id": "tsk-0a1b2c3d"}
 
-    def test_pairs_by_task_id_regardless_of_row_order(self):
+    def register(self, cfg: Config, tmp_path: Path, rows: list[dict]) -> Register:
+        return Register(cfg, "s-1", [write_rows(tmp_path / "events.jsonl", rows)])
+
+    def test_pairs_by_task_id_regardless_of_row_order(self, cfg, tmp_path):
         for rows in ([self.OPEN, self.CLOSE], [self.CLOSE, self.OPEN]):
-            ledger = task_seam.task_ledger(rows)
-            assert ledger["tsk-0a1b2c3d"]["open"] == self.OPEN
-            assert ledger["tsk-0a1b2c3d"]["close"] == self.CLOSE
+            assert self.register(cfg, tmp_path, rows).unclosed() == []
+        assert self.register(cfg, tmp_path, [self.OPEN]).unclosed() == ["tsk-0a1b2c3d"]
 
-    def test_orphan_rows_without_a_task_id_stay_out_of_the_ledger(self):
+    def test_orphan_rows_without_a_task_id_stay_out_of_the_pairing(self, cfg, tmp_path):
         rows = [{"type": "task_close", "task_id": "", "orphan": True}]
-        assert task_seam.task_ledger(rows) == {}
+        register = self.register(cfg, tmp_path, rows)
+        assert register.unclosed() == [] and register.listing() == []
 
-    def test_pending_open_matches_on_the_qualified_ref(self):
+    def test_a_stop_pairs_with_the_open_carrying_its_qualified_ref(self, cfg, tmp_path):
         ref_a = SessionRef.agent("claude-code", "agent-a")
         ref_b = SessionRef.agent("claude-code", "agent-b")
-        rows = [
+        register = self.register(cfg, tmp_path, [
             {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref_a.to_dict()},
             {"type": "task_open", "task_id": "tsk-bbbbbbbb", "session_ref": ref_b.to_dict()},
-        ]
-        assert task_seam.pending_open(rows, ref_b) == "tsk-bbbbbbbb"
-        assert task_seam.pending_open(rows, ref_a) == "tsk-aaaaaaaa"
+        ])
+        assert register.resolve_stop(ref_b) == ChildStop("pending", "tsk-bbbbbbbb")
+        assert register.resolve_stop(ref_a) == ChildStop("pending", "tsk-aaaaaaaa")
 
-    def test_pending_open_ignores_already_closed_tasks(self):
+    def test_a_stop_for_an_already_closed_task_is_its_duplicate(self, cfg, tmp_path):
         ref = SessionRef.agent("claude-code", "agent-a")
-        rows = [
-            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref.to_dict()},
-            {"type": "task_close", "task_id": "tsk-aaaaaaaa"},
-        ]
-        assert task_seam.pending_open(rows, ref) == ""
-
-    def test_closed_task_matches_the_ref_of_a_paired_close(self):
-        ref = SessionRef.agent("claude-code", "agent-a")
-        rows = [
-            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref.to_dict()},
-            {"type": "task_close", "task_id": "tsk-aaaaaaaa"},
-        ]
-        assert task_seam.closed_task(rows, ref) == "tsk-aaaaaaaa"
+        opened = {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref.to_dict()}
+        closed = {"type": "task_close", "task_id": "tsk-aaaaaaaa"}
+        register = self.register(cfg, tmp_path, [opened, closed])
+        assert register.resolve_stop(ref) == ChildStop("duplicate", "tsk-aaaaaaaa")
         other = SessionRef.agent("claude-code", "agent-b")
-        assert task_seam.closed_task(rows, other) == ""
-        assert task_seam.closed_task(rows[:1], ref) == ""  # still open
+        assert register.resolve_stop(other) == ChildStop("orphan")
+        assert register.resolve_stop(None) == ChildStop("orphan")
+        still_open = self.register(cfg, tmp_path, [opened])
+        assert still_open.resolve_stop(ref).kind == "pending"
 
 
 # ---------------------------------------------------------------------------
@@ -129,13 +136,13 @@ class TestLedger:
 
 class TestOpenClose:
     def test_open_mints_stub_and_register_row(self, cfg: Config):
-        dispatch = task_seam.open_task(
+        dispatch = tasks.open_child(
             cfg, session_key="s-1", project="proj", title="count beans"
         )
         assert TASK_ID_RE.fullmatch(dispatch.task_id)
 
-        stub = task_seam.find_stub(cfg, dispatch.task_id)
-        assert stub is not None and stub.name == f"{dispatch.task_id}.md"
+        stub = note_path(cfg, dispatch.task_id)
+        assert stub.name == f"{dispatch.task_id}.md"
         fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
         assert validate_task_note(fm) == []
         assert fm["status"] == "open"
@@ -151,7 +158,7 @@ class TestOpenClose:
         assert Path(dispatch.envelope_return).parent.is_dir()
 
     def test_close_compiles_the_round_and_flips_status(self, cfg: Config):
-        dispatch = task_seam.open_task(cfg, session_key="s-1", project="proj")
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
         envelope = {
             "task_id": dispatch.task_id,
             "outcome": "ok",
@@ -162,7 +169,7 @@ class TestOpenClose:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(envelope) + "\n", encoding="utf-8")
 
-        result = task_seam.close_task(cfg, dispatch.task_id, session_key="s-1")
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
         assert result.errors == ()
         assert result.envelopes == 1
 
@@ -176,16 +183,33 @@ class TestOpenClose:
         types = [r["type"] for r in register_rows(cfg, "s-1")]
         assert types == ["task_open", "task_close"]
 
+    def test_close_renders_the_ledger_body(self, cfg: Config):
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        _, body = parse_frontmatter(Path(dispatch.note).read_text(encoding="utf-8"))
+        assert "_No rounds yet._" in body
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        _, body = parse_frontmatter(Path(result.note).read_text(encoding="utf-8"))
+        lines = [line for line in body.splitlines() if line.startswith("- ")]
+        assert body.startswith("## Rounds") and len(lines) == 1
+        assert lines[0].startswith("- dispatch")
+
+    def test_close_of_a_closed_task_is_refused(self, cfg: Config):
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        with pytest.raises(ValueError, match="closed"):
+            tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        assert len(register_rows(cfg, "s-1")) == 2
+
     def test_close_without_envelope_file_records_an_empty_round(self, cfg: Config):
-        dispatch = task_seam.open_task(cfg, session_key="s-1", project="proj")
-        result = task_seam.close_task(cfg, dispatch.task_id, session_key="s-1")
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
         assert result.errors == ()
         assert result.envelopes == 0
         fm, _ = parse_frontmatter(Path(result.note).read_text(encoding="utf-8"))
         assert fm["status"] == "closed" and fm["rounds"][0]["envelopes"] == []
 
     def test_close_announces_invalid_envelope_rows(self, cfg: Config):
-        dispatch = task_seam.open_task(cfg, session_key="s-1", project="proj")
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
         path = Path(dispatch.envelope_return)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -195,7 +219,7 @@ class TestOpenClose:
             + "\n",
             encoding="utf-8",
         )
-        result = task_seam.close_task(cfg, dispatch.task_id, session_key="s-1")
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
         assert result.errors  # the degraded row is reported, never swallowed
         assert result.envelopes == 1  # the valid row still compiles
         types = [r["type"] for r in register_rows(cfg, "s-1")]
@@ -203,16 +227,16 @@ class TestOpenClose:
 
     def test_close_of_unknown_task_raises(self, cfg: Config):
         with pytest.raises(ValueError):
-            task_seam.close_task(cfg, "tsk-deadbeef", session_key="s-1")
+            tasks.close_child(cfg, "tsk-deadbeef", session_key="s-1")
 
     def test_no_per_task_lifecycle_file(self, cfg: Config):
-        dispatch = task_seam.open_task(cfg, session_key="s-1", project="proj")
-        task_seam.close_task(cfg, dispatch.task_id, session_key="s-1")
-        register = hook_events.register_path(cfg.weave_dir, "s-1")
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        register = buffer_path(cfg.weave_dir, "s-1")
         for path in cfg.weave_dir.rglob("*.jsonl"):
             if path == register:
                 continue
-            assert not hook_events.task_rows(path), (
+            assert not Register(cfg, "s-1", [path]).rows(), (
                 f"lifecycle rows leaked outside the register: {path}"
             )
 
@@ -232,7 +256,7 @@ class TestCli:
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
         out = capsys.readouterr().out.strip()
         assert TASK_ID_RE.fullmatch(out)
-        assert task_seam.find_stub(cfg, out) is not None
+        assert TaskStore(cfg).get(out) is not None
 
     def test_render_prints_the_descriptor(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
@@ -248,8 +272,8 @@ class TestCli:
         task_id = capsys.readouterr().out.strip()
         self._dispatch(["task", "close", task_id, "--session", "s-1"])
         assert task_id in capsys.readouterr().out
-        ledger = task_seam.task_ledger(register_rows(cfg, "s-1"))
-        assert ledger[task_id]["open"] and ledger[task_id]["close"]
+        types = {r["type"] for r in register_rows(cfg, "s-1") if r["task_id"] == task_id}
+        assert types == {"task_open", "task_close"}
 
     def test_ledger_lists_the_sessions_boundaries(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
@@ -279,7 +303,7 @@ class TestCli:
         (folder / "session.md").write_text(
             "---\ntype: session\nsource_session: s-1\n---\n", encoding="utf-8"
         )
-        hook_events.register_path(cfg.weave_dir, "s-1").rename(
+        buffer_path(cfg.weave_dir, "s-1").rename(
             folder / "events.jsonl"
         )
 
@@ -293,7 +317,7 @@ class TestCli:
     def test_close_exits_nonzero_on_envelope_errors(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
         task_id = capsys.readouterr().out.strip()
-        path = task_seam.envelope_path(cfg, task_id)
+        path = Path(tasks.dispatch_descriptor(cfg, task_id).envelope_return)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"nonsense": True}) + "\n", encoding="utf-8")
         with pytest.raises(SystemExit):
@@ -342,21 +366,21 @@ class TestHookHandlers:
         stop["hook_event_name"] = "SubagentStop"
         run_hook(monkeypatch, "subagent_stop", stop)
 
-        ledger = task_seam.task_ledger(register_rows(cfg, SESSION))
-        closed = [t for t, e in ledger.items() if e["close"]]
-        still_open = [t for t, e in ledger.items() if not e["close"]]
+        entries = Register(cfg, SESSION).listing()
+        closed = [e.task_id for e in entries if e.closed]
+        still_open = [e.task_id for e in entries if not e.closed]
         assert len(closed) == 1 and len(still_open) == 1
         fm, _ = parse_frontmatter(
-            task_seam.find_stub(cfg, closed[0]).read_text(encoding="utf-8")
+            note_path(cfg, closed[0]).read_text(encoding="utf-8")
         )
         assert fm["status"] == "closed"
 
     def test_second_stop_for_a_closed_task_is_not_an_orphan(
         self, cfg: Config, monkeypatch, tmp_path: Path
     ):
-        # Claude Code fires SubagentStop twice per subagent (observed live
-        # 2026-09-28): the second stop carries the same agent_id, seconds
-        # after its task was closed. It must not land as a spurious orphan.
+        # Claude Code can deliver SubagentStop twice per subagent: the second
+        # stop carries the same agent_id, seconds after its task was closed.
+        # It must not land as a spurious orphan.
         monkeypatch.setenv("THINKWEAVE_PROJECT", "canary")
         run_hook(monkeypatch, "subagent_start", self._start_payload(tmp_path, "agent-a1"))
         stop = dict(self._start_payload(tmp_path, "agent-a1"))
@@ -391,21 +415,22 @@ class TestHookHandlers:
         run_hook(monkeypatch, "subagent_start", self._start_payload(tmp_path, "agent-a1"))
         run_hook(monkeypatch, "subagent_start", self._start_payload(tmp_path, "agent-a2"))
         run_hook(monkeypatch, "stop", {"session_id": SESSION, "cwd": str(tmp_path)})
-        assert not hook_events.register_path(cfg.weave_dir, SESSION).exists()
+        assert not buffer_path(cfg.weave_dir, SESSION).exists()
 
         for agent in ("agent-a1", "agent-a2"):
             stop = self._start_payload(tmp_path, agent)
             stop["hook_event_name"] = "SubagentStop"
             run_hook(monkeypatch, "subagent_stop", stop)
 
-        rows = task_seam.session_task_rows(cfg, SESSION)
-        assert not any(r.get("orphan") for r in rows)
-        ledger = task_seam.task_ledger(rows)
-        assert len(ledger) == 2
-        for task_id, entry in ledger.items():
-            assert entry["close"], task_id
+        register = Register(cfg, SESSION)
+        assert not any(r.get("orphan") for r in register.rows())
+        entries = register.listing()
+        assert len(entries) == 2
+        for entry in entries:
+            assert entry.closed, entry.task_id
+            task_id = entry.task_id
             fm, _ = parse_frontmatter(
-                task_seam.find_stub(cfg, task_id).read_text(encoding="utf-8")
+                note_path(cfg, task_id).read_text(encoding="utf-8")
             )
             assert fm["status"] == "closed"
 
