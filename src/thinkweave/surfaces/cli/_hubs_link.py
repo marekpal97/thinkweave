@@ -41,9 +41,9 @@ def hubs_link(cfg, args: argparse.Namespace) -> None:
     # path->id inverse so parsing recovers ids from those links (else cited_ids
     # and date lookups would key on paths). Soft-fails to bare links if the DB
     # is unavailable.
-    from thinkweave.synthesis.concept_hub import _safe_hub_maps
+    from thinkweave.synthesis.concept_hub import safe_hub_maps
 
-    _link_idmap, _link_titles, _link_path_id = _safe_hub_maps(cfg)
+    _link_idmap, _link_titles, _link_path_id = safe_hub_maps(cfg)
 
     work: list[tuple[str, list[LogEntry], str]] = []
     for hub_path in hub_files:

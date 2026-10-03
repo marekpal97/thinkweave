@@ -583,10 +583,10 @@ def render_ledger_body(cfg, fm: dict) -> str:
     ``derived_from``, any other as ``relates_to``). A deliverable whose ref
     equals a child task's output ref names that child.
     """
-    from thinkweave.synthesis.concept_hub import _safe_hub_maps
+    from thinkweave.synthesis.concept_hub import safe_hub_maps
     from thinkweave.synthesis.hub import reflink
 
-    idmap, title_map, _ = _safe_hub_maps(cfg)
+    idmap, title_map, _ = safe_hub_maps(cfg)
 
     def link(note_id: str) -> str:
         return reflink(note_id, idmap, title_map)

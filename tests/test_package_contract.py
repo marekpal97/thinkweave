@@ -284,18 +284,8 @@ PRIVATE_BASELINE: frozenset[tuple[str, str, str]] = frozenset(
         ),
         (
             "thinkweave.operations.dream",
-            "thinkweave.synthesis.concept_hub",
-            "_safe_hub_maps",
-        ),
-        (
-            "thinkweave.operations.dream",
             "thinkweave.synthesis.theme_candidates",
             "_excerpt",
-        ),
-        (
-            "thinkweave.surfaces.cli._hubs_link",
-            "thinkweave.synthesis.concept_hub",
-            "_safe_hub_maps",
         ),
         (
             "thinkweave.surfaces.cli.hubs",
