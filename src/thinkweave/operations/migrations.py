@@ -45,6 +45,41 @@ def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
     return flipped
 
 
+def migrate_task_notes_to_ledger(config: Config) -> int:
+    """Bring ``kind: task`` notes to the ledger shape (2026-10 redesign).
+
+    Work-grain rounds without a ``route`` gain one (``devloop`` when the
+    round nests a devloop trace, else ``session``), ``asked`` takes its
+    normalized tracker ref, and the body is re-rendered from the rounds.
+    Idempotent. Returns the count of notes rewritten.
+    """
+    from thinkweave.core.task_contract import DEVLOOP_TRACE_KEYS, normalize_tracker_ref
+    from thinkweave.operations.task_seam import current_repo, render_ledger_body
+
+    repo = current_repo()
+    vm = VaultManager(config)
+    changed = 0
+    for path in config.vault_root.rglob("tsk-*.md"):
+        fm, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if fm.get("kind") != "task":
+            continue
+        rounds = [dict(r) for r in fm.get("rounds") or []]
+        if fm.get("grain") == "work":
+            for entry in rounds:
+                if "route" not in entry:
+                    traced = DEVLOOP_TRACE_KEYS & entry.keys()
+                    entry["route"] = "devloop" if traced else "session"
+        updates: dict = {"rounds": rounds}
+        if fm.get("asked"):
+            updates["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
+        new_body = render_ledger_body(config, {**fm, **updates})
+        if updates == {k: fm.get(k) for k in updates} and body.strip() == new_body.strip():
+            continue
+        vm.update_note(path, frontmatter_updates=updates, body=new_body)
+        changed += 1
+    return changed
+
+
 def migrate_todo_research_to_queue(vault_root: Path) -> int:
     """Move ``todo+research`` notes with a ``source_type`` into per-type queues.
 

@@ -47,7 +47,12 @@ wrap-coverage guarantee for headless runs. It is not duplicated here.
    one `weave_create(type=note, tags=[loop-run], session_id=<this session>,
    frontmatter=<payload>)`, adding a `builds_on` list (under `frontmatter=`) of
    the ship-time insight note ids. MCP down → `weave add -f …` CLI fallback.
-3. `/wrap` (interactive) or the dream wrap-catch-up worker (headless) later
+3. `weave task record-run <payload.json> --trajectory <note-id> --project
+   <p>` lands the run on the ticket's task: a `route: devloop` round whose
+   session ref is the trajectory note and whose deliverable is the PR. The
+   task is the open one carrying the issue's tracker ref, so loop work and
+   session work on one ticket share one task.
+4. `/wrap` (interactive) or the dream wrap-catch-up worker (headless) later
    synthesizes the *session* as usual — trajectory notes already sit in the
    session folder via `session_id`, so the wrap references them instead of
    re-describing per-issue detail. Where an issue's resolution embodied a

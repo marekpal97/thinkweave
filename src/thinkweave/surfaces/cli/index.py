@@ -219,6 +219,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         if getattr(args, "migrate", False):
             from thinkweave.operations.migrations import (
                 migrate_dormant_themes_to_resolved,
+                migrate_task_notes_to_ledger,
                 migrate_todo_research_to_queue,
             )
 
@@ -226,6 +227,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             print(f"migrate_todo_research_to_queue: {moved} note(s) moved to queues")
             flipped = migrate_dormant_themes_to_resolved(cfg.vault_root)
             print(f"migrate_dormant_themes_to_resolved: {flipped} theme(s) flipped")
+            ledgered = migrate_task_notes_to_ledger(cfg)
+            print(f"migrate_task_notes_to_ledger: {ledgered} task note(s) rewritten")
 
         include_isolation = bool(getattr(args, "isolation", False))
         report = doctor_report(cfg, include_isolation=include_isolation)

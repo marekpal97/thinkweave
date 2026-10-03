@@ -634,3 +634,49 @@ class TestTrackerIdentity:
         decl = {"declared": [{"title": "t", "asked": "#7"}]}
         task_id = reconcile(cfg, decl).minted[0]
         assert task_notes(cfg)[task_id]["asked"] == "github:acme/widgets#7"
+
+
+# ---------------------------------------------------------------------------
+# Migration: existing task notes take the ledger shape
+
+
+class TestLedgerMigration:
+    def seed_existing(self, cfg: Config) -> None:
+        folder = cfg.vault_root / "projects" / "t" / "sessions" / "old"
+        folder.mkdir(parents=True)
+        for name in ("devloop-rich", "envelope-thin", "declared-only"):
+            text = (FIXTURES / f"{name}.md").read_text(encoding="utf-8")
+            fm, _ = parse_frontmatter(text)
+            (folder / f"{fm['id']}.md").write_text(text, encoding="utf-8")
+        seed_stub(cfg, "tsk-0dd0dd00", grain="work")
+        stub = task_seam.find_stub(cfg, "tsk-0dd0dd00")
+        VaultManager(config=cfg).update_note(
+            stub,
+            frontmatter_updates={
+                "asked": "github:o/r#5",
+                "rounds": [
+                    {
+                        "session_ref": {
+                            "harness": "claude-code", "kind": "session_id", "value": "s-old",
+                        },
+                        "did": {"attempts": 1},
+                    }
+                ],
+            },
+        )
+
+    def test_every_existing_task_note_stays_valid_and_gains_the_ledger_shape(
+        self, cfg: Config
+    ):
+        from thinkweave.operations.migrations import migrate_task_notes_to_ledger
+
+        self.seed_existing(cfg)
+        assert migrate_task_notes_to_ledger(cfg) == 4
+        notes = task_notes(cfg)
+        for fm in notes.values():
+            assert validate_task_note(fm) == []
+        assert notes["tsk-3f9a1c2e"]["rounds"][0]["route"] == "devloop"
+        assert notes["tsk-0dd0dd00"]["rounds"][0]["route"] == "session"
+        assert "route" not in notes["tsk-9b2d4e6f"]["rounds"][0]  # batch grain
+        assert len(round_lines(task_body(cfg, "tsk-0dd0dd00"))) == 1
+        assert migrate_task_notes_to_ledger(cfg) == 0  # idempotent

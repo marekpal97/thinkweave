@@ -1,6 +1,6 @@
 """``weave task`` — the dispatch seam's CLI verbs (the headless route).
 
-Four actions over :mod:`thinkweave.operations.task_seam`:
+Five actions over :mod:`thinkweave.operations.task_seam`:
 
 - ``weave task open`` — mint a task at a dispatch boundary: stub note plus
   a ``task_open`` row in the events register. Prints the minted task id.
@@ -12,6 +12,8 @@ Four actions over :mod:`thinkweave.operations.task_seam`:
 - ``weave task ledger`` — list one session's task boundaries as JSON. The
   hooks mint seam children silently, so this is how the wrap declaration
   composer learns their ids before declaring ``children``.
+- ``weave task record-run <payload.json>`` — land a devloop run as a
+  ``route: devloop`` round on the open task its issue ref resolves to.
 
 Open and close correlate by the task id alone — a harness without hooks
 runs exactly this route and loses only the boundary automation.
@@ -43,8 +45,13 @@ def cmd_task(args: argparse.Namespace) -> None:
         _cmd_render(args)
     elif action == "ledger":
         _cmd_ledger(args)
+    elif action == "record-run":
+        _cmd_record_run(args)
     else:
-        print("Usage: weave task {open|close|render|ledger}", file=sys.stderr)
+        print(
+            "Usage: weave task {open|close|render|ledger|record-run}",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
 
@@ -113,3 +120,23 @@ def _cmd_ledger(args: argparse.Namespace) -> None:
             if fm.get("parent"):
                 item["parent"] = str(fm["parent"])
         print(json.dumps(item))
+
+
+def _cmd_record_run(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    from thinkweave.operations import task_seam
+
+    try:
+        payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
+        task_id = task_seam.record_devloop_run(
+            _load_config(),
+            payload,
+            project=args.project,
+            trajectory=args.trajectory,
+            session_key=args.session,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"record-run: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(task_id)

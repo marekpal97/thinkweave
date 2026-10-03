@@ -213,3 +213,16 @@ class TestLedgerRoute:
             task_seam.find_stub(cfg, first).read_text(encoding="utf-8")
         )
         assert len(fm["rounds"]) == 1
+
+    def test_the_cli_records_a_run_from_its_payload_file(self, cfg, capsys):
+        from thinkweave.operations import task_seam
+        from thinkweave.surfaces.cli.parser import build_parser
+        from thinkweave.surfaces.cli.task import cmd_task
+
+        args = build_parser().parse_args([
+            "task", "record-run", str(FIXTURES / "devloop-run-rich.json"),
+            "--trajectory", "n-7a7a7a7a", "--project", "t",
+        ])
+        cmd_task(args)
+        task_id = capsys.readouterr().out.strip()
+        assert task_seam.find_stub(cfg, task_id) is not None
