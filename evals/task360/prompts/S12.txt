@@ -1,0 +1,1 @@
+Ticket #2: add a --short flag to 'dogfood version' that prints only major.minor. Spawn one subagent to write its test while you implement. Commit.

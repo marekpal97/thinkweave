@@ -1,0 +1,1 @@
+Two tickets this session. Ticket #2: add a 'dogfood version' command that prints the package version. Ticket #3, which depends on #2: add 'dogfood version --json'. Do #2 first, then #3. Use one subagent per ticket. Make one commit per ticket.

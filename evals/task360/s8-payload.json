@@ -1,0 +1,129 @@
+{
+ "type": "note",
+ "title": "loop trajectory #1: greet CLI",
+ "tags": [
+  "loop-run"
+ ],
+ "frontmatter": {
+  "issue": 1,
+  "issue_url": "https://github.com/__REPO__/issues/1",
+  "pr_url": "https://github.com/__REPO__/pull/1",
+  "run_id": "loop-20261003-df03",
+  "branch": "loop/issue-1",
+  "outcome": "shipped",
+  "fix_rounds": 0,
+  "commits": 1,
+  "files_touched": [
+   "src/dogfood/__init__.py",
+   "tests/test_greet.py"
+  ],
+  "gates": [
+   {
+    "id": "diff-guard",
+    "passed": true,
+    "summary": "907 changed lines, no forbidden paths"
+   },
+   {
+    "id": "tests",
+    "passed": true,
+    "summary": "`uv run --extra mcp pytest -x -q` exited 0"
+   },
+   {
+    "id": "verify:1",
+    "passed": true,
+    "summary": "`uv run pytest tests/tasks -q` exited 0"
+   },
+   {
+    "id": "judge",
+    "passed": true,
+    "summary": "11/11 criteria met; 6 findings"
+   }
+  ],
+  "skills": [
+   {
+    "id": "implementer",
+    "role": "implementer",
+    "outcome": "pass",
+    "fix_rounds_attributed": 0
+   },
+   {
+    "id": "judge",
+    "role": "judge",
+    "outcome": "pass",
+    "fix_rounds_attributed": 0
+   }
+  ],
+  "primed": true,
+  "served": [
+   "n-8db96720",
+   "dec-c839fb4e",
+   "dec-ba94712f",
+   "dec-90cbed92"
+  ],
+  "trace": {
+   "criteria": [
+    {
+     "id": "AC1",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC2",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC3",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC4",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC5",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC6",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC7",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC8",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC9",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC10",
+     "verdict": "met",
+     "flipped_by_round": null
+    },
+    {
+     "id": "AC11",
+     "verdict": "met",
+     "flipped_by_round": null
+    }
+   ]
+  }
+ },
+ "body_skeleton": "## What\n<1-2 sentences: the slice delivered>\n\n## How it went\n<fix rounds and why; seams chosen; surprises>",
+ "concept_hints": [
+  "ready-for-agent",
+  "ready-for-human",
+  "track:E-devloop"
+ ]
+}

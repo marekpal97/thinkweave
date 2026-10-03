@@ -1,0 +1,1 @@
+Ticket #1: fix any typo in greet's --help text (or improve one help string). Commit.

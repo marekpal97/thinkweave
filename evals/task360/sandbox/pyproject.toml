@@ -1,0 +1,16 @@
+[project]
+name = "dogfood"
+version = "0.1.0"
+description = "A tiny CLI the task-360 eval works on."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+dogfood = "dogfood:main"
+
+[build-system]
+requires = ["uv_build>=0.8.14,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=8"]

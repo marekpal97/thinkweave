@@ -1,0 +1,1 @@
+Ticket #1: make --name optional with a default of 'World'. Commit.

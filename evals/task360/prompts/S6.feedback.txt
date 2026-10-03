@@ -1,0 +1,1 @@
+Review: --shout should also work with --json.
