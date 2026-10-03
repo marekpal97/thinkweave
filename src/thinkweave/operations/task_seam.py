@@ -3,7 +3,9 @@
 Every execution route mints its task stub at its existing choke point (the
 Claude Code SubagentStart hook, ``weave task open`` for headless dispatch)
 and records the close at the matching boundary. Boundaries captured here are
-ground truth; retroactive inference over transcripts is banned. Lifecycle
+ground truth; a transcript never places a boundary. At a child's close its
+transcript slice is read once (:class:`ChildDigest`) for what the child was
+asked, did and produced. Lifecycle
 rows land only in the per-session events register (``operations.hook_events``
 owns the writers); the ledger view is :func:`task_ledger`, a projection —
 open and close pair by the vault-minted task id with no ordering or timing
@@ -63,6 +65,85 @@ class TaskClose:
     note: str
     envelopes: int
     errors: tuple[str, ...]
+    gaps: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChildDigest:
+    """What a child's transcript slice says it was asked, did, and produced.
+
+    Read once at the close boundary; the boundaries themselves stay
+    seam-given. Every transcript field is optional — whatever the read
+    could not recover is named in ``gaps``.
+    """
+
+    version: str = ""
+    asked: str = ""
+    description: str = ""
+    model: str = ""
+    role: str = ""
+    paths: tuple[str, ...] = ()
+    commits: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    tools: dict = field(default_factory=dict)
+    tool_errors: int = 0
+    duration: float | None = None
+    success: bool | None = None
+    gaps: tuple[str, ...] = ()
+
+    @classmethod
+    def read(cls, transcript: Path, *, since: str = "", until: str = "") -> "ChildDigest":
+        """Digest one transcript (its slice from the prompt nearest ``since``
+        to ``until``, when given); never raises."""
+        try:
+            return _digest(transcript, since, until)
+        except Exception as exc:  # noqa: BLE001 — a close must never fail on a read
+            return cls(gaps=(f"digest aborted: {type(exc).__name__}: {exc}",))
+
+    def note_fields(self, fm: dict) -> dict:
+        """Stub fields the digest fills; a value already on the stub stands."""
+        fill = {
+            key: value
+            for key, value in (
+                ("asked", self.asked), ("model", self.model), ("role", self.role)
+            )
+            if value and not fm.get(key)
+        }
+        # The stub's minted placeholder title yields to the dispatch description.
+        if self.description and fm.get("title") == f"Task {fm.get('id')}":
+            fill["title"] = self.description
+        return fill
+
+    def round_fields(self, envelopes: list[dict]) -> dict:
+        """The round entry's digest fields; ``envelopes`` contribute outputs."""
+        outputs = (
+            [{"kind": "file", "ref": p} for p in self.paths]
+            + [{"kind": "commit", "ref": c} for c in self.commits]
+            + [{"kind": "note", "ref": n} for n in self.notes]
+            + [_output_ref(o) for row in envelopes for o in row.get("outputs") or []]
+        )
+        fields: dict = {
+            "tools": dict(self.tools),
+            "tool_errors": self.tool_errors,
+            "digest": {"version": self.version, "gaps": list(self.gaps)},
+        }
+        did = {"paths": list(self.paths), "commits": list(self.commits)}
+        if any(did.values()):
+            fields["did"] = {k: v for k, v in did.items() if v}
+        if outputs:
+            fields["outputs"] = list({(o["kind"], o["ref"]): o for o in outputs}.values())
+        if self.duration is not None:
+            fields["cost"] = {"duration": self.duration}
+        return fields
+
+    def envelope(self, task_id: str) -> dict | None:
+        """The child's own handback claim as an envelope row, when it made one."""
+        if self.success is None:
+            return None
+        row = {"task_id": task_id, "outcome": "success" if self.success else "failure"}
+        if self.model:
+            row["model"] = self.model
+        return row
 
 
 def mint_task_id() -> str:
@@ -88,6 +169,7 @@ def _mint_stub(
     grain: str,
     role: str = "",
     harness: str = "",
+    asked: str = "",
 ) -> tuple[str, Path, str]:
     """Mint one conforming stub note; returns (task_id, path, title)."""
     from thinkweave.core.schemas import NoteType
@@ -105,6 +187,8 @@ def _mint_stub(
         fm["role"] = role
     if harness:
         fm["harness"] = harness
+    if asked:
+        fm["asked"] = asked
 
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
@@ -135,6 +219,7 @@ def open_task(
     role: str = "",
     harness: str = "",
     session_ref: dict | None = None,
+    asked: str = "",
 ) -> TaskDispatch:
     """Mint the task at the dispatch boundary: stub note + register row."""
     task_id, note_path, title = _mint_stub(
@@ -145,6 +230,7 @@ def open_task(
         grain=grain,
         role=role,
         harness=harness,
+        asked=normalize_tracker_ref(asked, current_repo()) if asked else "",
     )
     # The return path is handed out here, so the directory it names must
     # exist here — a performer's first append never creates directories.
@@ -176,6 +262,7 @@ def close_task(
     *,
     session_key: str,
     session_ref: dict | None = None,
+    transcript: Path | None = None,
 ) -> TaskClose:
     """Record the boundary close and compile the round.
 
@@ -183,6 +270,8 @@ def close_task(
     become one ``rounds[]`` entry on the stub; invalid rows are reported in
     ``errors``, never silently dropped, and the close row is recorded either
     way — boundary truth does not depend on the performer's output shape.
+    The child's transcript — ``transcript``, else the session a prompt
+    bound to this task — is digested into the stub and the round.
     """
     from thinkweave.core.vault import VaultManager, parse_frontmatter
 
@@ -190,24 +279,41 @@ def close_task(
     if stub is None:
         raise ValueError(f"no task stub for {task_id}")
 
+    now = _now()
     envelopes, errors = _read_envelopes(envelope_path(cfg, task_id), task_id)
+    since = ""
+    if transcript is None:
+        bound = _read_binding(cfg, task_id)
+        if bound:
+            transcript = Path(bound["transcript_path"])
+            since = bound["since"]
+            session_ref = session_ref or bound["session_ref"]
+    digest = (
+        ChildDigest.read(transcript, since=since, until=now) if transcript else None
+    )
 
     fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+    updates: dict = {"status": "closed"}
     round_entry: dict = {"envelopes": envelopes}
+    if digest:
+        claim = digest.envelope(task_id)
+        round_entry = {
+            "envelopes": envelopes + ([claim] if claim else []),
+            **digest.round_fields(envelopes),
+        }
+        updates.update(digest.note_fields(fm))
     if session_ref:
         round_entry["session_ref"] = session_ref
-    rounds = list(fm.get("rounds") or []) + [round_entry]
+    updates["rounds"] = list(fm.get("rounds") or []) + [round_entry]
 
     vm = VaultManager(config=cfg)
-    vm.update_note(
-        stub, frontmatter_updates={"status": "closed", "rounds": rounds}
-    )
+    vm.update_note(stub, frontmatter_updates=updates)
 
     hook_events.append_task_event(
         cfg.weave_dir,
         session_key,
         hook_events.task_close_event(
-            task_id, _now(), session_id=session_key, session_ref=session_ref
+            task_id, now, session_id=session_key, session_ref=session_ref
         ),
     )
     return TaskClose(
@@ -215,7 +321,37 @@ def close_task(
         note=str(stub),
         envelopes=len(envelopes),
         errors=tuple(errors),
+        gaps=digest.gaps if digest else ("no transcript bound; the round carries no digest",),
     )
+
+
+def bind_session(
+    cfg, task_id: str, *, transcript_path: str, since: str, session_ref: dict
+) -> bool:
+    """Bind a dispatched session's transcript to an open per-dispatch task.
+
+    A dispatcher binds a session by putting the task id in its prompt; the
+    first binding stands. Returns whether this call bound the task.
+    """
+    from thinkweave.core.vault import parse_frontmatter
+
+    path = _binding_path(cfg, task_id)
+    stub = find_stub(cfg, task_id)
+    if path.exists() or stub is None:
+        return False
+    fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+    if fm.get("status") != "open" or fm.get("grain") != "per-dispatch":
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "transcript_path": transcript_path,
+            "since": since,
+            "session_ref": session_ref,
+        }),
+        encoding="utf-8",
+    )
+    return True
 
 
 def record_orphan_stop(cfg, *, session_key: str, session_ref: dict | None) -> None:
@@ -898,3 +1034,226 @@ def _read_envelopes(path: Path, task_id: str) -> tuple[list[dict], list[str]]:
         else:
             valid.append(row)
     return valid, errors
+
+
+def _binding_path(cfg, task_id: str) -> Path:
+    return cfg.weave_dir / "tasks" / f"{task_id}.bind.json"
+
+
+def _read_binding(cfg, task_id: str) -> dict | None:
+    path = _binding_path(cfg, task_id)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Child-digest plumbing — one reader for the Claude Code transcript format
+
+
+_NOTE_ID_RE = re.compile(r"\b[a-z]+-[0-9a-f]{8}\b")
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_FILE_TOOLS = ("Write", "Edit")
+_NOTE_TOOLS = ("weave_create", "weave_extract")
+
+
+def _digest(transcript: Path, since: str, until: str) -> ChildDigest:
+    """Walk the transcript slice once and collect every digest field."""
+    from collections import Counter
+
+    rows, gaps = _transcript_rows(transcript)
+    meta = _transcript_meta(transcript)
+    rows = _slice(rows, since, until)
+    uses: dict[str, dict] = {}
+    tools: Counter = Counter()
+    models: Counter = Counter()
+    paths: dict[str, None] = {}
+    commits: dict[str, None] = {}
+    notes: dict[str, None] = {}
+    asked, errors, success = "", 0, None
+    for row in rows:
+        message = row.get("message") if isinstance(row.get("message"), dict) else {}
+        blocks = [b for b in _list(message.get("content")) if isinstance(b, dict)]
+        if row.get("type") == "assistant":
+            if message.get("model") and message["model"] != "<synthetic>":
+                models[str(message["model"])] += 1
+            for block in blocks:
+                if block.get("type") == "tool_use" and block.get("name"):
+                    uses[str(block.get("id", ""))] = block
+                    tools[str(block["name"])] += 1
+                    if block["name"] == "SubagentHandback":
+                        claim = _dict(block.get("input")).get("success")
+                        success = claim if isinstance(claim, bool) else success
+            continue
+        if row.get("type") != "user":
+            continue
+        if not asked and not row.get("isMeta"):
+            asked = _prompt_text(message.get("content"))
+        for block in blocks:
+            if block.get("type") != "tool_result":
+                continue
+            if block.get("is_error"):
+                errors += 1
+                continue
+            use = uses.get(str(block.get("tool_use_id", "")), {})
+            name, args = str(use.get("name", "")), _dict(use.get("input"))
+            cwd = str(row.get("cwd", ""))
+            result = row.get("toolUseResult")
+            if name in _FILE_TOOLS and args.get("file_path"):
+                paths[_relative(str(args["file_path"]), cwd)] = None
+            elif name == "Bash":
+                for changed in _list(_dict(_dict(result).get("bashEditDiff")).get("files")):
+                    if _dict(changed).get("filePath"):
+                        paths[_relative(str(changed["filePath"]), cwd)] = None
+                sha = _commit_sha(str(args.get("command", "")), result)
+                if sha:
+                    commits[sha] = None
+            elif name.endswith(_NOTE_TOOLS):
+                notes.update(dict.fromkeys(_created_ids(block.get("content"))))
+    version = next((str(r["version"]) for r in rows if r.get("version")), "")
+    model = models.most_common(1)[0][0] if models else ""
+    gaps += [
+        f"no {what} in the transcript"
+        for what, value in (("version", version), ("prompt", asked), ("model", model))
+        if not value
+    ]
+    stamps = [t for t in map(_ts, rows) if t]
+    return ChildDigest(
+        version=version,
+        asked=asked,
+        description=str(meta.get("description", "")),
+        model=model,
+        role=str(meta.get("agentType", "")),
+        paths=tuple(paths),
+        commits=tuple(commits),
+        notes=tuple(notes),
+        tools=dict(tools),
+        tool_errors=errors,
+        duration=round((max(stamps) - min(stamps)).total_seconds(), 3) if stamps else None,
+        success=success,
+        gaps=tuple(gaps),
+    )
+
+
+def _transcript_rows(path: Path) -> tuple[list[dict], list[str]]:
+    """The transcript's JSON-object rows, plus a gap per unreadable line."""
+    if not path.is_file():
+        return [], [f"transcript not found: {path}"]
+    rows: list[dict] = []
+    bad = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            bad += 1
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+        else:
+            bad += 1
+    return rows, [f"{bad} unreadable transcript line(s)"] if bad else []
+
+
+def _transcript_meta(path: Path) -> dict:
+    """A subagent transcript's ``agent-<id>.meta.json`` sidecar, or ``{}``."""
+    meta = path.with_name(path.stem + ".meta.json")
+    try:
+        return _dict(json.loads(meta.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _slice(rows: list[dict], since: str, until: str) -> list[dict]:
+    """Rows from the prompt nearest ``since`` up to ``until``.
+
+    The binding hook and the transcript stamp the same prompt a moment
+    apart, in either order, so the slice opens at the nearest prompt row.
+    """
+    start, end = _ts({"timestamp": since}), _ts({"timestamp": until})
+    if start:
+        prompts = [
+            i for i, row in enumerate(rows)
+            if row.get("type") == "user" and not row.get("isMeta") and _ts(row)
+            and _prompt_text(_dict(row.get("message")).get("content"))
+        ]
+        if prompts:
+            first = min(prompts, key=lambda i: abs(_ts(rows[i]) - start))
+            rows = rows[first:]
+    if end:
+        rows = [r for r in rows if not _ts(r) or _ts(r) <= end]
+    return rows
+
+
+def _prompt_text(content) -> str:
+    """A human prompt's text; ``""`` for tool results and non-text rows."""
+    if isinstance(content, str):
+        return content.strip()
+    blocks = [b for b in _list(content) if isinstance(b, dict)]
+    if any(b.get("type") == "tool_result" for b in blocks):
+        return ""
+    return "\n".join(
+        str(b.get("text", "")) for b in blocks if b.get("type") == "text"
+    ).strip()
+
+
+def _commit_sha(command: str, result) -> str:
+    """The commit a Bash call made: the recorded git operation, else the
+    hook capture's commit parser over its stdout."""
+    sha = _dict(_dict(_dict(result).get("gitOperation")).get("commit")).get("sha")
+    if sha:
+        return str(sha)
+    if hook_events.is_git_commit(command):
+        parsed = hook_events.parse_commit_from_output(command, str(_dict(result).get("stdout", "")))
+        return str((parsed or {}).get("hash", ""))
+    return ""
+
+
+def _created_ids(content) -> list[str]:
+    """Note ids on the ``Created …`` lines of a weave_create/extract result."""
+    text = content if isinstance(content, str) else "\n".join(
+        str(_dict(b).get("text", "")) for b in _list(content)
+    )
+    return [
+        found
+        for line in text.splitlines()
+        if line.strip().startswith("Created")
+        for found in _NOTE_ID_RE.findall(line)
+    ]
+
+
+def _output_ref(ref: str) -> dict:
+    """An envelope's bare output ref as a ``{kind, ref}`` output."""
+    if _NOTE_ID_RE.fullmatch(ref):
+        kind = "note"
+    elif _SHA_RE.match(ref):
+        kind = "commit"
+    elif ref.startswith(("http://", "https://")):
+        kind = "url"
+    else:
+        kind = "file"
+    return {"kind": kind, "ref": ref}
+
+
+def _relative(path: str, cwd: str) -> str:
+    """``path`` relative to the session's working directory when under it."""
+    try:
+        return Path(path).relative_to(cwd).as_posix() if cwd else path
+    except ValueError:
+        return path
+
+
+def _ts(row: dict) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(row.get("timestamp", "")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value) -> list:
+    return value if isinstance(value, list) else []

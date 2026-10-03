@@ -1100,6 +1100,10 @@ def add_admin_subparsers(sub) -> None:
         "--grain", default="per-dispatch", choices=sorted(TASK_GRAINS)
     )
     p_task_open.add_argument("--role", default="")
+    p_task_open.add_argument(
+        "--asked", default="",
+        help="What the task was asked (free text, or a tracker ref such as #12).",
+    )
     p_task_close = task_sub.add_parser(
         "close",
         help=(

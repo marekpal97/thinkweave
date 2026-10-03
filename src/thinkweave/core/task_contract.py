@@ -494,6 +494,9 @@ _ROUND_CHECKERS = {
         {"register": _str, "prompt_ref": _str, "ts": _str}
     ),
     "cost": _COST,
+    # The child digest's provenance: the harness version whose transcript
+    # it read, and what that read could not recover.
+    "digest": _closed_dict({"version": _str, "gaps": _str_list}),
 }
 
 _GITHUB_ITEM_URL = re.compile(

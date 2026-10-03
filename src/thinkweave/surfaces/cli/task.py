@@ -5,7 +5,8 @@ Five actions over :mod:`thinkweave.operations.task_seam`:
 - ``weave task open`` — mint a task at a dispatch boundary: stub note plus
   a ``task_open`` row in the events register. Prints the minted task id.
 - ``weave task close <task-id>`` — record the boundary close, compile the
-  performer's envelope rows into the stub's ``rounds[]``. Envelope rows
+  performer's envelope rows into the stub's ``rounds[]``, and digest the
+  transcript of the session a prompt bound to the task. Envelope rows
   that fail the schema are reported on stderr and the exit code is 1; the
   close row is recorded either way.
 - ``weave task render <task-id>`` — re-emit the dispatch descriptor JSON.
@@ -71,6 +72,7 @@ def _cmd_open(args: argparse.Namespace) -> None:
         title=args.title,
         grain=args.grain,
         role=args.role,
+        asked=args.asked,
     )
     print(dispatch.task_id)
 
@@ -83,6 +85,8 @@ def _cmd_close(args: argparse.Namespace) -> None:
     )
     for error in result.errors:
         print(error, file=sys.stderr)
+    for gap in result.gaps:
+        print(f"digest: {gap}", file=sys.stderr)
     print(
         f"task {result.task_id} closed · {result.envelopes} envelope "
         f"row(s) · {result.note}"

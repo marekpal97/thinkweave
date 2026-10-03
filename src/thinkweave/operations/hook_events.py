@@ -27,6 +27,7 @@ identifiers ride only as a qualified ``{harness, kind, value}`` triple under
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -138,3 +139,75 @@ def to_canonical(profile: HarnessProfile, envelope: dict) -> dict:
     raise UnknownHookEvent(
         f"{profile.id} maps no canonical event onto native {native!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bash command classification — shared by the hook capture and the child digest
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
+
+
+def command_head(segment: str) -> str:
+    """A shell segment normalised for prefix classification.
+
+    Leading ``VAR=value`` assignments are dropped and the executable is
+    reduced to its basename, so ``PYTHONPATH=src /repo/.venv/bin/pytest -q``
+    classifies as ``pytest -q``. That is the shape Codex's code-mode
+    ``exec_command`` calls took on 2026-09-05 — every one of the session's
+    pytest runs was kept only because ``"pythonpath…".startswith("python")``
+    and none was recognised as a test run. Lower-cased; classifiers compare
+    against lower-case prefixes.
+    """
+    seg = segment.strip()
+    while True:
+        stripped = _ENV_ASSIGNMENT_RE.sub("", seg, count=1)
+        if stripped == seg:
+            break
+        seg = stripped
+    if not seg:
+        return ""
+    head, sep, rest = seg.partition(" ")
+    head = head.rsplit("/", 1)[-1]
+    return (head + sep + rest).lower()
+
+
+def is_git_commit(command: str) -> bool:
+    """Check if a bash command is a git commit."""
+    cmd = command_head(command)
+    return cmd.startswith("git commit") and "--amend" not in cmd
+
+
+def parse_commit_from_output(command: str, output: str) -> dict | None:
+    """Extract commit info from git commit output.
+
+    Git commit output looks like:
+      [branch abc1234] Commit message
+       N files changed, M insertions(+), K deletions(-)
+    """
+    if not output:
+        return None
+
+    info: dict = {}
+
+    # Extract hash from [branch hash] pattern
+    m = re.search(r"\[[\w/.-]+\s+([0-9a-f]{7,})\]", output)
+    if m:
+        info["hash"] = m.group(1)
+
+    # Extract message from -m flag or from output
+    m_flag = re.search(r'-m\s+["\'](.+?)["\']', command)
+    if m_flag:
+        info["message"] = m_flag.group(1)[:120]
+    else:
+        # Message is after the hash bracket
+        m_msg = re.search(r"\[[^\]]+\]\s+(.+)", output)
+        if m_msg:
+            info["message"] = m_msg.group(1).strip()[:120]
+
+    # Extract files from "N file(s) changed" line
+    m_files = re.search(r"(\d+)\s+files?\s+changed", output)
+    if m_files:
+        info["files_changed"] = int(m_files.group(1))
+
+    return info if info else None

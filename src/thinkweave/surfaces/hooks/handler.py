@@ -387,9 +387,12 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     task_id = task_seam.pending_open(rows, ref) if ref else ""
     duplicate_of = task_seam.closed_task(rows, ref) if ref and not task_id else ""
     if task_id:
-        task_seam.close_task(
-            cfg, task_id, session_key=session_id, session_ref=ref
+        closed = task_seam.close_task(
+            cfg, task_id, session_key=session_id, session_ref=ref,
+            transcript=_agent_transcript(hook_input),
         )
+        if closed.gaps:
+            _log_info("subagent_stop", f"{task_id} digest gaps: {'; '.join(closed.gaps)}")
     elif duplicate_of:
         _log_info(
             "subagent_stop",
@@ -401,6 +404,17 @@ def _handle_subagent_stop(hook_input: dict) -> None:
             cfg, session_key=session_id, session_ref=ref
         )
     _output()
+
+
+def _agent_transcript(hook_input: dict) -> Path | None:
+    """The stopping subagent's transcript: the payload's own path, else the
+    ``subagents/agent-<id>.jsonl`` file beside the parent's transcript."""
+    if hook_input.get("agent_transcript_path"):
+        return Path(hook_input["agent_transcript_path"])
+    parent, agent_id = hook_input.get("transcript_path"), hook_input.get("agent_id")
+    if not parent or not agent_id:
+        return None
+    return Path(parent).with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl"
 
 
 def _subagent_session_id(hook_input: dict) -> str:
@@ -462,6 +476,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to.
         _ensure_session(cfg, session_id, hook_input)
+        _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
 
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
         # live buffer, hard-capped. Any failure here must fall through to a
@@ -491,6 +506,23 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _output(
             system_message=_report_failure("user_prompt_submit", hook_input, e)
         )
+
+
+def _bind_dispatched_session(
+    cfg, session_id: str, prompt_text: str, now: str, hook_input: dict
+) -> None:
+    """A prompt naming a task id binds this session's transcript to it."""
+    from thinkweave.operations import task_seam
+
+    transcript = hook_input.get("transcript_path", "")
+    if not transcript:
+        return
+    ref = {"harness": _hook_harness() or "claude-code", "kind": "session_id", "value": session_id}
+    for task_id in dict.fromkeys(re.findall(r"\btsk-[0-9a-f]{8}\b", prompt_text)):
+        if task_seam.bind_session(
+            cfg, task_id, transcript_path=transcript, since=now, session_ref=ref
+        ):
+            _log_info("user_prompt_submit", f"bound {task_id} to session {session_id}")
 
 
 def _prompt_time_enrichment(
@@ -1245,31 +1277,11 @@ from thinkweave.core.buffer import (  # noqa: E402, F401
 )
 
 
-_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
-
-
-def _command_head(segment: str) -> str:
-    """A shell segment normalised for prefix classification.
-
-    Leading ``VAR=value`` assignments are dropped and the executable is
-    reduced to its basename, so ``PYTHONPATH=src /repo/.venv/bin/pytest -q``
-    classifies as ``pytest -q``. That is the shape Codex's code-mode
-    ``exec_command`` calls took on 2026-09-05 — every one of the session's
-    pytest runs was kept only because ``"pythonpath…".startswith("python")``
-    and none was recognised as a test run. Lower-cased; classifiers compare
-    against lower-case prefixes.
-    """
-    seg = segment.strip()
-    while True:
-        stripped = _ENV_ASSIGNMENT_RE.sub("", seg, count=1)
-        if stripped == seg:
-            break
-        seg = stripped
-    if not seg:
-        return ""
-    head, sep, rest = seg.partition(" ")
-    head = head.rsplit("/", 1)[-1]
-    return (head + sep + rest).lower()
+from thinkweave.operations.hook_events import (  # noqa: E402
+    command_head as _command_head,
+    is_git_commit as _is_git_commit,
+    parse_commit_from_output as _parse_commit_from_output,
+)
 
 
 def _is_significant_command(command: str) -> bool:
@@ -1301,47 +1313,6 @@ def _first_meaningful_line(text: str) -> str:
         if stripped and not stripped.startswith("#") and not stripped.startswith("//"):
             return stripped
     return ""
-
-
-def _is_git_commit(command: str) -> bool:
-    """Check if a bash command is a git commit."""
-    cmd = _command_head(command)
-    return cmd.startswith("git commit") and "--amend" not in cmd
-
-
-def _parse_commit_from_output(command: str, output: str) -> dict | None:
-    """Extract commit info from git commit output.
-
-    Git commit output looks like:
-      [branch abc1234] Commit message
-       N files changed, M insertions(+), K deletions(-)
-    """
-    if not output:
-        return None
-
-    info: dict = {}
-
-    # Extract hash from [branch hash] pattern
-    m = re.search(r"\[[\w/.-]+\s+([0-9a-f]{7,})\]", output)
-    if m:
-        info["hash"] = m.group(1)
-
-    # Extract message from -m flag or from output
-    m_flag = re.search(r'-m\s+["\'](.+?)["\']', command)
-    if m_flag:
-        info["message"] = m_flag.group(1)[:120]
-    else:
-        # Message is after the hash bracket
-        m_msg = re.search(r"\[[^\]]+\]\s+(.+)", output)
-        if m_msg:
-            info["message"] = m_msg.group(1).strip()[:120]
-
-    # Extract files from "N file(s) changed" line
-    m_files = re.search(r"(\d+)\s+files?\s+changed", output)
-    if m_files:
-        info["files_changed"] = int(m_files.group(1))
-
-    return info if info else None
 
 
 def _get_commit_files(commit_hash: str) -> list[str]:
