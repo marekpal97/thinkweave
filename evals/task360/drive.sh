@@ -236,7 +236,9 @@ stop() {  # stop <label>: the session exits, its pane stays open until finish
   echo "$1: session ended; pane $(_get "labels.$1.pane") stays open"
 }
 
-screen() { herdr agent read "$(_name "$1")" --source recent-unwrapped --lines "${2:-60}"; }
+screen() {  # screen <label> [lines]: the pane's text, also after the session ended
+  herdr pane read "$(_get "labels.$1.pane")" --source recent-unwrapped --lines "${2:-60}"
+}
 
 note() {  # note <label> <key> <value>: record a fact a check needs
   _state "s['labels'].setdefault('$1', {})['$2'] = '$3'"
