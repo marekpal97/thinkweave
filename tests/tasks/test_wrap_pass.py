@@ -752,6 +752,47 @@ class TestTrackerIdentity:
         assert task_notes(cfg)[task_id]["asked"] == "github:acme/widgets#7"
 
 
+class TestEpicIdentity:
+    """A declared sub-issue lands on its epic's task, found through
+    GitHub's sub-issue parent."""
+
+    SUB = "https://github.com/marekpal97/thinkweave/issues/241"
+    EPIC = "github:marekpal97/funloops#89"
+
+    def declare(self, cfg: Config):
+        decl = {"declared": [{"title": "t", "asked": self.SUB, "round": {}}]}
+        return reconcile(cfg, decl)
+
+    def test_a_sub_issue_lands_on_its_epic_task(self, cfg: Config, monkeypatch):
+        parents = {("marekpal97/thinkweave", "241"): self.EPIC}
+        monkeypatch.setattr(
+            tasks, "_gh_parent", lambda repo, number: parents.get((repo, number), "")
+        )
+        result = self.declare(cfg)
+        assert result.errors == [] and result.warnings == []
+        fm = task_notes(cfg)[result.minted[0]]
+        assert fm["asked"] == self.EPIC
+        assert fm["rounds"][0]["asked"] == "github:marekpal97/thinkweave#241"
+
+    def test_a_failed_parent_lookup_keeps_the_sub_issue_and_warns(
+        self, cfg: Config, monkeypatch
+    ):
+        import subprocess
+
+        def unreachable(repo, number):
+            raise subprocess.CalledProcessError(
+                1, ["gh"], stderr="error connecting to api.github.com"
+            )
+
+        monkeypatch.setattr(tasks, "_gh_parent", unreachable)
+        result = self.declare(cfg)
+        fm = task_notes(cfg)[result.minted[0]]
+        assert fm["asked"] == "github:marekpal97/thinkweave#241"
+        (warning,) = result.warnings
+        assert "github:marekpal97/thinkweave#241" in warning
+        assert "error connecting to api.github.com" in warning
+
+
 # ---------------------------------------------------------------------------
 # Migration: existing task notes take the ledger shape
 

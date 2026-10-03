@@ -96,13 +96,13 @@ def test_rejects_incomplete_session_ref_triple():
 def test_rejects_devloop_trace_fields_at_top_level():
     fm = load("declared-only")
     fm["criteria"] = [{"id": "AC1", "verdict": "met"}]
-    fm["simplify"] = {"outcome": "applied"}
+    fm["reviews"] = [{"gate": "review", "finding": "x"}]
     fm["rounds"] = [
         {"gate": "review", "finding": "x", "severity": "major"}
     ]
     errors = validate_task_note(fm)
     assert any("criteria" in e for e in errors)
-    assert any("simplify" in e for e in errors)
+    assert any("reviews" in e for e in errors)
     assert any("gate" in e for e in errors)
 
 

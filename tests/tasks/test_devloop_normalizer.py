@@ -13,6 +13,7 @@ import pytest
 from thinkweave.core.task_contract import (
     DEVLOOP_TRACE_KEYS,
     Round,
+    devloop_ask,
     validate_task_note,
 )
 from thinkweave.core.vault import parse_frontmatter
@@ -68,16 +69,14 @@ class TestRichRun:
         assert validate_task_note(note) == []
         assert note["status"] == "open"  # a run never closes its task
         assert note["grain"] == "work"
-        assert note["asked"] == "github:marekpal97/thinkweave#217"
+        assert note["asked"] == "github:marekpal97/thinkweave#184"  # its epic
         assert note["title"] == "loop trajectory #217: devloop envelope normalizer"
         assert len(note["rounds"]) == 1
 
     def test_trace_fields_nest_inside_the_round_never_at_top_level(self, cfg, rich):
-        # top-level "rounds" is the ledger itself; the trace's other names
-        # must not appear beside it
         note = recorded(cfg, "devloop-run-rich.json")
-        assert DEVLOOP_TRACE_KEYS & note.keys() == {"rounds"}
-        assert rich["rounds"] == [
+        assert not DEVLOOP_TRACE_KEYS & note.keys()
+        assert rich["reviews"] == [
             {
                 "gate": "review",
                 "finding": "trace fields at top level",
@@ -86,12 +85,6 @@ class TestRichRun:
                 "fixed_by": "2",
             }
         ]
-        assert rich["simplify"] == {
-            "outcome": "applied",
-            "cuts": [{"what": "helper dataclass", "why": "one consumer"}],
-            "kept": [{"what": "closed key tables", "why": "the contract surface"}],
-            "lines_delta": -42,
-        }
 
     def test_each_stage_record_is_one_envelope_row(self, rich):
         assert rich["envelopes"] == [
@@ -116,10 +109,17 @@ class TestRichRun:
             {
                 "id": "implementer",
                 "role": "implementer",
+                "posture": "writer",
                 "outcome": "ok",
                 "fix_rounds_attributed": 1,
             },
-            {"id": "judge", "role": "judge", "outcome": "ok", "fix_rounds_attributed": 1},
+            {
+                "id": "judge",
+                "role": "judge",
+                "posture": "reader",
+                "outcome": "ok",
+                "fix_rounds_attributed": 1,
+            },
         ]
 
     def test_null_criterion_counts_are_dropped_not_carried(self, rich):
@@ -129,7 +129,6 @@ class TestRichRun:
         ]
 
     def test_emitter_extras_beyond_the_contract_vocabulary_do_not_leak(self, rich):
-        assert "stack_simplify" not in rich
         assert "edge_cases" not in rich
         assert "tdd" not in rich
 
@@ -139,6 +138,38 @@ class TestRichRun:
             "paths": ["src/thinkweave/core/task_contract.py"],
             "attempts": 2,
         }
+
+
+class TestEpicTask:
+    """A run lands on its epic's task; a run with no epic on its issue's."""
+
+    def test_the_ask_is_the_epic_else_the_issue(self):
+        run = payload("devloop-run-rich.json")
+        assert devloop_ask(run) == "https://github.com/marekpal97/thinkweave/issues/184"
+        del run["frontmatter"]["epic_url"]
+        assert devloop_ask(run) == "https://github.com/marekpal97/thinkweave/issues/217"
+        assert devloop_ask(payload("devloop-run-thin.json")) == "#218"
+
+    def test_two_issues_of_one_epic_share_one_task(self, cfg):
+        first = payload("devloop-run-rich.json")
+        second = payload("devloop-run-rich.json")
+        second["frontmatter"]["issue"] = 218
+        second["frontmatter"]["issue_url"] = "https://github.com/marekpal97/thinkweave/issues/218"
+        a = tasks.record_run(cfg, first, project="t", trajectory="n-1a1a1a1a")
+        b = tasks.record_run(cfg, second, project="t", trajectory="n-2b2b2b2b")
+        assert a.task_id == b.task_id
+        note = note_fm(cfg, a.task_id)
+        assert note["asked"] == "github:marekpal97/thinkweave#184"
+        assert [(r["route"], r["asked"]) for r in note["rounds"]] == [
+            ("devloop", "github:marekpal97/thinkweave#217"),
+            ("devloop", "github:marekpal97/thinkweave#218"),
+        ]
+
+    def test_a_run_without_an_epic_lands_on_its_issue_task(self, cfg):
+        run = payload("devloop-run-rich.json")
+        del run["frontmatter"]["epic_url"]
+        note = note_fm(cfg, tasks.record_run(cfg, run, project="t").task_id)
+        assert note["asked"] == "github:marekpal97/thinkweave#217"
 
 
 class TestThinRun:
@@ -209,7 +240,7 @@ class TestLedgerRoute:
             "declared": [
                 {
                     "title": "fix-up after review",
-                    "asked": "github:marekpal97/thinkweave#217",
+                    "asked": "github:marekpal97/thinkweave#184",
                     "round": {"did": {"attempts": 1}},
                 }
             ]

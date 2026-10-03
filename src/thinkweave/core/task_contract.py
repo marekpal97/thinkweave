@@ -13,8 +13,8 @@ always an error naming its field and position, never a silent pass.
 The discriminator is ``kind: task`` on ``type: note`` — there is no task
 NoteType. Task ids are vault-minted (``tsk-`` + 8 hex); harness ids never
 anchor identity and travel only as a :class:`SessionRef`. Devloop's
-execution trace (review ``rounds``, ``criteria``, ``simplify``, ``skills``)
-nests inside one work-grain round, never at top level.
+execution trace (``reviews``, ``criteria``, ``skills``) nests inside one
+work-grain round, never at top level.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ ROUND_GRAINS = {
 }
 
 # Devloop's trace vocabulary; valid only inside a work-grain round entry.
-DEVLOOP_TRACE_KEYS = frozenset({"rounds", "criteria", "simplify", "skills"})
+DEVLOOP_TRACE_KEYS = frozenset({"reviews", "criteria", "skills"})
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,8 @@ class Round:
 
     route: str | None = None
     session_ref: SessionRef | None = None
+    # The tracker ref this stint worked, when the task's ask is wider (an epic).
+    asked: str | None = None
     notes: list | None = None
     decisions: dict | None = None
     feedback: list | None = None
@@ -111,9 +113,8 @@ class Round:
     cost: dict | None = None
     digest: dict | None = None
     # Devloop's trace (DEVLOOP_TRACE_KEYS), valid on a work-grain round only.
-    rounds: list | None = None
+    reviews: list | None = None
     criteria: list | None = None
-    simplify: dict | None = None
     skills: list | None = None
 
     @classmethod
@@ -132,15 +133,17 @@ class Round:
         cls, payload: object, *, task_id: str, trajectory: str = ""
     ) -> Round:
         """One devloop run's emitted trajectory payload as a ``route:
-        devloop`` round: each stage-dispatch record is one envelope row, the
-        semantic trace nests inside, the trajectory note (when its id is
-        known) is the session ref, and the PR is the deliverable. Keys the
+        devloop`` round naming its issue: each stage-dispatch record is one
+        envelope row, the semantic trace nests inside, the trajectory note
+        (when its id is known) is the session ref, and the PR is the
+        deliverable. Keys the
         emitter dropped stay absent; a value that cannot land raises
         ``ValueError`` naming the field."""
         src = _devloop_frontmatter(payload)
         stages = src.get("skills") or []
         data: dict = {
             "route": "devloop",
+            "asked": normalize_tracker_ref(_issue_ref(src)),
             "envelopes": [_stage_envelope(s, task_id) for s in stages],
             "did": {
                 "paths": list(src.get("files_touched") or []),
@@ -156,7 +159,7 @@ class Round:
         if "served" in src:
             data["served"] = list(src["served"])
         trace = src.get("trace") or {}
-        for key in ("rounds", "criteria", "simplify"):
+        for key in ("reviews", "criteria"):
             if key in trace:
                 data[key] = _drop_nones(trace[key])
         if stages:
@@ -164,6 +167,7 @@ class Round:
                 {
                     "id": s.get("id", ""),
                     "role": s.get("role", ""),
+                    **({"posture": s["posture"]} if s.get("posture") else {}),
                     "outcome": s.get("outcome", ""),
                     "fix_rounds_attributed": int(s.get("fix_rounds_attributed") or 0),
                 }
@@ -201,11 +205,11 @@ def normalize_tracker_ref(value: str, repo: str = "") -> str:
 
 
 def devloop_ask(payload: object) -> str:
-    """The tracker ref a devloop payload's run worked, as emitted: the issue
-    URL, else ``#<issue>``. Raises ``ValueError`` for a payload that is not
-    an emitted trajectory payload."""
+    """The tracker ref whose task a devloop run lands on, as emitted: the
+    epic URL, else the issue URL, else ``#<issue>``. Raises ``ValueError``
+    for a payload that is not an emitted trajectory payload."""
     src = _devloop_frontmatter(payload)
-    return str(src.get("issue_url") or f"#{src.get('issue', '')}")
+    return str(src.get("epic_url") or _issue_ref(src))
 
 
 def round_refusal(fm: dict, route: str) -> str:
@@ -335,6 +339,10 @@ def _devloop_frontmatter(payload: object) -> dict:
             "with a frontmatter mapping"
         )
     return payload["frontmatter"]
+
+
+def _issue_ref(src: dict) -> str:
+    return str(src.get("issue_url") or f"#{src.get('issue', '')}")
 
 
 def _stage_envelope(stage: dict, task_id: str) -> dict:
@@ -538,7 +546,7 @@ _ENVELOPE_CHECKERS = {
 
 # Devloop's trace shapes, as its trajectory normalizers emit them.
 _TRACE_CHECKERS = {
-    "rounds": _dict_list({
+    "reviews": _dict_list({
         "gate": _str,
         "finding": _str,
         "severity": _str,
@@ -550,15 +558,10 @@ _TRACE_CHECKERS = {
         "verdict": _str,
         "flipped_by_round": _int,
     }),
-    "simplify": _closed_dict({
-        "outcome": _str,
-        "cuts": _dict_list({"what": _str, "why": _str}),
-        "kept": _dict_list({"what": _str, "why": _str}),
-        "lines_delta": _int,
-    }),
     "skills": _dict_list({
         "id": _str,
         "role": _str,
+        "posture": _str,
         "outcome": _str,
         "fix_rounds_attributed": _int,
     }),
@@ -570,6 +573,7 @@ _TRACE_CHECKERS = {
 _ROUND_CHECKERS = {
     "route": _enum(ROUTES),
     "session_ref": _session_ref,
+    "asked": _str,
     "notes": _str_list,
     "children": _task_id_list,
     "tools": _str_int_map,
