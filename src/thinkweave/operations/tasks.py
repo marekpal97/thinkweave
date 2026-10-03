@@ -648,8 +648,8 @@ def apply_declaration(
     An invalid declaration aborts with no writes. A GitHub sub-issue
     ``asked`` resolves to its epic's ref, and the round names the sub-issue.
     Each entry continues its ``continuing`` task, else the open task
-    carrying its ``asked`` ref, else
-    a task this session already minted under its ``title``, else mints one;
+    carrying its ``asked`` ref, else a task this session already minted
+    under its ``title``, else mints one;
     its ``round`` lands as a ``route: session`` round under the session
     note's ref, replacing this session's earlier round, so a re-wrap
     re-applies rather than duplicates. ``done`` closes — the only closure
@@ -839,8 +839,8 @@ def record_run(
     its epic ref (else its issue ref) resolves to, minting a work-grain
     task when none is open; a re-record of the same trajectory replaces its
     round. A run never closes its task, and nothing closes it when its PR
-    merges. With no
-    ``session_key`` no register row is written: no session owns the run.
+    merges. With no ``session_key`` no register row is written: no session
+    owns the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
     warnings: list[str] = []
@@ -976,7 +976,7 @@ def _epic_ref(ref: str, warnings: list[str]) -> str:
         return ref
     try:
         return _gh_parent(found[1], found[2]) or ref
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         reason = (getattr(exc, "stderr", "") or str(exc)).strip()
         warnings.append(
             f"sub-issue parent lookup for {ref} failed ({reason}) — kept the "
@@ -987,16 +987,12 @@ def _epic_ref(ref: str, warnings: list[str]) -> str:
 
 def _gh_parent(repo: str, number: str) -> str:
     """The tracker ref of ``repo#number``'s sub-issue parent, or ``""``."""
-    url = subprocess.run(
-        ["gh", "api", f"repos/{repo}/issues/{number}", "-q", ".parent_issue_url // empty"],
+    jq = '.parent_issue_url // empty | sub(".*/repos/"; "") | sub("/issues/"; "#")'
+    out = subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{number}", "-q", jq],
         capture_output=True, text=True, timeout=15, check=True,
     ).stdout.strip()
-    if not url:
-        return ""
-    found = re.search(r"/repos/([\w.-]+/[\w.-]+)/issues/(\d+)$", url)
-    if not found:
-        raise ValueError(f"unrecognized parent issue URL {url!r}")
-    return f"github:{found[1]}#{found[2]}"
+    return f"github:{out}" if out else ""
 
 
 def _descriptor(cfg, task: Task) -> TaskDispatch:

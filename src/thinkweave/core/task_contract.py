@@ -136,9 +136,8 @@ class Round:
         devloop`` round naming its issue: each stage-dispatch record is one
         envelope row, the semantic trace nests inside, the trajectory note
         (when its id is known) is the session ref, and the PR is the
-        deliverable. Keys the
-        emitter dropped stay absent; a value that cannot land raises
-        ``ValueError`` naming the field."""
+        deliverable. Keys the emitter dropped stay absent; a value that
+        cannot land raises ``ValueError`` naming the field."""
         src = _devloop_frontmatter(payload)
         stages = src.get("skills") or []
         data: dict = {
