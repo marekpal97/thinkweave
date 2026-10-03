@@ -70,6 +70,8 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
                     traced = DEVLOOP_TRACE_KEYS & entry.keys()
                     entry["route"] = "devloop" if traced else "session"
         updates: dict = {"rounds": rounds}
+        if "outcome" in fm:
+            updates["outcome"] = None
         if fm.get("asked"):
             updates["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
         new_body = render_ledger_body(config, {**fm, **updates})

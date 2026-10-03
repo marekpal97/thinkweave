@@ -44,7 +44,7 @@ def test_canary(cfg: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         reply["hookSpecificOutput"]["additionalContext"]
     )["thinkweave_task"]
     task_id = descriptor["task_id"]
-    assert TASK_ID_RE.match(task_id)
+    assert TASK_ID_RE.fullmatch(task_id)
     assert descriptor["grain"] == "per-dispatch"
 
     # 2. Scripted performer: append envelope rows to the named return file.

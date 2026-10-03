@@ -129,7 +129,7 @@ class TestSoloLaneMint:
         assert result.errors == []
         assert len(result.minted) == 1
         task_id = result.minted[0]
-        assert TASK_ID_RE.match(task_id)
+        assert TASK_ID_RE.fullmatch(task_id)
 
         fm = task_notes(cfg)[task_id]
         assert validate_task_note(fm) == []
@@ -654,6 +654,7 @@ class TestLedgerMigration:
             stub,
             frontmatter_updates={
                 "asked": "github:o/r#5",
+                "outcome": [{"label": "merged-clean"}],
                 "rounds": [
                     {
                         "session_ref": {
@@ -678,5 +679,6 @@ class TestLedgerMigration:
         assert notes["tsk-3f9a1c2e"]["rounds"][0]["route"] == "devloop"
         assert notes["tsk-0dd0dd00"]["rounds"][0]["route"] == "session"
         assert "route" not in notes["tsk-9b2d4e6f"]["rounds"][0]  # batch grain
+        assert "outcome" not in notes["tsk-0dd0dd00"]  # no writer, so no field
         assert len(round_lines(task_body(cfg, "tsk-0dd0dd00"))) == 1
         assert migrate_task_notes_to_ledger(cfg) == 0  # idempotent

@@ -12,7 +12,7 @@ import pytest
 from tests.tasks.conftest import run_hook
 from thinkweave.core.config import Config
 from thinkweave.core.harness import PROFILES
-from thinkweave.core.task_contract import TASK_ID_RE, validate_task_note
+from thinkweave.core.task_contract import TASK_ID_RE, SessionRef, validate_task_note
 from thinkweave.core.vault import parse_frontmatter
 from thinkweave.operations import hook_events, task_seam
 from thinkweave.surfaces.cli.parser import build_parser
@@ -29,13 +29,13 @@ def register_rows(cfg: Config, key: str) -> list[dict]:
 
 class TestEventWriters:
     def test_open_and_close_rows_carry_the_declared_shape(self):
-        ref = task_seam.agent_ref("claude-code", "agent-abc")
+        ref = SessionRef.agent("claude-code", "agent-abc")
         opened = hook_events.task_open_event(
             "tsk-0a1b2c3d",
             "2026-09-22T10:00:00+00:00",
             session_id="s-1",
             grain="per-dispatch",
-            session_ref=ref,
+            session_ref=ref.to_dict(),
         )
         assert opened["type"] == hook_events.TASK_OPEN
         assert opened["task_id"] == "tsk-0a1b2c3d"
@@ -94,31 +94,31 @@ class TestLedger:
         assert task_seam.task_ledger(rows) == {}
 
     def test_pending_open_matches_on_the_qualified_ref(self):
-        ref_a = task_seam.agent_ref("claude-code", "agent-a")
-        ref_b = task_seam.agent_ref("claude-code", "agent-b")
+        ref_a = SessionRef.agent("claude-code", "agent-a")
+        ref_b = SessionRef.agent("claude-code", "agent-b")
         rows = [
-            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref_a},
-            {"type": "task_open", "task_id": "tsk-bbbbbbbb", "session_ref": ref_b},
+            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref_a.to_dict()},
+            {"type": "task_open", "task_id": "tsk-bbbbbbbb", "session_ref": ref_b.to_dict()},
         ]
         assert task_seam.pending_open(rows, ref_b) == "tsk-bbbbbbbb"
         assert task_seam.pending_open(rows, ref_a) == "tsk-aaaaaaaa"
 
     def test_pending_open_ignores_already_closed_tasks(self):
-        ref = task_seam.agent_ref("claude-code", "agent-a")
+        ref = SessionRef.agent("claude-code", "agent-a")
         rows = [
-            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref},
+            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref.to_dict()},
             {"type": "task_close", "task_id": "tsk-aaaaaaaa"},
         ]
         assert task_seam.pending_open(rows, ref) == ""
 
     def test_closed_task_matches_the_ref_of_a_paired_close(self):
-        ref = task_seam.agent_ref("claude-code", "agent-a")
+        ref = SessionRef.agent("claude-code", "agent-a")
         rows = [
-            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref},
+            {"type": "task_open", "task_id": "tsk-aaaaaaaa", "session_ref": ref.to_dict()},
             {"type": "task_close", "task_id": "tsk-aaaaaaaa"},
         ]
         assert task_seam.closed_task(rows, ref) == "tsk-aaaaaaaa"
-        other = task_seam.agent_ref("claude-code", "agent-b")
+        other = SessionRef.agent("claude-code", "agent-b")
         assert task_seam.closed_task(rows, other) == ""
         assert task_seam.closed_task(rows[:1], ref) == ""  # still open
 
@@ -132,7 +132,7 @@ class TestOpenClose:
         dispatch = task_seam.open_task(
             cfg, session_key="s-1", project="proj", title="count beans"
         )
-        assert TASK_ID_RE.match(dispatch.task_id)
+        assert TASK_ID_RE.fullmatch(dispatch.task_id)
 
         stub = task_seam.find_stub(cfg, dispatch.task_id)
         assert stub is not None and stub.name == f"{dispatch.task_id}.md"
@@ -231,7 +231,7 @@ class TestCli:
     def test_open_prints_the_minted_task_id(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
         out = capsys.readouterr().out.strip()
-        assert TASK_ID_RE.match(out)
+        assert TASK_ID_RE.fullmatch(out)
         assert task_seam.find_stub(cfg, out) is not None
 
     def test_render_prints_the_descriptor(self, cfg: Config, capsys):
@@ -327,7 +327,7 @@ class TestHookHandlers:
         descriptor = json.loads(
             reply["hookSpecificOutput"]["additionalContext"]
         )["thinkweave_task"]
-        assert TASK_ID_RE.match(descriptor["task_id"])
+        assert TASK_ID_RE.fullmatch(descriptor["task_id"])
         rows = register_rows(cfg, SESSION)
         assert [r["type"] for r in rows] == ["task_open"]
         assert rows[0]["session_ref"]["value"] == "agent-a1"

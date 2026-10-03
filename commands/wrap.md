@@ -209,4 +209,4 @@ A work-grain task is a durable unit of work that outlives sessions — "ship the
 - **Re-wraps restate, never add**: each round describes this session's whole work on **its own** task. A second wrap of the same session replaces each declared task's earlier round and reuses any task it minted under the same title. So re-declare **every** task the session touched — the ones the earlier wrap declared, with their full rounds, plus any new ones — never one merged entry for the whole session.
 - **`round.did`** is the segment's ledger: files actually touched, commit hashes this task produced (from the session note's `commits` frontmatter — attribute per task when the session interleaved several), fix-round count in `attempts`.
 - **`children`**: attribution, not bookkeeping — say which declared task each dispatched subagent served. Confidence rule as in step 4: unattributable children stay undeclared.
-- **Never**: fill `outcome` (the dream judge owns it), reopen a closed task, or declare tasks for pure Q&A sessions to have something to declare.
+- **Never**: reopen a closed task, or declare tasks for pure Q&A sessions to have something to declare.

@@ -33,8 +33,11 @@ from pathlib import Path
 
 from thinkweave.core.task_contract import (
     TASK_KIND,
+    Round,
+    SessionRef,
+    accepts_round,
+    devloop_ask,
     envelope_return_name,
-    normalize_devloop_run,
     normalize_tracker_ref,
     validate_envelope,
     validate_task_note,
@@ -155,11 +158,6 @@ def envelope_path(cfg, task_id: str) -> Path:
     return cfg.weave_dir / "tasks" / envelope_return_name(task_id)
 
 
-def agent_ref(harness: str, agent_id: str) -> dict:
-    """A harness agent id as its qualified session_ref triple."""
-    return {"harness": harness, "kind": "agent_id", "value": agent_id}
-
-
 def _mint_stub(
     cfg,
     *,
@@ -218,7 +216,7 @@ def open_task(
     grain: str = "per-dispatch",
     role: str = "",
     harness: str = "",
-    session_ref: dict | None = None,
+    session_ref: SessionRef | None = None,
     asked: str = "",
 ) -> TaskDispatch:
     """Mint the task at the dispatch boundary: stub note + register row."""
@@ -244,7 +242,7 @@ def open_task(
             _now(),
             session_id=session_key,
             grain=grain,
-            session_ref=session_ref,
+            session_ref=session_ref.to_dict() if session_ref else None,
         ),
     )
     return TaskDispatch(
@@ -261,7 +259,7 @@ def close_task(
     task_id: str,
     *,
     session_key: str,
-    session_ref: dict | None = None,
+    session_ref: SessionRef | None = None,
     transcript: Path | None = None,
 ) -> TaskClose:
     """Record the boundary close and compile the round.
@@ -287,7 +285,7 @@ def close_task(
         if bound:
             transcript = Path(bound["transcript_path"])
             since = bound["since"]
-            session_ref = session_ref or bound["session_ref"]
+            session_ref = session_ref or SessionRef.from_dict(bound["session_ref"])
     digest = (
         ChildDigest.read(transcript, since=since, until=now) if transcript else None
     )
@@ -301,8 +299,9 @@ def close_task(
         round_entry.update(digest.round_fields(envelopes))
         updates.update(digest.note_fields(fm))
     if session_ref:
-        round_entry["session_ref"] = session_ref
-    updates["rounds"] = list(fm.get("rounds") or []) + [round_entry]
+        round_entry["session_ref"] = session_ref.to_dict()
+    entry = Round.from_dict(round_entry, grain=str(fm.get("grain", "")))
+    updates["rounds"] = list(fm.get("rounds") or []) + [entry.to_dict()]
 
     vm = VaultManager(config=cfg)
     vm.update_note(stub, frontmatter_updates=updates)
@@ -311,7 +310,8 @@ def close_task(
         cfg.weave_dir,
         session_key,
         hook_events.task_close_event(
-            task_id, now, session_id=session_key, session_ref=session_ref
+            task_id, now, session_id=session_key,
+            session_ref=session_ref.to_dict() if session_ref else None,
         ),
     )
     return TaskClose(
@@ -324,7 +324,7 @@ def close_task(
 
 
 def bind_session(
-    cfg, task_id: str, *, transcript_path: str, since: str, session_ref: dict
+    cfg, task_id: str, *, transcript_path: str, since: str, session_ref: SessionRef
 ) -> bool:
     """Bind a dispatched session's transcript to an open per-dispatch task.
 
@@ -338,28 +338,30 @@ def bind_session(
     if path.exists() or stub is None:
         return False
     fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
-    if fm.get("status") != "open" or fm.get("grain") != "per-dispatch":
+    if not accepts_round(fm, "dispatch"):
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({
             "transcript_path": transcript_path,
             "since": since,
-            "session_ref": session_ref,
+            "session_ref": session_ref.to_dict(),
         }),
         encoding="utf-8",
     )
     return True
 
 
-def record_orphan_stop(cfg, *, session_key: str, session_ref: dict | None) -> None:
+def record_orphan_stop(
+    cfg, *, session_key: str, session_ref: SessionRef | None
+) -> None:
     """A boundary close that pairs with no open — flagged, never dropped."""
     hook_events.append_task_event(
         cfg.weave_dir,
         session_key,
         hook_events.task_close_event(
             "", _now(), session_id=session_key, orphan=True,
-            session_ref=session_ref,
+            session_ref=session_ref.to_dict() if session_ref else None,
         ),
     )
 
@@ -418,17 +420,17 @@ def session_task_rows(cfg, session_key: str) -> list[dict]:
     )
 
 
-def pending_open(rows: list[dict], session_ref: dict) -> str:
+def pending_open(rows: list[dict], session_ref: SessionRef) -> str:
     """The task id of the unclosed open annotated with this ref, or ``""``."""
     for task_id, entry in task_ledger(rows).items():
         opened = entry["open"]
         if opened and not entry["close"]:
-            if opened.get("session_ref") == session_ref:
+            if opened.get("session_ref") == session_ref.to_dict():
                 return task_id
     return ""
 
 
-def closed_task(rows: list[dict], session_ref: dict) -> str:
+def closed_task(rows: list[dict], session_ref: SessionRef) -> str:
     """The task id of the already-closed open annotated with this ref, or ``""``.
 
     Claude Code delivers SubagentStop twice per subagent (observed live
@@ -441,7 +443,7 @@ def closed_task(rows: list[dict], session_ref: dict) -> str:
     for task_id, entry in task_ledger(rows).items():
         opened = entry["open"]
         if opened and entry["close"]:
-            if opened.get("session_ref") == session_ref:
+            if opened.get("session_ref") == session_ref.to_dict():
                 return task_id
     return ""
 
@@ -501,8 +503,7 @@ def reconcile_tasks(
     - neither — new work. A stub is minted (``title`` required) and the
       ``round``, if present, is its first entry.
     - ``done: true`` — the user said the task is finished, so the note
-      closes. This is the only closure wrap performs. ``outcome`` is
-      never written — the dream judge owns it.
+      closes. This is the only closure wrap performs.
     - ``children: [tsk-…]`` — the per-dispatch seam tasks this task's
       work dispatched. Attachment is declared, never inferred:
       timestamps cannot attribute a dispatch when independent tasks run
@@ -546,16 +547,11 @@ def reconcile_tasks(
     vm.ensure_dirs()
     touched: list[Path] = []
     now = _now()
-    wrap_ref = {
-        "harness": harness.active().id,
-        "kind": "session_id",
-        "value": session_key,
-    }
+    wrap_ref = SessionRef.session(harness.active().id, session_key)
     minted_here = _minted_by_this_session(cfg, streams, session_key)
     note_id, insights, verdicts = _session_record(folders or [], streams)
     session_ref = (
-        {"harness": wrap_ref["harness"], "kind": "note", "value": note_id}
-        if note_id else wrap_ref
+        SessionRef.note(wrap_ref.harness, note_id) if note_id else wrap_ref
     )
     solo = len(declaration["declared"]) == 1
     repo = current_repo()
@@ -619,7 +615,9 @@ def reconcile_tasks(
         if "round" in entry:
             fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
             round_entry = {
-                "route": "session", "session_ref": session_ref, **entry["round"],
+                "route": "session",
+                "session_ref": session_ref.to_dict(),
+                **entry["round"],
             }
             if solo:
                 for key, found in (
@@ -629,11 +627,15 @@ def reconcile_tasks(
                         round_entry.setdefault(key, found)
             if entry.get("children"):
                 round_entry.setdefault("children", list(entry["children"]))
+            replaced = (wrap_ref.to_dict(), session_ref.to_dict())
             kept = [
                 r for r in fm.get("rounds") or []
-                if r.get("session_ref") not in (wrap_ref, session_ref)
+                if r.get("session_ref") not in replaced
             ]
-            updates["rounds"] = kept + [round_entry]
+            grain = str(fm.get("grain", ""))
+            updates["rounds"] = kept + [
+                Round.from_dict(round_entry, grain=grain).to_dict()
+            ]
             if resumed:
                 result.appended.append(task_id)
         if entry.get("done"):
@@ -679,8 +681,8 @@ def record_devloop_run(
     """
     from thinkweave.core.vault import VaultManager, parse_frontmatter
 
-    probe = normalize_devloop_run(payload, task_id=mint_task_id(), trajectory=trajectory)
-    asked = normalize_tracker_ref(probe["asked"], current_repo())
+    Round.from_devloop(payload, task_id=mint_task_id(), trajectory=trajectory)
+    asked = normalize_tracker_ref(devloop_ask(payload), current_repo())
     found = _open_task_by_ref(cfg, asked)
     stub = find_stub(cfg, found) if found else None
     if stub is None:
@@ -689,13 +691,14 @@ def record_devloop_run(
                 cfg,
                 session_key=session_key or "devloop",
                 project=project,
-                title=probe["title"],
+                title=str(payload.get("title", "")),
                 grain="work",
             ).note
         )
     fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
-    run = normalize_devloop_run(payload, task_id=str(fm["id"]), trajectory=trajectory)
-    entry = run["rounds"][0]
+    entry = Round.from_devloop(
+        payload, task_id=str(fm["id"]), trajectory=trajectory
+    ).to_dict()
     kept = [
         r for r in fm.get("rounds") or []
         if not entry.get("session_ref")
@@ -790,10 +793,7 @@ def _open_task_by_ref(cfg, asked: str) -> str:
 
     for path in cfg.vault_root.rglob("tsk-*.md"):
         fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        if (
-            fm.get("kind") == TASK_KIND and fm.get("asked") == asked
-            and fm.get("status") == "open" and fm.get("grain") == "work"
-        ):
+        if fm.get("asked") == asked and accepts_round(fm, "session"):
             return str(fm.get("id", ""))
     return ""
 

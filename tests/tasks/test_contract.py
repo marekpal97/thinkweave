@@ -1,19 +1,19 @@
-"""The ``kind: task`` note contract (#186): golden fixtures, the shape
-validator's rejections, the unified envelope schema, the two new edge
-types, and the reserved ``task_ref`` field on feedback events."""
+"""The ``kind: task`` note contract: golden fixtures, the shape
+validator's rejections, the unified envelope schema, the two edge types,
+and the declared records ``SessionRef`` and ``Round``."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
-from thinkweave.core.events import feedback_events
 from thinkweave.core.indexer import EDGE_FIELD_MAP
 from thinkweave.core.schemas import LIST_FRONTMATTER_KEYS, EdgeType
 from thinkweave.core.task_contract import (
-    FEEDBACK_TASK_REF_FIELD,
+    Round,
+    SessionRef,
+    accepts_round,
     envelope_return_name,
     normalize_tracker_ref,
     validate_envelope,
@@ -171,27 +171,6 @@ def test_envelope_return_file_is_named_by_task_id():
 
 
 # ---------------------------------------------------------------------------
-# task_ref: reserved on feedback events, zero behavior
-
-
-def test_task_ref_reserved_field_passes_through_feedback_events(tmp_path):
-    assert FEEDBACK_TASK_REF_FIELD == "task_ref"
-    events = tmp_path / "events.jsonl"
-    row = {
-        "ts": "2026-09-22T10:00:00+00:00",
-        "type": "feedback",
-        "session_id": "s1",
-        "register": "correction",
-        "prompt_ref": "use the rounds ledger",
-        "task_ref": "tsk-3f9a1c2e",
-    }
-    events.write_text(json.dumps(row) + "\n", encoding="utf-8")
-    rows = feedback_events(events)
-    assert len(rows) == 1
-    assert rows[0]["task_ref"] == "tsk-3f9a1c2e"
-
-
-# ---------------------------------------------------------------------------
 # Edge vocabulary: consumes + feedback_for
 
 
@@ -275,3 +254,62 @@ def test_tracker_refs_normalize(value, expected):
 
 def test_bare_issue_number_without_a_repo_stays_bare():
     assert normalize_tracker_ref("#7", repo="") == "#7"
+
+
+# ---------------------------------------------------------------------------
+# Declared records: SessionRef and Round validate once, at from_dict
+
+
+def test_session_ref_constructors_name_their_kind():
+    assert SessionRef.agent("claude-code", "a1").to_dict() == {
+        "harness": "claude-code", "kind": "agent_id", "value": "a1",
+    }
+    assert SessionRef.session("codex", "s1").kind == "session_id"
+    assert SessionRef.note("devloop", "n-1").kind == "note"
+
+
+def test_session_ref_from_dict_refuses_a_bare_string():
+    with pytest.raises(ValueError, match="triple"):
+        SessionRef.from_dict("7d0e5f4a")
+    ref = SessionRef.note("claude-code", "ses-1a2b3c4d")
+    assert SessionRef.from_dict(ref.to_dict()) == ref
+
+
+def test_round_round_trips_its_mapping_unchanged():
+    entry = ledger_round()
+    parsed = Round.from_dict(entry, grain="work")
+    assert parsed.session_ref == SessionRef.note("claude-code", "ses-1a2b3c4d")
+    assert parsed.to_dict() == entry
+
+
+def test_round_from_dict_names_every_bad_field():
+    entry = {**ledger_round(), "route": "herdr", "nonsense": 1}
+    with pytest.raises(ValueError) as exc:
+        Round.from_dict(entry, grain="work")
+    assert "route" in str(exc.value) and "nonsense" in str(exc.value)
+
+
+def test_trace_fields_are_refused_off_the_work_grain():
+    with pytest.raises(ValueError, match="work-grain"):
+        Round.from_dict({"criteria": []}, grain="per-dispatch")
+
+
+@pytest.mark.parametrize(
+    "fm, route, expected",
+    [
+        ({"status": "open", "grain": "work"}, "session", True),
+        ({"status": "open", "grain": "work"}, "dispatch", False),
+        ({"status": "open", "grain": "per-dispatch"}, "dispatch", True),
+        ({"status": "open", "grain": "batch"}, "dispatch", True),
+        ({"status": "closed", "grain": "work"}, "session", False),
+        ({"status": "open", "grain": "work"}, "devloop", True),
+    ],
+)
+def test_round_acceptance_by_route(fm, route, expected):
+    assert accepts_round({"kind": "task", **fm}, route) is expected
+
+
+def test_task_note_outcome_is_not_a_contract_field():
+    fm = load("declared-only")
+    fm["outcome"] = [{"label": "merged-clean"}]
+    assert any("outcome" in e for e in validate_task_note(fm))

@@ -335,6 +335,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
     key, never a filename.
     """
     from thinkweave.core.config import load_config
+    from thinkweave.core.task_contract import SessionRef
     from thinkweave.operations import task_seam
 
     cfg = load_config()
@@ -348,7 +349,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
             "payload carries no agent_id; the task opens without an agent "
             "ref and its SubagentStop cannot pair",
         )
-    ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
+    ref = SessionRef.agent(harness, agent_id) if agent_id else None
     dispatch = task_seam.open_task(
         cfg,
         session_key=session_id,
@@ -376,13 +377,14 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     orphans stay legible.
     """
     from thinkweave.core.config import load_config
+    from thinkweave.core.task_contract import SessionRef
     from thinkweave.operations import task_seam
 
     cfg = load_config()
     session_id = _subagent_session_id(hook_input)
     harness = _hook_harness() or "claude-code"
     agent_id = str(hook_input.get("agent_id", ""))
-    ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
+    ref = SessionRef.agent(harness, agent_id) if agent_id else None
     rows = task_seam.session_task_rows(cfg, session_id)
     task_id = task_seam.pending_open(rows, ref) if ref else ""
     duplicate_of = task_seam.closed_task(rows, ref) if ref and not task_id else ""
@@ -512,13 +514,14 @@ def _bind_dispatched_session(
     cfg, session_id: str, prompt_text: str, now: str, hook_input: dict
 ) -> None:
     """A prompt naming a task id binds this session's transcript to it."""
+    from thinkweave.core.task_contract import TASK_ID_RE, SessionRef
     from thinkweave.operations import task_seam
 
     transcript = hook_input.get("transcript_path", "")
     if not transcript:
         return
-    ref = {"harness": _hook_harness() or "claude-code", "kind": "session_id", "value": session_id}
-    for task_id in dict.fromkeys(re.findall(r"\btsk-[0-9a-f]{8}\b", prompt_text)):
+    ref = SessionRef.session(_hook_harness() or "claude-code", session_id)
+    for task_id in dict.fromkeys(TASK_ID_RE.findall(prompt_text)):
         if task_seam.bind_session(
             cfg, task_id, transcript_path=transcript, since=now, session_ref=ref
         ):
