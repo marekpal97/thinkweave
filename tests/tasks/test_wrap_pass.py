@@ -135,7 +135,7 @@ class TestSoloLaneMint:
         assert validate_task_note(fm) == []
         assert fm["status"] == "open"
         assert fm["grain"] == "work"
-        assert fm["asked"] == "#189"
+        assert fm["asked"] == "github:marekpal97/thinkweave#189"
         assert fm["consumes"] == ["dec-c839fb4e", "src-77778888"]
         assert len(fm["rounds"]) == 1
         assert fm["rounds"][0]["did"]["paths"] == [
@@ -433,3 +433,204 @@ class TestFinalizeSurface:
         with pytest.raises(SystemExit) as exc:
             cmd_wrap_finalize(args)
         assert exc.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# The ledger: rounds reference the session's notes; the body is derived
+
+
+def seed_session(cfg: Config) -> tuple[Path, dict[str, str]]:
+    """One wrapped session: session note, two insights, a decision, and a
+    feedback verdict in its events stream. Returns (folder, ids)."""
+    vm = VaultManager(config=cfg)
+    vm.ensure_dirs()
+    ses = vm.create_note(NoteType.SESSION, "S", body="## Summary\nx\n", project="t")
+    ses_id = vm.read_note(ses).id
+    folder = ses.parent
+    ids = {"session": ses_id}
+    for key, title in (("insight", "Ledger owns no content"), ("insight2", "Refs anchor identity")):
+        path = vm.create_note(
+            NoteType.NOTE, title, body="b", project="t",
+            extra_frontmatter={"derived_from": [ses_id]}, output_dir=folder,
+        )
+        ids[key] = vm.read_note(path).id
+    (folder / "use-sqlite.md").write_text(
+        "---\ntype: decision\nid: dec-aaaa1111\ntitle: Use SQLite\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    ids["decision"] = "dec-aaaa1111"
+    feedback = {
+        "ts": "2026-10-02T10:00:00+00:00", "type": "feedback",
+        "session_id": SESSION, "register": "correction",
+        "prompt_ref": "no, keep rounds sealed",
+    }
+    (folder / "events.jsonl").write_text(json.dumps(feedback) + "\n", encoding="utf-8")
+    return folder, ids
+
+
+def reconcile_session(cfg: Config, declaration: dict, folder: Path, key: str = SESSION):
+    return task_seam.reconcile_tasks(
+        cfg, declaration, session_key=key, project="t",
+        streams=[folder / "events.jsonl"], folders=[folder],
+    )
+
+
+def task_body(cfg: Config, task_id: str) -> str:
+    path = task_seam.find_stub(cfg, task_id)
+    return parse_frontmatter(path.read_text(encoding="utf-8"))[1]
+
+
+def round_lines(body: str) -> list[str]:
+    return [line for line in body.splitlines() if line.startswith("- ")]
+
+
+class TestLedgerRound:
+    def test_wrap_round_references_the_session_and_validates(self, cfg: Config):
+        folder, ids = seed_session(cfg)
+        decl = load_declaration()
+        decl["declared"][0]["round"]["outputs"] = [
+            {"kind": "url", "ref": "https://deck.example/s", "role": "deliverable"}
+        ]
+        result = reconcile_session(cfg, decl, folder)
+        assert result.errors == []
+        fm = task_notes(cfg)[result.minted[0]]
+        assert validate_task_note(fm) == []
+        entry = fm["rounds"][0]
+        assert entry["route"] == "session"
+        assert entry["session_ref"]["value"] == ids["session"]
+        assert entry["outputs"] == [
+            {"kind": "url", "ref": "https://deck.example/s", "role": "deliverable"}
+        ]
+
+    def test_single_task_session_attributes_every_insight_and_verdict(
+        self, cfg: Config
+    ):
+        folder, ids = seed_session(cfg)
+        result = reconcile_session(cfg, load_declaration(), folder)
+        entry = task_notes(cfg)[result.minted[0]]["rounds"][0]
+        assert sorted(entry["notes"]) == sorted([ids["insight"], ids["insight2"]])
+        assert entry["feedback"] == [
+            {
+                "register": "correction",
+                "prompt_ref": "no, keep rounds sealed",
+                "ts": "2026-10-02T10:00:00+00:00",
+            }
+        ]
+
+    def test_multi_task_session_attributes_only_what_is_declared(
+        self, cfg: Config
+    ):
+        folder, ids = seed_session(cfg)
+        decl = {
+            "declared": [
+                {"title": "a", "round": {"notes": [ids["insight"]]}},
+                {"title": "b", "round": {"did": {"attempts": 1}}},
+            ]
+        }
+        result = reconcile_session(cfg, decl, folder)
+        assert result.errors == []
+        notes = task_notes(cfg)
+        a, b = (notes[t]["rounds"][0] for t in result.minted)
+        assert a["notes"] == [ids["insight"]]
+        assert "notes" not in b and "feedback" not in b
+
+    def test_body_lists_one_wikilink_line_per_round_in_order(self, cfg: Config):
+        folder, ids = seed_session(cfg)
+        task_id = reconcile_session(cfg, load_declaration(), folder).minted[0]
+        cont = {"declared": [{"continuing": task_id, "round": {"did": {"attempts": 2}}}]}
+        task_seam.reconcile_tasks(  # a later session with no session note
+            cfg, cont, session_key="s-2", project="t",
+            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+        )
+        lines = round_lines(task_body(cfg, task_id))
+        assert len(lines) == 2
+        assert ids["session"] in lines[0] and "[[" in lines[0]
+        assert ids["insight"] in lines[0] and "dec-aaaa1111" in lines[0]
+        assert "s-2" in lines[1]
+
+    def test_graph_walk_from_the_task_reaches_its_referenced_notes(
+        self, cfg: Config
+    ):
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.retrieval.search import Search
+
+        folder, ids = seed_session(cfg)
+        task_id = reconcile_session(cfg, load_declaration(), folder).minted[0]
+        idx = Indexer(config=cfg)
+        try:
+            idx.rebuild(full=True)
+        finally:
+            idx.close()
+        s = Search(config=cfg)
+        try:
+            reached = {n.id for n in s.get_related(task_id, depth=1)}
+        finally:
+            s.close()
+        assert {ids["session"], ids["insight"], ids["insight2"], "dec-aaaa1111"} <= reached
+
+    def test_body_credits_a_child_whose_output_is_a_deliverable(
+        self, cfg: Config
+    ):
+        folder, _ids = seed_session(cfg)
+        child = task_seam.open_task(cfg, session_key=SESSION, project="t").task_id
+        stub = task_seam.find_stub(cfg, child)
+        VaultManager(config=cfg).update_note(
+            stub,
+            frontmatter_updates={
+                "rounds": [{"outputs": [{"kind": "note", "ref": "n-0babe000"}]}]
+            },
+        )
+        decl = load_declaration()
+        decl["declared"][0]["children"] = [child]
+        decl["declared"][0]["round"]["outputs"] = [
+            {"kind": "note", "ref": "n-0babe000", "role": "deliverable"}
+        ]
+        task_id = reconcile_session(cfg, decl, folder).minted[0]
+        line = round_lines(task_body(cfg, task_id))[0]
+        assert "n-0babe000" in line and child in line
+        assert task_notes(cfg)[task_id]["rounds"][0]["children"] == [child]
+
+
+# ---------------------------------------------------------------------------
+# Identity: a normalized tracker ref resolves to the open task carrying it
+
+
+class TestTrackerIdentity:
+    def test_a_declared_ref_appends_to_the_open_task_carrying_it(
+        self, cfg: Config
+    ):
+        first = reconcile(cfg, load_declaration()).minted[0]
+        decl = {
+            "declared": [
+                {
+                    "title": "picked up again",
+                    "asked": "github:marekpal97/thinkweave#189",
+                    "round": {"did": {"attempts": 1}},
+                }
+            ]
+        }
+        result = task_seam.reconcile_tasks(
+            cfg, decl, session_key="s-2", project="t",
+            streams=[hook_events.register_path(cfg.weave_dir, "s-2")],
+        )
+        assert result.minted == []
+        assert result.appended == [first]
+        assert len(task_notes(cfg)[first]["rounds"]) == 2
+
+    def test_a_bare_issue_number_normalizes_to_the_current_repo(
+        self, cfg: Config, tmp_path: Path, monkeypatch
+    ):
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "remote", "add", "origin",
+             "git@github.com:acme/widgets.git"],
+            check=True,
+        )
+        monkeypatch.chdir(repo)
+        decl = {"declared": [{"title": "t", "asked": "#7"}]}
+        task_id = reconcile(cfg, decl).minted[0]
+        assert task_notes(cfg)[task_id]["asked"] == "github:acme/widgets#7"

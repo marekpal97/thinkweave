@@ -15,6 +15,7 @@ from thinkweave.core.schemas import LIST_FRONTMATTER_KEYS, EdgeType
 from thinkweave.core.task_contract import (
     FEEDBACK_TASK_REF_FIELD,
     envelope_return_name,
+    normalize_tracker_ref,
     validate_envelope,
     validate_task_note,
 )
@@ -201,3 +202,76 @@ def test_new_edge_types_registered():
     assert EDGE_FIELD_MAP["feedback_for"] == "feedback_for"
     assert "consumes" in LIST_FRONTMATTER_KEYS
     assert "feedback_for" in LIST_FRONTMATTER_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Ledger round: references to what other surfaces own
+
+
+def ledger_round() -> dict:
+    return {
+        "route": "session",
+        "session_ref": {"harness": "claude-code", "kind": "note", "value": "ses-1a2b3c4d"},
+        "notes": ["n-1a2b3c4d"],
+        "decisions": {"minted": ["dec-1a2b3c4d"]},
+        "feedback": [{"register": "correction", "prompt_ref": "no", "ts": "t"}],
+        "outputs": [
+            {"kind": "pr", "ref": "https://github.com/o/r/pull/1", "role": "deliverable"},
+            {"kind": "file", "ref": "src/x.py", "role": "intermediate"},
+            {"kind": "url", "ref": "https://deck.example", "role": "deliverable"},
+        ],
+        "did": {"commits": ["abc1234"], "paths": ["src/x.py"], "attempts": 1},
+        "children": ["tsk-0000aaaa"],
+        "tools": {"Bash": 4, "Edit": 2},
+        "tool_errors": 1,
+    }
+
+
+def test_ledger_round_validates_clean():
+    fm = load("declared-only")
+    fm["rounds"] = [ledger_round()]
+    assert validate_task_note(fm) == []
+
+
+def test_route_and_output_vocabularies_are_closed():
+    fm = load("declared-only")
+    entry = ledger_round()
+    entry["route"] = "herdr"
+    entry["outputs"] = [{"kind": "blob", "ref": "x", "role": "final"}]
+    fm["rounds"] = [entry]
+    errors = validate_task_note(fm)
+    assert any("route" in e for e in errors)
+    assert any("kind" in e for e in errors)
+    assert any("role" in e for e in errors)
+
+
+def test_work_grain_outputs_need_a_role():
+    fm = load("declared-only")
+    fm["rounds"] = [{"outputs": [{"kind": "file", "ref": "src/x.py"}]}]
+    assert any("role" in e for e in validate_task_note(fm))
+
+
+def test_child_task_outputs_carry_no_role():
+    fm = load("envelope-thin")
+    fm["rounds"][0]["outputs"] = [{"kind": "note", "ref": "n-1a2b3c4d"}]
+    assert validate_task_note(fm) == []
+    fm["rounds"][0]["outputs"] = []
+    assert validate_task_note(fm) == []
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("#7", "github:o/r#7"),
+        ("https://github.com/a/b/issues/12", "github:a/b#12"),
+        ("github:a/b#12", "github:a/b#12"),
+        ("jira:ENG-42", "jira:ENG-42"),
+        ("audit the clusters", "audit the clusters"),
+    ],
+)
+def test_tracker_refs_normalize(value, expected):
+    assert normalize_tracker_ref(value, repo="o/r") == expected
+
+
+def test_bare_issue_number_without_a_repo_stays_bare():
+    assert normalize_tracker_ref("#7", repo="") == "#7"

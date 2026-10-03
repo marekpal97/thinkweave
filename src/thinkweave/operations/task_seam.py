@@ -22,6 +22,8 @@ inference.
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -30,6 +32,8 @@ from pathlib import Path
 from thinkweave.core.task_contract import (
     TASK_KIND,
     envelope_return_name,
+    normalize_devloop_run,
+    normalize_tracker_ref,
     validate_envelope,
     validate_task_note,
 )
@@ -356,8 +360,12 @@ def reconcile_tasks(
     - ``continuing: tsk-…`` — the work continues that task. Its
       ``round`` appends to the existing open work-grain note. Never a
       second note; a closed task cannot be reopened.
-    - no ``continuing`` — new work. A stub is minted (``title``
-      required) and the ``round``, if present, is its first entry.
+    - ``asked`` — normalized to its tracker ref (a bare ``#n`` resolves
+      against the current repo). Without ``continuing``, the open
+      work-grain task carrying that ref is the one the round appends to,
+      so every route that works one ticket builds one task.
+    - neither — new work. A stub is minted (``title`` required) and the
+      ``round``, if present, is its first entry.
     - ``done: true`` — the user said the task is finished, so the note
       closes. This is the only closure wrap performs. ``outcome`` is
       never written — the dream judge owns it.
@@ -368,6 +376,11 @@ def reconcile_tasks(
       task a child served.
     - ``round.decisions.minted`` — those decisions are stamped with the
       task id.
+    - ``round`` lands as a ``route: session`` round whose session ref is
+      the session note. In a single-task session the round's ``notes``
+      (the session's insights) and ``feedback`` (its verdicts) default to
+      everything the session recorded; with several tasks only what each
+      entry declares is attributed.
 
     Re-running the pass for the same session re-applies rather than
     duplicates: each round carries the wrapping session's ref and replaces
@@ -378,8 +391,8 @@ def reconcile_tasks(
     ``boundary`` sparsity (a per-dispatch open with no id-matched close).
     At ``task-id-only`` sparsity — a catch-up declarer that was not
     present — an absent close is not evidence, so nothing is flagged.
-    Every touched note is re-validated against the contract before the
-    pass returns.
+    Every touched note's body is re-rendered from its rounds and the note
+    is re-validated against the contract before the pass returns.
     """
     from thinkweave.core.task_contract import validate_wrap_declaration
     from thinkweave.core.vault import VaultManager, parse_frontmatter
@@ -405,9 +418,20 @@ def reconcile_tasks(
         "value": session_key,
     }
     minted_here = _minted_by_this_session(cfg, streams, session_key)
+    session = _SessionRecord.read(folders or [], streams)
+    session_ref = session.ref(wrap_ref["harness"]) or wrap_ref
+    solo = len(declaration["declared"]) == 1
+    repo = current_repo()
     for entry in declaration["declared"]:
         continuing = str(entry.get("continuing") or "")
-        existing = continuing or minted_here.get(str(entry.get("title", "")), "")
+        asked = normalize_tracker_ref(str(entry.get("asked") or ""), repo)
+        if asked.startswith("#"):
+            result.warnings.append(
+                f"declared: no GitHub remote to resolve {asked} against — "
+                "kept bare, so it matches no other route's task"
+            )
+        resumed = continuing or (asked and _open_task_by_ref(cfg, asked)) or ""
+        existing = resumed or minted_here.get(str(entry.get("title", "")), "")
         if existing:
             stub = find_stub(cfg, existing)
             if stub is None:
@@ -451,19 +475,29 @@ def reconcile_tasks(
             result.minted.append(task_id)
 
         updates: dict = {}
-        if entry.get("asked"):
-            updates["asked"] = entry["asked"]
+        if asked:
+            updates["asked"] = asked
         if entry.get("consumes"):
             updates["consumes"] = list(entry["consumes"])
         if "round" in entry:
             fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
-            round_entry = {"session_ref": wrap_ref, **entry["round"]}
+            round_entry = {
+                "route": "session", "session_ref": session_ref, **entry["round"],
+            }
+            if solo:
+                for key, found in (
+                    ("notes", session.insights), ("feedback", session.feedback),
+                ):
+                    if found:
+                        round_entry.setdefault(key, found)
+            if entry.get("children"):
+                round_entry.setdefault("children", list(entry["children"]))
             kept = [
                 r for r in fm.get("rounds") or []
-                if r.get("session_ref") != round_entry["session_ref"]
+                if r.get("session_ref") not in (wrap_ref, session_ref)
             ]
             updates["rounds"] = kept + [round_entry]
-            if continuing:
+            if resumed:
                 result.appended.append(task_id)
         if entry.get("done"):
             updates["status"] = "closed"
@@ -482,6 +516,7 @@ def reconcile_tasks(
         _flag_orphans(cfg, vm, streams, result, touched)
 
     for stub in dict.fromkeys(touched):
+        _render_body(cfg, vm, stub)
         fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
         result.errors.extend(
             f"{stub.name}: {e}" for e in validate_task_note(fm)
@@ -489,8 +524,207 @@ def reconcile_tasks(
     return result
 
 
+def record_devloop_run(
+    cfg,
+    payload: object,
+    *,
+    project: str,
+    trajectory: str = "",
+    session_key: str = "",
+) -> str:
+    """Land one devloop run as a ``route: devloop`` round; returns the task id.
+
+    The run resolves its task by the tracker ref its issue normalizes to:
+    the open work-grain task carrying that ref gains the round (a re-record
+    of the same trajectory replaces it), otherwise a work-grain task is
+    opened for it. A payload that does not fit the contract raises
+    ``ValueError`` before anything is written.
+    """
+    from thinkweave.core.vault import VaultManager, parse_frontmatter
+
+    probe = normalize_devloop_run(payload, task_id=mint_task_id(), trajectory=trajectory)
+    asked = normalize_tracker_ref(probe["asked"], current_repo())
+    found = _open_task_by_ref(cfg, asked)
+    stub = find_stub(cfg, found) if found else None
+    if stub is None:
+        stub = Path(
+            open_task(
+                cfg,
+                session_key=session_key or "devloop",
+                project=project,
+                title=probe["title"],
+                grain="work",
+            ).note
+        )
+    fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+    run = normalize_devloop_run(payload, task_id=str(fm["id"]), trajectory=trajectory)
+    entry = run["rounds"][0]
+    kept = [
+        r for r in fm.get("rounds") or []
+        if not entry.get("session_ref")
+        or r.get("session_ref") != entry["session_ref"]
+    ]
+    vm = VaultManager(config=cfg)
+    vm.update_note(stub, frontmatter_updates={"asked": asked, "rounds": kept + [entry]})
+    _render_body(cfg, vm, stub)
+    errors = validate_task_note(
+        parse_frontmatter(stub.read_text(encoding="utf-8"))[0]
+    )
+    if errors:
+        raise ValueError(f"{stub.name}: {errors}")
+    return str(fm["id"])
+
+
+def render_ledger_body(cfg, fm: dict) -> str:
+    """The task body: one wikilink line per round, in ledger order.
+
+    Derived from the rounds alone and never hand-edited. Its wikilinks are
+    also the task's graph edges (the indexer types a link to a session as
+    ``derived_from``, any other as ``relates_to``). A deliverable whose ref
+    equals a child task's output ref names that child.
+    """
+    from thinkweave.synthesis.concept_hub import _safe_hub_maps
+    from thinkweave.synthesis.hub import reflink
+
+    idmap, title_map, _ = _safe_hub_maps(cfg)
+
+    def link(note_id: str) -> str:
+        return reflink(note_id, idmap, title_map)
+
+    lines = []
+    for entry in fm.get("rounds") or []:
+        credit = _child_credit(cfg, entry.get("children") or [])
+        lines.append("- " + " · ".join(_round_parts(entry, link, credit)))
+    return "## Rounds\n\n" + ("\n".join(lines) or "_No rounds yet._") + "\n"
+
+
+def current_repo() -> str:
+    """``owner/name`` of the working directory's GitHub ``origin``, or ``""``."""
+    try:
+        url = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    found = re.search(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$", url)
+    return found[1] if found else ""
+
+
 # ---------------------------------------------------------------------------
 # Wrap-pass plumbing
+
+
+@dataclass(frozen=True)
+class _SessionRecord:
+    """What the wrapped session itself recorded: its session note, the
+    insight notes derived from it, and its prompt verdicts."""
+
+    note_id: str = ""
+    insights: tuple[str, ...] = ()
+    feedback: tuple[dict, ...] = ()
+
+    @classmethod
+    def read(cls, folders: list[Path], streams: list[Path]) -> "_SessionRecord":
+        from thinkweave.core.events import feedback_events
+        from thinkweave.core.vault import parse_frontmatter
+
+        notes = [
+            parse_frontmatter(p.read_text(encoding="utf-8"))[0]
+            for p in _folder_notes(folders)
+        ]
+        sessions = [str(fm.get("id")) for fm in notes if fm.get("type") == "session"]
+        insights = [
+            str(fm["id"]) for fm in notes
+            if fm.get("type") == "note" and fm.get("id")
+            and not fm.get("kind") and not fm.get("auto_extracted")
+            and set(sessions) & set(fm.get("derived_from") or [])
+        ]
+        verdicts = [
+            {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
+            for stream in streams
+            for row in feedback_events(stream)
+        ]
+        return cls(
+            note_id=sessions[0] if sessions else "",
+            insights=tuple(insights),
+            feedback=tuple(verdicts),
+        )
+
+    def ref(self, harness_id: str) -> dict | None:
+        if not self.note_id:
+            return None
+        return {"harness": harness_id, "kind": "note", "value": self.note_id}
+
+
+def _open_task_by_ref(cfg, asked: str) -> str:
+    """The id of the open work-grain task whose ``asked`` is this tracker
+    ref, or ``""``.
+
+    ponytail: parses every task stub per lookup, O(task notes); the upgrade
+    path is the SQLite index once stubs are indexed at write.
+    """
+    from thinkweave.core.vault import parse_frontmatter
+
+    for path in cfg.vault_root.rglob("tsk-*.md"):
+        fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if (
+            fm.get("kind") == TASK_KIND and fm.get("asked") == asked
+            and fm.get("status") == "open" and fm.get("grain") == "work"
+        ):
+            return str(fm.get("id", ""))
+    return ""
+
+
+def _render_body(cfg, vm, stub: Path) -> None:
+    from thinkweave.core.vault import parse_frontmatter
+
+    fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+    vm.update_note(stub, body=render_ledger_body(cfg, fm))
+
+
+def _round_parts(entry: dict, link, credit: dict[str, str]) -> list[str]:
+    ref = entry.get("session_ref") or {}
+    head = (
+        link(ref["value"]) if ref.get("kind") == "note"
+        else f"`{ref.get('harness', '')} {ref.get('value', '?')}`"
+    )
+    parts = [f"{entry.get('route', 'dispatch')} {head}"]
+    if entry.get("notes"):
+        parts.append("notes " + ", ".join(link(n) for n in entry["notes"]))
+    decisions = entry.get("decisions") or {}
+    for key in ("minted", "re_served", "reverted"):
+        if decisions.get(key):
+            label = key.replace("_", "-")
+            parts.append(f"decisions {label} " + ", ".join(link(d) for d in decisions[key]))
+    if entry.get("feedback"):
+        parts.append("feedback " + ", ".join(f.get("register", "?") for f in entry["feedback"]))
+    for out in entry.get("outputs") or []:
+        target = link(out["ref"]) if out.get("kind") == "note" else out.get("ref", "")
+        text = f"{out.get('role', 'output')} {out.get('kind', '')} {target}"
+        if out.get("role") == "deliverable" and out.get("ref") in credit:
+            text += f" by {link(credit[out['ref']])}"
+        parts.append(text)
+    commits = (entry.get("did") or {}).get("commits")
+    if commits:
+        parts.append("commits " + ", ".join(commits))
+    return parts
+
+
+def _child_credit(cfg, children: list[str]) -> dict[str, str]:
+    """{output ref: child task id} over the children's recorded outputs."""
+    from thinkweave.core.vault import parse_frontmatter
+
+    credit: dict[str, str] = {}
+    for child_id in children:
+        stub = find_stub(cfg, child_id)
+        if stub is None:
+            continue
+        fm, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+        for entry in fm.get("rounds") or []:
+            for out in entry.get("outputs") or []:
+                credit.setdefault(str(out.get("ref", "")), child_id)
+    return credit
 
 
 def _attach_children(

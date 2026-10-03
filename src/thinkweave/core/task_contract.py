@@ -37,6 +37,13 @@ SPARSITY_TIERS = frozenset({"boundary", "task-id-only"})
 
 SESSION_REF_KEYS = frozenset({"harness", "kind", "value"})
 
+# How a round's work ran, and what it produced. A work-grain round assigns
+# each output a role; a per-dispatch child records bare {kind, ref} and the
+# parent's round decides whether that ref was the deliverable.
+ROUTES = frozenset({"session", "devloop"})
+OUTPUT_KINDS = frozenset({"file", "url", "artifact", "pr", "commit", "note"})
+OUTPUT_ROLES = frozenset({"deliverable", "intermediate"})
+
 # Devloop's trace vocabulary; valid only inside a work-grain round entry.
 DEVLOOP_TRACE_KEYS = frozenset({"rounds", "criteria", "simplify", "skills"})
 
@@ -50,14 +57,31 @@ def envelope_return_name(task_id: str) -> str:
     return f"{task_id}.jsonl"
 
 
-def normalize_devloop_run(payload: object, *, task_id: str) -> dict:
+def normalize_tracker_ref(value: str, repo: str = "") -> str:
+    """A tracker reference in its identity form: ``github:<owner>/<repo>#<n>``
+    or ``jira:<KEY>-<n>``. A bare ``#<n>`` resolves against ``repo``
+    (``owner/name``) and stays bare without one; a GitHub issue or PR URL
+    folds to its ref; anything else (free-text asks) passes through."""
+    value = value.strip()
+    if bare := re.fullmatch(r"#(\d+)", value):
+        return f"github:{repo}#{bare[1]}" if repo else value
+    if url := _GITHUB_ITEM_URL.fullmatch(value):
+        return f"github:{url[1]}#{url[2]}"
+    return value
+
+
+def normalize_devloop_run(
+    payload: object, *, task_id: str, trajectory: str = ""
+) -> dict:
     """Compile one devloop run's emitted trajectory payload into a
-    work-grain task note: each stage-dispatch record becomes one envelope
-    row, and the semantic trace nests inside the single round entry the run
-    compiles to. Keys the emitter dropped are simply absent; the result is
-    validated against the contract and a value that cannot land raises
-    ``ValueError`` naming the field. The note stays ``status: open`` —
-    closure for loop work is the PR merge, never this compile."""
+    work-grain task note whose single round is ``route: devloop``: each
+    stage-dispatch record becomes one envelope row, the semantic trace
+    nests inside the round, the trajectory note (when its id is known) is
+    the round's session ref, and the PR is its deliverable. Keys the
+    emitter dropped are simply absent; the result is validated against the
+    contract and a value that cannot land raises ``ValueError`` naming the
+    field. The note stays ``status: open`` — closure for loop work is the
+    PR merge, never this compile."""
     if not isinstance(payload, dict) or not isinstance(
         payload.get("frontmatter"), dict
     ):
@@ -68,12 +92,21 @@ def normalize_devloop_run(payload: object, *, task_id: str) -> dict:
     src = payload["frontmatter"]
     stages = src.get("skills") or []
     entry: dict = {
+        "route": "devloop",
         "envelopes": [_stage_envelope(s, task_id) for s in stages],
         "did": {
             "paths": list(src.get("files_touched") or []),
             "attempts": int(src.get("fix_rounds") or 0),
         },
     }
+    if trajectory:
+        entry["session_ref"] = {
+            "harness": "devloop", "kind": "note", "value": trajectory,
+        }
+    if src.get("pr_url"):
+        entry["outputs"] = [
+            {"kind": "pr", "ref": str(src["pr_url"]), "role": "deliverable"}
+        ]
     if "served" in src:
         entry["served"] = list(src["served"])
     trace = src.get("trace") or {}
@@ -97,7 +130,9 @@ def normalize_devloop_run(payload: object, *, task_id: str) -> dict:
         "title": str(payload.get("title", "")),
         "status": "open",
         "grain": "work",
-        "asked": f"#{src.get('issue', '')}",
+        "asked": normalize_tracker_ref(
+            str(src.get("issue_url") or f"#{src.get('issue', '')}")
+        ),
         "rounds": [entry],
     }
     errors = validate_task_note(fm)
@@ -350,6 +385,37 @@ def _dict_list(spec):
     return check
 
 
+def _str_int_map(value, where):
+    if not isinstance(value, dict):
+        return [f"{where}: expected a mapping of name to count"]
+    return [
+        e for k, v in value.items() for e in _int(v, f"{where}.{k}")
+    ]
+
+
+def _outputs(role_required: bool):
+    """Round outputs: ``{kind, ref}`` plus a ``role`` the work grain owes."""
+    entry = _closed_dict({
+        "kind": _enum(OUTPUT_KINDS),
+        "ref": _str,
+        "role": _enum(OUTPUT_ROLES),
+    })
+
+    def check(value, where):
+        if not isinstance(value, list):
+            return [f"{where}: expected a list"]
+        errors = []
+        for i, v in enumerate(value):
+            at = f"{where}[{i}]"
+            errors += entry(v, at)
+            if isinstance(v, dict):
+                required = ("kind", "ref", "role") if role_required else ("kind", "ref")
+                errors += [f"{at}: missing {k!r}" for k in required if k not in v]
+        return errors
+
+    return check
+
+
 def _envelopes(value, where):
     if not isinstance(value, list):
         return [f"{where}: expected a list"]
@@ -406,10 +472,16 @@ _TRACE_CHECKERS = {
 }
 
 # One round entry: what a single /wrap (or devloop run) compiles into the
-# ledger — session ref, envelope rows, context served, outputs delta,
-# decision lifecycle, feedback refs.
+# ledger — references into the surfaces that own the content (session or
+# trajectory note, insight notes, decisions, verdict events, outputs,
+# commits, child tasks), never the content itself.
 _ROUND_CHECKERS = {
+    "route": _enum(ROUTES),
     "session_ref": _session_ref,
+    "notes": _str_list,
+    "children": _task_id_list,
+    "tools": _str_int_map,
+    "tool_errors": _int,
     "envelopes": _envelopes,
     "served": _str_list,
     "did": _closed_dict(
@@ -423,6 +495,10 @@ _ROUND_CHECKERS = {
     ),
     "cost": _COST,
 }
+
+_GITHUB_ITEM_URL = re.compile(
+    r"https?://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)/?"
+)
 
 _TOP_REQUIRED = ("type", "kind", "id", "status", "grain", "rounds")
 
@@ -475,7 +551,9 @@ def _rounds_errors(value, grain, where="task note.rounds") -> list[str]:
             errors.append(f"{at}: expected a mapping")
             continue
         for key, v in entry.items():
-            if key in _ROUND_CHECKERS:
+            if key == "outputs":
+                errors += _outputs(grain == "work")(v, f"{at}.{key}")
+            elif key in _ROUND_CHECKERS:
                 errors += _ROUND_CHECKERS[key](v, f"{at}.{key}")
             elif key in _TRACE_CHECKERS:
                 if grain == "work":
