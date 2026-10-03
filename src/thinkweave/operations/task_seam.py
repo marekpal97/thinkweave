@@ -297,10 +297,8 @@ def close_task(
     round_entry: dict = {"envelopes": envelopes}
     if digest:
         claim = digest.envelope(task_id)
-        round_entry = {
-            "envelopes": envelopes + ([claim] if claim else []),
-            **digest.round_fields(envelopes),
-        }
+        round_entry["envelopes"] = envelopes + ([claim] if claim else [])
+        round_entry.update(digest.round_fields(envelopes))
         updates.update(digest.note_fields(fm))
     if session_ref:
         round_entry["session_ref"] = session_ref
@@ -554,8 +552,11 @@ def reconcile_tasks(
         "value": session_key,
     }
     minted_here = _minted_by_this_session(cfg, streams, session_key)
-    session = _SessionRecord.read(folders or [], streams)
-    session_ref = session.ref(wrap_ref["harness"]) or wrap_ref
+    note_id, insights, verdicts = _session_record(folders or [], streams)
+    session_ref = (
+        {"harness": wrap_ref["harness"], "kind": "note", "value": note_id}
+        if note_id else wrap_ref
+    )
     solo = len(declaration["declared"]) == 1
     repo = current_repo()
     for entry in declaration["declared"]:
@@ -622,7 +623,7 @@ def reconcile_tasks(
             }
             if solo:
                 for key, found in (
-                    ("notes", session.insights), ("feedback", session.feedback),
+                    ("notes", insights), ("feedback", verdicts),
                 ):
                     if found:
                         round_entry.setdefault(key, found)
@@ -751,46 +752,31 @@ def current_repo() -> str:
 # Wrap-pass plumbing
 
 
-@dataclass(frozen=True)
-class _SessionRecord:
-    """What the wrapped session itself recorded: its session note, the
+def _session_record(
+    folders: list[Path], streams: list[Path]
+) -> tuple[str, list[str], list[dict]]:
+    """What the wrapped session itself recorded: its session note id, the
     insight notes derived from it, and its prompt verdicts."""
+    from thinkweave.core.events import feedback_events
+    from thinkweave.core.vault import parse_frontmatter
 
-    note_id: str = ""
-    insights: tuple[str, ...] = ()
-    feedback: tuple[dict, ...] = ()
-
-    @classmethod
-    def read(cls, folders: list[Path], streams: list[Path]) -> "_SessionRecord":
-        from thinkweave.core.events import feedback_events
-        from thinkweave.core.vault import parse_frontmatter
-
-        notes = [
-            parse_frontmatter(p.read_text(encoding="utf-8"))[0]
-            for p in _folder_notes(folders)
-        ]
-        sessions = [str(fm.get("id")) for fm in notes if fm.get("type") == "session"]
-        insights = [
-            str(fm["id"]) for fm in notes
-            if fm.get("type") == "note" and fm.get("id")
-            and not fm.get("kind") and not fm.get("auto_extracted")
-            and set(sessions) & set(fm.get("derived_from") or [])
-        ]
-        verdicts = [
-            {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
-            for stream in streams
-            for row in feedback_events(stream)
-        ]
-        return cls(
-            note_id=sessions[0] if sessions else "",
-            insights=tuple(insights),
-            feedback=tuple(verdicts),
-        )
-
-    def ref(self, harness_id: str) -> dict | None:
-        if not self.note_id:
-            return None
-        return {"harness": harness_id, "kind": "note", "value": self.note_id}
+    notes = [
+        parse_frontmatter(p.read_text(encoding="utf-8"))[0]
+        for p in _folder_notes(folders)
+    ]
+    sessions = [str(fm.get("id")) for fm in notes if fm.get("type") == "session"]
+    insights = [
+        str(fm["id"]) for fm in notes
+        if fm.get("type") == "note" and fm.get("id")
+        and not fm.get("kind") and not fm.get("auto_extracted")
+        and set(sessions) & set(fm.get("derived_from") or [])
+    ]
+    verdicts = [
+        {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
+        for stream in streams
+        for row in feedback_events(stream)
+    ]
+    return (sessions[0] if sessions else "", insights, verdicts)
 
 
 def _open_task_by_ref(cfg, asked: str) -> str:

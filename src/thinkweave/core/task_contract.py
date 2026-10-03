@@ -395,22 +395,21 @@ def _str_int_map(value, where):
 
 def _outputs(role_required: bool):
     """Round outputs: ``{kind, ref}`` plus a ``role`` the work grain owes."""
-    entry = _closed_dict({
+    entries = _dict_list({
         "kind": _enum(OUTPUT_KINDS),
         "ref": _str,
         "role": _enum(OUTPUT_ROLES),
     })
+    required = ("kind", "ref", "role") if role_required else ("kind", "ref")
 
     def check(value, where):
-        if not isinstance(value, list):
-            return [f"{where}: expected a list"]
-        errors = []
-        for i, v in enumerate(value):
-            at = f"{where}[{i}]"
-            errors += entry(v, at)
-            if isinstance(v, dict):
-                required = ("kind", "ref", "role") if role_required else ("kind", "ref")
-                errors += [f"{at}: missing {k!r}" for k in required if k not in v]
+        errors = entries(value, where)
+        if isinstance(value, list):
+            errors += [
+                f"{where}[{i}]: missing {k!r}"
+                for i, v in enumerate(value) if isinstance(v, dict)
+                for k in required if k not in v
+            ]
         return errors
 
     return check
