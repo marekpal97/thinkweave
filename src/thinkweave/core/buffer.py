@@ -32,6 +32,16 @@ from pathlib import Path
 _RETRIEVAL_LOG_TYPES = frozenset({"retrieval", "startup"})
 
 
+def buffer_path(weave_dir: Path, session_id: str) -> Path:
+    """The live buffer one session's hooks append to."""
+    return weave_dir / "buffer" / f"{session_id}.jsonl"
+
+
+def archived_events_path(session_dir: Path) -> Path:
+    """Where the archive step files a session's action and prompt events."""
+    return session_dir / "events.jsonl"
+
+
 def session_state_dir(weave_dir: Path, session_id: str) -> Path:
     """Per-session scratch beside the buffer, for markers with no place in it.
 
@@ -74,7 +84,7 @@ def _append_unique_lines(path: Path, lines: list[str]) -> None:
 
 def cleanup_buffer(weave_dir: Path, session_id: str) -> None:
     """Delete the buffer file, and its scratch dir, after extraction."""
-    buf_file = weave_dir / "buffer" / f"{session_id}.jsonl"
+    buf_file = buffer_path(weave_dir, session_id)
     buf_file.unlink(missing_ok=True)
     clear_session_state(weave_dir, session_id)
 
@@ -120,13 +130,13 @@ def mirror_buffer_events(weave_dir: Path, session_id: str, session_dir: Path) ->
     projected into ``context_served`` at index time and stays an archive-time
     artefact. Returns the number of lines appended.
     """
-    buf_file = weave_dir / "buffer" / f"{session_id}.jsonl"
+    buf_file = buffer_path(weave_dir, session_id)
     if not buf_file.exists():
         return 0
     action_lines, _retrieval = _partition_buffer(buf_file)
     if not action_lines:
         return 0
-    events_dest = session_dir / "events.jsonl"
+    events_dest = archived_events_path(session_dir)
     seen = (
         set(events_dest.read_text(encoding="utf-8").splitlines())
         if events_dest.exists()
@@ -148,12 +158,12 @@ def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
     the pre-RLVR behaviour: a single ``events.jsonl`` is written and the
     sibling retrieval log file is never created.
     """
-    buf_file = weave_dir / "buffer" / f"{session_id}.jsonl"
+    buf_file = buffer_path(weave_dir, session_id)
     if not buf_file.exists():
         clear_session_state(weave_dir, session_id)
         return
 
-    events_dest = session_dir / "events.jsonl"
+    events_dest = archived_events_path(session_dir)
     retrieval_dest = session_dir / "retrieval_log.jsonl"
 
     # Any failure propagates and leaves the live buffer in place. The next

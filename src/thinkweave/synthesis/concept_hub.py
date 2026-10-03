@@ -282,7 +282,7 @@ def append_log_entries(
     # title-aliased links, and the path->id inverse so the parse below recovers
     # citation ids from any links already written in title-aliased form (else
     # dedup would compare paths against ids and re-cite everything).
-    idmap, title_map, path_to_id = _safe_hub_maps(config)
+    idmap, title_map, path_to_id = safe_hub_maps(config)
     hub = parse_concept_hub(path, concept=concept, path_to_id=path_to_id)
     cited = hub.cited_ids
     for entry in new_entries:
@@ -369,7 +369,7 @@ def _safe_id_path_map(config: Config) -> dict[str, str]:
         db.close()
 
 
-def _safe_hub_maps(
+def safe_hub_maps(
     config: Config,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """Build (id->path, id->title, path->id) in one DB pass for hub render+parse.
@@ -482,7 +482,7 @@ def unprocessed_notes_for_concept(
     )
     # path->id so title-aliased citations resolve back to ids; without it the
     # cited-set would hold paths and every note would look unprocessed.
-    _, _, path_to_id = _safe_hub_maps(config)
+    _, _, path_to_id = safe_hub_maps(config)
     hub = parse_concept_hub(
         concept_hub_path(config, concept), concept=concept, path_to_id=path_to_id
     )

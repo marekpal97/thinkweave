@@ -1,20 +1,21 @@
-"""The ``kind: task`` note contract (#186): golden fixtures, the shape
-validator's rejections, the unified envelope schema, the two new edge
-types, and the reserved ``task_ref`` field on feedback events."""
+"""The ``kind: task`` note contract: golden fixtures, the shape
+validator's rejections, the unified envelope schema, the two edge types,
+and the declared records ``SessionRef`` and ``Round``."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
-from thinkweave.core.events import feedback_events
 from thinkweave.core.indexer import EDGE_FIELD_MAP
 from thinkweave.core.schemas import LIST_FRONTMATTER_KEYS, EdgeType
 from thinkweave.core.task_contract import (
-    FEEDBACK_TASK_REF_FIELD,
+    Round,
+    SessionRef,
+    accepts_round,
     envelope_return_name,
+    normalize_tracker_ref,
     validate_envelope,
     validate_task_note,
 )
@@ -170,27 +171,6 @@ def test_envelope_return_file_is_named_by_task_id():
 
 
 # ---------------------------------------------------------------------------
-# task_ref: reserved on feedback events, zero behavior
-
-
-def test_task_ref_reserved_field_passes_through_feedback_events(tmp_path):
-    assert FEEDBACK_TASK_REF_FIELD == "task_ref"
-    events = tmp_path / "events.jsonl"
-    row = {
-        "ts": "2026-09-22T10:00:00+00:00",
-        "type": "feedback",
-        "session_id": "s1",
-        "register": "correction",
-        "prompt_ref": "use the rounds ledger",
-        "task_ref": "tsk-3f9a1c2e",
-    }
-    events.write_text(json.dumps(row) + "\n", encoding="utf-8")
-    rows = feedback_events(events)
-    assert len(rows) == 1
-    assert rows[0]["task_ref"] == "tsk-3f9a1c2e"
-
-
-# ---------------------------------------------------------------------------
 # Edge vocabulary: consumes + feedback_for
 
 
@@ -201,3 +181,135 @@ def test_new_edge_types_registered():
     assert EDGE_FIELD_MAP["feedback_for"] == "feedback_for"
     assert "consumes" in LIST_FRONTMATTER_KEYS
     assert "feedback_for" in LIST_FRONTMATTER_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Ledger round: references to what other surfaces own
+
+
+def ledger_round() -> dict:
+    return {
+        "route": "session",
+        "session_ref": {"harness": "claude-code", "kind": "note", "value": "ses-1a2b3c4d"},
+        "notes": ["n-1a2b3c4d"],
+        "decisions": {"minted": ["dec-1a2b3c4d"]},
+        "feedback": [{"register": "correction", "prompt_ref": "no", "ts": "t"}],
+        "outputs": [
+            {"kind": "pr", "ref": "https://github.com/o/r/pull/1", "role": "deliverable"},
+            {"kind": "file", "ref": "src/x.py", "role": "intermediate"},
+            {"kind": "url", "ref": "https://deck.example", "role": "deliverable"},
+        ],
+        "did": {"commits": ["abc1234"], "paths": ["src/x.py"], "attempts": 1},
+        "children": ["tsk-0000aaaa"],
+        "tools": {"Bash": 4, "Edit": 2},
+        "tool_errors": 1,
+    }
+
+
+def test_ledger_round_validates_clean():
+    fm = load("declared-only")
+    fm["rounds"] = [ledger_round()]
+    assert validate_task_note(fm) == []
+
+
+def test_route_and_output_vocabularies_are_closed():
+    fm = load("declared-only")
+    entry = ledger_round()
+    entry["route"] = "herdr"
+    entry["outputs"] = [{"kind": "blob", "ref": "x", "role": "final"}]
+    fm["rounds"] = [entry]
+    errors = validate_task_note(fm)
+    assert any("route" in e for e in errors)
+    assert any("kind" in e for e in errors)
+    assert any("role" in e for e in errors)
+
+
+def test_work_grain_outputs_need_a_role():
+    fm = load("declared-only")
+    fm["rounds"] = [{"outputs": [{"kind": "file", "ref": "src/x.py"}]}]
+    assert any("role" in e for e in validate_task_note(fm))
+
+
+def test_child_task_outputs_carry_no_role():
+    fm = load("envelope-thin")
+    fm["rounds"][0]["outputs"] = [{"kind": "note", "ref": "n-1a2b3c4d"}]
+    assert validate_task_note(fm) == []
+    fm["rounds"][0]["outputs"] = []
+    assert validate_task_note(fm) == []
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("#7", "github:o/r#7"),
+        ("https://github.com/a/b/issues/12", "github:a/b#12"),
+        ("github:a/b#12", "github:a/b#12"),
+        ("jira:ENG-42", "jira:ENG-42"),
+        ("audit the clusters", "audit the clusters"),
+    ],
+)
+def test_tracker_refs_normalize(value, expected):
+    assert normalize_tracker_ref(value, repo="o/r") == expected
+
+
+def test_bare_issue_number_without_a_repo_stays_bare():
+    assert normalize_tracker_ref("#7", repo="") == "#7"
+
+
+# ---------------------------------------------------------------------------
+# Declared records: SessionRef and Round validate once, at from_dict
+
+
+def test_session_ref_constructors_name_their_kind():
+    assert SessionRef.agent("claude-code", "a1").to_dict() == {
+        "harness": "claude-code", "kind": "agent_id", "value": "a1",
+    }
+    assert SessionRef.session("codex", "s1").kind == "session_id"
+    assert SessionRef.note("devloop", "n-1").kind == "note"
+
+
+def test_session_ref_from_dict_refuses_a_bare_string():
+    with pytest.raises(ValueError, match="triple"):
+        SessionRef.from_dict("7d0e5f4a")
+    ref = SessionRef.note("claude-code", "ses-1a2b3c4d")
+    assert SessionRef.from_dict(ref.to_dict()) == ref
+
+
+def test_round_round_trips_its_mapping_unchanged():
+    entry = ledger_round()
+    parsed = Round.from_dict(entry, grain="work")
+    assert parsed.session_ref == SessionRef.note("claude-code", "ses-1a2b3c4d")
+    assert parsed.to_dict() == entry
+
+
+def test_round_from_dict_names_every_bad_field():
+    entry = {**ledger_round(), "route": "herdr", "nonsense": 1}
+    with pytest.raises(ValueError) as exc:
+        Round.from_dict(entry, grain="work")
+    assert "route" in str(exc.value) and "nonsense" in str(exc.value)
+
+
+def test_trace_fields_are_refused_off_the_work_grain():
+    with pytest.raises(ValueError, match="work-grain"):
+        Round.from_dict({"criteria": []}, grain="per-dispatch")
+
+
+@pytest.mark.parametrize(
+    "fm, route, expected",
+    [
+        ({"status": "open", "grain": "work"}, "session", True),
+        ({"status": "open", "grain": "work"}, "dispatch", False),
+        ({"status": "open", "grain": "per-dispatch"}, "dispatch", True),
+        ({"status": "open", "grain": "batch"}, "dispatch", True),
+        ({"status": "closed", "grain": "work"}, "session", False),
+        ({"status": "open", "grain": "work"}, "devloop", True),
+    ],
+)
+def test_round_acceptance_by_route(fm, route, expected):
+    assert accepts_round({"kind": "task", **fm}, route) is expected
+
+
+def test_task_note_outcome_is_not_a_contract_field():
+    fm = load("declared-only")
+    fm["outcome"] = [{"label": "merged-clean"}]
+    assert any("outcome" in e for e in validate_task_note(fm))

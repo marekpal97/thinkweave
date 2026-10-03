@@ -722,7 +722,7 @@ def mint_theme_from_signal(
     # `- DATE: cluster seed [[src]] *new*` form diverged from the canonical
     # `- DATE · *new* — text — [[src]]` grammar the Hub parser expects, so
     # minted catalyst logs rendered as empty.)
-    from thinkweave.synthesis.concept_hub import _safe_hub_maps
+    from thinkweave.synthesis.concept_hub import safe_hub_maps
     from thinkweave.synthesis.hub import FLAG_NEW, Hub, HubLogEntry
 
     cmap = _catalyst_map(catalysts)
@@ -745,7 +745,7 @@ def mint_theme_from_signal(
     # instead of spawning a phantom stub (sources are slug-filed, so a bare
     # [[src-id]] would resolve only via the fragile alias); title aliases so the
     # log shows the headline, not an opaque src-id.
-    _mint_idmap, _mint_titles, _ = _safe_hub_maps(config)
+    _mint_idmap, _mint_titles, _ = safe_hub_maps(config)
     # ``threaded=True`` so a minted theme's catalyst log renders with the same
     # indented temporal-DAG layout as concept hubs (seed entries are mostly
     # ``new`` so this is usually flat at mint, but a seeded ``extends`` entry

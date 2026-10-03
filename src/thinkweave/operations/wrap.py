@@ -511,10 +511,10 @@ def finalize_wrap(
        registers + probe labels) as events (:func:`_append_verdict_events`).
        Runs first so the events land before any archival/indexing the
        later steps trigger.
-    0.5. **tasks** — the wrap task pass (#189,
-       :func:`thinkweave.operations.task_seam.reconcile_tasks`) over the
+    0.5. **tasks** — the wrap task pass
+       (:func:`thinkweave.operations.tasks.apply_declaration`) over the
        declaration file the wrap LLM composed. Before the reindex, so the
-       stubs it writes land in the same index pass.
+       task notes it writes land in the same index pass.
     1. **prune** orphan session folders (conservative GC; ``session_id`` is
        protected). Done first so the reindex in step 2 also drops their rows.
     2. **index** — incremental rebuild. Picks up the notes ``weave_extract`` just
@@ -559,18 +559,18 @@ def finalize_wrap(
             result.warnings.append(f"segments: {e}")
         result.timings["verdicts"] = time.perf_counter() - _t
 
-    # 0.5. wrap task pass (#189) -------------------------------------------
+    # 0.5. wrap task pass -------------------------------------------------
     if tasks is not None:
         _t = time.perf_counter()
         try:
-            from thinkweave.operations import hook_events
-            from thinkweave.operations.task_seam import reconcile_tasks
+            from thinkweave.core.buffer import buffer_path
+            from thinkweave.operations.tasks import apply_declaration
 
             streams = [ev for ev, _d, _fm in chain] or [
-                hook_events.register_path(cfg.weave_dir, session_id)
+                buffer_path(cfg.weave_dir, session_id)
             ]
             folders = [d for _ev, d, _fm in chain if d is not None]
-            pass_result = reconcile_tasks(
+            pass_result = apply_declaration(
                 cfg,
                 tasks,
                 session_key=session_id,

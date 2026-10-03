@@ -920,11 +920,13 @@ class VaultManager:
         frontmatter_updates: dict | None = None,
         body_append: str = "",
         remove_tags: list[str] | None = None,
+        body: str | None = None,
     ) -> None:
-        """Update a note's frontmatter and/or append to its body."""
+        """Update a note's frontmatter and/or append to (or replace) its body."""
         path = self._resolve_path(path)
         text = path.read_text(encoding="utf-8")
-        fm, body = parse_frontmatter(text)
+        fm, old_body = parse_frontmatter(text)
+        body = old_body if body is None else body
 
         if frontmatter_updates:
             for key, value in frontmatter_updates.items():

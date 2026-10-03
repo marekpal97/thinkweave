@@ -1,0 +1,7 @@
+{"type": "user", "version": "9.9.9", "timestamp": "2026-10-02T00:00:00Z"}
+not json at all
+{"type": "assistant", "message": {"content": "unexpected string"}}
+{"type": "assistant", "message": {"model": "claude-x", "content": [{"type": "tool_use"}, "odd"]}}
+{"type": "user", "message": {"content": [{"type": "tool_result"}]}, "toolUseResult": {"bashEditDiff": {"files": "nope"}, "gitOperation": {"commit": null}}}
+["a", "list", "row"]
+{"type": "hologram", "timestamp": "not a time"}

@@ -1428,7 +1428,7 @@ def fold_concept_hub_on_merge(
     by design: any failure returns partial stats with an ``error`` key —
     a hub-layer hiccup must never abort the note-level merge.
     """
-    from thinkweave.synthesis.concept_hub import _safe_hub_maps, concept_hub_path
+    from thinkweave.synthesis.concept_hub import safe_hub_maps, concept_hub_path
     from thinkweave.synthesis.hub import fold_hub_logs, set_frontmatter_keys
 
     stats: dict = {"folded": 0, "deduped": 0, "fold_dates": [], "archived": False}
@@ -1439,7 +1439,7 @@ def fold_concept_hub_on_merge(
             return stats
 
         if to_path.exists():
-            idmap, title_map, path_to_id = _safe_hub_maps(config)
+            idmap, title_map, path_to_id = safe_hub_maps(config)
             stats.update(
                 fold_hub_logs(
                     to_path,
@@ -1553,7 +1553,7 @@ def revert_coarsening(config: Config, target: str) -> dict:
 
     from thinkweave.core.indexer import Indexer
     from thinkweave.synthesis.concept_hub import (
-        _safe_hub_maps,
+        safe_hub_maps,
         concept_hub_path,
         parse_concept_hub,
         write_concept_hub,
@@ -1599,7 +1599,7 @@ def revert_coarsening(config: Config, target: str) -> dict:
     try:
         wp = concept_hub_path(config, target_l)
         if wp.exists() and fold_dates:
-            idmap, title_map, path_to_id = _safe_hub_maps(config)
+            idmap, title_map, path_to_id = safe_hub_maps(config)
             hub = parse_concept_hub(wp, concept=target_l, path_to_id=path_to_id)
             before = len(hub.log_entries)
             hub.log_entries = [

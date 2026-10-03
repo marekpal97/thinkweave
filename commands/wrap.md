@@ -102,9 +102,15 @@ harness session id (the `weave session-id` / `$CLAUDE_SESSION_ID` UUID).
    "done": false,                      // true ONLY on the user's explicit done
    "consumes": ["dec-…", "src-…"],
    "children": ["tsk-…"],              // seam children this task dispatched (see below)
-   "round": {"did": {"paths": […], "commits": […], "attempts": N}}}
+   "round": {"did": {"paths": […], "commits": […], "attempts": N},
+             "outputs": [{"kind": "pr|file|url|artifact|commit|note", "ref": "…",
+                          "role": "deliverable|intermediate"}],
+             "notes": ["n-…"],                 // several tasks only: this task's insights
+             "feedback": [{"register": "…", "prompt_ref": "…", "ts": "…"}]}}  // likewise
 ]}
 ```
+
+The task note is a **ledger**: its round points at what other surfaces own and the pass renders the body from it. `asked` is the ticket's tracker ref — `#NNN` (this repo), `github:<owner>/<repo>#NNN` or `jira:<KEY>-NNN`; a declared ref resolves to the open task already carrying it (devloop runs on that ticket included), so a ticket picked up again never needs its task id. `outputs` names what the round produced with a role — the deliverable versus scratch; off-disk products (a published deck URL, an artifact) belong here too. With **one** declared task the pass attributes every insight `weave_extract` minted and every verdict to it — omit `notes`/`feedback`. With several, list each task's own (insight ids from the `weave_extract` result); undeclared items stay unattributed.
 
 Your two inputs: the **open tasks** served at SessionStart (continuing candidates), and the **seam children** — the per-dispatch tasks the hooks minted for this session's subagents, listed by `weave task ledger --session "$id"` (one JSON row each). Attribute each child to the declared task whose work dispatched it; timestamps cannot do this under concurrent tasks, which is why it is your call. A child you cannot attribute confidently: leave undeclared — unattached is truthful, guessed is not. No task-shaped work this session → omit the flag entirely. Catch-up mode → `"sparsity": "task-id-only"`, no `children`, no `done` (you were not present; declare only what the events show).
 
@@ -203,4 +209,4 @@ A work-grain task is a durable unit of work that outlives sessions — "ship the
 - **Re-wraps restate, never add**: each round describes this session's whole work on **its own** task. A second wrap of the same session replaces each declared task's earlier round and reuses any task it minted under the same title. So re-declare **every** task the session touched — the ones the earlier wrap declared, with their full rounds, plus any new ones — never one merged entry for the whole session.
 - **`round.did`** is the segment's ledger: files actually touched, commit hashes this task produced (from the session note's `commits` frontmatter — attribute per task when the session interleaved several), fix-round count in `attempts`.
 - **`children`**: attribution, not bookkeeping — say which declared task each dispatched subagent served. Confidence rule as in step 4: unattributable children stay undeclared.
-- **Never**: fill `outcome` (the dream judge owns it), reopen a closed task, or declare tasks for pure Q&A sessions to have something to declare.
+- **Never**: reopen a closed task, or declare tasks for pure Q&A sessions to have something to declare.

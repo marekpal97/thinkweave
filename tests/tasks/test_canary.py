@@ -1,4 +1,4 @@
-"""The synthetic canary (#187): one artificial task dispatched through the
+"""The synthetic canary: one artificial task dispatched through the
 real seam — SubagentStart on stdin, a scripted performer appending envelope
 rows to the return file the descriptor names, SubagentStop on stdin — in a
 temp vault. Asserts event rows, stub fields, envelope schema, round compile,
@@ -19,7 +19,8 @@ from thinkweave.core.task_contract import (
     validate_task_note,
 )
 from thinkweave.core.vault import parse_frontmatter
-from thinkweave.operations import hook_events
+from thinkweave.core.buffer import buffer_path
+from thinkweave.operations.tasks import Register
 
 SESSION = "99999999-8888-4777-a666-555544443333"
 AGENT = "agent-0f9e8d7c6b5a"
@@ -44,7 +45,7 @@ def test_canary(cfg: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         reply["hookSpecificOutput"]["additionalContext"]
     )["thinkweave_task"]
     task_id = descriptor["task_id"]
-    assert TASK_ID_RE.match(task_id)
+    assert TASK_ID_RE.fullmatch(task_id)
     assert descriptor["grain"] == "per-dispatch"
 
     # 2. Scripted performer: append envelope rows to the named return file.
@@ -73,8 +74,8 @@ def test_canary(cfg: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     )
 
     # 4. Event rows: one open, one close, correlated by task id only.
-    register = hook_events.register_path(cfg.weave_dir, SESSION)
-    rows = hook_events.task_rows(register)
+    register = buffer_path(cfg.weave_dir, SESSION)
+    rows = Register(cfg, SESSION, [register]).rows()
     assert [r["type"] for r in rows] == ["task_open", "task_close"]
     assert {r["task_id"] for r in rows} == {task_id}
     for row in rows:
@@ -104,18 +105,18 @@ def test_canary(cfg: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     for artifact in (stubs[0], return_file):
         assert SESSION not in artifact.name
         assert AGENT not in artifact.name
-    assert task_seam_join_keys_only(rows, task_id)
+    assert join_keys_only(rows, task_id)
 
     # 8. No per-task lifecycle file: lifecycle rows live only in the register.
     for path in cfg.weave_dir.rglob("*.jsonl"):
         if path == register:
             continue
-        assert not hook_events.task_rows(path), (
+        assert not Register(cfg, SESSION, [path]).rows(), (
             f"lifecycle rows leaked outside the register: {path}"
         )
 
 
-def task_seam_join_keys_only(rows: list[dict], task_id: str) -> bool:
+def join_keys_only(rows: list[dict], task_id: str) -> bool:
     """Every correlating field is the vault-minted task id; harness values
     appear nowhere outside the qualified ``session_ref`` triple and the
     register's own ``session_id`` stamp."""

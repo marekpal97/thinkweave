@@ -2656,7 +2656,7 @@ def apply(
         elif coarsenings:
             from thinkweave.core.indexer import Indexer
             from thinkweave.synthesis.concept_hub import (
-                _safe_hub_maps,
+                safe_hub_maps,
                 concept_hub_path,
                 parse_concept_hub,
             )
@@ -2668,7 +2668,7 @@ def apply(
                 save_aliases,
             )
 
-            _, _, path_to_id = _safe_hub_maps(cfg)
+            _, _, path_to_id = safe_hub_maps(cfg)
             idx = Indexer(config=cfg)
             aliases = load_aliases(cfg)
             did_fold = False

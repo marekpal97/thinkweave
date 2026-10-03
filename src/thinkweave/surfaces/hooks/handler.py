@@ -325,34 +325,32 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
 
 
 def _handle_subagent_start(hook_input: dict) -> None:
-    """SubagentStart: mint the task at the dispatch boundary.
+    """SubagentStart: mint the child task at the dispatch boundary.
 
-    The stub note and the ``task_open`` register row are written by the
-    seam (``operations.task_seam``); the minted task id rides back to the
-    subagent inside the dispatch descriptor via ``additionalContext``, and
-    names the envelope return file the performer appends to. The agent id
-    is recorded only as a qualified ``session_ref`` triple — never a join
-    key, never a filename.
+    The minted task id rides back to the subagent inside the dispatch
+    descriptor via ``additionalContext``; the agent id is recorded only as
+    a qualified session ref — never a join key, never a filename.
     """
     from thinkweave.core.config import load_config
-    from thinkweave.operations import task_seam
+    from thinkweave.operations import tasks
 
     cfg = load_config()
-    session_id = hook_input.get("session_id") or _env_session_id()
-    if not session_id:
-        _output()
-        return
+    session_id = _subagent_session_id(hook_input)
     _ensure_session(cfg, session_id, hook_input)
-    harness = _hook_harness() or "claude-code"
     agent_id = str(hook_input.get("agent_id", ""))
-    ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
-    dispatch = task_seam.open_task(
+    if not agent_id:
+        _log_info(
+            "subagent_start",
+            "payload carries no agent_id; the task opens without an agent "
+            "ref and its SubagentStop cannot pair",
+        )
+    dispatch = tasks.open_child(
         cfg,
         session_key=session_id,
         project=_detect_project(hook_input),
         role=str(hook_input.get("agent_type", "")),
-        harness=harness,
-        session_ref=ref,
+        harness=_hook_harness() or "claude-code",
+        agent_id=agent_id,
     )
     _output(
         additional_context=json.dumps({"thinkweave_task": dispatch.to_dict()}),
@@ -361,48 +359,48 @@ def _handle_subagent_start(hook_input: dict) -> None:
 
 
 def _handle_subagent_stop(hook_input: dict) -> None:
-    """SubagentStop: record the boundary close, flag the unpairable.
+    """SubagentStop: close the child the stop ends, or record the unpairable.
 
-    The matching open is resolved from the session's register by the
-    qualified agent ref; the close row itself correlates by task id alone.
-    A stop with no unclosed open is recorded as an orphan row — wrap
-    reconciles, this hook only detects. One exception: Claude Code fires
-    SubagentStop twice per subagent (observed live 2026-09-28), so a stop
-    whose ref matches a task this register already closed is the duplicate
-    delivery — skipped with a hooks-log line, never an orphan row, so real
-    orphans stay legible.
+    The hook only detects; ``tasks.stop_child`` pairs the stop with the
+    session's register, and wrap reconciles what stays unpaired.
     """
     from thinkweave.core.config import load_config
-    from thinkweave.operations import hook_events, task_seam
+    from thinkweave.operations import tasks
 
     cfg = load_config()
-    session_id = hook_input.get("session_id") or _env_session_id()
-    if not session_id:
-        _output()
-        return
-    harness = _hook_harness() or "claude-code"
     agent_id = str(hook_input.get("agent_id", ""))
-    ref = task_seam.agent_ref(harness, agent_id) if agent_id else None
-    rows = hook_events.task_rows(
-        hook_events.register_path(cfg.weave_dir, session_id)
+    source = tasks.TranscriptSource.agent_file(
+        _hook_harness() or "claude-code",
+        agent_id,
+        agent_transcript=str(hook_input.get("agent_transcript_path") or ""),
+        parent_transcript=str(hook_input.get("transcript_path") or ""),
     )
-    task_id = task_seam.pending_open(rows, ref) if ref else ""
-    duplicate_of = task_seam.closed_task(rows, ref) if ref and not task_id else ""
-    if task_id:
-        task_seam.close_task(
-            cfg, task_id, session_key=session_id, session_ref=ref
+    stop = tasks.stop_child(
+        cfg, session_key=_subagent_session_id(hook_input), source=source
+    )
+    if stop.closed and stop.closed.gaps:
+        _log_info(
+            "subagent_stop", f"{stop.task_id} digest gaps: {'; '.join(stop.closed.gaps)}"
         )
-    elif duplicate_of:
+    elif stop.kind == "duplicate":
         _log_info(
             "subagent_stop",
-            f"duplicate SubagentStop for closed task {duplicate_of} "
+            f"duplicate SubagentStop for closed task {stop.task_id} "
             f"(agent {agent_id}); skipped",
         )
-    else:
-        task_seam.record_orphan_stop(
-            cfg, session_key=session_id, session_ref=ref
-        )
     _output()
+
+
+def _subagent_session_id(hook_input: dict) -> str:
+    """The session a task boundary belongs to; raises when there is none.
+
+    A boundary with no session has no register to land in, so it fails
+    loudly through :func:`main` rather than vanishing.
+    """
+    session_id = hook_input.get("session_id") or _env_session_id()
+    if not session_id:
+        raise ValueError("no session id in payload or env; task boundary not recorded")
+    return session_id
 
 
 def _handle_user_prompt_submit(hook_input: dict) -> None:
@@ -452,6 +450,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to.
         _ensure_session(cfg, session_id, hook_input)
+        _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
 
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
         # live buffer, hard-capped. Any failure here must fall through to a
@@ -481,6 +480,26 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _output(
             system_message=_report_failure("user_prompt_submit", hook_input, e)
         )
+
+
+def _bind_dispatched_session(
+    cfg, session_id: str, prompt_text: str, now: str, hook_input: dict
+) -> None:
+    """A prompt naming a task id binds this session's transcript to it."""
+    from thinkweave.operations import tasks
+
+    transcript = hook_input.get("transcript_path", "")
+    if not transcript:
+        return
+    for task_id in tasks.bind_session(
+        cfg,
+        prompt_text,
+        harness=_hook_harness() or "claude-code",
+        session_key=session_id,
+        transcript_path=transcript,
+        since=now,
+    ):
+        _log_info("user_prompt_submit", f"bound {task_id} to session {session_id}")
 
 
 def _prompt_time_enrichment(
@@ -815,7 +834,8 @@ def _detect_project(hook_input: dict) -> str:
 def _raw_project(hook_input: dict) -> str:
     """The project name before normalization: env var, git repo, or cwd.
 
-    When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
+    A ``.claude/worktrees/<name>`` cwd resolves to its parent repo, never to
+    the worktree's own directory name. When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
     cloud-agent run, or a bare UUID), fall through to ``_unscoped`` instead
     of letting the runtime's session-id leak in as a project name.
     """
@@ -824,8 +844,10 @@ def _raw_project(hook_input: dict) -> str:
     if env_proj:
         return env_proj
 
+    from thinkweave.core.config import worktree_repo_root
+
     cwd = hook_input.get("cwd", os.getcwd())
-    cwd_path = Path(cwd)
+    cwd_path = Path(worktree_repo_root(cwd) or cwd)
 
     # Walk up to find a .git directory — use that repo's directory name
     for parent in [cwd_path, *cwd_path.parents]:
@@ -1232,31 +1254,11 @@ from thinkweave.core.buffer import (  # noqa: E402, F401
 )
 
 
-_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
-
-
-def _command_head(segment: str) -> str:
-    """A shell segment normalised for prefix classification.
-
-    Leading ``VAR=value`` assignments are dropped and the executable is
-    reduced to its basename, so ``PYTHONPATH=src /repo/.venv/bin/pytest -q``
-    classifies as ``pytest -q``. That is the shape Codex's code-mode
-    ``exec_command`` calls took on 2026-09-05 — every one of the session's
-    pytest runs was kept only because ``"pythonpath…".startswith("python")``
-    and none was recognised as a test run. Lower-cased; classifiers compare
-    against lower-case prefixes.
-    """
-    seg = segment.strip()
-    while True:
-        stripped = _ENV_ASSIGNMENT_RE.sub("", seg, count=1)
-        if stripped == seg:
-            break
-        seg = stripped
-    if not seg:
-        return ""
-    head, sep, rest = seg.partition(" ")
-    head = head.rsplit("/", 1)[-1]
-    return (head + sep + rest).lower()
+from thinkweave.operations.hook_events import (  # noqa: E402
+    command_head as _command_head,
+    is_git_commit as _is_git_commit,
+    parse_commit_from_output as _parse_commit_from_output,
+)
 
 
 def _is_significant_command(command: str) -> bool:
@@ -1288,47 +1290,6 @@ def _first_meaningful_line(text: str) -> str:
         if stripped and not stripped.startswith("#") and not stripped.startswith("//"):
             return stripped
     return ""
-
-
-def _is_git_commit(command: str) -> bool:
-    """Check if a bash command is a git commit."""
-    cmd = _command_head(command)
-    return cmd.startswith("git commit") and "--amend" not in cmd
-
-
-def _parse_commit_from_output(command: str, output: str) -> dict | None:
-    """Extract commit info from git commit output.
-
-    Git commit output looks like:
-      [branch abc1234] Commit message
-       N files changed, M insertions(+), K deletions(-)
-    """
-    if not output:
-        return None
-
-    info: dict = {}
-
-    # Extract hash from [branch hash] pattern
-    m = re.search(r"\[[\w/.-]+\s+([0-9a-f]{7,})\]", output)
-    if m:
-        info["hash"] = m.group(1)
-
-    # Extract message from -m flag or from output
-    m_flag = re.search(r'-m\s+["\'](.+?)["\']', command)
-    if m_flag:
-        info["message"] = m_flag.group(1)[:120]
-    else:
-        # Message is after the hash bracket
-        m_msg = re.search(r"\[[^\]]+\]\s+(.+)", output)
-        if m_msg:
-            info["message"] = m_msg.group(1).strip()[:120]
-
-    # Extract files from "N file(s) changed" line
-    m_files = re.search(r"(\d+)\s+files?\s+changed", output)
-    if m_files:
-        info["files_changed"] = int(m_files.group(1))
-
-    return info if info else None
 
 
 def _get_commit_files(commit_hash: str) -> list[str]:

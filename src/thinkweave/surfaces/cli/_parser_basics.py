@@ -1079,7 +1079,8 @@ def add_admin_subparsers(sub) -> None:
             "Dispatch-seam task lifecycle: open (mint stub + register row, "
             "prints the task id), close (record the boundary close, compile "
             "the round), render (re-emit the dispatch descriptor JSON), "
-            "ledger (list a session's task boundaries as JSON)."
+            "ledger (list a session's task boundaries as JSON), record-run "
+            "(land a devloop run as a round on its ticket's task)."
         ),
     )
     task_sub = p_task.add_subparsers(dest="task_action")
@@ -1099,6 +1100,10 @@ def add_admin_subparsers(sub) -> None:
         "--grain", default="per-dispatch", choices=sorted(TASK_GRAINS)
     )
     p_task_open.add_argument("--role", default="")
+    p_task_open.add_argument(
+        "--asked", default="",
+        help="What the task was asked (free text, or a tracker ref such as #12).",
+    )
     p_task_close = task_sub.add_parser(
         "close",
         help=(
@@ -1121,6 +1126,20 @@ def add_admin_subparsers(sub) -> None:
         ),
     )
     p_task_ledger.add_argument("--session", default="")
+    p_task_run = task_sub.add_parser(
+        "record-run",
+        help=(
+            "Land one devloop run (its emitted trajectory payload JSON) as a "
+            "route: devloop round on the open task carrying its issue ref, "
+            "minting one if none; prints the task id."
+        ),
+    )
+    p_task_run.add_argument("payload", help="Trajectory payload JSON file")
+    p_task_run.add_argument(
+        "--trajectory", default="", help="The trajectory note id (the round's session ref)"
+    )
+    p_task_run.add_argument("--project", "-p", default="")
+    p_task_run.add_argument("--session", default="")
 
     # --- C24: CLI parity for MCP-only tools -------------------------------
     p_unlink = sub.add_parser(

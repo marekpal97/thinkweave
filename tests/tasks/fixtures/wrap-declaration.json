@@ -3,7 +3,7 @@
   "declared": [
     {
       "title": "wire the wrap task pass",
-      "asked": "#189",
+      "asked": "github:marekpal97/thinkweave#189",
       "grain": "work",
       "done": false,
       "consumes": ["dec-c839fb4e", "src-77778888"],
