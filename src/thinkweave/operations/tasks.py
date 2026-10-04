@@ -1121,7 +1121,7 @@ def claude_code_digest(transcript: Path, since: str, until: str) -> ChildDigest:
 
     rows, gaps = _transcript_rows(transcript)
     meta = _transcript_meta(transcript)
-    rows = _slice(rows, since, until)
+    rows = _slice(rows, since, until, _claude_code_prompt)
     uses: dict[str, dict] = {}
     tools: Counter = Counter()
     models: Counter = Counter()
@@ -1196,6 +1196,75 @@ def claude_code_digest(transcript: Path, since: str, until: str) -> ChildDigest:
     )
 
 
+def pi_digest(transcript: Path, since: str, until: str) -> ChildDigest:
+    """Pi's digest reader: walk the slice of the session's live branch once
+    and collect every digest field its entries carry."""
+    from collections import Counter
+
+    from thinkweave.acquisition.importers.pi import live_branch
+
+    if not transcript.is_file():
+        return ChildDigest(gaps=(f"transcript not found: {transcript}",))
+    header, chain = live_branch(transcript)
+    cwd = str(header.get("cwd", ""))
+    rows = _slice([e for e in chain if e.get("type") == "message"], since, until, _pi_prompt)
+    calls: dict[str, dict] = {}
+    tools: Counter = Counter()
+    models: Counter = Counter()
+    paths: dict[str, None] = {}
+    commits: dict[str, None] = {}
+    notes: dict[str, None] = {}
+    asked, errors = "", 0
+    for row in rows:
+        message = _dict(row.get("message"))
+        content = message.get("content")
+        if message.get("role") == "assistant":
+            if message.get("model"):
+                models[str(message["model"])] += 1
+            for block in map(_dict, _list(content)):
+                if block.get("type") == "toolCall" and block.get("name"):
+                    calls[str(block.get("id", ""))] = block
+                    tools[str(block["name"])] += 1
+        elif message.get("role") == "toolResult":
+            if message.get("isError"):
+                errors += 1
+                continue
+            call = calls.get(str(message.get("toolCallId", "")), {})
+            name, args = str(call.get("name", "")), _dict(call.get("arguments"))
+            if name in _PI_FILE_TOOLS and args.get("path"):
+                paths[_relative(str(args["path"]), cwd)] = None
+            elif name == "bash":
+                sha = _commit_sha(str(args.get("command", "")), {"stdout": _prompt_text(content)})
+                if sha:
+                    commits[sha] = None
+            elif name.endswith(_NOTE_TOOLS):
+                notes.update(dict.fromkeys(_created_ids(content)))
+        elif not asked:
+            asked = _pi_prompt(row)
+    model = models.most_common(1)[0][0] if models else ""
+    # The session header carries a format version, not Pi's own.
+    gaps = [
+        f"no {what} in the transcript"
+        for what, value in (("version", ""), ("prompt", asked), ("model", model))
+        if not value
+    ]
+    stamps = [t for t in map(_ts, rows) if t]
+    return ChildDigest(
+        asked=asked,
+        model=model,
+        paths=tuple(paths),
+        commits=tuple(commits),
+        notes=tuple(notes),
+        tools=dict(tools),
+        tool_errors=errors,
+        duration=round((max(stamps) - min(stamps)).total_seconds(), 3) if stamps else None,
+        gaps=tuple(gaps),
+    )
+
+
+_PI_FILE_TOOLS = ("edit", "write")
+
+
 def _transcript_rows(path: Path) -> tuple[list[dict], list[str]]:
     """The transcript's JSON-object rows, plus a gap per unreadable line."""
     if not path.is_file():
@@ -1226,25 +1295,34 @@ def _transcript_meta(path: Path) -> dict:
         return {}
 
 
-def _slice(rows: list[dict], since: str, until: str) -> list[dict]:
-    """Rows from the prompt nearest ``since`` up to ``until``.
+def _slice(rows: list[dict], since: str, until: str, prompt) -> list[dict]:
+    """Rows from the prompt nearest ``since`` up to ``until``; ``prompt``
+    gives a row's human prompt text, ``""`` for any other row.
 
     The binding hook and the transcript stamp the same prompt a moment
     apart, in either order, so the slice opens at the nearest prompt row.
     """
     start, end = _ts({"timestamp": since}), _ts({"timestamp": until})
     if start:
-        prompts = [
-            i for i, row in enumerate(rows)
-            if row.get("type") == "user" and not row.get("isMeta") and _ts(row)
-            and _prompt_text(_dict(row.get("message")).get("content"))
-        ]
+        prompts = [i for i, row in enumerate(rows) if _ts(row) and prompt(row)]
         if prompts:
             first = min(prompts, key=lambda i: abs(_ts(rows[i]) - start))
             rows = rows[first:]
     if end:
         rows = [r for r in rows if not _ts(r) or _ts(r) <= end]
     return rows
+
+
+def _claude_code_prompt(row: dict) -> str:
+    if row.get("type") != "user" or row.get("isMeta"):
+        return ""
+    return _prompt_text(_dict(row.get("message")).get("content"))
+
+
+def _pi_prompt(entry: dict) -> str:
+    from thinkweave.acquisition.importers.pi import user_prompt
+
+    return user_prompt(_dict(entry.get("message")))
 
 
 def _prompt_text(content) -> str:

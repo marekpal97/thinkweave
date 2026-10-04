@@ -859,9 +859,9 @@ class TestTaskRoute:
 
     def test_a_missing_reader_without_a_degradation_fails(self, tmp_path: Path):
         row = dataclasses.replace(
-            _build("pi", tmp_path),
+            _build("codex", tmp_path),
             degradations=tuple(
-                d for d in _build("pi", tmp_path).degradations
+                d for d in _build("codex", tmp_path).degradations
                 if "digest" not in d.capability.lower()
             ),
         )
@@ -875,11 +875,12 @@ class TestTaskRoute:
 
     def test_declared_rows(self, tmp_path: Path):
         # Claude Code reads its own transcripts; Codex's prompt hook carries a
-        # transcript path (docs/HARNESSES.md §Codex); Pi's shim sends none.
+        # transcript path (docs/HARNESSES.md §Codex), and so does Pi's shim
+        # (sessionManager.getSessionFile(), probed live on 0.84.4).
         rows = {i: _build(i, tmp_path) for i in ALL_IDS}
         assert {i: (bool(p.digest_reader), p.binds_workers) for i, p in rows.items()} == {
             "claude-code": (True, True),
             "codex": (False, True),
-            "pi": (False, False),
+            "pi": (True, True),
             "opencode": (False, False),
         }

@@ -932,6 +932,11 @@ def pi(home: Path | None = None) -> HarnessProfile:
         transcript_format="jsonl-tree",
         transcript_parser="thinkweave.acquisition.importers.pi:parse_session",
         transcript_importer="thinkweave.acquisition.importers.pi:import_pi",
+        digest_reader="thinkweave.operations.tasks:pi_digest",
+        # The shim's prompt envelope carries sessionManager.getSessionFile()
+        # (probed live on 0.84.4, 2026-10-04: set at before_agent_start, the
+        # file itself appears with the first reply).
+        binds_workers=True,
         session_id_scheme="uuid (session-header id)",
         # Live env dump 2026-09-05: Pi exports PI_SESSION_ID (the session uuid,
         # what the shim also stamps as source_session) and PI_SESSION_FILE.
@@ -1003,21 +1008,13 @@ def pi(home: Path | None = None) -> HarnessProfile:
                 "n-a1d3beba §2",
             ),
             Degradation(
-                "task worker binding",
+                "task digest fields",
                 "documented",
-                "the shim's prompt envelope carries no transcript path, so a "
-                "dispatched pi worker's transcript cannot be bound to the "
-                "task its prompt names; the round records the worker's "
-                "session and a gap naming the missing binding",
-                "shims/pi/thinkweave-pi.ts envelope()",
-            ),
-            Degradation(
-                "task digest",
-                "documented",
-                "no digest reader parses jsonl-tree transcripts, so a child "
-                "task's round carries a gap naming the missing reader "
-                "instead of its tools, files and commits",
-                "#243",
+                "the session header carries a format version, not Pi's own, "
+                "and Pi has no handback tool, so a pi worker's round records "
+                "a `no version in the transcript` gap and no success claim; "
+                "its tools, files, commits and notes are read",
+                "tests/fixtures/harness_transcripts/pi",
             ),
             Degradation(
                 "skill invocation",

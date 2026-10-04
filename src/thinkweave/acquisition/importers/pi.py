@@ -130,9 +130,8 @@ def _entry_text(message: dict) -> str:
     return "\n\n".join(parts)
 
 
-def parse_session(path: Path) -> PiSession | None:
-    """Parse one Pi session file into a linear session; None when the
-    surviving branch holds no conversation.
+def live_branch(path: Path) -> tuple[dict, list[dict]]:
+    """The session header and the surviving branch's entries, root first.
 
     Tree walk: collect every entry keyed by ``id``, take the LAST ``message``
     entry in file order as the live leaf (entries are appended as they
@@ -140,12 +139,9 @@ def parse_session(path: Path) -> PiSession | None:
     on), then follow ``parentId`` links back to the root and emit that chain
     in forward order. ``model_change`` / ``thinking_level_change`` /
     ``compaction`` entries participate in the chain (they carry parent links)
-    but contribute no turns.
+    but are not messages.
     """
-    header_id = ""
-    cwd = ""
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
+    header: dict = {}
     entries: dict[str, dict] = {}
     last_message_id = ""
 
@@ -161,24 +157,15 @@ def parse_session(path: Path) -> PiSession | None:
             continue
 
         if entry.get("type") == "session":
-            header_id = str(entry.get("id") or "")
-            if isinstance(entry.get("cwd"), str):
-                cwd = entry["cwd"]
-            started_at = _parse_ts(entry.get("timestamp"))
+            header = entry
             continue
 
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
             continue
         entries[entry_id] = entry
-        ts = _parse_ts(entry.get("timestamp"))
-        if ts and (ended_at is None or ts > ended_at):
-            ended_at = ts
         if entry.get("type") == "message":
             last_message_id = entry_id
-
-    if not last_message_id:
-        return None
 
     # Walk the surviving branch leaf → root. The visited set makes a cyclic
     # parentId (corrupt file) terminate instead of spinning.
@@ -192,6 +179,24 @@ def parse_session(path: Path) -> PiSession | None:
         parent = entry.get("parentId")
         cursor = parent if isinstance(parent, str) else None
     chain.reverse()
+    return header, chain
+
+
+def user_prompt(message: dict) -> str:
+    """A user message's text; ``""`` for any other role and for the
+    context the shim injects."""
+    text = _entry_text(message) if message.get("role") == "user" else ""
+    return "" if text.startswith(_CONTEXT_MARKER) else text
+
+
+def parse_session(path: Path) -> PiSession | None:
+    """Parse one Pi session file into a linear session (its
+    :func:`live_branch`); None when that branch holds no conversation."""
+    header, chain = live_branch(path)
+    if not chain:
+        return None
+    cwd = header.get("cwd") if isinstance(header.get("cwd"), str) else ""
+    stamps = [t for t in (_parse_ts(e.get("timestamp")) for e in chain) if t]
 
     turns: list[tuple[str, str]] = []
     for entry in chain:
@@ -203,8 +208,8 @@ def parse_session(path: Path) -> PiSession | None:
         role = message.get("role")
         if role not in ("user", "assistant"):
             continue  # toolResult and custom roles are operational
-        text = _entry_text(message)
-        if not text or (role == "user" and text.startswith(_CONTEXT_MARKER)):
+        text = user_prompt(message) if role == "user" else _entry_text(message)
+        if not text:
             continue
         turns.append((role, text))
 
@@ -212,11 +217,11 @@ def parse_session(path: Path) -> PiSession | None:
         return None
 
     return PiSession(
-        session_id=header_id or session_file_id(path),
+        session_id=str(header.get("id") or "") or session_file_id(path),
         project=normalize_project(cwd),
         cwd=cwd,
-        started_at=started_at,
-        ended_at=ended_at,
+        started_at=_parse_ts(header.get("timestamp")),
+        ended_at=max(stamps) if stamps else None,
         turns=turns,
         file_path=path,
     )

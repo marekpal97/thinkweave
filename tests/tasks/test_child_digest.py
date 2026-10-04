@@ -26,6 +26,10 @@ FOREGROUND = FIXTURES / "agent-a1f0e2d3c4b5a6978.jsonl"
 WORKTREE = FIXTURES / "agent-a8c6a44dd35bd23d8.jsonl"
 HERDR = FIXTURES / "herdr-two-prompts.jsonl"
 PARTIAL = FIXTURES / "partial.jsonl"
+PI = (
+    Path(__file__).parents[1] / "fixtures" / "harness_transcripts" / "pi"
+    / "2026-10-04T15-46-02-748Z_0199cccc-0000-7000-8000-000000000002.jsonl"
+)
 SESSION = "11111111-2222-4333-8444-555566667777"
 
 
@@ -112,6 +116,27 @@ class TestDigest:
         fields = digest.round_fields([])
         assert "tools" not in fields and "tool_errors" not in fields
         assert fields["digest"]["gaps"] == list(digest.gaps)
+
+    def test_a_pi_worker_transcript_digests_its_live_branch_from_the_task_prompt(self):
+        digest = digest_of(PI, since="2026-10-04T15:46:11.000Z", harness="pi")
+        assert digest.asked.startswith("Task tsk-20bdc8ce: Add --indent N")
+        assert digest.model == "moonshotai/kimi-k2.6"
+        # The warm-up turn and the abandoned fork's write stay out.
+        assert digest.tools == {"bash": 3, "read": 1, "edit": 1, "write": 1, "weave_create": 1}
+        assert digest.tool_errors == 1
+        assert digest.duration == 18.792  # 15:46:11.313 → 15:46:30.105
+        fields = digest.round_fields([])
+        assert fields["did"] == {
+            "paths": ["src/dogfood/__init__.py", "tests/test_version.py"],
+            "commits": ["3e141e8"],
+        }
+        assert {"kind": "note", "ref": "src-a10e8018"} in fields["outputs"]
+        assert digest.gaps == ("no version in the transcript",)
+
+    def test_a_missing_pi_transcript_returns_the_gap(self, tmp_path: Path):
+        digest = digest_of(tmp_path / "gone.jsonl", harness="pi")
+        assert digest.tools is None
+        assert any("transcript not found" in g for g in digest.gaps)
 
     def test_no_token_counts_are_written(self):
         for path in (FOREGROUND, WORKTREE, HERDR, PARTIAL):
@@ -211,32 +236,44 @@ class TestNoSilentRound:
         (entry,) = stub_fm(cfg, task_id)["rounds"]
         assert entry["digest"]["gaps"] == [tasks._NO_TRANSCRIPT]
 
-    def test_a_pi_worker_round_names_the_missing_binding_and_reader(
-        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
-    ):
+    def _pi_worker_close(self, cfg, monkeypatch, tmp_path, capsys, transcript: str) -> dict:
         cli(["task", "open", "--session", "s-1", "--project", "p"])
         task_id = capsys.readouterr().out.strip()
         monkeypatch.setattr(
             "thinkweave.surfaces.hooks.handler._prompt_time_enrichment",
             lambda *a, **k: None,
         )
-        # Pi's shim sends no transcript_path (shims/pi/thinkweave-pi.ts).
-        run_hook(monkeypatch, "user_prompt_submit", {
+        payload = {
             "session_id": "pi-worker",
             "cwd": str(tmp_path),
-            "prompt": f"Task {task_id}: add --indent. Commit.",
-        }, harness="pi")
+            "prompt": f"Task {task_id}: Add --indent N to 'dogfood version --json'.",
+        }
+        if transcript:
+            payload["transcript_path"] = transcript
+        run_hook(monkeypatch, "user_prompt_submit", payload, harness="pi")
+        monkeypatch.setattr(tasks, "_now", lambda: "2026-10-04T16:00:00+00:00")
         cli(["task", "close", task_id, "--session", "s-1"])
-
         fm = stub_fm(cfg, task_id)
         assert validate_task_note(fm) == []
         (entry,) = fm["rounds"]
         assert entry["session_ref"] == {
             "harness": "pi", "kind": "session_id", "value": "pi-worker",
         }
+        return entry
+
+    def test_a_pi_worker_prompt_binds_its_transcript_and_closes_with_a_digest(
+        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
+    ):
+        entry = self._pi_worker_close(cfg, monkeypatch, tmp_path, capsys, str(PI))
+        assert entry["tools"]["bash"] == 3
+        assert entry["did"]["commits"] == ["3e141e8"]
+
+    def test_a_pi_prompt_without_a_transcript_path_names_the_gap(
+        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
+    ):
+        entry = self._pi_worker_close(cfg, monkeypatch, tmp_path, capsys, "")
         gaps = entry["digest"]["gaps"]
-        assert any("pi" in g and "binding" in g for g in gaps)
-        assert any("pi" in g and "digest reader" in g for g in gaps)
+        assert "the prompt hook carried no transcript path" in gaps
         assert "tools" not in entry
         err = capsys.readouterr().err
         assert all(f"digest: {g}" in err for g in gaps)

@@ -1206,6 +1206,7 @@ class TestGitCommitDetection:
     def test_is_git_commit(self):
         assert _is_git_commit("git commit -m 'fix'")
         assert _is_git_commit("git commit -am 'fix'")
+        assert _is_git_commit("git add -A && git commit -m 'fix'")
         assert not _is_git_commit("git commit --amend")
         assert not _is_git_commit("git log")
         assert not _is_git_commit("echo git commit")
