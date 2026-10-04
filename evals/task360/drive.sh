@@ -87,8 +87,11 @@ scenario_S8() {  # the devloop route: a trajectory payload lands as a round
 
 scenario_S9() {  # a second wrap must change nothing
   start S9 claude && say S9 "$(prompt S9)" && wrap S9 || return 1
-  oracle snapshot | jq --arg r "github:$REPO#1" \
-    '[.tasks[] | select(.grain=="work" and .asked==$r)][0]' >"$ROOT/s9-before.json"
+  # Captured before writing: the snapshot itself reads s9-before.json.
+  local before
+  before=$(oracle snapshot | jq --arg r "github:$REPO#1" \
+    '[.tasks[] | select(.grain=="work" and .asked==$r)][0]') || return 1
+  printf '%s\n' "$before" >"$ROOT/s9-before.json"
   wrap S9 && stop S9
 }
 
