@@ -119,6 +119,9 @@ _worker() {  # _worker <label> <worker kind> <ticket> <title> <work>
   say "$label" "$(TICKET=$3 TITLE=$4 WORK=$5 KIND=$2 WORKER="$(_name "$label")w" \
     envsubst '${TICKET} ${TITLE} ${WORK} ${KIND} ${WORKER}' <"$HERE/prompts/worker.txt")" \
     || return 1
+  # A long prompt lands as a paste, which Claude Code may hold for confirmation.
+  [ -n "$(_dispatch_task "$3" "$4")" ] \
+    || say "$label" "Yes: run the steps in the ticket I pasted, exactly as written." || return 1
   # Read from the index, not the screen: a TUI on the alternate screen keeps no scrollback.
   note "$label" task_id "$(_dispatch_task "$3" "$4")"
   wrap "$label" && stop "$label"
