@@ -398,6 +398,36 @@ class TestChildren:
         )
         assert any("tsk-deadbeef" in e for e in result.errors)
 
+    def test_a_child_dispatched_with_a_multiline_prompt_attaches(self, cfg: Config):
+        prompt = (
+            "Work on ticket #1.\n\n"
+            "Interface contract (do NOT edit src/): greet --name NAME\n"
+            "Your dispatch is /x/implementer-77.dispatch.md: read it whole"
+        )
+        child = tasks.open_child(cfg, session_key=SESSION, asked=prompt).task_id
+        result = reconcile(cfg, self.declaration_with_children([child]))
+        assert result.errors == []
+        assert result.attached == [child]
+        fm = task_notes(cfg)[child]
+        assert fm["parent"] == result.minted[0]
+        assert fm["asked"] == prompt
+        assert validate_task_note(fm) == []
+
+    def test_a_child_that_cannot_attach_names_itself_and_the_reason(
+        self, cfg: Config
+    ):
+        seed_stub(cfg, "tsk-11111111", grain="per-dispatch")
+        path = note_path(cfg, "tsk-11111111")
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "kind: task", "kind: task\nbogus_key: stray"
+            ),
+            encoding="utf-8",
+        )
+        result = reconcile(cfg, self.declaration_with_children(["tsk-11111111"]))
+        assert result.attached == []
+        assert [e for e in result.errors if "tsk-11111111" in e and "bogus_key" in e]
+
 
 # ---------------------------------------------------------------------------
 # Decisions stamp task_id
@@ -708,3 +738,25 @@ class TestLedgerMigration:
         assert "outcome" not in notes["tsk-0dd0dd00"]  # no writer, so no field
         assert len(round_lines(task_body(cfg, "tsk-0dd0dd00"))) == 1
         assert migrate_task_notes_to_ledger(cfg) == 0  # idempotent
+
+    def test_a_note_split_by_a_multiline_asked_is_rejoined(self, cfg: Config):
+        from thinkweave.operations.migrations import migrate_task_notes_to_ledger
+
+        folder = cfg.vault_root / "projects" / "t" / "sessions" / "old"
+        folder.mkdir(parents=True)
+        note = folder / "tsk-7a0710e0.md"
+        note.write_text(
+            (FIXTURES / "split-asked.md").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        assert migrate_task_notes_to_ledger(cfg) == 1
+        fm = task_notes(cfg)["tsk-7a0710e0"]
+        assert validate_task_note(fm) == []
+        assert fm["asked"] == (
+            'Write the tests for ticket #1: the "dogfood greet --name NAME" subcommand.\n'
+            "\n"
+            "Interface contract (do NOT edit src/): dogfood greet --name NAME prints Hello, NAME!\n"
+            "Create tests/test_greet.py only. Cover: the greeting, a missing --name, a name with spaces.\n"
+            "- run them with uv run pytest -q\n"
+            "Report back the test names and C:\\sandbox\\tests\\"
+        )
+        assert migrate_task_notes_to_ledger(cfg) == 0

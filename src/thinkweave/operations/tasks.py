@@ -789,15 +789,15 @@ class _DeclarationPass:
         """Write the declared child → parent edges. Which declared task a
         dispatch served is the model's call, never a timestamp's."""
         for child_id in entry.get("children") or []:
-            child = self.store.get(child_id)
             try:
+                child = self.store.get(child_id)
                 if child is None:
-                    raise ValueError(f"no task note for {child_id}")
+                    raise ValueError("no task note")
                 if task.attach_child(child):
                     self.result.warnings += child.save(self.vm)
                     self.result.attached.append(child_id)
             except ValueError as exc:
-                self.result.errors.append(f"children: {exc}")
+                self.result.errors.append(f"children: {child_id} not attached to {task.id}: {exc}")
 
 
 # ---------------------------------------------------------------------------
