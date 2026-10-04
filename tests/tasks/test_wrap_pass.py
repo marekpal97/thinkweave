@@ -495,19 +495,25 @@ class TestFinalizeSurface:
 # The ledger: rounds reference the session's notes; the body is derived
 
 
-def seed_session(cfg: Config) -> tuple[Path, dict[str, str]]:
+def seed_session(cfg: Config, *, harness_derived: bool = False) -> tuple[Path, dict[str, str]]:
     """One wrapped session: session note, two insights, a decision, and a
-    feedback verdict in its events stream. Returns (folder, ids)."""
+    feedback verdict in its events stream. Returns (folder, ids).
+    ``harness_derived`` points the insights at the harness session id, as
+    ``weave_extract`` writes them, instead of the session note's id."""
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
-    ses = vm.create_note(NoteType.SESSION, "S", body="## Summary\nx\n", project="t")
+    ses = vm.create_note(
+        NoteType.SESSION, "S", body="## Summary\nx\n", project="t",
+        extra_frontmatter={"source_session": SESSION},
+    )
     ses_id = vm.read_note(ses).id
+    derived = SESSION if harness_derived else ses_id
     folder = ses.parent
     ids = {"session": ses_id}
     for key, title in (("insight", "Ledger owns no content"), ("insight2", "Refs anchor identity")):
         path = vm.create_note(
             NoteType.NOTE, title, body="b", project="t",
-            extra_frontmatter={"derived_from": [ses_id]}, output_dir=folder,
+            extra_frontmatter={"derived_from": [derived]}, output_dir=folder,
         )
         ids[key] = vm.read_note(path).id
     (folder / "use-sqlite.md").write_text(
@@ -573,10 +579,19 @@ class TestLedgerRound:
             }
         ]
 
-    def test_multi_task_session_attributes_only_what_is_declared(
+    def test_solo_session_credits_insights_derived_from_the_harness_id(
         self, cfg: Config
     ):
-        folder, ids = seed_session(cfg)
+        folder, ids = seed_session(cfg, harness_derived=True)
+        result = reconcile_session(cfg, load_declaration(), folder)
+        entry = task_notes(cfg)[result.minted[0]]["rounds"][0]
+        assert sorted(entry["notes"]) == sorted([ids["insight"], ids["insight2"]])
+
+    @pytest.mark.parametrize("harness_derived", [False, True])
+    def test_multi_task_session_attributes_only_what_is_declared(
+        self, cfg: Config, harness_derived: bool
+    ):
+        folder, ids = seed_session(cfg, harness_derived=harness_derived)
         decl = {
             "declared": [
                 {"title": "a", "round": {"notes": [ids["insight"]]}},

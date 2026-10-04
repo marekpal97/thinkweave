@@ -23,7 +23,6 @@ DEFAULT_ROOT = Path(os.environ.get("TASK360_ROOT", Path.home() / ".local/state/t
 KNOWN = {
     "the round records the commit": "#228",
     "commits split between the two tasks": "#228",
-    "solo session credits its insights to the round": "#247",
     "the session recorded a verdict event": "#200",
     "the mid-session correction is credited as feedback on the round": "#200",
     "PROBE #2 gained a Codex round": "#251",

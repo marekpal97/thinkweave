@@ -671,7 +671,11 @@ class _DeclarationPass:
         self.result = TaskPassResult()
         self.repo = current_repo()
         notes = [fm for _path, fm in _folder_notes(folders)]
-        sessions = [str(fm.get("id")) for fm in notes if fm.get("type") == "session"]
+        session_notes = [fm for fm in notes if fm.get("type") == "session"]
+        sessions = [str(fm.get("id")) for fm in session_notes]
+        # weave_extract derives insights from the harness session id.
+        anchors = {*sessions, *(str(fm["source_session"]) for fm in session_notes
+                                if fm.get("source_session"))}
         self.wrap_ref = SessionRef.session(active_harness().id, session_key)
         self.session_ref = (
             SessionRef.note(self.wrap_ref.harness, sessions[0]) if sessions else self.wrap_ref
@@ -680,7 +684,7 @@ class _DeclarationPass:
             str(fm["id"]) for fm in notes
             if fm.get("type") == "note" and fm.get("id")
             and not fm.get("kind") and not fm.get("auto_extracted")
-            and set(sessions) & set(fm.get("derived_from") or [])
+            and anchors & set(fm.get("derived_from") or [])
         ]
         self.verdicts = [
             {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
