@@ -34,13 +34,16 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 _WIKILINK_REF_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 # A note-id-shaped token: prefix + hex suffix (src-…, n-…, dec-…, ses-…, thm-…).
 _NOTE_ID_RE = re.compile(r"^[a-z]+-[0-9a-f]{6,}$")
+# A literal block scalar header: ``|`` with an optional indent digit and chomping.
+_BLOCK_HEADER_RE = re.compile(r"^\|([1-9])?([-+])?$")
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
     """Parse YAML frontmatter from a markdown string.
 
     Returns (frontmatter_dict, body_text).
-    Handles flat key-value pairs and simple lists (- item).
+    Handles flat key-value pairs, simple lists (- item) and literal block
+    scalars (``key: |-`` followed by indented lines).
     """
     m = _FRONTMATTER_RE.match(text)
     if not m:
@@ -51,7 +54,11 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     current_key: str | None = None
     current_list: list[str] | None = None
 
-    for line in raw_yaml.split("\n"):
+    lines = raw_yaml.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -87,6 +94,10 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
             current_key = key
 
+            if _BLOCK_HEADER_RE.match(value):
+                result[key], i = _block_scalar(value, lines, i)
+                continue
+
             # Inline list: [item1, item2]
             if value.startswith("[") and value.endswith("]"):
                 items = value[1:-1]
@@ -120,7 +131,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
                 pass
 
             # String (unquote)
-            result[key] = _unquote_scalar(value)
+            result[key] = unquote_scalar(value)
 
     return result, body
 
@@ -337,7 +348,29 @@ def is_chain_sibling(
     return not (fm.get("processed") and not fm.get("auto_extracted"))
 
 
-def _unquote_scalar(value: str) -> str:
+def _block_scalar(header: str, lines: list[str], i: int) -> tuple[str, int]:
+    """Read the literal block scalar whose ``header`` precedes ``lines[i]``;
+    returns its value and the index of the first line after it."""
+    indent_digit, chomp = _BLOCK_HEADER_RE.match(header).groups()
+    indent = int(indent_digit or 0)
+    content: list[str] = []
+    while i < len(lines):
+        line = lines[i]
+        if line.strip():
+            lead = len(line) - len(line.lstrip(" "))
+            indent = indent or lead
+            if lead == 0 or lead < indent:
+                break
+        content.append(line[indent:] if indent else "")
+        i += 1
+    text = "\n".join(content)
+    if chomp == "+":
+        return text + "\n", i
+    text = text.rstrip("\n")
+    return (text if chomp == "-" or not text else text + "\n"), i
+
+
+def unquote_scalar(value: str) -> str:
     """Undo frontmatter scalar quoting.
 
     Properly double-quoted values get the YAML double-quote treatment:
@@ -432,10 +465,16 @@ def quote_scalar(s: str) -> str:
     Values containing YAML-significant chars (``: # [ ] { }``), a double
     quote, leading/trailing quote chars, or a trailing backslash are
     wrapped in double quotes with ``\\`` and ``"`` backslash-escaped — the
-    YAML double-quote convention, mirrored by ``_unquote_scalar`` in
+    YAML double-quote convention, mirrored by ``unquote_scalar`` in
     ``parse_frontmatter`` so values round-trip. Shared by every
     frontmatter emitter (do not hand-roll ``f'{key}: "{value}"'``).
+    A value with a newline renders as a literal block scalar instead, which
+    keeps every character verbatim.
     """
+    if "\n" in s:
+        chomp = "+" if s.endswith("\n") else "-"
+        lines = (s[:-1] if chomp == "+" else s).split("\n")
+        return f"|2{chomp}" + "".join(f"\n  {line}" for line in lines)
     needs_quote = (
         any(c in s for c in (":", "#", "[", "]", "{", "}", '"'))
         or s[:1] in ('"', "'")

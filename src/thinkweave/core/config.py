@@ -761,6 +761,47 @@ def worktree_repo_root(cwd: str) -> str:
     return cwd.replace("\\", "/")
 
 
+_EPHEMERAL_CWD_RE = re.compile(r"^(agent-[a-f0-9]{12,}|[a-f0-9-]{32,})$")
+
+
+def detect_project(cwd: str = "") -> str:
+    """The live project for a working directory (default: the process cwd).
+
+    Priority: THINKWEAVE_PROJECT env var > git repo name > cwd directory name,
+    normalized the way every vault write normalizes it (``tw-dogfood`` is
+    stored as ``tw_dogfood``), so reads find what writes stored.
+    """
+    raw = _raw_project(cwd or os.getcwd())
+    return raw if raw == UNSCOPED_PROJECT else normalize_project_name(raw)
+
+
+def _raw_project(cwd: str) -> str:
+    """The project name before normalization: env var, git repo, or cwd.
+
+    A ``.claude/worktrees/<name>`` cwd resolves to its parent repo, never to
+    the worktree's own directory name. When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
+    cloud-agent run, or a bare UUID), fall through to ``_unscoped`` instead
+    of letting the runtime's session-id leak in as a project name.
+    """
+    # PERSONAL_MEM_PROJECT: pre-rename migration fallback (→ thinkweave 2026-06-13).
+    env_proj = os.environ.get("THINKWEAVE_PROJECT") or os.environ.get("PERSONAL_MEM_PROJECT")
+    if env_proj:
+        return env_proj
+
+    cwd_path = Path(worktree_repo_root(cwd) or cwd)
+
+    # Walk up to find a .git directory — use that repo's directory name
+    for parent in [cwd_path, *cwd_path.parents]:
+        if (parent / ".git").exists():
+            return parent.name
+        if parent == parent.parent:
+            break
+
+    if _EPHEMERAL_CWD_RE.match(cwd_path.name):
+        return UNSCOPED_PROJECT
+    return cwd_path.name
+
+
 def normalize_project(cwd: str) -> str:
     """Derive a vault project name from a coding-agent session's cwd.
 

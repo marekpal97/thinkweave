@@ -60,13 +60,19 @@ def _session_key(args: argparse.Namespace) -> str:
     return args.session or harness.env_session_id() or "unattributed"
 
 
+def _project(args: argparse.Namespace) -> str:
+    from thinkweave.core.config import detect_project
+
+    return args.project or detect_project()
+
+
 def _cmd_open(args: argparse.Namespace) -> None:
     from thinkweave.operations import tasks
 
     dispatch = tasks.open_child(
         _load_config(),
         session_key=_session_key(args),
-        project=args.project,
+        project=_project(args),
         title=args.title,
         grain=args.grain,
         role=args.role,
@@ -122,7 +128,7 @@ def _cmd_record_run(args: argparse.Namespace) -> None:
         landed = tasks.record_run(
             _load_config(),
             payload,
-            project=args.project,
+            project=_project(args),
             trajectory=args.trajectory,
             session_key=args.session,
         )

@@ -17,7 +17,8 @@
 //                        milliseconds later, so fire-and-forget would always
 //                        miss the injection window)
 //   before_agent_start → UserPromptSubmit (awaited: its reply may carry the
-//                        prompt-time enrichment block to inject)
+//                        prompt-time enrichment block to inject; carries the
+//                        session file as transcript_path)
 //   tool_result        → PostToolUse    (fire-and-forget)
 //   agent_end          → Stop           (awaited within budget; a Stop that
 //                        outlives it keeps running as runHook's documented
@@ -159,6 +160,18 @@ export default function thinkweavePi(pi: any) {
     return sessionId;
   }
 
+  // The session's JSONL path, set by the time before_agent_start fires (the
+  // file itself appears with the first reply; probed on 0.84.4, 2026-10-04).
+  // Ephemeral `--no-session` runs have none.
+  function sessionFile(ctx: any): string | undefined {
+    try {
+      const file = ctx?.sessionManager?.getSessionFile?.();
+      return typeof file === "string" && file ? file : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   function envelope(event: CanonicalEvent, extra: HookEnvelope): HookEnvelope {
     return {
       hook_event_name: event,
@@ -270,7 +283,11 @@ export default function thinkweavePi(pi: any) {
     // Awaited: the reply can carry the prompt-time enrichment block, and the
     // `context` event that could deliver it fires immediately after this
     // handler. Capture itself also lands before a print-mode exit this way.
-    const reply = await call("UserPromptSubmit", { prompt }, BUDGET_MS.UserPromptSubmit);
+    const reply = await call(
+      "UserPromptSubmit",
+      { prompt, transcript_path: sessionFile(ctx) },
+      BUDGET_MS.UserPromptSubmit,
+    );
     queueInjection(reply.hookSpecificOutput?.additionalContext ?? "");
   });
 

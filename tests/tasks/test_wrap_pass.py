@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from thinkweave.core import harness
 from thinkweave.core.config import Config
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.task_contract import (
@@ -325,6 +326,19 @@ class TestOrphans:
         assert "orphan" not in notes[paired]
         assert "orphan" not in notes[work]  # work grain stays open by design
 
+    def test_a_close_after_the_wrap_clears_the_orphan_flag(self, cfg: Config):
+        hanging, _paired, _work = self._seed_ledger(cfg)
+        decl = load_declaration()
+        decl["declared"][0]["children"] = [hanging]
+        parent = reconcile(cfg, decl).minted[0]
+        assert task_notes(cfg)[hanging]["orphan"] is True
+        tasks.close_child(cfg, hanging, session_key=SESSION)
+        fm = task_notes(cfg)[hanging]
+        assert fm["status"] == "closed"
+        assert "orphan" not in fm
+        assert fm["parent"] == parent
+        assert validate_task_note(fm) == []
+
     def test_task_id_only_sparsity_skips_orphan_flagging(self, cfg: Config):
         hanging, _paired, _work = self._seed_ledger(cfg)
         result = reconcile(
@@ -392,11 +406,54 @@ class TestChildren:
         assert result.errors == []
         assert any("tsk-11111111" in w and "no task note" in w for w in result.warnings)
 
+    def test_a_closed_child_attaches_and_keeps_its_rounds(self, cfg: Config):
+        child = tasks.open_child(cfg, session_key=SESSION, project="t").task_id
+        tasks.close_child(cfg, child, session_key=SESSION)
+        rounds = task_notes(cfg)[child]["rounds"]
+        assert len(rounds) == 1
+        result = reconcile(cfg, self.declaration_with_children([child]))
+        assert result.errors == []
+        assert result.attached == [child]
+        fm = task_notes(cfg)[child]
+        assert fm["parent"] == result.minted[0]
+        assert fm["status"] == "closed"
+        assert fm["rounds"] == rounds
+
     def test_unknown_child_is_an_error(self, cfg: Config):
         result = reconcile(
             cfg, self.declaration_with_children(["tsk-deadbeef"])
         )
         assert any("tsk-deadbeef" in e for e in result.errors)
+
+    def test_a_child_dispatched_with_a_multiline_prompt_attaches(self, cfg: Config):
+        prompt = (
+            "Work on ticket #1.\n\n"
+            "Interface contract (do NOT edit src/): greet --name NAME\n"
+            "Your dispatch is /x/implementer-77.dispatch.md: read it whole"
+        )
+        child = tasks.open_child(cfg, session_key=SESSION, asked=prompt).task_id
+        result = reconcile(cfg, self.declaration_with_children([child]))
+        assert result.errors == []
+        assert result.attached == [child]
+        fm = task_notes(cfg)[child]
+        assert fm["parent"] == result.minted[0]
+        assert fm["asked"] == prompt
+        assert validate_task_note(fm) == []
+
+    def test_a_child_that_cannot_attach_names_itself_and_the_reason(
+        self, cfg: Config
+    ):
+        seed_stub(cfg, "tsk-11111111", grain="per-dispatch")
+        path = note_path(cfg, "tsk-11111111")
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "kind: task", "kind: task\nbogus_key: stray"
+            ),
+            encoding="utf-8",
+        )
+        result = reconcile(cfg, self.declaration_with_children(["tsk-11111111"]))
+        assert result.attached == []
+        assert [e for e in result.errors if "tsk-11111111" in e and "bogus_key" in e]
 
 
 # ---------------------------------------------------------------------------
@@ -404,20 +461,30 @@ class TestChildren:
 
 
 class TestDecisionStamp:
-    def test_minted_decisions_gain_the_task_id(self, cfg: Config, tmp_path: Path):
-        folder = tmp_path / "session-folder"
-        folder.mkdir()
-        dec = folder / "use-sqlite.md"
-        dec.write_text(
-            "---\ntype: decision\nid: dec-aaaa1111\ntitle: Use SQLite\n---\n\nBody.\n",
-            encoding="utf-8",
+    def test_a_decision_filed_outside_the_session_folder_gains_the_task_id(
+        self, cfg: Config, tmp_path: Path
+    ):
+        from thinkweave.core.indexer import Indexer
+
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        dec = vm.create_note(
+            NoteType.DECISION, "Use SQLite", body="Body.", project="t",
+            note_id="dec-aaaa1111",
         )
-        result = reconcile(cfg, load_declaration(), folders=[folder])
+        idx = Indexer(config=cfg)
+        idx.index_file(dec)
+        idx.close()
+        session_folder = tmp_path / "session-folder"
+        session_folder.mkdir()
+        result = reconcile(cfg, load_declaration(), folders=[session_folder])
         fm, _ = parse_frontmatter(dec.read_text(encoding="utf-8"))
         assert fm["task_id"] == result.minted[0]
+        assert result.stamped == 1
 
-    def test_unlocatable_decision_is_announced(self, cfg: Config):
+    def test_a_decision_the_index_does_not_know_is_announced(self, cfg: Config):
         result = reconcile(cfg, load_declaration())
+        assert result.stamped == 0
         assert any("dec-aaaa1111" in w for w in result.warnings)
 
 
@@ -465,19 +532,25 @@ class TestFinalizeSurface:
 # The ledger: rounds reference the session's notes; the body is derived
 
 
-def seed_session(cfg: Config) -> tuple[Path, dict[str, str]]:
+def seed_session(cfg: Config, *, harness_derived: bool = False) -> tuple[Path, dict[str, str]]:
     """One wrapped session: session note, two insights, a decision, and a
-    feedback verdict in its events stream. Returns (folder, ids)."""
+    feedback verdict in its events stream. Returns (folder, ids).
+    ``harness_derived`` points the insights at the harness session id, as
+    ``weave_extract`` writes them, instead of the session note's id."""
     vm = VaultManager(config=cfg)
     vm.ensure_dirs()
-    ses = vm.create_note(NoteType.SESSION, "S", body="## Summary\nx\n", project="t")
+    ses = vm.create_note(
+        NoteType.SESSION, "S", body="## Summary\nx\n", project="t",
+        extra_frontmatter={"source_session": SESSION},
+    )
     ses_id = vm.read_note(ses).id
+    derived = SESSION if harness_derived else ses_id
     folder = ses.parent
     ids = {"session": ses_id}
     for key, title in (("insight", "Ledger owns no content"), ("insight2", "Refs anchor identity")):
         path = vm.create_note(
             NoteType.NOTE, title, body="b", project="t",
-            extra_frontmatter={"derived_from": [ses_id]}, output_dir=folder,
+            extra_frontmatter={"derived_from": [derived]}, output_dir=folder,
         )
         ids[key] = vm.read_note(path).id
     (folder / "use-sqlite.md").write_text(
@@ -543,10 +616,27 @@ class TestLedgerRound:
             }
         ]
 
-    def test_multi_task_session_attributes_only_what_is_declared(
+    def test_round_names_the_harness_the_wrap_runs_under(self, cfg: Config, monkeypatch):
+        monkeypatch.setattr(harness, "_OVERRIDE", None)
+        monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
+        folder, _ids = seed_session(cfg)
+        result = reconcile_session(cfg, load_declaration(), folder)
+        entry = task_notes(cfg)[result.minted[0]]["rounds"][0]
+        assert entry["session_ref"]["harness"] == "codex"
+
+    def test_solo_session_credits_insights_derived_from_the_harness_id(
         self, cfg: Config
     ):
-        folder, ids = seed_session(cfg)
+        folder, ids = seed_session(cfg, harness_derived=True)
+        result = reconcile_session(cfg, load_declaration(), folder)
+        entry = task_notes(cfg)[result.minted[0]]["rounds"][0]
+        assert sorted(entry["notes"]) == sorted([ids["insight"], ids["insight2"]])
+
+    @pytest.mark.parametrize("harness_derived", [False, True])
+    def test_multi_task_session_attributes_only_what_is_declared(
+        self, cfg: Config, harness_derived: bool
+    ):
+        folder, ids = seed_session(cfg, harness_derived=harness_derived)
         decl = {
             "declared": [
                 {"title": "a", "round": {"notes": [ids["insight"]]}},
@@ -708,3 +798,25 @@ class TestLedgerMigration:
         assert "outcome" not in notes["tsk-0dd0dd00"]  # no writer, so no field
         assert len(round_lines(task_body(cfg, "tsk-0dd0dd00"))) == 1
         assert migrate_task_notes_to_ledger(cfg) == 0  # idempotent
+
+    def test_a_note_split_by_a_multiline_asked_is_rejoined(self, cfg: Config):
+        from thinkweave.operations.migrations import migrate_task_notes_to_ledger
+
+        folder = cfg.vault_root / "projects" / "t" / "sessions" / "old"
+        folder.mkdir(parents=True)
+        note = folder / "tsk-7a0710e0.md"
+        note.write_text(
+            (FIXTURES / "split-asked.md").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        assert migrate_task_notes_to_ledger(cfg) == 1
+        fm = task_notes(cfg)["tsk-7a0710e0"]
+        assert validate_task_note(fm) == []
+        assert fm["asked"] == (
+            'Write the tests for ticket #1: the "dogfood greet --name NAME" subcommand.\n'
+            "\n"
+            "Interface contract (do NOT edit src/): dogfood greet --name NAME prints Hello, NAME!\n"
+            "Create tests/test_greet.py only. Cover: the greeting, a missing --name, a name with spaces.\n"
+            "- run them with uv run pytest -q\n"
+            "Report back the test names and C:\\sandbox\\tests\\"
+        )
+        assert migrate_task_notes_to_ledger(cfg) == 0

@@ -339,6 +339,17 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
     )
 
 
+# Stated verbatim in commands/wrap.md §C6; a test pins the two together.
+OPEN_TASK_RULES = (
+    "Work on a listed task's ref continues that task: /wrap declares "
+    "`continuing: <tsk-id>`, never a second task for the ref.",
+    "A request to finish a listed ref closes its task: /wrap declares "
+    "`done: true` on it, with no tracker search.",
+    "A dispatch closed in this session is still its work task's child: "
+    "/wrap lists it in `children`.",
+)
+
+
 def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
     """Open ``kind: task`` work-grain notes — the continuation cue.
 
@@ -392,14 +403,10 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
     if not lines:
         return None
 
-    preamble = (
-        "Open work-grain tasks. If this session continues one, /wrap "
-        "declares `continuing: <tsk-id>` for it."
-    )
     return Section(
         key="tasks",
         title=_default_title("tasks"),
-        body=preamble + "\n\n" + "\n".join(lines),
+        body="\n".join(OPEN_TASK_RULES) + "\n\n" + "\n".join(lines),
         soft_budget_chars=1600,
     )
 

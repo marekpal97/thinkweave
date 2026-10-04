@@ -1,0 +1,1 @@
+No, that's wrong — the default should come from the USER environment variable, falling back to 'World'. Fix it and commit.

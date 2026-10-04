@@ -18,4 +18,12 @@ linked by each generated skill remain the semantic source of truth.
   model name or tool names; omit `model` so the Codex subagent inherits the
   current model, and translate capabilities as above.
 
+- Run every `weave` CLI call as `THINKWEAVE_HARNESS=codex weave …`. The
+  prefix makes `weave session-id` read `$CODEX_SESSION_ID` first and stamps
+  the wrap's task rounds with the `codex` harness; without it a variable
+  leaked from a parent Claude Code session wins.
+- Call `weave_extract` only inside `$thinkweave-wrap`, once, with the id
+  `weave session-id` prints. Never call it mid-task or with an invented
+  session id: an id no session note carries mints a stray second note.
+
 Do not emit Claude Code Task-call syntax from a Codex session.

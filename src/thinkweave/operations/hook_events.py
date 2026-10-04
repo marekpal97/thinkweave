@@ -87,9 +87,12 @@ def command_head(segment: str) -> str:
 
 
 def is_git_commit(command: str) -> bool:
-    """Check if a bash command is a git commit."""
-    cmd = command_head(command)
-    return cmd.startswith("git commit") and "--amend" not in cmd
+    """Check if a bash command, or any ``&&``/``;`` segment of it, is a git
+    commit."""
+    return any(
+        cmd.startswith("git commit") and "--amend" not in cmd
+        for cmd in map(command_head, re.split(r"&&|\|\||;", command))
+    )
 
 
 def parse_commit_from_output(command: str, output: str) -> dict | None:

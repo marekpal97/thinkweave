@@ -95,6 +95,11 @@ def render_matrix() -> str:
             "transcripts",
             lambda p: f"`{p.transcript_glob}` ({p.transcript_format})",
         ),
+        row(
+            "task digest reader",
+            lambda p: f"`{p.digest_reader}`" if p.digest_reader else "— (degraded)",
+        ),
+        row("task worker binding", lambda p: _yes(p.binds_workers)),
         row("session ids", lambda p: f"`{p.session_id_scheme}`"),
         row(
             "MCP config",

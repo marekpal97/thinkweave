@@ -1,0 +1,1 @@
+Work on ticket #1: add a 'dogfood greet --name NAME' subcommand that prints 'Hello, NAME!'. Use one subagent (the Agent tool, foreground) to write the tests while you implement. Commit when the tests pass.

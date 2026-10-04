@@ -106,11 +106,11 @@ class TestSchemaInvariants:
         # The wrap resolver (`weave session-id`) reads this env var to land on
         # the note the hooks already created; a wrong/absent value is exactly
         # the mint-a-detached-slug fragmentation the field exists to close
-        # (Pi 2026-09-08, Codex 2026-09-05). Codex/OpenCode declare none — they
-        # export no session-id env var — and fall back to recency + guard.
+        # (Pi 2026-09-08, Codex 2026-09-05). OpenCode declares none and falls
+        # back to recency + guard.
         expected = {
             "claude-code": ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"),
-            "codex": (),
+            "codex": ("CODEX_SESSION_ID", "CODEX_THREAD_ID"),
             "pi": ("PI_SESSION_ID",),
             "opencode": (),
         }
@@ -118,6 +118,14 @@ class TestSchemaInvariants:
         for name in profile.session_id_envs:
             # Each declared value is an env-var NAME, not a session id.
             assert name.isupper()
+
+    def test_active_harness_session_id_wins_over_a_leaked_one(self, monkeypatch):
+        # A Codex shell spawned from a Claude Code session inherits its id.
+        monkeypatch.setattr(harness, "_OVERRIDE", None)
+        monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cc-uuid")
+        monkeypatch.setenv("CODEX_SESSION_ID", "codex-uuid")
+        assert harness.env_session_id() == "codex-uuid"
 
     def test_harness_flag_is_empty_or_names_this_harness(self, profile):
         # Claude Code is the authored canonical shape and stays unstamped;
@@ -820,3 +828,67 @@ class TestTranscriptFormats:
         assert fixtures, f"no transcript fixture for {profile.id}"
         session = parser(fixtures[0])
         assert session is not None and session.turn_count >= 2
+
+
+# --------------------------------------------------------------------------- #
+# the task route: digest reader + worker binding, declared or degraded
+# --------------------------------------------------------------------------- #
+
+
+def _task_route_violations(profile: harness.HarnessProfile) -> list[str]:
+    """What the task route's profile contract finds wrong with one row."""
+    found: list[str] = []
+    capabilities = " ".join(d.capability.lower() for d in profile.degradations)
+    if profile.digest_reader:
+        try:
+            reader = profile.load_digest_reader()
+        except (ImportError, AttributeError, ValueError) as exc:
+            reader = None
+            found.append(f"digest reader {profile.digest_reader!r}: {exc}")
+        if reader is not None and reader.__module__ != "thinkweave.operations.tasks":
+            found.append(f"digest reader lives outside the task route: {reader.__module__}")
+    elif "digest" not in capabilities:
+        found.append("no digest reader and no digest degradation")
+    if not profile.binds_workers and "binding" not in capabilities:
+        found.append("no worker binding and no binding degradation")
+    return found
+
+
+class TestTaskRoute:
+    def test_every_row_declares_or_degrades_each_capability(self, profile):
+        assert _task_route_violations(profile) == []
+
+    def test_an_unresolvable_reader_fails(self, tmp_path: Path):
+        row = dataclasses.replace(
+            _build("claude-code", tmp_path),
+            digest_reader="thinkweave.operations.tasks:no_such_reader",
+        )
+        assert any("no_such_reader" in v for v in _task_route_violations(row))
+
+    def test_a_missing_reader_without_a_degradation_fails(self, tmp_path: Path):
+        row = dataclasses.replace(
+            _build("opencode", tmp_path),
+            degradations=tuple(
+                d for d in _build("opencode", tmp_path).degradations
+                if "digest" not in d.capability.lower()
+            ),
+        )
+        assert "no digest reader and no digest degradation" in _task_route_violations(row)
+
+    def test_missing_binding_without_a_degradation_fails(self, tmp_path: Path):
+        row = dataclasses.replace(
+            _build("claude-code", tmp_path), binds_workers=False
+        )
+        assert "no worker binding and no binding degradation" in _task_route_violations(row)
+
+    def test_declared_rows(self, tmp_path: Path):
+        # Each reads its own transcripts: Claude Code natively, Codex through
+        # its prompt hook's transcript path (docs/HARNESSES.md §Codex), Pi through its shim
+        # (sessionManager.getSessionFile(), probed live on 0.84.4).
+        rows = {i: _build(i, tmp_path) for i in ALL_IDS}
+        assert {i: (bool(p.digest_reader), p.binds_workers) for i, p in rows.items()} == {
+            "claude-code": (True, True),
+            "codex": (True, True),
+            "pi": (True, True),
+            "opencode": (False, False),
+        }

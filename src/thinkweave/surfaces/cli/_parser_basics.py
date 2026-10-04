@@ -1087,7 +1087,10 @@ def add_admin_subparsers(sub) -> None:
     p_task_open = task_sub.add_parser(
         "open", help="Mint a task at a dispatch boundary; prints the task id."
     )
-    p_task_open.add_argument("--project", "-p", default="")
+    p_task_open.add_argument(
+        "--project", "-p", default="",
+        help="Project (default: THINKWEAVE_PROJECT, else the cwd's git repo, else the cwd).",
+    )
     p_task_open.add_argument(
         "--session", default="",
         help=(
@@ -1138,7 +1141,10 @@ def add_admin_subparsers(sub) -> None:
     p_task_run.add_argument(
         "--trajectory", default="", help="The trajectory note id (the round's session ref)"
     )
-    p_task_run.add_argument("--project", "-p", default="")
+    p_task_run.add_argument(
+        "--project", "-p", default="",
+        help="Project (default: THINKWEAVE_PROJECT, else the cwd's git repo, else the cwd).",
+    )
     p_task_run.add_argument("--session", default="")
 
     # --- C24: CLI parity for MCP-only tools -------------------------------

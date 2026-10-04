@@ -1,0 +1,1 @@
+Ticket #3 again: make 'dogfood version --json' include the python version. Commit.

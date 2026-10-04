@@ -153,6 +153,46 @@ class TestOpenTasksSection:
         assert "tsk-aaaa1111" in parse_returned_ids(payload)
 
 
+def _section_rules(payload: str) -> list[str]:
+    """The Open Tasks section's guidance: its lines before the task list."""
+    section = payload.split("## Open Tasks", 1)[1]
+    head = section.split("\n- `tsk-", 1)[0]
+    return [line for line in head.splitlines() if line.strip()]
+
+
+class TestOpenTasksRules:
+    """A session maps a ticket ref to its open task without guessing."""
+
+    def test_section_states_continue_finish_and_closed_child_rules(
+        self, config: Config, vault: VaultManager
+    ):
+        _seed_task(vault, "tsk-aaaa1111", "Greet CLI", asked="#1")
+        _reindex(config)
+
+        rules = _section_rules(build_project_context(config, "t"))
+
+        assert len(rules) <= 4
+        text = "\n".join(rules)
+        assert "`continuing: <tsk-id>`" in text
+        assert "`done: true`" in text
+        assert "`children`" in text
+        assert "closed" in text
+
+    def test_wrap_doc_states_the_rules_in_the_same_words(
+        self, config: Config, vault: VaultManager
+    ):
+        _seed_task(vault, "tsk-aaaa1111", "Greet CLI", asked="#1")
+        _reindex(config)
+        wrap_doc = (
+            Path(__file__).parents[2] / "commands" / "wrap.md"
+        ).read_text(encoding="utf-8")
+
+        rules = _section_rules(build_project_context(config, "t"))
+
+        missing = [rule for rule in rules if rule not in wrap_doc]
+        assert missing == []
+
+
 def _seed_session(vault: VaultManager, log_lines: list[dict]) -> str:
     sess_path = vault.create_note(
         NoteType.SESSION, "S", body="## Summary\nseed\n", project="t"
@@ -247,4 +287,4 @@ def test_hook_project_detection_normalizes_like_writes(tmp_path: Path, monkeypat
     monkeypatch.delenv("THINKWEAVE_PROJECT", raising=False)
     monkeypatch.delenv("PERSONAL_MEM_PROJECT", raising=False)
 
-    assert handler._detect_project({"cwd": str(repo)}) == "tw_dogfood2"
+    assert handler.detect_project(str(repo)) == "tw_dogfood2"

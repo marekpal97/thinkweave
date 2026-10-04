@@ -12,7 +12,12 @@ from pathlib import Path
 
 from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config
-from thinkweave.core.vault import VaultManager, parse_frontmatter
+from thinkweave.core.vault import (
+    VaultManager,
+    parse_frontmatter,
+    render_frontmatter,
+    unquote_scalar,
+)
 from thinkweave.acquisition.sources import load_user_config
 from thinkweave.acquisition.sources.queue import Queue
 from thinkweave.acquisition.sources.registry import normalize
@@ -51,8 +56,9 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
     Work-grain rounds without a ``route`` gain one (``devloop`` when the
     round nests a devloop trace, else ``session``), ``asked`` takes its
     normalized tracker ref, the unwritten ``outcome`` field goes, and the
-    body is re-rendered from the rounds. Idempotent. Returns the count of
-    notes rewritten.
+    body is re-rendered from the rounds. A quoted value an older writer
+    split across raw lines is rejoined first. Idempotent. Returns the count
+    of notes rewritten.
     """
     from dataclasses import replace
 
@@ -64,7 +70,7 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
     changed = 0
     for path in config.vault_root.rglob("tsk-*.md"):
         before = path.read_text(encoding="utf-8")
-        fm, _ = parse_frontmatter(before)
+        fm, _ = parse_frontmatter(_rejoin_split_scalars(before))
         if fm.get("kind") != "task":
             continue
         fm.pop("outcome", None)
@@ -79,6 +85,39 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
         task.save(vm)
         changed += path.read_text(encoding="utf-8") != before
     return changed
+
+
+def _rejoin_split_scalars(text: str) -> str:
+    """Re-render each top-level double-quoted value whose closing quote sits
+    on a later line, so the lines it spans parse as one value again."""
+    lines = text.split("\n")
+    out: list[str] = lines[:1]
+    i = 1
+    while i < len(lines) and lines[i] != "---":
+        key, sep, value = lines[i].partition(": ")
+        i += 1
+        opens = sep and key[:1] not in ("", " ") and value.startswith('"')
+        if not opens or _closes(value[1:]):
+            out.append(lines[i - 1])
+            continue
+        span = [value]
+        while i < len(lines) and not _closes(lines[i]):
+            span.append(lines[i])
+            i += 1
+        if i == len(lines):
+            return text
+        span.append(lines[i])
+        i += 1
+        out.append(render_frontmatter({key: unquote_scalar("\n".join(span))})[4:-4])
+    return "\n".join(out + lines[i:])
+
+
+def _closes(line: str) -> bool:
+    """Whether ``line`` ends a double-quoted scalar: an unescaped final quote."""
+    body = line.rstrip()
+    if not body.endswith('"'):
+        return False
+    return (len(body[:-1]) - len(body[:-1].rstrip("\\"))) % 2 == 0
 
 
 def _legacy_route(entry) -> str:

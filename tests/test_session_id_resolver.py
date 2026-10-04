@@ -23,13 +23,13 @@ from thinkweave.surfaces.cli import main
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
     # A stray in-process override or a real harness's exported var would make
-    # these cases non-hermetic — clear both, plus the two session-id vars any
+    # these cases non-hermetic — clear both, plus every session-id var any
     # profile declares, before each case sets exactly what it needs.
     monkeypatch.setattr(harness, "_OVERRIDE", None)
     monkeypatch.delenv("THINKWEAVE_HARNESS", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-    monkeypatch.delenv("PI_SESSION_ID", raising=False)
+    for profile in harness.PROFILES.values():
+        for env in profile().session_id_envs:
+            monkeypatch.delenv(env, raising=False)
 
 
 def test_claude_code_prints_current_build_var(monkeypatch, capsys):
@@ -79,10 +79,17 @@ def test_active_harness_var_wins_when_both_present(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "pi-uuid-456"
 
 
-def test_codex_exits_nonzero_with_empty_output(monkeypatch, capsys):
-    # Codex exports no session-id var — the resolver must fail silently so
-    # `id=$(weave session-id)` leaves $id empty and /wrap falls back to
-    # recency + the #209 identity guard rather than minting a fresh slug.
+def test_codex_prints_its_own_var(monkeypatch, capsys):
+    monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
+    monkeypatch.setenv("CODEX_SESSION_ID", "01a10380-0000-7000-8000-000000000002")
+    main(["session-id"])
+    assert capsys.readouterr().out.strip() == "01a10380-0000-7000-8000-000000000002"
+
+
+def test_codex_without_its_var_exits_nonzero_with_empty_output(monkeypatch, capsys):
+    # The resolver fails silently so `id=$(weave session-id)` leaves $id
+    # empty and /wrap falls back to recency + the identity guard rather
+    # than minting a fresh slug.
     monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
     with pytest.raises(SystemExit) as exc:
         main(["session-id"])

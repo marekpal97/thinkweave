@@ -1,0 +1,1 @@
+Ticket #1: add '--times N' and a '--json' output mode. Dispatch two subagents IN THE BACKGROUND (run_in_background) in parallel: one adds --times with tests, one adds --json with tests. End your turn right after dispatching them.

@@ -140,6 +140,35 @@ class TestRenderFrontmatter:
         fm, _ = parse_frontmatter(text)
         assert fm["title"] == "C:\\old\\style"
 
+    def test_multiline_values_roundtrip(self):
+        for value in (
+            "Work on #1.\nYour dispatch is /x/impl-77.dispatch.md: read it whole",
+            'line one\nInterface contract (do NOT edit src/): "quoted"\nlast',
+            "- leading dash\n- a list-looking line\nkey: value",
+            "first line\nends with a backslash \\",
+            "C:\\notes\\new\nsecond: line",
+            "  leading spaces\n\n\nafter blank lines\n",
+            "trailing blank lines\n\n\n",
+            "\nstarts with a newline\n---\nfence-looking line",
+        ):
+            rendered = render_frontmatter({"asked": value, "status": "open"})
+            fm, body = parse_frontmatter(rendered + "\n\nBody")
+            assert fm == {"asked": value, "status": "open"}, rendered
+            assert body.strip() == "Body"
+
+    def test_pre_change_quoted_values_read_back_unchanged(self):
+        # Hand-written as the writer emitted them before multi-line support:
+        # escaped backslashes, and a literal backslash-n that is not a newline.
+        text = (
+            "---\n"
+            'cwd: "C:\\\\Users\\\\me\\\\notes: x"\n'
+            'title: "say \\"hi\\" \\\\n here"\n'
+            "---\n\nBody"
+        )
+        fm, _ = parse_frontmatter(text)
+        assert fm["cwd"] == "C:\\Users\\me\\notes: x"
+        assert fm["title"] == 'say "hi" \\n here'
+
     def test_dict_values(self):
         data = {"context": {"prompt": "do something", "plan": "dec-123"}}
         rendered = render_frontmatter(data)

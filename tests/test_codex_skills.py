@@ -185,3 +185,9 @@ def test_codex_only_recall_skill_remains_valid() -> None:
     assert metadata["name"] == "thinkweave-recall"
     assert "Use only when the user invokes" in metadata["description"]
     assert "ordinary history" in metadata["description"]
+
+
+def test_adapter_pins_the_harness_and_keeps_extract_to_the_wrap() -> None:
+    adapter = (ROOT / "docs" / "CODEX-SKILL-PROJECTION.md").read_text(encoding="utf-8")
+    assert "`THINKWEAVE_HARNESS=codex weave …`" in adapter
+    assert "`weave_extract` only inside `$thinkweave-wrap`" in adapter

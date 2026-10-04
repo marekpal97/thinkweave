@@ -28,7 +28,7 @@ The steps below cover both. Step 1 + 2 differ in source material; everything fro
 
 ## 1. Find the session note (or note its absence)
 
-**Resolve by exact identity, in both modes — harness-neutrally.** The hooks stamp the *harness* session id as `source_session:` on the session note's frontmatter, and `weave_extract(session_id=<that raw id>)` resolves the note through that stamp — auto-creating one only if no note carries the id. But the id lives in a **different environment variable per harness** (`CLAUDE_SESSION_ID` on Claude Code, `PI_SESSION_ID` on Pi, and none at all on Codex), so never read `$CLAUDE_SESSION_ID` directly: it is empty on any non-Claude harness, and a wrap that reads an empty value mints a detached second note while the real hook-created one keeps none. Resolve the id once with the neutral resolver instead:
+**Resolve by exact identity, in both modes — harness-neutrally.** The hooks stamp the *harness* session id as `source_session:` on the session note's frontmatter, and `weave_extract(session_id=<that raw id>)` resolves the note through that stamp — auto-creating one only if no note carries the id. But the id lives in a **different environment variable per harness** (`CLAUDE_CODE_SESSION_ID` on Claude Code, `PI_SESSION_ID` on Pi, `CODEX_SESSION_ID` on Codex), so never read `$CLAUDE_SESSION_ID` directly: it is empty on any non-Claude harness, and a wrap that reads an empty value mints a detached second note while the real hook-created one keeps none. Resolve the id once with the neutral resolver instead:
 
 ```
 id=$(weave session-id)   # prints the running harness's session id; empty + exit 1 when none is set
@@ -38,7 +38,7 @@ id=$(weave session-id)   # prints the running harness's session id; empty + exit
 
 Never search for the session note by recency when you have an id. Several sessions share one checkout and one vault; "most recent session in this project" returns whichever concurrent session wrote last, and a `force=true` extract onto it overwrites another session's note.
 
-**`id` is empty** (`weave session-id` exited non-zero — Codex, which exports no session-id variable, or a genuinely headless run) — only then fall back to recency, WITH the #209 identity guard. Never mint a fresh slug for a live session that already has a hook-created note; minting is for the genuine no-note case alone.
+**`id` is empty** (`weave session-id` exited non-zero — a genuinely headless run, or a harness that exports no session-id variable) — only then fall back to recency, WITH the #209 identity guard. Never mint a fresh slug for a live session that already has a hook-created note; minting is for the genuine no-note case alone.
 ```
 weave search --type session --project <project> --limit 1
 ```
@@ -205,8 +205,12 @@ If you cannot name the referent from session context — generic courtesy ("than
 
 ### C6. Task declaration — continuity is your judgment, take the user's cue
 A work-grain task is a durable unit of work that outlives sessions — "ship the wrap task pass", not "answer a question". **One entry per distinct deliverable**: a CLI feature and a pitch deck are two tasks even when one session did both, and folding them into one entry merges their rounds and commits for good. Pure Q&A declares nothing; slicing one deliverable into several mints is the opposite error.
-- **Continuing vs mint**: if this session advanced an open task from the SessionStart open-tasks list, declare `continuing` with its id — the round appends to that note; a second note for the same work poisons playback. Mint only for genuinely new work. The user's framing wins: "back to X" = continuing, even if the angle changed; a user saying a task is finished = `done: true`, and nothing else closes a task.
+- **The Open Tasks rules** — the SessionStart Open Tasks section states these three, in these words:
+  - Work on a listed task's ref continues that task: /wrap declares `continuing: <tsk-id>`, never a second task for the ref.
+  - A request to finish a listed ref closes its task: /wrap declares `done: true` on it, with no tracker search.
+  - A dispatch closed in this session is still its work task's child: /wrap lists it in `children`.
+- **Continuing vs mint**: the round appends to the continued note; a second note for the same work poisons playback. Mint only for genuinely new work. The user's framing wins: "back to X" = continuing, even if the angle changed; a user saying a task is finished = `done: true`, and nothing else closes a task. A minted task's `title` names the ticket's intent ("dogfood greet CLI"), not this session's first slice of it ("fix greet typo").
 - **Re-wraps restate, never add**: each round describes this session's whole work on **its own** task. A second wrap of the same session replaces each declared task's earlier round and reuses any task it minted under the same title. So re-declare **every** task the session touched — the ones the earlier wrap declared, with their full rounds, plus any new ones — never one merged entry for the whole session.
 - **`round.did`** is the segment's ledger: files actually touched, commit hashes this task produced (from the session note's `commits` frontmatter — attribute per task when the session interleaved several), fix-round count in `attempts`.
-- **`children`**: attribution, not bookkeeping — say which declared task each dispatched subagent served. Confidence rule as in step 4: unattributable children stay undeclared.
+- **`children`**: attribution, not bookkeeping — say which declared task each dispatched subagent served, open or closed; a dispatch that already finished is still listed. Declaring a closed child only sets its parent; it never reopens it or adds a round. Confidence rule as in step 4: unattributable children stay undeclared.
 - **Never**: reopen a closed task, or declare tasks for pure Q&A sessions to have something to declare.

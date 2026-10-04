@@ -1,0 +1,1 @@
+Ticket #1: add a '--lang en|es' option. Have one subagent implement it with worktree isolation (isolation: worktree), then merge its branch into main, remove the worktree, and commit.

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tests.tasks.conftest import run_hook
 from thinkweave.core.config import Config
-from thinkweave.core.task_contract import validate_task_note
+from thinkweave.core.task_contract import SessionRef, validate_task_note
 from thinkweave.core.vault import parse_frontmatter
 from thinkweave.operations import tasks
 from thinkweave.operations.tasks import ChildDigest, TaskStore, TranscriptSource
@@ -26,7 +26,16 @@ FOREGROUND = FIXTURES / "agent-a1f0e2d3c4b5a6978.jsonl"
 WORKTREE = FIXTURES / "agent-a8c6a44dd35bd23d8.jsonl"
 HERDR = FIXTURES / "herdr-two-prompts.jsonl"
 PARTIAL = FIXTURES / "partial.jsonl"
+PI = (
+    Path(__file__).parents[1] / "fixtures" / "harness_transcripts" / "pi"
+    / "2026-10-04T15-46-02-748Z_0199cccc-0000-7000-8000-000000000002.jsonl"
+)
 SESSION = "11111111-2222-4333-8444-555566667777"
+CODEX = next(
+    (Path(__file__).parents[1] / "fixtures" / "harness_transcripts" / "codex").glob(
+        "rollout-2026-10-03*.jsonl"
+    )
+)
 
 
 def stub_fm(cfg: Config, task_id: str) -> dict:
@@ -35,8 +44,8 @@ def stub_fm(cfg: Config, task_id: str) -> dict:
     return parse_frontmatter(task.path.read_text(encoding="utf-8"))[0]
 
 
-def digest_of(path: Path, since: str = "") -> ChildDigest:
-    return ChildDigest.read(TranscriptSource(path, since))
+def digest_of(path: Path, since: str = "", harness: str = "claude-code") -> ChildDigest:
+    return ChildDigest.read(TranscriptSource(path, since, SessionRef.session(harness, "s-x")))
 
 
 def cli(argv: list[str]) -> None:
@@ -106,10 +115,73 @@ class TestDigest:
             "Read": 1, "Bash": 1, "mcp__thinkweave__weave_create": 1,
         }
 
+    def test_a_harness_without_a_reader_names_the_gap_not_zero_tools(self):
+        digest = digest_of(FOREGROUND, harness="opencode")
+        assert any("opencode" in g and "digest reader" in g for g in digest.gaps)
+        fields = digest.round_fields([])
+        assert "tools" not in fields and "tool_errors" not in fields
+        assert fields["digest"]["gaps"] == list(digest.gaps)
+
+    def test_a_pi_worker_transcript_digests_its_live_branch_from_the_task_prompt(self):
+        digest = digest_of(PI, since="2026-10-04T15:46:11.000Z", harness="pi")
+        assert digest.asked.startswith("Task tsk-20bdc8ce: Add --indent N")
+        assert digest.model == "moonshotai/kimi-k2.6"
+        # The warm-up turn and the abandoned fork's write stay out.
+        assert digest.tools == {"bash": 3, "read": 1, "edit": 1, "write": 1, "weave_create": 1}
+        assert digest.tool_errors == 1
+        assert digest.duration == 18.792  # 15:46:11.313 → 15:46:30.105
+        fields = digest.round_fields([])
+        assert fields["did"] == {
+            "paths": ["src/dogfood/__init__.py", "tests/test_version.py"],
+            "commits": ["3e141e8"],
+        }
+        assert {"kind": "note", "ref": "src-a10e8018"} in fields["outputs"]
+        assert digest.gaps == ("no version in the transcript",)
+
+    def test_a_missing_pi_transcript_returns_the_gap(self, tmp_path: Path):
+        digest = digest_of(tmp_path / "gone.jsonl", harness="pi")
+        assert digest.tools is None
+        assert any("transcript not found" in g for g in digest.gaps)
+
     def test_no_token_counts_are_written(self):
         for path in (FOREGROUND, WORKTREE, HERDR, PARTIAL):
             fields = digest_of(path).round_fields([])
             assert "tokens" not in json.dumps(fields)
+
+
+class TestCodexDigest:
+    """Expected values read off the hand-built 0.160 rollout fixture."""
+
+    def test_bound_worker_reads_only_its_prompt_slice(self):
+        digest = digest_of(CODEX, since="2026-10-03T10:05:00.400+00:00", harness="codex")
+        assert digest.asked == "Task: tsk-0c0d0e0f\nAdd --pretty to 'dogfood version --json'."
+        assert digest.version == "0.160.0"
+        assert digest.model == "gpt-5.6-terra"
+        assert digest.tools == {
+            "Bash": 2, "apply_patch": 1,
+            "mcp__thinkweave__weave_create": 1, "mcp__thinkweave__weave_extract": 1,
+        }
+        assert digest.tool_errors == 2
+        assert digest.duration == 30.0  # 10:05:00 → 10:05:30
+        assert digest.gaps == ()
+        fields = digest.round_fields([])
+        assert fields["did"] == {"paths": ["src/dogfood/__init__.py"], "commits": ["1a2b3c4"]}
+        assert {"kind": "note", "ref": "dec-1234abcd"} in fields["outputs"]
+
+    def test_unsliced_rollout_counts_the_warm_up_too(self):
+        digest = digest_of(CODEX, harness="codex")
+        assert digest.asked == "Warm up: list the repo."
+        assert digest.tools["Bash"] == 3 and digest.tools["apply_patch"] == 2
+
+    def test_tool_calls_without_item_records_are_a_gap(self, tmp_path: Path):
+        rows = [json.loads(line) for line in CODEX.read_text().splitlines()]
+        kept = [r for r in rows if r["payload"].get("type") != "item_completed"
+                or r["payload"]["item"]["type"] == "UserMessage"]
+        transcript = tmp_path / CODEX.name
+        transcript.write_text("".join(json.dumps(r) + "\n" for r in kept), encoding="utf-8")
+        digest = digest_of(transcript, harness="codex")
+        assert digest.tools == {}
+        assert any("6 tool call(s)" in gap for gap in digest.gaps)
 
 
 class TestWiring:
@@ -177,6 +249,35 @@ class TestWiring:
             "harness": "claude-code", "kind": "session_id", "value": "s-worker",
         }
 
+    def test_a_codex_worker_binds_and_closes_with_tools_counted(
+        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
+    ):
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        transcript = tmp_path / CODEX.name
+        transcript.write_text(
+            CODEX.read_text(encoding="utf-8").replace("tsk-0c0d0e0f", task_id),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "thinkweave.surfaces.hooks.handler._prompt_time_enrichment",
+            lambda *a, **k: None,
+        )
+        run_hook(monkeypatch, "user_prompt_submit", {
+            "session_id": "01a10380-0000-7000-8000-000000000002",
+            "cwd": str(tmp_path),
+            "transcript_path": str(transcript),
+            "prompt": f"Task: {task_id}\nAdd --pretty to 'dogfood version --json'.",
+        }, harness="codex")
+        monkeypatch.setattr(tasks, "_now", lambda: "2026-10-03T10:06:00+00:00")
+        cli(["task", "close", task_id, "--session", "s-1"])
+
+        (entry,) = stub_fm(cfg, task_id)["rounds"]
+        assert entry["session_ref"]["harness"] == "codex"
+        assert entry["tools"]["Bash"] == 2
+        assert entry["did"]["commits"] == ["1a2b3c4"]
+        assert entry["digest"]["gaps"] == []
+
     def test_a_corrupt_binding_closes_with_a_recorded_gap(
         self, cfg: Config, tmp_path: Path, capsys
     ):
@@ -189,4 +290,59 @@ class TestWiring:
         assert f"{task_id}.bind.json unreadable" in err
         fm = stub_fm(cfg, task_id)
         assert fm["status"] == "closed"
-        assert "digest" not in fm["rounds"][0]
+        gaps = fm["rounds"][0]["digest"]["gaps"]
+        assert any(f"{task_id}.bind.json unreadable" in g for g in gaps)
+        assert tasks._NO_TRANSCRIPT in gaps
+
+
+class TestNoSilentRound:
+    def test_a_close_with_no_transcript_writes_the_gap_onto_the_round(
+        self, cfg: Config, capsys
+    ):
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        cli(["task", "close", task_id, "--session", "s-1"])
+        (entry,) = stub_fm(cfg, task_id)["rounds"]
+        assert entry["digest"]["gaps"] == [tasks._NO_TRANSCRIPT]
+
+    def _pi_worker_close(self, cfg, monkeypatch, tmp_path, capsys, transcript: str) -> dict:
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        monkeypatch.setattr(
+            "thinkweave.surfaces.hooks.handler._prompt_time_enrichment",
+            lambda *a, **k: None,
+        )
+        payload = {
+            "session_id": "pi-worker",
+            "cwd": str(tmp_path),
+            "prompt": f"Task {task_id}: Add --indent N to 'dogfood version --json'.",
+        }
+        if transcript:
+            payload["transcript_path"] = transcript
+        run_hook(monkeypatch, "user_prompt_submit", payload, harness="pi")
+        monkeypatch.setattr(tasks, "_now", lambda: "2026-10-04T16:00:00+00:00")
+        cli(["task", "close", task_id, "--session", "s-1"])
+        fm = stub_fm(cfg, task_id)
+        assert validate_task_note(fm) == []
+        (entry,) = fm["rounds"]
+        assert entry["session_ref"] == {
+            "harness": "pi", "kind": "session_id", "value": "pi-worker",
+        }
+        return entry
+
+    def test_a_pi_worker_prompt_binds_its_transcript_and_closes_with_a_digest(
+        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
+    ):
+        entry = self._pi_worker_close(cfg, monkeypatch, tmp_path, capsys, str(PI))
+        assert entry["tools"]["bash"] == 3
+        assert entry["did"]["commits"] == ["3e141e8"]
+
+    def test_a_pi_prompt_without_a_transcript_path_names_the_gap(
+        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
+    ):
+        entry = self._pi_worker_close(cfg, monkeypatch, tmp_path, capsys, "")
+        gaps = entry["digest"]["gaps"]
+        assert "the prompt hook carried no transcript path" in gaps
+        assert "tools" not in entry
+        err = capsys.readouterr().err
+        assert all(f"digest: {g}" in err for g in gaps)
