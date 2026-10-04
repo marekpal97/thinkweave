@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from thinkweave.core.config import Config
+from thinkweave.core.harness import PROFILES
 
 
 @pytest.fixture()
@@ -22,8 +23,9 @@ def cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Config:
     monkeypatch.setattr("thinkweave.core.config.load_config", lambda: config)
     # The suite may itself run under a harness that exports a session id;
     # these tests exercise the explicit-key and no-session paths.
-    for env in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "PI_SESSION_ID"):
-        monkeypatch.delenv(env, raising=False)
+    for profile in PROFILES.values():
+        for env in profile().session_id_envs:
+            monkeypatch.delenv(env, raising=False)
     return config
 
 

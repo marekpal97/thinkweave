@@ -28,7 +28,7 @@ The steps below cover both. Step 1 + 2 differ in source material; everything fro
 
 ## 1. Find the session note (or note its absence)
 
-**Resolve by exact identity, in both modes — harness-neutrally.** The hooks stamp the *harness* session id as `source_session:` on the session note's frontmatter, and `weave_extract(session_id=<that raw id>)` resolves the note through that stamp — auto-creating one only if no note carries the id. But the id lives in a **different environment variable per harness** (`CLAUDE_SESSION_ID` on Claude Code, `PI_SESSION_ID` on Pi, and none at all on Codex), so never read `$CLAUDE_SESSION_ID` directly: it is empty on any non-Claude harness, and a wrap that reads an empty value mints a detached second note while the real hook-created one keeps none. Resolve the id once with the neutral resolver instead:
+**Resolve by exact identity, in both modes — harness-neutrally.** The hooks stamp the *harness* session id as `source_session:` on the session note's frontmatter, and `weave_extract(session_id=<that raw id>)` resolves the note through that stamp — auto-creating one only if no note carries the id. But the id lives in a **different environment variable per harness** (`CLAUDE_CODE_SESSION_ID` on Claude Code, `PI_SESSION_ID` on Pi, `CODEX_SESSION_ID` on Codex), so never read `$CLAUDE_SESSION_ID` directly: it is empty on any non-Claude harness, and a wrap that reads an empty value mints a detached second note while the real hook-created one keeps none. Resolve the id once with the neutral resolver instead:
 
 ```
 id=$(weave session-id)   # prints the running harness's session id; empty + exit 1 when none is set
@@ -38,7 +38,7 @@ id=$(weave session-id)   # prints the running harness's session id; empty + exit
 
 Never search for the session note by recency when you have an id. Several sessions share one checkout and one vault; "most recent session in this project" returns whichever concurrent session wrote last, and a `force=true` extract onto it overwrites another session's note.
 
-**`id` is empty** (`weave session-id` exited non-zero — Codex, which exports no session-id variable, or a genuinely headless run) — only then fall back to recency, WITH the #209 identity guard. Never mint a fresh slug for a live session that already has a hook-created note; minting is for the genuine no-note case alone.
+**`id` is empty** (`weave session-id` exited non-zero — a genuinely headless run, or a harness that exports no session-id variable) — only then fall back to recency, WITH the #209 identity guard. Never mint a fresh slug for a live session that already has a hook-created note; minting is for the genuine no-note case alone.
 ```
 weave search --type session --project <project> --limit 1
 ```

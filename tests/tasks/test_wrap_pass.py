@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from thinkweave.core import harness
 from thinkweave.core.config import Config
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.task_contract import (
@@ -614,6 +615,14 @@ class TestLedgerRound:
                 "ts": "2026-10-02T10:00:00+00:00",
             }
         ]
+
+    def test_round_names_the_harness_the_wrap_runs_under(self, cfg: Config, monkeypatch):
+        monkeypatch.setattr(harness, "_OVERRIDE", None)
+        monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")
+        folder, _ids = seed_session(cfg)
+        result = reconcile_session(cfg, load_declaration(), folder)
+        entry = task_notes(cfg)[result.minted[0]]["rounds"][0]
+        assert entry["session_ref"]["harness"] == "codex"
 
     def test_solo_session_credits_insights_derived_from_the_harness_id(
         self, cfg: Config

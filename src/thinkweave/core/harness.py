@@ -334,17 +334,14 @@ class HarnessProfile:
     """How the harness mints session ids, for importers and dedup keys."""
 
     session_id_envs: tuple[str, ...] = ()
-    """Environment variable the harness exports carrying the current session's
-    id — ``CLAUDE_SESSION_ID`` on Claude Code, ``PI_SESSION_ID`` on Pi. Empty
-    when the harness sets none: Codex passes ``session_id`` only as a hook
-    *payload* field (docs/HARNESSES.md §Codex Q4), never an env var, and
-    OpenCode has none either. This is what a wrap running as a *model turn*
-    reads to land on the note the hooks already created: there is no
-    ``--harness`` argv in that turn, and ``$THINKWEAVE_HARNESS`` is usually
-    unset, so the env var each harness exports is the actual signal. Resolved
-    harness-neutrally by ``weave session-id``; a harness that declares none
-    falls back to recency + the #209 identity guard rather than minting a
-    fresh slug for a live session that already has a note."""
+    """Environment variables the harness exports carrying the current
+    session's id, tried in order — ``CLAUDE_CODE_SESSION_ID`` on Claude Code,
+    ``PI_SESSION_ID`` on Pi, ``CODEX_SESSION_ID`` on Codex. Empty when the
+    harness sets none (OpenCode). A wrap runs as a *model turn* with no
+    ``--harness`` argv, so it reads these to land on the note the hooks
+    already created; ``weave session-id`` resolves them harness-neutrally, and
+    a harness that declares none falls back to recency + the identity guard
+    rather than minting a fresh slug for a live session that has a note."""
 
     native_memory_artifact: Path | None = None
     """The on-disk memory corpus the seam reconciles, or None. Must agree
@@ -754,12 +751,13 @@ def codex(home: Path | None = None) -> HarnessProfile:
         transcript_format="jsonl-rollout",
         transcript_parser="thinkweave.acquisition.importers.codex:parse_rollout",
         transcript_importer="thinkweave.acquisition.importers.codex:import_codex",
+        digest_reader="thinkweave.operations.tasks:codex_digest",
         binds_workers=True,
         session_id_scheme="uuid7",
-        # session_id_envs stays empty: an env-dumping SessionStart hook saw no
-        # CODEX_SESSION_ID or equivalent (docs/HARNESSES.md §Codex Q4) — Codex
-        # delivers session_id only as a hook payload field, which a wrap model
-        # turn cannot read, so wrap falls back to recency + the #209 guard.
+        # Both names ship in the codex-cli 0.160.0 binary. Hooks never read
+        # them (session_id is a required payload field); a model turn's shell
+        # does, which is where the wrap resolves its session.
+        session_id_envs=("CODEX_SESSION_ID", "CODEX_THREAD_ID"),
         harness_flag="--harness codex",
         windows_cli_shim=True,
         mcp_servers_key="mcp_servers",
@@ -799,15 +797,6 @@ def codex(home: Path | None = None) -> HarnessProfile:
                 "codex exec resolves no slash commands; a $name mention is a "
                 "hint the model acts on by reading the skill file itself",
                 "docs/HARNESSES.md §Q2",
-            ),
-            Degradation(
-                "task digest",
-                "documented",
-                "no digest reader parses jsonl-rollout transcripts, so a "
-                "child task's round records the session it ran in and a gap "
-                "naming the missing reader instead of its tools, files and "
-                "commits",
-                "#243",
             ),
         ),
     )
@@ -1208,8 +1197,8 @@ def active() -> HarnessProfile:
 def env_session_id() -> str:
     """The current harness session id, read from whichever declared
     session-id env var carries a value — active profile first, then every
-    other registered one. ``""`` when no harness exports one (Codex, or a
-    genuinely headless run); callers fall back to their own scheme.
+    other registered one. ``""`` when none carries one (a genuinely headless
+    run); callers fall back to their own scheme.
     """
     ordered = [active()] + [
         factory() for name, factory in PROFILES.items() if name != active().id

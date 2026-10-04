@@ -31,6 +31,11 @@ PI = (
     / "2026-10-04T15-46-02-748Z_0199cccc-0000-7000-8000-000000000002.jsonl"
 )
 SESSION = "11111111-2222-4333-8444-555566667777"
+CODEX = next(
+    (Path(__file__).parents[1] / "fixtures" / "harness_transcripts" / "codex").glob(
+        "rollout-2026-10-03*.jsonl"
+    )
+)
 
 
 def stub_fm(cfg: Config, task_id: str) -> dict:
@@ -111,8 +116,8 @@ class TestDigest:
         }
 
     def test_a_harness_without_a_reader_names_the_gap_not_zero_tools(self):
-        digest = digest_of(FOREGROUND, harness="codex")
-        assert any("codex" in g and "digest reader" in g for g in digest.gaps)
+        digest = digest_of(FOREGROUND, harness="opencode")
+        assert any("opencode" in g and "digest reader" in g for g in digest.gaps)
         fields = digest.round_fields([])
         assert "tools" not in fields and "tool_errors" not in fields
         assert fields["digest"]["gaps"] == list(digest.gaps)
@@ -142,6 +147,41 @@ class TestDigest:
         for path in (FOREGROUND, WORKTREE, HERDR, PARTIAL):
             fields = digest_of(path).round_fields([])
             assert "tokens" not in json.dumps(fields)
+
+
+class TestCodexDigest:
+    """Expected values read off the hand-built 0.160 rollout fixture."""
+
+    def test_bound_worker_reads_only_its_prompt_slice(self):
+        digest = digest_of(CODEX, since="2026-10-03T10:05:00.400+00:00", harness="codex")
+        assert digest.asked == "Task: tsk-0c0d0e0f\nAdd --pretty to 'dogfood version --json'."
+        assert digest.version == "0.160.0"
+        assert digest.model == "gpt-5.6-terra"
+        assert digest.tools == {
+            "Bash": 2, "apply_patch": 1,
+            "mcp__thinkweave__weave_create": 1, "mcp__thinkweave__weave_extract": 1,
+        }
+        assert digest.tool_errors == 2
+        assert digest.duration == 30.0  # 10:05:00 → 10:05:30
+        assert digest.gaps == ()
+        fields = digest.round_fields([])
+        assert fields["did"] == {"paths": ["src/dogfood/__init__.py"], "commits": ["1a2b3c4"]}
+        assert {"kind": "note", "ref": "dec-1234abcd"} in fields["outputs"]
+
+    def test_unsliced_rollout_counts_the_warm_up_too(self):
+        digest = digest_of(CODEX, harness="codex")
+        assert digest.asked == "Warm up: list the repo."
+        assert digest.tools["Bash"] == 3 and digest.tools["apply_patch"] == 2
+
+    def test_tool_calls_without_item_records_are_a_gap(self, tmp_path: Path):
+        rows = [json.loads(line) for line in CODEX.read_text().splitlines()]
+        kept = [r for r in rows if r["payload"].get("type") != "item_completed"
+                or r["payload"]["item"]["type"] == "UserMessage"]
+        transcript = tmp_path / CODEX.name
+        transcript.write_text("".join(json.dumps(r) + "\n" for r in kept), encoding="utf-8")
+        digest = digest_of(transcript, harness="codex")
+        assert digest.tools == {}
+        assert any("6 tool call(s)" in gap for gap in digest.gaps)
 
 
 class TestWiring:
@@ -208,6 +248,35 @@ class TestWiring:
         assert entry["session_ref"] == {
             "harness": "claude-code", "kind": "session_id", "value": "s-worker",
         }
+
+    def test_a_codex_worker_binds_and_closes_with_tools_counted(
+        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
+    ):
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        transcript = tmp_path / CODEX.name
+        transcript.write_text(
+            CODEX.read_text(encoding="utf-8").replace("tsk-0c0d0e0f", task_id),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "thinkweave.surfaces.hooks.handler._prompt_time_enrichment",
+            lambda *a, **k: None,
+        )
+        run_hook(monkeypatch, "user_prompt_submit", {
+            "session_id": "01a10380-0000-7000-8000-000000000002",
+            "cwd": str(tmp_path),
+            "transcript_path": str(transcript),
+            "prompt": f"Task: {task_id}\nAdd --pretty to 'dogfood version --json'.",
+        }, harness="codex")
+        monkeypatch.setattr(tasks, "_now", lambda: "2026-10-03T10:06:00+00:00")
+        cli(["task", "close", task_id, "--session", "s-1"])
+
+        (entry,) = stub_fm(cfg, task_id)["rounds"]
+        assert entry["session_ref"]["harness"] == "codex"
+        assert entry["tools"]["Bash"] == 2
+        assert entry["did"]["commits"] == ["1a2b3c4"]
+        assert entry["digest"]["gaps"] == []
 
     def test_a_corrupt_binding_closes_with_a_recorded_gap(
         self, cfg: Config, tmp_path: Path, capsys

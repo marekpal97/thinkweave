@@ -95,7 +95,7 @@ Evidence-derived from `src-ae9cbc5c`, `src-40e37b6e`, `src-fc676ead`, `src-415f9
 weave learn probe --session "$(weave session-id)" --text "<the question, verbatim>"
 ```
 
-Resolve the session id harness-neutrally with `weave session-id` (prints the running harness's id — `CLAUDE_SESSION_ID` on Claude Code, `PI_SESSION_ID` on Pi; empty on Codex/headless), never a literal `$CLAUDE_SESSION_ID`, which is Claude-only. Writes the same `prompt` + `probe` event pair `weave wrap-finalize --verdicts` persists, keyed by the harness UUID, so `weave_prompts` / the dream probe-distiller pick it up and it feeds acquisition. Unresolvable session (empty id → Codex/headless, or no matching note) → the rail writes nothing and says so; do not retry with a made-up key.
+Resolve the session id harness-neutrally with `weave session-id` (prints the running harness's id — `CLAUDE_CODE_SESSION_ID` on Claude Code, `PI_SESSION_ID` on Pi, `CODEX_SESSION_ID` on Codex; empty when headless), never a literal `$CLAUDE_SESSION_ID`, which is Claude-only. Writes the same `prompt` + `probe` event pair `weave wrap-finalize --verdicts` persists, keyed by the harness UUID, so `weave_prompts` / the dream probe-distiller pick it up and it feeds acquisition. Unresolvable session (empty id → headless, or no matching note) → the rail writes nothing and says so; do not retry with a made-up key.
 
 ## 7. Close — one learn note per session
 

@@ -70,7 +70,7 @@ def cmd_session_id(args: argparse.Namespace) -> None:
     session-id env var is set. We try the active profile first (honouring
     ``$THINKWEAVE_HARNESS`` when it *is* set), then every other registered
     profile, and print the first declared var that carries a value. None
-    resolvable (Codex, which exports no such var, or a genuinely headless run)
+    resolvable (a genuinely headless run)
     → exit 1, and the caller falls back to recency + the #209 identity guard.
     """
     from thinkweave.core import harness

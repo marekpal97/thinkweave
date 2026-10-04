@@ -24,7 +24,7 @@ profile is what runs; fix whichever is wrong.
 | context channel | `additionalContext` | `additionalContext` | `context-injection` | `message-transform` |
 | dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
 | transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/storage/session/*/*.json` (json-records) |
-| task digest reader | `thinkweave.operations.tasks:claude_code_digest` | — (degraded) | `thinkweave.operations.tasks:pi_digest` | — (degraded) |
+| task digest reader | `thinkweave.operations.tasks:claude_code_digest` | `thinkweave.operations.tasks:codex_digest` | `thinkweave.operations.tasks:pi_digest` | — (degraded) |
 | task worker binding | yes | yes | yes | no |
 | session ids | `uuid4` | `uuid7` | `uuid (session-header id)` | `ses_<12-hex><14-base62> (ULID-style sortable)` |
 | MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/mcp.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
@@ -59,7 +59,6 @@ row above) everything unlisted works as on Claude Code; on a
 - **Stop capture** — documented: fires at every turn end — measured interactively 2026-09-05 (hook/started at each task_complete) and headless 2026-09-07 (raw envelope with last_assistant_message; SessionEnd ~2 s later, which thinkweave does not hook). The first Stop materialises the note and later turns fold in place. Still unmeasured: whether an interactive TUI exit delivers a final Stop of its own beyond the last turn's, so a rich end-of-session capture in the TUI still rides `$thinkweave-wrap` (docs/HARNESSES.md §2026-09-07 instrumented headless run)
 - **SessionStart context delivery** — documented: additionalContext renders as a visible developer message, not a silent system one (openai/codex#16933)
 - **headless skill invocation** — documented: codex exec resolves no slash commands; a $name mention is a hint the model acts on by reading the skill file itself (docs/HARNESSES.md §Q2)
-- **task digest** — documented: no digest reader parses jsonl-rollout transcripts, so a child task's round records the session it ran in and a gap naming the missing reader instead of its tools, files and commits (#243)
 
 #### Pi
 
@@ -278,22 +277,24 @@ at all. `[manual]` "Treat tool hooks as a useful guardrail, not a complete
 enforcement boundary."
 
 **Q4 (not asked, needed anyway) — Is there a session-id environment variable?
-No.** `[measured]` An env-dumping SessionStart hook saw no `CODEX_SESSION_ID`
-or equivalent; the only Codex variable present was `CODEX_HOME`, and it was
-inherited from the invoking shell. For the *hook handler* this is a non-issue:
-`session_id` is a *required* field on every Codex hook input `[binary]`, so the
-handler's env-var fallback is never reached.
+Not in a hook; yes in the model's shell.** `[measured]` An env-dumping
+SessionStart hook saw no `CODEX_SESSION_ID` or equivalent; the only Codex
+variable present was `CODEX_HOME`, inherited from the invoking shell. For the
+*hook handler* this is a non-issue: `session_id` is a *required* field on every
+Codex hook input `[binary]`, so the handler's env-var fallback is never
+reached. `[binary]` The codex-cli 0.160.0 binary carries both
+`CODEX_SESSION_ID` and `CODEX_THREAD_ID`; the profile declares them in that
+order. A live dump of a model turn's shell environment is still owed.
 
-It **does** matter for `/wrap`, which runs as a model turn — not a hook — and
-so cannot read the hook payload. `HarnessProfile.session_id_envs` is empty for
-Codex accordingly (`CLAUDE_SESSION_ID` for Claude Code, `PI_SESSION_ID` for Pi),
-and `weave session-id` returns empty here. A Codex wrap therefore falls back to
-recency **with** the #209 identity guard, never to minting a fresh slug for a
-live session that already has a hook-created note. See [§Session identity and
-the wrap resolver](#session-identity-and-the-wrap-resolver). This closes the
-mint-a-detached-slug fragmentation observed on Codex (2026-09-05:
-`codex-diagnose-mcp-startup-20260905` → ses-dec974a7, a second note beside the
-hook-created one).
+It matters for `/wrap`, which runs as a model turn — not a hook — and so cannot
+read the hook payload. `weave session-id` reads the profile's
+`session_id_envs`, and the Codex skill adapter runs every `weave` call as
+`THINKWEAVE_HARNESS=codex weave …` so a variable leaked from a parent Claude
+Code session cannot win. The adapter also confines `weave_extract` to
+`$thinkweave-wrap`: Codex sessions in a 2026-10-03 dogfood run called it
+mid-task with an invented id (`ses-20261003-version-python`), which minted a
+stray session note. See [§Session identity and the wrap
+resolver](#session-identity-and-the-wrap-resolver).
 
 ### Why the handler reads argv, not the profile
 
@@ -328,7 +329,7 @@ The id lives in a **different environment variable per harness**, held as
 |---|---|---|
 | Claude Code | `CLAUDE_CODE_SESSION_ID`, then legacy `CLAUDE_SESSION_ID` | uuid4. The shipping build exports `CLAUDE_CODE_SESSION_ID`; the shorter legacy name is kept as a fallback (fixed 2026-09-15 — the profile had declared only the legacy name, so `weave session-id` came up empty on Claude Code itself) |
 | Pi | `PI_SESSION_ID` | the session uuid; also `PI_SESSION_FILE` (path). The shim stamps `PI_SESSION_ID` as `source_session` |
-| Codex | *(none)* | `session_id` arrives as a hook *payload* field only (§Codex Q4); a model turn cannot read it |
+| Codex | `CODEX_SESSION_ID`, then `CODEX_THREAD_ID` | uuid7, equal to the rollout id. Both names ship in the 0.160.0 binary (§Codex Q4); the skill adapter prefixes `THINKWEAVE_HARNESS=codex` so this row is tried first |
 | OpenCode | *(none)* | no session-id env var documented |
 
 A wrap runs as a **model turn**, not a hook: there is no `--harness` argv, and
@@ -345,8 +346,8 @@ and exiting non-zero with empty output when none does.
 
 1. `id=$(weave session-id)` → **non-empty**: pass that raw id to
    `weave_extract` and land on the hook-created note by construction.
-2. **empty** (`weave session-id` exited non-zero — Codex, or a genuinely
-   headless run): fall back to `weave search --type session --limit 1` **with**
+2. **empty** (`weave session-id` exited non-zero — a genuinely headless run,
+   or a harness that exports no session-id variable): fall back to `weave search --type session --limit 1` **with**
    the #209 identity guard — check `source_session` before any `force=true`,
    and mint a fresh id only when no session note exists at all. Never mint for
    a live session that already has a hook-created note.

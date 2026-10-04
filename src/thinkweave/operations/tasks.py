@@ -1158,14 +1158,12 @@ def claude_code_digest(transcript: Path, since: str, until: str) -> ChildDigest:
                     commits[sha] = None
             elif name.endswith(_NOTE_TOOLS):
                 notes.update(dict.fromkeys(_created_ids(block.get("content"))))
-    naive = sum(1 for r in rows if r.get("timestamp") and _ts(r) is None)
-    timing = f"{naive} row(s) with an unreadable or zone-less timestamp left out of timing"
     return _assemble(
         rows,
         models,
         asked,
         gaps,
-        [timing] if naive else [],
+        _timing_gaps(rows),
         version=next((str(r["version"]) for r in rows if r.get("version")), ""),
         description=str(meta.get("description", "")),
         role=str(meta.get("agentType", "")),
@@ -1255,6 +1253,96 @@ def pi_digest(transcript: Path, since: str, until: str) -> ChildDigest:
 
 
 _PI_FILE_TOOLS = ("edit", "write")
+
+
+def codex_digest(transcript: Path, since: str, until: str) -> ChildDigest:
+    """Codex's digest reader: count the rollout slice's completed tool items
+    (shell, patch, MCP, collab), whatever code-mode script issued them."""
+    from collections import Counter
+
+    rows, gaps = _transcript_rows(transcript)
+    meta = next((_dict(r.get("payload")) for r in rows if r.get("type") == "session_meta"), {})
+    # A turn's context row precedes its prompt, so models come from the whole rollout.
+    models = Counter(
+        str(_dict(r.get("payload")).get("model")) for r in rows
+        if r.get("type") == "turn_context" and _dict(r.get("payload")).get("model")
+    )
+    rows = _slice(rows, since, until, _codex_prompt)
+    cwd = str(meta.get("cwd", ""))
+    tools: Counter = Counter()
+    paths: dict[str, None] = {}
+    commits: dict[str, None] = {}
+    notes: dict[str, None] = {}
+    asked, errors = "", 0
+    for row in rows:
+        payload = _dict(row.get("payload"))
+        asked = asked or _codex_prompt(row)
+        item = _dict(payload.get("item")) if payload.get("type") == "item_completed" else {}
+        name = _codex_tool_name(item)
+        if not name:
+            continue
+        tools[name] += 1
+        if item.get("status") != "completed":
+            errors += 1
+        elif name == "apply_patch":
+            paths.update(dict.fromkeys(_relative(str(p), cwd) for p in _dict(item.get("changes"))))
+        elif name == "Bash":
+            command = " ".join(str(c) for c in _list(item.get("command"))[-1:])
+            sha = _commit_sha(command, {"stdout": item.get("stdout", "")})
+            if sha:
+                commits[sha] = None
+        elif name.endswith(_NOTE_TOOLS):
+            notes.update(dict.fromkeys(_created_ids(_dict(item.get("result")).get("content"))))
+    calls = sum(
+        1 for r in rows
+        if _dict(r.get("payload")).get("type") in ("function_call", "custom_tool_call")
+    )
+    if calls and not tools:
+        gaps.append(f"{calls} tool call(s) but no completed-item records to count them from")
+    return _assemble(
+        rows,
+        models,
+        asked,
+        gaps,
+        _timing_gaps(rows),
+        version=str(meta.get("cli_version", "")),
+        paths=tuple(paths),
+        commits=tuple(commits),
+        notes=tuple(notes),
+        tools=dict(tools),
+        tool_errors=errors,
+    )
+
+
+_CODEX_ITEM_TOOLS = {"CommandExecution": "Bash", "FileChange": "apply_patch"}
+
+
+def _codex_tool_name(item: dict) -> str:
+    """A completed rollout item's tool name in the hook vocabulary; ``""``
+    for messages, reasoning and other non-tool items."""
+    kind = item.get("type")
+    if kind == "McpToolCall":
+        return f"mcp__{item.get('server', '')}__{item.get('tool', '')}"
+    if kind == "CollabAgentToolCall":
+        return str(item.get("tool", ""))
+    return _CODEX_ITEM_TOOLS.get(str(kind), "")
+
+
+def _codex_prompt(row: dict) -> str:
+    """A rollout row's user prompt text; ``""`` for every other row."""
+    payload = _dict(row.get("payload"))
+    item = _dict(payload.get("item"))
+    if payload.get("type") != "item_completed" or item.get("type") != "UserMessage":
+        return ""
+    return "\n".join(
+        str(_dict(b).get("text", "")) for b in _list(item.get("content"))
+    ).strip()
+
+
+def _timing_gaps(rows: list[dict]) -> list[str]:
+    """A gap for the rows whose timestamp is unreadable or zone-less."""
+    naive = sum(1 for r in rows if r.get("timestamp") and _ts(r) is None)
+    return [f"{naive} row(s) with an unreadable or zone-less timestamp left out of timing"] if naive else []
 
 
 def _transcript_rows(path: Path) -> tuple[list[dict], list[str]]:
