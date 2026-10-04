@@ -186,7 +186,7 @@ def _env_session_id() -> str:
     from thinkweave.core import harness
 
     hid = _hook_harness()
-    profile = harness.PROFILES[hid]() if hid in harness.PROFILES else harness.active()
+    profile = harness.lookup(hid) or harness.active()
     envs = profile.session_id_envs
     for env in envs:
         value = os.environ.get(env, "")

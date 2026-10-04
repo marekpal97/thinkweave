@@ -373,12 +373,16 @@ def snapshot(root: Path) -> dict:
     state = json.loads((root / "state.json").read_text())
     cfg = _throwaway_config(state)
 
+    import sqlite3
+
     from thinkweave.core.buffer import buffer_path
+    from thinkweave.core.events import iter_jsonl
     from thinkweave.core.indexer import Indexer
     from thinkweave.retrieval.context import build_project_context
 
     Indexer(config=cfg).rebuild()
-    db = _index(cfg)
+    db = sqlite3.connect(str(cfg.index_db))
+    db.row_factory = sqlite3.Row
     before = root / "s9-before.json"
     live = Path(state["live_vault"]) / "projects" / state["project"]
     return {
@@ -389,7 +393,9 @@ def snapshot(root: Path) -> dict:
         "feedback": _feedback(db),
         "edges": _edges(db),
         "served": build_project_context(cfg, state["project"]),
-        "devloop_buffer": [r.get("task_id") for r in _jsonl(buffer_path(cfg.weave_dir, "devloop"))],
+        "devloop_buffer": [
+            r.get("task_id") for r in iter_jsonl(buffer_path(cfg.weave_dir, "devloop"))
+        ],
         "before": json.loads(before.read_text()) if before.exists() else None,
         "live_leak": str(live) if live.exists() else "",
     }
@@ -405,14 +411,6 @@ def _throwaway_config(state: dict):
     if cfg.vault_root.resolve() != Path(state["vault"]).resolve():
         sys.exit(f"oracle: config resolved {cfg.vault_root}, not the throwaway {state['vault']}")
     return cfg
-
-
-def _index(cfg):
-    import sqlite3
-
-    db = sqlite3.connect(str(cfg.index_db))
-    db.row_factory = sqlite3.Row
-    return db
 
 
 def _tasks(cfg, db) -> dict:
@@ -439,7 +437,7 @@ def _tasks(cfg, db) -> dict:
 def _session(cfg, db, driven: dict) -> dict:
     """One driven session: its note id, task rows and verdict count."""
     from thinkweave.core.buffer import archived_events_path, buffer_path
-    from thinkweave.core.events import feedback_events
+    from thinkweave.core.events import feedback_events, iter_jsonl
     from thinkweave.operations.tasks import Register
 
     key = driven.get("session", "")
@@ -455,7 +453,7 @@ def _session(cfg, db, driven: dict) -> dict:
         **driven,
         "key": key,
         "id": note["id"] if note else "",
-        "events": sum(1 for st in streams for _ in _jsonl(st)),
+        "events": sum(1 for st in streams for _ in iter_jsonl(st)),
         "opens": [{"task_id": r.get("task_id"), "grain": r.get("grain")}
                   for r in rows if r["type"] == "task_open"],
         "closes": [r.get("task_id") for r in rows if r["type"] == "task_close"],
@@ -482,12 +480,6 @@ def _edges(db) -> dict:
     ):
         out.setdefault(r["source"], []).append([r["target"], r["edge_type"]])
     return out
-
-
-def _jsonl(path: Path):
-    from thinkweave.core.events import iter_jsonl
-
-    return iter_jsonl(path)
 
 
 if __name__ == "__main__":

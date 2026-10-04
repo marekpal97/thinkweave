@@ -1160,6 +1160,12 @@ PROFILES: dict[str, Callable[..., HarnessProfile]] = {
     "opencode": opencode,
 }
 
+def lookup(name: str) -> HarnessProfile | None:
+    """The registered profile named ``name``; none for an unknown name."""
+    factory = PROFILES.get(name)
+    return factory() if factory else None
+
+
 #: In-process override. ``None`` means "derive from the environment".
 _OVERRIDE: HarnessProfile | None = None
 

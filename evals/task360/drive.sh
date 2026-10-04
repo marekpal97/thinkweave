@@ -256,7 +256,7 @@ prompt() { cat "$HERE/prompts/$1.txt"; }
 # Plumbing
 
 _name() {  # the herdr agent name: unique per run, since herdr keeps names after exit
-  echo "t360-$(_get workspace | tr -d :)-$(tr '[:upper:]' '[:lower:]' <<<"$1")" | tr '[:upper:]' '[:lower:]'
+  echo "t360-$(_get workspace | tr -d :)-$1" | tr '[:upper:]' '[:lower:]'
 }
 
 _status() { herdr agent get "$1" | jq -r '.result.agent.agent_status // empty'; }

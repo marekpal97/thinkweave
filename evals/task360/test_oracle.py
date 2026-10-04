@@ -23,7 +23,7 @@ def _snap(rounds: list[dict], opens: list[dict], closes: list[str], **extra) -> 
             "orphan": None, "rounds": rounds, "body": ["[[a]]"] * len(rounds), "errors": []}
     sessions = {
         label: {"key": f"uuid-{label}", "id": f"ses-{label}", "opens": opens, "closes": closes,
-                "orphan_closes": 0, "verdicts": 0}
+                "verdicts": 0}
         for label in ("S1", "S2", "S9")
     }
     return {"repo": REPO, "tasks": {"tsk-1": work}, "sessions": sessions,

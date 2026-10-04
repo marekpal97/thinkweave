@@ -28,7 +28,7 @@ from pathlib import Path
 
 from thinkweave.core.buffer import archived_events_path, buffer_path
 from thinkweave.core.events import feedback_events, iter_jsonl
-from thinkweave.core.harness import PROFILES
+from thinkweave.core.harness import lookup
 from thinkweave.core.harness import active as active_harness
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.task_contract import (
@@ -396,11 +396,6 @@ class TranscriptSource:
         return cls(path, session_ref=SessionRef.agent(harness, agent_id) if agent_id else None)
 
     @classmethod
-    def bound_slice(cls, path: str, since: str, session_ref: SessionRef) -> TranscriptSource:
-        """A dispatched session's transcript from the prompt that bound it."""
-        return cls(Path(path), since, session_ref)
-
-    @classmethod
     def bound(cls, cfg, task_id: str) -> TranscriptSource:
         """The slice a prompt bound to ``task_id``; none when nothing bound
         it, and a gap when its binding cannot be read."""
@@ -437,9 +432,6 @@ class TranscriptSource:
             encoding="utf-8",
         )
         return True
-
-    def digest(self, until: str) -> ChildDigest:
-        return ChildDigest.read(self, until=until)
 
 
 @dataclass(frozen=True)
@@ -565,7 +557,7 @@ def close_child(
     source = source or TranscriptSource.bound(cfg, task_id)
     errors: list[str] = []
     envelopes = _read_envelopes(_envelope_path(cfg, task_id), task_id, errors)
-    digest = source.digest(until=_now())
+    digest = ChildDigest.read(source, until=_now())
     data = {**digest.round_fields(envelopes), "envelopes": envelopes + digest.claims(task_id)}
     task.frontmatter.update(digest.note_fields(task.frontmatter))
     task.put_round(replace(Round.from_dict(data, grain=task.grain), session_ref=source.session_ref))
@@ -602,17 +594,15 @@ def bind_session(
     prompt names; returns the ids this call bound. A harness whose profile
     cannot bind a worker binds the session with a gap instead."""
     ref = SessionRef.session(harness, session_key)
-    profile = PROFILES[harness]() if harness in PROFILES else None
+    profile = lookup(harness)
     if profile is None or not profile.binds_workers:
         gap = f"{harness} declares no worker binding for a dispatched session"
     elif not transcript_path:
         gap = "the prompt hook carried no transcript path"
     else:
         gap = ""
-    source = (
-        TranscriptSource(None, since, ref, (gap,))
-        if gap
-        else TranscriptSource.bound_slice(transcript_path, since, ref)
+    source = TranscriptSource(
+        None if gap else Path(transcript_path), since, ref, (gap,) if gap else ()
     )
     store = TaskStore(cfg)
     return [
@@ -1049,7 +1039,7 @@ class ChildDigest:
         ref's harness profile declares; never raises. The source's own gaps
         lead the digest's."""
         harness = source.session_ref.harness if source.session_ref else ""
-        profile = PROFILES[harness]() if harness in PROFILES else None
+        profile = lookup(harness)
         reader = profile.load_digest_reader() if profile else None
         missing = [_NO_TRANSCRIPT] if source.path is None else []
         if harness and not reader:
@@ -1168,31 +1158,40 @@ def claude_code_digest(transcript: Path, since: str, until: str) -> ChildDigest:
                     commits[sha] = None
             elif name.endswith(_NOTE_TOOLS):
                 notes.update(dict.fromkeys(_created_ids(block.get("content"))))
-    version = next((str(r["version"]) for r in rows if r.get("version")), "")
-    model = models.most_common(1)[0][0] if models else ""
-    gaps += [
-        f"no {what} in the transcript"
-        for what, value in (("version", version), ("prompt", asked), ("model", model))
-        if not value
-    ]
     naive = sum(1 for r in rows if r.get("timestamp") and _ts(r) is None)
-    if naive:
-        gaps.append(f"{naive} row(s) with an unreadable or zone-less timestamp left out of timing")
-    stamps = [t for t in map(_ts, rows) if t]
-    return ChildDigest(
-        version=version,
-        asked=asked,
+    timing = f"{naive} row(s) with an unreadable or zone-less timestamp left out of timing"
+    return _assemble(
+        rows,
+        models,
+        asked,
+        gaps,
+        [timing] if naive else [],
+        version=next((str(r["version"]) for r in rows if r.get("version")), ""),
         description=str(meta.get("description", "")),
-        model=model,
         role=str(meta.get("agentType", "")),
         paths=tuple(paths),
         commits=tuple(commits),
         notes=tuple(notes),
         tools=dict(tools),
         tool_errors=errors,
-        duration=round((max(stamps) - min(stamps)).total_seconds(), 3) if stamps else None,
         success=success,
+    )
+
+
+def _assemble(rows, models, asked: str, gaps: list[str], late_gaps=(), **fields) -> ChildDigest:
+    """A reader's digest from its walk: the dominant model, a gap per missing
+    version, prompt or model (then ``late_gaps``), and the slice's timing."""
+    model = models.most_common(1)[0][0] if models else ""
+    missing = (("version", fields.get("version", "")), ("prompt", asked), ("model", model))
+    gaps += [f"no {what} in the transcript" for what, value in missing if not value]
+    gaps += late_gaps
+    stamps = [t for t in map(_ts, rows) if t]
+    return ChildDigest(
+        asked=asked,
+        model=model,
+        duration=round((max(stamps) - min(stamps)).total_seconds(), 3) if stamps else None,
         gaps=tuple(gaps),
+        **fields,
     )
 
 
@@ -1241,24 +1240,17 @@ def pi_digest(transcript: Path, since: str, until: str) -> ChildDigest:
                 notes.update(dict.fromkeys(_created_ids(content)))
         elif not asked:
             asked = _pi_prompt(row)
-    model = models.most_common(1)[0][0] if models else ""
-    # The session header carries a format version, not Pi's own.
-    gaps = [
-        f"no {what} in the transcript"
-        for what, value in (("version", ""), ("prompt", asked), ("model", model))
-        if not value
-    ]
-    stamps = [t for t in map(_ts, rows) if t]
-    return ChildDigest(
-        asked=asked,
-        model=model,
+    # The session header carries a format version, not Pi's own: no version.
+    return _assemble(
+        rows,
+        models,
+        asked,
+        [],
         paths=tuple(paths),
         commits=tuple(commits),
         notes=tuple(notes),
         tools=dict(tools),
         tool_errors=errors,
-        duration=round((max(stamps) - min(stamps)).total_seconds(), 3) if stamps else None,
-        gaps=tuple(gaps),
     )
 
 
