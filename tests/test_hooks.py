@@ -1213,6 +1213,14 @@ class TestGitCommitDetection:
         assert _is_git_commit("git add a.py && git commit -m 'fix' && git status")
         assert not _is_git_commit("git add a.py && git commit --amend")
 
+    def test_is_git_commit_respects_quoting(self):
+        assert _is_git_commit("git add -A && git commit -m x")
+        assert _is_git_commit("cd repo; git commit")
+        assert _is_git_commit('git commit -m "a; b && c"')
+        assert not _is_git_commit('echo "git commit"')
+        assert not _is_git_commit('echo "a && git commit"')
+        assert not _is_git_commit("echo 'a; git commit'")
+
     def test_parse_commit_output(self):
         output = '[main abc1234] Fix parser bug\n 2 files changed, 15 insertions(+), 3 deletions(-)\n'
         result = _parse_commit_from_output("git commit -m 'Fix parser bug'", output)
@@ -1292,6 +1300,7 @@ class TestTestDetection:
         """Chained commands like 'cd foo && uv run pytest' should be detected."""
         assert _is_test_command("cd src && uv run pytest -x")
         assert _is_test_command("export FOO=1 && pytest tests/")
+        assert not _is_test_command('echo "done && pytest"')
         assert _is_test_command("cd /tmp; pytest")
         assert _is_test_command("echo setup || uv run pytest --tb=short")
         assert not _is_test_command("cd src && echo pytest")

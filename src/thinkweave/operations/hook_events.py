@@ -18,6 +18,7 @@ consumers are shims and the conformance suite.
 from __future__ import annotations
 
 import re
+import shlex
 from typing import TYPE_CHECKING
 
 from thinkweave.core.harness import CANONICAL_EVENTS as CANONICAL_EVENTS
@@ -87,12 +88,34 @@ def command_head(segment: str) -> str:
 
 
 def is_git_commit(command: str) -> bool:
-    """Check if a bash command, or any ``&&``/``;`` segment of it, is a git
-    commit."""
+    """Check if a bash command, or any ``&&``/``||``/``;`` segment of it, is
+    a git commit."""
     return any(
         cmd.startswith("git commit") and "--amend" not in cmd
-        for cmd in map(command_head, re.split(r"&&|\|\||;", command))
+        for cmd in map(command_head, command_segments(command))
     )
+
+
+def command_segments(command: str) -> list[str]:
+    """The segments of a command chained by ``&&``, ``||`` or ``;``.
+
+    Separators inside quotes stay part of their segment. A command whose
+    quotes do not balance is not valid shell and comes back whole.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return [command]
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in ("&&", "||", ";"):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return [shlex.join(seg) for seg in segments if seg]
 
 
 def parse_commit_from_output(command: str, output: str) -> dict | None:
