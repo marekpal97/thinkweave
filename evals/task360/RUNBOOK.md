@@ -28,6 +28,11 @@ evals/task360/drive.sh finish       # close the workspace once you have looked
   vault. The S0 checkpoint asserts the live vault has no folder for the sandbox project.
 - Every pane also starts with `PYTHONPATH=<this checkout>/src`, so hooks and MCP run the
   checkout the driver lives in (a worktree included), not the dev-linked one.
+- `setup` builds per-run harness homes under `home/`: `home/codex` (`CODEX_HOME`) and
+  `home/pi` (`PI_CODING_AGENT_DIR`). It fills them with this checkout's own installers
+  (`weave install`, `weave hooks install --scope user`), herdr's integrations and the
+  pi MCP adapter. The MCP entries carry the throwaway vault. Codex keeps its app-server
+  daemon in its home, so the run's daemon serves only the run; `finish` stops it.
 - `run <label>` runs the scenario's prerequisites first, once per setup. When a scenario
   ends, the driver freezes the oracle snapshot to `frozen/<label>.json`. `check` scores
   each label from its frozen snapshot, so a later wrap that prunes an earlier session's
@@ -36,6 +41,20 @@ evals/task360/drive.sh finish       # close the workspace once you have looked
 - Oracle rows print `PASS`, `FAIL` (a bug in a supported route), `KNOWN #n` (a gap that
   ticket #n owns: add evidence there, never a new issue) or `GAP` (a probe that found a
   missing capability). Each row carries the session id and session note id.
+
+## Harness logins: one step per setup
+
+`setup` never copies credentials. The per-run homes have no login, so each run needs
+one human step before Codex or pi panes use them:
+
+```bash
+install -m 600 ~/.codex/auth.json "$TASK360_ROOT/home/codex/"
+install -m 600 ~/.pi/agent/auth.json "$TASK360_ROOT/home/pi/"
+```
+
+A home without `auth.json` is skipped: every pane start prints `no login in …`, and
+that harness runs from your own `~/.codex` or `~/.pi`, as before. Codex also gates the
+per-run `hooks.json` on trust: open a Codex pane, run `/hooks`, and trust the entries.
 
 ## Permissions: no bypass flags
 

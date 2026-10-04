@@ -2,6 +2,8 @@
 # The task-360 driver: real interactive sessions in a throwaway sandbox repo,
 # run through herdr. Every session's hooks, MCP server and CLI calls see
 # THINKWEAVE_VAULT set to a throwaway vault, so the live vault is never touched.
+# Codex and pi run from per-run homes built off this checkout, so a run changes
+# nothing under ~/.codex or ~/.pi and shares no Codex app-server daemon.
 #
 #   drive.sh setup             fresh sandbox repo, throwaway vault, herdr workspace
 #   drive.sh run S2            run S2, its prerequisites first (setup when none)
@@ -28,10 +30,12 @@ ROOT=${TASK360_ROOT:-$HOME/.local/state/task360}
 STATE=$ROOT/state.json
 SANDBOX=$ROOT/sandbox
 VAULT=$ROOT/vault
+HOMES=$ROOT/home
 PROJECT=task360_sandbox
 REPO=task360/sandbox
 TIMEOUT_MS=${TIMEOUT_MS:-1200000}   # 20 minutes per wait
 
+declare -A HOME_VAR=([codex]=CODEX_HOME [pi]=PI_CODING_AGENT_DIR)
 declare -A WRAP=([claude]="/wrap" [codex]='$thinkweave-wrap' [pi]="/skill:wrap")
 # Keys that end a session at an empty input; a slash command sent as a prompt
 # reaches the model, not the harness. A spare press would exit the pane's shell.
@@ -162,10 +166,11 @@ setup() {  # a fresh sandbox repo and an empty throwaway vault, in a new workspa
   _weave init >/dev/null
   # The live ontology, read-only, so concept gating behaves as it does live.
   cp "$live/config/ontology.yaml" "$live/config/concept_aliases.yaml" "$VAULT/config/"
+  _homes || return 1
   local out ws pane
-  out=$(herdr workspace create --cwd "$SANDBOX" --label task360 --no-focus \
-    --env THINKWEAVE_VAULT="$VAULT" --env THINKWEAVE_PROJECT="$PROJECT" \
-    --env PYTHONPATH="$REPO_ROOT/src") || return 1
+  _pane_env
+  out=$(herdr workspace create --cwd "$SANDBOX" --label task360 --no-focus "${PANE_ENV[@]}") \
+    || return 1
   ws=$(jq -r .result.workspace.workspace_id <<<"$out")
   pane=$(jq -r .result.root_pane.pane_id <<<"$out")
   _state "s.update(root='$ROOT', sandbox='$SANDBOX', vault='$VAULT', live_vault='$live',
@@ -175,9 +180,14 @@ setup() {  # a fresh sandbox repo and an empty throwaway vault, in a new workspa
   echo "task360: sandbox $SANDBOX, throwaway vault $VAULT"
 }
 
-finish() {  # close the run's workspace; the run root stays for inspection
+finish() {  # close the run's workspace and stop its Codex daemon; the run root stays
   local ws; ws=$(_get workspace)
   [ -n "$ws" ] && herdr workspace close "$ws" >/dev/null && echo "task360: closed workspace $ws"
+  if [ -d "$HOMES/codex/app-server-daemon" ]; then
+    CODEX_HOME=$HOMES/codex codex app-server daemon stop >/dev/null 2>&1 \
+      && echo "task360: stopped the run's Codex daemon"
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -188,9 +198,9 @@ start() {  # start <label> <claude|codex|pi>
   name=$(_name "$label")
   from=$(_get last_pane); dir=down
   [ -z "$from" ] && { from=$(_get root_pane); dir=right; }
-  out=$(herdr pane split --pane "$from" --direction "$dir" --cwd "$SANDBOX" \
-    --env THINKWEAVE_VAULT="$VAULT" --env THINKWEAVE_PROJECT="$PROJECT" \
-    --env PYTHONPATH="$REPO_ROOT/src") || return 1
+  _pane_env
+  out=$(herdr pane split --pane "$from" --direction "$dir" --cwd "$SANDBOX" "${PANE_ENV[@]}") \
+    || return 1
   pane=$(jq -r .result.pane.pane_id <<<"$out")
   _state "s['last_pane'] = '$pane'
 s['labels'].setdefault('$label', {}).update(harness='$kind', name='$name', pane='$pane')"
@@ -332,6 +342,36 @@ _dispatch_task() {  # _dispatch_task <ticket> <title>: the per-dispatch task a w
   oracle snapshot | jq -r --arg r "github:$REPO#$1" --arg t "$2" \
     '.tasks | to_entries[] | select(.value.grain=="per-dispatch" and .value.asked==$r
       and .value.title==$t) | .key' | head -1
+}
+
+_pane_env() {  # PANE_ENV: the throwaway vault, this checkout's code, and each harness
+  # home that holds a login; without one that harness runs from the user's home
+  PANE_ENV=(--env THINKWEAVE_VAULT="$VAULT" --env THINKWEAVE_PROJECT="$PROJECT"
+    --env PYTHONPATH="$REPO_ROOT/src")
+  local kind
+  for kind in codex pi; do
+    if [ -f "$HOMES/$kind/auth.json" ]; then
+      PANE_ENV+=(--env "${HOME_VAR[$kind]}=$HOMES/$kind")
+    else
+      echo "task360: no login in $HOMES/$kind; $kind panes use your own home (RUNBOOK.md)" >&2
+    fi
+  done
+}
+
+_homes() {  # per-run Codex and pi homes, wired to this checkout and the throwaway vault
+  local log=$HOMES/install.log kind
+  mkdir -p "$HOMES/codex/skills" "$HOMES/pi" || return 1
+  ln -s "$REPO_ROOT"/skills/thinkweave-* "$HOMES/codex/skills/"
+  (
+    cd "$SANDBOX" || exit 1
+    for kind in codex pi; do
+      export "${HOME_VAR[$kind]}=$HOMES/$kind"
+      _weave install --harness "$kind" --vault "$VAULT" --yes \
+        && _weave hooks install --harness "$kind" --scope user \
+        && herdr integration install "$kind" || exit 1
+    done
+    pi install npm:pi-mcp-adapter
+  ) >"$log" 2>&1 || { echo "task360: building the harness homes failed; see $log" >&2; return 1; }
 }
 
 _weave() {  # the weave CLI, always against the throwaway vault

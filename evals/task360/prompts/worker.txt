@@ -1,6 +1,6 @@
 Ticket #${TICKET}: ${WORK} Do NOT do it yourself — dispatch it to a herdr worker, step by step:
 1. Run: weave task open --title '${TITLE}' --asked '#${TICKET}'. Print 'TASK_ID=<id>'.
-2. Run: herdr pane split --current --direction down --cwd "$PWD" --env THINKWEAVE_VAULT="$THINKWEAVE_VAULT" --env THINKWEAVE_PROJECT="$THINKWEAVE_PROJECT". Take .result.pane.pane_id.
+2. Run: herdr pane split --current --direction down --cwd "$PWD" --env THINKWEAVE_VAULT="$THINKWEAVE_VAULT" --env THINKWEAVE_PROJECT="$THINKWEAVE_PROJECT" --env PYTHONPATH="$PYTHONPATH" --env CODEX_HOME="${CODEX_HOME:-$HOME/.codex}" --env PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}". Take .result.pane.pane_id.
 3. Run: herdr agent start ${WORKER} --kind ${KIND} --pane <pane id> --timeout 120000
 4. Run: herdr agent prompt ${WORKER} 'WARMUP: reply with the single word ready.' --wait --timeout 300000
 5. Run: herdr agent prompt ${WORKER} 'Task <id>: ${WORK} Add a test. Commit.' --wait --timeout 1200000
