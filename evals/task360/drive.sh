@@ -119,7 +119,8 @@ _worker() {  # _worker <label> <worker kind> <ticket> <title> <work>
   say "$label" "$(TICKET=$3 TITLE=$4 WORK=$5 KIND=$2 WORKER="$(_name "$label")w" \
     envsubst '${TICKET} ${TITLE} ${WORK} ${KIND} ${WORKER}' <"$HERE/prompts/worker.txt")" \
     || return 1
-  note "$label" task_id "$(screen "$label" 200 | grep -o 'TASK_ID=tsk-[0-9a-f]*' | tail -1 | cut -d= -f2)"
+  # Read from the index, not the screen: a TUI on the alternate screen keeps no scrollback.
+  note "$label" task_id "$(_dispatch_task "$3" "$4")"
   wrap "$label" && stop "$label"
 }
 
@@ -308,6 +309,12 @@ _shells() {  # count shell commands still running anywhere under process $1
 _work_task() {  # the work task for ticket #n, by tracker ref, from the index
   oracle snapshot | jq -r --arg r "github:$REPO#$1" \
     '.tasks | to_entries[] | select(.value.grain=="work" and .value.asked==$r) | .key' | head -1
+}
+
+_dispatch_task() {  # _dispatch_task <ticket> <title>: the per-dispatch task a worker scenario opened
+  oracle snapshot | jq -r --arg r "github:$REPO#$1" --arg t "$2" \
+    '.tasks | to_entries[] | select(.value.grain=="per-dispatch" and .value.asked==$r
+      and .value.title==$t) | .key' | head -1
 }
 
 _weave() {  # the weave CLI, always against the throwaway vault
