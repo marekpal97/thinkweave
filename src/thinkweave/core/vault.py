@@ -103,7 +103,6 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             if value[0] in "[{" and not line[0].isspace():
                 try:
                     result[key] = json.loads(value)
-                    current_list = None
                     continue
                 except json.JSONDecodeError:
                     pass

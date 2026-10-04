@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from itertools import groupby
 from typing import TYPE_CHECKING
 
 from thinkweave.core.harness import CANONICAL_EVENTS as CANONICAL_EVENTS
@@ -109,13 +110,11 @@ def command_segments(command: str) -> list[str]:
         tokens = list(lexer)
     except ValueError:
         return [command]
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token in ("&&", "||", ";"):
-            segments.append([])
-        else:
-            segments[-1].append(token)
-    return [shlex.join(seg) for seg in segments if seg]
+    return [
+        shlex.join(seg)
+        for is_sep, seg in groupby(tokens, lambda t: t in ("&&", "||", ";"))
+        if not is_sep
+    ]
 
 
 def parse_commit_from_output(command: str, output: str) -> dict | None:

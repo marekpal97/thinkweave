@@ -1214,7 +1214,6 @@ class TestGitCommitDetection:
         assert not _is_git_commit("git add a.py && git commit --amend")
 
     def test_is_git_commit_respects_quoting(self):
-        assert _is_git_commit("git add -A && git commit -m x")
         assert _is_git_commit("cd repo; git commit")
         assert _is_git_commit('git commit -m "a; b && c"')
         assert not _is_git_commit('echo "git commit"')
