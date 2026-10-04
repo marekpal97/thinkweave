@@ -69,3 +69,14 @@ def test_marks_split_new_bugs_from_known_gaps_and_probes():
     assert oracle.mark("PROBE it closed", False) == "GAP"
     assert oracle.mark("#1 conforms to the contract", False) == "FAIL"
     assert oracle.mark("#1 conforms to the contract", True) == "PASS"
+
+
+def test_check_scores_a_label_from_the_state_frozen_at_its_end(tmp_path, capsys):
+    # No state.json: a live snapshot would fail, so a pass proves the frozen one was read.
+    frozen = {"repo": REPO, "project": "p", "tasks": {}, "feedback": [], "edges": {},
+              "live_leak": "",
+              "sessions": {"S0": {"key": "uuid-S0", "id": "ses-S0", "events": 3}}}
+    (tmp_path / "frozen").mkdir()
+    (tmp_path / "frozen" / "S0.json").write_text(oracle.json.dumps(frozen))
+    assert oracle.main(["--root", str(tmp_path), "check", "S0"]) == 0
+    assert capsys.readouterr().out.count("PASS") == 3
