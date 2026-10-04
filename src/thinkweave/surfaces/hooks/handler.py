@@ -54,6 +54,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from thinkweave.core.config import detect_project
+
 # Lazy imports to keep hook startup fast
 
 
@@ -347,7 +349,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
     dispatch = tasks.open_child(
         cfg,
         session_key=session_id,
-        project=_detect_project(hook_input),
+        project=detect_project(hook_input.get("cwd", "")),
         role=str(hook_input.get("agent_type", "")),
         harness=_hook_harness() or "claude-code",
         agent_id=agent_id,
@@ -773,7 +775,7 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     # Project first: it narrows the resolver's fallback scan to this
     # project's sessions dir (the first prompt of every session lands here,
     # under the 30s UserPromptSubmit timeout).
-    project = _detect_project(hook_input)
+    project = detect_project(hook_input.get("cwd", ""))
     if _find_session_note(vm, session_id, project):
         return
 
@@ -796,52 +798,6 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     idx = Indexer(config=cfg)
     idx.index_file(session_path)
     idx.close()
-
-
-_EPHEMERAL_CWD_RE = re.compile(r"^(agent-[a-f0-9]{12,}|[a-f0-9-]{32,})$")
-
-
-def _detect_project(hook_input: dict) -> str:
-    """Detect the current project from env var, git, or cwd.
-
-    Priority: THINKWEAVE_PROJECT env var > git repo name > cwd directory name,
-    normalized the way every vault write normalizes it (``tw-dogfood`` is
-    stored as ``tw_dogfood``), so reads find what writes stored.
-    """
-    from thinkweave.core.config import normalize_project_name
-
-    raw = _raw_project(hook_input)
-    return raw if raw == "_unscoped" else normalize_project_name(raw)
-
-
-def _raw_project(hook_input: dict) -> str:
-    """The project name before normalization: env var, git repo, or cwd.
-
-    A ``.claude/worktrees/<name>`` cwd resolves to its parent repo, never to
-    the worktree's own directory name. When cwd looks ephemeral (e.g. ``agent-a4701018f1189051e/`` from a
-    cloud-agent run, or a bare UUID), fall through to ``_unscoped`` instead
-    of letting the runtime's session-id leak in as a project name.
-    """
-    # PERSONAL_MEM_PROJECT: pre-rename migration fallback (→ thinkweave 2026-06-13).
-    env_proj = os.environ.get("THINKWEAVE_PROJECT") or os.environ.get("PERSONAL_MEM_PROJECT")
-    if env_proj:
-        return env_proj
-
-    from thinkweave.core.config import worktree_repo_root
-
-    cwd = hook_input.get("cwd", os.getcwd())
-    cwd_path = Path(worktree_repo_root(cwd) or cwd)
-
-    # Walk up to find a .git directory — use that repo's directory name
-    for parent in [cwd_path, *cwd_path.parents]:
-        if (parent / ".git").exists():
-            return parent.name
-        if parent == parent.parent:
-            break
-
-    if _EPHEMERAL_CWD_RE.match(cwd_path.name):
-        return "_unscoped"
-    return cwd_path.name
 
 
 # Directory markers — matched anywhere in the path, since every file under
@@ -1680,7 +1636,7 @@ def _handle_session_start(hook_input: dict) -> None:
             )
             return
 
-        project = _detect_project(hook_input)
+        project = detect_project(hook_input.get("cwd", ""))
         payload = build_project_context(
             cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
         )

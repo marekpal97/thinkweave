@@ -247,4 +247,4 @@ def test_hook_project_detection_normalizes_like_writes(tmp_path: Path, monkeypat
     monkeypatch.delenv("THINKWEAVE_PROJECT", raising=False)
     monkeypatch.delenv("PERSONAL_MEM_PROJECT", raising=False)
 
-    assert handler._detect_project({"cwd": str(repo)}) == "tw_dogfood2"
+    assert handler.detect_project(str(repo)) == "tw_dogfood2"

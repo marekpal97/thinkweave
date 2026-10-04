@@ -323,6 +323,38 @@ class TestCli:
         with pytest.raises(SystemExit):
             self._dispatch(["task", "close", task_id, "--session", "s-1"])
 
+    @pytest.fixture()
+    def in_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Run from a subdirectory of a git repo named ``tw-sandbox``."""
+        repo = tmp_path / "tw-sandbox"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "src").mkdir()
+        monkeypatch.chdir(repo / "src")
+        monkeypatch.delenv("THINKWEAVE_PROJECT", raising=False)
+        monkeypatch.delenv("PERSONAL_MEM_PROJECT", raising=False)
+        return repo
+
+    def test_open_without_project_files_under_the_cwd_repo(
+        self, cfg: Config, in_repo: Path, capsys
+    ):
+        self._dispatch(["task", "open", "--session", "s-1", "--title", "probe"])
+        path = note_path(cfg, capsys.readouterr().out.strip())
+        assert cfg.vault_root / "projects" / "tw_sandbox" in path.parents
+        assert parse_frontmatter(path.read_text(encoding="utf-8"))[0]["project"] == "tw_sandbox"
+
+    def test_open_with_project_keeps_the_flag(self, cfg: Config, in_repo: Path, capsys):
+        self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
+        path = note_path(cfg, capsys.readouterr().out.strip())
+        assert cfg.vault_root / "projects" / "p" in path.parents
+
+    def test_record_run_without_project_files_under_the_cwd_repo(
+        self, cfg: Config, in_repo: Path, capsys
+    ):
+        run = Path(__file__).parent / "fixtures" / "devloop-run-rich.json"
+        self._dispatch(["task", "record-run", str(run)])
+        path = note_path(cfg, capsys.readouterr().out.strip())
+        assert cfg.vault_root / "projects" / "tw_sandbox" in path.parents
+
 
 # ---------------------------------------------------------------------------
 # Hook handlers — synthetic payloads on stdin, no live session, no model

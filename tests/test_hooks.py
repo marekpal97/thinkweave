@@ -10,12 +10,11 @@ from unittest.mock import patch
 import pytest
 
 from tests.conftest import write_transcript
-from thinkweave.core.config import Config
+from thinkweave.core.config import Config, detect_project
 from thinkweave.surfaces.hooks.handler import (
     _buffer_event,
     _build_auto_summary,
     _build_event,
-    _detect_project,
     _diff_context,
     _extract_insight_blocks,
     _extract_tool_output_text,
@@ -78,18 +77,18 @@ class TestHookHelpers:
     def test_detect_project(self, tmp_path: Path):
         # Env var takes priority
         with patch.dict("os.environ", {"THINKWEAVE_PROJECT": "from-env"}):
-            assert _detect_project({"cwd": "/anywhere"}) == "from_env"  # normalized like every vault write
+            assert detect_project("/anywhere") == "from_env"  # normalized like every vault write
 
         # Git repo detection: walk up to .git
         repo = tmp_path / "my_project" / "src" / "pkg"
         repo.mkdir(parents=True)
         (tmp_path / "my_project" / ".git").mkdir()
-        assert _detect_project({"cwd": str(repo)}) == "my_project"
+        assert detect_project(str(repo)) == "my_project"
 
         # Fallback to cwd directory name
         no_git = tmp_path / "random_dir"
         no_git.mkdir()
-        assert _detect_project({"cwd": str(no_git)}) == "random_dir"
+        assert detect_project(str(no_git)) == "random_dir"
 
     def test_extract_insight_blocks(self):
         text = """Some text before.
@@ -1644,8 +1643,8 @@ class TestSessionStartHandler:
             "thinkweave.core.config.load_config", lambda: cfg
         )
         monkeypatch.setattr(
-            "thinkweave.surfaces.hooks.handler._detect_project",
-            lambda hook_input: project,
+            "thinkweave.surfaces.hooks.handler.detect_project",
+            lambda cwd: project,
         )
 
         buf = io.StringIO()

@@ -583,7 +583,7 @@ class TestRetrievalPipelineEndToEnd:
             "thinkweave.core.config.load_config", lambda: cfg
         )
         monkeypatch.setattr(h, "_output", lambda *a, **kw: None)
-        monkeypatch.setattr(h, "_detect_project", lambda hi: "t")
+        monkeypatch.setattr(h, "detect_project", lambda cwd: "t")
 
         h._handle_stop({"session_id": "ses-retrieval-only", "cwd": str(vault)})
 
