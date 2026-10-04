@@ -118,7 +118,9 @@ class Task:
         self.rounds = [r for r in self.rounds if r.session_ref not in same] + [new]
 
     def close(self) -> bool:
-        """Close the task; False when it was already closed."""
+        """Close the task, clearing any orphan flag a missing close earned;
+        False when it was already closed."""
+        self.frontmatter.pop("orphan", None)
         if self.closed:
             return False
         self.frontmatter["status"] = "closed"
@@ -776,14 +778,14 @@ class _DeclarationPass:
         return Round.from_dict(data, grain=task.grain)
 
     def _stamp_decisions(self, entry: dict, task: Task) -> None:
-        """Stamp each decision the round declares minted with the task id."""
+        """Stamp each decision the round declares minted with the task id,
+        wherever the index has it filed."""
         minted = ((entry.get("round") or {}).get("decisions") or {}).get("minted")
         for dec_id in minted or []:
-            notes = _folder_notes(self.folders)
-            path = next((p for p, fm in notes if fm.get("id") == dec_id), None)
+            path = indexed_note_path(self.vm.config, dec_id)
             if path is None:
                 self.result.warnings.append(
-                    f"decision {dec_id} not found in the session chain — task_id stamp skipped"
+                    f"decision {dec_id} is not in the index — task_id stamp skipped"
                 )
                 continue
             self.vm.update_note(path, frontmatter_updates={"task_id": task.id})

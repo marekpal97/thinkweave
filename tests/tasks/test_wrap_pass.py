@@ -325,6 +325,19 @@ class TestOrphans:
         assert "orphan" not in notes[paired]
         assert "orphan" not in notes[work]  # work grain stays open by design
 
+    def test_a_close_after_the_wrap_clears_the_orphan_flag(self, cfg: Config):
+        hanging, _paired, _work = self._seed_ledger(cfg)
+        decl = load_declaration()
+        decl["declared"][0]["children"] = [hanging]
+        parent = reconcile(cfg, decl).minted[0]
+        assert task_notes(cfg)[hanging]["orphan"] is True
+        tasks.close_child(cfg, hanging, session_key=SESSION)
+        fm = task_notes(cfg)[hanging]
+        assert fm["status"] == "closed"
+        assert "orphan" not in fm
+        assert fm["parent"] == parent
+        assert validate_task_note(fm) == []
+
     def test_task_id_only_sparsity_skips_orphan_flagging(self, cfg: Config):
         hanging, _paired, _work = self._seed_ledger(cfg)
         result = reconcile(
@@ -392,6 +405,19 @@ class TestChildren:
         assert result.errors == []
         assert any("tsk-11111111" in w and "no task note" in w for w in result.warnings)
 
+    def test_a_closed_child_attaches_and_keeps_its_rounds(self, cfg: Config):
+        child = tasks.open_child(cfg, session_key=SESSION, project="t").task_id
+        tasks.close_child(cfg, child, session_key=SESSION)
+        rounds = task_notes(cfg)[child]["rounds"]
+        assert len(rounds) == 1
+        result = reconcile(cfg, self.declaration_with_children([child]))
+        assert result.errors == []
+        assert result.attached == [child]
+        fm = task_notes(cfg)[child]
+        assert fm["parent"] == result.minted[0]
+        assert fm["status"] == "closed"
+        assert fm["rounds"] == rounds
+
     def test_unknown_child_is_an_error(self, cfg: Config):
         result = reconcile(
             cfg, self.declaration_with_children(["tsk-deadbeef"])
@@ -434,20 +460,30 @@ class TestChildren:
 
 
 class TestDecisionStamp:
-    def test_minted_decisions_gain_the_task_id(self, cfg: Config, tmp_path: Path):
-        folder = tmp_path / "session-folder"
-        folder.mkdir()
-        dec = folder / "use-sqlite.md"
-        dec.write_text(
-            "---\ntype: decision\nid: dec-aaaa1111\ntitle: Use SQLite\n---\n\nBody.\n",
-            encoding="utf-8",
+    def test_a_decision_filed_outside_the_session_folder_gains_the_task_id(
+        self, cfg: Config, tmp_path: Path
+    ):
+        from thinkweave.core.indexer import Indexer
+
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        dec = vm.create_note(
+            NoteType.DECISION, "Use SQLite", body="Body.", project="t",
+            note_id="dec-aaaa1111",
         )
-        result = reconcile(cfg, load_declaration(), folders=[folder])
+        idx = Indexer(config=cfg)
+        idx.index_file(dec)
+        idx.close()
+        session_folder = tmp_path / "session-folder"
+        session_folder.mkdir()
+        result = reconcile(cfg, load_declaration(), folders=[session_folder])
         fm, _ = parse_frontmatter(dec.read_text(encoding="utf-8"))
         assert fm["task_id"] == result.minted[0]
+        assert result.stamped == 1
 
-    def test_unlocatable_decision_is_announced(self, cfg: Config):
+    def test_a_decision_the_index_does_not_know_is_announced(self, cfg: Config):
         result = reconcile(cfg, load_declaration())
+        assert result.stamped == 0
         assert any("dec-aaaa1111" in w for w in result.warnings)
 
 
