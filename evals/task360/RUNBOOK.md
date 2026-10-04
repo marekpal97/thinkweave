@@ -25,6 +25,8 @@ evals/task360/drive.sh finish       # close the workspace once you have looked
 - Every pane starts with `THINKWEAVE_VAULT=<run root>/vault` and
   `THINKWEAVE_PROJECT=task360_sandbox`, so hooks, MCP and CLI write only the throwaway
   vault. The S0 checkpoint asserts the live vault has no folder for the sandbox project.
+- Every pane also starts with `PYTHONPATH=<this checkout>/src`, so hooks and MCP run the
+  checkout the driver lives in (a worktree included), not the dev-linked one.
 - `run <label>` runs the scenario's prerequisites first, once per setup.
 - Oracle rows print `PASS`, `FAIL` (a bug in a supported route), `KNOWN #n` (a gap that
   ticket #n owns: add evidence there, never a new issue) or `GAP` (a probe that found a

@@ -157,7 +157,8 @@ setup() {  # a fresh sandbox repo and an empty throwaway vault, in a new workspa
   cp "$live/config/ontology.yaml" "$live/config/concept_aliases.yaml" "$VAULT/config/"
   local out ws pane
   out=$(herdr workspace create --cwd "$SANDBOX" --label task360 --no-focus \
-    --env THINKWEAVE_VAULT="$VAULT" --env THINKWEAVE_PROJECT="$PROJECT") || return 1
+    --env THINKWEAVE_VAULT="$VAULT" --env THINKWEAVE_PROJECT="$PROJECT" \
+    --env PYTHONPATH="$REPO_ROOT/src") || return 1
   ws=$(jq -r .result.workspace.workspace_id <<<"$out")
   pane=$(jq -r .result.root_pane.pane_id <<<"$out")
   _state "s.update(root='$ROOT', sandbox='$SANDBOX', vault='$VAULT', live_vault='$live',
@@ -181,7 +182,8 @@ start() {  # start <label> <claude|codex|pi>
   from=$(_get last_pane); dir=down
   [ -z "$from" ] && { from=$(_get root_pane); dir=right; }
   out=$(herdr pane split --pane "$from" --direction "$dir" --cwd "$SANDBOX" \
-    --env THINKWEAVE_VAULT="$VAULT" --env THINKWEAVE_PROJECT="$PROJECT") || return 1
+    --env THINKWEAVE_VAULT="$VAULT" --env THINKWEAVE_PROJECT="$PROJECT" \
+    --env PYTHONPATH="$REPO_ROOT/src") || return 1
   pane=$(jq -r .result.pane.pane_id <<<"$out")
   _state "s['last_pane'] = '$pane'
 s['labels'].setdefault('$label', {}).update(harness='$kind', name='$name', pane='$pane')"
