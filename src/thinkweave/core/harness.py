@@ -828,9 +828,16 @@ def pi(home: Path | None = None) -> HarnessProfile:
     ``commands/*.md`` there directly — the Codex ``skills/`` bundle must
     NOT be what Pi gets, its relative ``../../docs`` pointer breaks from
     the Pi skills dir.
+
+    ``$PI_CODING_AGENT_DIR`` (Pi's own override) relocates the agent dir; an
+    explicit ``home`` wins over it, as it does over ``$CODEX_HOME``.
     """
     h = home or Path.home()
-    agent = h / ".pi" / "agent"
+    agent = (
+        h / ".pi" / "agent"
+        if home is not None
+        else Path(os.environ.get("PI_CODING_AGENT_DIR") or h / ".pi" / "agent")
+    )
     return HarnessProfile(
         id="pi",
         display_name="Pi",
