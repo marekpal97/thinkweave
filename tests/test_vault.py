@@ -182,6 +182,8 @@ class TestRenderFrontmatter:
             {"ctx": {"plan": {"path": "/p.md", "summary": "s1\n\ns2: \"q\"\n"}}},
             {"ctx": {"notes": ["n1\nn2", "C:\\new"]}},
             {"rounds": [{"asked": "a\nb", "outputs": ["o1\no2"]}]},
+            {"lst": [["in\nner"]]},
+            {"lst": ["a", ["b", ["c\nd"]]]},
         ):
             rendered = render_frontmatter({**data, "status": "open"})
             fm, body = parse_frontmatter(rendered + "\n\nBody")

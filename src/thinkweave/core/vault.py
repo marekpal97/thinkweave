@@ -507,8 +507,8 @@ def render_frontmatter(data: dict) -> str:
     callers passing a JSON-shaped string or a bare scalar for a field
     that downstream consumers will iterate as a list.
 
-    Nested dicts, and lists holding a multi-line string, render as one
-    JSON flow line, which ``parse_frontmatter`` reads back at any depth.
+    Values ``_needs_json_flow`` flags render as one JSON flow line, which
+    ``parse_frontmatter`` reads back at any depth.
     """
     lines = ["---"]
     for key, value in data.items():
@@ -525,10 +525,7 @@ def render_frontmatter(data: dict) -> str:
             value = _coerce_list_field(value)
         if isinstance(value, dict):
             value = {k: v for k, v in value.items() if v is not None and v != ""}
-        if isinstance(value, dict) or (
-            isinstance(value, list)
-            and any(isinstance(v, str) and "\n" in v for v in value)
-        ):
+        if _needs_json_flow(value):
             lines.append(f"{key}: {json.dumps(value, ensure_ascii=False, default=str)}")
         elif isinstance(value, list):
             if not value:
@@ -552,6 +549,16 @@ def render_frontmatter(data: dict) -> str:
             lines.append(f"{key}: {quote_scalar(str(value))}")
     lines.append("---")
     return "\n".join(lines)
+
+
+def _needs_json_flow(value) -> bool:
+    """True when ``value`` cannot render as a plain or block-list line: a
+    dict, or a list holding a nested list or a multi-line string."""
+    if isinstance(value, dict):
+        return True
+    return isinstance(value, list) and any(
+        isinstance(v, list) or (isinstance(v, str) and "\n" in v) for v in value
+    )
 
 
 def extract_wikilinks(text: str) -> list[str]:
