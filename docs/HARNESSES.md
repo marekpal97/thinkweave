@@ -24,6 +24,8 @@ profile is what runs; fix whichever is wrong.
 | context channel | `additionalContext` | `additionalContext` | `context-injection` | `message-transform` |
 | dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
 | transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/storage/session/*/*.json` (json-records) |
+| task digest reader | `thinkweave.operations.tasks:claude_code_digest` | — (degraded) | — (degraded) | — (degraded) |
+| task worker binding | yes | yes | no | no |
 | session ids | `uuid4` | `uuid7` | `uuid (session-header id)` | `ses_<12-hex><14-base62> (ULID-style sortable)` |
 | MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/mcp.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
 | MCP native CLI | `claude mcp add` | `codex mcp add` | — | — |
@@ -57,6 +59,7 @@ row above) everything unlisted works as on Claude Code; on a
 - **Stop capture** — documented: fires at every turn end — measured interactively 2026-09-05 (hook/started at each task_complete) and headless 2026-09-07 (raw envelope with last_assistant_message; SessionEnd ~2 s later, which thinkweave does not hook). The first Stop materialises the note and later turns fold in place. Still unmeasured: whether an interactive TUI exit delivers a final Stop of its own beyond the last turn's, so a rich end-of-session capture in the TUI still rides `$thinkweave-wrap` (docs/HARNESSES.md §2026-09-07 instrumented headless run)
 - **SessionStart context delivery** — documented: additionalContext renders as a visible developer message, not a silent system one (openai/codex#16933)
 - **headless skill invocation** — documented: codex exec resolves no slash commands; a $name mention is a hint the model acts on by reading the skill file itself (docs/HARNESSES.md §Q2)
+- **task digest** — documented: no digest reader parses jsonl-rollout transcripts, so a child task's round records the session it ran in and a gap naming the missing reader instead of its tools, files and commits (#243)
 
 #### Pi
 
@@ -64,6 +67,8 @@ row above) everything unlisted works as on Claude Code; on a
 - **MCP registration** — documented: Pi core ships no MCP client — a settings.json mcpServers block parses and is silently ignored (falsified live on 0.84.4, 2026-09-03). The registration is served through the community pi-mcp-adapter extension instead: `weave install --harness pi` writes the standard mcpServers block (plus lifecycle/directTools/toolPrefix) to ~/.pi/agent/mcp.json, the adapter also reads the project .mcp.json, and `weave doctor --mcp --harness pi` fails with `pi install npm:pi-mcp-adapter` when the package is absent; the CLI fallback in the instructions block covers a session where the tools still did not load (#114, n-fb74c7d0)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
 - **SubagentStart/SubagentStop task capture** — documented: no subagent bus events exist to map the dispatch seam onto, so live task-boundary capture does not run; task correlation degrades to task-id-only via `weave task open`/`close` (the id rides the dispatch descriptor) (n-a1d3beba §2)
+- **task worker binding** — documented: the shim's prompt envelope carries no transcript path, so a dispatched pi worker's transcript cannot be bound to the task its prompt names; the round records the worker's session and a gap naming the missing binding (shims/pi/thinkweave-pi.ts envelope())
+- **task digest** — documented: no digest reader parses jsonl-tree transcripts, so a child task's round carries a gap naming the missing reader instead of its tools, files and commits (#243)
 - **skill invocation** — documented: no Skill tool — /skill:<name> is prompt expansion. Skills are root-file links `weave install --harness pi` creates in ~/.pi/agent/skills, one <name>.md per canonical commands/*.md; worker-backed commands (/drain, /dream, /news, /newsletter, /podcast, /youtube, /seed-enrich, …) are not linked because Pi has no subagents to run them (Pi docs/skills.md §Locations)
 
 #### OpenCode
@@ -73,6 +78,7 @@ row above) everything unlisted works as on Claude Code; on a
 - **Stop capture** — documented: no verified Stop-equivalent event — claude-mem's plugin subscribed to bus events that never fire and captured nothing silently; only session.idle/session.deleted are confirmed real (claude-mem#2462)
 - **subagent fan-out** — documented: no hook fires on subagent dispatch/completion in the docs or any reference plugin (n-767d66b4 §2)
 - **transcript import** — documented: sessions are per-record JSON files (session/message/part); no importer reads them yet (n-767d66b4 §6)
+- **task worker binding and digest** — documented: no prompt hook runs, so a dispatched worker's transcript is never bound, and no digest reader parses json-records; a child task closed via `weave task close` records the gap (#243)
 
 <!-- weave:harness-matrix:end -->
 

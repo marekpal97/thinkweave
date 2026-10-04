@@ -28,6 +28,7 @@ from pathlib import Path
 
 from thinkweave.core.buffer import archived_events_path, buffer_path
 from thinkweave.core.events import feedback_events, iter_jsonl
+from thinkweave.core.harness import PROFILES
 from thinkweave.core.harness import active as active_harness
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.task_contract import (
@@ -408,30 +409,37 @@ class TranscriptSource:
             return cls()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            ref = SessionRef.from_dict(data["session_ref"])
-            return cls.bound_slice(str(data["transcript_path"]), str(data["since"]), ref)
+            transcript = str(data["transcript_path"])
+            return cls(
+                Path(transcript) if transcript else None,
+                str(data["since"]),
+                SessionRef.from_dict(data["session_ref"]),
+                tuple(map(str, data.get("gaps", ()))),
+            )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return cls(gaps=(f"binding {path.name} unreadable ({type(exc).__name__}: {exc})",))
 
     def bind(self, cfg, task_id: str) -> bool:
-        """Record this slice as ``task_id``'s transcript; the first binding
-        stands. Returns whether this call bound it."""
+        """Record this slice — or the gaps that left it without a
+        transcript — as ``task_id``'s; the first binding stands. Returns
+        whether this call bound it."""
         path = _binding_path(cfg, task_id)
-        if path.exists() or self.path is None or self.session_ref is None:
+        if path.exists() or self.session_ref is None:
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps({
-                "transcript_path": str(self.path),
+                "transcript_path": str(self.path or ""),
                 "since": self.since,
                 "session_ref": self.session_ref.to_dict(),
+                "gaps": list(self.gaps),
             }),
             encoding="utf-8",
         )
         return True
 
-    def digest(self, until: str) -> ChildDigest | None:
-        return ChildDigest.read(self, until=until) if self.path else None
+    def digest(self, until: str) -> ChildDigest:
+        return ChildDigest.read(self, until=until)
 
 
 @dataclass(frozen=True)
@@ -546,8 +554,9 @@ def close_child(
 ) -> TaskClose:
     """Close a child at its boundary. Its envelope rows and its transcript
     digest — ``source``, else the slice a prompt bound to it — become the
-    task's round. Invalid envelope rows are reported, never dropped
-    silently, and the close row is recorded either way."""
+    task's round, and every gap in locating, binding or reading the
+    transcript lands on it. Invalid envelope rows are reported, never
+    dropped silently, and the close row is recorded either way."""
     task = TaskStore(cfg).get(task_id)
     if task is None:
         raise ValueError(f"no task note for {task_id}")
@@ -557,10 +566,8 @@ def close_child(
     errors: list[str] = []
     envelopes = _read_envelopes(_envelope_path(cfg, task_id), task_id, errors)
     digest = source.digest(until=_now())
-    data: dict = {"envelopes": envelopes}
-    if digest:
-        data = {**digest.round_fields(envelopes), "envelopes": envelopes + digest.claims(task_id)}
-        task.frontmatter.update(digest.note_fields(task.frontmatter))
+    data = {**digest.round_fields(envelopes), "envelopes": envelopes + digest.claims(task_id)}
+    task.frontmatter.update(digest.note_fields(task.frontmatter))
     task.put_round(replace(Round.from_dict(data, grain=task.grain), session_ref=source.session_ref))
     task.close()
     task.save(VaultManager(config=cfg))
@@ -570,7 +577,7 @@ def close_child(
         note=str(task.path),
         envelopes=len(envelopes),
         errors=tuple(errors),
-        gaps=source.gaps + (digest.gaps if digest else (_NO_TRANSCRIPT,)),
+        gaps=digest.gaps,
     )
 
 
@@ -592,9 +599,20 @@ def bind_session(
     cfg, prompt: str, *, harness: str, session_key: str, transcript_path: str, since: str
 ) -> list[str]:
     """Bind a dispatched session's transcript to each open child task its
-    prompt names; returns the ids this call bound."""
-    source = TranscriptSource.bound_slice(
-        transcript_path, since, SessionRef.session(harness, session_key)
+    prompt names; returns the ids this call bound. A harness whose profile
+    cannot bind a worker binds the session with a gap instead."""
+    ref = SessionRef.session(harness, session_key)
+    profile = PROFILES[harness]() if harness in PROFILES else None
+    if profile is None or not profile.binds_workers:
+        gap = f"{harness} declares no worker binding for a dispatched session"
+    elif not transcript_path:
+        gap = "the prompt hook carried no transcript path"
+    else:
+        gap = ""
+    source = (
+        TranscriptSource(None, since, ref, (gap,))
+        if gap
+        else TranscriptSource.bound_slice(transcript_path, since, ref)
     )
     store = TaskStore(cfg)
     return [
@@ -915,7 +933,7 @@ def _linker(cfg):
 # Plumbing
 
 
-_NO_TRANSCRIPT = "no transcript bound; the round carries no digest"
+_NO_TRANSCRIPT = "no transcript bound to the task"
 
 
 def current_repo() -> str:
@@ -996,9 +1014,9 @@ def _read_envelopes(path: Path, task_id: str, errors: list[str]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# The child digest — one reader for the Claude Code transcript format.
-# HarnessProfile.transcript_parser keeps only text turns, while the digest
-# needs tool calls, their results and a timestamp slice, so it reads here.
+# The child digest — each harness profile names its format's reader
+# (HarnessProfile.digest_reader). transcript_parser keeps only text turns,
+# while the digest needs tool calls, their results and a timestamp slice.
 
 
 @dataclass(frozen=True)
@@ -1017,7 +1035,8 @@ class ChildDigest:
     paths: tuple[str, ...] = ()
     commits: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
-    tools: dict = field(default_factory=dict)
+    tools: dict | None = None
+    """Tool-call counts, or None when no transcript was read."""
     tool_errors: int = 0
     duration: float | None = None
     success: bool | None = None
@@ -1026,11 +1045,24 @@ class ChildDigest:
     @classmethod
     def read(cls, source: TranscriptSource, *, until: str = "") -> ChildDigest:
         """Digest the source's transcript (from the prompt nearest its
-        ``since`` up to ``until``, when given); never raises."""
+        ``since`` up to ``until``, when given) with the reader its session
+        ref's harness profile declares; never raises. The source's own gaps
+        lead the digest's."""
+        harness = source.session_ref.harness if source.session_ref else ""
+        profile = PROFILES[harness]() if harness in PROFILES else None
+        reader = profile.load_digest_reader() if profile else None
+        missing = [_NO_TRANSCRIPT] if source.path is None else []
+        if harness and not reader:
+            missing.append(f"{harness} declares no digest reader for its transcripts")
+        elif not harness and source.path is not None:
+            missing.append("no session ref names the transcript's harness")
+        if missing:
+            return cls(gaps=source.gaps + tuple(missing))
         try:
-            return _digest(source.path or Path(), source.since, until)
+            read = reader(source.path, source.since, until)
         except Exception as exc:  # noqa: BLE001 — a close must never fail on a read
-            return cls(gaps=(f"digest aborted: {type(exc).__name__}: {exc}",))
+            read = cls(gaps=(f"digest aborted: {type(exc).__name__}: {exc}",))
+        return replace(read, gaps=source.gaps + read.gaps)
 
     def note_fields(self, fm: dict) -> dict:
         """Task-note fields the digest fills; a value already set stands."""
@@ -1054,11 +1086,9 @@ class ChildDigest:
             + [{"kind": "note", "ref": n} for n in self.notes]
             + [_output_ref(o) for row in envelopes for o in row.get("outputs") or []]
         )
-        fields: dict = {
-            "tools": dict(self.tools),
-            "tool_errors": self.tool_errors,
-            "digest": {"version": self.version, "gaps": list(self.gaps)},
-        }
+        fields: dict = {"digest": {"version": self.version, "gaps": list(self.gaps)}}
+        if self.tools is not None:
+            fields.update(tools=dict(self.tools), tool_errors=self.tool_errors)
         did = {"paths": list(self.paths), "commits": list(self.commits)}
         if any(did.values()):
             fields["did"] = {k: v for k, v in did.items() if v}
@@ -1084,8 +1114,9 @@ _FILE_TOOLS = ("Write", "Edit")
 _NOTE_TOOLS = ("weave_create", "weave_extract")
 
 
-def _digest(transcript: Path, since: str, until: str) -> ChildDigest:
-    """Walk the transcript slice once and collect every digest field."""
+def claude_code_digest(transcript: Path, since: str, until: str) -> ChildDigest:
+    """Claude Code's digest reader: walk the transcript slice once and
+    collect every digest field."""
     from collections import Counter
 
     rows, gaps = _transcript_rows(transcript)

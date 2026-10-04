@@ -490,15 +490,12 @@ def _bind_dispatched_session(
     """A prompt naming a task id binds this session's transcript to it."""
     from thinkweave.operations import tasks
 
-    transcript = hook_input.get("transcript_path", "")
-    if not transcript:
-        return
     for task_id in tasks.bind_session(
         cfg,
         prompt_text,
         harness=_hook_harness() or "claude-code",
         session_key=session_id,
-        transcript_path=transcript,
+        transcript_path=str(hook_input.get("transcript_path") or ""),
         since=now,
     ):
         _log_info("user_prompt_submit", f"bound {task_id} to session {session_id}")

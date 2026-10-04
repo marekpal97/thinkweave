@@ -296,6 +296,19 @@ class HarnessProfile:
     stays pure data either way. Resolve via :meth:`load_transcript_parser`;
     the conformance suite pins the exact modules these strings may reach."""
 
+    digest_reader: str = ""
+    """Entry point of this format's child-digest reader as ``module:callable``
+    taking ``(path, since, until)`` and returning a ``ChildDigest``: what a
+    task close reads a child's transcript with. Empty while none exists —
+    then a ``task digest`` degradation must say so (conformance-enforced).
+    Resolve via :meth:`load_digest_reader`."""
+
+    binds_workers: bool = False
+    """The harness's prompt hook carries the session's transcript path, so a
+    dispatched worker's prompt naming a task id binds that transcript to the
+    task. False ⇒ a ``worker binding`` degradation must say so, and the
+    task's round records the gap instead of a digest."""
+
     transcript_importer: str = ""
     """Entry point of the batch importer behind ``weave import <id>``, as
     ``module:callable`` taking ``(cfg, sessions_root=…, **filters)``. Empty
@@ -471,6 +484,10 @@ class HarnessProfile:
         """Resolve :attr:`transcript_parser`, or None when no parser exists."""
         return self._load_entry(self.transcript_parser)
 
+    def load_digest_reader(self) -> Callable | None:
+        """Resolve :attr:`digest_reader`, or None when no reader exists."""
+        return self._load_entry(self.digest_reader)
+
     def load_transcript_importer(self) -> Callable | None:
         """Resolve :attr:`transcript_importer`, or None when none exists."""
         return self._load_entry(self.transcript_importer)
@@ -583,6 +600,8 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         transcript_format="jsonl-flat",
         transcript_parser="thinkweave.onboarding.claude_code_seed:parse_session",
         transcript_importer="thinkweave.onboarding.claude_code_seed:import_claude_code",
+        digest_reader="thinkweave.operations.tasks:claude_code_digest",
+        binds_workers=True,
         session_id_scheme="uuid4",
         session_id_envs=("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"),
         native_memory_artifact=cc / "projects",
@@ -735,6 +754,7 @@ def codex(home: Path | None = None) -> HarnessProfile:
         transcript_format="jsonl-rollout",
         transcript_parser="thinkweave.acquisition.importers.codex:parse_rollout",
         transcript_importer="thinkweave.acquisition.importers.codex:import_codex",
+        binds_workers=True,
         session_id_scheme="uuid7",
         # session_id_envs stays empty: an env-dumping SessionStart hook saw no
         # CODEX_SESSION_ID or equivalent (docs/HARNESSES.md §Codex Q4) — Codex
@@ -779,6 +799,15 @@ def codex(home: Path | None = None) -> HarnessProfile:
                 "codex exec resolves no slash commands; a $name mention is a "
                 "hint the model acts on by reading the skill file itself",
                 "docs/HARNESSES.md §Q2",
+            ),
+            Degradation(
+                "task digest",
+                "documented",
+                "no digest reader parses jsonl-rollout transcripts, so a "
+                "child task's round records the session it ran in and a gap "
+                "naming the missing reader instead of its tools, files and "
+                "commits",
+                "#243",
             ),
         ),
     )
@@ -974,6 +1003,23 @@ def pi(home: Path | None = None) -> HarnessProfile:
                 "n-a1d3beba §2",
             ),
             Degradation(
+                "task worker binding",
+                "documented",
+                "the shim's prompt envelope carries no transcript path, so a "
+                "dispatched pi worker's transcript cannot be bound to the "
+                "task its prompt names; the round records the worker's "
+                "session and a gap naming the missing binding",
+                "shims/pi/thinkweave-pi.ts envelope()",
+            ),
+            Degradation(
+                "task digest",
+                "documented",
+                "no digest reader parses jsonl-tree transcripts, so a child "
+                "task's round carries a gap naming the missing reader "
+                "instead of its tools, files and commits",
+                "#243",
+            ),
+            Degradation(
                 "skill invocation",
                 "documented",
                 "no Skill tool — /skill:<name> is prompt expansion. Skills "
@@ -1097,6 +1143,14 @@ def opencode(home: Path | None = None) -> HarnessProfile:
                 "sessions are per-record JSON files (session/message/part); "
                 "no importer reads them yet",
                 "n-767d66b4 §6",
+            ),
+            Degradation(
+                "task worker binding and digest",
+                "documented",
+                "no prompt hook runs, so a dispatched worker's transcript is "
+                "never bound, and no digest reader parses json-records; a "
+                "child task closed via `weave task close` records the gap",
+                "#243",
             ),
         ),
     )

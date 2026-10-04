@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tests.tasks.conftest import run_hook
 from thinkweave.core.config import Config
-from thinkweave.core.task_contract import validate_task_note
+from thinkweave.core.task_contract import SessionRef, validate_task_note
 from thinkweave.core.vault import parse_frontmatter
 from thinkweave.operations import tasks
 from thinkweave.operations.tasks import ChildDigest, TaskStore, TranscriptSource
@@ -35,8 +35,8 @@ def stub_fm(cfg: Config, task_id: str) -> dict:
     return parse_frontmatter(task.path.read_text(encoding="utf-8"))[0]
 
 
-def digest_of(path: Path, since: str = "") -> ChildDigest:
-    return ChildDigest.read(TranscriptSource(path, since))
+def digest_of(path: Path, since: str = "", harness: str = "claude-code") -> ChildDigest:
+    return ChildDigest.read(TranscriptSource(path, since, SessionRef.session(harness, "s-x")))
 
 
 def cli(argv: list[str]) -> None:
@@ -105,6 +105,13 @@ class TestDigest:
         assert digest.tools == {
             "Read": 1, "Bash": 1, "mcp__thinkweave__weave_create": 1,
         }
+
+    def test_a_harness_without_a_reader_names_the_gap_not_zero_tools(self):
+        digest = digest_of(FOREGROUND, harness="codex")
+        assert any("codex" in g and "digest reader" in g for g in digest.gaps)
+        fields = digest.round_fields([])
+        assert "tools" not in fields and "tool_errors" not in fields
+        assert fields["digest"]["gaps"] == list(digest.gaps)
 
     def test_no_token_counts_are_written(self):
         for path in (FOREGROUND, WORKTREE, HERDR, PARTIAL):
@@ -189,4 +196,47 @@ class TestWiring:
         assert f"{task_id}.bind.json unreadable" in err
         fm = stub_fm(cfg, task_id)
         assert fm["status"] == "closed"
-        assert "digest" not in fm["rounds"][0]
+        gaps = fm["rounds"][0]["digest"]["gaps"]
+        assert any(f"{task_id}.bind.json unreadable" in g for g in gaps)
+        assert tasks._NO_TRANSCRIPT in gaps
+
+
+class TestNoSilentRound:
+    def test_a_close_with_no_transcript_writes_the_gap_onto_the_round(
+        self, cfg: Config, capsys
+    ):
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        cli(["task", "close", task_id, "--session", "s-1"])
+        (entry,) = stub_fm(cfg, task_id)["rounds"]
+        assert entry["digest"]["gaps"] == [tasks._NO_TRANSCRIPT]
+
+    def test_a_pi_worker_round_names_the_missing_binding_and_reader(
+        self, cfg: Config, monkeypatch, tmp_path: Path, capsys
+    ):
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        monkeypatch.setattr(
+            "thinkweave.surfaces.hooks.handler._prompt_time_enrichment",
+            lambda *a, **k: None,
+        )
+        # Pi's shim sends no transcript_path (shims/pi/thinkweave-pi.ts).
+        run_hook(monkeypatch, "user_prompt_submit", {
+            "session_id": "pi-worker",
+            "cwd": str(tmp_path),
+            "prompt": f"Task {task_id}: add --indent. Commit.",
+        }, harness="pi")
+        cli(["task", "close", task_id, "--session", "s-1"])
+
+        fm = stub_fm(cfg, task_id)
+        assert validate_task_note(fm) == []
+        (entry,) = fm["rounds"]
+        assert entry["session_ref"] == {
+            "harness": "pi", "kind": "session_id", "value": "pi-worker",
+        }
+        gaps = entry["digest"]["gaps"]
+        assert any("pi" in g and "binding" in g for g in gaps)
+        assert any("pi" in g and "digest reader" in g for g in gaps)
+        assert "tools" not in entry
+        err = capsys.readouterr().err
+        assert all(f"digest: {g}" in err for g in gaps)

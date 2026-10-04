@@ -27,12 +27,16 @@ def cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Config:
     return config
 
 
-def run_hook(monkeypatch: pytest.MonkeyPatch, phase: str, payload: dict) -> dict:
-    """Drive ``handler.main()`` exactly as the harness does: phase on argv,
-    the synthetic payload on stdin; returns the parsed hook reply."""
+def run_hook(
+    monkeypatch: pytest.MonkeyPatch, phase: str, payload: dict, *, harness: str = ""
+) -> dict:
+    """Drive ``handler.main()`` exactly as the harness does: phase (and any
+    ``--harness``) on argv, the synthetic payload on stdin; returns the
+    parsed hook reply."""
     from thinkweave.surfaces.hooks import handler
 
-    monkeypatch.setattr("sys.argv", ["weave-hook", phase])
+    argv = ["weave-hook", phase] + (["--harness", harness] if harness else [])
+    monkeypatch.setattr("sys.argv", argv)
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     out = io.StringIO()
     monkeypatch.setattr("sys.stdout", out)
