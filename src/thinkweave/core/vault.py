@@ -42,8 +42,9 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     """Parse YAML frontmatter from a markdown string.
 
     Returns (frontmatter_dict, body_text).
-    Handles flat key-value pairs, simple lists (- item) and literal block
-    scalars (``key: |-`` followed by indented lines).
+    Handles flat key-value pairs, simple lists (- item), literal block
+    scalars (``key: |-`` followed by indented lines) and JSON flow values
+    (``key: {...}`` / ``key: [...]``).
     """
     m = _FRONTMATTER_RE.match(text)
     if not m:
@@ -97,6 +98,14 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             if _BLOCK_HEADER_RE.match(value):
                 result[key], i = _block_scalar(value, lines, i)
                 continue
+
+            # Nested values the writer renders as JSON flow (top level only).
+            if value[0] in "[{" and not line[0].isspace():
+                try:
+                    result[key] = json.loads(value)
+                    continue
+                except json.JSONDecodeError:
+                    pass
 
             # Inline list: [item1, item2]
             if value.startswith("[") and value.endswith("]"):
@@ -496,6 +505,9 @@ def render_frontmatter(data: dict) -> str:
     before rendering. This is the terminal write-time backstop against
     callers passing a JSON-shaped string or a bare scalar for a field
     that downstream consumers will iterate as a list.
+
+    Values ``_needs_json_flow`` flags render as one JSON flow line, which
+    ``parse_frontmatter`` reads back at any depth.
     """
     lines = ["---"]
     for key, value in data.items():
@@ -510,7 +522,11 @@ def render_frontmatter(data: dict) -> str:
             # Already a list, but still run through coercion to catch
             # the char-by-char damage shape (all single-char strings).
             value = _coerce_list_field(value)
-        if isinstance(value, list):
+        if isinstance(value, dict):
+            value = {k: v for k, v in value.items() if v is not None and v != ""}
+        if _needs_json_flow(value):
+            lines.append(f"{key}: {json.dumps(value, ensure_ascii=False, default=str)}")
+        elif isinstance(value, list):
             if not value:
                 lines.append(f"{key}: []")
             elif len(value) <= 3 and all(isinstance(v, str) and "," not in v for v in value):
@@ -526,17 +542,22 @@ def render_frontmatter(data: dict) -> str:
                         lines.append(f"  - {item}")
         elif isinstance(value, bool):
             lines.append(f"{key}: {'true' if value else 'false'}")
-        elif isinstance(value, dict):
-            lines.append(f"{key}:")
-            for k, v in value.items():
-                if v is not None and v != "":
-                    lines.append(f"  {k}: {v}")
         elif isinstance(value, (int, float)):
             lines.append(f"{key}: {value}")
         else:
             lines.append(f"{key}: {quote_scalar(str(value))}")
     lines.append("---")
     return "\n".join(lines)
+
+
+def _needs_json_flow(value) -> bool:
+    """True when ``value`` cannot render as a plain or block-list line: a
+    dict, or a list holding a nested list or a multi-line string."""
+    if isinstance(value, dict):
+        return True
+    return isinstance(value, list) and any(
+        isinstance(v, list) or (isinstance(v, str) and "\n" in v) for v in value
+    )
 
 
 def extract_wikilinks(text: str) -> list[str]:

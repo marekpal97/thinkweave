@@ -1192,6 +1192,7 @@ from thinkweave.core.buffer import (  # noqa: E402, F401
 
 from thinkweave.operations.hook_events import (  # noqa: E402
     command_head as _command_head,
+    command_segments as _command_segments,
     is_git_commit as _is_git_commit,
     parse_commit_from_output as _parse_commit_from_output,
 )
@@ -1251,9 +1252,11 @@ def _is_test_command(command: str) -> bool:
     by splitting on shell operators and checking each segment.
     """
     _TEST_PREFIXES = ("pytest", "python -m pytest", "uv run pytest", "uv run python -m pytest")
-    # Split on shell chain operators (&&, ||, ;) and check each segment
-    segments = re.split(r"\s*(?:&&|\|\||;)\s*", command.strip())
-    return any(_command_head(seg).startswith(p) for seg in segments for p in _TEST_PREFIXES)
+    return any(
+        _command_head(seg).startswith(p)
+        for seg in _command_segments(command)
+        for p in _TEST_PREFIXES
+    )
 
 
 def _parse_test_result(command: str, output: str) -> dict | None:

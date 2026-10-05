@@ -171,9 +171,45 @@ class TestRenderFrontmatter:
 
     def test_dict_values(self):
         data = {"context": {"prompt": "do something", "plan": "dec-123"}}
-        rendered = render_frontmatter(data)
-        assert "prompt: do something" in rendered
-        assert "plan: dec-123" in rendered
+        fm, _ = parse_frontmatter(render_frontmatter(data) + "\n\nBody")
+        assert fm == data
+
+    def test_nested_multiline_values_roundtrip(self):
+        for data in (
+            {"lst": ["one\ntwo"]},
+            {"lst": ["plain", "a, b", "x\ny", "z"]},
+            {"ctx": {"prompt": "l1\nl2"}},
+            {"ctx": {"plan": {"path": "/p.md", "summary": "s1\n\ns2: \"q\"\n"}}},
+            {"ctx": {"notes": ["n1\nn2", "C:\\new"]}},
+            {"rounds": [{"asked": "a\nb", "outputs": ["o1\no2"]}]},
+            {"lst": [["in\nner"]]},
+            {"lst": ["a", ["b", ["c\nd"]]]},
+        ):
+            rendered = render_frontmatter({**data, "status": "open"})
+            fm, body = parse_frontmatter(rendered + "\n\nBody")
+            assert fm == {**data, "status": "open"}, rendered
+            assert body.strip() == "Body"
+
+    def test_pre_change_nested_values_read_back_unchanged(self):
+        # As the writer emitted them before nested values rendered as JSON.
+        text = (
+            "---\n"
+            "context:\n"
+            "  plan: {}\n"
+            "plan: \"{}\"\n"
+            "lst: [a, b]\n"
+            "concepts:\n"
+            "  - x\n"
+            "  - {\"k\": 1}\n"
+            "---\n\nBody"
+        )
+        fm, _ = parse_frontmatter(text)
+        assert fm == {
+            "context": "",
+            "plan": "{}",
+            "lst": ["a", "b"],
+            "concepts": ["x", {"k": 1}],
+        }
 
     def test_list_of_dicts_roundtrip(self):
         data = {
