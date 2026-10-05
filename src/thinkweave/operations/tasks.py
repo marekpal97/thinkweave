@@ -416,16 +416,24 @@ class TranscriptSource:
 
     def bind(self, cfg, task_id: str) -> bool:
         """Record this slice — or the gaps that left it without a
-        transcript — as ``task_id``'s; the first binding stands. Returns
-        whether this call bound it."""
-        path = _binding_path(cfg, task_id)
-        if path.exists() or self.session_ref is None:
+        transcript — as ``task_id``'s. A real binding stands; a gap-only one
+        yields to a later real slice. Returns whether this call bound it."""
+        if self.session_ref is None:
             return False
+        path = _binding_path(cfg, task_id)
+        since = self.since
+        if path.exists():
+            prior = TranscriptSource.bound(cfg, task_id)
+            if prior.path or self.path is None:
+                return False
+            if prior.session_ref == self.session_ref:
+                # The session's first prompt naming the task opens its slice.
+                since = prior.since
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps({
                 "transcript_path": str(self.path or ""),
-                "since": self.since,
+                "since": since,
                 "session_ref": self.session_ref.to_dict(),
                 "gaps": list(self.gaps),
             }),
