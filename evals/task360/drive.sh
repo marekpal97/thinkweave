@@ -10,7 +10,7 @@
 #
 # The verbs scenarios are built from:
 #   start <label> <claude|codex|pi>   split a pane and start a session in it
-#   say <label> <prompt>              prompt and wait for the turn to settle
+#   say <label> <prompt>              hand over the prompt as a file, wait for the turn
 #   settle <label>                    wait until idle with no shell still running
 #   wrap <label>                      settle, run the harness's wrap skill, settle
 #   stop <label>                      settle, then exit the session; the pane stays
@@ -119,11 +119,10 @@ _worker() {  # _worker <label> <worker kind> <ticket> <title> <work>
   say "$label" "$(TICKET=$3 TITLE=$4 WORK=$5 KIND=$2 WORKER="$(_name "$label")w" \
     envsubst '${TICKET} ${TITLE} ${WORK} ${KIND} ${WORKER}' <"$HERE/prompts/worker.txt")" \
     || return 1
-  # A long prompt lands as a paste, which Claude Code may hold for confirmation.
-  [ -n "$(_dispatch_task "$3" "$4")" ] \
-    || say "$label" "Yes: run the steps in the ticket I pasted, exactly as written." || return 1
   # Read from the index, not the screen: a TUI on the alternate screen keeps no scrollback.
-  note "$label" task_id "$(_dispatch_task "$3" "$4")"
+  local task; task=$(_dispatch_task "$3" "$4")
+  [ -n "$task" ] || { echo "$label: the session opened no dispatch task for #$3" >&2; return 1; }
+  note "$label" task_id "$task"
   wrap "$label" && stop "$label"
 }
 
@@ -139,7 +138,8 @@ run() {  # run <label>: prerequisites first, each once per setup
   echo "== $label"
   "scenario_$label" || { echo "$label: scenario failed; panes stay open for a look" >&2; return 1; }
   _state "s['labels'].setdefault('$label', {})['done'] = True"
-  check "$label" || true
+  # A later scenario's wrap may prune this one's notes: score the state it ended on.
+  oracle freeze "$label" && check "$label" || true
 }
 
 check() { oracle check "$@"; }
@@ -201,7 +201,15 @@ s['labels'].setdefault('$label', {}).update(harness='$kind', name='$name', pane=
   echo "$label: $kind started in workspace $(_get workspace), pane $pane"
 }
 
-say() {  # say <label> <prompt>
+say() {  # say <label> <prompt>: the model reads the prompt from a file, so the
+  # message it gets is typed by the user, not a paste it may treat as data
+  local file
+  file=$ROOT/prompts/$1-$(date +%s%N).txt
+  mkdir -p "$ROOT/prompts" && printf '%s\n' "$2" >"$file"
+  _send "$1" "Read the file $file and do what it asks."
+}
+
+_send() {  # _send <label> <text>: type text as the user's prompt, wait for the turn
   local name out; name=$(_name "$1")
   out=$(herdr agent prompt "$name" "$2" --wait --timeout "$TIMEOUT_MS" 2>&1)
   if grep -q agent_prompt_stalled <<<"$out"; then
@@ -236,7 +244,7 @@ settle() {  # settle <label>: idle, and no shell left running under the agent
 }
 
 wrap() {  # wrap <label>
-  settle "$1" && say "$1" "${WRAP[$(_get "labels.$1.harness")]}" && settle "$1"
+  settle "$1" && _send "$1" "${WRAP[$(_get "labels.$1.harness")]}" && settle "$1"
 }
 
 stop() {  # stop <label>: the session exits, its pane stays open until finish
@@ -273,17 +281,23 @@ _rekey() {  # record the harness session id once herdr reports it
 }
 
 _answer_trust() {  # answer a harness's one-time folder-trust dialog, then wait for ready
-  local name text downs; name=$(_name "$1")
+  local name text; name=$(_name "$1")
   text=$(screen "$1" 40)
   grep -qi trust <<<"$text" || return 1
-  # Move the menu cursor (❯ or ›) from its option down to the "Yes" option.
-  downs=$(awk '/^ *[❯›]? *([0-9]\. *)?(Yes|No)([ ,]|$)/ {
-      n++; if ($0 ~ /[❯›]/) cur = n; if (!yes && $0 ~ /Yes/) yes = n }
-    END { print (yes && cur) ? yes - cur : 0 }' <<<"$text")
-  local -a keys=()
-  for ((i = 0; i < downs; i++)); do keys+=(down); done
-  herdr agent send-keys "$name" "${keys[@]}" enter >/dev/null
+  # shellcheck disable=SC2046
+  herdr agent send-keys "$name" $(_trust_keys <<<"$text") >/dev/null
   herdr agent wait "$name" --until idle --timeout 120000 >/dev/null
+}
+
+_trust_keys() {  # the keys that move a menu cursor (❯ or ›) onto its "Yes" option and confirm
+  awk '/^ *[❯›]? *([0-9]+\. |(Yes|No)([ ,]|$))/ {
+      n++; if ($0 ~ /[❯›]/) cur = n; if (!yes && $0 ~ /Yes/) yes = n }
+    END {
+      d = (yes && cur) ? yes - cur : 0
+      for (; d > 0; d--) printf "down "
+      for (; d < 0; d++) printf "up "
+      print "enter"
+    }'
 }
 
 _steady() {  # wait until the pane stops changing: herdr reports ready while a
@@ -340,4 +354,6 @@ p.write_text(json.dumps(s, indent=1))
 EOF
 }
 
-[ "${BASH_SOURCE[0]}" = "$0" ] && { cmd=${1:?usage: drive.sh setup|run|check|finish|<verb> ...}; shift; "$cmd" "$@"; }
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  cmd=${1:?usage: drive.sh setup|run|check|finish|<verb> ...}; shift; "$cmd" "$@"
+fi

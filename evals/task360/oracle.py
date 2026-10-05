@@ -76,7 +76,8 @@ class View:
 
 
 # ---------------------------------------------------------------------------
-# Checkpoints. Each assumes its prerequisites ran; counts are floors, so a
+# Checkpoints. Each assumes its prerequisites ran. A scenario the driver ran
+# scores the state it ended on (frozen/<label>.json); counts are floors, so a
 # checkpoint still holds on the final state of a longer run.
 
 
@@ -346,14 +347,26 @@ def main(argv: list[str]) -> int:
     check = sub.add_parser("check", help="PASS/FAIL/KNOWN/GAP per assertion; exit 1 on a FAIL")
     check.add_argument("labels", nargs="*", help="checkpoints to run (default: every one)")
     sub.add_parser("snapshot", help="the whole state as JSON")
+    freeze = sub.add_parser("freeze", help="keep the state a scenario ended on for its check")
+    freeze.add_argument("label")
     args = parser.parse_args(argv)
 
-    snap = snapshot(args.root)
     if args.cmd == "snapshot":
-        print(json.dumps(snap, indent=1, default=str))
+        print(json.dumps(snapshot(args.root), indent=1, default=str))
         return 0
-    view, failed = View(snap), 0
+    if args.cmd == "freeze":
+        path = args.root / "frozen" / f"{args.label}.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps(snapshot(args.root), indent=1, default=str))
+        return 0
+    failed, live = 0, None
     for label in args.labels or list(CHECKS):
+        frozen = args.root / "frozen" / f"{label}.json"
+        if frozen.exists():
+            view = View(json.loads(frozen.read_text()))
+        else:
+            live = live or View(snapshot(args.root))
+            view = live
         session = view.session(label)
         who = "/".join(x for x in (session.get("key"), session.get("id")) if x) or "no session"
         for name, ok, evidence in CHECKS[label](view):

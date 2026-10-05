@@ -2,8 +2,9 @@
 
 The 360 task test drives real interactive sessions through herdr against a throwaway
 sandbox repo and a throwaway vault, then asserts the task trace from the throwaway index.
-It is not a pytest suite; the tests gate never runs it. Only the oracle's own rules have
-a unit check: `uv run --no-sync pytest evals/task360/test_oracle.py -q`.
+It is not a pytest suite; the tests gate never runs it. Only the oracle's rules and the
+driver's trust-dialog answer have unit checks:
+`uv run --no-sync pytest evals/task360/test_oracle.py evals/task360/test_drive.py -q`.
 
 ## Run it
 
@@ -27,7 +28,11 @@ evals/task360/drive.sh finish       # close the workspace once you have looked
   vault. The S0 checkpoint asserts the live vault has no folder for the sandbox project.
 - Every pane also starts with `PYTHONPATH=<this checkout>/src`, so hooks and MCP run the
   checkout the driver lives in (a worktree included), not the dev-linked one.
-- `run <label>` runs the scenario's prerequisites first, once per setup.
+- `run <label>` runs the scenario's prerequisites first, once per setup. When a scenario
+  ends, the driver freezes the oracle snapshot to `frozen/<label>.json`. `check` scores
+  each label from its frozen snapshot, so a later wrap that prunes an earlier session's
+  folder cannot fail that earlier scenario. A label with no frozen snapshot scores the
+  current state.
 - Oracle rows print `PASS`, `FAIL` (a bug in a supported route), `KNOWN #n` (a gap that
   ticket #n owns: add evidence there, never a new issue) or `GAP` (a probe that found a
   missing capability). Each row carries the session id and session note id.
@@ -75,8 +80,14 @@ of a longer run.
 
 ## What the driver handles
 
+- **Prompts as files**: `say` writes the prompt to `prompts/<label>-<n>.txt` under the
+  run root and types one short line asking the model to read that file. A long prompt
+  pasted into the TUI arrives as pasted data, which a model may refuse to act on.
+  Wrap skills (`/wrap`, `$thinkweave-wrap`, `/skill:wrap`) are typed directly.
+- **Task ids**: a worker scenario reads the per-dispatch task its session opened from
+  the throwaway index and records it with `note`. It fails when there is none.
 - **Folder trust**: a first start in a new sandbox path hits the harness's trust
-  dialog. The driver moves the menu cursor to the "Yes" option and confirms.
+  dialog. The driver moves the menu cursor up or down to the "Yes" option and confirms.
 - **Autocomplete**: a Codex `$skill` prompt can stay unsubmitted behind its popup.
   When herdr reports `agent_prompt_stalled`, the driver presses Enter again.
 - **Background shells**: `settle` waits until the agent is idle and no shell runs
