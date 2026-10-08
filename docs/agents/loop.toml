@@ -15,7 +15,6 @@
 
 [loop]
 max_issues_per_run = 3   # token guardrail: issues processed per invocation
-max_parallel = 1         # frontier width dispatched concurrently (>1 = worktrees)
 max_fix_rounds = 2       # implement→gates→fix iterations before routing to human; never extended mid-run
 training_mode = true     # pause for human approval before push/PR; flip when trusted
 branch_prefix = "loop/issue-"
@@ -55,13 +54,23 @@ sensitive_paths = [
 # is the judgment plane: loop.toml and a constitution overlay live there, and
 # a change steers every future run.
 watched_paths = ["docs/agents/"]
-red_min_diff_lines = 800       # "big diff" → red (a human-lane signal, never a block)
+red_diff_lines = 800           # "big diff" → red (a human-lane signal, never a block)
+
+# ── Dispatch roles ────────────────────────────────────────────────────────
+# How `devloop pack` shapes each role's dispatch file. writer: persona +
+# standing orders; reader: neither; shape: the stack-tip shape posture.
+[dispatch.implementer]
+posture = "writer"
+transport = "agent-tool"   # agent-tool | herdr
+
+[dispatch.judge]
+posture = ["reader", "shape"]
+transport = "agent-tool"
 
 # ── Gate pipeline ─────────────────────────────────────────────────────────
 # Ordered, and the order is the contract: the deterministic guards run first,
-# then the one judge, then the applying trim. kinds: command | diff
-# (deterministic, run by the rail) — judge | simplify (LLM-judged, run by the
-# command in fresh subagent contexts). A gate carries only the keys its kind
+# then the one judge. kinds: command | diff (deterministic, run by the
+# rail) — judge (LLM-judged, run by the command in a fresh subagent context). A gate carries only the keys its kind
 # reads; anything else is refused by name.
 
 [[gates]]
@@ -81,22 +90,8 @@ timeout_sec = 1200
 
 # The one judgment stage: a fresh judge returns criteria[] verdicts against
 # the issue's acceptance criteria plus advisory findings[]. Fails iff a
-# criterion is not-met per `threshold`; findings never block.
+# criterion is not-met; findings never block.
 [[gates]]
 id = "judge"
 kind = "judge"
 required = true
-threshold = "all"        # all | majority — of the issue's acceptance criteria
-
-# simplify runs LAST and is safe by construction: it can only SHRINK an
-# already-verified diff. The orchestrator snapshots the tip, applies the
-# subagent's delete-list, re-runs `rerun`, and hard-resets to the snapshot if
-# it goes red — so required=false is literal: its failure mode is a revert,
-# not a block. Stacked delivery runs it once, at the stack tip.
-[[gates]]
-id = "simplify"
-kind = "simplify"
-required = false
-skill = "ponytail-review"          # ships with devloop (funloops); host /simplify is the fallback
-rerun = ["tests"]                  # re-verify the shrunk diff against these gate ids, in order; no second judge
-revert_note = "⚠ simplify-reverted"  # PR-body note when the shrunk diff is discarded

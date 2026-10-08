@@ -1,7 +1,6 @@
 {
   "loop": {
     "max_issues_per_run": 3,
-    "max_parallel": 1,
     "max_fix_rounds": 2,
     "training_mode": true,
     "branch_prefix": "loop/issue-",
@@ -28,17 +27,19 @@
     "watched_paths": [
       "docs/agents/"
     ],
-    "red_min_diff_lines": 800
+    "red_diff_lines": 800
   },
   "dispatch": {
     "implementer": {
-      "transport": "agent-tool"
+      "transport": "agent-tool",
+      "posture": "writer"
     },
     "judge": {
-      "transport": "agent-tool"
-    },
-    "simplify": {
-      "transport": "agent-tool"
+      "transport": "agent-tool",
+      "posture": [
+        "reader",
+        "shape"
+      ]
     }
   },
   "gates": [
@@ -62,20 +63,7 @@
     {
       "id": "judge",
       "kind": "judge",
-      "required": true,
-      "threshold": "all"
-    },
-    {
-      "id": "simplify",
-      "kind": "simplify",
-      "required": false,
-      "skill": "ponytail-review",
-      "rerun": [
-        "tests"
-      ],
-      "revert_note": "\u26a0 simplify-reverted",
-      "min_diff_lines": 0
+      "required": true
     }
-  ],
-  "tier": "base"
+  ]
 }
