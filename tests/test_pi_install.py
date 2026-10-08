@@ -529,3 +529,21 @@ class TestPiNextStepsAndBlock:
         assert "/skill:wrap" in block
         assert "pi-mcp-adapter" in block
         assert f"`{REPO_ROOT / 'bin' / 'weave'} add" in block
+
+
+class TestAgentDirEnv:
+    def test_pi_coding_agent_dir_overrides_the_default_location(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # `$PI_CODING_AGENT_DIR` is Pi's own knob (its README, environment variables).
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "agent"))
+        p = harness.pi()
+        assert (p.mcp_config, p.skills_dir, p.instructions_file) == (
+            tmp_path / "agent" / "mcp.json",
+            tmp_path / "agent" / "skills",
+            tmp_path / "agent" / "AGENTS.md",
+        )
+
+    def test_explicit_home_wins_over_the_env(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", "/should/not/be/used")
+        assert harness.pi(home=tmp_path).mcp_config == tmp_path / ".pi" / "agent" / "mcp.json"
