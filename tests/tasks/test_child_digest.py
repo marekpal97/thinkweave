@@ -294,6 +294,42 @@ class TestWiring:
         assert any(f"{task_id}.bind.json unreadable" in g for g in gaps)
         assert tasks._NO_TRANSCRIPT in gaps
 
+    def _bind(self, cfg: Config, task_id: str, transcript: str, since: str) -> list[str]:
+        return tasks.bind_session(
+            cfg, f"Task: {task_id}", harness="claude-code", session_key="s-worker",
+            transcript_path=transcript, since=since,
+        )
+
+    def test_a_gap_only_binding_yields_to_a_later_real_one(
+        self, cfg: Config, monkeypatch, capsys
+    ):
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        assert self._bind(cfg, task_id, "", "2026-09-30T21:39:47.600+00:00") == [task_id]
+        assert self._bind(cfg, task_id, str(HERDR), "2026-09-30T22:05:18.900+00:00") == [task_id]
+        monkeypatch.setattr(tasks, "_now", lambda: "2026-09-30T23:00:00+00:00")
+        cli(["task", "close", task_id, "--session", "s-1"])
+
+        (entry,) = stub_fm(cfg, task_id)["rounds"]
+        assert entry["digest"]["gaps"] == []
+        # The session's first task prompt still opens the slice.
+        assert entry["did"] == {
+            "paths": ["src/dogfood/__init__.py", "deck/pitch.md"], "commits": ["1a1343a"],
+        }
+        assert entry["tools"] == {"Write": 2, "Bash": 2}
+
+    def test_a_real_binding_is_never_replaced(self, cfg: Config, monkeypatch, capsys):
+        cli(["task", "open", "--session", "s-1", "--project", "p"])
+        task_id = capsys.readouterr().out.strip()
+        assert self._bind(cfg, task_id, str(HERDR), "2026-09-30T22:05:18.900+00:00") == [task_id]
+        assert self._bind(cfg, task_id, "", "2026-09-30T22:06:00+00:00") == []
+        assert self._bind(cfg, task_id, str(PARTIAL), "2026-09-30T22:07:00+00:00") == []
+        monkeypatch.setattr(tasks, "_now", lambda: "2026-09-30T23:00:00+00:00")
+        cli(["task", "close", task_id, "--session", "s-1"])
+
+        (entry,) = stub_fm(cfg, task_id)["rounds"]
+        assert entry["did"] == {"paths": ["deck/pitch.md"], "commits": ["1a1343a"]}
+
 
 class TestNoSilentRound:
     def test_a_close_with_no_transcript_writes_the_gap_onto_the_round(
