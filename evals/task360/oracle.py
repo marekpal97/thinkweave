@@ -190,15 +190,27 @@ def s8(v: View) -> list[Row]:
 
 
 def s9(v: View) -> list[Row]:
+    """A second wrap re-extracts the session's insights under fresh ids, so
+    the rounds must match with credited notes compared by presence, and every
+    credited note must still exist."""
     a = v.one_work(1)
     before = v.snap.get("before")
     mine = v.rounds_from(a, "S9")
+    after = a["rounds"] if a else None
+    credited = {x for r in after or [] for x in r.get("notes") or []}
+    missing = sorted(credited - set(v.snap.get("note_ids", [])))
     return [
         ("S9 added a round to #1", bool(mine), f"{len(mine)} round(s) from S9"),
         ("a second wrap changes nothing on #1",
-         before is not None and a is not None and before["rounds"] == a["rounds"],
+         before is not None and after is not None
+         and _credit_blind(before["rounds"]) == _credit_blind(after),
          "rounds before the second wrap == rounds after" if before else "no s9-before.json"),
+        ("every note #1 credits exists", not missing, f"missing={missing}"),
     ]
+
+
+def _credit_blind(rounds: list[dict]) -> list[dict]:
+    return [{**r, "notes": bool(r.get("notes"))} for r in rounds]
 
 
 def s10(v: View) -> list[Row]:
@@ -403,6 +415,7 @@ def snapshot(root: Path) -> dict:
         "sessions": {label: _session(cfg, db, d) for label, d in state["labels"].items()},
         "feedback": _feedback(db),
         "edges": _edges(db),
+        "note_ids": [r[0] for r in db.execute("SELECT id FROM notes")],
         "served": build_project_context(cfg, state["project"]),
         "devloop_buffer": [
             r.get("task_id") for r in iter_jsonl(buffer_path(cfg.weave_dir, "devloop"))

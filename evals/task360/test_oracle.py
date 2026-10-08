@@ -64,6 +64,20 @@ def test_s9_requires_its_own_round_and_an_idempotent_rewrap():
     assert marks["a second wrap changes nothing on #1"] is True
 
 
+
+def test_s9_rewrap_may_remint_credited_insights_but_never_drop_them():
+    before = [_round("ses-S1"), _round("ses-S9", notes=["n-old"])]
+    reminted = [_round("ses-S1"), _round("ses-S9", notes=["n-new"])]
+    view = oracle.View(_snap(reminted, [], [], before={"rounds": before}, note_ids=["n-new"]))
+    assert set(_marks(oracle.s9(view)).values()) == {True}
+
+    dangling = oracle.View(_snap(before, [], [], before={"rounds": before}, note_ids=[]))
+    assert _marks(oracle.s9(dangling))["every note #1 credits exists"] is False
+
+    dropped = [_round("ses-S1"), _round("ses-S9")]
+    lost = oracle.View(_snap(dropped, [], [], before={"rounds": before}, note_ids=["n-old"]))
+    assert _marks(oracle.s9(lost))["a second wrap changes nothing on #1"] is False
+
 def test_marks_split_new_bugs_from_known_gaps_and_probes():
     assert oracle.mark("the round records the commit", False) == "KNOWN #228"
     assert oracle.mark("PROBE it closed", False) == "GAP"
