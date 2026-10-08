@@ -645,9 +645,11 @@ def apply_declaration(
 ) -> TaskPassResult:
     """Apply the wrap declaration: the model judged, this pass writes.
 
-    An invalid declaration aborts with no writes. Each entry continues its
-    ``continuing`` task, else the open task carrying its ``asked`` ref, else
-    a task this session already minted under its ``title``, else mints one;
+    An invalid declaration aborts with no writes. A GitHub sub-issue
+    ``asked`` resolves to its epic's ref, and the round names the sub-issue.
+    Each entry continues its ``continuing`` task, else the open task
+    carrying its ``asked`` ref, else a task this session already minted
+    under its ``title``, else mints one;
     its ``round`` lands as a ``route: session`` round under the session
     note's ref, replacing this session's earlier round, so a re-wrap
     re-applies rather than duplicates. ``done`` closes — the only closure
@@ -720,7 +722,8 @@ class _DeclarationPass:
                     self.minted_titles.setdefault(task.title, task.id)
 
     def apply(self, entry: dict, *, solo: bool) -> None:
-        asked = _tracker_ref(str(entry.get("asked") or ""), self.repo, self.result.warnings)
+        issue = _tracker_ref(str(entry.get("asked") or ""), self.repo, self.result.warnings)
+        asked = _epic_ref(issue, self.result.warnings)
         task = self._task_for(entry, asked)
         if task is None:
             return
@@ -730,7 +733,7 @@ class _DeclarationPass:
             consumed = [*(task.frontmatter.get("consumes") or []), *entry["consumes"]]
             task.frontmatter["consumes"] = list(dict.fromkeys(consumed))
         if "round" in entry:
-            task.put_round(self._round(entry, task, solo), replaces=(self.wrap_ref,))
+            task.put_round(self._round(entry, task, solo, issue), replaces=(self.wrap_ref,))
         closing = bool(entry.get("done")) and task.close()
         minting = task.path is None
         self.result.warnings += task.save(self.vm)
@@ -780,11 +783,14 @@ class _DeclarationPass:
             self.result.appended.append(task.id)
         return task
 
-    def _round(self, entry: dict, task: Task, solo: bool) -> Round:
-        """The entry's round under this session's ref. A single-task session
-        credits it with every insight and verdict the session recorded;
-        with several tasks only what each entry declares is attributed."""
+    def _round(self, entry: dict, task: Task, solo: bool, issue: str) -> Round:
+        """The entry's round under this session's ref, naming the ``issue``
+        it worked. A single-task session credits it with every insight and
+        verdict the session recorded; with several tasks only what each
+        entry declares is attributed."""
         data = {"route": "session", "session_ref": self.session_ref.to_dict(), **entry["round"]}
+        if issue:
+            data.setdefault("asked", issue)
         if solo:
             for key, found in (("notes", self.insights), ("feedback", self.verdicts)):
                 if found:
@@ -830,10 +836,11 @@ def record_run(
     cfg, payload: object, *, project: str, trajectory: str = "", session_key: str = ""
 ) -> RunLanded:
     """Land one devloop run as a ``route: devloop`` round on the open task
-    its issue ref resolves to, minting a work-grain task when none is open;
-    a re-record of the same trajectory replaces its round. A run never
-    closes its task, and nothing closes it when its PR merges. With no
-    ``session_key`` no register row is written: no session owns the run.
+    its epic ref (else its issue ref) resolves to, minting a work-grain
+    task when none is open; a re-record of the same trajectory replaces its
+    round. A run never closes its task, and nothing closes it when its PR
+    merges. With no ``session_key`` no register row is written: no session
+    owns the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
     warnings: list[str] = []
@@ -877,6 +884,8 @@ def _round_parts(entry: Round, link, credit: dict[str, str]) -> list[str]:
         else f"`{ref.harness if ref else ''} {ref.value if ref else '?'}`"
     )
     parts = [f"{entry.route or 'dispatch'} {head}"]
+    if entry.asked:
+        parts.append(f"asked {entry.asked}")
     if entry.notes:
         parts.append("notes " + ", ".join(link(n) for n in entry.notes))
     decisions = entry.decisions or {}
@@ -957,6 +966,33 @@ def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:
             "matches no other route's task"
         )
     return ref
+
+
+def _epic_ref(ref: str, warnings: list[str]) -> str:
+    """The epic ref a GitHub sub-issue ``ref`` belongs to, else ``ref``; a
+    failed parent lookup keeps ``ref``, and is announced."""
+    found = re.fullmatch(r"github:([\w.-]+/[\w.-]+)#(\d+)", ref)
+    if not found:
+        return ref
+    try:
+        return _gh_parent(found[1], found[2]) or ref
+    except (OSError, subprocess.SubprocessError) as exc:
+        reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+        warnings.append(
+            f"sub-issue parent lookup for {ref} failed ({reason}) — kept the "
+            "sub-issue ref, so the round misses its epic's task"
+        )
+        return ref
+
+
+def _gh_parent(repo: str, number: str) -> str:
+    """The tracker ref of ``repo#number``'s sub-issue parent, or ``""``."""
+    jq = '.parent_issue_url // empty | sub(".*/repos/"; "") | sub("/issues/"; "#")'
+    out = subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{number}", "-q", jq],
+        capture_output=True, text=True, timeout=15, check=True,
+    ).stdout.strip()
+    return f"github:{out}" if out else ""
 
 
 def _descriptor(cfg, task: Task) -> TaskDispatch:

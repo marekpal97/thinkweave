@@ -5,6 +5,7 @@
   "frontmatter": {
     "issue": 217,
     "issue_url": "https://github.com/marekpal97/thinkweave/issues/217",
+    "epic_url": "https://github.com/marekpal97/thinkweave/issues/184",
     "pr_url": "https://github.com/marekpal97/thinkweave/pull/999",
     "run_id": "run-42",
     "branch": "loop/dag-184",
@@ -17,6 +18,7 @@
       {
         "id": "implementer",
         "role": "implementer",
+        "posture": "writer",
         "outcome": "ok",
         "fix_rounds_attributed": 1,
         "transport": "agent-tool",
@@ -29,6 +31,7 @@
       {
         "id": "judge",
         "role": "judge",
+        "posture": "reader",
         "outcome": "ok",
         "fix_rounds_attributed": 1
       }
@@ -36,7 +39,7 @@
     "primed": true,
     "served": ["dec-1c903854", "dec-ba94712f"],
     "trace": {
-      "rounds": [
+      "reviews": [
         {
           "gate": "review",
           "finding": "trace fields at top level",
@@ -49,13 +52,6 @@
         {"id": "AC1", "verdict": "met", "flipped_by_round": 1},
         {"id": "AC2", "verdict": "met", "flipped_by_round": null}
       ],
-      "simplify": {
-        "outcome": "applied",
-        "cuts": [{"what": "helper dataclass", "why": "one consumer"}],
-        "kept": [{"what": "closed key tables", "why": "the contract surface"}],
-        "lines_delta": -42
-      },
-      "stack_simplify": {"outcome": "skipped", "cuts": [], "kept": [], "lines_delta": 0},
       "edge_cases": ["empty stage log"],
       "tdd": {"red_confirmed": true}
     }

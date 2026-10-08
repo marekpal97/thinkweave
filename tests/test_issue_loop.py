@@ -41,38 +41,18 @@ def _arch_proposal_doc() -> str:
 def test_repo_loop_toml_parses_and_gate_ids_unique():
     cfg = cli.load_config()
     ids = [g["id"] for g in cfg["gates"]]
-    assert len(ids) == len(set(ids)) and len(ids) >= 4
-    assert all(g["kind"] in {"command", "diff", "judge", "simplify"}
-               for g in cfg["gates"])
+    assert len(ids) == len(set(ids)) and len(ids) >= 3
+    assert all(g["kind"] in {"command", "diff", "judge"} for g in cfg["gates"])
 
 
 def test_gate_pipeline_order_is_pinned():
-    """The full pipeline order is a contract: diff-guard → tests → judge →
-    simplify. The deterministic guards run first, then the one judge, then
-    the trim, so simplify only ever shrinks an already-verified diff."""
+    """The full pipeline order is a contract: diff-guard → tests → judge.
+    The deterministic guards run first, then the one judge. funloops#89
+    retired the simplify stage; the shape posture at the stack tip owns
+    module-level shape instead."""
     cfg = cli.load_config()
     ids = [g["id"] for g in cfg["gates"]]
-    assert ids == ["diff-guard", "tests", "judge", "simplify"]
-
-
-def test_simplify_gate_shape():
-    """The simplify gate is a non-required LLM/orchestrator kind whose
-    'failure' mode is a revert (never a pipeline block): it re-runs the
-    verification gates on the simplified diff and, if either goes red, ships
-    the pre-simplify diff with the revert note."""
-    cfg = cli.load_config()
-    gate = next(g for g in cfg["gates"] if g["id"] == "simplify")
-    assert gate["kind"] == "simplify"
-    # required=false: simplify can never fail the pipeline — its failure ships
-    # the pre-simplify diff (documented in issue-loop.command.md §1c-simplify).
-    assert gate["required"] is False
-    # It re-verifies the shrunk diff against the tests gate only; there is
-    # no second judge.
-    assert gate["rerun"] == ["tests"]
-    assert "simplify-reverted" in gate["revert_note"]
-    # The delete-list comes from the ponytail-review skill, which the
-    # orchestrator reads from funloops (packages/devloop/docs/agents/).
-    assert gate["skill"] == "ponytail-review"
+    assert ids == ["diff-guard", "tests", "judge"]
 
 
 def test_committed_hooks_carry_no_ponytail_entries():

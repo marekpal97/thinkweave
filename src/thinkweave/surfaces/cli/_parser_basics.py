@@ -1133,7 +1133,8 @@ def add_admin_subparsers(sub) -> None:
         "record-run",
         help=(
             "Land one devloop run (its emitted trajectory payload JSON) as a "
-            "route: devloop round on the open task carrying its issue ref, "
+            "route: devloop round on the open task carrying its epic ref "
+            "(else its issue ref), "
             "minting one if none; prints the task id."
         ),
     )
