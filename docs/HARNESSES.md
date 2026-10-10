@@ -254,7 +254,7 @@ So a `$wrap` token is a hint the model must act on by reading the file itself â€
 not harness-side expansion the way Claude Code's headless slash resolution
 injects a skill body. `headless_slash=False` on the Codex profile is therefore
 correct. The complete supported command surface now projects from
-`commands/**/*.md` into `skills/` with explicit `thinkweave-*` names. The
+`commands/**/*.md` into `codex/skills/` with explicit `thinkweave-*` names. The
 adapters point back to the canonical command instead of copying its prompt.
 Worker-backed skills read the shared `agents/*.md` contract and pass it in full
 to Codex-native `spawn_agent`; retries and fan-in map to `followup_task` and
@@ -612,7 +612,7 @@ Skill tool â€” and *relative paths inside a skill resolve from the skill's
 directory*.
 
 That last rule is what broke the first attempt: the Codex projections under
-`skills/thinkweave-*/SKILL.md` say "read `../../docs/CODEX-SKILL-PROJECTION.md`",
+`codex/skills/thinkweave-*/SKILL.md` say "read `../../../docs/CODEX-SKILL-PROJECTION.md`",
 which from `~/.pi/agent/skills/thinkweave-wrap/` is nothing. Symlinking the
 Codex bundle into Pi therefore produced 31 skills that each failed on first
 use. The Codex bundle is untouched for Codex; it just must not be what Pi

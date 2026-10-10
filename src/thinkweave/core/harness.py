@@ -217,7 +217,7 @@ class HarnessProfile:
     this harness, so post-install instructions may tell the user to run one.
 
     False for Codex's raw installer route: the full Codex-native bundle lives
-    under ``skills/`` and is discovered through the plugin, while ``weave
+    under ``codex/skills/`` and is discovered through the plugin, while ``weave
     install`` does not export it. Post-install instructions must not claim a
     skill was installed. ``weave install`` printed "3. /onboard" to every harness
     regardless — a next step a Codex user could not take, on the one screen whose
@@ -427,8 +427,8 @@ class HarnessProfile:
     as individual skills when they carry ``name`` + ``description``
     frontmatter (Pi docs/skills.md §Locations). ``weave install`` then links
     every worker-less ``commands/<name>.md`` there by its own name —
-    pointing at the canonical contract, NOT at the Codex ``skills/`` bundle:
-    a Codex projection says "read ../../docs/CODEX-SKILL-PROJECTION.md" and
+    pointing at the canonical contract, NOT at the Codex ``codex/skills/`` bundle:
+    a Codex projection says "read ../../../docs/CODEX-SKILL-PROJECTION.md" and
     resolves that path from the skill's directory, which under
     ``~/.pi/agent/skills`` is nothing (the 2026-09-05 breakage that
     motivated the flag). Worker-backed commands are skipped when
@@ -825,8 +825,8 @@ def pi(home: Path | None = None) -> HarnessProfile:
     Skills: Pi discovers root ``*.md`` files in ``~/.pi/agent/skills`` as
     individual skills (docs/skills.md §Locations) and expands
     ``/skill:<name>`` as a prompt. The installer links the canonical
-    ``commands/*.md`` there directly — the Codex ``skills/`` bundle must
-    NOT be what Pi gets, its relative ``../../docs`` pointer breaks from
+    ``commands/*.md`` there directly — the Codex ``codex/skills/`` bundle must
+    NOT be what Pi gets, its relative ``../../../docs`` pointer breaks from
     the Pi skills dir.
 
     ``$PI_CODING_AGENT_DIR`` (Pi's own override) relocates the agent dir; an

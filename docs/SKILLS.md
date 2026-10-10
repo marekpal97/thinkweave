@@ -48,7 +48,7 @@ Generated from `commands/*.md` frontmatter. Re-run `weave skill list` to regener
 `commands/**/*.md` is the single semantic source for the 27 supported
 interactive workflows. Claude Code consumes those contracts directly as
 `/<name>` (or `/thinkweave:<name>` on the plugin route). Codex discovers the
-generated adapters under `skills/` as `$thinkweave-<name>`; each adapter links
+generated adapters under `codex/skills/` as `$thinkweave-<name>`; each adapter links
 back to its canonical command and translates only tool and invocation
 vocabulary. `thinkweave-recall` is an opt-in, read-only Codex convenience skill
 rather than a wrapper around ordinary retrieval: history and context questions
@@ -61,8 +61,8 @@ they carry `name` + `description` frontmatter (which every command does), so
 `weave install --harness pi` links each worker-less command there by name —
 `~/.pi/agent/skills/wrap.md -> <repo>/commands/wrap.md`, invoked as
 `/skill:wrap` (prompt expansion; Pi has no Skill tool). The Codex bundle under
-`skills/` must **not** be what Pi gets: a Codex projection says "read
-`../../docs/CODEX-SKILL-PROJECTION.md`", and Pi resolves relative paths from
+`codex/skills/` must **not** be what Pi gets: a Codex projection says "read
+`../../../docs/CODEX-SKILL-PROJECTION.md`", and Pi resolves relative paths from
 the skill's own directory, which under `~/.pi/agent/skills` is nothing — the
 installer sweeps any such `thinkweave-*` links it finds. Worker-backed commands
 (`/drain`, `/dream`, `/news`, `/newsletter`, `/podcast`, `/youtube`,

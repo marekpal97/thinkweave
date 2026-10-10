@@ -212,6 +212,42 @@ class TestBuildProjectContext:
         assert "## Available MCP Tools" not in payload
         assert "## Recent Wrapped Sessions" not in payload
 
+    def test_omit_empty_drops_placeholders_keeps_content(
+        self, config: Config, vault: VaultManager, indexer: Indexer
+    ):
+        """omit_empty drops "nothing yet" placeholders but keeps real sections."""
+        vault.create_note(
+            NoteType.DECISION,
+            "Use FTS5",
+            body="Rationale body",
+            project="demo",
+            extra_frontmatter={"status": "accepted", "summary": "FTS5 is fast enough"},
+        )
+        indexer.rebuild(full=True)
+        wanted = ["header", "state", "backlog", "decisions", "probes", "sources"]
+
+        full = build_project_context(config, project="demo", sections=wanted)
+        assert "## State of Play" in full
+        assert "## Open Probes" in full
+
+        trimmed = build_project_context(
+            config, project="demo", sections=wanted, omit_empty=True
+        )
+        assert "## Header" in trimmed
+        assert "Use FTS5" in trimmed
+        for heading in ("## State of Play", "## Backlog", "## Open Probes",
+                        "## Recent Sources"):
+            assert heading not in trimmed, heading
+
+    def test_omit_empty_keeps_index_fault_visible(
+        self, config: Config, vault: VaultManager
+    ):
+        """A missing index is a fault, not an empty section — it stays."""
+        payload = build_project_context(
+            config, project="demo", sections=["decisions"], omit_empty=True
+        )
+        assert "index not built" in payload
+
     def test_honours_token_budget(
         self, config: Config, vault: VaultManager, indexer: Indexer
     ):

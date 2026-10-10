@@ -696,8 +696,8 @@ def _root_file_skill_links() -> list[tuple[Path, Path]]:
     The contracts come from ``skill_projection.iter_command_contracts``, the
     same parser the Codex projector uses, so "worker-backed" means the same
     thing on every harness. Targets are the canonical ``commands/*.md``
-    files themselves — never the Codex ``skills/`` bundle, whose relative
-    ``../../docs`` pointer resolves to nothing from the harness's skills dir.
+    files themselves — never the Codex ``codex/skills/`` bundle, whose relative
+    ``../../../docs`` pointer resolves to nothing from the harness's skills dir.
     A harness with subagents would link everything; none of the current
     root-file-skill rows has them, and a worker-backed contract handed to a
     harness that cannot dispatch it is a skill that fails on first use.
@@ -1135,8 +1135,8 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
     profile = _profile()
     # A root-file-skills row (Pi) has no plugin runtime to hand a checkout to,
     # and discovers `SKILL.md` dirs recursively: the whole-checkout symlink
-    # would re-expose the Codex `skills/thinkweave-*` bundle, whose relative
-    # ../../docs pointers break outside the repo (the breakage that led to the
+    # would re-expose the Codex `codex/skills/thinkweave-*` bundle, whose relative
+    # ../../../docs pointers break outside the repo (the breakage that led to the
     # root-file route). The install command already gives the dev-link
     # property — links straight into this working tree — so refuse and point.
     if profile.root_file_skills:
@@ -1155,8 +1155,8 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
             "runtime and\n"
             "  discovers SKILL.md directories recursively, so linking the whole "
             f"checkout into\n  {_dev_link()} would re-expose the Codex "
-            "`skills/thinkweave-*` bundle, whose\n"
-            "  relative ../../docs links break there.\n"
+            "`codex/skills/thinkweave-*` bundle, whose\n"
+            "  relative ../../../docs links break there.\n"
             f"  Use `weave install{flag}` (root-file skill links + MCP entry, live "
             "against this\n"
             f"  checkout) and `weave hooks install{flag} --scope user`.{existing}",
