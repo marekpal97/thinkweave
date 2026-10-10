@@ -270,10 +270,18 @@ EDGE_FIELD_MAP: dict[str, str] = {
     "builds_on": "builds_on",
     "consumes": "consumes",
     "feedback_for": "feedback_for",
+    "parent": "child_of",
 }
 
 # Reverse map: edge_type -> frontmatter field name
 EDGE_TYPE_TO_FIELD: dict[str, str] = {v: k for k, v in EDGE_FIELD_MAP.items()}
+
+# Per-note lookup row for the edge passes; ``parent`` lets a round's child
+# list defer to the child's own ``parent:`` declaration.
+_LOOKUP_SQL = (
+    "SELECT id, path, title, type, CASE WHEN json_valid(frontmatter) "
+    "THEN json_extract(frontmatter, '$.parent') END AS parent FROM notes"
+)
 
 
 class Indexer:
@@ -969,7 +977,8 @@ class Indexer:
         slug_to_id: dict[str, str] = {}
         id_to_type: dict[str, str] = {}
         id_to_path: dict[str, str] = {}
-        for row in self.db.execute("SELECT id, path, title, type FROM notes"):
+        parent_of: dict[str, str] = {}
+        for row in self.db.execute(_LOOKUP_SQL):
             stem = Path(row["path"]).stem
             slug_to_id[stem] = row["id"]
             slug_to_id[row["title"].lower()] = row["id"]
@@ -984,6 +993,7 @@ class Indexer:
                 slug_to_id[rel.lower()] = row["id"]
             id_to_type[row["id"]] = row["type"]
             id_to_path[row["id"]] = row["path"]
+            parent_of[row["id"]] = str(row["parent"] or "")
 
         # ── 1. Frontmatter edges ─────────────────────────────────────
         for row in self.db.execute("SELECT id, frontmatter, body_text FROM notes"):
@@ -1007,6 +1017,7 @@ class Indexer:
                     if resolved and resolved != note_id:
                         self._insert_edge(note_id, resolved, edge_type, now)
                         edge_count += 1
+            edge_count += self._insert_round_child_edges(note_id, fm, parent_of, now)
 
             # ── 2. Wikilink edges (with type inference) ──────────────
             body = row["body_text"] or ""
@@ -1154,14 +1165,17 @@ class Indexer:
         # Every edge out of a changed note, and the inbound edges derived
         # from it (concept, tag, session-dir pairs, which can land with X as
         # target). An inbound frontmatter or wikilink edge is declared by its
-        # unchanged source and is not re-emitted here, so it stays.
+        # unchanged source and is not re-emitted here, so it stays. A round
+        # child's edge is declared by its work task (the target), so it
+        # follows the target instead.
         for i in range(0, len(changed_list), CHUNK):
             chunk = changed_list[i:i + CHUNK]
             placeholders = ",".join("?" * len(chunk))
             self.db.execute(
-                f"DELETE FROM edges WHERE source IN ({placeholders}) "
+                f"DELETE FROM edges WHERE (source IN ({placeholders}) "
+                f"AND json_extract(metadata, '$.via') IS NOT 'rounds') "
                 f"OR (target IN ({placeholders}) AND json_extract(metadata, '$.via') "
-                f"IN ('concept', 'tag', 'session_dir'))",
+                f"IN ('concept', 'tag', 'session_dir', 'rounds'))",
                 chunk + chunk,
             )
 
@@ -1169,7 +1183,8 @@ class Indexer:
         slug_to_id: dict[str, str] = {}
         id_to_type: dict[str, str] = {}
         id_to_path: dict[str, str] = {}
-        for row in self.db.execute("SELECT id, path, title, type FROM notes"):
+        parent_of: dict[str, str] = {}
+        for row in self.db.execute(_LOOKUP_SQL):
             stem = Path(row["path"]).stem
             slug_to_id[stem] = row["id"]
             slug_to_id[row["title"].lower()] = row["id"]
@@ -1184,6 +1199,7 @@ class Indexer:
                 slug_to_id[rel.lower()] = row["id"]
             id_to_type[row["id"]] = row["type"]
             id_to_path[row["id"]] = row["path"]
+            parent_of[row["id"]] = str(row["parent"] or "")
         all_ids = set(slug_to_id.values())
         total_notes = len(id_to_type)
 
@@ -1221,6 +1237,7 @@ class Indexer:
                     if resolved and resolved != note_id:
                         self._insert_edge(note_id, resolved, edge_type, now)
                         edge_count += 1
+            edge_count += self._insert_round_child_edges(note_id, fm, parent_of, now)
 
             body = row["body_text"] or ""
             for link in extract_wikilink_ids(body):
@@ -1392,6 +1409,28 @@ class Indexer:
                 edge_count += 1
 
         return edge_count
+
+    def _insert_round_child_edges(
+        self, note_id: str, fm: dict, parent_of: dict[str, str], now: str
+    ) -> int:
+        """Emit ``child_of`` from each task a round of ``note_id`` lists as a
+        child, unless the child's own ``parent:`` already declares that edge."""
+        count = 0
+        for rnd in fm.get("rounds") or []:
+            if not isinstance(rnd, dict):
+                continue
+            for child in rnd.get("children") or []:
+                child = str(child)
+                if child == note_id or child not in parent_of or parent_of[child] == note_id:
+                    continue
+                self.db.execute(
+                    "INSERT OR IGNORE INTO edges "
+                    "(source, target, edge_type, metadata, created_at, weight) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (child, note_id, "child_of", json.dumps({"via": "rounds"}), now, 1.0),
+                )
+                count += 1
+        return count
 
     def _insert_edge(
         self,

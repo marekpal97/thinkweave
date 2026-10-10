@@ -34,6 +34,9 @@ class EdgeType(str, Enum):
     # the sealed task record is never mutated).
     CONSUMES = "consumes"
     FEEDBACK_FOR = "feedback_for"
+    # A child task points at its parent, from its own ``parent:`` or from a
+    # round's ``children`` list on the parent.
+    CHILD_OF = "child_of"
 
 
 class DecisionStatus(str, Enum):

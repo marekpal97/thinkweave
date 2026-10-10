@@ -141,7 +141,7 @@ class TestLinkUnlinkMarkdown:
         expected_types = {
             "derived_from", "supersedes", "relates_to",
             "cites", "implements", "builds_on",
-            "consumes", "feedback_for",
+            "consumes", "feedback_for", "child_of",
         }
         assert set(EDGE_TYPE_TO_FIELD.keys()) == expected_types
 
