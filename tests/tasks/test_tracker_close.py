@@ -71,3 +71,16 @@ def test_trajectory_judge_leaves_a_child_on_a_closed_issue_to_its_own_close(cfg)
     closed = tasks.close_child(cfg, child.task_id, session_key="s-1")
     assert closed.task_id == child.task_id
     assert status(cfg, child.task_id) == "closed"
+
+
+def test_trajectory_judge_lists_an_unreadable_task_and_keeps_going(cfg):
+    bad = minted(cfg, "github:o/r#1")
+    good = minted(cfg, "github:o/r#1")
+    VaultManager(config=cfg).update_note(
+        tasks.TaskStore(cfg).get(bad).path,
+        frontmatter_updates={"rounds": [{"route": "devloop", "rounds": []}]},
+    )
+    result = judge_trajectories(cfg, issue_state=issue_state)
+    assert result["closed_tasks"] == [good]
+    assert [e["id"] for e in result["errors"]] == [bad]
+    assert "unknown field 'rounds'" in result["errors"][0]["reason"]

@@ -305,17 +305,18 @@ class TaskStore:
                 or fm.get("status") != "open"
             ):
                 continue
-            task = Task(fm, path)
+            task_id = str(fm.get("id") or path.stem)
             try:
+                task = Task(fm, path)
                 if issue_state(issue.repo, issue.number).lower() != "closed":
                     continue
                 task.close()
                 task.save(vm)
             except (OSError, subprocess.SubprocessError, ValueError) as exc:
                 reason = (getattr(exc, "stderr", "") or str(exc)).strip()
-                errors[task.id] = f"issue {fm['asked']} not checked: {reason}"
+                errors[task_id] = f"issue {fm['asked']} not checked: {reason}"
             else:
-                closed.append(task.id)
+                closed.append(task_id)
         return TrackerClosures(closed, errors)
 
     def mint(
