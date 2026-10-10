@@ -257,6 +257,16 @@ class TaskStore:
                 return Task(fm, path)
         return None
 
+    def for_trajectory(self, note_id: str) -> Task | None:
+        """The task, open or closed, holding the devloop round whose session
+        ref names this trajectory note."""
+        ref = SessionRef.note("devloop", note_id).to_dict()
+        for path in self._filed("tsk-*.md"):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            if any(r.get("session_ref") == ref for r in fm.get("rounds") or []):
+                return Task(fm, path)
+        return None
+
     def close_tracked(self, issue_state=None) -> TrackerClosures:
         """Close every open task whose ``asked`` is a GitHub issue that is now
         closed. ``issue_state(repo, number)`` returns the issue's state; a

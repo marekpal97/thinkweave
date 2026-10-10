@@ -44,12 +44,16 @@ belongs to the downstream learner, not this judge.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from thinkweave.core.config import Config
+from thinkweave.core.schemas import NoteType
 
 # --- Phase-1 verdicts (closed-horizon, at merge/close) ---------------------
 MERGED_CLEAN = "merged-clean"
@@ -107,8 +111,8 @@ def count_human_commits(pr: dict, identities: tuple[str, ...] = DEFAULT_AGENT_ID
 def count_review_feedback(pr: Optional[dict]) -> dict:
     """Count raw human review-feedback signals from pre-fetched PR JSON (issue #71). Pure.
 
-    Over the ``reviews`` array ``gh pr view --json reviews`` emits — each
-    ``{author, authorAssociation, body, state, submittedAt}``:
+    Over the ``reviews`` array ``gh api .../pulls/N/reviews`` emits — each
+    ``{user, body, state, submitted_at, html_url}``:
 
     - ``review_comments`` — reviews carrying a written body (a substantive
       review comment). A bare approval (empty body) or a PR with no reviews
@@ -123,10 +127,9 @@ def count_review_feedback(pr: Optional[dict]) -> dict:
     None pr at the call site means 'could not fetch', which stays DISTINCT from
     'clean PR = 0' (that case leaves the fields absent).
 
-    DEFERRED (documented seam): the finer-grained inline review-*thread* comment
-    count (``gh api .../pulls/N/comments``) and a condensed digest of review
-    bodies — both need a second fetch beyond ``gh pr view --json reviews``.
-    Raw submission-level counts are the #71 acceptance criteria and the
+    The inline review comments (``reviewComments``) are filed as feedback
+    notes by :func:`review_feedback`, not counted here. Raw submission-level
+    counts are the #71 acceptance criteria and the
     right-sized surface; when a deeper count is wanted, extend this function's
     return dict and thread it through :func:`_phase1_extra` / the phase-1 stamp
     — this pure counter is the only place a new signal enters.
@@ -237,6 +240,79 @@ def classify_delayed_outcome(
 
 
 # ---------------------------------------------------------------------------
+# Feedback capture — the PR's human feedback as notes on the task
+# ---------------------------------------------------------------------------
+
+PR_REVIEW = "pr-review"
+POST_MERGE_COMMIT = "post-merge-commit"
+
+
+@dataclass(frozen=True)
+class Feedback:
+    """One piece of human feedback on a PR; its ``ref`` URL is its identity."""
+
+    source: str
+    ref: str
+    files: tuple[str, ...]
+    body: str
+
+    @property
+    def note_id(self) -> str:
+        return "n-" + hashlib.sha1(self.ref.encode("utf-8")).hexdigest()[:8]
+
+    def file(self, vm, task) -> str:
+        """Write this feedback as a note beside ``task``, edged ``feedback_for``
+        it; returns the note id, or ``""`` when the note already exists."""
+        from thinkweave.operations.tasks import _index_now
+
+        if (task.path.parent / f"{self.note_id}.md").exists():
+            return ""
+        path = vm.create_note(
+            NoteType.NOTE,
+            title=self.note_id,
+            body=self.body,
+            project=str(task.frontmatter.get("project", "")),
+            extra_frontmatter={
+                "source": self.source,
+                "ref": self.ref,
+                "files": list(self.files),
+                "feedback_for": [task.id],
+            },
+            output_dir=task.path.parent,
+            note_id=self.note_id,
+        )
+        _index_now(vm, path)
+        return self.note_id
+
+
+def review_feedback(pr: dict) -> list[Feedback]:
+    """Each written review and each review comment on the PR. A review with
+    no body is only the container of its comments, so it files nothing."""
+    reviews = [
+        Feedback(PR_REVIEW, r["html_url"], (), str(r["body"]))
+        for r in pr.get("reviews") or []
+        if str(r.get("body") or "").strip()
+    ]
+    comments = [
+        Feedback(PR_REVIEW, c["html_url"], (c["path"],), str(c.get("body") or ""))
+        for c in pr.get("reviewComments") or []
+    ]
+    return reviews + comments
+
+
+def post_merge_feedback(
+    signals: dict, pr_url: str, identities: tuple[str, ...] = DEFAULT_AGENT_IDENTITIES
+) -> list[Feedback]:
+    """Each post-merge commit touching the PR's files that no agent authored."""
+    repo_url = pr_url.split("/pull/")[0]
+    return [
+        Feedback(POST_MERGE_COMMIT, f"{repo_url}/commit/{c['sha']}", tuple(c["files"]), c["subject"])
+        for c in signals.get("followup_commits") or []
+        if not is_agent_authored(c, identities)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Phase-window arithmetic + prediction_history append idempotency
 # ---------------------------------------------------------------------------
 
@@ -320,9 +396,9 @@ def append_outcome(
 # ---------------------------------------------------------------------------
 
 # gh's `commits` JSON field carries co-authors under `authors`; state/mergedAt
-# drive the phase-1 verdict; mergeCommit.oid seeds phase-2 blame; `reviews`
-# carries the human-feedback join (#71 — state + body per review submission).
-_PR_JSON_FIELDS = "number,state,mergedAt,mergeCommit,commits,reviews"
+# drive the phase-1 verdict; mergeCommit.oid seeds phase-2 blame.
+_PR_JSON_FIELDS = "number,state,mergedAt,mergeCommit,commits"
+_PR_URL = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)")
 
 
 def _run(args: list[str], *, cwd: str | None = None) -> str:
@@ -332,31 +408,42 @@ def _run(args: list[str], *, cwd: str | None = None) -> str:
 
 
 def fetch_pr_json(pr_url: str) -> Optional[dict]:
-    """Fetch PR state + commits via ``gh``. Network seam — returns ``None`` on any error.
+    """Fetch PR state + commits via ``gh pr view``, plus its ``reviews`` and
+    ``reviewComments`` via ``gh api`` (the REST shapes, which carry each
+    one's ``html_url``). Network seam — returns ``None`` on any error.
 
     Kept dead-simple and total so the driver's per-note loop never raises on a
     stale/deleted PR URL; classification is a pure function over what this
     returns.
     """
-    if not pr_url:
+    match = _PR_URL.search(pr_url or "")
+    if not match:
         return None
+    api = f"repos/{match[1]}/pulls/{match[2]}"
     try:
-        out = _run(["gh", "pr", "view", pr_url, "--json", _PR_JSON_FIELDS])
+        data = json.loads(_run(["gh", "pr", "view", pr_url, "--json", _PR_JSON_FIELDS]))
+        data["reviews"] = _gh_api_list(f"{api}/reviews")
+        data["reviewComments"] = _gh_api_list(f"{api}/comments")
     except Exception:
         return None
-    try:
-        data = json.loads(out)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    return data
+
+
+def _gh_api_list(path: str) -> list[dict]:
+    """Every item of a paginated ``gh api`` list endpoint."""
+    out = _run(["gh", "api", "--paginate", path, "--jq", ".[] | tojson"])
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
 def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
     """Fetch phase-2 delayed signals for a merged PR. ``git``/``gh`` seam.
 
-    Returns ``{total_lines, surviving_lines, reverted}`` — the raw inputs to
-    :func:`compute_rework_blame` / :func:`classify_delayed_outcome`. Total on any
-    error so the driver degrades to a ``stable`` verdict rather than raising.
+    Returns ``{total_lines, surviving_lines, reverted, followup_commits}`` —
+    the raw inputs to :func:`compute_rework_blame` /
+    :func:`classify_delayed_outcome`, and each later commit touching the
+    merge's files as ``{sha, subject, authors, files}`` for
+    :func:`post_merge_feedback`. Total on any error so the driver degrades to
+    a ``stable`` verdict rather than raising.
 
     Implemented:
 
@@ -389,7 +476,7 @@ def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
     :func:`classify_delayed_outcome` — the pure classifier is the only place a
     new signal changes the verdict.
     """
-    signals = {"total_lines": 0, "surviving_lines": 0, "reverted": False}
+    signals = {"total_lines": 0, "surviving_lines": 0, "reverted": False, "followup_commits": []}
     merge_oid = (pr.get("mergeCommit") or {}).get("oid") or ""
     number = pr.get("number")
     if not merge_oid:
@@ -446,7 +533,33 @@ def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
         if number and f"#{number}" in subject:
             signals["reverted"] = True
             break
+
+    # follow-up commits ------------------------------------------------------
+    if changed_files:
+        try:
+            followups = _run(
+                ["git", "log", f"{merge_oid}..HEAD", "--no-merges", "--name-only",
+                 f"--format=%x00%H%x1f%s%x1f%an%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)",
+                 "--", *changed_files],
+                cwd=repo_dir,
+            )
+        except Exception:
+            followups = ""
+        signals["followup_commits"] = [_followup(block) for block in followups.split("\0") if block.strip()]
     return signals
+
+
+def _followup(block: str) -> dict:
+    """One ``git log`` block (header line, then its touched files) as a commit record."""
+    header, *files = block.strip("\n").split("\n")
+    sha, subject, name, email, trailers = (header.split("\x1f") + [""] * 5)[:5]
+    co_authors = [{"name": t.strip()} for t in trailers.split("\x1e") if t.strip()]
+    return {
+        "sha": sha,
+        "subject": subject,
+        "authors": [{"name": name, "email": email}, *co_authors],
+        "files": [f for f in files if f.strip()],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -593,13 +706,16 @@ def judge_trajectories(
     signals_fetcher: Callable[..., dict] | None = None,
     issue_state: Callable[[str, str], str] | None = None,
 ) -> dict:
-    """Judge every due trajectory once per phase, then close every open task
-    whose tracker issue has closed. Idempotent; write-with-receipt.
+    """Judge every due trajectory once per phase, file each judged phase's
+    human feedback as notes on the trajectory's task, then close every open
+    task whose tracker issue has closed. Idempotent; write-with-receipt.
 
     ``phase`` ∈ ``{"both", "1", "2"}``. Returns
-    ``{judged: [...], skipped: [...], errors: [...], closed_tasks: [...]}`` —
-    one ``judged`` entry per history append (``{id, phase, outcome}``); a
-    re-run over already-judged trajectories returns empty ``judged``.
+    ``{judged: [...], skipped: [...], errors: [...], feedback: [...],
+    closed_tasks: [...]}`` — one ``judged`` entry per history append (``{id,
+    phase, outcome}``) and one ``feedback`` entry per note written (``{id,
+    task, source}``); a re-run over already-judged trajectories returns
+    empty ``judged`` and ``feedback``.
 
     The ``pr_fetcher`` / ``signals_fetcher`` / ``issue_state`` seams default to
     the real ``gh`` / ``git`` functions; tests inject fixtures so no network /
@@ -623,9 +739,11 @@ def judge_trajectories(
     judged_at = now.isoformat(timespec="seconds")
 
     vm = VaultManager(config=cfg)
+    store = TaskStore(cfg)
     judged: list[dict] = []
     skipped: list[dict] = []
     errors: list[dict] = []
+    filed: list[dict] = []
     seen = 0
 
     for note_id, rel in _candidate_trajectories(cfg):
@@ -642,6 +760,7 @@ def judge_trajectories(
         history = read_history(fm)
         pr_url = fm.get("pr_url", "") or ""
         traj_outcome = fm.get("outcome", "") or ""
+        pending: list[Feedback] = []
 
         # --- Phase 1: at merge/close ---------------------------------------
         if do1 and not has_phase_entry(history, 1):
@@ -684,6 +803,7 @@ def judge_trajectories(
                     errors.append({"id": note_id, "phase": 1, "reason": f"write failed: {e}"})
                 else:
                     judged.append({"id": note_id, "phase": 1, "outcome": label})
+                    pending += review_feedback(pr) if pr else []
                     fm.update(delta)
                     history = read_history(fm)
 
@@ -719,7 +839,21 @@ def judge_trajectories(
                         errors.append({"id": note_id, "phase": 2, "reason": f"write failed: {e}"})
                     else:
                         judged.append({"id": note_id, "phase": 2, "outcome": label})
+                        pending += post_merge_feedback(signals, pr_url, identities)
 
-    tracked = TaskStore(cfg).close_tracked(issue_state)
+        if pending:
+            task = store.for_trajectory(note_id)
+            if task is None:
+                skipped.append({"id": note_id, "reason": "no task holds this trajectory's round; its feedback is not filed"})
+            for item in pending if task else []:
+                try:
+                    feedback_id = item.file(vm, task)
+                except Exception as e:  # noqa: BLE001
+                    errors.append({"id": note_id, "reason": f"feedback {item.ref} not filed: {e}"})
+                else:
+                    if feedback_id:
+                        filed.append({"id": feedback_id, "task": task.id, "source": item.source})
+
+    tracked = store.close_tracked(issue_state)
     errors += [{"id": task_id, "reason": reason} for task_id, reason in tracked.errors.items()]
-    return {"judged": judged, "skipped": skipped, "errors": errors, "closed_tasks": tracked.closed}
+    return {"judged": judged, "skipped": skipped, "errors": errors, "feedback": filed, "closed_tasks": tracked.closed}

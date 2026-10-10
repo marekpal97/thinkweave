@@ -7,8 +7,10 @@ The Python side of the phase-2 ``dream-outcome-worker``. One action:
   (and, for phase-2, ``git`` blame/revert signals), classify deterministically,
   and append a ``prediction_history``-shaped ``{outcome, judged_at, reason,
   phase}`` entry + an ``outcome_label`` frontmatter field. Idempotent: an
-  already-judged phase is never re-appended. It then closes every open task
-  whose tracker issue has closed, listed under ``closed_tasks``.
+  already-judged phase is never re-appended. Each judged phase files the PR's
+  human feedback as notes edged ``feedback_for`` the trajectory's task, listed
+  under ``feedback``. It then closes every open task whose tracker issue has
+  closed, listed under ``closed_tasks``.
 
 All the classification/idempotency/window logic lives in
 ``operations/trajectory_outcome`` (pure, unit-tested); the ``gh``/``git`` calls
@@ -53,12 +55,15 @@ def _cmd_judge(args: argparse.Namespace) -> None:
     skipped = result.get("skipped", [])
     errors = result.get("errors", [])
     closed_tasks = result.get("closed_tasks", [])
+    feedback = result.get("feedback", [])
     print(
         f"trajectory judge · {len(judged)} judged · {len(skipped)} skipped · "
-        f"{len(closed_tasks)} tasks closed · {len(errors)} errors"
+        f"{len(feedback)} feedback notes · {len(closed_tasks)} tasks closed · {len(errors)} errors"
     )
     for j in judged:
         print(f"  {j['id']} · phase {j['phase']} → {j['outcome']}")
+    for f in feedback:
+        print(f"  {f['id']} · {f['source']} → feedback_for {f['task']}")
     for task_id in closed_tasks:
         print(f"  {task_id} · tracker issue closed → task closed")
     for e in errors:

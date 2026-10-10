@@ -73,13 +73,14 @@ def _merged_pr(commits: list[dict], merged_at: str = "2026-07-03T10:00:00Z") -> 
 
 
 def _review(state: str, body: str = "", login: str = "marekpal97") -> dict:
-    """A review submission as ``gh pr view --json reviews`` emits it."""
+    """A review submission as ``gh api .../pulls/N/reviews`` emits it."""
     return {
-        "author": {"login": login},
-        "authorAssociation": "OWNER",
+        "user": {"login": login},
+        "author_association": "OWNER",
         "body": body,
         "state": state,
-        "submittedAt": "2026-07-02T09:00:00Z",
+        "submitted_at": "2026-07-02T09:00:00Z",
+        "html_url": f"https://github.com/o/r/pull/1#pullrequestreview-{state}-{body}",
     }
 
 
