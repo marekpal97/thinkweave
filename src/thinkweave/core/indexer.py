@@ -18,6 +18,7 @@ from pathlib import Path
 
 from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config, load_config
+from thinkweave.core.schemas import LINKABLE_EDGE_TYPES
 from thinkweave.synthesis.landing import (
     LANDING_FILENAMES,
     landing_filename_set,
@@ -273,8 +274,10 @@ EDGE_FIELD_MAP: dict[str, str] = {
     "parent": "child_of",
 }
 
-# Reverse map: edge_type -> frontmatter field name
-EDGE_TYPE_TO_FIELD: dict[str, str] = {v: k for k, v in EDGE_FIELD_MAP.items()}
+# Reverse map for link/unlink: edge_type -> frontmatter field name
+EDGE_TYPE_TO_FIELD: dict[str, str] = {
+    v: k for k, v in EDGE_FIELD_MAP.items() if v in LINKABLE_EDGE_TYPES
+}
 
 # Per-note lookup row for the edge passes; ``parent`` lets a round's child
 # list defer to the child's own ``parent:`` declaration.

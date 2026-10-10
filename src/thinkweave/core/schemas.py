@@ -46,6 +46,13 @@ class DecisionStatus(str, Enum):
     SUPERSEDED = "superseded"
 
 
+# Edge types ``link``/``unlink`` may write. ``child_of`` is projected from a
+# task's scalar ``parent:``, which only the task's own attach step sets.
+LINKABLE_EDGE_TYPES: tuple[str, ...] = tuple(
+    e.value for e in EdgeType if e is not EdgeType.CHILD_OF
+)
+
+
 class DecisionOutcome(str, Enum):
     KEPT = "kept"
     SUPERSEDED = "superseded"

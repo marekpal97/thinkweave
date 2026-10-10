@@ -1410,9 +1410,9 @@ class TestTaskChildOfEdges:
                 rounds=[{"route": "loop", "children": ["tsk-00000002", "tsk-00000003"]}],
             ),
             "named": self._write_task(
-                vault, "tsk-00000002", grain="dispatch", parent=self.WORK
+                vault, "tsk-00000002", grain="per-dispatch", parent=self.WORK
             ),
-            "listed": self._write_task(vault, "tsk-00000003", grain="dispatch"),
+            "listed": self._write_task(vault, "tsk-00000003", grain="per-dispatch"),
         }
 
     def test_parent_and_round_children_become_one_edge_each(
