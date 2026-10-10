@@ -186,17 +186,16 @@ class TestPiRow:
         assert p.user_settings == agent / "settings.json"
         assert p.packages_root == agent / "npm" / "node_modules"
 
-    def test_mcp_client_is_the_adapter_extension(self, tmp_path: Path):
+    def test_mcp_uses_native_pi_mcp_exposure(self, tmp_path: Path):
         p = _build("pi", tmp_path)
-        assert p.mcp_client_package == "pi-mcp-adapter"
-        assert p.mcp_client_install_cmd == "pi install npm:pi-mcp-adapter"
-        # Adapter-only keys (types.ts ServerEntry): bare `weave_*` names need
-        # directTools + toolPrefix none; eager so the first retrieval does
-        # not pay the server's cold start.
+        # Pi ≥ 1.0 ships native MCP; no extension package, `exposure: direct`
+        # so the model sees all 17 tools like built-ins (the `codemode`
+        # default hides them — docs/mcp.md §Control tool exposure).
+        assert p.mcp_client_package == ""
+        assert p.mcp_client_install_cmd == ""
         assert p.mcp_entry_extras == {
-            "lifecycle": "eager",
-            "directTools": True,
-            "toolPrefix": "none",
+            "exposure": "direct",
+            "description": "Thinkweave vault memory: search, create, read, link, extract.",
         }
 
     def test_skills_are_root_file_links(self, tmp_path: Path):
@@ -208,7 +207,8 @@ class TestPiRow:
         body = _build("pi", tmp_path).instructions_block_body
         assert "NEVER call `weave_extract`" in body
         assert "/skill:wrap" in body
-        assert "pi-mcp-adapter" in body
+        assert "pi-mcp-adapter" not in body
+        assert "native MCP client" in body
         assert "never crawl the filesystem" in body
         assert "{weave} add" in body and "{weave} search" in body
 
@@ -602,18 +602,15 @@ class TestMcpInstallSurface:
             # env omitted (format-level trims, still the split shape).
             assert entry == {"command": "/uv", "args": uv_args}
         elif profile.id == "pi":
-            # The standard split shape pi-mcp-adapter reads from mcp.json
-            # (its isServerEntry accepts any record, so `type` is harmless)
-            # plus the three adapter-only keys that expose bare `weave_*`
-            # tools eagerly (types.ts ServerEntry, 2.32.1).
+            # Pi ≥ 1.0 native MCP (docs/mcp.md): standard split shape Pi
+            # reads from mcp.json, plus `exposure: direct` + `description`.
             assert entry == {
                 "type": "stdio",
                 "command": "/uv",
                 "args": uv_args,
                 "env": {},
-                "lifecycle": "eager",
-                "directTools": True,
-                "toolPrefix": "none",
+                "exposure": "direct",
+                "description": "Thinkweave vault memory: search, create, read, link, extract.",
             }
         else:  # claude-code — the authored split shape.
             assert entry == {

@@ -240,11 +240,43 @@ def handle_create(cfg: Config, args: dict):
 
     from thinkweave.operations.notes import create_note
 
-    note_type = NoteType(args["type"])
+    # Validate the required surface BEFORE touching NoteType()/create_note.
+    # A model that omits `type` or `title` (the JSON Schema marks them
+    # required, but not every MCP transport enforces it — a Pi-native
+    # weave_create(body=...) reached this handler and hit a raw KeyError in
+    # NoteType(args["type"]), which the server swallowed into an EMPTY tool
+    # result: the model got no guidance and believed the note was minted.
+    # Return an explicit TextContent error so the model can self-correct.
+    raw_type = args.get("type")
+    raw_title = args.get("title")
+    valid_types = [t.value for t in NoteType]
+    problems: list[str] = []
+    if not isinstance(raw_type, str) or not raw_type.strip():
+        problems.append(
+            f"missing required 'type' — one of {valid_types}"
+        )
+    elif raw_type.strip() not in valid_types:
+        problems.append(f"invalid 'type' {raw_type!r} — one of {valid_types}")
+    if not isinstance(raw_title, str) or not raw_title.strip():
+        problems.append("missing required 'title' — a non-empty string")
+    if problems:
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    "weave_create rejected: " + "; ".join(problems) + ". "
+                    "No note was created. Received keys: "
+                    + ", ".join(sorted(args))
+                    + "."
+                ),
+            )
+        ]
+
+    note_type = NoteType(raw_type.strip())
     result = create_note(
         cfg,
         note_type=note_type,
-        title=args["title"],
+        title=raw_title.strip(),
         body=args.get("body", ""),
         project=args.get("project", ""),
         tags=args.get("tags"),

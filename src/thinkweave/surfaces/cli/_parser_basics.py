@@ -623,6 +623,15 @@ def add_admin_subparsers(sub) -> None:
         help="Skip the orphan-prune step",
     )
     p_wrap_finalize.add_argument(
+        "--allow-empty", action="store_true",
+        help=(
+            "Downgrade the silent-failure rail to a warning. By default, a "
+            "session that changed files but landed zero insights/decisions "
+            "exits non-zero (a broken /wrap). Pass this only when the session "
+            "genuinely had nothing durable to capture."
+        ),
+    )
+    p_wrap_finalize.add_argument(
         "--verdicts", default="",
         help=(
             "JSON list of prompt verdicts composed by the wrap LLM: "

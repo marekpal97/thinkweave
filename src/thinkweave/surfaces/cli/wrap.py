@@ -75,6 +75,7 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         prune=not args.no_prune,
         verdicts=verdicts,
         tasks=tasks,
+        allow_empty=getattr(args, "allow_empty", False),
     )
 
     if args.json:
@@ -102,6 +103,21 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
     else:
         print("  prune:   no orphans")
     print(f"  index:   {result.indexed} indexed, {result.removed} removed, {result.edges} edges")
+    if result.work_evidence and result.derived_landed == 0:
+        # Loud, unmissable banner — the silent-failure rail (#201 follow-up).
+        note = "" if getattr(args, "allow_empty", False) else "  (exit 1)"
+        print(
+            "  ⚠⚠⚠ WRAP LOOKS BROKEN: the session changed files but no "
+            f"insights/decisions/todos landed{note}"
+        )
+        print(
+            "        → weave_extract most likely skipped on an "
+            "already-processed no-op instead of re-running with force=true."
+        )
+        print(
+            "        → Re-extract with force=true, or pass --allow-empty if "
+            "there was genuinely nothing to capture."
+        )
     if result.decisions_judged:
         verdicts = ", ".join(f"{v}×{n}" for v, n in sorted(result.verdicts.items()))
         print(f"  judge:   {result.decisions_judged} decision(s) — {verdicts}")

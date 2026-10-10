@@ -174,8 +174,8 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     shaped = mcp_config.canonical(
         _mcp_config(), entry, shape=_profile().mcp_entry_shape
     )
-    # Client-specific options ride beside the launch fields (pi-mcp-adapter's
-    # lifecycle/directTools/toolPrefix). Merged after shaping so the shape
+    # Client-specific options ride beside the launch fields (Pi native MCP's
+    # `exposure`/`description`). Merged after shaping so the shape
     # dispatch stays about the launch body only; the doctor's fingerprint
     # ignores these keys (`mcp_doctor._key` reads command + args).
     return {**shaped, **_profile().mcp_entry_extras}
@@ -1032,6 +1032,7 @@ def _print_next_steps() -> None:
     if profile.mcp_client_package:
         # No built-in MCP client: the registration just written is read by
         # an extension the user has to install first, or nothing spawns.
+        # No shipped profile sets this today (Pi ≥ 1.0 ships native MCP).
         step += 1
         print(
             f"  {step}. {profile.mcp_client_install_cmd}   # MCP client "

@@ -282,6 +282,32 @@ class TestExtractFormatReport:
         assert "--project" not in report
 
 
+    def test_skip_reason_is_actionable_not_terse(
+        self, config: Config, vault: VaultManager
+    ):
+        """Rail A (2026-10-10). The old terse 'Use force=true to re-extract'
+        read as a risky escape hatch, and a hesitant model skipped the whole
+        extraction (silently). The skip reason must now state that force=true
+        is the NORMAL /wrap catch-up path."""
+        _index(config)
+        sid = "sess-rail-a"
+        first = extract_session(
+            config, session_id=sid, project="t",
+            summary="seed", insights=[], decisions=[],
+        )
+        assert first.skipped_reason == ""  # first pass marks processed
+        second = extract_session(
+            config, session_id=sid, project="t",
+            summary="redo", decisions=[],
+            insights=[{"title": "x", "body": "y",
+                        "concepts": ["mcp", "harness"]}],
+        )
+        assert second.skipped_reason
+        assert "force=true" in second.skipped_reason
+        assert "CATCH-UP" in second.skipped_reason.upper()
+        assert "does not duplicate" in second.skipped_reason
+
+
 class TestResolvesExistingNoteBySourceSession:
     """A raw harness UUID must land on the note the hooks already stamped.
 
