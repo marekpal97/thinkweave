@@ -829,7 +829,7 @@ class TestLedgerMigration:
         from thinkweave.operations.migrations import migrate_task_notes_to_ledger
 
         self.seed_existing(cfg)
-        assert migrate_task_notes_to_ledger(cfg) == 4
+        assert migrate_task_notes_to_ledger(cfg).rewritten == 4
         notes = task_notes(cfg)
         for fm in notes.values():
             assert validate_task_note(fm) == []
@@ -838,7 +838,7 @@ class TestLedgerMigration:
         assert "route" not in notes["tsk-9b2d4e6f"]["rounds"][0]  # batch grain
         assert "outcome" not in notes["tsk-0dd0dd00"]  # no writer, so no field
         assert len(round_lines(task_body(cfg, "tsk-0dd0dd00"))) == 1
-        assert migrate_task_notes_to_ledger(cfg) == 0  # idempotent
+        assert migrate_task_notes_to_ledger(cfg).rewritten == 0  # idempotent
 
     def test_a_note_split_by_a_multiline_asked_is_rejoined(self, cfg: Config):
         from thinkweave.operations.migrations import migrate_task_notes_to_ledger
@@ -849,7 +849,7 @@ class TestLedgerMigration:
         note.write_text(
             (FIXTURES / "split-asked.md").read_text(encoding="utf-8"), encoding="utf-8"
         )
-        assert migrate_task_notes_to_ledger(cfg) == 1
+        assert migrate_task_notes_to_ledger(cfg).rewritten == 1
         fm = task_notes(cfg)["tsk-7a0710e0"]
         assert validate_task_note(fm) == []
         assert fm["asked"] == (
@@ -860,4 +860,69 @@ class TestLedgerMigration:
             "- run them with uv run pytest -q\n"
             "Report back the test names and C:\\sandbox\\tests\\"
         )
-        assert migrate_task_notes_to_ledger(cfg) == 0
+        assert migrate_task_notes_to_ledger(cfg).rewritten == 0
+
+
+class TestRawRefMigration:
+    """A task stored under a raw ``owner/repo#N`` folds to its ref; tasks the
+    fold makes share one ``asked`` merge when at most one is open."""
+
+    RAW = "o/r#77"
+    REF = "github:o/r#77"
+
+    def seed(self, cfg: Config, task_id: str, *, asked: str, status: str, date: str,
+             rounds: list[dict] | None = None, parent: str = ""):
+        seed_stub(cfg, task_id, grain="per-dispatch" if parent else "work", parent=parent)
+        updates = {"status": status, "date": date, "rounds": rounds or []}
+        if asked:
+            updates["asked"] = asked
+        VaultManager(config=cfg).update_note(
+            note_path(cfg, task_id), frontmatter_updates=updates
+        )
+
+    def session_round(self, value: str) -> dict:
+        return {
+            "route": "session",
+            "session_ref": {"harness": "claude-code", "kind": "session_id", "value": value},
+        }
+
+    def migrate(self, cfg: Config):
+        from thinkweave.operations.migrations import migrate_task_notes_to_ledger
+
+        return migrate_task_notes_to_ledger(cfg)
+
+    def test_a_wrap_on_the_raw_ref_continues_the_migrated_open_task(self, cfg: Config):
+        self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01")
+        self.migrate(cfg)
+        decl = {"declared": [{"title": "more", "asked": self.RAW, "round": {}}]}
+        result = reconcile(cfg, decl)
+        assert result.minted == [] and result.appended == ["tsk-0a0a0a0a"]
+        assert task_notes(cfg)["tsk-0a0a0a0a"]["asked"] == self.REF
+
+    def test_a_raw_and_a_folded_task_on_one_ref_merge_into_the_open_one(self, cfg: Config):
+        self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01",
+                  rounds=[self.session_round("s-1")])
+        self.seed(cfg, "tsk-0b0b0b0b", asked=self.REF, status="closed", date="2026-10-03",
+                  rounds=[self.session_round("s-2")])
+        self.seed(cfg, "tsk-0c0c0c0c", asked="", status="closed", date="2026-10-03",
+                  parent="tsk-0b0b0b0b")
+        report = self.migrate(cfg)
+        (shared,) = report.shared
+        assert shared.asked == self.REF and shared.kept == "tsk-0a0a0a0a"
+        assert set(shared.task_ids) == {"tsk-0a0a0a0a", "tsk-0b0b0b0b"}
+        notes = task_notes(cfg)
+        assert "tsk-0b0b0b0b" not in notes
+        kept = notes["tsk-0a0a0a0a"]
+        assert validate_task_note(kept) == []
+        assert kept["asked"] == self.REF and kept["status"] == "open"
+        assert [r["session_ref"]["value"] for r in kept["rounds"]] == ["s-1", "s-2"]
+        assert "tsk-0b0b0b0b" in kept["aliases"]
+        assert notes["tsk-0c0c0c0c"]["parent"] == "tsk-0a0a0a0a"
+        assert self.migrate(cfg).shared == ()
+
+    def test_two_open_tasks_on_one_ref_are_reported_not_merged(self, cfg: Config):
+        self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01")
+        self.seed(cfg, "tsk-0b0b0b0b", asked=self.REF, status="open", date="2026-10-03")
+        (shared,) = self.migrate(cfg).shared
+        assert shared.kept == ""
+        assert set(task_notes(cfg)) == {"tsk-0a0a0a0a", "tsk-0b0b0b0b"}

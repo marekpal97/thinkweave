@@ -228,7 +228,13 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             flipped = migrate_dormant_themes_to_resolved(cfg.vault_root)
             print(f"migrate_dormant_themes_to_resolved: {flipped} theme(s) flipped")
             ledgered = migrate_task_notes_to_ledger(cfg)
-            print(f"migrate_task_notes_to_ledger: {ledgered} task note(s) rewritten")
+            print(f"migrate_task_notes_to_ledger: {ledgered.rewritten} task note(s) rewritten")
+            for shared in ledgered.shared:
+                verdict = (
+                    f"merged into {shared.kept}" if shared.kept
+                    else "not merged: more than one is open"
+                )
+                print(f"  {shared.asked} keys {', '.join(shared.task_ids)}: {verdict}")
 
         include_isolation = bool(getattr(args, "isolation", False))
         report = doctor_report(cfg, include_isolation=include_isolation)

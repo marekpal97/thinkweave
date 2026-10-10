@@ -148,6 +148,17 @@ class Task:
         child.frontmatter["parent"] = self.id
         return True
 
+    def absorb(self, other: Task) -> None:
+        """Take ``other``'s rounds (the earlier-dated task's first), its
+        consumed decisions, and its id as an alias: one unit of work that
+        was keyed twice."""
+        first, last = sorted((self, other), key=lambda t: str(t.frontmatter.get("date", "")))
+        self.rounds = first.rounds + last.rounds
+        for key, extra in (("consumes", other.frontmatter.get("consumes")), ("aliases", [other.id])):
+            merged = [*(self.frontmatter.get(key) or []), *(extra or [])]
+            if merged:
+                self.frontmatter[key] = list(dict.fromkeys(merged))
+
     def flag_orphan(self) -> bool:
         """Flag an open dispatch whose close the register lacks; False when
         nothing changed. Work-grain tasks stay open by design."""
@@ -841,7 +852,8 @@ def record_run(
     cfg, payload: object, *, project: str, trajectory: str = "", session_key: str = ""
 ) -> RunLanded:
     """Land one devloop run as a ``route: devloop`` round on the open task
-    its epic ref (else its issue ref) resolves to, minting a work-grain
+    its epic ref resolves to — the payload's, else the issue's sub-issue
+    parent, else the issue ref itself — minting a work-grain
     task when none is open; a re-record of the same trajectory replaces its
     round. A run never closes its task, and nothing closes it when its PR
     merges. With no ``session_key`` no register row is written: no session
@@ -851,6 +863,8 @@ def record_run(
     warnings: list[str] = []
     asked = _tracker_ref(devloop_ask(payload), current_repo(), warnings)
     assert isinstance(payload, dict)
+    if not payload["frontmatter"].get("epic_url"):
+        asked = _epic_ref(asked, warnings)
     store = TaskStore(cfg)
     task = store.open_by_ref(asked) or store.mint(
         "work", str(payload.get("title", "")), project, asked=asked, session_key=session_key

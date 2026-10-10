@@ -2,12 +2,15 @@
 
 Migrations are intentionally simple and idempotent — re-running one is
 always safe. Each function takes a ``vault_root`` (or full ``Config``)
-and returns a count of records affected. Wire-up to the CLI lives in
-``weave doctor --migrate`` (Phase 1) and is invoked manually after upgrade.
+and returns a count of records affected, or a report that carries one.
+Wire-up to the CLI lives in ``weave doctor --migrate`` (Phase 1) and is
+invoked manually after upgrade.
 """
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from thinkweave.core._utils import as_list
@@ -21,6 +24,8 @@ from thinkweave.core.vault import (
 from thinkweave.acquisition.sources import load_user_config
 from thinkweave.acquisition.sources.queue import Queue
 from thinkweave.acquisition.sources.registry import normalize
+
+log = logging.getLogger(__name__)
 
 
 def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
@@ -50,15 +55,35 @@ def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
     return flipped
 
 
-def migrate_task_notes_to_ledger(config: Config) -> int:
+@dataclass(frozen=True)
+class SharedAsk:
+    """Work-grain tasks that share one ``asked``; ``kept`` is the task the
+    others merged into, ``""`` when more than one is open."""
+
+    asked: str
+    task_ids: tuple[str, ...]
+    kept: str = ""
+
+
+@dataclass(frozen=True)
+class LedgerMigration:
+    """What :func:`migrate_task_notes_to_ledger` changed."""
+
+    rewritten: int
+    shared: tuple[SharedAsk, ...] = ()
+
+
+def migrate_task_notes_to_ledger(config: Config) -> LedgerMigration:
     """Bring ``kind: task`` notes to the ledger shape.
 
     Work-grain rounds without a ``route`` gain one (``devloop`` when the
     round nests a devloop trace, else ``session``), ``asked`` takes its
     normalized tracker ref, the unwritten ``outcome`` field goes, and the
     body is re-rendered from the rounds. A quoted value an older writer
-    split across raw lines is rejoined first. Idempotent. Returns the count
-    of notes rewritten.
+    split across raw lines is rejoined first. Work-grain tasks that share
+    one ``asked`` are reported, and merged into the open one (else the
+    earliest) when at most one is open. Idempotent. Returns the count of
+    notes rewritten or merged away, and every shared ``asked``.
     """
     from dataclasses import replace
 
@@ -67,10 +92,11 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
 
     repo = current_repo()
     vm = VaultManager(config)
-    changed = 0
+    before: dict[Path, str] = {}
+    loaded: list[Task] = []
     for path in config.vault_root.rglob("tsk-*.md"):
-        before = path.read_text(encoding="utf-8")
-        fm, _ = parse_frontmatter(_rejoin_split_scalars(before))
+        before[path] = path.read_text(encoding="utf-8")
+        fm, _ = parse_frontmatter(_rejoin_split_scalars(before[path]))
         if fm.get("kind") != "task":
             continue
         fm.pop("outcome", None)
@@ -83,8 +109,62 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
         if fm.get("asked"):
             task.frontmatter["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
         task.save(vm)
-        changed += path.read_text(encoding="utf-8") != before
-    return changed
+        loaded.append(task)
+    shared = tuple(_merge_shared_asks(vm, loaded))
+    rewritten = sum(
+        not path.exists() or path.read_text(encoding="utf-8") != text
+        for path, text in before.items()
+    )
+    return LedgerMigration(rewritten, shared)
+
+
+def _merge_shared_asks(vm: VaultManager, tasks: list) -> list[SharedAsk]:
+    """Merge each group of work-grain tasks sharing one ``asked`` into its
+    open task, else its earliest, when at most one is open: the kept task
+    absorbs the rest, their children re-parent onto it, their notes go."""
+    by_ask: dict[str, list] = {}
+    for task in tasks:
+        if task.grain == "work" and task.frontmatter.get("asked"):
+            by_ask.setdefault(str(task.frontmatter["asked"]), []).append(task)
+    reports: list[SharedAsk] = []
+    for asked, group in by_ask.items():
+        if len(group) < 2:
+            continue
+        ids = tuple(t.id for t in group)
+        live = [t for t in group if not t.closed]
+        if len(live) > 1:
+            reports.append(SharedAsk(asked, ids))
+            continue
+        kept = live[0] if live else min(group, key=lambda t: str(t.frontmatter.get("date", "")))
+        for other in group:
+            if other is kept:
+                continue
+            kept.absorb(other)
+            for child in tasks:
+                if child.frontmatter.get("parent") == other.id:
+                    child.frontmatter["parent"] = kept.id
+                    child.save(vm)
+            other.path.unlink()
+            _unindex(vm, other.path)
+        kept.save(vm)
+        reports.append(SharedAsk(asked, ids, kept.id))
+    return reports
+
+
+def _unindex(vm: VaultManager, path: Path) -> None:
+    """Drop a deleted note's index row; a failure leaves it to the next
+    ``weave index`` pass, and is logged."""
+    try:
+        from thinkweave.core.indexer import Indexer
+
+        idx = Indexer(config=vm.config)
+        try:
+            idx.index_paths([path])
+        finally:
+            idx.close()
+    except Exception:
+        log.warning("merged task note %s not unindexed; the next weave index pass will",
+                    path, exc_info=True)
 
 
 def _rejoin_split_scalars(text: str) -> str:

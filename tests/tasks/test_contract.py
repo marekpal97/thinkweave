@@ -244,6 +244,7 @@ def test_child_task_outputs_carry_no_role():
         ("#7", "github:o/r#7"),
         ("https://github.com/a/b/issues/12", "github:a/b#12"),
         ("github:a/b#12", "github:a/b#12"),
+        ("a/b#12", "github:a/b#12"),
         ("jira:ENG-42", "jira:ENG-42"),
         ("audit the clusters", "audit the clusters"),
     ],

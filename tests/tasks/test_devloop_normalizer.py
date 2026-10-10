@@ -256,6 +256,36 @@ class TestLedgerRoute:
         assert validate_task_note(fm) == []
         assert [r.get("route") for r in fm["rounds"]] == ["devloop", "session"]
 
+    def test_a_run_without_an_epic_url_lands_on_its_epics_task(self, cfg, monkeypatch):
+        epic = "github:marekpal97/funloops#89"
+        parents = {("marekpal97/thinkweave", "217"): epic}
+        monkeypatch.setattr(
+            tasks, "_gh_parent", lambda repo, number: parents.get((repo, number), "")
+        )
+        decl = {"declared": [{"title": "epic", "asked": epic, "round": {}}]}
+        (epic_task,) = tasks.apply_declaration(
+            cfg, decl, session_key="s-9", project="t",
+            streams=[buffer_path(cfg.weave_dir, "s-9")],
+        ).minted
+        run = payload("devloop-run-rich.json")
+        run["frontmatter"]["epic_url"] = ""
+        landed = tasks.record_run(cfg, run, project="t")
+        assert landed.task_id == epic_task and landed.warnings == ()
+
+    def test_a_failed_epic_lookup_is_announced(self, cfg, monkeypatch):
+        import subprocess
+
+        def unreachable(repo, number):
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="gh: offline")
+
+        monkeypatch.setattr(tasks, "_gh_parent", unreachable)
+        run = payload("devloop-run-rich.json")
+        run["frontmatter"]["epic_url"] = ""
+        landed = tasks.record_run(cfg, run, project="t")
+        assert note_fm(cfg, landed.task_id)["asked"] == "github:marekpal97/thinkweave#217"
+        (warning,) = landed.warnings
+        assert "gh: offline" in warning
+
     def test_rerecording_a_run_replaces_its_round(self, cfg):
         args = (cfg, payload("devloop-run-rich.json"))
         first = tasks.record_run(*args, project="t", trajectory="n-7a7a7a7a")
