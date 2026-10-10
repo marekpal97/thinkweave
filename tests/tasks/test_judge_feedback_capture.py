@@ -10,7 +10,7 @@ from thinkweave.core.schemas import NoteType
 from thinkweave.core.task_contract import Round, SessionRef
 from thinkweave.core.vault import VaultManager, parse_frontmatter
 from thinkweave.operations import tasks
-from thinkweave.operations.trajectory_outcome import judge_trajectories
+from thinkweave.operations.trajectory_outcome import FollowupCommit, judge_trajectories
 
 PR_URL = "https://github.com/o/r/pull/7"
 NOW = datetime(2026, 10, 10, tzinfo=timezone.utc)
@@ -41,10 +41,8 @@ SIGNALS = {
     "surviving_lines": 10,
     "reverted": False,
     "followup_commits": [
-        {"sha": "h" * 40, "subject": "Rewrite the parser", "authors": [HUMAN],
-         "files": ["src/pkg/a.py", "src/pkg/b.py"]},
-        {"sha": "c" * 40, "subject": "Agent touch-up", "authors": [HUMAN, AGENT],
-         "files": ["src/pkg/a.py"]},
+        FollowupCommit("h" * 40, "Rewrite the parser", (HUMAN,), ("src/pkg/a.py", "src/pkg/b.py")),
+        FollowupCommit("c" * 40, "Agent touch-up", (HUMAN, AGENT), ("src/pkg/a.py",)),
     ],
 }
 
@@ -134,3 +132,18 @@ def test_second_judge_run_writes_no_new_note(cfg):
     assert [j["phase"] for j in rejudged["judged"]] == [1, 2]
     assert rejudged["feedback"] == []
     assert feedback_notes(cfg) == first
+
+
+def test_failed_followup_fetch_leaves_phase_two_for_the_next_run(cfg):
+    setup(cfg)
+
+    def failing(pr):
+        raise RuntimeError("git log failed")
+
+    result = judge_trajectories(
+        cfg, now=NOW, pr_fetcher=lambda url: PR, signals_fetcher=failing,
+        issue_state=lambda repo, number: "open",
+    )
+    assert [j["phase"] for j in result["judged"]] == [1]
+    assert "git log failed" in result["errors"][0]["reason"]
+    assert [f["source"] for f in judge(cfg)["feedback"]] == ["post-merge-commit"]

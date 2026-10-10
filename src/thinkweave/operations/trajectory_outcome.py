@@ -129,8 +129,7 @@ def count_review_feedback(pr: Optional[dict]) -> dict:
 
     The inline review comments (``reviewComments``) are filed as feedback
     notes by :func:`review_feedback`, not counted here. Raw submission-level
-    counts are the #71 acceptance criteria and the
-    right-sized surface; when a deeper count is wanted, extend this function's
+    counts are the right-sized surface; when a deeper count is wanted, extend this function's
     return dict and thread it through :func:`_phase1_extra` / the phase-1 stamp
     — this pure counter is the only place a new signal enters.
     """
@@ -300,15 +299,35 @@ def review_feedback(pr: dict) -> list[Feedback]:
     return reviews + comments
 
 
+@dataclass(frozen=True)
+class FollowupCommit:
+    """A commit after the merge that touches the PR's files; ``authors`` are
+    ``{name, email}`` dicts, co-authors included."""
+
+    sha: str
+    subject: str
+    authors: tuple[dict, ...]
+    files: tuple[str, ...]
+
+    @classmethod
+    def from_log(cls, block: str) -> FollowupCommit:
+        """One ``git log`` block: the header line, then the files it touched."""
+        header, *files = block.strip("\n").split("\n")
+        sha, subject, name, email, trailers = (header.split("\x1f") + [""] * 5)[:5]
+        co_authors = [{"name": t.strip()} for t in trailers.split("\x1e") if t.strip()]
+        return cls(sha, subject, ({"name": name, "email": email}, *co_authors),
+                   tuple(f for f in files if f.strip()))
+
+
 def post_merge_feedback(
     signals: dict, pr_url: str, identities: tuple[str, ...] = DEFAULT_AGENT_IDENTITIES
 ) -> list[Feedback]:
     """Each post-merge commit touching the PR's files that no agent authored."""
     repo_url = pr_url.split("/pull/")[0]
     return [
-        Feedback(POST_MERGE_COMMIT, f"{repo_url}/commit/{c['sha']}", tuple(c["files"]), c["subject"])
+        Feedback(POST_MERGE_COMMIT, f"{repo_url}/commit/{c.sha}", c.files, c.subject)
         for c in signals.get("followup_commits") or []
-        if not is_agent_authored(c, identities)
+        if not any(_identity_match(a, identities) for a in c.authors)
     ]
 
 
@@ -441,9 +460,9 @@ def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
     Returns ``{total_lines, surviving_lines, reverted, followup_commits}`` —
     the raw inputs to :func:`compute_rework_blame` /
     :func:`classify_delayed_outcome`, and each later commit touching the
-    merge's files as ``{sha, subject, authors, files}`` for
-    :func:`post_merge_feedback`. Total on any error so the driver degrades to
-    a ``stable`` verdict rather than raising.
+    merge's files as a :class:`FollowupCommit` for :func:`post_merge_feedback`.
+    A failed blame or revert lookup degrades to zeros; a failed follow-up
+    log raises, so the phase stays unjudged and its feedback is retried.
 
     Implemented:
 
@@ -536,30 +555,16 @@ def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
 
     # follow-up commits ------------------------------------------------------
     if changed_files:
-        try:
-            followups = _run(
-                ["git", "log", f"{merge_oid}..HEAD", "--no-merges", "--name-only",
-                 "--format=%x00%H%x1f%s%x1f%an%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)",
-                 "--", *changed_files],
-                cwd=repo_dir,
-            )
-        except Exception:
-            followups = ""
-        signals["followup_commits"] = [_followup(block) for block in followups.split("\0") if block.strip()]
+        followups = _run(
+            ["git", "log", f"{merge_oid}..HEAD", "--no-merges", "--name-only",
+             "--format=%x00%H%x1f%s%x1f%an%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)",
+             "--", *changed_files],
+            cwd=repo_dir,
+        )
+        signals["followup_commits"] = [
+            FollowupCommit.from_log(block) for block in followups.split("\0") if block.strip()
+        ]
     return signals
-
-
-def _followup(block: str) -> dict:
-    """One ``git log`` block (header line, then its touched files) as a commit record."""
-    header, *files = block.strip("\n").split("\n")
-    sha, subject, name, email, trailers = (header.split("\x1f") + [""] * 5)[:5]
-    co_authors = [{"name": t.strip()} for t in trailers.split("\x1e") if t.strip()]
-    return {
-        "sha": sha,
-        "subject": subject,
-        "authors": [{"name": name, "email": email}, *co_authors],
-        "files": [f for f in files if f.strip()],
-    }
 
 
 # ---------------------------------------------------------------------------
