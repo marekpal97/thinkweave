@@ -61,3 +61,13 @@ def test_trajectory_judge_closed_task_refuses_a_later_round(cfg):
     judge_trajectories(cfg, issue_state=issue_state)
     task = tasks.TaskStore(cfg).get(task_id)
     assert task.refusal("devloop").startswith("is closed")
+
+
+def test_trajectory_judge_leaves_a_child_on_a_closed_issue_to_its_own_close(cfg):
+    child = tasks.open_child(cfg, session_key="s-1", project="t", asked="github:o/r#1")
+    result = judge_trajectories(cfg, issue_state=issue_state)
+    assert result["closed_tasks"] == []
+    assert status(cfg, child.task_id) == "open"
+    closed = tasks.close_child(cfg, child.task_id, session_key="s-1")
+    assert closed.task_id == child.task_id
+    assert status(cfg, child.task_id) == "closed"

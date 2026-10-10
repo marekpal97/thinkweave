@@ -298,9 +298,11 @@ class TaskStore:
         return feedback.note_id
 
     def close_tracked(self, issue_state=None) -> TrackerClosures:
-        """Close every open task whose ``asked`` is a GitHub issue that is now
-        closed. ``issue_state(repo, number)`` returns the issue's state; a
-        failed lookup leaves its task open and is listed under ``errors``."""
+        """Close every open work-grain task whose ``asked`` is a GitHub issue
+        that is now closed. A child keyed to that issue stays open: its own
+        ``close_child`` closes it. ``issue_state(repo, number)`` returns the
+        issue's state; a failed lookup leaves its task open and is listed
+        under ``errors``."""
         issue_state = issue_state or _gh_issue_state
         vm = VaultManager(config=self.cfg)
         closed: list[str] = []
@@ -311,6 +313,7 @@ class TaskStore:
             if (
                 not issue
                 or fm.get("kind") != TASK_KIND
+                or fm.get("grain") != "work"
                 or fm.get("status") != "open"
             ):
                 continue
