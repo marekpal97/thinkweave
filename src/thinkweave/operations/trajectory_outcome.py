@@ -539,7 +539,7 @@ def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
         try:
             followups = _run(
                 ["git", "log", f"{merge_oid}..HEAD", "--no-merges", "--name-only",
-                 f"--format=%x00%H%x1f%s%x1f%an%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)",
+                 "--format=%x00%H%x1f%s%x1f%an%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)",
                  "--", *changed_files],
                 cwd=repo_dir,
             )
