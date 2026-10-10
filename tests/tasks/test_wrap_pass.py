@@ -658,7 +658,7 @@ class TestLedgerRound:
     def test_solo_session_credits_and_stamps_every_minted_decision(
         self, cfg: Config
     ):
-        folder, ids = seed_session(cfg, harness_derived=True)
+        folder, _ids = seed_session(cfg, harness_derived=True)
         decl = {"declared": [{"title": "a", "round": {"did": {"attempts": 1}}}]}
         result = reconcile_session(cfg, decl, folder)
         assert result.errors == []
@@ -673,7 +673,7 @@ class TestLedgerRound:
     def test_multi_task_session_stamps_only_each_entrys_decisions(
         self, cfg: Config
     ):
-        folder, ids = seed_session(cfg)
+        folder, _ids = seed_session(cfg)
         decl = {
             "declared": [
                 {"title": "a", "round": {"decisions": {"minted": ["dec-aaaa1111"]}}},
