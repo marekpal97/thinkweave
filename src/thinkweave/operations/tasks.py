@@ -530,6 +530,9 @@ class TaskDispatch:
     envelope_return: str
     note: str
     title: str
+    instructions: str = ""
+    """What the performer owes the close: trailer-tagged commits, and one
+    envelope row with its outputs and a summary ``outcome``."""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -676,7 +679,7 @@ def close_child(
     source = source or TranscriptSource.bound(cfg, task_id)
     errors: list[str] = []
     envelopes = _read_envelopes(_envelope_path(cfg, task_id), task_id, errors)
-    digest = ChildDigest.read(source, until=_now())
+    digest = ChildDigest.read(source, until=_now()).with_trailer_commits(task_id)
     data = {**digest.round_fields(envelopes), "envelopes": envelopes + digest.claims(task_id)}
     task.frontmatter.update(digest.note_fields(task.frontmatter))
     task.put_round(replace(Round.from_dict(data, grain=task.grain), session_ref=source.session_ref))
@@ -1137,13 +1140,26 @@ def _gh_issue_state(repo: str, number: str) -> str:
     ).stdout.strip()
 
 
+_DISPATCH_INSTRUCTIONS = (
+    "End every commit message with the trailer line `Task: {task_id}`. "
+    "Before you finish, append one JSON line to {envelope_return}: "
+    '{{"task_id": "{task_id}", "outcome": "<a short summary of what you did, '
+    'or why you wrote nothing>", "outputs": [<each file you wrote and each '
+    'note id you created>]}}.'
+)
+
+
 def _descriptor(cfg, task: Task) -> TaskDispatch:
+    envelope_return = str(_envelope_path(cfg, task.id))
     return TaskDispatch(
         task_id=task.id,
         grain=task.grain,
-        envelope_return=str(_envelope_path(cfg, task.id)),
+        envelope_return=envelope_return,
         note=str(task.path),
         title=task.title,
+        instructions=_DISPATCH_INSTRUCTIONS.format(
+            task_id=task.id, envelope_return=envelope_return
+        ),
     )
 
 
@@ -1273,6 +1289,22 @@ class ChildDigest:
         if self.duration is not None:
             fields["cost"] = {"duration": self.duration}
         return fields
+
+    def with_trailer_commits(self, task_id: str) -> ChildDigest:
+        """The digest plus every commit, on any ref of the working
+        directory's repo, whose ``Task:`` trailer names ``task_id``; a
+        failed search is a gap."""
+        try:
+            found = subprocess.run(
+                ["git", "log", "--all", f"--grep=^Task: {task_id}$", "--format=%H"],
+                capture_output=True, text=True, timeout=15, check=True,
+            ).stdout.split()
+        except (OSError, subprocess.SubprocessError) as exc:
+            reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+            return replace(self, gaps=self.gaps + (f"Task trailer search failed: {reason}",))
+        # A transcript's short sha of the same commit yields to the full one.
+        kept = tuple(c for c in self.commits if not any(f.startswith(c) for f in found))
+        return replace(self, commits=kept + tuple(found))
 
     def claims(self, task_id: str) -> list[dict]:
         """The child's own handback claim as an envelope row, when it made one."""
