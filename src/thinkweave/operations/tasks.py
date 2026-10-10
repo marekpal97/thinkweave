@@ -19,6 +19,7 @@ register's boundaries are ground truth; a transcript never places one.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import uuid
@@ -53,6 +54,8 @@ from thinkweave.core.vault import (
     render_frontmatter,
 )
 from thinkweave.operations import hook_events
+
+log = logging.getLogger(__name__)
 
 TASK_OPEN = "task_open"
 TASK_CLOSE = "task_close"
@@ -188,11 +191,12 @@ class Task:
 
 
 def _index_now(vm: VaultManager, path: Path) -> None:
-    """Index one just-written note so id lookups resolve without a walk.
+    """Index one just-written note, edges included, so id lookups and graph
+    walks resolve without a walk of the vault.
 
-    Best-effort: a locked or missing index never fails the write — the
-    markdown is the truth, the index is derived and the next ``weave index``
-    pass catches up.
+    A locked or missing index never fails the write: the markdown is the
+    truth, and a note whose indexing failed has no stored hash, so the next
+    ``weave index`` pass picks it up. The failure is logged, not hidden.
     """
     try:
         from thinkweave.core.indexer import Indexer
@@ -203,7 +207,8 @@ def _index_now(vm: VaultManager, path: Path) -> None:
         finally:
             idx.close()
     except Exception:
-        pass
+        log.warning("task note %s not indexed; the next weave index pass will", path,
+                    exc_info=True)
 
 
 class TaskStore:
