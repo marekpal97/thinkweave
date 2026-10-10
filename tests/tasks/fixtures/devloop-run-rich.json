@@ -6,12 +6,18 @@
     "issue": 217,
     "issue_url": "https://github.com/marekpal97/thinkweave/issues/217",
     "epic_url": "https://github.com/marekpal97/thinkweave/issues/184",
+    "epic_title": "Task object as a ledger",
     "pr_url": "https://github.com/marekpal97/thinkweave/pull/999",
     "run_id": "run-42",
     "branch": "loop/dag-184",
     "outcome": "shipped",
     "fix_rounds": 2,
     "commits": 3,
+    "commit_shas": [
+      "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+      "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+      "c3d4e5f60718293a4b5c6d7e8f90123456789012"
+    ],
     "files_touched": ["src/thinkweave/core/task_contract.py"],
     "gates": [{"id": "tests", "passed": true, "summary": "42 passed"}],
     "skills": [

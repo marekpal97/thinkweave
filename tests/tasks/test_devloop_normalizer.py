@@ -70,7 +70,7 @@ class TestRichRun:
         assert note["status"] == "open"  # a run never closes its task
         assert note["grain"] == "work"
         assert note["asked"] == "github:marekpal97/thinkweave#184"  # its epic
-        assert note["title"] == "loop trajectory #217: devloop envelope normalizer"
+        assert note["title"] == "Task object as a ledger"  # its epic's
         assert len(note["rounds"]) == 1
 
     def test_trace_fields_nest_inside_the_round_never_at_top_level(self, cfg, rich):
@@ -137,6 +137,11 @@ class TestRichRun:
         assert rich["did"] == {
             "paths": ["src/thinkweave/core/task_contract.py"],
             "attempts": 2,
+            "commits": [  # the branch's SHAs, oldest first
+                "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+                "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+                "c3d4e5f60718293a4b5c6d7e8f90123456789012",
+            ],
         }
 
 
@@ -184,6 +189,11 @@ class TestThinRun:
         assert thin["did"] == {"paths": [], "attempts": 0}
         assert "served" not in thin
         assert not DEVLOOP_TRACE_KEYS & thin.keys()
+
+    def test_an_older_emitter_run_takes_the_trajectory_title(self, cfg):
+        note = recorded(cfg, "devloop-run-thin.json")
+        assert "commits" not in note["rounds"][0]["did"]
+        assert note["title"] == "loop trajectory #218: drop the dead flag"
 
 
 class TestRefusals:
@@ -255,6 +265,36 @@ class TestLedgerRoute:
         fm, _ = parse_frontmatter(notes[0].read_text(encoding="utf-8"))
         assert validate_task_note(fm) == []
         assert [r.get("route") for r in fm["rounds"]] == ["devloop", "session"]
+
+    def test_a_run_without_an_epic_url_lands_on_its_epics_task(self, cfg, monkeypatch):
+        epic = "github:marekpal97/funloops#89"
+        parents = {("marekpal97/thinkweave", "217"): epic}
+        monkeypatch.setattr(
+            tasks, "_gh_parent", lambda repo, number: parents.get((repo, number), "")
+        )
+        decl = {"declared": [{"title": "epic", "asked": epic, "round": {}}]}
+        (epic_task,) = tasks.apply_declaration(
+            cfg, decl, session_key="s-9", project="t",
+            streams=[buffer_path(cfg.weave_dir, "s-9")],
+        ).minted
+        run = payload("devloop-run-rich.json")
+        run["frontmatter"]["epic_url"] = ""
+        landed = tasks.record_run(cfg, run, project="t")
+        assert landed.task_id == epic_task and landed.warnings == ()
+
+    def test_a_failed_epic_lookup_is_announced(self, cfg, monkeypatch):
+        import subprocess
+
+        def unreachable(repo, number):
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="gh: offline")
+
+        monkeypatch.setattr(tasks, "_gh_parent", unreachable)
+        run = payload("devloop-run-rich.json")
+        run["frontmatter"]["epic_url"] = ""
+        landed = tasks.record_run(cfg, run, project="t")
+        assert note_fm(cfg, landed.task_id)["asked"] == "github:marekpal97/thinkweave#217"
+        (warning,) = landed.warnings
+        assert "gh: offline" in warning
 
     def test_rerecording_a_run_replaces_its_round(self, cfg):
         args = (cfg, payload("devloop-run-rich.json"))

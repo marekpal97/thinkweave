@@ -149,6 +149,8 @@ class Round:
                 "attempts": int(src.get("fix_rounds") or 0),
             },
         }
+        if "commit_shas" in src:
+            data["did"]["commits"] = list(src["commit_shas"])
         if trajectory:
             data["session_ref"] = SessionRef.note("devloop", trajectory).to_dict()
         if src.get("pr_url"):
@@ -193,14 +195,32 @@ def envelope_return_name(task_id: str) -> str:
 def normalize_tracker_ref(value: str, repo: str = "") -> str:
     """A tracker reference in its identity form: ``github:<owner>/<repo>#<n>``
     or ``jira:<KEY>-<n>``. A bare ``#<n>`` resolves against ``repo``
-    (``owner/name``) and stays bare without one; a GitHub issue or PR URL
-    folds to its ref; anything else (free-text asks) passes through."""
+    (``owner/name``) and stays bare without one; an ``owner/name#<n>`` or a
+    GitHub issue or PR URL folds to its ref; anything else (free-text asks)
+    passes through."""
     value = value.strip()
     if bare := re.fullmatch(r"#(\d+)", value):
         return f"github:{repo}#{bare[1]}" if repo else value
+    if short := re.fullmatch(r"([\w.-]+/[\w.-]+)#(\d+)", value):
+        return f"github:{short[1]}#{short[2]}"
     if url := _GITHUB_ITEM_URL.fullmatch(value):
         return f"github:{url[1]}#{url[2]}"
     return value
+
+
+@dataclass(frozen=True)
+class GithubIssue:
+    """A ``github:<owner>/<repo>#<n>`` tracker ref, split into the
+    ``owner/name`` repo and the issue number ``gh`` addresses."""
+
+    repo: str
+    number: str
+
+    @classmethod
+    def parse(cls, ref: str) -> GithubIssue | None:
+        """The issue ``ref`` names, or ``None`` for any other ref."""
+        found = re.fullmatch(r"github:([\w.-]+/[\w.-]+)#(\d+)", ref)
+        return cls(found[1], found[2]) if found else None
 
 
 def devloop_ask(payload: object) -> str:

@@ -1,9 +1,10 @@
 # How finished issues feed thinkweave
 
 Status: **accepted** — owner sign-off 2026-07-15. The vault-write step
-(`issue_loop.py trajectory`, command §3) is enabled and runs unattended:
-after each processed issue the orchestrator writes one trajectory note. What
-follows documents that live behavior.
+(`devloop trajectory`, §3 of the devloop package's `issue-loop.command.md`)
+is enabled and runs unattended: after each processed issue the orchestrator
+writes one trajectory note and lands a round on the epic's task. What follows
+documents that live behavior.
 
 ## The gap
 
@@ -35,11 +36,15 @@ wrap-coverage guarantee for headless runs. It is not duplicated here.
 
 **Mechanics.** After §2 Report, for each processed issue:
 
-1. `issue_loop.py trajectory <N> --cwd <worktree> --gates-json <file>
-   [--skills-json <file>] [--skill-centric] --fix-rounds R --outcome shipped
-   --pr-url <url> --run-id <id>` assembles the deterministic half: files
-   touched, commit count, gate verdicts, skill invocations, refs — emitted
-   as a `weave_create`-shaped payload.
+1. `uv run --directory <repo-root> devloop trajectory <N> --branch <branch>
+   --gates-json <file> [--skills-json <file>] [--skill-centric]
+   [--primed --served-json <file> | --no-primed] [--trace-json <file>]
+   --fix-rounds R --outcome shipped --pr-url <url> --run-id <id>` assembles
+   the deterministic half: files touched, the branch's commit SHAs
+   (`commit_shas`), gate verdicts, skill invocations, refs, and the epic's
+   `epic_url` / `epic_title` when the issue has one — emitted as a
+   `weave_create`-shaped payload. It runs from the main checkout, since the
+   worktree is gone by §3.
 2. The orchestrator fills the judgment half: a ≤1K-char body (What / How it
    went — the run-causal register only; **Lessons are retired**, see below),
    and **concepts chosen at creation** from the ontology (`weave_concepts`
@@ -48,10 +53,23 @@ wrap-coverage guarantee for headless runs. It is not duplicated here.
    frontmatter=<payload>)`, adding a `builds_on` list (under `frontmatter=`) of
    the ship-time insight note ids. MCP down → `weave add -f …` CLI fallback.
 3. `weave task record-run <payload.json> --trajectory <note-id> --project
-   <p>` lands the run on the ticket's task: a `route: devloop` round whose
-   session ref is the trajectory note and whose deliverable is the PR. The
-   task is the open one carrying the issue's tracker ref, so loop work and
-   session work on one ticket share one task.
+   <p> [--session <session-id>]` lands the run on the **epic's** task, not
+   the issue's. The task's `asked` is the epic ref: the payload's
+   `epic_url`, else the issue's GitHub sub-issue parent, else the issue ref
+   itself. When no open task carries that ref, record-run mints a work-grain
+   task titled as the epic (`epic_title`), else as the trajectory. Every
+   issue of one epic is one `route: devloop` round on that one task, so loop
+   work and session work on one epic share it. A round carries:
+   - `session_ref` — the trajectory note;
+   - `did.paths` and `did.commits` — the files touched and the branch's
+     commit SHAs;
+   - `outputs` — the PR, as the `deliverable`;
+   - the stage envelopes, `served`, and the semantic trace.
+
+   Re-recording the same trajectory replaces its round. A non-zero exit, or
+   a task whose `asked` does not name the epic, is a warning in the run
+   report, never a failed run. A run never closes its task, and a PR merge
+   does not close it either; see *The outcome-judge visit* below.
 4. `/wrap` (interactive) or the dream wrap-catch-up worker (headless) later
    synthesizes the *session* as usual — trajectory notes already sit in the
    session folder via `session_id`, so the wrap references them instead of
@@ -101,29 +119,63 @@ under a single `trace` frontmatter key:
 
 ```
 trace:
-  rounds:     [{gate, finding, severity, disposition, fixed_by}]   # prose-valued
+  reviews:    [{gate, finding, severity, disposition, fixed_by}]   # prose-valued
   criteria:   [{id, verdict, flipped_by_round}]                    # flip = int|null
-  simplify:   {outcome, cuts:[{what,why}], kept:[{what,why}], lines_delta}
-  stack_simplify: {outcome, cuts:[{what,why}], kept:[{what,why}], lines_delta}  # §1e stack-tip pass (#90), stacked runs only
   edge_cases: [<prose>]
+  deviations: [<the findings comment's deviation bullets>]
   tdd:        {red_confirmed}
 ```
 
 The orchestrator condenses these envelopes **from the gate agents' own reports —
 no new model call** (`--trace-json`, §3). Since issue #99 they are schema-checked
-where the subagent returns them — `issue_loop.py validate --gate <id>` rejects a
+where the subagent returns them — `devloop validate --gate <id>` rejects a
 malformed return with per-field reasons so the orchestrator re-asks — and
-`_normalize_trace` is a **documented backstop only**: it still shapes what
+`_normalize_trace` (in `devloop.trajectory.mint`) is a **documented backstop only**: it still shapes what
 arrives (strict on type — a non-dict trace is rejected; lenient on keys —
 unknowns dropped, each item projected), but for legacy/degraded input, not as a
-second enforcement point. Counts (`lines_delta`,
-`flipped_by_round`) are filter/join keys, not signal. The `trace` is the
+second enforcement point. Counts (`flipped_by_round`) are filter/join keys,
+not signal. The `trace` is the
 **machine-readable half of the tracker's gate evidence, not a second prose
 owner** — it duplicates neither the tracker's prose nor the trajectory body. It
 is a top-level frontmatter key no existing consumer reads, so #60's outcome
 judge, `weave rlvr export` (row envelope locked), and #62's steering evidence are
 untouched; absent (`--trace-json` omitted), the pre-#85 *frontmatter* is
 byte-stable (the body skeleton retires Lessons for all callers by design).
+
+**The outcome-judge visit.** The nightly `/dream` phase-2
+`dream-outcome-worker` runs `weave trajectory judge --phase both --json`. Beyond
+labelling each trajectory's PR outcome, every judged phase files the PR's human
+feedback as ordinary notes, edged `feedback_for` the task that holds the
+trajectory's round:
+
+- phase 1 (at merge) files each written review and review comment
+  (`source: pr-review`);
+- phase 2 (+14d) files each later human commit that touches the PR's files
+  (`source: post-merge-commit`).
+
+A feedback note's `ref` URL is its identity, so a re-run files nothing twice.
+A trajectory that no task holds lands under `skipped`. The same call then
+closes every open task whose `asked` is a GitHub issue that is now closed, and
+lists those ids under `closed_tasks`. This is the only close rule for a loop
+task: closing the epic's tracker issue closes its task. A failed issue lookup
+leaves the task open and lands under `errors`.
+
+**Canary into a scratch vault.** A canary run exercises §3 without touching the
+real vault. MCP `weave_create` always writes the vault the MCP server started
+on, which is the real one, so the canary uses the CLI with
+`THINKWEAVE_VAULT` pinned to a scratch directory:
+
+```bash
+export THINKWEAVE_VAULT=<scratch-dir>
+unset THINKWEAVE_WEAVE_DIR   # else derived state lands in the ambient weave_dir
+weave add "<trajectory title>" --type note --project <p> --tags loop-run \
+  --body "<What / How it went>" -f issue=<N> -f 'skills=[...]'   # payload keys
+weave task record-run <payload.json> --trajectory <note-id> --project <p>
+```
+
+`weave add -f key=value` parses a `[...]` or `{...}` value as JSON, so the
+payload's list and object keys survive the round trip. Every `weave` call in
+the canary must see the same `THINKWEAVE_VAULT`.
 
 **What the notes buy.** Trajectory notes carry concepts, so they flow into
 concept hubs, digests, and retrieval like any note: "what did the loop learn
@@ -134,22 +186,52 @@ without committing to its schema now.
 
 **Serving trajectories back into the implementer (epic #54 / #57).** Capture
 without serving is a dead end. Claim-time priming is thinkweave's native
-`bd prime`: before dispatching issue N's implementer, `issue_loop.py prime <N>
---run-id <id> --concepts <ontology terms> --query "<the issue's text>"` reads
-the derived index read-only, retrieves `[loop-run]` trajectory notes, and emits
+`bd prime`: before dispatching issue N's implementer, the orchestrator runs
+
+```bash
+uv run devloop prime <N> --run-id <run-id> \
+  --concepts "<2-3 ontology terms>" --query "<the issue's title (+ body)>" \
+  [--decisions "<note ids>"] --vault <vault-root> \
+  [--buffer <weave_dir>/buffer/<session-id>.jsonl]
+```
+
+It reads the derived index read-only (`--vault` resolves it under the vault's
+`weave_dir` override, else `<vault>/.weave/index.db`), retrieves `[loop-run]` trajectory notes, and emits
 a budget-capped block of their **reusable color** that the orchestrator splices
 into the implementer prompt, adjacent to the standing `decisions_for_file`
 context (§1b). Empty match or holdout → nothing spliced, loop unchanged.
 
-**Prime v3 (issue #100): two retrieval legs, fused.** Retrieval is concept
-match *and* full-text match over the issue's own words, fused by RRF (k=60) in
-the devloop package's `index_client.py`. Concept-only was dead by construction — the write
+**Prime v3 (issue #100): two retrieval legs, fused.** In the pinned devloop,
+retrieval is concept match *and* full-text match over the issue's own words,
+fused by RRF (k=60) in the devloop package's `index_client.py`. Concept-only was dead by construction — the write
 side tags trajectories with ontology concepts while the rail was handed GitHub
 labels, so the join matched 0 of 20 live trajectory notes and every run before
 #100 was effectively unprimed. The orchestrator maps the issue to ontology
 terms and passes the issue text; a labels-only call with no `--query` is
 stamped with a warning in the payload's `note` rather than reported as a benign
-empty match.
+empty match. That note reads:
+
+> called with GH labels as concepts and no --query — prime v3 retrieval is
+> likely dead by vocabulary; pass ontology --concepts and/or --query
+
+**Semantic third leg: not in the pin.** funloops#2 (prime v4) adds a third,
+semantic leg to the same RRF fusion. It is still open: its draft PR closed
+unmerged, so the pinned devloop fuses two legs and never mentions a semantic
+leg. Once it lands and the pin advances (the pin-update dance in
+`tests/test_devloop_boundaries.py`), the leg shells out to the host's
+`weave search --mode similar` and needs, per run:
+
+- `--vault <vault-root>` — the leg ranks only the vault it is pinned to;
+- query text (`--query`) — there is nothing to embed without it;
+- a host `weave search --mode similar` with built embeddings, and `weave` on
+  PATH (or `DEVLOOP_WEAVE_BIN` naming it, as on the plugin install route).
+
+Without these, prime still fuses concepts + FTS and stamps this `note`, the
+string to grep for:
+
+> semantic leg skipped — the host served no ranking (needs --vault, query
+> text, and a `weave search --mode similar` with built embeddings; set
+> DEVLOOP_WEAVE_BIN if `weave` is off PATH); fused on concepts + FTS only
 
 **Prime v2 (issue #85): serve insight bodies via links, weighted by outcome.**
 For each matched trajectory, prime follows its `builds_on` links to the

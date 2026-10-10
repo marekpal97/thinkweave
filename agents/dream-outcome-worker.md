@@ -28,6 +28,10 @@ You judge issue-loop **trajectory notes** for their PR outcome — the reward si
 
 Each judgment appends a `prediction_history`-shaped `{outcome, judged_at, reason, phase}` entry and sets the `outcome_label` frontmatter field. Re-running never duplicates an entry — a phase already judged is left untouched. These entries flow into `weave rlvr export` alongside decisions (same row schema).
 
+Each judged phase also files the PR's human feedback as notes edged `feedback_for` the task holding the trajectory's round: phase 1 files each written review and review comment (`source: pr-review`), phase 2 each later human commit touching the PR's files (`source: post-merge-commit`). A note's `ref` URL is its identity, so a re-run files nothing twice. The written note ids land under `feedback`; a trajectory no task holds lands under `skipped`.
+
+The same call then closes every open task whose `asked` is a GitHub issue that is now closed, and lists those task ids under `closed_tasks`. A failed issue lookup leaves its task open and lands under `errors`.
+
 ## Input contract
 
 The orchestrator passes the scan surface + cycle id in your prompt body:
@@ -52,9 +56,9 @@ One Bash call from the repo root:
 cd <repo> && weave trajectory judge --phase both --json
 ```
 
-`gh` must be authenticated in the environment (headless cron inherits the machine's `gh` auth). If `gh` is unavailable or a PR URL is stale, that trajectory's fetch returns nothing and the rail **skips** it (no verdict, no error) — it re-surfaces next cycle. Parse the JSON the rail prints: `{"judged": [{"id","phase","outcome"}...], "skipped": [...], "errors": [...]}`.
+`gh` must be authenticated in the environment (headless cron inherits the machine's `gh` auth). If `gh` is unavailable or a PR URL is stale, that trajectory's fetch returns nothing and the rail **skips** it (no verdict, no error) — it re-surfaces next cycle. Parse the JSON the rail prints: `{"judged": [{"id","phase","outcome"}...], "skipped": [...], "errors": [...], "feedback": [{"id","task","source"}...], "closed_tasks": ["tsk-…"...]}`.
 
-Do NOT hand-edit any note. Do NOT re-implement the classification — the rail owns it. Do NOT fetch human-feedback counts (#71) or touch triage (#59); the rail consumes #71 fields tolerantly if already present and never fetches them.
+Do NOT hand-edit any note. Do NOT re-implement the classification — the rail owns it. Do NOT fetch reviews or commits yourself, or touch triage (#59); the rail fetches and files them.
 
 ## Output contract
 
@@ -68,7 +72,9 @@ Output exactly one line of JSON as the final non-empty line of your response:
   "outcome": {
     "judged": [{"id": "n-XXXXXXXX", "phase": 1, "outcome": "merged-clean"}],
     "skipped": [{"id": "n-YYYYYYYY", "phase": 1, "reason": "not at verdict window (PR open / no PR)"}],
-    "errors": []
+    "errors": [],
+    "feedback": [],
+    "closed_tasks": []
   },
   "side_effects": [{"kind": "trajectory_judged", "id": "n-XXXXXXXX"}],
   "errors": []
@@ -77,7 +83,7 @@ Output exactly one line of JSON as the final non-empty line of your response:
 
 Conventions:
 
-- `outcome.judged` / `outcome.skipped` / `outcome.errors` — pass through the rail's arrays verbatim.
+- `outcome.judged` / `outcome.skipped` / `outcome.errors` / `outcome.feedback` / `outcome.closed_tasks` — pass through the rail's arrays verbatim.
 - `side_effects` — one `trajectory_judged` per entry in `outcome.judged`. The orchestrator's report consumes this.
 - Top-level `errors` — only worker-level failures (the rail itself raised / `weave` not found). A per-trajectory fetch failure belongs in `outcome.errors`, which the rail already populates.
 

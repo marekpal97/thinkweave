@@ -2,12 +2,14 @@
 
 Migrations are intentionally simple and idempotent — re-running one is
 always safe. Each function takes a ``vault_root`` (or full ``Config``)
-and returns a count of records affected. Wire-up to the CLI lives in
-``weave doctor --migrate`` (Phase 1) and is invoked manually after upgrade.
+and returns a count of records affected, or a report that carries one.
+Wire-up to the CLI lives in ``weave doctor --migrate`` (Phase 1) and is
+invoked manually after upgrade.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from thinkweave.core._utils import as_list
@@ -50,15 +52,32 @@ def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
     return flipped
 
 
-def migrate_task_notes_to_ledger(config: Config) -> int:
+@dataclass(frozen=True)
+class SharedAsk:
+    """Work-grain tasks that share one ``asked``."""
+
+    asked: str
+    task_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LedgerMigration:
+    """What :func:`migrate_task_notes_to_ledger` changed."""
+
+    rewritten: int
+    shared: tuple[SharedAsk, ...] = ()
+
+
+def migrate_task_notes_to_ledger(config: Config) -> LedgerMigration:
     """Bring ``kind: task`` notes to the ledger shape.
 
     Work-grain rounds without a ``route`` gain one (``devloop`` when the
     round nests a devloop trace, else ``session``), ``asked`` takes its
     normalized tracker ref, the unwritten ``outcome`` field goes, and the
     body is re-rendered from the rounds. A quoted value an older writer
-    split across raw lines is rejoined first. Idempotent. Returns the count
-    of notes rewritten.
+    split across raw lines is rejoined first. Work-grain tasks that share
+    one ``asked`` are reported, not changed. Idempotent. Returns the count
+    of notes rewritten, and every shared ``asked``.
     """
     from dataclasses import replace
 
@@ -68,6 +87,7 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
     repo = current_repo()
     vm = VaultManager(config)
     changed = 0
+    by_ask: dict[str, list[str]] = {}
     for path in config.vault_root.rglob("tsk-*.md"):
         before = path.read_text(encoding="utf-8")
         fm, _ = parse_frontmatter(_rejoin_split_scalars(before))
@@ -84,7 +104,12 @@ def migrate_task_notes_to_ledger(config: Config) -> int:
             task.frontmatter["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
         task.save(vm)
         changed += path.read_text(encoding="utf-8") != before
-    return changed
+        if task.grain == "work" and task.frontmatter.get("asked"):
+            by_ask.setdefault(str(task.frontmatter["asked"]), []).append(task.id)
+    shared = tuple(
+        SharedAsk(asked, tuple(sorted(ids))) for asked, ids in by_ask.items() if len(ids) > 1
+    )
+    return LedgerMigration(changed, shared)
 
 
 def _rejoin_split_scalars(text: str) -> str:

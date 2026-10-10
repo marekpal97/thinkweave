@@ -26,6 +26,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from thinkweave.core.buffer import archived_events_path, buffer_path
 from thinkweave.core.events import feedback_events, iter_jsonl
@@ -35,6 +36,7 @@ from thinkweave.core.schemas import NoteType
 from thinkweave.core.task_contract import (
     TASK_ID_RE,
     TASK_KIND,
+    GithubIssue,
     Round,
     SessionRef,
     accepts_round,
@@ -54,6 +56,9 @@ from thinkweave.core.vault import (
     render_frontmatter,
 )
 from thinkweave.operations import hook_events
+
+if TYPE_CHECKING:
+    from thinkweave.operations.trajectory_outcome import Feedback
 
 log = logging.getLogger(__name__)
 
@@ -245,6 +250,73 @@ class TaskStore:
             if fm.get("asked") == asked and accepts_round(fm, "session"):
                 return Task(fm, path)
         return None
+
+    def for_trajectory(self, note_id: str) -> Task | None:
+        """The task, open or closed, holding the devloop round whose session
+        ref names this trajectory note."""
+        ref = SessionRef.note("devloop", note_id).to_dict()
+        for path in self._filed("tsk-*.md"):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            if any(r.get("session_ref") == ref for r in fm.get("rounds") or []):
+                return Task(fm, path)
+        return None
+
+    def file_feedback(self, task: Task, feedback: Feedback) -> str:
+        """Write ``feedback`` as a note beside ``task``, edged
+        ``feedback_for`` it; returns the note id, or ``""`` when the note
+        already exists."""
+        if (task.path.parent / f"{feedback.note_id}.md").exists():
+            return ""
+        vm = VaultManager(config=self.cfg)
+        path = vm.create_note(
+            NoteType.NOTE,
+            title=feedback.note_id,
+            body=feedback.body,
+            project=str(task.frontmatter.get("project", "")),
+            extra_frontmatter={
+                "source": feedback.source,
+                "ref": feedback.ref,
+                "files": list(feedback.files),
+                "feedback_for": [task.id],
+            },
+            output_dir=task.path.parent,
+            note_id=feedback.note_id,
+        )
+        _index_now(vm, path)
+        return feedback.note_id
+
+    def close_tracked(self, issue_state=None) -> TrackerClosures:
+        """Close every open work-grain task whose ``asked`` is a GitHub issue
+        that is now closed. A child keyed to that issue stays open: its own
+        ``close_child`` closes it. ``issue_state(repo, number)`` returns the
+        issue's state; a failed lookup leaves its task open and is listed
+        under ``errors``."""
+        issue_state = issue_state or _gh_issue_state
+        vm = VaultManager(config=self.cfg)
+        closed: list[str] = []
+        errors: dict[str, str] = {}
+        for path in self._filed("tsk-*.md"):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            issue = GithubIssue.parse(str(fm.get("asked", "")))
+            if (
+                not issue
+                or fm.get("kind") != TASK_KIND
+                or fm.get("grain") != "work"
+                or fm.get("status") != "open"
+            ):
+                continue
+            task = Task(fm, path)
+            try:
+                if issue_state(issue.repo, issue.number).lower() != "closed":
+                    continue
+                task.close()
+                task.save(vm)
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+                errors[task.id] = f"issue {fm['asked']} not checked: {reason}"
+            else:
+                closed.append(task.id)
+        return TrackerClosures(closed, errors)
 
     def mint(
         self,
@@ -488,6 +560,15 @@ class RunLanded:
 
     task_id: str
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TrackerClosures:
+    """Which tasks one tracker sweep closed, and why it skipped others
+    (``{task id: reason}``)."""
+
+    closed: list[str]
+    errors: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -841,19 +922,24 @@ def record_run(
     cfg, payload: object, *, project: str, trajectory: str = "", session_key: str = ""
 ) -> RunLanded:
     """Land one devloop run as a ``route: devloop`` round on the open task
-    its epic ref (else its issue ref) resolves to, minting a work-grain
-    task when none is open; a re-record of the same trajectory replaces its
+    its epic ref resolves to — the payload's, else the issue's sub-issue
+    parent, else the issue ref itself — minting a work-grain
+    task, titled as its epic else as the trajectory, when none is open; a re-record of the same trajectory replaces its
     round. A run never closes its task, and nothing closes it when its PR
-    merges. With no ``session_key`` no register row is written: no session
-    owns the run.
+    merges: its tracker issue closing does (``TaskStore.close_tracked``).
+    With no ``session_key`` no register row is written: no session owns
+    the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
     warnings: list[str] = []
     asked = _tracker_ref(devloop_ask(payload), current_repo(), warnings)
     assert isinstance(payload, dict)
+    if not payload["frontmatter"].get("epic_url"):
+        asked = _epic_ref(asked, warnings)
     store = TaskStore(cfg)
+    title = payload["frontmatter"].get("epic_title") or payload.get("title", "")
     task = store.open_by_ref(asked) or store.mint(
-        "work", str(payload.get("title", "")), project, asked=asked, session_key=session_key
+        "work", str(title), project, asked=asked, session_key=session_key
     )
     task.put_round(Round.from_devloop(payload, task_id=task.id, trajectory=trajectory))
     task.frontmatter["asked"] = asked
@@ -976,11 +1062,11 @@ def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:
 def _epic_ref(ref: str, warnings: list[str]) -> str:
     """The epic ref a GitHub sub-issue ``ref`` belongs to, else ``ref``; a
     failed parent lookup keeps ``ref``, and is announced."""
-    found = re.fullmatch(r"github:([\w.-]+/[\w.-]+)#(\d+)", ref)
-    if not found:
+    issue = GithubIssue.parse(ref)
+    if not issue:
         return ref
     try:
-        return _gh_parent(found[1], found[2]) or ref
+        return _gh_parent(issue.repo, issue.number) or ref
     except (OSError, subprocess.SubprocessError) as exc:
         reason = (getattr(exc, "stderr", "") or str(exc)).strip()
         warnings.append(
@@ -998,6 +1084,14 @@ def _gh_parent(repo: str, number: str) -> str:
         capture_output=True, text=True, timeout=15, check=True,
     ).stdout.strip()
     return f"github:{out}" if out else ""
+
+
+def _gh_issue_state(repo: str, number: str) -> str:
+    """``repo#number``'s state, ``open`` or ``closed``."""
+    return subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{number}", "-q", ".state"],
+        capture_output=True, text=True, timeout=15, check=True,
+    ).stdout.strip()
 
 
 def _descriptor(cfg, task: Task) -> TaskDispatch:
