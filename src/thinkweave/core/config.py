@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from thinkweave.core.fswrite import atomic_write_text
+from thinkweave.core.task_contract import GithubIssue
 
 
 _DEFAULT_VAULT = Path.home() / "vault"
@@ -773,6 +774,16 @@ def detect_project(cwd: str = "") -> str:
     """
     raw = _raw_project(cwd or os.getcwd())
     return raw if raw == UNSCOPED_PROJECT else normalize_project_name(raw)
+
+
+def tracker_project(ref: str, vault_root: Path) -> str:
+    """The vault project a ``github:<owner>/<repo>#<n>`` ref's repo maps to,
+    or ``""`` for any other ref or a repo with no project in the vault."""
+    issue = GithubIssue.parse(ref)
+    if not issue:
+        return ""
+    name = normalize_project_name(issue.repo.rpartition("/")[2])
+    return name if (vault_root / "projects" / name).is_dir() else ""
 
 
 def _raw_project(cwd: str) -> str:

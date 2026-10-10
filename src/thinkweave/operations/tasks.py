@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from thinkweave.core.buffer import archived_events_path, buffer_path
+from thinkweave.core.config import tracker_project
 from thinkweave.core.events import feedback_events, iter_jsonl
 from thinkweave.core.harness import lookup
 from thinkweave.core.harness import active as active_harness
@@ -884,7 +885,8 @@ class _DeclarationPass:
             task = by_ref or self.store.get(self.minted_titles.get(title, ""))
         if task is None:
             grain = str(entry.get("grain", "work"))
-            return self.store.mint(grain, title, self.project, session_key=self.session_key)
+            project = tracker_project(asked, self.vm.config.vault_root) or self.project
+            return self.store.mint(grain, title, project, session_key=self.session_key)
         if refusal := task.refusal("session"):
             if entry.get("done") and task.closed:
                 return None
@@ -964,7 +966,11 @@ def record_run(
     store = TaskStore(cfg)
     title = payload["frontmatter"].get("epic_title") or payload.get("title", "")
     task = store.open_by_ref(asked) or store.mint(
-        "work", str(title), project, asked=asked, session_key=session_key
+        "work",
+        str(title),
+        tracker_project(asked, cfg.vault_root) or project,
+        asked=asked,
+        session_key=session_key,
     )
     task.put_round(Round.from_devloop(payload, task_id=task.id, trajectory=trajectory))
     task.frontmatter["asked"] = asked
