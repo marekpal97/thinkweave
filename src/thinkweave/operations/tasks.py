@@ -51,6 +51,7 @@ from thinkweave.core.task_contract import (
 from thinkweave.core.vault import (
     VaultManager,
     find_session_note_by_source,
+    indexed_alias_path,
     indexed_note_path,
     parse_frontmatter,
     render_frontmatter,
@@ -235,7 +236,8 @@ class TaskStore:
         self.cfg = cfg
 
     def get(self, task_id: str) -> Task | None:
-        """The task note filed under this id.
+        """The task note filed under this id, else the task that absorbed it
+        and keeps the id in ``aliases``.
 
         Index first: ``Task.save`` indexes at write, so ``notes.id`` resolves
         the path in one query. The fallback is a glob bounded to the folders
@@ -246,10 +248,21 @@ class TaskStore:
         """
         if not task_id:
             return None
-        path = indexed_note_path(self.cfg, task_id) or next(
-            self._filed(f"{task_id}.md"), None
+        path = (
+            indexed_note_path(self.cfg, task_id)
+            or next(self._filed(f"{task_id}.md"), None)
+            or indexed_alias_path(self.cfg, task_id)
+            or self._absorber(task_id)
         )
         return Task.load(path) if path else None
+
+    def _absorber(self, task_id: str) -> Path | None:
+        """The filed task note whose ``aliases`` lists ``task_id``."""
+        for path in self._filed("tsk-*.md"):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            if task_id in (fm.get("aliases") or []):
+                return path
+        return None
 
     def _filed(self, pattern: str):
         """Task-note files matching ``pattern`` in every filing folder."""

@@ -926,3 +926,15 @@ class TestRawRefMigration:
         (shared,) = self.migrate(cfg).shared
         assert shared.kept == ""
         assert set(task_notes(cfg)) == {"tsk-0a0a0a0a", "tsk-0b0b0b0b"}
+
+    def test_a_merged_away_id_resolves_to_the_task_that_absorbed_it(self, cfg: Config):
+        self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01")
+        self.seed(cfg, "tsk-0b0b0b0b", asked=self.REF, status="closed", date="2026-10-03")
+        self.migrate(cfg)
+        from thinkweave.core.vault import indexed_alias_path
+
+        assert indexed_alias_path(cfg, "tsk-0b0b0b0b") == note_path(cfg, "tsk-0a0a0a0a")
+        store = tasks.TaskStore(cfg)
+        assert store.get("tsk-0b0b0b0b").id == "tsk-0a0a0a0a"  # by the index
+        cfg.index_db.unlink()
+        assert store.get("tsk-0b0b0b0b").id == "tsk-0a0a0a0a"  # by the filing folders
