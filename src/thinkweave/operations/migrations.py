@@ -9,9 +9,9 @@ invoked manually after upgrade.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config
@@ -25,7 +25,8 @@ from thinkweave.acquisition.sources import load_user_config
 from thinkweave.acquisition.sources.queue import Queue
 from thinkweave.acquisition.sources.registry import normalize
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from thinkweave.operations.tasks import SharedAsk
 
 
 def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
@@ -56,16 +57,6 @@ def migrate_dormant_themes_to_resolved(vault_root: Path) -> int:
 
 
 @dataclass(frozen=True)
-class SharedAsk:
-    """Work-grain tasks that share one ``asked``; ``kept`` is the task the
-    others merged into, ``""`` when more than one is open."""
-
-    asked: str
-    task_ids: tuple[str, ...]
-    kept: str = ""
-
-
-@dataclass(frozen=True)
 class LedgerMigration:
     """What :func:`migrate_task_notes_to_ledger` changed."""
 
@@ -88,7 +79,7 @@ def migrate_task_notes_to_ledger(config: Config) -> LedgerMigration:
     from dataclasses import replace
 
     from thinkweave.core.task_contract import normalize_tracker_ref
-    from thinkweave.operations.tasks import Task, current_repo
+    from thinkweave.operations.tasks import Task, TaskStore, current_repo
 
     repo = current_repo()
     vm = VaultManager(config)
@@ -110,61 +101,12 @@ def migrate_task_notes_to_ledger(config: Config) -> LedgerMigration:
             task.frontmatter["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
         task.save(vm)
         loaded.append(task)
-    shared = tuple(_merge_shared_asks(vm, loaded))
+    shared = tuple(TaskStore(config).merge_shared(loaded))
     rewritten = sum(
         not path.exists() or path.read_text(encoding="utf-8") != text
         for path, text in before.items()
     )
     return LedgerMigration(rewritten, shared)
-
-
-def _merge_shared_asks(vm: VaultManager, tasks: list) -> list[SharedAsk]:
-    """Merge each group of work-grain tasks sharing one ``asked`` into its
-    open task, else its earliest, when at most one is open: the kept task
-    absorbs the rest, their children re-parent onto it, their notes go."""
-    by_ask: dict[str, list] = {}
-    for task in tasks:
-        if task.grain == "work" and task.frontmatter.get("asked"):
-            by_ask.setdefault(str(task.frontmatter["asked"]), []).append(task)
-    reports: list[SharedAsk] = []
-    for asked, group in by_ask.items():
-        if len(group) < 2:
-            continue
-        ids = tuple(t.id for t in group)
-        live = [t for t in group if not t.closed]
-        if len(live) > 1:
-            reports.append(SharedAsk(asked, ids))
-            continue
-        kept = live[0] if live else min(group, key=lambda t: str(t.frontmatter.get("date", "")))
-        for other in group:
-            if other is kept:
-                continue
-            kept.absorb(other)
-            for child in tasks:
-                if child.frontmatter.get("parent") == other.id:
-                    child.frontmatter["parent"] = kept.id
-                    child.save(vm)
-            other.path.unlink()
-            _unindex(vm, other.path)
-        kept.save(vm)
-        reports.append(SharedAsk(asked, ids, kept.id))
-    return reports
-
-
-def _unindex(vm: VaultManager, path: Path) -> None:
-    """Drop a deleted note's index row; a failure leaves it to the next
-    ``weave index`` pass, and is logged."""
-    try:
-        from thinkweave.core.indexer import Indexer
-
-        idx = Indexer(config=vm.config)
-        try:
-            idx.index_paths([path])
-        finally:
-            idx.close()
-    except Exception:
-        log.warning("merged task note %s not unindexed; the next weave index pass will",
-                    path, exc_info=True)
 
 
 def _rejoin_split_scalars(text: str) -> str:

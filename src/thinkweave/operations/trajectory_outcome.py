@@ -1,4 +1,4 @@
-"""Deterministic outcome judge for issue-loop trajectory notes (issue #60).
+"""Deterministic outcome judge for issue-loop trajectory notes.
 
 The reward signal for the self-improvement loop. `issue-loop-memory.md` names a
 deterministic outcome judge as future work; the shape already exists — the
@@ -21,26 +21,31 @@ verdict window, unlike decisions which are revisited indefinitely):
   follow-up bug issues citing the PR) is a documented, tested-as-absent seam —
   see :func:`fetch_delayed_signals`.
 
-Design mirrors the dream-judge idiom's split (orchestrator note on #60):
+Design mirrors the dream-judge idiom's split:
 
 - **Pure, unit-tested logic** lives here — :func:`classify_pr_outcome` (over
   pre-fetched PR JSON), :func:`compute_rework_blame`,
   :func:`classify_delayed_outcome`, :func:`phase2_due`, and the append-idempotency
   helpers. None of these touch the network.
+- **The main flow** is :func:`judge_trajectories`, first below: per due
+  trajectory, phase 1, phase 2, then its feedback handed to the task; last,
+  the tracker-close sweep. It produces :class:`Feedback` records; the
+  task-side writes are ``TaskStore``'s.
 - **The ``gh``/``git`` seam** is isolated in :func:`fetch_pr_json` /
-  :func:`fetch_delayed_signals`. The driver :func:`judge_trajectories` takes them
-  as injectable parameters so tests feed fixtures and never hit the network or a
+  :func:`fetch_delayed_signals`, at the bottom. The driver takes them as
+  injectable parameters so tests feed fixtures and never hit the network or a
   real repo.
 - **The worker agent** (``agents/dream-outcome-worker.md``) is a thin wrapper
   that runs ``weave trajectory judge`` and relays the JSON outcome.
 
-Raw counts, never composite scores (per #60): phase-1 records ``human_commits``
-/ ``fix_rounds`` and #71's human-feedback join ``review_comments`` /
+Raw counts, never composite scores: phase-1 records ``human_commits``
+/ ``fix_rounds`` and the human-feedback join ``review_comments`` /
 ``requested_changes_rounds`` (fetched from the PR's ``reviews`` and stamped on
 the trajectory note); phase-2 records ``blame_total_lines`` /
 ``blame_surviving_lines`` / ``blame_fraction`` / ``reverted``. Normalization
 belongs to the downstream learner, not this judge.
 """
+
 
 from __future__ import annotations
 
@@ -48,12 +53,13 @@ import hashlib
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from thinkweave.core.config import Config
-from thinkweave.core.schemas import NoteType
+
 
 # --- Phase-1 verdicts (closed-horizon, at merge/close) ---------------------
 MERGED_CLEAN = "merged-clean"
@@ -72,6 +78,400 @@ REVERTED = "reverted"
 PHASE2_WINDOW_DAYS = 14
 DEFAULT_AGENT_IDENTITIES = ("claude", "noreply@anthropic.com")
 DEFAULT_REWORK_THRESHOLD = 0.5
+
+
+
+# ---------------------------------------------------------------------------
+# The judge visit — the main flow
+# ---------------------------------------------------------------------------
+
+
+def judge_trajectories(
+    cfg: Config,
+    *,
+    phase: str = "both",
+    limit: int | None = None,
+    now: datetime | None = None,
+    identities: tuple[str, ...] | None = None,
+    window_days: int | None = None,
+    rework_threshold: float | None = None,
+    pr_fetcher: Callable[[str], Optional[dict]] | None = None,
+    signals_fetcher: Callable[..., dict] | None = None,
+    issue_state: Callable[[str, str], str] | None = None,
+) -> dict:
+    """Judge every due trajectory once per phase, file each judged phase's
+    human feedback as notes on the trajectory's task, then close every open
+    task whose tracker issue has closed. Idempotent; write-with-receipt.
+
+    ``phase`` ∈ ``{"both", "1", "2"}``. Returns
+    ``{judged: [...], skipped: [...], errors: [...], feedback: [...],
+    closed_tasks: [...]}`` — one ``judged`` entry per history append (``{id,
+    phase, outcome}``) and one ``feedback`` entry per note written (``{id,
+    task, source}``); a re-run over already-judged trajectories returns
+    empty ``judged`` and ``feedback``.
+
+    The ``pr_fetcher`` / ``signals_fetcher`` / ``issue_state`` seams default to
+    the real ``gh`` / ``git`` functions; tests inject fixtures so no network /
+    repo is touched.
+    """
+    visit = _JudgeVisit(
+        cfg,
+        now=now or datetime.now(timezone.utc),
+        identities=identities or _cfg_identities(cfg),
+        window_days=window_days if window_days is not None else _cfg_window(cfg),
+        rework_threshold=(
+            rework_threshold if rework_threshold is not None else _cfg_rework_threshold(cfg)
+        ),
+        # Resolved at call time (not as def-time defaults) so
+        # ``monkeypatch.setattr(trajectory_outcome, "fetch_pr_json", …)``
+        # reaches them — the standard way tests keep this off the network.
+        pr_fetcher=pr_fetcher or fetch_pr_json,
+        signals_fetcher=signals_fetcher or fetch_delayed_signals,
+    )
+    for note_id, rel in _candidate_trajectories(cfg)[:limit]:
+        trajectory = visit.read(note_id, rel)
+        if trajectory is None:
+            continue
+        if phase in ("both", "1", 1):
+            visit.phase1(trajectory)
+        if phase in ("both", "2", 2):
+            visit.phase2(trajectory)
+        visit.file_feedback(trajectory)
+    visit.close_tracked(issue_state)
+    return visit.result()
+
+
+@dataclass
+class _Trajectory:
+    """One trajectory note under judgment, and the feedback its judged
+    phases gathered for the task."""
+
+    id: str
+    path: Path
+    fm: dict
+    feedback: list[Feedback] = field(default_factory=list)
+
+    @property
+    def history(self) -> list[dict]:
+        return read_history(self.fm)
+
+    @property
+    def pr_url(self) -> str:
+        return self.fm.get("pr_url", "") or ""
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    """One phase's classification: the history entry's label, reason and
+    raw counts, the top-level fields stamped beside it, and the feedback
+    the phase surfaced."""
+
+    label: str
+    reason: str
+    extra: dict
+    stamp: dict = field(default_factory=dict)
+    feedback: tuple[Feedback, ...] = ()
+
+
+class _JudgeVisit:
+    """One run of the judge: its knobs, its seams, and the buckets every
+    step reports into — each trajectory lands in at most one of ``judged``,
+    ``skipped`` or ``errors`` per phase."""
+
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        now: datetime,
+        identities: tuple[str, ...],
+        window_days: int,
+        rework_threshold: float,
+        pr_fetcher: Callable[[str], Optional[dict]],
+        signals_fetcher: Callable[..., dict],
+    ) -> None:
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.operations.tasks import TaskStore
+
+        self.vm = VaultManager(config=cfg)
+        self.store = TaskStore(cfg)
+        self.now = now
+        self.judged_at = now.isoformat(timespec="seconds")
+        self.identities = identities
+        self.window_days = window_days
+        self.rework_threshold = rework_threshold
+        self.pr_fetcher = pr_fetcher
+        self.signals_fetcher = signals_fetcher
+        self.judged: list[dict] = []
+        self.skipped: list[dict] = []
+        self.errors: list[dict] = []
+        self.filed: list[dict] = []
+        self.closed: list[str] = []
+
+    def read(self, note_id: str, rel: str) -> _Trajectory | None:
+        path = self.vm.root / rel
+        try:
+            note = self.vm.read_note(path)
+        except Exception as e:  # noqa: BLE001
+            self.errors.append({"id": note_id, "reason": f"read failed: {e}"})
+            return None
+        return _Trajectory(note_id, path, note.frontmatter)
+
+    def phase1(self, t: _Trajectory) -> None:
+        """At merge/close: the PR's verdict, once."""
+        if has_phase_entry(t.history, 1):
+            return
+        self._judge(t, 1, self._classify_merge, failed="classify failed",
+                    unripe="not at verdict window (PR open / no PR)")
+
+    def phase2(self, t: _Trajectory) -> None:
+        """Once, at +window after merge: the delayed signals. Only merged
+        trajectories take this pass."""
+        if has_phase_entry(t.history, 2):
+            return
+        p1 = phase_entry(t.history, 1)
+        if not (p1 and p1.get("outcome") in _MERGED_LABELS):
+            return
+        if not phase2_due(t.fm.get("merged_at") or "", now=self.now, window_days=self.window_days):
+            self.skipped.append({"id": t.id, "phase": 2, "reason": "phase-2 window not elapsed"})
+            return
+        self._judge(t, 2, self._classify_delayed, failed="delayed-signal failed")
+
+    def file_feedback(self, t: _Trajectory) -> None:
+        """Hand the gathered feedback to the task holding this trajectory's
+        round."""
+        if not t.feedback:
+            return
+        task = self.store.for_trajectory(t.id)
+        if task is None:
+            self.skipped.append({"id": t.id, "reason": "no task holds this trajectory's round; its feedback is not filed"})
+            return
+        for item in t.feedback:
+            try:
+                feedback_id = self.store.file_feedback(task, item)
+            except Exception as e:  # noqa: BLE001
+                self.errors.append({"id": t.id, "reason": f"feedback {item.ref} not filed: {e}"})
+            else:
+                if feedback_id:
+                    self.filed.append({"id": feedback_id, "task": task.id, "source": item.source})
+
+    def close_tracked(self, issue_state: Callable[[str, str], str] | None) -> None:
+        tracked = self.store.close_tracked(issue_state)
+        self.errors += [{"id": task_id, "reason": reason} for task_id, reason in tracked.errors.items()]
+        self.closed = tracked.closed
+
+    def result(self) -> dict:
+        return {
+            "judged": self.judged,
+            "skipped": self.skipped,
+            "errors": self.errors,
+            "feedback": self.filed,
+            "closed_tasks": self.closed,
+        }
+
+    def _judge(
+        self,
+        t: _Trajectory,
+        phase: int,
+        classify: Callable[[_Trajectory], Optional[_Verdict]],
+        *,
+        failed: str,
+        unripe: str = "",
+    ) -> None:
+        """Fetch and classify, append the outcome, write the note, and
+        report into one bucket. ``classify`` returns ``None`` when the
+        phase is not at its verdict window (reported as ``unripe``)."""
+        try:
+            verdict = classify(t)
+        except Exception as e:  # noqa: BLE001
+            self.errors.append({"id": t.id, "phase": phase, "reason": f"{failed}: {e}"})
+            return
+        if verdict is None:
+            self.skipped.append({"id": t.id, "phase": phase, "reason": unripe})
+            return
+        delta = append_outcome(
+            t.fm, outcome=verdict.label, reason=verdict.reason, phase=phase,
+            judged_at=self.judged_at, extra=verdict.extra,
+        )
+        delta.update(verdict.stamp)
+        try:
+            self.vm.update_note(t.path, frontmatter_updates=delta)
+        except Exception as e:  # noqa: BLE001
+            self.errors.append({"id": t.id, "phase": phase, "reason": f"write failed: {e}"})
+            return
+        self.judged.append({"id": t.id, "phase": phase, "outcome": verdict.label})
+        t.feedback += verdict.feedback
+        t.fm.update(delta)
+
+    def _classify_merge(self, t: _Trajectory) -> Optional[_Verdict]:
+        pr = self.pr_fetcher(t.pr_url)
+        verdict = classify_pr_outcome(
+            pr, trajectory_outcome=t.fm.get("outcome", "") or "", identities=self.identities
+        )
+        if verdict is None:
+            return None
+        label, reason = verdict
+        # The human-feedback counts go TOP-LEVEL too, so the trajectory note
+        # itself carries them — only when the PR was fetched: a None pr means
+        # 'could not fetch', which must stay DISTINCT from 'clean PR = 0'.
+        stamp = count_review_feedback(pr) if pr is not None else {}
+        # merged_at makes phase-2's window arithmetic self-contained. Prefer
+        # the PR's own mergedAt; a merged verdict lacking it (anomalous)
+        # anchors to the judgment time so phase 2 still becomes due.
+        # Non-merged verdicts get none — they never take a phase-2 pass.
+        if label in _MERGED_LABELS:
+            stamp["merged_at"] = (pr.get("mergedAt") if pr else "") or self.judged_at
+        return _Verdict(
+            label, reason, _phase1_extra(t.fm, pr, self.identities), stamp,
+            tuple(review_feedback(pr)) if pr else (),
+        )
+
+    def _classify_delayed(self, t: _Trajectory) -> _Verdict:
+        pr = self.pr_fetcher(t.pr_url)
+        signals = (
+            self.signals_fetcher(pr) if pr
+            else {"total_lines": 0, "surviving_lines": 0, "reverted": False}
+        )
+        frac = compute_rework_blame(signals.get("total_lines", 0), signals.get("surviving_lines", 0))
+        label, reason = classify_delayed_outcome(
+            blame_fraction=frac, reverted=bool(signals.get("reverted")),
+            rework_threshold=self.rework_threshold,
+        )
+        extra = {
+            "blame_total_lines": int(signals.get("total_lines", 0) or 0),
+            "blame_surviving_lines": int(signals.get("surviving_lines", 0) or 0),
+            "blame_fraction": frac,
+            "reverted": bool(signals.get("reverted")),
+        }
+        return _Verdict(
+            label, reason, extra,
+            feedback=tuple(post_merge_feedback(signals, t.pr_url, self.identities)),
+        )
+
+
+def _phase1_extra(fm: dict, pr: Optional[dict], identities: tuple[str, ...]) -> dict:
+    """Raw phase-1 counts for the history entry (no composite scores).
+
+    ``fix_rounds`` from the trajectory; ``human_commits`` and the
+    human-feedback counts (``review_comments`` / ``requested_changes_rounds``)
+    computed from the fetched PR. When the PR could not be fetched (``pr is
+    None`` — e.g. a routed-to-human trajectory that opened no PR) the
+    PR-derived counts are omitted rather than zero-filled, so 'could not fetch'
+    stays distinct from 'clean PR = 0'.
+    """
+    extra: dict[str, Any] = {"fix_rounds": int(fm.get("fix_rounds", 0) or 0)}
+    if pr is not None:
+        extra["human_commits"] = count_human_commits(pr, identities)
+        extra.update(count_review_feedback(pr))
+    return extra
+
+
+# ---------------------------------------------------------------------------
+# Candidate discovery — index-driven, never a filesystem crawl
+# ---------------------------------------------------------------------------
+
+
+def _candidate_trajectories(cfg: Config) -> list[tuple[str, str]]:
+    """``(note_id, rel_path)`` for loop-run trajectory notes carrying a pr_url.
+
+    Uses the SQLite index (``note_tags`` join + ``json_extract`` on the
+    frontmatter blob) — no vault crawl, mirroring ``_collect_rejudge_queue``.
+    """
+    from thinkweave.core.indexer import Indexer
+
+    idx = Indexer(config=cfg)
+    try:
+        # Admit any loop-run note with a pr_url OR one the loop routed to a
+        # human (``outcome: routed-to-human``) — the latter has an empty pr_url
+        # (the loop opened no PR) but is the most informative negative reward
+        # signal, so it must still reach phase-1 judgment + RLVR export.
+        rows = idx.db.execute(
+            """
+            SELECT DISTINCT n.id AS id, n.path AS path
+              FROM notes n
+              JOIN note_tags t ON t.note_id = n.id
+             WHERE n.type = 'note'
+               AND t.tag = 'loop-run'
+               AND (
+                     (json_extract(n.frontmatter, '$.pr_url') IS NOT NULL
+                      AND json_extract(n.frontmatter, '$.pr_url') != '')
+                  OR json_extract(n.frontmatter, '$.outcome') = 'routed-to-human'
+                   )
+             ORDER BY n.id
+            """
+        ).fetchall()
+    finally:
+        idx.close()
+    out: list[tuple[str, str]] = []
+    for r in rows:
+        try:
+            out.append((r["id"], r["path"]))
+        except (KeyError, IndexError):
+            out.append((r[0], r[1]))
+    return out
+
+
+def scan_trajectory_outcomes(cfg: Config, *, now: datetime | None = None, cap: int | None = None) -> list[dict]:
+    """Read-only surface: trajectory notes with judgment due this cycle.
+
+    Each entry: ``{id, path, pr_url, due_phases: [1|2...]}``. Phase 1 is due
+    when no phase-1 entry exists yet; phase 2 when a merged phase-1 entry
+    exists, the window has elapsed (``merged_at`` + window), and no phase-2
+    entry exists. Powers the dream scan's ``has_signal`` — the worker (or
+    ``weave trajectory judge``) does the actual fetch + classify + write.
+    """
+    from thinkweave.core.vault import VaultManager
+
+    now = now or datetime.now(timezone.utc)
+    window = _cfg_window(cfg)
+    vm = VaultManager(config=cfg)
+    out: list[dict] = []
+    for note_id, rel in _candidate_trajectories(cfg):
+        try:
+            note = vm.read_note(vm.root / rel)
+        except Exception:
+            continue
+        fm = note.frontmatter
+        history = read_history(fm)
+        due: list[int] = []
+        if not has_phase_entry(history, 1):
+            due.append(1)
+        else:
+            p1 = phase_entry(history, 1)
+            merged_at = fm.get("merged_at") or ""
+            if (
+                p1
+                and p1.get("outcome") in _MERGED_LABELS
+                and not has_phase_entry(history, 2)
+                and phase2_due(merged_at, now=now, window_days=window)
+            ):
+                due.append(2)
+        if due:
+            out.append({"id": note_id, "path": rel, "pr_url": fm.get("pr_url", ""), "due_phases": due})
+        if cap and len(out) >= cap:
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Config knob resolution
+# ---------------------------------------------------------------------------
+
+
+def _cfg_identities(cfg: Config) -> tuple[str, ...]:
+    raw = getattr(cfg, "dream_trajectory_agent_identities", None)
+    if not raw:
+        return DEFAULT_AGENT_IDENTITIES
+    if isinstance(raw, str):
+        return tuple(t.strip() for t in raw.split(",") if t.strip())
+    return tuple(raw)
+
+
+def _cfg_window(cfg: Config) -> int:
+    return int(getattr(cfg, "dream_trajectory_phase2_days", PHASE2_WINDOW_DAYS) or PHASE2_WINDOW_DAYS)
+
+
+def _cfg_rework_threshold(cfg: Config) -> float:
+    return float(getattr(cfg, "dream_trajectory_rework_threshold", DEFAULT_REWORK_THRESHOLD) or DEFAULT_REWORK_THRESHOLD)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +509,7 @@ def count_human_commits(pr: dict, identities: tuple[str, ...] = DEFAULT_AGENT_ID
 
 
 def count_review_feedback(pr: Optional[dict]) -> dict:
-    """Count raw human review-feedback signals from pre-fetched PR JSON (issue #71). Pure.
+    """Count raw human review-feedback signals from pre-fetched PR JSON. Pure.
 
     Over the ``reviews`` array ``gh api .../pulls/N/reviews`` emits — each
     ``{user, body, state, submitted_at, html_url}``:
@@ -120,7 +520,7 @@ def count_review_feedback(pr: Optional[dict]) -> dict:
     - ``requested_changes_rounds`` — reviews with ``state ==
       'CHANGES_REQUESTED'`` (the owner's rework turns / review turns).
 
-    Raw counts, never a composite score (per #60): review turns confound task
+    Raw counts, never a composite score: review turns confound task
     difficulty with implementation quality; normalization is the downstream
     learner's job. Returns zeros for a **fetched** PR with no feedback (a clean
     merge) — the phase-1 driver only stamps this when the PR was fetched, so a
@@ -195,6 +595,7 @@ def classify_pr_outcome(
     return None
 
 
+
 # ---------------------------------------------------------------------------
 # Phase-2 classification — pure over pre-fetched blame / revert signals
 # ---------------------------------------------------------------------------
@@ -248,7 +649,8 @@ POST_MERGE_COMMIT = "post-merge-commit"
 
 @dataclass(frozen=True)
 class Feedback:
-    """One piece of human feedback on a PR; its ``ref`` URL is its identity."""
+    """One piece of human feedback on a PR; its ``ref`` URL is its identity.
+    ``TaskStore.file_feedback`` writes it beside the task."""
 
     source: str
     ref: str
@@ -258,30 +660,6 @@ class Feedback:
     @property
     def note_id(self) -> str:
         return "n-" + hashlib.sha1(self.ref.encode("utf-8")).hexdigest()[:8]
-
-    def file(self, vm, task) -> str:
-        """Write this feedback as a note beside ``task``, edged ``feedback_for``
-        it; returns the note id, or ``""`` when the note already exists."""
-        from thinkweave.operations.tasks import _index_now
-
-        if (task.path.parent / f"{self.note_id}.md").exists():
-            return ""
-        path = vm.create_note(
-            NoteType.NOTE,
-            title=self.note_id,
-            body=self.body,
-            project=str(task.frontmatter.get("project", "")),
-            extra_frontmatter={
-                "source": self.source,
-                "ref": self.ref,
-                "files": list(self.files),
-                "feedback_for": [task.id],
-            },
-            output_dir=task.path.parent,
-            note_id=self.note_id,
-        )
-        _index_now(vm, path)
-        return self.note_id
 
 
 def review_feedback(pr: dict) -> list[Feedback]:
@@ -394,7 +772,7 @@ def append_outcome(
 
     Returns ``{prediction_history, outcome_label, outcome_judged_at}`` — the
     full appended list plus the denormalized tail label (the queryable field
-    #59's triage calibration reads) and its timestamp. Mirrors
+    triage calibration reads) and its timestamp. Mirrors
     ``synthesis.prediction.append_verdict`` but with the ``outcome`` verdict
     key and no VERDICT clamp.
     """
@@ -565,300 +943,3 @@ def fetch_delayed_signals(pr: dict, *, repo_dir: str | None = None) -> dict:
             FollowupCommit.from_log(block) for block in followups.split("\0") if block.strip()
         ]
     return signals
-
-
-# ---------------------------------------------------------------------------
-# Config knob resolution
-# ---------------------------------------------------------------------------
-
-
-def _cfg_identities(cfg: Config) -> tuple[str, ...]:
-    raw = getattr(cfg, "dream_trajectory_agent_identities", None)
-    if not raw:
-        return DEFAULT_AGENT_IDENTITIES
-    if isinstance(raw, str):
-        return tuple(t.strip() for t in raw.split(",") if t.strip())
-    return tuple(raw)
-
-
-def _cfg_window(cfg: Config) -> int:
-    return int(getattr(cfg, "dream_trajectory_phase2_days", PHASE2_WINDOW_DAYS) or PHASE2_WINDOW_DAYS)
-
-
-def _cfg_rework_threshold(cfg: Config) -> float:
-    return float(getattr(cfg, "dream_trajectory_rework_threshold", DEFAULT_REWORK_THRESHOLD) or DEFAULT_REWORK_THRESHOLD)
-
-
-# ---------------------------------------------------------------------------
-# Candidate discovery — index-driven, never a filesystem crawl
-# ---------------------------------------------------------------------------
-
-
-def _candidate_trajectories(cfg: Config) -> list[tuple[str, str]]:
-    """``(note_id, rel_path)`` for loop-run trajectory notes carrying a pr_url.
-
-    Uses the SQLite index (``note_tags`` join + ``json_extract`` on the
-    frontmatter blob) — no vault crawl, mirroring ``_collect_rejudge_queue``.
-    """
-    from thinkweave.core.indexer import Indexer
-
-    idx = Indexer(config=cfg)
-    try:
-        # Admit any loop-run note with a pr_url OR one the loop routed to a
-        # human (``outcome: routed-to-human``) — the latter has an empty pr_url
-        # (the loop opened no PR) but is the most informative negative reward
-        # signal, so it must still reach phase-1 judgment + RLVR export.
-        rows = idx.db.execute(
-            """
-            SELECT DISTINCT n.id AS id, n.path AS path
-              FROM notes n
-              JOIN note_tags t ON t.note_id = n.id
-             WHERE n.type = 'note'
-               AND t.tag = 'loop-run'
-               AND (
-                     (json_extract(n.frontmatter, '$.pr_url') IS NOT NULL
-                      AND json_extract(n.frontmatter, '$.pr_url') != '')
-                  OR json_extract(n.frontmatter, '$.outcome') = 'routed-to-human'
-                   )
-             ORDER BY n.id
-            """
-        ).fetchall()
-    finally:
-        idx.close()
-    out: list[tuple[str, str]] = []
-    for r in rows:
-        try:
-            out.append((r["id"], r["path"]))
-        except (KeyError, IndexError):
-            out.append((r[0], r[1]))
-    return out
-
-
-def scan_trajectory_outcomes(cfg: Config, *, now: datetime | None = None, cap: int | None = None) -> list[dict]:
-    """Read-only surface: trajectory notes with judgment due this cycle.
-
-    Each entry: ``{id, path, pr_url, due_phases: [1|2...]}``. Phase 1 is due
-    when no phase-1 entry exists yet; phase 2 when a merged phase-1 entry
-    exists, the window has elapsed (``merged_at`` + window), and no phase-2
-    entry exists. Powers the dream scan's ``has_signal`` — the worker (or
-    ``weave trajectory judge``) does the actual fetch + classify + write.
-    """
-    from thinkweave.core.vault import VaultManager
-
-    now = now or datetime.now(timezone.utc)
-    window = _cfg_window(cfg)
-    vm = VaultManager(config=cfg)
-    out: list[dict] = []
-    for note_id, rel in _candidate_trajectories(cfg):
-        try:
-            note = vm.read_note(vm.root / rel)
-        except Exception:
-            continue
-        fm = note.frontmatter
-        history = read_history(fm)
-        due: list[int] = []
-        if not has_phase_entry(history, 1):
-            due.append(1)
-        else:
-            p1 = phase_entry(history, 1)
-            merged_at = fm.get("merged_at") or ""
-            if (
-                p1
-                and p1.get("outcome") in _MERGED_LABELS
-                and not has_phase_entry(history, 2)
-                and phase2_due(merged_at, now=now, window_days=window)
-            ):
-                due.append(2)
-        if due:
-            out.append({"id": note_id, "path": rel, "pr_url": fm.get("pr_url", ""), "due_phases": due})
-        if cap and len(out) >= cap:
-            break
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Driver — fetch + classify + write, idempotent, per-phase
-# ---------------------------------------------------------------------------
-
-
-def _phase1_extra(fm: dict, pr: Optional[dict], identities: tuple[str, ...]) -> dict:
-    """Raw phase-1 counts for the history entry (no composite scores).
-
-    ``fix_rounds`` from the trajectory; ``human_commits`` and #71's
-    human-feedback counts (``review_comments`` / ``requested_changes_rounds``)
-    computed from the fetched PR. When the PR could not be fetched (``pr is
-    None`` — e.g. a routed-to-human trajectory that opened no PR) the
-    PR-derived counts are omitted rather than zero-filled, so 'could not fetch'
-    stays distinct from 'clean PR = 0'.
-    """
-    extra: dict[str, Any] = {"fix_rounds": int(fm.get("fix_rounds", 0) or 0)}
-    if pr is not None:
-        extra["human_commits"] = count_human_commits(pr, identities)
-        extra.update(count_review_feedback(pr))
-    return extra
-
-
-def judge_trajectories(
-    cfg: Config,
-    *,
-    phase: str = "both",
-    limit: int | None = None,
-    now: datetime | None = None,
-    identities: tuple[str, ...] | None = None,
-    window_days: int | None = None,
-    rework_threshold: float | None = None,
-    pr_fetcher: Callable[[str], Optional[dict]] | None = None,
-    signals_fetcher: Callable[..., dict] | None = None,
-    issue_state: Callable[[str, str], str] | None = None,
-) -> dict:
-    """Judge every due trajectory once per phase, file each judged phase's
-    human feedback as notes on the trajectory's task, then close every open
-    task whose tracker issue has closed. Idempotent; write-with-receipt.
-
-    ``phase`` ∈ ``{"both", "1", "2"}``. Returns
-    ``{judged: [...], skipped: [...], errors: [...], feedback: [...],
-    closed_tasks: [...]}`` — one ``judged`` entry per history append (``{id,
-    phase, outcome}``) and one ``feedback`` entry per note written (``{id,
-    task, source}``); a re-run over already-judged trajectories returns
-    empty ``judged`` and ``feedback``.
-
-    The ``pr_fetcher`` / ``signals_fetcher`` / ``issue_state`` seams default to
-    the real ``gh`` / ``git`` functions; tests inject fixtures so no network /
-    repo is touched.
-    """
-    from thinkweave.operations.tasks import TaskStore
-    from thinkweave.core.vault import VaultManager
-
-    # Resolve the seams at call time (not as def-time defaults) so
-    # ``monkeypatch.setattr(trajectory_outcome, "fetch_pr_json", …)`` reaches
-    # them — the standard way tests keep this off the network.
-    pr_fetcher = pr_fetcher or fetch_pr_json
-    signals_fetcher = signals_fetcher or fetch_delayed_signals
-
-    now = now or datetime.now(timezone.utc)
-    identities = identities or _cfg_identities(cfg)
-    window_days = window_days if window_days is not None else _cfg_window(cfg)
-    rework_threshold = rework_threshold if rework_threshold is not None else _cfg_rework_threshold(cfg)
-    do1 = phase in ("both", "1", 1)
-    do2 = phase in ("both", "2", 2)
-    judged_at = now.isoformat(timespec="seconds")
-
-    vm = VaultManager(config=cfg)
-    store = TaskStore(cfg)
-    judged: list[dict] = []
-    skipped: list[dict] = []
-    errors: list[dict] = []
-    filed: list[dict] = []
-    seen = 0
-
-    for note_id, rel in _candidate_trajectories(cfg):
-        if limit is not None and seen >= limit:
-            break
-        seen += 1
-        path = vm.root / rel
-        try:
-            note = vm.read_note(path)
-        except Exception as e:  # noqa: BLE001
-            errors.append({"id": note_id, "reason": f"read failed: {e}"})
-            continue
-        fm = note.frontmatter
-        history = read_history(fm)
-        pr_url = fm.get("pr_url", "") or ""
-        traj_outcome = fm.get("outcome", "") or ""
-        pending: list[Feedback] = []
-
-        # --- Phase 1: at merge/close ---------------------------------------
-        if do1 and not has_phase_entry(history, 1):
-            errored = False
-            try:
-                pr = pr_fetcher(pr_url)
-                verdict = classify_pr_outcome(pr, trajectory_outcome=traj_outcome, identities=identities)
-            except Exception as e:  # noqa: BLE001
-                errors.append({"id": note_id, "phase": 1, "reason": f"classify failed: {e}"})
-                pr, verdict, errored = None, None, True
-            if errored:
-                # A classify/fetch exception is recorded under errors only —
-                # do NOT also record it as a skip (one bucket per note).
-                pass
-            elif verdict is None:
-                skipped.append({"id": note_id, "phase": 1, "reason": "not at verdict window (PR open / no PR)"})
-            else:
-                label, reason = verdict
-                extra = _phase1_extra(fm, pr, identities)
-                delta = append_outcome(fm, outcome=label, reason=reason, phase=1, judged_at=judged_at, extra=extra)
-                # #71: stamp the human-feedback counts as TOP-LEVEL frontmatter
-                # so the trajectory note itself carries them (and rlvr export
-                # surfaces them via the history entry). Only when the PR was
-                # fetched — a None pr means 'could not fetch', which must stay
-                # DISTINCT from 'clean PR = 0' (so we leave the fields absent).
-                if pr is not None:
-                    delta.update(count_review_feedback(pr))
-                # Stamp merged_at so phase-2's window arithmetic is
-                # self-contained. Prefer the PR's own mergedAt; if a merged
-                # verdict lacks it (anomalous — GitHub normally always sets it),
-                # anchor to the phase-1 judgment time so phase-2 still becomes
-                # due rather than being blocked forever. Non-merged verdicts
-                # (routed-to-human / closed-unmerged) intentionally get no
-                # merged_at — they never take a phase-2 pass.
-                if label in _MERGED_LABELS:
-                    delta["merged_at"] = (pr.get("mergedAt") if pr else "") or judged_at
-                try:
-                    vm.update_note(path, frontmatter_updates=delta)
-                except Exception as e:  # noqa: BLE001
-                    errors.append({"id": note_id, "phase": 1, "reason": f"write failed: {e}"})
-                else:
-                    judged.append({"id": note_id, "phase": 1, "outcome": label})
-                    pending += review_feedback(pr) if pr else []
-                    fm.update(delta)
-                    history = read_history(fm)
-
-        # --- Phase 2: once, at +window after merge -------------------------
-        if do2 and not has_phase_entry(history, 2):
-            p1 = phase_entry(history, 1)
-            merged_at = fm.get("merged_at") or ""
-            if not (p1 and p1.get("outcome") in _MERGED_LABELS):
-                pass  # only merged trajectories get a phase-2 pass
-            elif not phase2_due(merged_at, now=now, window_days=window_days):
-                skipped.append({"id": note_id, "phase": 2, "reason": "phase-2 window not elapsed"})
-            else:
-                try:
-                    pr = pr_fetcher(pr_url)
-                    signals = signals_fetcher(pr) if pr else {"total_lines": 0, "surviving_lines": 0, "reverted": False}
-                    frac = compute_rework_blame(signals.get("total_lines", 0), signals.get("surviving_lines", 0))
-                    label, reason = classify_delayed_outcome(
-                        blame_fraction=frac, reverted=bool(signals.get("reverted")), rework_threshold=rework_threshold
-                    )
-                except Exception as e:  # noqa: BLE001
-                    errors.append({"id": note_id, "phase": 2, "reason": f"delayed-signal failed: {e}"})
-                else:
-                    extra = {
-                        "blame_total_lines": int(signals.get("total_lines", 0) or 0),
-                        "blame_surviving_lines": int(signals.get("surviving_lines", 0) or 0),
-                        "blame_fraction": frac,
-                        "reverted": bool(signals.get("reverted")),
-                    }
-                    delta = append_outcome(fm, outcome=label, reason=reason, phase=2, judged_at=judged_at, extra=extra)
-                    try:
-                        vm.update_note(path, frontmatter_updates=delta)
-                    except Exception as e:  # noqa: BLE001
-                        errors.append({"id": note_id, "phase": 2, "reason": f"write failed: {e}"})
-                    else:
-                        judged.append({"id": note_id, "phase": 2, "outcome": label})
-                        pending += post_merge_feedback(signals, pr_url, identities)
-
-        if pending:
-            task = store.for_trajectory(note_id)
-            if task is None:
-                skipped.append({"id": note_id, "reason": "no task holds this trajectory's round; its feedback is not filed"})
-            for item in pending if task else []:
-                try:
-                    feedback_id = item.file(vm, task)
-                except Exception as e:  # noqa: BLE001
-                    errors.append({"id": note_id, "reason": f"feedback {item.ref} not filed: {e}"})
-                else:
-                    if feedback_id:
-                        filed.append({"id": feedback_id, "task": task.id, "source": item.source})
-
-    tracked = store.close_tracked(issue_state)
-    errors += [{"id": task_id, "reason": reason} for task_id, reason in tracked.errors.items()]
-    return {"judged": judged, "skipped": skipped, "errors": errors, "feedback": filed, "closed_tasks": tracked.closed}

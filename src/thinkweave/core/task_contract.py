@@ -208,6 +208,21 @@ def normalize_tracker_ref(value: str, repo: str = "") -> str:
     return value
 
 
+@dataclass(frozen=True)
+class GithubIssue:
+    """A ``github:<owner>/<repo>#<n>`` tracker ref, split into the
+    ``owner/name`` repo and the issue number ``gh`` addresses."""
+
+    repo: str
+    number: str
+
+    @classmethod
+    def parse(cls, ref: str) -> GithubIssue | None:
+        """The issue ``ref`` names, or ``None`` for any other ref."""
+        found = re.fullmatch(r"github:([\w.-]+/[\w.-]+)#(\d+)", ref)
+        return cls(found[1], found[2]) if found else None
+
+
 def devloop_ask(payload: object) -> str:
     """The tracker ref whose task a devloop run lands on, as emitted: the
     epic URL, else the issue URL, else ``#<issue>``. Raises ``ValueError``

@@ -26,6 +26,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from thinkweave.core.buffer import archived_events_path, buffer_path
 from thinkweave.core.events import feedback_events, iter_jsonl
@@ -35,6 +36,7 @@ from thinkweave.core.schemas import NoteType
 from thinkweave.core.task_contract import (
     TASK_ID_RE,
     TASK_KIND,
+    GithubIssue,
     Round,
     SessionRef,
     accepts_round,
@@ -54,6 +56,9 @@ from thinkweave.core.vault import (
     render_frontmatter,
 )
 from thinkweave.operations import hook_events
+
+if TYPE_CHECKING:
+    from thinkweave.operations.trajectory_outcome import Feedback
 
 log = logging.getLogger(__name__)
 
@@ -202,8 +207,9 @@ class Task:
 
 
 def _index_now(vm: VaultManager, path: Path) -> None:
-    """Index one just-written note, edges included, so id lookups and graph
-    walks resolve without a walk of the vault.
+    """Index one just-written note, edges included, or drop the row of one
+    just deleted, so id lookups and graph walks resolve without a walk of
+    the vault.
 
     A locked or missing index never fails the write: the markdown is the
     truth, and a note whose indexing failed has no stored hash, so the next
@@ -267,6 +273,30 @@ class TaskStore:
                 return Task(fm, path)
         return None
 
+    def file_feedback(self, task: Task, feedback: Feedback) -> str:
+        """Write ``feedback`` as a note beside ``task``, edged
+        ``feedback_for`` it; returns the note id, or ``""`` when the note
+        already exists."""
+        if (task.path.parent / f"{feedback.note_id}.md").exists():
+            return ""
+        vm = VaultManager(config=self.cfg)
+        path = vm.create_note(
+            NoteType.NOTE,
+            title=feedback.note_id,
+            body=feedback.body,
+            project=str(task.frontmatter.get("project", "")),
+            extra_frontmatter={
+                "source": feedback.source,
+                "ref": feedback.ref,
+                "files": list(feedback.files),
+                "feedback_for": [task.id],
+            },
+            output_dir=task.path.parent,
+            note_id=feedback.note_id,
+        )
+        _index_now(vm, path)
+        return feedback.note_id
+
     def close_tracked(self, issue_state=None) -> TrackerClosures:
         """Close every open task whose ``asked`` is a GitHub issue that is now
         closed. ``issue_state(repo, number)`` returns the issue's state; a
@@ -277,12 +307,16 @@ class TaskStore:
         errors: dict[str, str] = {}
         for path in self._filed("tsk-*.md"):
             fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-            issue = re.fullmatch(_GITHUB_ISSUE, str(fm.get("asked", "")))
-            if not issue or fm.get("kind") != TASK_KIND or fm.get("status") != "open":
+            issue = GithubIssue.parse(str(fm.get("asked", "")))
+            if (
+                not issue
+                or fm.get("kind") != TASK_KIND
+                or fm.get("status") != "open"
+            ):
                 continue
             task = Task(fm, path)
             try:
-                if issue_state(issue[1], issue[2]).lower() != "closed":
+                if issue_state(issue.repo, issue.number).lower() != "closed":
                     continue
                 task.close()
                 task.save(vm)
@@ -292,6 +326,40 @@ class TaskStore:
             else:
                 closed.append(task.id)
         return TrackerClosures(closed, errors)
+
+    def merge_shared(self, tasks: list[Task]) -> list[SharedAsk]:
+        """Merge each group of work-grain ``tasks`` sharing one ``asked``
+        into its open task, else its earliest, when at most one is open: the
+        kept task absorbs the rest, their children re-parent onto it, their
+        notes go. Every shared ``asked`` is reported."""
+        vm = VaultManager(config=self.cfg)
+        by_ask: dict[str, list[Task]] = {}
+        for task in tasks:
+            if task.grain == "work" and task.frontmatter.get("asked"):
+                by_ask.setdefault(str(task.frontmatter["asked"]), []).append(task)
+        reports: list[SharedAsk] = []
+        for asked, group in by_ask.items():
+            if len(group) < 2:
+                continue
+            ids = tuple(t.id for t in group)
+            live = [t for t in group if not t.closed]
+            if len(live) > 1:
+                reports.append(SharedAsk(asked, ids))
+                continue
+            kept = live[0] if live else min(group, key=lambda t: str(t.frontmatter.get("date", "")))
+            for other in group:
+                if other is kept:
+                    continue
+                kept.absorb(other)
+                for child in tasks:
+                    if child.frontmatter.get("parent") == other.id:
+                        child.frontmatter["parent"] = kept.id
+                        child.save(vm)
+                other.path.unlink()
+                _index_now(vm, other.path)
+            kept.save(vm)
+            reports.append(SharedAsk(asked, ids, kept.id))
+        return reports
 
     def mint(
         self,
@@ -544,6 +612,16 @@ class TrackerClosures:
 
     closed: list[str]
     errors: dict[str, str]
+
+
+@dataclass(frozen=True)
+class SharedAsk:
+    """Work-grain tasks that share one ``asked``; ``kept`` is the task the
+    others merged into, ``""`` when more than one is open."""
+
+    asked: str
+    task_ids: tuple[str, ...]
+    kept: str = ""
 
 
 @dataclass(frozen=True)
@@ -1037,11 +1115,11 @@ def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:
 def _epic_ref(ref: str, warnings: list[str]) -> str:
     """The epic ref a GitHub sub-issue ``ref`` belongs to, else ``ref``; a
     failed parent lookup keeps ``ref``, and is announced."""
-    found = re.fullmatch(_GITHUB_ISSUE, ref)
-    if not found:
+    issue = GithubIssue.parse(ref)
+    if not issue:
         return ref
     try:
-        return _gh_parent(found[1], found[2]) or ref
+        return _gh_parent(issue.repo, issue.number) or ref
     except (OSError, subprocess.SubprocessError) as exc:
         reason = (getattr(exc, "stderr", "") or str(exc)).strip()
         warnings.append(
@@ -1059,9 +1137,6 @@ def _gh_parent(repo: str, number: str) -> str:
         capture_output=True, text=True, timeout=15, check=True,
     ).stdout.strip()
     return f"github:{out}" if out else ""
-
-
-_GITHUB_ISSUE = r"github:([\w.-]+/[\w.-]+)#(\d+)"
 
 
 def _gh_issue_state(repo: str, number: str) -> str:
