@@ -167,6 +167,7 @@ on, which is the real one, so the canary uses the CLI with
 
 ```bash
 export THINKWEAVE_VAULT=<scratch-dir>
+unset THINKWEAVE_WEAVE_DIR   # else derived state lands in the ambient weave_dir
 weave add "<trajectory title>" --type note --project <p> --tags loop-run \
   --body "<What / How it went>" -f issue=<N> -f 'skills=[...]'   # payload keys
 weave task record-run <payload.json> --trajectory <note-id> --project <p>
