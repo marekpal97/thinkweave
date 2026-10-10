@@ -70,7 +70,7 @@ class TestRichRun:
         assert note["status"] == "open"  # a run never closes its task
         assert note["grain"] == "work"
         assert note["asked"] == "github:marekpal97/thinkweave#184"  # its epic
-        assert note["title"] == "loop trajectory #217: devloop envelope normalizer"
+        assert note["title"] == "Task object as a ledger"  # its epic's
         assert len(note["rounds"]) == 1
 
     def test_trace_fields_nest_inside_the_round_never_at_top_level(self, cfg, rich):
@@ -137,6 +137,11 @@ class TestRichRun:
         assert rich["did"] == {
             "paths": ["src/thinkweave/core/task_contract.py"],
             "attempts": 2,
+            "commits": [  # the branch's SHAs, oldest first
+                "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+                "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+                "c3d4e5f60718293a4b5c6d7e8f90123456789012",
+            ],
         }
 
 
@@ -184,6 +189,11 @@ class TestThinRun:
         assert thin["did"] == {"paths": [], "attempts": 0}
         assert "served" not in thin
         assert not DEVLOOP_TRACE_KEYS & thin.keys()
+
+    def test_an_older_emitter_run_takes_the_trajectory_title(self, cfg):
+        note = recorded(cfg, "devloop-run-thin.json")
+        assert "commits" not in note["rounds"][0]["did"]
+        assert note["title"] == "loop trajectory #218: drop the dead flag"
 
 
 class TestRefusals:

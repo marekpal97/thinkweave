@@ -854,7 +854,7 @@ def record_run(
     """Land one devloop run as a ``route: devloop`` round on the open task
     its epic ref resolves to — the payload's, else the issue's sub-issue
     parent, else the issue ref itself — minting a work-grain
-    task when none is open; a re-record of the same trajectory replaces its
+    task, titled as its epic else as the trajectory, when none is open; a re-record of the same trajectory replaces its
     round. A run never closes its task, and nothing closes it when its PR
     merges. With no ``session_key`` no register row is written: no session
     owns the run.
@@ -866,8 +866,9 @@ def record_run(
     if not payload["frontmatter"].get("epic_url"):
         asked = _epic_ref(asked, warnings)
     store = TaskStore(cfg)
+    title = payload["frontmatter"].get("epic_title") or payload.get("title", "")
     task = store.open_by_ref(asked) or store.mint(
-        "work", str(payload.get("title", "")), project, asked=asked, session_key=session_key
+        "work", str(title), project, asked=asked, session_key=session_key
     )
     task.put_round(Round.from_devloop(payload, task_id=task.id, trajectory=trajectory))
     task.frontmatter["asked"] = asked

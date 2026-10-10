@@ -149,6 +149,8 @@ class Round:
                 "attempts": int(src.get("fix_rounds") or 0),
             },
         }
+        if "commit_shas" in src:
+            data["did"]["commits"] = list(src["commit_shas"])
         if trajectory:
             data["session_ref"] = SessionRef.note("devloop", trajectory).to_dict()
         if src.get("pr_url"):
