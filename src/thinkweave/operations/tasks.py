@@ -25,7 +25,7 @@ import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from thinkweave.core.buffer import archived_events_path, buffer_path
@@ -251,6 +251,24 @@ class TaskStore:
             if fm.get("asked") == asked and accepts_round(fm, "session"):
                 return Task(fm, path)
         return None
+
+    def open_touching(self, paths: list[str]) -> list[Task]:
+        """Open tasks with a round whose ``did.paths`` names one of
+        ``paths``; absolute and repo-relative forms of a file match."""
+        wanted = [PurePosixPath(p).parts for p in paths if p]
+        found: list[Task] = []
+        for path in self._filed("tsk-*.md"):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            if fm.get("kind") != TASK_KIND or fm.get("status") == "closed":
+                continue
+            touched = [
+                PurePosixPath(p).parts
+                for r in fm.get("rounds") or []
+                for p in (r.get("did") or {}).get("paths") or []
+            ]
+            if any(_same_file(a, b) for a in wanted for b in touched):
+                found.append(Task(fm, path))
+        return found
 
     def for_trajectory(self, note_id: str) -> Task | None:
         """The task, open or closed, holding the devloop round whose session
@@ -1179,6 +1197,13 @@ def _folder_notes(folders: list[Path]):
     for folder in folders:
         for path in folder.rglob("*.md"):
             yield path, parse_frontmatter(path.read_text(encoding="utf-8"))[0]
+
+
+def _same_file(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """Whether two path-part tuples name one file: equal, or one is a
+    trailing suffix of the other (a repo-relative path under an absolute)."""
+    n = min(len(a), len(b))
+    return n > 0 and a[-n:] == b[-n:]
 
 
 def _now() -> str:

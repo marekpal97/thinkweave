@@ -12,7 +12,9 @@ Imports `core/`, `retrieval/`, `synthesis/`, `sources/`, and the
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -36,6 +38,62 @@ from thinkweave.synthesis.concepts import (
 )
 from thinkweave.operations import rejudge_queue
 from thinkweave.synthesis.prediction import append_verdict
+
+
+@dataclass
+class RefEvidence:
+    """The session's tracker-ref evidence, served to the model before it
+    writes the task declaration; it informs ``asked``, never sets it."""
+
+    commit_closes: dict[str, list[str]] = field(default_factory=dict)
+    prs: dict[str, list[str]] = field(default_factory=dict)
+    tasks: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def gather(cls, cfg: Config, session_fm: dict, warnings: list[str]) -> RefEvidence:
+        """Closing refs in the session's commits, the PRs of its pushed
+        branch, and open tasks touching its files. A failed lookup is
+        appended to ``warnings``, never dropped."""
+        from thinkweave.operations.tasks import TaskStore
+
+        evidence = cls()
+        commits = session_fm.get("commits") or []
+        for commit in commits:
+            for ref in _closing_refs(str(commit.get("message", ""))):
+                evidence.commit_closes.setdefault(ref, []).append(
+                    str(commit.get("hash", ""))
+                )
+        branch = session_fm.get("git_branch")
+        if branch:
+            try:
+                evidence.prs = _gh_branch_prs(branch)
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+                warnings.append(f"PR lookup for branch {branch} failed: {reason}")
+        paths = list(session_fm.get("files_touched") or [])
+        paths += [f for c in commits for f in c.get("files") or []]
+        if paths:
+            try:
+                evidence.tasks = {
+                    t.id: t.title for t in TaskStore(cfg).open_touching(paths)
+                }
+            except (OSError, ValueError) as exc:
+                warnings.append(f"open-task lookup by touched file failed: {exc}")
+        return evidence
+
+    def lines(self) -> list[str]:
+        """The report block; empty when there is no evidence."""
+        out = [
+            f"  {ref} closed by commit {', '.join(hashes)}"
+            for ref, hashes in self.commit_closes.items()
+        ]
+        out += [
+            f"  PR {url}" + (f" closes {', '.join(refs)}" if refs else "")
+            for url, refs in self.prs.items()
+        ]
+        out += [f"  open task {tid} ({title}) touched the same files"
+                for tid, title in self.tasks.items()]
+        return ["Ref evidence for the task declaration:", *out] if out else []
 
 
 @dataclass
@@ -66,6 +124,7 @@ class ExtractOutcome:
     processed_at: str = ""
     error: str = ""
     skipped_reason: str = ""
+    ref_evidence: RefEvidence = field(default_factory=RefEvidence)
 
     @property
     def all_created(self) -> list[NoteMeta]:
@@ -368,6 +427,9 @@ def extract_session(
     # and gates whether a `supersedes:` declaration is allowed to flip its
     # predecessors to `superseded` (see the supersession block below).
     session_commits = session_note.frontmatter.get("commits", [])
+    outcome.ref_evidence = RefEvidence.gather(
+        cfg, session_note.frontmatter, outcome.warnings
+    )
 
     for dec in decisions_in:
         outcome_value = dec.get("outcome", "committed")
@@ -624,3 +686,27 @@ def extract_session(
     idx.close()
 
     return outcome
+
+
+_CLOSING_REF_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+((?:[\w.-]+/[\w.-]+)?#\d+)",
+    re.IGNORECASE,
+)
+
+
+def _closing_refs(message: str) -> list[str]:
+    """The refs a commit message closes with GitHub's closing keywords."""
+    return _CLOSING_REF_RE.findall(message)
+
+
+def _gh_branch_prs(branch: str) -> dict[str, list[str]]:
+    """The URL of each PR whose head is ``branch``, with the issue refs it closes."""
+    out = subprocess.run(
+        ["gh", "pr", "list", "--head", branch, "--state", "all",
+         "--json", "url,closingIssuesReferences"],
+        capture_output=True, text=True, timeout=15, check=True,
+    ).stdout
+    return {
+        pr["url"]: [f"#{i['number']}" for i in pr.get("closingIssuesReferences") or []]
+        for pr in json.loads(out or "[]")
+    }
