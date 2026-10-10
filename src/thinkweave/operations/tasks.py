@@ -51,7 +51,6 @@ from thinkweave.core.task_contract import (
 from thinkweave.core.vault import (
     VaultManager,
     find_session_note_by_source,
-    indexed_alias_path,
     indexed_note_path,
     parse_frontmatter,
     render_frontmatter,
@@ -154,17 +153,6 @@ class Task:
         child.frontmatter["parent"] = self.id
         return True
 
-    def absorb(self, other: Task) -> None:
-        """Take ``other``'s rounds (the earlier-dated task's first), its
-        consumed decisions, and its id as an alias: one unit of work that
-        was keyed twice."""
-        first, last = sorted((self, other), key=lambda t: str(t.frontmatter.get("date", "")))
-        self.rounds = first.rounds + last.rounds
-        for key, extra in (("consumes", other.frontmatter.get("consumes")), ("aliases", [other.id])):
-            merged = [*(self.frontmatter.get(key) or []), *(extra or [])]
-            if merged:
-                self.frontmatter[key] = list(dict.fromkeys(merged))
-
     def flag_orphan(self) -> bool:
         """Flag an open dispatch whose close the register lacks; False when
         nothing changed. Work-grain tasks stay open by design."""
@@ -208,9 +196,8 @@ class Task:
 
 
 def _index_now(vm: VaultManager, path: Path) -> None:
-    """Index one just-written note, edges included, or drop the row of one
-    just deleted, so id lookups and graph walks resolve without a walk of
-    the vault.
+    """Index one just-written note, edges included, so id lookups and graph
+    walks resolve without a walk of the vault.
 
     A locked or missing index never fails the write: the markdown is the
     truth, and a note whose indexing failed has no stored hash, so the next
@@ -236,8 +223,7 @@ class TaskStore:
         self.cfg = cfg
 
     def get(self, task_id: str) -> Task | None:
-        """The task note filed under this id, else the task that absorbed it
-        and keeps the id in ``aliases``.
+        """The task note filed under this id.
 
         Index first: ``Task.save`` indexes at write, so ``notes.id`` resolves
         the path in one query. The fallback is a glob bounded to the folders
@@ -248,21 +234,10 @@ class TaskStore:
         """
         if not task_id:
             return None
-        path = (
-            indexed_note_path(self.cfg, task_id)
-            or next(self._filed(f"{task_id}.md"), None)
-            or indexed_alias_path(self.cfg, task_id)
-            or self._absorber(task_id)
+        path = indexed_note_path(self.cfg, task_id) or next(
+            self._filed(f"{task_id}.md"), None
         )
         return Task.load(path) if path else None
-
-    def _absorber(self, task_id: str) -> Path | None:
-        """The filed task note whose ``aliases`` lists ``task_id``."""
-        for path in self._filed("tsk-*.md"):
-            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-            if task_id in (fm.get("aliases") or []):
-                return path
-        return None
 
     def _filed(self, pattern: str):
         """Task-note files matching ``pattern`` in every filing folder."""
@@ -342,40 +317,6 @@ class TaskStore:
             else:
                 closed.append(task.id)
         return TrackerClosures(closed, errors)
-
-    def merge_shared(self, tasks: list[Task]) -> list[SharedAsk]:
-        """Merge each group of work-grain ``tasks`` sharing one ``asked``
-        into its open task, else its earliest, when at most one is open: the
-        kept task absorbs the rest, their children re-parent onto it, their
-        notes go. Every shared ``asked`` is reported."""
-        vm = VaultManager(config=self.cfg)
-        by_ask: dict[str, list[Task]] = {}
-        for task in tasks:
-            if task.grain == "work" and task.frontmatter.get("asked"):
-                by_ask.setdefault(str(task.frontmatter["asked"]), []).append(task)
-        reports: list[SharedAsk] = []
-        for asked, group in by_ask.items():
-            if len(group) < 2:
-                continue
-            ids = tuple(t.id for t in group)
-            live = [t for t in group if not t.closed]
-            if len(live) > 1:
-                reports.append(SharedAsk(asked, ids))
-                continue
-            kept = live[0] if live else min(group, key=lambda t: str(t.frontmatter.get("date", "")))
-            for other in group:
-                if other is kept:
-                    continue
-                kept.absorb(other)
-                for child in tasks:
-                    if child.frontmatter.get("parent") == other.id:
-                        child.frontmatter["parent"] = kept.id
-                        child.save(vm)
-                other.path.unlink()
-                _index_now(vm, other.path)
-            kept.save(vm)
-            reports.append(SharedAsk(asked, ids, kept.id))
-        return reports
 
     def mint(
         self,
@@ -628,16 +569,6 @@ class TrackerClosures:
 
     closed: list[str]
     errors: dict[str, str]
-
-
-@dataclass(frozen=True)
-class SharedAsk:
-    """Work-grain tasks that share one ``asked``; ``kept`` is the task the
-    others merged into, ``""`` when more than one is open."""
-
-    asked: str
-    task_ids: tuple[str, ...]
-    kept: str = ""
 
 
 @dataclass(frozen=True)

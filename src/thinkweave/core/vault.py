@@ -242,19 +242,6 @@ def indexed_note_path(cfg: Config, note_id: str) -> Path | None:
     return _index_probe(cfg, "SELECT path FROM notes WHERE id = ? LIMIT 1", (note_id,))
 
 
-def indexed_alias_path(cfg: Config, note_id: str) -> Path | None:
-    """The indexed file of another note whose ``aliases`` lists this id —
-    the note that absorbed it."""
-    if not note_id:
-        return None
-    return _index_probe(
-        cfg,
-        "SELECT n.path FROM notes n, json_each(n.frontmatter, '$.aliases') a "
-        "WHERE a.value = ? AND n.id != ? LIMIT 1",
-        (note_id, note_id),
-    )
-
-
 def indexed_session_path(cfg: Config, session_id: str) -> Path | None:
     """The indexed ``session.md`` whose ``id`` OR ``source_session`` is this id.
 

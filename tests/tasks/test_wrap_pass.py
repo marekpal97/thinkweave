@@ -865,19 +865,18 @@ class TestLedgerMigration:
 
 class TestRawRefMigration:
     """A task stored under a raw ``owner/repo#N`` folds to its ref; tasks the
-    fold makes share one ``asked`` merge when at most one is open."""
+    fold makes share one ``asked`` are reported, not changed."""
 
     RAW = "o/r#77"
     REF = "github:o/r#77"
 
     def seed(self, cfg: Config, task_id: str, *, asked: str, status: str, date: str,
-             rounds: list[dict] | None = None, parent: str = ""):
-        seed_stub(cfg, task_id, grain="per-dispatch" if parent else "work", parent=parent)
-        updates = {"status": status, "date": date, "rounds": rounds or []}
-        if asked:
-            updates["asked"] = asked
+             rounds: list[dict] | None = None):
+        seed_stub(cfg, task_id, grain="work")
         VaultManager(config=cfg).update_note(
-            note_path(cfg, task_id), frontmatter_updates=updates
+            note_path(cfg, task_id),
+            frontmatter_updates={"status": status, "date": date, "rounds": rounds or [],
+                                 "asked": asked},
         )
 
     def session_round(self, value: str) -> dict:
@@ -899,42 +898,18 @@ class TestRawRefMigration:
         assert result.minted == [] and result.appended == ["tsk-0a0a0a0a"]
         assert task_notes(cfg)["tsk-0a0a0a0a"]["asked"] == self.REF
 
-    def test_a_raw_and_a_folded_task_on_one_ref_merge_into_the_open_one(self, cfg: Config):
+    def test_a_raw_and_a_folded_task_on_one_ref_are_reported_and_kept(self, cfg: Config):
+        from thinkweave.operations.migrations import SharedAsk
+
         self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01",
                   rounds=[self.session_round("s-1")])
         self.seed(cfg, "tsk-0b0b0b0b", asked=self.REF, status="closed", date="2026-10-03",
                   rounds=[self.session_round("s-2")])
-        self.seed(cfg, "tsk-0c0c0c0c", asked="", status="closed", date="2026-10-03",
-                  parent="tsk-0b0b0b0b")
+        seeded = task_notes(cfg)
         report = self.migrate(cfg)
-        (shared,) = report.shared
-        assert shared.asked == self.REF and shared.kept == "tsk-0a0a0a0a"
-        assert set(shared.task_ids) == {"tsk-0a0a0a0a", "tsk-0b0b0b0b"}
+        assert report.shared == (SharedAsk(self.REF, ("tsk-0a0a0a0a", "tsk-0b0b0b0b")),)
         notes = task_notes(cfg)
-        assert "tsk-0b0b0b0b" not in notes
-        kept = notes["tsk-0a0a0a0a"]
-        assert validate_task_note(kept) == []
-        assert kept["asked"] == self.REF and kept["status"] == "open"
-        assert [r["session_ref"]["value"] for r in kept["rounds"]] == ["s-1", "s-2"]
-        assert "tsk-0b0b0b0b" in kept["aliases"]
-        assert notes["tsk-0c0c0c0c"]["parent"] == "tsk-0a0a0a0a"
-        assert self.migrate(cfg).shared == ()
-
-    def test_two_open_tasks_on_one_ref_are_reported_not_merged(self, cfg: Config):
-        self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01")
-        self.seed(cfg, "tsk-0b0b0b0b", asked=self.REF, status="open", date="2026-10-03")
-        (shared,) = self.migrate(cfg).shared
-        assert shared.kept == ""
-        assert set(task_notes(cfg)) == {"tsk-0a0a0a0a", "tsk-0b0b0b0b"}
-
-    def test_a_merged_away_id_resolves_to_the_task_that_absorbed_it(self, cfg: Config):
-        self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01")
-        self.seed(cfg, "tsk-0b0b0b0b", asked=self.REF, status="closed", date="2026-10-03")
-        self.migrate(cfg)
-        from thinkweave.core.vault import indexed_alias_path
-
-        assert indexed_alias_path(cfg, "tsk-0b0b0b0b") == note_path(cfg, "tsk-0a0a0a0a")
-        store = tasks.TaskStore(cfg)
-        assert store.get("tsk-0b0b0b0b").id == "tsk-0a0a0a0a"  # by the index
-        cfg.index_db.unlink()
-        assert store.get("tsk-0b0b0b0b").id == "tsk-0a0a0a0a"  # by the filing folders
+        assert notes["tsk-0b0b0b0b"] == seeded["tsk-0b0b0b0b"]
+        assert notes["tsk-0a0a0a0a"] == {**seeded["tsk-0a0a0a0a"], "asked": self.REF}
+        rerun = self.migrate(cfg)
+        assert rerun.rewritten == 0 and rerun.shared == report.shared
