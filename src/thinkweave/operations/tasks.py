@@ -564,6 +564,29 @@ class RunLanded:
 
 
 @dataclass(frozen=True)
+class IssueNode:
+    """One GitHub issue's place in its sub-issue tree: how many sub-issues
+    it has, and its parent's tracker ref (``""`` for none)."""
+
+    sub_issues: int = 0
+    parent: str = ""
+
+    @classmethod
+    def from_api(cls, fields: dict) -> IssueNode:
+        """The node ``gh api``'s issue fields describe."""
+        parent = str(fields.get("parent_issue_url") or "")
+        return cls(
+            sub_issues=int((fields.get("sub_issues_summary") or {}).get("total") or 0),
+            parent=normalize_tracker_ref(parent.replace("api.github.com/repos/", "github.com/")),
+        )
+
+    def epic(self, ref: str) -> str:
+        """The nearest epic of the issue ``ref`` names: ``ref`` itself when
+        it has sub-issues, else its parent, else ``ref``."""
+        return ref if self.sub_issues else self.parent or ref
+
+
+@dataclass(frozen=True)
 class TrackerClosures:
     """Which tasks one tracker sweep closed, and why it skipped others
     (``{task id: reason}``)."""
@@ -1069,7 +1092,7 @@ def _epic_ref(ref: str, warnings: list[str], fallback: str = "") -> str:
     if not issue:
         return fallback or ref
     try:
-        found = _gh_issue(issue.repo, issue.number)
+        node = _gh_issue(issue.repo, issue.number)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         kept = fallback or ref
         reason = (getattr(exc, "stderr", "") or str(exc)).strip()
@@ -1078,20 +1101,16 @@ def _epic_ref(ref: str, warnings: list[str], fallback: str = "") -> str:
             "round may miss its nearest epic's task"
         )
         return kept
-    if (found.get("sub_issues_summary") or {}).get("total"):
-        return ref
-    parent = str(found.get("parent_issue_url") or "")
-    return normalize_tracker_ref(parent.replace("api.github.com/repos/", "github.com/")) or ref
+    return node.epic(ref)
 
 
-def _gh_issue(repo: str, number: str) -> dict:
-    """``repo#number``'s ``sub_issues_summary`` and ``parent_issue_url``, as
-    ``gh api`` returns them."""
-    return json.loads(subprocess.run(
+def _gh_issue(repo: str, number: str) -> IssueNode:
+    """``repo#number``'s place in its sub-issue tree, read through ``gh api``."""
+    return IssueNode.from_api(json.loads(subprocess.run(
         ["gh", "api", f"repos/{repo}/issues/{number}",
          "-q", "{sub_issues_summary, parent_issue_url}"],
         capture_output=True, text=True, timeout=15, check=True,
-    ).stdout)
+    ).stdout))
 
 
 def _gh_issue_state(repo: str, number: str) -> str:

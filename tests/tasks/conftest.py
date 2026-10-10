@@ -10,6 +10,7 @@ import pytest
 
 from thinkweave.core.config import Config
 from thinkweave.core.harness import PROFILES
+from thinkweave.operations.tasks import IssueNode
 
 
 @pytest.fixture()
@@ -37,7 +38,7 @@ def cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tracker: dict[str, dict
     # No network: issue lookups read the fake tracker.
     monkeypatch.setattr(
         "thinkweave.operations.tasks._gh_issue",
-        lambda repo, number: tracker.get(f"{repo}#{number}", {}),
+        lambda repo, number: IssueNode.from_api(tracker.get(f"{repo}#{number}", {})),
     )
     return config
 
