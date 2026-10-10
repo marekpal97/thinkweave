@@ -89,6 +89,38 @@ class TestIndexer:
         indexer.index_file(path)
         assert indexer.get_stats()["notes_total"] == 1
 
+    def test_index_file_builds_edges_an_incremental_rebuild_keeps(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        session = vault.read_note(vault.create_note(NoteType.SESSION, "S", project="p"))
+        indexer.rebuild(full=True)
+        path = vault.create_note(
+            NoteType.NOTE, "Insight", project="p",
+            extra_frontmatter={"derived_from": [session.id]},
+        )
+        indexer.index_file(path)
+        indexer.rebuild()  # the note's hash is unchanged, so this skips it
+        note = vault.read_note(path)
+        edges = indexer.db.execute(
+            "SELECT target FROM edges WHERE source = ?", (note.id,)
+        ).fetchall()
+        assert session.id in [r["target"] for r in edges]
+
+    def test_reindexing_a_target_keeps_the_edges_declared_into_it(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        target = vault.create_note(NoteType.NOTE, "Insight", project="p")
+        tid = vault.read_note(target).id
+        source = vault.create_note(
+            NoteType.NOTE, "Task", project="p", extra_frontmatter={"related": [tid]},
+        )
+        indexer.rebuild(full=True)
+        indexer.index_file(target)
+        sid = vault.read_note(source).id
+        assert indexer.db.execute(
+            "SELECT 1 FROM edges WHERE source = ? AND target = ?", (sid, tid)
+        ).fetchone()
+
     def test_multiple_note_types(self, vault: VaultManager, indexer: Indexer):
         vault.create_note(NoteType.NOTE, "A Note", project="p")
         vault.create_note(NoteType.SESSION, "A Session", project="p")

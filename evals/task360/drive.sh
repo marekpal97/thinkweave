@@ -56,8 +56,7 @@ scenario_S2() { _solo S2; }
 
 scenario_S3() {  # two background helpers that outlive the parent's turn
   start S3 claude && say S3 "$(prompt S3.1)" || return 1
-  herdr agent wait "$(_name S3)" --until working --timeout "$TIMEOUT_MS" >/dev/null
-  settle S3 && say S3 "$(prompt S3.2)" && wrap S3 && stop S3
+  helpers_closed S3 2 && settle S3 && say S3 "$(prompt S3.2)" && wrap S3 && stop S3
 }
 
 scenario_S4() { _solo S4; }
@@ -250,6 +249,21 @@ settle() {  # settle <label>: idle, and no shell left running under the agent
     sleep 5
   done
   echo "$1: still busy after ${TIMEOUT_MS}ms" >&2
+  return 1
+}
+
+helpers_closed() {  # helpers_closed <label> <n>: n helpers opened and every one closed,
+  # read from the session's register; a status wait misses helpers that finish fast
+  local log deadline=$((SECONDS + TIMEOUT_MS / 1000))
+  log=$VAULT/.weave/buffer/$(_get "labels.$1.session").jsonl
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    [ -f "$log" ] && jq -se --argjson n "$2" '
+      [.[] | select(.type == "task_open" and .grain != "work") | .task_id] as $o
+      | [.[] | select(.type == "task_close") | .task_id] as $c
+      | ($o | length) >= $n and ($o - $c | length) == 0' "$log" >/dev/null && return 0
+    sleep 10
+  done
+  echo "$1: $2 helpers not all closed after ${TIMEOUT_MS}ms" >&2
   return 1
 }
 

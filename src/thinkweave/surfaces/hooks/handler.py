@@ -405,6 +405,17 @@ def _subagent_session_id(hook_input: dict) -> str:
     return session_id
 
 
+# Blocks the harness delivers through the prompt channel without the user
+# typing them, such as Claude Code's background-task completion notices.
+_INJECTED = re.compile(r"\s*(<(task-notification|system-reminder)>.*?</\2>\s*)+", re.S)
+
+
+def _harness_injected(text: str) -> bool:
+    """Whether the prompt is only harness-injected blocks, which no reader of
+    "what the user asked" should see as the user's words."""
+    return bool(_INJECTED.fullmatch(text))
+
+
 def _handle_user_prompt_submit(hook_input: dict) -> None:
     """UserPromptSubmit: append a structured prompt event to the JSONL buffer.
 
@@ -425,7 +436,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
 
         session_id = hook_input.get("session_id") or _env_session_id()
         prompt_text = hook_input.get("prompt", hook_input.get("user_prompt", ""))
-        if not session_id or not prompt_text:
+        if not session_id or not prompt_text or _harness_injected(prompt_text):
             _output()
             return
 

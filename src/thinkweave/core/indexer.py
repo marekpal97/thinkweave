@@ -649,7 +649,12 @@ class Indexer:
         return stats
 
     def index_file(self, path: Path) -> None:
-        """Index or re-index a single file. Used by hooks for incremental updates."""
+        """Index or re-index a single file, edges included.
+
+        Callers write a note and index it at once, so a later incremental
+        ``rebuild`` sees an unchanged hash and skips it: edges built here are
+        the only ones the note gets before a full rebuild.
+        """
         if path.name in landing_filename_set(self.config.vault_root):
             return  # Landing docs are excluded from the index
         if path.name in SOURCE_COMPANION_FILENAMES:
@@ -663,7 +668,7 @@ class Indexer:
         text = path.read_text(encoding="utf-8")
         file_hash = content_hash(text)
         rel_path = self._rel_path(path)
-        self._index_file(path, text, file_hash, rel_path)
+        self._rebuild_edges_incremental({self._index_file(path, text, file_hash, rel_path)})
 
         # If this is a session note, project its sibling retrieval_log.jsonl
         # opportunistically — wrap-finalize's incremental index pass relies on
@@ -1105,9 +1110,11 @@ class Indexer:
         """Rebuild ONLY the edges touching the given changed note IDs.
 
         Used by the incremental rebuild path (``rebuild(full=False)`` and
-        ``index_paths``). Deletes all edges where ``source`` OR ``target``
-        is in ``changed_ids`` and recomputes them from current frontmatter,
-        body, concepts, and tags.
+        ``index_paths``) and by ``index_file``. Deletes the edges out of each
+        changed note and the derived (concept, tag, session-dir) edges into
+        it, then recomputes them from current frontmatter, body, concepts,
+        and tags. Inbound frontmatter and wikilink edges belong to their
+        unchanged source and are kept.
 
         **Outbound** categories (frontmatter, wikilink, session-dir) are
         recomputed per changed note — fully scoped.
@@ -1143,15 +1150,18 @@ class Indexer:
         # SQLite's compile-time variable limit is 999 by default; chunk to be safe.
         CHUNK = 500
 
-        # ── Delete edges incident to any changed note (both directions) ──
-        # Pairwise edges like (other, X) where X is changed-as-target must
-        # also be cleared so we can re-emit them with current shared concepts.
+        # ── Delete the edges this pass re-emits ──
+        # Every edge out of a changed note, and the inbound edges derived
+        # from it (concept, tag, session-dir pairs, which can land with X as
+        # target). An inbound frontmatter or wikilink edge is declared by its
+        # unchanged source and is not re-emitted here, so it stays.
         for i in range(0, len(changed_list), CHUNK):
             chunk = changed_list[i:i + CHUNK]
             placeholders = ",".join("?" * len(chunk))
             self.db.execute(
                 f"DELETE FROM edges WHERE source IN ({placeholders}) "
-                f"OR target IN ({placeholders})",
+                f"OR (target IN ({placeholders}) AND json_extract(metadata, '$.via') "
+                f"IN ('concept', 'tag', 'session_dir'))",
                 chunk + chunk,
             )
 
