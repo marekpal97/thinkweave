@@ -890,6 +890,20 @@ class TestRawRefMigration:
 
         return migrate_task_notes_to_ledger(cfg)
 
+    def test_a_round_recorded_before_260_gains_the_reviews_key(self, cfg: Config):
+        review = {"gate": "judge", "finding": "f", "severity": "problem",
+                  "disposition": "routed-to-human", "fixed_by": ""}
+        legacy = {"route": "devloop",
+                  "session_ref": {"harness": "devloop", "kind": "note", "value": "n-1"},
+                  "rounds": [review], "simplify": {"applied": 0}}
+        self.seed(cfg, "tsk-0c0c0c0c", asked=self.REF, status="open", date="2026-10-05",
+                  rounds=[legacy])
+        self.migrate(cfg)
+        fm = task_notes(cfg)["tsk-0c0c0c0c"]
+        assert validate_task_note(fm) == []
+        assert fm["rounds"][0]["reviews"] == [review]
+        assert "rounds" not in fm["rounds"][0] and "simplify" not in fm["rounds"][0]
+
     def test_a_wrap_on_the_raw_ref_continues_the_migrated_open_task(self, cfg: Config):
         self.seed(cfg, "tsk-0a0a0a0a", asked=self.RAW, status="open", date="2026-10-01")
         self.migrate(cfg)

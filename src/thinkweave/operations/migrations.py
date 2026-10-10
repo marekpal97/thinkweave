@@ -94,6 +94,7 @@ def migrate_task_notes_to_ledger(config: Config) -> LedgerMigration:
         if fm.get("kind") != "task":
             continue
         fm.pop("outcome", None)
+        _upgrade_devloop_traces(fm)
         task = Task(fm, path)
         if task.grain == "work":
             task.rounds = [
@@ -143,6 +144,17 @@ def _closes(line: str) -> bool:
     if not body.endswith('"'):
         return False
     return (len(body[:-1]) - len(body[:-1].rstrip("\\"))) % 2 == 0
+
+
+def _upgrade_devloop_traces(fm: dict) -> None:
+    """Bring rounds recorded before #260 to its trace contract: the trace key
+    ``rounds`` becomes ``reviews`` and ``simplify`` goes."""
+    for entry in fm.get("rounds") or []:
+        if not isinstance(entry, dict):
+            continue
+        if "rounds" in entry:
+            entry["reviews"] = entry.pop("rounds")
+        entry.pop("simplify", None)
 
 
 def _legacy_route(entry) -> str:
