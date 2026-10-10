@@ -22,6 +22,15 @@ class CommandContract:
     workers: tuple[str, ...]
 
 
+# Outside the repo-root ``skills/`` dir on purpose: Claude Code always scans
+# that dir when it loads the checkout as a plugin, so a projection there is
+# listed a second time as ``thinkweave:thinkweave-*``. Codex finds this dir
+# through ``.codex-plugin/plugin.json``'s ``skills`` key instead.
+CODEX_SKILLS_RELPATH = Path("codex") / "skills"
+# From ``codex/skills/<skill>/SKILL.md`` back up to the repo root.
+_TO_REPO_ROOT = "../" * (len(CODEX_SKILLS_RELPATH.parts) + 1)
+
+
 def codex_skill_name(name: str) -> str:
     return f"thinkweave-{name}"
 
@@ -73,7 +82,7 @@ def _quoted(value: str) -> str:
 
 
 def render_codex_skill(contract: CommandContract) -> str:
-    command_ref = "../../" + contract.source_relpath.as_posix()
+    command_ref = _TO_REPO_ROOT + contract.source_relpath.as_posix()
     lines = [
         "---",
         f"name: {codex_skill_name(contract.name)}",
@@ -82,7 +91,7 @@ def render_codex_skill(contract: CommandContract) -> str:
         "",
         f"# Codex projection for `/{contract.name}`",
         "",
-        "Read the [shared Codex adapter](../../docs/CODEX-SKILL-PROJECTION.md)",
+        f"Read the [shared Codex adapter]({_TO_REPO_ROOT}docs/CODEX-SKILL-PROJECTION.md)",
         "and the [canonical ThinkWeave command contract]"
         f"({command_ref}) completely, then execute the canonical contract through",
         "that adapter.",
@@ -95,7 +104,7 @@ def render_codex_skill(contract: CommandContract) -> str:
             "worker contracts:",
             "",
         ]
-        lines += [f"- [`{worker}`](../../agents/{worker}.md)" for worker in contract.workers]
+        lines += [f"- [`{worker}`]({_TO_REPO_ROOT}agents/{worker}.md)" for worker in contract.workers]
 
     if contract.name in {"dream", "drain"}:
         lines += [
@@ -136,7 +145,7 @@ def render_codex_metadata(contract: CommandContract) -> str:
 def write_codex_projections(repo_root: Path) -> None:
     commands_root = repo_root / "commands"
     agents_root = repo_root / "agents"
-    skills_root = repo_root / "skills"
+    skills_root = repo_root / CODEX_SKILLS_RELPATH
     seen: dict[str, Path] = {}
     for contract in iter_command_contracts(commands_root, agents_root):
         skill_name = codex_skill_name(contract.name)

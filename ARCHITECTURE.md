@@ -68,7 +68,7 @@ Dependency rule: `core/` imports nothing from the rest; `retrieval/` and `synthe
 The harness interaction layer sits on top: lifecycle hooks feed session events
 into the knowledge layer via the CLI, while skills drive it through MCP tools.
 Claude Code consumes `commands/**/*.md` and `agents/*.md` directly. Codex
-consumes small generated adapters under `skills/`; those adapters point back to
+consumes small generated adapters under `codex/skills/`; those adapters point back to
 the same command and worker contracts and translate only harness vocabulary
 (including native subagent dispatch). Both harnesses are clients of the
 knowledge API; neither is a peer.
@@ -467,7 +467,7 @@ The framework's *internal* contracts (layer dependencies, operations seam, retri
 | Module entry | `python -m thinkweave.mcp.server` | back-compat shim | external configs that haven't migrated to `weave-mcp` yet |
 | Hook subcommands | `weave-hook {session_start,user_prompt_submit,pre_tool_use,post_tool_use,stop}` | stable | every entry in `.claude/settings.json` written by `weave hooks install` |
 | Skill files | `commands/<name>.md` filenames | stable | `/<name>` invocations and the `.claude/plugins/thinkweave/` symlinks |
-| Codex skill projection | `skills/thinkweave-<name>/SKILL.md` | generated | `$thinkweave-<name>` discovery; regenerate via `python -m thinkweave.core.skill_projection` |
+| Codex skill projection | `codex/skills/thinkweave-<name>/SKILL.md` | generated | `$thinkweave-<name>` discovery; regenerate via `python -m thinkweave.core.skill_projection` |
 | YAML keys | `sources.<slug>.{queue,research_skill,drain_strategy,dedup_keys,url_patterns,intake_folder}`, `projects.<name>.{discover_strategies,…}`, `landing_files.{state,backlog,decisions,themes,research_focus}`, `auto_todo_extraction` | stable | every user's `vault/config/sources.yaml` |
 
 The rule: when restructuring internal modules, treat anything in this table as an immovable identifier. Internal layout (`thinkweave/foo/bar.py`) is private; the names here are the contract. If you must rename one, add a back-compat alias for one release before removing.

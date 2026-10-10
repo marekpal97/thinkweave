@@ -11,7 +11,7 @@ Three facts drive every test here, all measured or read on 2026-09-03/05
   ``settings.json`` entry, and the doctor checks the adapter is installed.
 * Pi discovers root ``*.md`` files in ``~/.pi/agent/skills`` as skills. The
   installer links the canonical ``commands/*.md`` there by name — NOT the
-  Codex ``skills/`` bundle, whose ``../../docs`` pointer resolves to nothing
+  Codex ``codex/skills/`` bundle, whose ``../../../docs`` pointer resolves to nothing
   from the Pi skills dir (the breakage that motivated this work).
 * Worker-backed commands are not linked: Pi has no subagents.
 
@@ -209,11 +209,11 @@ class TestRootFileSkills:
         self, pi_home: Path, installable, requires_symlinks, capsys
     ):
         """The breakage that motivated this: `thinkweave-*` dirs symlinked
-        from the Codex projection bundle say "read ../../docs/…", which from
+        from the Codex projection bundle say "read ../../../docs/…", which from
         ~/.pi/agent/skills is nothing."""
         skills = pi_home / "skills"
         skills.mkdir(parents=True)
-        (skills / "thinkweave-wrap").symlink_to(REPO_ROOT / "skills" / "thinkweave-wrap")
+        (skills / "thinkweave-wrap").symlink_to(REPO_ROOT / "codex" / "skills" / "thinkweave-wrap")
         (skills / "thinkweave-gone").symlink_to(pi_home / "nowhere" / "thinkweave-gone")
         # A user's own skill dir named like ours but NOT a projection stays.
         mine = skills / "thinkweave-mine"
@@ -453,7 +453,7 @@ class TestDoctorExtensionStub:
 
 class TestDevLinkRefusedOnPi:
     """Pi discovers SKILL.md dirs recursively, so a whole-checkout symlink in
-    ~/.pi/agent/skills would re-expose the Codex ``skills/thinkweave-*``
+    ~/.pi/agent/skills would re-expose the Codex ``codex/skills/thinkweave-*``
     bundle — the original breakage. Before this gate the command died on the
     missing ``package.json`` manifest with "run from a thinkweave checkout",
     which lied about the cause."""
@@ -469,7 +469,7 @@ class TestDevLinkRefusedOnPi:
         err = capsys.readouterr().err
         assert "weave install --harness pi" in err
         assert "weave hooks install --harness pi --scope user" in err
-        assert "skills/thinkweave-*" in err
+        assert "codex/skills/thinkweave-*" in err
         assert not (pi_home / "skills" / "thinkweave").exists()
         assert not (pi_home / "skills").exists()  # touched nothing
 

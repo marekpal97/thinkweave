@@ -102,7 +102,7 @@ weave_create(
 
 For the `source` path (when content clearly maps to a registered
 source type), follow the same shape but with `type="source"` and the
-appropriate `source_type` in frontmatter — see `commands/_source_template.md`
+appropriate `source_type` in frontmatter — see `templates/_source_template.md`
 for the canonical fields. **Do NOT set `project`** — sources are global.
 
 ### 6. Report

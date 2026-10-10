@@ -54,7 +54,7 @@ def serves(monkeypatch):
     def _serves(payload: str) -> None:
         monkeypatch.setattr(
             "thinkweave.retrieval.context.build_project_context",
-            lambda cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS: payload,
+            lambda cfg, project, **_kwargs: payload,
         )
 
     return _serves

@@ -24,17 +24,18 @@ def test_codex_plugin_manifest_exposes_bootstrap_skill() -> None:
     )
 
     assert manifest["name"] == "thinkweave"
-    assert manifest["skills"] == "./skills/"
-    assert (root / "skills" / "thinkweave-bootstrap" / "SKILL.md").is_file()
+    assert manifest["skills"] == "./codex/skills/"
+    assert (root / "codex" / "skills" / "thinkweave-bootstrap" / "SKILL.md").is_file()
 
 
 def test_bootstrap_skill_metadata_matches_the_other_codex_skills() -> None:
-    """Same shape every other `skills/*/agents/openai.yaml` carries — the
+    """Same shape every other `codex/skills/*/agents/openai.yaml` carries — the
     projected-skill suite asserts this across the whole directory, so a
     bootstrap skill that skips it only breaks once the two land together."""
     metadata = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
+            / "codex"
             / "skills"
             / "thinkweave-bootstrap"
             / "agents"

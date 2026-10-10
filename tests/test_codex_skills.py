@@ -19,7 +19,7 @@ from thinkweave.surfaces.mcp.tools import DISPATCH
 
 
 ROOT = Path(__file__).parents[1]
-SKILLS_ROOT = ROOT / "skills"
+SKILLS_ROOT = ROOT / "codex" / "skills"
 COMMANDS_ROOT = ROOT / "commands"
 AGENTS_ROOT = ROOT / "agents"
 
@@ -44,7 +44,7 @@ def test_every_supported_command_has_a_drift_free_codex_projection() -> None:
         assert metadata.keys() == {"name", "description"}
         assert metadata["name"] == codex_skill_name(contract.name)
         assert metadata["description"].strip()
-        assert "../../docs/CODEX-SKILL-PROJECTION.md" in skill_file.read_text(
+        assert "../../../docs/CODEX-SKILL-PROJECTION.md" in skill_file.read_text(
             encoding="utf-8"
         )
 

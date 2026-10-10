@@ -7,7 +7,7 @@
   "repository": "https://github.com/marekpal97/thinkweave",
   "license": "MIT",
   "keywords": ["memory", "obsidian", "codex"],
-  "skills": "./skills/",
+  "skills": "./codex/skills/",
   "interface": {
     "displayName": "ThinkWeave",
     "shortDescription": "Durable memory for Codex sessions.",

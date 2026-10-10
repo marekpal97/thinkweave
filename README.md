@@ -263,7 +263,7 @@ session boundary for rich synthesis. Raw `weave_extract` is only the fallback
 when the wrap skill is unavailable and session-end hooks are not trusted.
 
 The repository carries the complete supported Codex skill surface under
-`skills/`, projected from the same `commands/**/*.md` contracts Claude Code
+`codex/skills/`, projected from the same `commands/**/*.md` contracts Claude Code
 uses. Codex invokes them as `$thinkweave-<name>`. Worker-backed skills use
 native Codex subagents while preserving the shared worker contract in
 `agents/*.md`; `/dream` and `/drain` visibly mark unattended/headless execution

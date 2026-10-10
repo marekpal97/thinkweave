@@ -39,6 +39,12 @@ SECTIONS = (
     "footer",
 )
 
+# SessionStart omits "tools" and "footer": Claude Code defers MCP tool schemas
+# and surfaces them through ToolSearch, so a manifest of the weave_* tools and a
+# retrieval-hints table restate what the tool descriptions already carry.
+# ``weave_project_snapshot`` still serves every section on request.
+SESSION_START_SECTIONS = tuple(s for s in SECTIONS if s not in ("tools", "footer"))
+
 # Drop order when over budget. Header/tools/state/sessions are load-bearing
 # and dropped last; decorative sections go first.
 _DROP_ORDER = ("sources", "themes", "concepts", "probes", "decisions", "backlog")
@@ -54,6 +60,9 @@ class Section:
     # Soft per-section budget in characters. Used only as a hint when the
     # section itself decides whether to inline more or truncate.
     soft_budget_chars: int = 0
+    # Placeholder with nothing to report ("no decisions yet"). Faults such as
+    # "index not built" are NOT empty — they stay visible.
+    empty: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +76,7 @@ def build_project_context(
     *,
     sections: list[str] | None = None,
     budget_tokens: int = 10000,
+    omit_empty: bool = False,
 ) -> str:
     """Assemble the structured context payload for a project.
 
@@ -75,6 +85,7 @@ def build_project_context(
         project: Project slug. If empty, uses cfg.default_project.
         sections: Optional subset of SECTIONS to include. Default: all.
         budget_tokens: Soft cap on the total payload size in tokens.
+        omit_empty: Drop placeholder sections that have nothing to report.
 
     Returns:
         A markdown string with ``## Heading`` sections. If the vault is
@@ -101,7 +112,7 @@ def build_project_context(
                 body=f"_(section failed: {type(e).__name__}: {e})_",
                 soft_budget_chars=200,
             )
-        if section is not None:
+        if section is not None and not (omit_empty and section.empty):
             collected[key] = section
 
     max_chars = budget_tokens * CHARS_PER_TOKEN
@@ -302,6 +313,7 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
             key="sessions",
             title=_default_title("sessions"),
             body="_(no wrapped sessions found — run `/wrap` at session end)_",
+            empty=True,
             soft_budget_chars=200,
         )
 
@@ -459,7 +471,7 @@ def _build_state_excerpt(cfg: Config, project: str, max_chars: int = 12000) -> S
     from thinkweave.synthesis.landing import landing_filenames
 
     if not project:
-        return Section("state", _default_title("state"), "_(no project set)_", 100)
+        return Section("state", _default_title("state"), "_(no project set)_", 100, empty=True)
 
     state_name = landing_filenames(cfg.vault_root)["state"]
     state_path = cfg.vault_root / "projects" / project / state_name
@@ -468,6 +480,7 @@ def _build_state_excerpt(cfg: Config, project: str, max_chars: int = 12000) -> S
             key="state",
             title=_default_title("state"),
             body=f"_({state_name} not found — run `weave landing --doc state`)_",
+            empty=True,
             soft_budget_chars=200,
         )
 
@@ -490,7 +503,7 @@ def _build_backlog(cfg: Config, project: str) -> Section:
     from thinkweave.synthesis.landing import landing_filenames
 
     if not project:
-        return Section("backlog", _default_title("backlog"), "_(no project set)_", 100)
+        return Section("backlog", _default_title("backlog"), "_(no project set)_", 100, empty=True)
 
     backlog_name = landing_filenames(cfg.vault_root)["backlog"]
     backlog_path = cfg.vault_root / "projects" / project / backlog_name
@@ -499,6 +512,7 @@ def _build_backlog(cfg: Config, project: str) -> Section:
             key="backlog",
             title=_default_title("backlog"),
             body=f"_({backlog_name} not found — run `weave landing --doc backlog`)_",
+            empty=True,
             soft_budget_chars=200,
         )
 
@@ -509,6 +523,7 @@ def _build_backlog(cfg: Config, project: str) -> Section:
             key="backlog",
             title=_default_title("backlog"),
             body="_(no open backlog items)_",
+            empty=True,
             soft_budget_chars=200,
         )
 
@@ -554,6 +569,7 @@ def _build_recent_decisions(cfg: Config, project: str, n: int = 10) -> Section:
             key="decisions",
             title=_default_title("decisions"),
             body="_(no decisions yet)_",
+            empty=True,
             soft_budget_chars=200,
         )
 
@@ -627,6 +643,7 @@ def _build_open_probes(cfg: Config, project: str, n: int = 20) -> Section:
             key="probes",
             title=_default_title("probes"),
             body="_(no open probes)_",
+            empty=True,
             soft_budget_chars=200,
         )
 
@@ -677,6 +694,7 @@ def _build_concept_histogram(cfg: Config, project: str, n: int = 20) -> Section:
             key="concepts",
             title=_default_title("concepts"),
             body="_(no concepts indexed yet)_",
+            empty=True,
             soft_budget_chars=200,
         )
 
@@ -722,6 +740,7 @@ def _build_recent_sources(cfg: Config, project: str, n: int = 5) -> Section:
             key="sources",
             title=_default_title("sources"),
             body="_(no sources yet)_",
+            empty=True,
             soft_budget_chars=200,
         )
 

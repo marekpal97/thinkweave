@@ -1606,7 +1606,10 @@ def _handle_session_start(hook_input: dict) -> None:
     try:
         from thinkweave.core.config import load_config
         from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
-        from thinkweave.retrieval.context import build_project_context
+        from thinkweave.retrieval.context import (
+            SESSION_START_SECTIONS,
+            build_project_context,
+        )
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
@@ -1649,7 +1652,11 @@ def _handle_session_start(hook_input: dict) -> None:
 
         project = detect_project(hook_input.get("cwd", ""))
         payload = build_project_context(
-            cfg, project, budget_tokens=SESSION_START_BUDGET_TOKENS
+            cfg,
+            project,
+            sections=list(SESSION_START_SECTIONS),
+            budget_tokens=SESSION_START_BUDGET_TOKENS,
+            omit_empty=True,
         )
 
         # Served note ids — computed once, reused for the RLVR startup event

@@ -1714,7 +1714,8 @@ class TestSessionStartHandler:
         assert "Populated session" in ctx
         assert "An insight title" in ctx
         assert "## Header" in ctx
-        assert "## Available MCP Tools" in ctx
+        assert "## Available MCP Tools" not in ctx
+        assert "## Retrieval Hints" not in ctx
 
     def test_failure_in_payload_does_not_block(self, tmp_path: Path, monkeypatch):
         """Hook must always exit cleanly, even if the payload builder raises."""
