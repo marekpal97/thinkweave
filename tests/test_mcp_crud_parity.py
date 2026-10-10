@@ -165,6 +165,42 @@ class TestCreateParity:
 # --- handle_update parity -------------------------------------------------
 
 
+# --- handle_create required-surface validation (Rail B, 2026-10-10) -------
+
+
+class TestCreateValidation:
+    """A body-only ``weave_create`` (a Pi-native DeepSeek call that reached
+    ``NoteType(args['type'])`` and KeyErrored into an EMPTY tool result) must
+    now return a surfaced, actionable error so the model can self-correct."""
+
+    def test_body_only_rejected_with_guidance(self, cfg: Config) -> None:
+        result = mcp_notes.handle_create(cfg, {"body": "just a body, no type/title"})
+        msg = _text(result)
+        assert "weave_create rejected" in msg
+        assert "missing required 'type'" in msg
+        assert "missing required 'title'" in msg
+        assert "No note was created" in msg
+
+    def test_missing_title_only(self, cfg: Config) -> None:
+        result = mcp_notes.handle_create(cfg, {"type": "note", "body": "x"})
+        msg = _text(result)
+        assert "weave_create rejected" in msg
+        assert "missing required 'title'" in msg
+
+    def test_invalid_type_enumerated(self, cfg: Config) -> None:
+        result = mcp_notes.handle_create(
+            cfg, {"type": "decisionn", "title": "x", "body": "y"}
+        )
+        msg = _text(result)
+        assert "invalid 'type'" in msg
+        assert "No note was created" in msg
+
+    def test_blank_strings_rejected(self, cfg: Config) -> None:
+        result = mcp_notes.handle_create(cfg, {"type": "   ", "title": "  "})
+        msg = _text(result)
+        assert "weave_create rejected" in msg
+
+
 class TestUpdateParity:
     def _make_note(self, cfg: Config) -> str:
         result = ops.create_note(

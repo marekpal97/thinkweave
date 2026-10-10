@@ -165,6 +165,96 @@ class TestFinalizeWrap:
         assert result.errors == []
         assert result.decisions_judged == 0
 
+    def _seed_work_only_session(
+        self, vault: VaultManager, *, with_decision: bool = False
+    ) -> str:
+        """A processed session that CHANGED FILES (work_evidence) but may or
+        may not have a derived note. Mirrors a /wrap that skipped extraction."""
+        sess_path = vault.create_note(
+            NoteType.SESSION,
+            "Native MCP pivot",
+            body="## Summary\nDid real work.\n",
+            project="t",
+            extra_frontmatter={
+                "processed": True,
+                "commits": ["5a5a398"],
+                "files_touched": ["src/thinkweave/core/harness.py"],
+            },
+        )
+        session_id = vault.read_note(sess_path).id
+        if with_decision:
+            vault.create_note(
+                NoteType.DECISION,
+                "Pi uses native MCP",
+                body="## Context\nx\n\n## Decision\ny\n\n## Consequences\nz",
+                project="t",
+                extra_frontmatter={
+                    "status": "proposed",
+                    "source_session": session_id,
+                    "derived_from": [session_id],
+                    "concepts": ["mcp", "harness"],
+                },
+                output_dir=sess_path.parent,
+            )
+        return session_id
+
+    def test_landing_gap_fails_loud_on_unextracted_work(
+        self, config: Config, vault: VaultManager
+    ):
+        # The 2026-10-10 DeepSeek signature: processed session, files changed,
+        # zero derived notes (weave_extract skipped on 'already processed').
+        session_id = self._seed_work_only_session(vault)
+        _index(config)
+
+        result = finalize_wrap(config, session_id=session_id, project="t")
+
+        assert result.work_evidence is True
+        assert result.derived_landed == 0
+        assert any("derived_landed=0" in e for e in result.errors)
+        assert "force=true" in result.errors[0]
+
+    def test_landing_gap_allow_empty_downgrades_to_warning(
+        self, config: Config, vault: VaultManager
+    ):
+        session_id = self._seed_work_only_session(vault)
+        _index(config)
+
+        result = finalize_wrap(
+            config, session_id=session_id, project="t", allow_empty=True
+        )
+
+        assert result.errors == []
+        assert any("derived_landed=0" in w for w in result.warnings)
+
+    def test_landing_gap_not_fired_when_content_landed(
+        self, config: Config, vault: VaultManager
+    ):
+        session_id = self._seed_work_only_session(vault, with_decision=True)
+        _index(config)
+
+        result = finalize_wrap(config, session_id=session_id, project="t")
+
+        assert result.work_evidence is True
+        assert result.derived_landed >= 1
+        assert result.errors == []
+
+    def test_landing_gap_skips_pure_qa(self, config: Config, vault: VaultManager):
+        # No commits / files_touched → work_evidence False → rail never fires,
+        # even with zero derived notes.
+        _index(config)
+        qa_path = vault.create_note(
+            NoteType.SESSION,
+            "Just a question",
+            body="## Summary\nAnswered.\n",
+            project="t",
+            extra_frontmatter={"processed": True},
+        )
+        qa_id = vault.read_note(qa_path).id
+        _index(config)
+        result = finalize_wrap(config, session_id=qa_id, project="t")
+        assert result.work_evidence is False
+        assert result.errors == []
+
     def test_missing_project_is_recorded_as_error(
         self, config: Config, vault: VaultManager
     ):

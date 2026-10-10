@@ -251,9 +251,22 @@ def extract_session(
 
     if session_note.frontmatter.get("processed") and not force:
         processed_at = session_note.frontmatter.get("processed_at", "unknown date")
+        # Actionable, not terse. A passive Stop-hook auto-extract stamps
+        # processed=true on the live session BEFORE an explicit /wrap runs, so
+        # every interactive /wrap lands here. The correct move is force=true
+        # (it refines the auto-skeleton, it does not duplicate it). Older
+        # wording ("Use force=true to re-extract") read as a risky escape
+        # hatch against the #209 identity guard, and a hesitant model skipped
+        # the whole extraction — silently, because this is a no-op, not an
+        # error. Spell out that force IS the normal path for this session.
         outcome.skipped_reason = (
-            f"Session {session_id} already processed on {processed_at}. "
-            "Use force=true to re-extract."
+            f"Session {session_id} already processed on {processed_at} "
+            "(auto-extract skeleton present). THIS IS THE NORMAL /wrap CATCH-UP "
+            "PATH: call weave_extract again with force=true and your curated "
+            "insights/decisions — force refines the existing skeleton, it does "
+            "not duplicate it. Skipping instead of forcing writes nothing. "
+            "Only caution: confirm the id names THIS live session before "
+            "forcing (never force onto a concurrent session's note)."
         )
         return outcome
 

@@ -54,6 +54,12 @@ class WrapFinalizeResult:
     # The task pass (#189): TaskPassResult.as_dict(), empty when no
     # declaration file was passed.
     tasks: dict = field(default_factory=dict)
+    # Silent-failure rail (2026-10-10): did the session carry real work
+    # evidence (commits / files_touched), and how many notes/decisions
+    # actually landed for it. ``work_evidence and not derived_landed`` on a
+    # processed session is the signature of a /wrap that skipped extraction.
+    work_evidence: bool = False
+    derived_landed: int = 0
     errors: list[str] = field(default_factory=list)
     # Benign anomalies worth surfacing without flipping the exit code
     # (e.g. two verdicts resolving to one prompt).
@@ -81,6 +87,8 @@ class WrapFinalizeResult:
             "verdicts_unmatched": self.verdicts_unmatched,
             "segments": self.segments,
             "tasks": self.tasks,
+            "work_evidence": self.work_evidence,
+            "derived_landed": self.derived_landed,
             "errors": self.errors,
             "warnings": self.warnings,
             "timings": self.timings,
@@ -324,6 +332,81 @@ def _source_session_of(cfg: Config, session_note_id: str) -> str:
     return str(fm.get("source_session") or "")
 
 
+def _wrap_landing_gap(
+    cfg: Config, session_id: str, chain: list[tuple[Path, Path | None, dict | None]]
+) -> tuple[bool, bool, int]:
+    """Return ``(processed, work_evidence, derived_landed)`` for a wrapped session.
+
+    Powers the silent-failure rail. A passive Stop-hook can leave a session
+    marked ``processed`` while an explicit ``/wrap`` extraction silently no-ops
+    (the model saw ``already processed`` and skipped ``force=true``). The old
+    tail hid that: it reindexed 0 notes and exited 0.
+
+    - ``processed``: the session note carries ``processed: true``.
+    - ``work_evidence``: the note carries non-empty ``commits`` or
+      ``files_touched`` — real file/code work. A pure Q&A wrap has none, so it
+      never trips the rail.
+    - ``derived_landed``: notes that landed with a ``derived_from`` edge onto
+      this session (insights + decisions + todos all carry it). ``-1`` when the
+      index is unreadable — the caller treats that as "do not fire."
+    """
+    from thinkweave.retrieval.search import Search
+
+    fm: dict = {}
+    for _ev, _d, f in chain:
+        if f:
+            fm = f
+            break
+
+    landed = -1
+    try:
+        s = Search(config=cfg)
+        try:
+            row = s.get_note_by_id(session_id)
+            if row is None:
+                # Caller passed a raw harness UUID — find the note stamped with
+                # it as source_session (extract keys derived edges off that).
+                found = s.list_notes(
+                    note_type="session", source_sessions=[session_id], limit=1
+                )
+                if found:
+                    row = s.get_note_by_id(found[0].id)
+            if row is not None:
+                try:
+                    note_fm = json.loads(row["frontmatter"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    note_fm = {}
+                # The derived index is authoritative for commits / files_touched
+                # (the chain frontmatter can be sparse in synthetic callers).
+                for k in (
+                    "processed", "commits", "files_touched",
+                    "id", "source_session",
+                ):
+                    if k in note_fm:
+                        fm[k] = note_fm[k]
+
+            ids: set[str] = {session_id}
+            for key in ("id", "source_session"):
+                v = fm.get(key)
+                if v:
+                    ids.add(str(v))
+            ph = ",".join("?" for _ in ids)
+            cur = s.db.execute(
+                "SELECT COUNT(DISTINCT source) FROM edges "
+                f"WHERE edge_type = 'derived_from' AND target IN ({ph})",
+                list(ids),
+            ).fetchone()
+            landed = int(cur[0]) if cur else 0
+        finally:
+            s.close()
+    except (FileNotFoundError, sqlite3.Error):
+        landed = -1
+
+    processed = bool(fm.get("processed"))
+    work_evidence = bool(fm.get("commits")) or bool(fm.get("files_touched"))
+    return processed, work_evidence, landed
+
+
 def _append_verdict_events(
     session_id: str,
     verdicts: list[dict],
@@ -502,6 +585,7 @@ def finalize_wrap(
     prune: bool = True,
     verdicts: list[dict] | None = None,
     tasks: dict | None = None,
+    allow_empty: bool = False,
 ) -> WrapFinalizeResult:
     """Run the deterministic post-extraction chain in one process.
 
@@ -526,6 +610,9 @@ def finalize_wrap(
        wrap skill makes, not this deterministic tail.
     5. **drift** — read-only concept-drift advisory; surfaced in the result,
        never acted on here.
+    6. **silent-failure rail** — a session that changed files but landed zero
+       derived notes is a broken ``/wrap`` (the extraction no-op'd). Records an
+       error (exit 1) unless ``allow_empty`` downgrades it to a warning.
 
     Every step is wrapped: a failure in one is recorded in ``errors`` and the
     rest still run. Returns a :class:`WrapFinalizeResult`.
@@ -720,5 +807,35 @@ def finalize_wrap(
         result.errors.append(f"drift: {e}")
     finally:
         result.timings["drift"] = time.perf_counter() - _t
+
+    # 6. silent-failure rail (2026-10-10) --------------------------------
+    # A passive Stop-hook marks the live session processed BEFORE an explicit
+    # /wrap runs. A model that then treats the ``already processed`` no-op as
+    # final (instead of re-running weave_extract with force=true) writes
+    # NOTHING — and the old tail reindexed 0 notes and exited 0, so the loss
+    # was silent. Fire loudly when the session changed files (work_evidence)
+    # but zero derived notes landed. Pure Q&A wraps have no work evidence and
+    # stay green; ``allow_empty`` downgrades the error for a deliberate
+    # nothing-to-capture wrap.
+    try:
+        processed, work_evidence, landed = _wrap_landing_gap(cfg, session_id, chain)
+        result.work_evidence = work_evidence
+        result.derived_landed = landed
+        if work_evidence and landed == 0:
+            gap_msg = (
+                "no insights/decisions/todos landed for a session that changed "
+                "files (work_evidence=True, derived_landed=0) — /wrap most "
+                "likely skipped weave_extract on an 'already processed' no-op "
+                "instead of re-running with force=true; this session's "
+                "knowledge was NOT captured. Re-run weave_extract with "
+                "force=true (pass --allow-empty only if there was genuinely "
+                "nothing to record)."
+            )
+            if allow_empty:
+                result.warnings.append(gap_msg)
+            else:
+                result.errors.append(gap_msg)
+    except Exception as e:  # noqa: BLE001 — a broken rail must not mask the rest
+        result.warnings.append(f"landing-gap check: {e}")
 
     return result
