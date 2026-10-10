@@ -801,7 +801,8 @@ class _DeclarationPass:
         self.folders = folders
         self.result = TaskPassResult()
         self.repo = current_repo()
-        notes = [fm for _path, fm in _folder_notes(folders)]
+        filed = list(_folder_notes(folders))
+        notes = [fm for _path, fm in filed]
         session_notes = [fm for fm in notes if fm.get("type") == "session"]
         sessions = [str(fm.get("id")) for fm in session_notes]
         # weave_extract derives insights from the harness session id.
@@ -817,6 +818,11 @@ class _DeclarationPass:
             and not fm.get("kind") and not fm.get("auto_extracted")
             and anchors & set(fm.get("derived_from") or [])
         ]
+        self.decisions = {
+            str(fm["id"]): path for path, fm in filed
+            if fm.get("type") == "decision" and fm.get("id")
+            and anchors & set(fm.get("derived_from") or [])
+        }
         self.verdicts = [
             {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
             for stream in streams
@@ -843,8 +849,11 @@ class _DeclarationPass:
         if entry.get("consumes"):
             consumed = [*(task.frontmatter.get("consumes") or []), *entry["consumes"]]
             task.frontmatter["consumes"] = list(dict.fromkeys(consumed))
+        minted: list[str] = []
         if "round" in entry:
-            task.put_round(self._round(entry, task, solo, issue), replaces=(self.wrap_ref,))
+            new = self._round(entry, task, solo, issue)
+            minted = (new.decisions or {}).get("minted") or []
+            task.put_round(new, replaces=(self.wrap_ref,))
         closing = bool(entry.get("done")) and task.close()
         minting = task.path is None
         self.result.warnings += task.save(self.vm)
@@ -854,7 +863,7 @@ class _DeclarationPass:
         if closing:
             self.register.close(task)
             self.result.closed.append(task.id)
-        self._stamp_decisions(entry, task)
+        self._stamp_decisions(minted, task)
         self._attach_children(entry, task)
 
     def flag_orphans(self) -> None:
@@ -899,7 +908,7 @@ class _DeclarationPass:
         """The entry's round under this session's ref, naming the ``issue``
         it worked. A single-task session credits it with every insight and
         verdict the session recorded; with several tasks only what each
-        entry declares is attributed."""
+        entry declares is attributed. Decisions credit the same way."""
         data = {"route": "session", "session_ref": self.session_ref.to_dict(), **entry["round"]}
         if issue:
             data.setdefault("asked", issue)
@@ -907,16 +916,17 @@ class _DeclarationPass:
             for key, found in (("notes", self.insights), ("feedback", self.verdicts)):
                 if found:
                     data.setdefault(key, found)
+            if self.decisions:
+                data["decisions"] = {"minted": list(self.decisions), **(data.get("decisions") or {})}
         if entry.get("children"):
             data.setdefault("children", list(entry["children"]))
         return Round.from_dict(data, grain=task.grain)
 
-    def _stamp_decisions(self, entry: dict, task: Task) -> None:
-        """Stamp each decision the round declares minted with the task id,
-        wherever the index has it filed."""
-        minted = ((entry.get("round") or {}).get("decisions") or {}).get("minted")
-        for dec_id in minted or []:
-            path = indexed_note_path(self.vm.config, dec_id)
+    def _stamp_decisions(self, minted: list[str], task: Task) -> None:
+        """Stamp each decision the round lists minted with the task id,
+        in the session folder or wherever the index has it filed."""
+        for dec_id in minted:
+            path = self.decisions.get(dec_id) or indexed_note_path(self.vm.config, dec_id)
             if path is None:
                 self.result.warnings.append(
                     f"decision {dec_id} is not in the index — task_id stamp skipped"

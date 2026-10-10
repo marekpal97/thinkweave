@@ -553,11 +553,15 @@ def seed_session(cfg: Config, *, harness_derived: bool = False) -> tuple[Path, d
             extra_frontmatter={"derived_from": [derived]}, output_dir=folder,
         )
         ids[key] = vm.read_note(path).id
-    (folder / "use-sqlite.md").write_text(
-        "---\ntype: decision\nid: dec-aaaa1111\ntitle: Use SQLite\n---\n\nBody.\n",
-        encoding="utf-8",
-    )
-    ids["decision"] = "dec-aaaa1111"
+    for key, dec_id, title in (
+        ("decision", "dec-aaaa1111", "Use SQLite"), ("decision2", "dec-bbbb2222", "Keep FTS"),
+    ):
+        (folder / f"{dec_id}.md").write_text(
+            f"---\ntype: decision\nid: {dec_id}\ntitle: {title}\n"
+            f"derived_from:\n- {derived}\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        ids[key] = dec_id
     feedback = {
         "ts": "2026-10-02T10:00:00+00:00", "type": "feedback",
         "session_id": SESSION, "register": "correction",
@@ -649,6 +653,41 @@ class TestLedgerRound:
         a, b = (notes[t]["rounds"][0] for t in result.minted)
         assert a["notes"] == [ids["insight"]]
         assert "notes" not in b and "feedback" not in b
+        assert "decisions" not in a and "decisions" not in b
+
+    def test_solo_session_credits_and_stamps_every_minted_decision(
+        self, cfg: Config
+    ):
+        folder, ids = seed_session(cfg, harness_derived=True)
+        decl = {"declared": [{"title": "a", "round": {"did": {"attempts": 1}}}]}
+        result = reconcile_session(cfg, decl, folder)
+        assert result.errors == []
+        assert result.stamped == 2
+        task_id = result.minted[0]
+        entry = task_notes(cfg)[task_id]["rounds"][0]
+        assert sorted(entry["decisions"]["minted"]) == ["dec-aaaa1111", "dec-bbbb2222"]
+        for dec_id in ("dec-aaaa1111", "dec-bbbb2222"):
+            fm, _ = parse_frontmatter((folder / f"{dec_id}.md").read_text(encoding="utf-8"))
+            assert fm["task_id"] == task_id
+
+    def test_multi_task_session_stamps_only_each_entrys_decisions(
+        self, cfg: Config
+    ):
+        folder, ids = seed_session(cfg)
+        decl = {
+            "declared": [
+                {"title": "a", "round": {"decisions": {"minted": ["dec-aaaa1111"]}}},
+                {"title": "b", "round": {"did": {"attempts": 1}}},
+            ]
+        }
+        result = reconcile_session(cfg, decl, folder)
+        assert result.errors == [] and result.stamped == 1
+        stamped, unstamped = (
+            parse_frontmatter((folder / f"{d}.md").read_text(encoding="utf-8"))[0]
+            for d in ("dec-aaaa1111", "dec-bbbb2222")
+        )
+        assert stamped["task_id"] == result.minted[0]
+        assert "task_id" not in unstamped
 
     def test_body_lists_one_wikilink_line_per_round_in_order(self, cfg: Config):
         folder, ids = seed_session(cfg)
