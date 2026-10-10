@@ -13,7 +13,15 @@ from thinkweave.core.harness import PROFILES
 
 
 @pytest.fixture()
-def cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Config:
+def tracker() -> dict[str, dict]:
+    """The fake GitHub tracker every ``gh api`` issue lookup reads:
+    ``owner/name#n`` → that issue's API fields. An issue left out has no
+    sub-issue parent and no sub-issues."""
+    return {}
+
+
+@pytest.fixture()
+def cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tracker: dict[str, dict]) -> Config:
     """An initialized temp vault every ``load_config()`` call resolves to."""
     config = Config(vault_root=tmp_path / "vault")
     (config.vault_root / "config").mkdir(parents=True)
@@ -26,8 +34,11 @@ def cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Config:
     for profile in PROFILES.values():
         for env in profile().session_id_envs:
             monkeypatch.delenv(env, raising=False)
-    # No network: a tracker ref has no sub-issue parent unless a test says so.
-    monkeypatch.setattr("thinkweave.operations.tasks._gh_parent", lambda repo, number: "")
+    # No network: issue lookups read the fake tracker.
+    monkeypatch.setattr(
+        "thinkweave.operations.tasks._gh_issue",
+        lambda repo, number: tracker.get(f"{repo}#{number}", {}),
+    )
     return config
 
 

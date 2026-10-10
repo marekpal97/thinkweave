@@ -25,6 +25,17 @@ FIXTURES = Path(__file__).parent / "fixtures"
 TASK_ID = "tsk-217aaaaa"
 
 
+API = "https://api.github.com/repos/marekpal97/thinkweave/issues/"
+
+
+@pytest.fixture(autouse=True)
+def rich_tree(tracker):
+    """The rich fixture's tree on the fake tracker: #217 and #218 are
+    sub-issues of #184."""
+    tracker["marekpal97/thinkweave#217"] = {"parent_issue_url": API + "184"}
+    tracker["marekpal97/thinkweave#218"] = {"parent_issue_url": API + "184"}
+
+
 def payload(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
@@ -148,10 +159,8 @@ class TestRichRun:
 class TestEpicTask:
     """A run lands on its epic's task; a run with no epic on its issue's."""
 
-    def test_the_ask_is_the_epic_else_the_issue(self):
+    def test_the_ask_is_the_issue(self):
         run = payload("devloop-run-rich.json")
-        assert devloop_ask(run) == "https://github.com/marekpal97/thinkweave/issues/184"
-        del run["frontmatter"]["epic_url"]
         assert devloop_ask(run) == "https://github.com/marekpal97/thinkweave/issues/217"
         assert devloop_ask(payload("devloop-run-thin.json")) == "#218"
 
@@ -170,11 +179,33 @@ class TestEpicTask:
             ("devloop", "github:marekpal97/thinkweave#218"),
         ]
 
-    def test_a_run_without_an_epic_lands_on_its_issue_task(self, cfg):
+    def test_a_run_without_an_epic_lands_on_its_issue_task(self, cfg, tracker):
+        tracker.clear()
         run = payload("devloop-run-rich.json")
         del run["frontmatter"]["epic_url"]
         note = note_fm(cfg, tasks.record_run(cfg, run, project="t").task_id)
         assert note["asked"] == "github:marekpal97/thinkweave#217"
+
+    def test_the_nearest_epic_beats_the_payloads_epic_url(self, cfg, tracker):
+        tracker["marekpal97/thinkweave#256"] = {"parent_issue_url": API + "243"}
+        run = payload("devloop-run-rich.json")
+        run["frontmatter"]["issue"] = 256
+        run["frontmatter"]["issue_url"] = "https://github.com/marekpal97/thinkweave/issues/256"
+        landed = tasks.record_run(cfg, run, project="t")
+        assert note_fm(cfg, landed.task_id)["asked"] == "github:marekpal97/thinkweave#243"
+        assert landed.warnings == ()
+
+    def test_a_failed_lookup_falls_back_to_the_epic_url(self, cfg, monkeypatch):
+        import subprocess
+
+        def unreachable(repo, number):
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="gh: offline")
+
+        monkeypatch.setattr(tasks, "_gh_issue", unreachable)
+        landed = tasks.record_run(cfg, payload("devloop-run-rich.json"), project="t")
+        assert note_fm(cfg, landed.task_id)["asked"] == "github:marekpal97/thinkweave#184"
+        (warning,) = landed.warnings
+        assert "gh: offline" in warning
 
 
 class TestThinRun:
@@ -266,12 +297,11 @@ class TestLedgerRoute:
         assert validate_task_note(fm) == []
         assert [r.get("route") for r in fm["rounds"]] == ["devloop", "session"]
 
-    def test_a_run_without_an_epic_url_lands_on_its_epics_task(self, cfg, monkeypatch):
+    def test_a_run_without_an_epic_url_lands_on_its_epics_task(self, cfg, tracker):
         epic = "github:marekpal97/funloops#89"
-        parents = {("marekpal97/thinkweave", "217"): epic}
-        monkeypatch.setattr(
-            tasks, "_gh_parent", lambda repo, number: parents.get((repo, number), "")
-        )
+        tracker["marekpal97/thinkweave#217"] = {
+            "parent_issue_url": "https://api.github.com/repos/marekpal97/funloops/issues/89"
+        }
         decl = {"declared": [{"title": "epic", "asked": epic, "round": {}}]}
         (epic_task,) = tasks.apply_declaration(
             cfg, decl, session_key="s-9", project="t",
@@ -288,7 +318,7 @@ class TestLedgerRoute:
         def unreachable(repo, number):
             raise subprocess.CalledProcessError(1, ["gh"], stderr="gh: offline")
 
-        monkeypatch.setattr(tasks, "_gh_parent", unreachable)
+        monkeypatch.setattr(tasks, "_gh_issue", unreachable)
         run = payload("devloop-run-rich.json")
         run["frontmatter"]["epic_url"] = ""
         landed = tasks.record_run(cfg, run, project="t")

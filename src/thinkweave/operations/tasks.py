@@ -923,20 +923,21 @@ def record_run(
     cfg, payload: object, *, project: str, trajectory: str = "", session_key: str = ""
 ) -> RunLanded:
     """Land one devloop run as a ``route: devloop`` round on the open task
-    its epic ref resolves to — the payload's, else the issue's sub-issue
-    parent, else the issue ref itself — minting a work-grain
-    task, titled as its epic else as the trajectory, when none is open; a re-record of the same trajectory replaces its
-    round. A run never closes its task, and nothing closes it when its PR
+    of its issue's nearest epic — the payload's ``epic_url`` only when that
+    lookup fails — minting a work-grain task, titled as its epic else as
+    the trajectory, when none is open; a re-record of the same trajectory
+    replaces its round. A run never closes its task, and nothing closes it when its PR
     merges: its tracker issue closing does (``TaskStore.close_tracked``).
     With no ``session_key`` no register row is written: no session owns
     the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
     warnings: list[str] = []
-    asked = _tracker_ref(devloop_ask(payload), current_repo(), warnings)
+    repo = current_repo()
+    issue = _tracker_ref(devloop_ask(payload), repo, warnings)
     assert isinstance(payload, dict)
-    if not payload["frontmatter"].get("epic_url"):
-        asked = _epic_ref(asked, warnings)
+    epic_url = normalize_tracker_ref(str(payload["frontmatter"].get("epic_url") or ""), repo)
+    asked = _epic_ref(issue, warnings, fallback=epic_url)
     store = TaskStore(cfg)
     title = payload["frontmatter"].get("epic_title") or payload.get("title", "")
     task = store.open_by_ref(asked) or store.mint(
@@ -1060,31 +1061,37 @@ def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:
     return ref
 
 
-def _epic_ref(ref: str, warnings: list[str]) -> str:
-    """The epic ref a GitHub sub-issue ``ref`` belongs to, else ``ref``; a
-    failed parent lookup keeps ``ref``, and is announced."""
+def _epic_ref(ref: str, warnings: list[str], fallback: str = "") -> str:
+    """The tracker ref of ``ref``'s nearest epic: ``ref`` itself when it has
+    sub-issues, else its sub-issue parent, else ``ref``. A ref no lookup can
+    take keeps ``fallback`` or ``ref``; so does a failed lookup, announced."""
     issue = GithubIssue.parse(ref)
     if not issue:
-        return ref
+        return fallback or ref
     try:
-        return _gh_parent(issue.repo, issue.number) or ref
-    except (OSError, subprocess.SubprocessError) as exc:
+        found = _gh_issue(issue.repo, issue.number)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        kept = fallback or ref
         reason = (getattr(exc, "stderr", "") or str(exc)).strip()
         warnings.append(
-            f"sub-issue parent lookup for {ref} failed ({reason}) — kept the "
-            "sub-issue ref, so the round misses its epic's task"
+            f"epic lookup for {ref} failed ({reason}) — kept {kept}, so the "
+            "round may miss its nearest epic's task"
         )
+        return kept
+    if (found.get("sub_issues_summary") or {}).get("total"):
         return ref
+    parent = str(found.get("parent_issue_url") or "")
+    return normalize_tracker_ref(parent.replace("api.github.com/repos/", "github.com/")) or ref
 
 
-def _gh_parent(repo: str, number: str) -> str:
-    """The tracker ref of ``repo#number``'s sub-issue parent, or ``""``."""
-    jq = '.parent_issue_url // empty | sub(".*/repos/"; "") | sub("/issues/"; "#")'
-    out = subprocess.run(
-        ["gh", "api", f"repos/{repo}/issues/{number}", "-q", jq],
+def _gh_issue(repo: str, number: str) -> dict:
+    """``repo#number``'s ``sub_issues_summary`` and ``parent_issue_url``, as
+    ``gh api`` returns them."""
+    return json.loads(subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{number}",
+         "-q", "{sub_issues_summary, parent_issue_url}"],
         capture_output=True, text=True, timeout=15, check=True,
-    ).stdout.strip()
-    return f"github:{out}" if out else ""
+    ).stdout)
 
 
 def _gh_issue_state(repo: str, number: str) -> str:

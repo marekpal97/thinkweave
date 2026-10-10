@@ -753,30 +753,39 @@ class TestTrackerIdentity:
 
 
 class TestEpicIdentity:
-    """A declared sub-issue lands on its epic's task, found through
-    GitHub's sub-issue parent."""
+    """A declared ref lands on its nearest epic's task: the ref itself when
+    it has sub-issues, else its GitHub sub-issue parent."""
 
-    SUB = "https://github.com/marekpal97/thinkweave/issues/241"
-    EPIC = "github:marekpal97/funloops#89"
+    SUB = "https://github.com/marekpal97/thinkweave/issues/256"
+    EPIC = "github:marekpal97/thinkweave#243"
+    ROOT = "github:marekpal97/thinkweave#184"
+    API = "https://api.github.com/repos/marekpal97/thinkweave/issues/"
 
-    def declare(self, cfg: Config):
-        decl = {"declared": [{"title": "t", "asked": self.SUB, "round": {}}]}
+    @pytest.fixture(autouse=True)
+    def nested_tree(self, tracker):
+        tracker["marekpal97/thinkweave#256"] = {"parent_issue_url": self.API + "243"}
+        tracker["marekpal97/thinkweave#243"] = {
+            "parent_issue_url": self.API + "184",
+            "sub_issues_summary": {"total": 11},
+        }
+
+    def declare(self, cfg: Config, asked: str):
+        decl = {"declared": [{"title": "t", "asked": asked, "round": {}}]}
         return reconcile(cfg, decl)
 
-    def test_a_sub_issue_lands_on_its_epic_task(self, cfg: Config, monkeypatch):
-        parents = {("marekpal97/thinkweave", "241"): self.EPIC}
-        monkeypatch.setattr(
-            tasks, "_gh_parent", lambda repo, number: parents.get((repo, number), "")
-        )
-        result = self.declare(cfg)
+    def test_a_sub_issue_lands_on_its_epic_task(self, cfg: Config):
+        result = self.declare(cfg, self.SUB)
         assert result.errors == [] and result.warnings == []
         fm = task_notes(cfg)[result.minted[0]]
         assert fm["asked"] == self.EPIC
-        assert fm["rounds"][0]["asked"] == "github:marekpal97/thinkweave#241"
+        assert fm["rounds"][0]["asked"] == "github:marekpal97/thinkweave#256"
 
-    def test_a_failed_parent_lookup_keeps_the_sub_issue_and_warns(
-        self, cfg: Config, monkeypatch
-    ):
+    def test_an_epic_under_an_epic_owns_its_own_task(self, cfg: Config):
+        result = self.declare(cfg, self.EPIC)
+        assert result.errors == [] and result.warnings == []
+        assert task_notes(cfg)[result.minted[0]]["asked"] == self.EPIC
+
+    def test_a_failed_lookup_keeps_the_ref_and_warns(self, cfg: Config, monkeypatch):
         import subprocess
 
         def unreachable(repo, number):
@@ -784,12 +793,12 @@ class TestEpicIdentity:
                 1, ["gh"], stderr="error connecting to api.github.com"
             )
 
-        monkeypatch.setattr(tasks, "_gh_parent", unreachable)
-        result = self.declare(cfg)
+        monkeypatch.setattr(tasks, "_gh_issue", unreachable)
+        result = self.declare(cfg, self.SUB)
         fm = task_notes(cfg)[result.minted[0]]
-        assert fm["asked"] == "github:marekpal97/thinkweave#241"
+        assert fm["asked"] == "github:marekpal97/thinkweave#256"
         (warning,) = result.warnings
-        assert "github:marekpal97/thinkweave#241" in warning
+        assert "github:marekpal97/thinkweave#256" in warning
         assert "error connecting to api.github.com" in warning
 
 

@@ -224,11 +224,10 @@ class GithubIssue:
 
 
 def devloop_ask(payload: object) -> str:
-    """The tracker ref whose task a devloop run lands on, as emitted: the
-    epic URL, else the issue URL, else ``#<issue>``. Raises ``ValueError``
-    for a payload that is not an emitted trajectory payload."""
-    src = _devloop_frontmatter(payload)
-    return str(src.get("epic_url") or _issue_ref(src))
+    """The tracker ref a devloop run worked, as emitted: the issue URL,
+    else ``#<issue>``. Raises ``ValueError`` for a payload that is not an
+    emitted trajectory payload."""
+    return _issue_ref(_devloop_frontmatter(payload))
 
 
 def round_refusal(fm: dict, route: str) -> str:
