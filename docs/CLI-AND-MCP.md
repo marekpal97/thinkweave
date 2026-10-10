@@ -31,9 +31,9 @@ weave context "q" [--type X]                  # 3-layer retrieval (FTS → conce
 weave stats                                   # vault health (deprecated → weave doctor)
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
 weave doctor --mcp [--harness X]              # MCP wiring: registration scopes, launcher probe, venv
-                                            # extras; on a harness whose MCP client is an
-                                            # extension (Pi: pi-mcp-adapter) also checks that
-                                            # package is installed and names its install command
+                                            # extras; on a native-MCP harness with a legacy
+                                            # suppression package (Pi: pi-mcp-adapter) also warns
+                                            # that package would replace the built-in client
 weave health [--json]                         # jobs/queues/hooks/digest; exit 1 on flag; --json is /brief's contract
 weave learn check --note <id>                 # learn-note frontmatter contract; exit 1 on problems
 weave learn probe --session <uuid|ses-id> --text "…"  # unanswered question → probe row

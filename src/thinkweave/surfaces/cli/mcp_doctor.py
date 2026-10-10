@@ -855,13 +855,12 @@ def check_mcp_client_extension(cwd: Path) -> CheckResult:
     """FAIL when the harness's MCP client — an extension, not core — is not
     installed, so no registration anywhere would spawn the server.
 
-    Only rows declaring ``mcp_client_package`` get this row (Pi: the
-    community ``pi-mcp-adapter``). Pi core parses an ``mcpServers`` block and
-    ignores it without a word (falsified live 2026-09-03, n-fb74c7d0), which
-    is the exact silent failure the doctor exists to name. Detection reads
-    what ``pi install`` writes: the ``packages`` array in the machine-scope
-    settings (or the project's), corroborated against the unpacked package
-    dir when the profile documents one.
+    Only rows declaring ``mcp_client_package`` get this row. No shipped
+    profile sets it today (Pi ≥ 1.0 ships native MCP; the pre-1.0 route
+    relied on the community ``pi-mcp-adapter``). Kept for a future harness
+    whose client is still an extension: detection reads what ``pi install``
+    writes — the ``packages`` array in the machine-scope settings (or the
+    project's), corroborated against the unpacked package dir.
     """
     profile = _profile()
     package = profile.mcp_client_package
@@ -905,6 +904,40 @@ def check_mcp_client_extension(cwd: Path) -> CheckResult:
         name="MCP client extension",
         passed=True,
         detail=f"{package} listed in {where}",
+    )
+
+
+def check_pi_adapter_still_installed(cwd: Path) -> CheckResult:
+    """WARN when a leftover suppression package would hide native MCP.
+
+    A harness with a native MCP client can still be shadowed by a legacy
+    package that REPLACES that client (docs/mcp.md §Replace the built-in MCP
+    support): Pi then stops reading mcp.json and the registration written by
+    ``weave install --harness pi`` is silently invisible. The profile names
+    the culprit in :attr:`HarnessProfile.suppressed_by_package`; an old
+    installation that still lists it is the silent regression this row names.
+    """
+    profile = _profile()
+    package = profile.suppressed_by_package
+    for path in (profile.user_settings, cwd / profile.project_settings_relpath):
+        name = _settings_lists_package(path, package)
+        if name is not None:
+            return CheckResult(
+                name="Native MCP client",
+                passed=True,
+                warn=True,
+                detail=(f"{package} is still installed ({name} in {path}) — "
+                        f"{profile.display_name or profile.id} ships native MCP "
+                        "and the extension replaces it, so the thinkweave "
+                        "registration in mcp.json is not read"),
+                fix=(f"remove the package (drop `{name}` from settings.json "
+                     f"`packages`), then restart {profile.cli_bin}"),
+            )
+    return CheckResult(
+        name="Native MCP client",
+        passed=True,
+        detail=(f"no `{package}` package; {profile.display_name or profile.id} "
+                "uses its native MCP client"),
     )
 
 
@@ -1035,8 +1068,11 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     """Run every MCP-wiring check and return a structured result."""
     cwd = cwd or Path.cwd()
     result = DoctorResult()
-    # First on a row whose MCP client is an extension: with it absent every
-    # registration below is a file nobody reads.
+    # Pi ≥ 1.0 reads mcp.json natively; a leftover suppression package would
+    # replace that client and hide the registration. Rows declaring an
+    # explicit `mcp_client_package` (none today) keep the old FAIL seam.
+    if _profile().suppressed_by_package:
+        result.checks.append(check_pi_adapter_still_installed(cwd))
     if _profile().mcp_client_package:
         result.checks.append(check_mcp_client_extension(cwd))
     result.checks.append(check_registration_scopes(cwd))

@@ -88,11 +88,13 @@ const TOOL_NAMES: Record<string, string> = {
   write: "Write",
 };
 
-// Thinkweave's MCP tools reach Pi through pi-mcp-adapter with
-// `toolPrefix: "none"`, so Pi reports them under their bare names. The
-// handler's gates key on the MCP namespacing every other harness uses
-// (`mcp__<server>__<tool>`), so the namespace is restored here — casing and
-// naming only, the handler still decides what each call means.
+// Thinkweave's MCP tools reach Pi through Pi's native MCP client
+// (≥ 1.0), which names them `mcp__thinkweave__weave_*`. The handler's gates
+// key on that MCP namespacing, so native names pass through unchanged. Pre-1.0
+// Pi used pi-mcp-adapter with `toolPrefix: "none"`, which reported the tools
+// under bare `weave_*`; that route is now removed, but the bare-name mapping
+// is kept so a stale pre-pivot capture still classifies (casing and naming
+// only, the handler still decides what each call means).
 const MCP_SERVER = "thinkweave";
 const MCP_TOOL_PREFIX = "weave_";
 function canonicalToolName(native: string): string {

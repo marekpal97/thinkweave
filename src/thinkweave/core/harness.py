@@ -122,6 +122,7 @@ class HarnessProfile:
     """Where an MCP server registration is read from / written to. The *format*
     of that file is the writer's business, not the profile's (#106)."""
 
+
     skills_dir: Path
     plugins_root: Path
     plugins_cache: Path
@@ -167,6 +168,18 @@ class HarnessProfile:
     """Model our own headless flows ask this harness for. Model names are
     per-vendor, so a shared literal cannot exist; empty means "don't pass
     ``model_flag`` at all — let the harness use its configured default"."""
+
+    # --- MCP client seams -------------------------------------------------
+    native_mcp_client: bool = False
+    """The harness ships a native MCP client, so no extension package is
+    required to read the registration. Pi ≥ 1.0 sets this; pre-1.0 Pi (and a
+    leftover ``pi-mcp-adapter`` package) did not."""
+
+    suppressed_by_package: str = ""
+    """A legacy package that, if still installed, REPLACES the harness's own
+    MCP client and therefore hides the registration the harness natively
+    reads. Pi's pre-1.0 route (`pi-mcp-adapter`) is the one known example;
+    when set, the doctor warns on a leftover install rather than failing."""
 
     project_mcp_caveat: str = ""
     """Condition under which the harness ignores a project-scope registration,
@@ -370,11 +383,9 @@ class HarnessProfile:
     entry into — one of ``mcp_config.ENTRY_SHAPES``.
 
     ``command-args`` — Claude Code's authored split shape (``type: stdio``,
-    ``command`` string, ``args`` list, ``env`` map). Pi's MCP client is the
-    ``pi-mcp-adapter`` extension, which reads the same standard ``.mcp.json``
-    shape and accepts any record as a server entry (``isServerEntry`` is
-    ``isRecord`` in its ``config.ts``, 2.32.1) — the ``type`` key is simply
-    ignored, transport being inferred from ``command`` vs ``url``. Codex's
+    ``command`` string, ``args`` list, ``env`` map). Pi ≥ 1.0 reads the same
+    standard ``mcp.json`` body natively (docs/mcp.md), so this shape serves
+    both. Codex's
     TOML differs only by the format-level trims the writer already applies.
     ``argv-array`` — OpenCode's documented
     ``mcp`` body (opencode.ai/docs/mcp-servers/, fetched 2026-08-24 into
@@ -846,16 +857,15 @@ def pi(home: Path | None = None) -> HarnessProfile:
         native_memory=False,
         headless_slash=False,
         instructions_file=agent / "AGENTS.md",
-        # E3 posture: the extension shim captures passively, so the block's
-        # job is to keep the model OUT of the capture path — no per-turn
-        # weave_extract — and to name the one explicit boundary skill. Not
-        # built on _NUDGE: its "if available" hedge is wrong here (the tools
-        # are served, by a named extension), and the text is the one
-        # live-verified on the dev machine's AGENTS.md (2026-09-05).
+        # Native Pi MCP (≥ 1.0): Pi reads ~/.pi/agent/mcp.json itself, names
+        # tools `mcp__thinkweave__weave_*`, and declares them with
+        # `exposure`. The block's job is to keep the model OUT of the capture
+        # path — no per-turn weave_extract — and to name the one explicit
+        # boundary skill.
         instructions_block_body=(
             "Thinkweave (Obsidian-native memory layer) is your durable "
-            "memory. Its `weave_*` tools are served through the "
-            "pi-mcp-adapter extension. Prefer `weave_search` / "
+            "memory. Its `weave_*` tools are served through Pi's native "
+            "MCP client. Prefer `weave_search` / "
             "`weave_context` / `weave_graph` over filesystem search; never "
             "crawl the filesystem with find/grep/ls looking for thinkweave "
             "or vault files. Lifecycle hooks capture this session passively "
@@ -866,10 +876,12 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "`{weave} add <title> -t note -p <project> -b <body>` persists "
             "a note and `{weave} search <query>` retrieves."
         ),
-        # The adapter's Pi-global file. settings.json stays the home of
+        # Pi's user-level MCP config. settings.json stays the home of
         # `packages` (installed_plugins) and any hook-ish settings, and is
         # swept as the LEGACY registration location: the pre-2026-09-05 row
-        # wrote a `mcpServers` block there that Pi core parses and ignores.
+        # wrote a `mcpServers` block there that Pi core parses and ignores
+        # (and, until the native MCP pivot, pi-mcp-adapter replaced Pi's own
+        # client entirely).
         mcp_config=agent / "mcp.json",
         legacy_mcp_config=agent / "settings.json",
         skills_dir=agent / "skills",
@@ -882,18 +894,17 @@ def pi(home: Path | None = None) -> HarnessProfile:
         project_mcp_config_relpath=Path(".mcp.json"),
         project_plugins_relpath=Path(".pi") / "extensions",
         packages_root=agent / "npm" / "node_modules",
-        mcp_client_package="pi-mcp-adapter",
-        mcp_client_install_cmd="pi install npm:pi-mcp-adapter",
-        # Adapter-only keys (types.ts ServerEntry, 2.32.1): without
-        # `directTools` the server hides behind one `mcp` proxy tool, and with
-        # it the tools come out as `thinkweave_weave_search` unless
-        # `toolPrefix: none` — the skills name bare `weave_*`. `eager`
-        # because SessionStart already spawns the handler; a lazy server
-        # would add its cold start to the first retrieval instead.
+        # Native Pi MCP (≥ 1.0). Tools land as `mcp__thinkweave__weave_*` and
+        # `exposure: direct` declares them like built-ins — the default
+        # `codemode` exposure hides them from the model (docs/mcp.md
+        # §Control tool exposure). The pre-1.0 route replaced Pi's whole
+        # client with the pi-mcp-adapter extension, so a leftover adapter
+        # package suppresses native MCP: the doctor warns on it.
+        native_mcp_client=True,
+        suppressed_by_package="pi-mcp-adapter",
         mcp_entry_extras={
-            "lifecycle": "eager",
-            "directTools": True,
-            "toolPrefix": "none",
+            "exposure": "direct",
+            "description": "Thinkweave vault memory: search, create, read, link, extract.",
         },
         root_file_skills=True,
         skill_prefix="/skill:",
@@ -945,7 +956,8 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "2026-09-05 (all four native events fired), and an interactive "
             "session 2026-09-05 through pi-mcp-adapter 2.32.1 (17 bare-named "
             "weave_* tools, direct calls, /skill:wrap end-to-end on a "
-            "hook-captured session)"
+            "hook-captured session; native route pivot 2026-10-10 on Pi "
+            "1.1.0 — `pi mcp list` connects 17 tools with `exposure: direct`)"
         ),
         # Headless events probe 2026-09-05 (all four; SessionStart injection
         # quoted real note ids back) + interactive session 2026-09-05 (prompt
@@ -974,18 +986,16 @@ def pi(home: Path | None = None) -> HarnessProfile:
             Degradation(
                 "MCP registration",
                 "documented",
-                "Pi core ships no MCP client — a settings.json mcpServers "
-                "block parses and is silently ignored (falsified live on "
-                "0.84.4, 2026-09-03). The registration is served through the "
-                "community pi-mcp-adapter extension instead: `weave install "
-                "--harness pi` writes the standard mcpServers block (plus "
-                "lifecycle/directTools/toolPrefix) to ~/.pi/agent/mcp.json, "
-                "the adapter also reads the project .mcp.json, and `weave "
-                "doctor --mcp --harness pi` fails with `pi install "
-                "npm:pi-mcp-adapter` when the package is absent; the CLI "
-                "fallback in the instructions block covers a session where "
-                "the tools still did not load",
-                "#114, n-fb74c7d0",
+                "Pi ≥ 1.0 ships a native MCP client that reads ~/.pi/agent/"
+                "mcp.json directly and names tools `mcp__thinkweave__'"
+                "weave_*`. `weave install --harness pi` writes the entry "
+                "with `exposure: direct` so the model sees all 17 tools like "
+                "built-ins (the `codemode` default hides them). Pre-1.0 Pi "
+                "had no client — the community pi-mcp-adapter extension "
+                "supplied one and REPLACED Pi's own client whenever it was "
+                "installed; a leftover adapter package suppresses native MCP "
+                "and is flagged by `weave doctor --mcp --harness pi`",
+                "docs/mcp.md §Control tool exposure",
             ),
             Degradation(
                 "subagent fan-out",

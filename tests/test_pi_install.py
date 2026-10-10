@@ -1,14 +1,16 @@
 """Pi's machine wiring through ``weave install`` / ``uninstall`` /
 ``doctor --mcp`` — the E3 posture landed by #114's follow-up.
 
-Three facts drive every test here, all measured or read on 2026-09-03/05
-(vault note n-fb74c7d0; pi-mcp-adapter 2.32.1 source):
+Three facts drive every test here, measured or read on 2026-09-03/05 and
+2026-10-10 (Pi 1.1.0, docs/mcp.md):
 
-* Pi core has NO MCP client. A ``mcpServers`` block in ``settings.json``
-  parses and is silently ignored; the community ``pi-mcp-adapter`` extension
-  reads the standard shape from ``~/.pi/agent/mcp.json`` / project
-  ``.mcp.json`` instead. So the installer writes there, sweeps the legacy
-  ``settings.json`` entry, and the doctor checks the adapter is installed.
+* Pi ≥ 1.0 ships a native MCP client. It reads the standard shape from
+  ``~/.pi/agent/mcp.json`` / project ``.mcp.json`` and names tools
+  ``mcp__thinkweave__weave_*`` — no community extension. The installer
+  writes the native entry there (with ``exposure: direct``), sweeps the
+  legacy ``settings.json`` entry, and the doctor warns when a leftover
+  pi-mcp-adapter package would suppress native MCP. Pre-1.0 Pi had no
+  client and relied on the community ``pi-mcp-adapter`` extension.
 * Pi discovers root ``*.md`` files in ``~/.pi/agent/skills`` as skills. The
   installer links the canonical ``commands/*.md`` there by name — NOT the
   Codex ``codex/skills/`` bundle, whose ``../../../docs`` pointer resolves to nothing
@@ -81,7 +83,7 @@ def _worker_less_commands() -> set[str]:
 
 
 class TestMcpRegistration:
-    def test_entry_lands_in_the_adapters_global_file_with_its_keys(
+    def test_entry_lands_in_native_mcp_file_with_exposure(
         self, pi_home: Path, installable, requires_symlinks
     ):
         _install()
@@ -89,11 +91,11 @@ class TestMcpRegistration:
         entry = doc["mcpServers"]["thinkweave"]
         assert entry["command"] == "/uv"
         assert entry["args"][-1] == "thinkweave.surfaces.mcp.server"
-        # The three adapter-only keys: direct bare `weave_*` tools, eager.
-        assert entry["lifecycle"] == "eager"
-        assert entry["directTools"] is True
-        assert entry["toolPrefix"] == "none"
-        # settings.json — the location the harness never reads — is NOT written.
+        # Native Pi MCP: `exposure: direct` so the model sees all 17 tools
+        # like built-ins; the `codemode` default would hide them.
+        assert entry["exposure"] == "direct"
+        assert "description" in entry
+        # Settings.json — the legacy registration location — is NOT written.
         assert not (pi_home / "settings.json").exists()
 
     def test_install_sweeps_the_dead_settings_json_entry(
@@ -270,64 +272,64 @@ class TestRootFileSkills:
 
 
 # --------------------------------------------------------------------------- #
-# doctor: the MCP client is an extension
+# doctor: Pi ≥ 1.0 native MCP; a leftover adapter suppresses it
 # --------------------------------------------------------------------------- #
 
 
-class TestDoctorAdapterCheck:
+class TestDoctorNativeMcp:
     def _settings(self, pi_home: Path, packages: list, project: Path | None = None) -> None:
         path = (project / ".pi" / "settings.json") if project else pi_home / "settings.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"packages": packages}), encoding="utf-8")
 
-    def _unpack(self, pi_home: Path, name: str = "pi-mcp-adapter") -> Path:
-        pkg = pi_home / "npm" / "node_modules" / name
-        pkg.mkdir(parents=True)
-        (pkg / "package.json").write_text('{"name": "%s"}' % name, encoding="utf-8")
-        return pkg
+    def test_no_adapter_passes_quietly(self, pi_home: Path, tmp_path: Path):
+        r = md.check_pi_adapter_still_installed(tmp_path)
+        assert r.passed and not r.warn
+        assert "native MCP client" in r.detail
 
-    def test_absent_fails_with_the_install_command(self, pi_home: Path, tmp_path: Path):
-        r = md.check_mcp_client_extension(tmp_path)
-        assert not r.passed
-        assert "pi-mcp-adapter is not listed" in r.detail
-        assert "pi install npm:pi-mcp-adapter" in r.fix
-
-    def test_listed_and_unpacked_passes(self, pi_home: Path, tmp_path: Path):
+    def test_leftover_adapter_warns_and_names_the_remedy(
+        self, pi_home: Path, tmp_path: Path
+    ):
         self._settings(pi_home, ["npm:pi-mcp-adapter"])
-        pkg = self._unpack(pi_home)
-        r = md.check_mcp_client_extension(tmp_path)
-        assert r.passed and str(pkg) in r.detail
+        r = md.check_pi_adapter_still_installed(tmp_path)
+        assert r.passed and r.warn
+        assert "replaces" in r.detail and "not read" in r.detail
+        assert "settings.json `packages`" in r.fix
 
-    def test_listed_but_not_unpacked_fails(self, pi_home: Path, tmp_path: Path):
-        self._settings(pi_home, ["npm:pi-mcp-adapter@2.32.1"])
-        r = md.check_mcp_client_extension(tmp_path)
-        assert not r.passed and "not unpacked" in r.detail
-        assert "pi install npm:pi-mcp-adapter" in r.fix
+    def test_scoped_and_pinned_specs_are_still_spotted(
+        self, pi_home: Path, tmp_path: Path
+    ):
+        self._settings(pi_home, [{"source": "npm:pi-mcp-adapter@2.32.1", "skills": []}])
+        assert md.check_pi_adapter_still_installed(tmp_path).warn
 
-    def test_scoped_and_pinned_specs_are_recognised(self, pi_home: Path, tmp_path: Path):
-        self._settings(pi_home, [{"source": "npm:@fork/pi-mcp-adapter@1.0.0", "skills": []}])
-        self._unpack(pi_home, "@fork/pi-mcp-adapter")
-        assert md.check_mcp_client_extension(tmp_path).passed
-
-    def test_project_settings_alone_pass(self, pi_home: Path, tmp_path: Path):
+    def test_project_settings_alone_warn_too(self, pi_home: Path, tmp_path: Path):
         project = tmp_path / "proj"
         self._settings(pi_home, ["npm:pi-mcp-adapter"], project=project)
-        r = md.check_mcp_client_extension(project)
-        assert r.passed and ".pi/settings.json" in r.detail.replace("\\", "/")
+        r = md.check_pi_adapter_still_installed(project)
+        assert r.warn and ".pi/settings.json" in r.detail.replace("\\", "/")
 
     def test_a_lookalike_does_not_count(self, pi_home: Path, tmp_path: Path):
         self._settings(pi_home, ["npm:pi-mcp-adapter-ui", "npm:notpi-mcp-adapter"])
-        assert not md.check_mcp_client_extension(tmp_path).passed
+        assert not md.check_pi_adapter_still_installed(tmp_path).warn
 
-    def test_the_check_leads_the_pi_report_and_is_absent_elsewhere(
+    def test_the_warn_leads_the_pi_report_and_is_absent_elsewhere(
         self, pi_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ):
         monkeypatch.setattr(md, "_EXTRA_MODULES", (("json", "stdlib", "always"),))
         names = [c.name for c in md.run_mcp_doctor(tmp_path).checks]
-        assert names[0] == "MCP client extension"
+        assert "Native MCP client" in names
+        # On a silent Pi (no adapter) the row passes; wired through the
+        # doctor's real order it still surfaces for a Pi below the fold.
+        monkeypatch.setattr(
+            harness, "_OVERRIDE", harness.pi(home=tmp_path)
+        )
+        assert any(
+            c.name == "Native MCP client" and not c.warn
+            for c in md.run_mcp_doctor(tmp_path).checks
+        )
         monkeypatch.setattr(harness, "_OVERRIDE", harness.claude_code(home=tmp_path))
         names = [c.name for c in md.run_mcp_doctor(tmp_path).checks]
-        assert "MCP client extension" not in names
+        assert "Native MCP client" not in names
 
 
 class TestDoctorExtensionStub:
@@ -500,10 +502,13 @@ class TestDevLinkRefusedOnPi:
 
 
 class TestPiNextStepsAndBlock:
-    def test_next_steps_name_the_adapter_and_the_wrap_skill(self, pi_home: Path, capsys):
+    def test_next_steps_name_the_wrap_skill_and_omit_the_adapter(
+        self, pi_home: Path, capsys
+    ):
         inst._print_next_steps()
         out = capsys.readouterr().out
-        assert "pi install npm:pi-mcp-adapter" in out
+        # Pi ≥ 1.0 needs no MCP client extension; the old adapter step is gone.
+        assert "pi install" not in out
         assert "weave hooks install --scope user --harness pi" in out
         assert "weave import pi --enrich" in out
         assert "/skill:wrap" in out
@@ -527,7 +532,8 @@ class TestPiNextStepsAndBlock:
         assert "{weave}" not in block
         assert "NEVER call `weave_extract` mid-session or per turn" in block
         assert "/skill:wrap" in block
-        assert "pi-mcp-adapter" in block
+        assert "native MCP client" in block
+        assert "pi-mcp-adapter" not in block
         assert f"`{REPO_ROOT / 'bin' / 'weave'} add" in block
 
 
