@@ -591,17 +591,21 @@ def judge_trajectories(
     rework_threshold: float | None = None,
     pr_fetcher: Callable[[str], Optional[dict]] | None = None,
     signals_fetcher: Callable[..., dict] | None = None,
+    issue_state: Callable[[str, str], str] | None = None,
 ) -> dict:
-    """Judge every due trajectory once per phase. Idempotent; write-with-receipt.
+    """Judge every due trajectory once per phase, then close every open task
+    whose tracker issue has closed. Idempotent; write-with-receipt.
 
     ``phase`` ∈ ``{"both", "1", "2"}``. Returns
-    ``{judged: [...], skipped: [...], errors: [...]}`` — one ``judged`` entry
-    per history append (``{id, phase, outcome}``); a re-run over already-judged
-    trajectories returns empty ``judged``.
+    ``{judged: [...], skipped: [...], errors: [...], closed_tasks: [...]}`` —
+    one ``judged`` entry per history append (``{id, phase, outcome}``); a
+    re-run over already-judged trajectories returns empty ``judged``.
 
-    The ``pr_fetcher`` / ``signals_fetcher`` seams default to the real ``gh`` /
-    ``git`` functions; tests inject fixtures so no network / repo is touched.
+    The ``pr_fetcher`` / ``signals_fetcher`` / ``issue_state`` seams default to
+    the real ``gh`` / ``git`` functions; tests inject fixtures so no network /
+    repo is touched.
     """
+    from thinkweave.operations.tasks import TaskStore
     from thinkweave.core.vault import VaultManager
 
     # Resolve the seams at call time (not as def-time defaults) so
@@ -716,4 +720,6 @@ def judge_trajectories(
                     else:
                         judged.append({"id": note_id, "phase": 2, "outcome": label})
 
-    return {"judged": judged, "skipped": skipped, "errors": errors}
+    tracked = TaskStore(cfg).close_tracked(issue_state)
+    errors += [{"id": task_id, "reason": reason} for task_id, reason in tracked.errors.items()]
+    return {"judged": judged, "skipped": skipped, "errors": errors, "closed_tasks": tracked.closed}

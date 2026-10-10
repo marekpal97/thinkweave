@@ -257,6 +257,32 @@ class TaskStore:
                 return Task(fm, path)
         return None
 
+    def close_tracked(self, issue_state=None) -> TrackerClosures:
+        """Close every open task whose ``asked`` is a GitHub issue that is now
+        closed. ``issue_state(repo, number)`` returns the issue's state; a
+        failed lookup leaves its task open and is listed under ``errors``."""
+        issue_state = issue_state or _gh_issue_state
+        vm = VaultManager(config=self.cfg)
+        closed: list[str] = []
+        errors: dict[str, str] = {}
+        for path in self._filed("tsk-*.md"):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            issue = re.fullmatch(_GITHUB_ISSUE, str(fm.get("asked", "")))
+            if not issue or fm.get("kind") != TASK_KIND or fm.get("status") != "open":
+                continue
+            task = Task(fm, path)
+            try:
+                if issue_state(issue[1], issue[2]).lower() != "closed":
+                    continue
+                task.close()
+                task.save(vm)
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+                errors[task.id] = f"issue {fm['asked']} not checked: {reason}"
+            else:
+                closed.append(task.id)
+        return TrackerClosures(closed, errors)
+
     def mint(
         self,
         grain: str,
@@ -499,6 +525,15 @@ class RunLanded:
 
     task_id: str
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TrackerClosures:
+    """Which tasks one tracker sweep closed, and why it skipped others
+    (``{task id: reason}``)."""
+
+    closed: list[str]
+    errors: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -856,8 +891,9 @@ def record_run(
     parent, else the issue ref itself — minting a work-grain
     task, titled as its epic else as the trajectory, when none is open; a re-record of the same trajectory replaces its
     round. A run never closes its task, and nothing closes it when its PR
-    merges. With no ``session_key`` no register row is written: no session
-    owns the run.
+    merges: its tracker issue closing does (``TaskStore.close_tracked``).
+    With no ``session_key`` no register row is written: no session owns
+    the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
     warnings: list[str] = []
@@ -991,7 +1027,7 @@ def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:
 def _epic_ref(ref: str, warnings: list[str]) -> str:
     """The epic ref a GitHub sub-issue ``ref`` belongs to, else ``ref``; a
     failed parent lookup keeps ``ref``, and is announced."""
-    found = re.fullmatch(r"github:([\w.-]+/[\w.-]+)#(\d+)", ref)
+    found = re.fullmatch(_GITHUB_ISSUE, ref)
     if not found:
         return ref
     try:
@@ -1013,6 +1049,17 @@ def _gh_parent(repo: str, number: str) -> str:
         capture_output=True, text=True, timeout=15, check=True,
     ).stdout.strip()
     return f"github:{out}" if out else ""
+
+
+_GITHUB_ISSUE = r"github:([\w.-]+/[\w.-]+)#(\d+)"
+
+
+def _gh_issue_state(repo: str, number: str) -> str:
+    """``repo#number``'s state, ``open`` or ``closed``."""
+    return subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{number}", "-q", ".state"],
+        capture_output=True, text=True, timeout=15, check=True,
+    ).stdout.strip()
 
 
 def _descriptor(cfg, task: Task) -> TaskDispatch:
