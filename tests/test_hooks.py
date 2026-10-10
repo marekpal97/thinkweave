@@ -1813,6 +1813,20 @@ class TestUserPromptSubmitHook:
             return []
         return [json.loads(ln) for ln in buf_file.read_text().splitlines() if ln.strip()]
 
+    def test_harness_injected_blocks_are_not_user_prompts(self, tmp_path: Path, monkeypatch):
+        from thinkweave.core.config import Config
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        notice = ("<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n"
+                  "</task-notification>")
+        assert self._run_prompt(cfg, monkeypatch, "ses-inj-1", notice) == []
+        assert self._run_prompt(
+            cfg, monkeypatch, "ses-inj-2",
+            f"<system-reminder>\nnote\n</system-reminder>\n{notice}\n",
+        ) == []
+        typed = self._run_prompt(cfg, monkeypatch, "ses-inj-3", f"{notice}\nwhy did it fail?")
+        assert [r["type"] for r in typed] == ["prompt"]
+
     def test_hook_never_writes_feedback_events(self, tmp_path: Path, monkeypatch):
         # #101 — hooks capture, never judge. Even an unambiguous correction
         # produces only the raw prompt event; feedback labeling happens
