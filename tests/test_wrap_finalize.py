@@ -249,6 +249,33 @@ class TestFinalizeWrap:
         assert result.errors == []
         assert any("declared no task" in w for w in result.warnings)
 
+    def test_a_mid_session_wrap_reads_work_from_the_event_stream(
+        self, config: Config, vault: VaultManager
+    ):
+        # Mid-session /wrap: the Stop-time extract has not filled
+        # files_touched yet, but the hook already logged the Edit.
+        sess_path = vault.create_note(
+            NoteType.SESSION, "Help text", body="## Summary\nx\n", project="t",
+            extra_frontmatter={"processed": True},
+        )
+        session_id = vault.read_note(sess_path).id
+        (sess_path.parent / "events.jsonl").write_text(
+            json.dumps({"tool": "Edit", "file": "src/cli.py"}) + "\n", encoding="utf-8"
+        )
+        vault.create_note(
+            NoteType.DECISION, "Describe the CLI",
+            body="## Context\nx\n\n## Decision\ny\n\n## Consequences\nz",
+            project="t", output_dir=sess_path.parent,
+            extra_frontmatter={"status": "proposed", "source_session": session_id,
+                               "derived_from": [session_id], "concepts": ["cli", "docs"]},
+        )
+        _index(config)
+
+        result = finalize_wrap(config, session_id=session_id, project="t")
+
+        assert result.work_evidence is True
+        assert any("declared no task" in w for w in result.warnings)
+
     def test_landing_gap_skips_pure_qa(self, config: Config, vault: VaultManager):
         # No commits / files_touched → work_evidence False → rail never fires,
         # even with zero derived notes.

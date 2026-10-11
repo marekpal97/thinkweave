@@ -569,13 +569,21 @@ def _tasks(cfg, db) -> dict:
     return tasks
 
 
+def _session_key(session: str) -> str:
+    """The harness session id a driven label recorded. pi records its
+    transcript path (``<ts>_<uuid>.jsonl``); the note keys on the uuid."""
+    if session.endswith(".jsonl"):
+        return Path(session).stem.rsplit("_", 1)[-1]
+    return session
+
+
 def _session(cfg, db, driven: dict) -> dict:
     """One driven session: its note id, task rows and verdict count."""
     from thinkweave.core.buffer import archived_events_path, buffer_path
     from thinkweave.core.events import feedback_events, iter_jsonl
     from thinkweave.operations.tasks import Register
 
-    key = driven.get("session", "")
+    key = _session_key(driven.get("session", ""))
     note = db.execute(
         "SELECT id, path, frontmatter FROM notes WHERE type = 'session' AND frontmatter LIKE ?",
         (f'%"source_session": "{key}"%',),

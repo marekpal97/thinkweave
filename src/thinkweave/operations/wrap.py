@@ -403,8 +403,30 @@ def _wrap_landing_gap(
         landed = -1
 
     processed = bool(fm.get("processed"))
-    work_evidence = bool(fm.get("commits")) or bool(fm.get("files_touched"))
+    work_evidence = (bool(fm.get("commits")) or bool(fm.get("files_touched"))
+                     or _streams_show_work(ev for ev, _d, _f in chain))
     return processed, work_evidence, landed
+
+
+_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+
+
+def _streams_show_work(streams) -> bool:
+    """True when a session's event streams record a file write or a commit.
+
+    The note's ``files_touched``/``commits`` are filled only by the Stop-time
+    extract, so a ``/wrap`` mid-session reads them empty; the streams already
+    hold the hook's tool events.
+    """
+    from thinkweave.core.events import iter_jsonl
+
+    for path in streams:
+        if not path or not Path(path).exists():
+            continue
+        for ev in iter_jsonl(Path(path)):
+            if ev.get("tool") in _WRITE_TOOLS or ev.get("commit"):
+                return True
+    return False
 
 
 def _append_verdict_events(

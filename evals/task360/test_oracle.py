@@ -195,3 +195,9 @@ def test_s24_checks_pi_model_and_reads_the_trace_back():
     unstamped = [{"id": "dec-1", "task_id": None, "derived_from": ["ses-S20"]}]
     assert _unmet(oracle.s24, decisions=unstamped) == {
         "read-back: the mini run's decisions carry the #243 task id"}
+
+
+def test_a_pi_label_resolves_its_note_by_the_transcript_uuid():
+    path = "/run/home/pi/sessions/--sandbox--/2026-10-11T19-36-32-677Z_01a12c77-84a5.jsonl"
+    assert oracle._session_key(path) == "01a12c77-84a5"
+    assert oracle._session_key("220b0e40-5f84") == "220b0e40-5f84"
