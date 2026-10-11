@@ -75,6 +75,9 @@ on real Claude and Pi sessions.
   one session maps to one note, and guardian sidecars are filtered out.
 - Wrap and judge resolve session notes by exact id and the harness
   session id (PRs #209, #214, #233).
+- shim-core builds and its test suite runs again: `npm test` passes a
+  file glob on Node 24, and the subagent hooks have timeout budgets
+  (PR #213).
 
 ### Internal
 
