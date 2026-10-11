@@ -34,6 +34,8 @@ HOMES=$ROOT/home
 PROJECT=task360_sandbox
 REPO=task360/sandbox
 TIMEOUT_MS=${TIMEOUT_MS:-1200000}   # 20 minutes per wait
+PI_MODEL=${PI_MODEL:-openrouter/deepseek/deepseek-v4-flash}   # S24's OpenRouter model
+TREE=marekpal97/thinkweave   # the mini run's refs: the real #184 → #243 → #256, read only
 
 declare -A HOME_VAR=([codex]=CODEX_HOME [pi]=PI_CODING_AGENT_DIR)
 declare -A WRAP=([claude]="/wrap" [codex]='$thinkweave-wrap' [pi]="/skill:wrap")
@@ -42,9 +44,11 @@ declare -A WRAP=([claude]="/wrap" [codex]='$thinkweave-wrap' [pi]="/skill:wrap")
 declare -A EXIT=([claude]="ctrl+d ctrl+d" [codex]="ctrl+d" [pi]="ctrl+d")
 
 # Each scenario's prerequisites: the scenarios whose state it builds on.
+# S24 runs the whole mini run, S23 before S21: S23 continues the task S21 closes.
 declare -A NEEDS=(
   [S0]="" [S1]=S0 [S2]=S1 [S3]=S2 [S4]=S3 [S5]=S4 [S6]=S5 [S7]=S0 [S8]=S1
   [S9]=S1 [S10]=S9 [S11]=S10 [S12]=S7 [S13]=S7 [S14]=S7 [S15]=S7
+  [S20]="" [S21]=S20 [S22]="" [S23]="S20 S22" [S24]="S23 S21"
 )
 
 # ---------------------------------------------------------------------------
@@ -111,6 +115,35 @@ scenario_S14() {
 }
 
 scenario_S15() { _solo S15 codex; }
+
+# The mini run: the epic's routing through real harnesses, on the real tracker tree.
+scenario_S20() { _solo S20; }
+
+scenario_S21() {  # #243 done; a seeded #184 task shows that done reaches no further
+  (cd "$SANDBOX" && _weave task open --grain work --title "epic 184" --asked "$TREE#184" \
+    --session task360-seed >/dev/null) && _solo S21
+}
+
+scenario_S22() {  # left running: S23 re-wraps this same session
+  start S22 claude && say S22 "$(prompt S22)" && wrap S22 || return 1
+  # The wrap's report lives on its screen; the same command over the same session reprints it.
+  local ses; ses=$(oracle snapshot | jq -r '.sessions.S22.id // empty')
+  [ -n "$ses" ] || { echo "S22: no session note in the index" >&2; return 1; }
+  (cd "$SANDBOX" && _weave wrap-finalize "$ses" --no-prune) >"$ROOT/s22-wrap.txt" 2>&1
+  return 0  # a non-zero exit is part of the report the S22 check reads
+}
+
+scenario_S23() {  # S22's session again: a re-wrap continuing the S20 task
+  local task; task=$(_work_task "$TREE#243")
+  [ -n "$task" ] || { echo "S23: no work task for $TREE#243" >&2; return 1; }
+  _state "s['labels']['S23'] = dict(s['labels']['S22'])"
+  say S23 "$(TASK=$task envsubst '${TASK}' <"$HERE/prompts/S23.txt")" && wrap S23 && stop S23
+}
+
+scenario_S24() {
+  start S24 pi --model "$PI_MODEL" && note S24 want_model "$PI_MODEL" \
+    && say S24 "$(prompt S24)" && wrap S24 && stop S24
+}
 
 _solo() {  # _solo <label> [harness]: one prompt, a wrap, a stop
   start "$1" "${2:-claude}" && say "$1" "$(prompt "$1")" && wrap "$1" && stop "$1"
@@ -192,8 +225,9 @@ finish() {  # close the run's workspace and stop its Codex daemon; the run root 
 # ---------------------------------------------------------------------------
 # Session verbs
 
-start() {  # start <label> <claude|codex|pi>
-  local label=$1 kind=$2 name out pane from dir
+start() {  # start <label> <claude|codex|pi> [harness args ...]
+  local label=$1 kind=$2 name out pane from dir args=()
+  [ $# -gt 2 ] && args=(-- "${@:3}")
   name=$(_name "$label")
   from=$(_get last_pane); dir=down
   [ -z "$from" ] && { from=$(_get root_pane); dir=right; }
@@ -203,7 +237,8 @@ start() {  # start <label> <claude|codex|pi>
   pane=$(jq -r .result.pane.pane_id <<<"$out")
   _state "s['last_pane'] = '$pane'
 s['labels'].setdefault('$label', {}).update(harness='$kind', name='$name', pane='$pane')"
-  if ! herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 60000 >/dev/null 2>&1; then
+  if ! herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 60000 "${args[@]}" \
+    >/dev/null 2>&1; then
     _answer_trust "$label" || { echo "$label: start failed"; screen "$label" 40; return 1; }
   fi
   _steady "$label"
@@ -291,7 +326,10 @@ prompt() { cat "$HERE/prompts/$1.txt"; }
 # ---------------------------------------------------------------------------
 # Plumbing
 
-_name() {  # the herdr agent name: unique per run, since herdr keeps names after exit
+_name() {  # the herdr agent name: unique per run, since herdr keeps names after exit;
+  # a label that resumes another label's session keeps that session's name
+  local kept; kept=$(_get "labels.$1.name")
+  [ -n "$kept" ] && { echo "$kept"; return; }
   echo "t360-$(_get workspace | tr -d :)-$1" | tr '[:upper:]' '[:lower:]'
 }
 
@@ -347,8 +385,10 @@ _shells() {  # count shell commands still running anywhere under process $1
     }'
 }
 
-_work_task() {  # the work task for ticket #n, by tracker ref, from the index
-  oracle snapshot | jq -r --arg r "github:$REPO#$1" \
+_work_task() {  # the work task for ticket n (or an owner/repo#n ref), by tracker ref
+  local ref=github:$REPO#$1
+  [[ $1 == */*#* ]] && ref=github:$1
+  oracle snapshot | jq -r --arg r "$ref" \
     '.tasks | to_entries[] | select(.value.grain=="work" and .value.asked==$r) | .key' | head -1
 }
 

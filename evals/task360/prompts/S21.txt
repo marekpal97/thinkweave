@@ -1,0 +1,1 @@
+GitHub issue marekpal97/thinkweave#243 is finished (read only: never write to GitHub). Run the tests, add a one-line CHANGELOG.md entry for the echo subcommand, and commit. When you wrap, declare the task with `asked: marekpal97/thinkweave#243` exactly and `done: true`.

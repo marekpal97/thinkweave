@@ -13,7 +13,7 @@ From any plain shell on a machine with herdr running and thinkweave dev-linked:
 ```bash
 evals/task360/drive.sh setup        # optional: `run` sets up when no run exists
 evals/task360/drive.sh run S2       # runs S0, S1, then S2; checks each as it goes
-evals/task360/drive.sh check        # every checkpoint on the final state
+evals/task360/drive.sh check        # every checkpoint this run ran, on its frozen state
 evals/task360/drive.sh finish       # close the workspace once you have looked
 ```
 
@@ -72,8 +72,15 @@ No session or herdr worker starts with a permission-bypass flag.
 
 ## Scenarios
 
-Tickets exist only in the prompts (`prompts/`); nothing lives on GitHub.
+The S0–S15 tickets exist only in the prompts (`prompts/`); nothing lives on GitHub.
 #1 is the `dogfood greet` CLI, #2 `dogfood version`, #3 `dogfood version --json` (needs #2).
+
+The mini run (S20–S24, about 20 minutes) names the real tree
+`marekpal97/thinkweave` #184 → #243 → #256 instead. The epic lookup reads it with `gh`,
+read only. The prompts spell each ref as `marekpal97/thinkweave#n`, since a bare `#n`
+resolves to the sandbox's origin. Assertions read only the throwaway index.
+`drive.sh run S24` runs all five, S23 before S21: S23 continues the task S21 closes.
+S24 starts pi on `PI_MODEL` (default `openrouter/deepseek/deepseek-v4-flash`).
 
 | Label | Needs | Harness | What it exercises |
 |---|---|---|---|
@@ -93,6 +100,11 @@ Tickets exist only in the prompts (`prompts/`); nothing lives on GitHub.
 | S13 | S7 | claude → codex worker | PROBE: a Codex herdr worker on #3. Human step possible. |
 | S14 | S7 | claude → pi worker | PROBE: a pi herdr worker on #3. |
 | S15 | S7 | codex | PROBE: Codex continues #3 and wraps. Human step possible. |
+| S20 | — | claude | Works #256 with one committing subagent: the round lands on #243's task; the child round lists its `Task:` trailer commit and its summary envelope; the session note records harness and model. |
+| S21 | S20 | claude | #243 done: its task closes, a seeded #184 task stays open. |
+| S22 | — | claude | A file edit under no ref, wrapped with no task: the wrap warns and prints its landing line. The session stays open for S23. |
+| S23 | S20, S22 | claude | S22's session re-wraps `continuing` the S20 task: its round moves there. |
+| S24 | S23, S21 | pi | A short task on `$PI_MODEL` (an OpenRouter model) with `/skill:wrap`: the session note records `harness: pi` and the model. Its checkpoint also reads back: the graph walk from #243's task reaches its children, and the run's decisions carry its task id. Needs the pi login in the run home. |
 
 Rows assert floors ("at least N rounds"), so a checkpoint still holds on the final state
 of a longer run.
@@ -115,7 +127,7 @@ of a longer run.
 
 ## After a run
 
-1. Run `drive.sh check` with no label, so every checkpoint runs on the final state.
+1. Run `drive.sh check` with no label, so every scenario this run ran is scored.
 2. File one issue per `FAIL` and per material `GAP` under the task-trace epic, with the
    oracle output as evidence. Add `KNOWN #n` evidence to ticket #n as a comment.
 3. Run `drive.sh finish`. The run root stays on disk for inspection until the next setup.

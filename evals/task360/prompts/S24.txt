@@ -1,0 +1,1 @@
+Add a 'dogfood ping' subcommand that prints 'pong', with a test. Commit.

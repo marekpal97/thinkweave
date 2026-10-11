@@ -94,3 +94,104 @@ def test_check_scores_a_label_from_the_state_frozen_at_its_end(tmp_path, capsys)
     (tmp_path / "frozen" / "S0.json").write_text(oracle.json.dumps(frozen))
     assert oracle.main(["--root", str(tmp_path), "check", "S0"]) == 0
     assert capsys.readouterr().out.count("PASS") == 3
+
+
+# ---------------------------------------------------------------------------
+# The mini run (S20–S24): refs name the real tree #184 → #243 → #256.
+
+TREE = "github:marekpal97/thinkweave"
+
+
+def _tree_snap(**over) -> dict:
+    """The mini run's end state, every row met: S20 worked #256 onto the
+    #243 task with one trailer-committing child, S21 closed it, S22's
+    session re-wrapped onto it as S23, S24 ran on pi."""
+    s20 = _round("ses-S20", asked=f"{TREE}#256")
+    epic = {"grain": "work", "status": "closed", "asked": f"{TREE}#243", "parent": None,
+            "orphan": None, "body": ["[[a]]"] * 3, "errors": [],
+            "rounds": [s20, _round("ses-S22", asked=f"{TREE}#243"),
+                       _round("ses-S21", asked=f"{TREE}#243", done=True)]}
+    root = {"grain": "work", "status": "open", "asked": f"{TREE}#184", "parent": None,
+            "rounds": [], "body": [], "errors": []}
+    child = {"grain": "per-dispatch", "status": "closed", "asked": None, "parent": "tsk-243",
+             "orphan": None, "rounds": [{"tools": {"Bash": 2}, "did": {"commits": ["c0ffee"]},
+                                         "envelopes": [{"task_id": "tsk-kid",
+                                                        "outcome": "wrote the greet test"}]}]}
+    sessions = {
+        "S20": {"key": "uuid-S20", "id": "ses-S20", "opens": [], "closes": [],
+                "recorded": {"harness": "claude-code", "model": "claude-opus-5-5"}},
+        "S21": {"key": "uuid-S21", "id": "ses-S21"},
+        "S22": {"key": "uuid-S22", "id": "ses-S22"},
+        "S23": {"key": "uuid-S22", "id": "ses-S22"},
+        "S24": {"key": "uuid-S24", "id": "ses-S24",
+                "want_model": "openrouter/deepseek/deepseek-v4-flash",
+                "recorded": {"harness": "pi", "model": "deepseek/deepseek-v4-flash"}},
+    }
+    snap = {
+        "repo": REPO, "tasks": {"tsk-243": epic, "tsk-184": root, "tsk-kid": child},
+        "sessions": sessions, "feedback": [], "edges": {},
+        "trailers": {"tsk-kid": ["c0ffee"]},
+        "graph": {"tsk-243": ["tsk-kid", "ses-S20"]},
+        "decisions": [{"id": "dec-1", "task_id": "tsk-243", "derived_from": ["ses-S20"]},
+                      {"id": "dec-2", "task_id": "tsk-243", "derived_from": ["uuid-S22"]}],
+        "s22_wrap": "  landing: DECISIONS.md, BACKLOG.md\n  warnings:\n    ~ the session "
+                    "changed files but declared no task — its work lands on none\n",
+    }
+    for path, value in over.items():
+        *keys, last = path.split(".")
+        node = snap
+        for k in keys:
+            node = node[k]
+        node[last] = value
+    return snap
+
+
+def _unmet(check, **over) -> set[str]:
+    return {name for name, ok in _marks(check(oracle.View(_tree_snap(**over)))).items() if not ok}
+
+
+def test_the_mini_run_end_state_meets_every_row():
+    for check in (oracle.s20, oracle.s21, oracle.s22, oracle.s23, oracle.s24):
+        assert _unmet(check) == set(), check.__name__
+
+
+def test_s20_child_evidence_needs_a_trailer_tagged_commit_and_a_summary():
+    untagged = _unmet(oracle.s20, **{"trailers": {}})
+    assert untagged == {"a child round lists its Task-trailer commit"}
+    claim_only = [{"task_id": "tsk-kid", "outcome": "success"}]
+    assert _unmet(oracle.s20, **{"tasks.tsk-kid.rounds": [
+        {"tools": {"Bash": 2}, "did": {"commits": ["c0ffee"]}, "envelopes": claim_only}]}) == {
+        "a child round carries its summary envelope"}
+
+
+def test_s20_round_must_name_the_sub_issue_on_the_epic_task():
+    assert "the S20 round names sub-issue #256" in _unmet(
+        oracle.s20, **{"tasks.tsk-243.rounds": [_round("ses-S20", asked=f"{TREE}#243")]})
+
+
+def test_s21_done_on_243_must_leave_the_184_task_open():
+    assert _unmet(oracle.s21, **{"tasks.tsk-184.status": "closed"}) == {
+        "the #184 task stays open"}
+    assert _unmet(oracle.s21, **{"tasks.tsk-243.status": "open"}) == {"the #243 task is closed"}
+
+
+def test_s22_reads_the_no_task_warning_and_landing_line_from_the_wrap_output():
+    assert _unmet(oracle.s22, s22_wrap="  landing: (none)\n") == {
+        "the wrap of S22 warns that it declared no task", "the wrap of S22 prints its landing line"}
+
+
+def test_s23_round_moved_only_when_no_other_task_keeps_it():
+    stray = {"grain": "work", "status": "open", "asked": "fix the docstring",
+             "rounds": [_round("ses-S22")]}
+    assert _unmet(oracle.s23, **{"tasks.tsk-old": stray}) == {
+        "no other task keeps a round from the S22 session"}
+
+
+def test_s24_checks_pi_model_and_reads_the_trace_back():
+    assert _unmet(oracle.s24, **{"sessions.S24.recorded.model": "qwen/qwen3-coder"}) == {
+        "the S24 session note records its model"}
+    assert _unmet(oracle.s24, **{"graph.tsk-243": ["ses-S20"]}) == {
+        "read-back: weave_graph from the #243 task reaches its children"}
+    unstamped = [{"id": "dec-1", "task_id": None, "derived_from": ["ses-S20"]}]
+    assert _unmet(oracle.s24, decisions=unstamped) == {
+        "read-back: the mini run's decisions carry the #243 task id"}
