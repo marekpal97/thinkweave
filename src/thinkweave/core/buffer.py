@@ -24,7 +24,9 @@ retrieval-free sessions.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -61,6 +63,70 @@ def clear_session_state(weave_dir: Path, session_id: str) -> None:
     directory per session, forever.
     """
     shutil.rmtree(session_state_dir(weave_dir, session_id), ignore_errors=True)
+
+
+def append_event(weave_dir: Path, session_id: str, event: dict, *, harness: str) -> bool:
+    """Append one event, stamped with ``harness``, unless its delivery receipt exists.
+
+    Returns True when the line was written. An event with no ``delivery_id``
+    is always written.
+    """
+    event["harness"] = harness
+    path = buffer_path(weave_dir, session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    receipt: Path | None = None
+    delivery_id = event.get("delivery_id")
+    if delivery_id:
+        receipts = session_state_dir(weave_dir, session_id)
+        receipts.mkdir(parents=True, exist_ok=True)
+        receipt = receipts / hashlib.sha256(
+            str(delivery_id).encode("utf-8")
+        ).hexdigest()
+        try:
+            fd = os.open(receipt, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except FileExistsError:
+            return False
+
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        if receipt is not None:
+            receipt.unlink(missing_ok=True)
+        raise
+    return True
+
+
+def record_model(weave_dir: Path, session_id: str, model: str) -> str:
+    """Store the model a hook reported for this session; return the one before it.
+
+    Returns ``""`` the first time a session reports a model.
+    """
+    path = _model_path(weave_dir, session_id)
+    previous = session_model(weave_dir, session_id)
+    if model != previous:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(model, encoding="utf-8")
+    return previous
+
+
+def session_model(weave_dir: Path, session_id: str) -> str:
+    """The model this session's hooks last reported; ``""`` before any did."""
+    try:
+        return _model_path(weave_dir, session_id).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def _model_path(weave_dir: Path, session_id: str) -> Path:
+    """Outside :func:`session_state_dir` so the first archive keeps it: a
+    model switch after turn one must still find the model it replaced.
+
+    ponytail: one small file per session, never removed. Clear it on a
+    session-end hook if the directory ever grows enough to matter.
+    """
+    return weave_dir / "buffer" / ".models" / session_id
 
 
 def _append_unique_lines(path: Path, lines: list[str]) -> None:
