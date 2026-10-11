@@ -136,6 +136,13 @@ class Task:
         self.frontmatter["status"] = "closed"
         return True
 
+    def reopen(self) -> bool:
+        """Reopen a closed task; False when it was already open."""
+        if not self.closed:
+            return False
+        self.frontmatter["status"] = "open"
+        return True
+
     def attach_child(self, child: Task) -> bool:
         """Become ``child``'s parent; False when it already is. Raises
         ``ValueError`` for a refused edge: no task parents itself, work-grain
@@ -273,12 +280,17 @@ class TaskStore:
     def for_trajectory(self, note_id: str) -> Task | None:
         """The task, open or closed, holding the devloop round whose session
         ref names this trajectory note."""
-        ref = SessionRef.note("devloop", note_id).to_dict()
+        return next(iter(self.holding({SessionRef.note("devloop", note_id)})), None)
+
+    def holding(self, refs: set[SessionRef]) -> list[Task]:
+        """Tasks, open or closed, holding a round under one of ``refs``."""
+        wanted = [ref.to_dict() for ref in refs]
+        found: list[Task] = []
         for path in self._filed("tsk-*.md"):
             fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-            if any(r.get("session_ref") == ref for r in fm.get("rounds") or []):
-                return Task(fm, path)
-        return None
+            if any(r.get("session_ref") in wanted for r in fm.get("rounds") or []):
+                found.append(Task(fm, path))
+        return found
 
     def file_feedback(self, task: Task, feedback: Feedback) -> str:
         """Write ``feedback`` as a note beside ``task``, edged
@@ -652,6 +664,8 @@ class TaskPassResult:
     closed: list[str] = field(default_factory=list)
     orphaned: list[str] = field(default_factory=list)
     attached: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)
+    reopened: list[str] = field(default_factory=list)
     stamped: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -793,7 +807,10 @@ def apply_declaration(
     under its ``title``, else mints one;
     its ``round`` lands as a ``route: session`` round under the session
     note's ref, replacing this session's earlier round, so a re-wrap
-    re-applies rather than duplicates. ``done`` closes the task only when
+    re-applies rather than duplicates. A re-wrap that lands a round moves
+    this session's earlier round off every task its entries no longer name,
+    and reopens such a task when this session's own ``done`` closed it;
+    rounds other sessions wrote stay put. ``done`` closes the task only when
     the declared ref is the task's own ``asked`` — the only closure wrap
     performs; on an epic's task for a sub-issue the round records it. A
     closed task's entry is skipped with a warning. Each landed entry is
@@ -817,6 +834,7 @@ def apply_declaration(
             wrap.apply(entry, solo=len(entries) == 1)
         except ValueError as exc:
             wrap.result.errors.append(f"declared: {exc}")
+    wrap.move_rounds()
     if declaration.get("sparsity", "boundary") == "boundary":
         wrap.flag_orphans()
     return wrap.result
@@ -835,6 +853,9 @@ class _DeclarationPass:
         self.project = project
         self.folders = folders
         self.result = TaskPassResult()
+        # Tasks this pass's entries resolved to, and those it put a round on.
+        self.named: set[str] = set()
+        self.rounded: set[str] = set()
         self.repo = current_repo()
         filed = list(_folder_notes(folders))
         notes = [fm for _path, fm in filed]
@@ -890,6 +911,7 @@ class _DeclarationPass:
         task = self._task_for(entry, asked)
         if task is None:
             return
+        self.named.add(task.id)
         self._land(entry, task, asked, issue)
         if asked:
             task.frontmatter["asked"] = asked
@@ -901,6 +923,7 @@ class _DeclarationPass:
             new = self._round(entry, task, solo, issue)
             minted = (new.decisions or {}).get("minted") or []
             task.put_round(new, replaces=(self.wrap_ref,))
+            self.rounded.add(task.id)
         # A sub-issue's done stays on its round; the epic's own close (or
         # the tracker sweep) closes the epic's task.
         own = not issue or issue == task.frontmatter.get("asked")
@@ -939,6 +962,28 @@ class _DeclarationPass:
                 f"close {', '.join(sorted(self.closing_refs))}"
             )
 
+    def move_rounds(self) -> None:
+        """Take this session's earlier round off each task no entry named
+        once this pass landed a round elsewhere; reopen one whose close this
+        session's own ``done`` recorded in the register. A pass with errors
+        moves nothing, so a failed entry never loses its earlier round."""
+        if self.result.errors or not self.rounded:
+            return
+        refs = {self.session_ref, self.wrap_ref}
+        closed_here = {
+            row["task_id"] for row in self.register.rows()
+            if row["type"] == TASK_CLOSE and not row.get("session_ref")
+        }
+        for task in self.store.holding(refs):
+            if task.id in self.named:
+                continue
+            left = [r for r in task.rounds if r.session_ref in refs]
+            task.rounds = [r for r in task.rounds if r.session_ref not in refs]
+            if task.id in closed_here and any(r.done for r in left) and task.reopen():
+                self.result.reopened.append(task.id)
+            self.result.warnings += task.save(self.vm)
+            self.result.moved.append(task.id)
+
     def flag_orphans(self) -> None:
         """Flag each open with no close in the register; ids this pass
         touched carry their own boundary truth."""
@@ -972,6 +1017,7 @@ class _DeclarationPass:
             return self.store.mint(grain, title, project, session_key=self.session_key)
         if refusal := task.refusal("session"):
             if task.closed:
+                self.named.add(task.id)
                 self.result.warnings.append(f"{task.id} {refusal} — entry skipped")
                 return None
             raise ValueError(f"{task.id} {refusal}")

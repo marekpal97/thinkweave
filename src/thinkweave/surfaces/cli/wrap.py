@@ -95,7 +95,8 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             f"  tasks:   {len(t['minted'])} minted, "
             f"{len(t['appended'])} round(s) appended, "
             f"{len(t['closed'])} closed, {len(t['orphaned'])} orphaned, "
-            f"{len(t['attached'])} child(ren) attached, {t['stamped']} stamped"
+            f"{len(t['attached'])} child(ren) attached, {t['stamped']} stamped, "
+            f"{len(t['moved'])} round(s) moved off, {len(t['reopened'])} reopened"
         )
         for landing in t["landed"]:
             print(

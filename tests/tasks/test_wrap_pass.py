@@ -5,8 +5,9 @@ wrap LLM composed (canned here; no model call). Each declared entry
 mints a task or appends a round to a continuing one, closes on explicit
 done, attaches declared seam children, and stamps minted decisions with
 the task id. Orphan flags are the one mechanical check, at boundary
-sparsity only. The pass never fills ``outcome``, never reopens a closed
-task, and never attributes a child by inference.
+sparsity only. The pass never fills ``outcome`` and never attributes a
+child by inference; it reopens a task only when a re-wrap moves off the
+round whose ``done`` closed it.
 """
 
 from __future__ import annotations
@@ -263,6 +264,72 @@ class TestRoundAppend:
             if r["type"] == "task_close"
         ]
         assert len(closes) == 1
+
+    def test_rewrap_moves_a_done_round_and_reopens_the_task(self, cfg: Config):
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        first = reconcile(
+            cfg,
+            {"declared": [{"title": "A", "done": True, "round": {"did": {"attempts": 1}}}]},
+        )
+        (task_a,) = first.minted
+        assert task_notes(cfg)[task_a]["status"] == "closed"
+
+        again = reconcile(
+            cfg,
+            {"declared": [{"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 2}}}]},
+        )
+        assert again.errors == []
+        assert again.moved == [task_a]
+        assert again.reopened == [task_a]
+        notes = task_notes(cfg)
+        assert notes[task_a]["rounds"] == []
+        assert notes[task_a]["status"] == "open"
+        assert [r["did"] for r in notes["tsk-bbbbbbbb"]["rounds"]] == [{"attempts": 2}]
+
+    def test_rewrap_move_leaves_other_sessions_rounds(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        tasks.apply_declaration(
+            cfg,
+            {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 9}}}]},
+            session_key="s-2", project="t", streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        for target in ("tsk-aaaaaaaa", "tsk-bbbbbbbb"):
+            reconcile(
+                cfg, {"declared": [{"continuing": target, "round": {"did": {"attempts": 1}}}]}
+            )
+        notes = task_notes(cfg)
+        assert [r["did"] for r in notes["tsk-aaaaaaaa"]["rounds"]] == [{"attempts": 9}]
+        assert notes["tsk-aaaaaaaa"]["status"] == "open"
+        assert len(notes["tsk-bbbbbbbb"]["rounds"]) == 1
+
+    def test_rewrap_naming_its_closed_task_moves_nothing(self, cfg: Config):
+        decl = {"declared": [{"title": "A", "done": True, "round": {"did": {"attempts": 1}}}]}
+        task_a = reconcile(cfg, decl).minted[0]
+        decl["declared"][0] = {"continuing": task_a, "round": {"did": {"attempts": 2}}}
+        again = reconcile(cfg, decl)
+        assert again.moved == [] and again.reopened == []
+        fm = task_notes(cfg)[task_a]
+        assert fm["status"] == "closed"
+        assert [r["did"] for r in fm["rounds"]] == [{"attempts": 1}]
+
+    def test_rewrap_does_not_reopen_a_task_another_session_closed(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        reconcile(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 1}}}]}
+        )
+        tasks.apply_declaration(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "done": True}]},
+            session_key="s-2", project="t", streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        again = reconcile(
+            cfg, {"declared": [{"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 2}}}]}
+        )
+        assert again.moved == ["tsk-aaaaaaaa"]
+        assert again.reopened == []
+        fm = task_notes(cfg)["tsk-aaaaaaaa"]
+        assert fm["rounds"] == [] and fm["status"] == "closed"
 
     def test_continuing_unknown_task_is_an_error(self, cfg: Config):
         result = reconcile(
