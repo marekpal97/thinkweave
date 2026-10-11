@@ -148,7 +148,10 @@ class TestCliSurface:
         # route: mint the task stub + register row, record the boundary
         # close and compile the round, re-emit the descriptor, issue #187)
         # added 2026-09-23: 51 → 52.
-        assert len(_DISPATCH) == 52
+        # `weave explain` (locate / check — the /explain rail: the
+        # (session, scope, target) lookup a re-run updates, and the
+        # explain-note contract) added 2026-10-11: 52 → 53.
+        assert len(_DISPATCH) == 53
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():
