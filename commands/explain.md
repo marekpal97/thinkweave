@@ -57,7 +57,7 @@ Run it only when `$id` is non-empty. It prints the id of the explain note for th
 
 ### 3. Gather the material
 
-- **Session scope.** The conversation is the main source. Add the vault notes the session read, through `weave_read`. With a hint, keep to the part of the session the hint names.
+- **Session scope.** The conversation is the main source. A vault note joins the material only when the session's work used it: a decision rested on it, the work cited it, or the work changed because of it. The SessionStart payload and broad recall hits are background, not material. Read a note with `weave_read` only when the explanation needs more than the conversation shows. With a hint, keep to the part of the session the hint names.
 - **Diff scope.** Read the change without changing the working tree:
 
   ```
@@ -136,7 +136,7 @@ Use these sections, in this order. Leave a section out when the material has not
 3. **`## How it works`** — the mechanism, one short chunk per idea. Each chunk ends where the next idea starts.
 4. **`## Terms`** — a table: term, plain meaning, where it appears. Every term the note uses that a newcomer would not know.
 5. **`## Check questions`** — four to six questions, with the answers in a collapsed callout (`> [!note]- Answers`). Mix recall, prediction ("what happens if …") and contrast ("how does X differ from Y"). Nothing records the answers.
-6. **`## Read next`** — the vault notes and files to open next, as `[[path|id]]` links or file paths.
+6. **`## Read next`** — the vault notes and files to open next, as `[[path|id]]` links or file paths. Link only notes the work used, or notes that extend it. Never link a note only because recall served it.
 
 ## Diff additions
 
