@@ -11,6 +11,8 @@ no Python seam (dec-696bacfb).
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from thinkweave.core.schemas import NoteType
@@ -34,6 +36,7 @@ def arc(vault_factory):
                 "body": "We discussed kl divergence between two gaussians.",
                 "extra_frontmatter": {
                     "source_session": UUID,
+                    "harness": "pi",
                     "concepts": CONCEPTS,
                 },
             },
@@ -95,6 +98,13 @@ def test_probe_resolves_ses_id_too(arc):
     # events land in the buffer keyed by the harness UUID, never the ses- id
     assert (arc.config.weave_dir / "buffer" / f"{UUID}.jsonl").exists()
     assert not (arc.config.weave_dir / "buffer" / f"{ref.ses_id}.jsonl").exists()
+
+
+def test_probe_rows_carry_the_session_harness(arc):
+    assert record_probe(arc.config, UUID, "Is KL a metric?") is True
+    buf = arc.config.weave_dir / "buffer" / f"{UUID}.jsonl"
+    rows = [json.loads(line) for line in buf.read_text(encoding="utf-8").splitlines()]
+    assert [(r["type"], r["harness"]) for r in rows] == [("prompt", "pi"), ("probe", "pi")]
 
 
 def test_probe_unresolvable_session_writes_nothing(arc):

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from thinkweave.core.buffer import archived_events_path, buffer_path
+from thinkweave.core.buffer import append_event, archived_events_path, buffer_path
 from thinkweave.core.config import tracker_project
 from thinkweave.core.events import feedback_events, iter_jsonl
 from thinkweave.core.harness import lookup
@@ -464,9 +464,7 @@ class Register:
         }
         if ref:
             row["session_ref"] = ref.to_dict()
-        self._target.parent.mkdir(parents=True, exist_ok=True)
-        with self._target.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        append_event(self._target, row, harness=ref.harness if ref else "")
 
 
 @dataclass(frozen=True)

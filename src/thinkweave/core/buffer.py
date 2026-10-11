@@ -65,19 +65,20 @@ def clear_session_state(weave_dir: Path, session_id: str) -> None:
     shutil.rmtree(session_state_dir(weave_dir, session_id), ignore_errors=True)
 
 
-def append_event(weave_dir: Path, session_id: str, event: dict, *, harness: str) -> bool:
-    """Append one event, stamped with ``harness``, unless its delivery receipt exists.
+def append_event(
+    path: Path, event: dict, *, harness: str, receipts: Path | None = None
+) -> bool:
+    """Append one event to a session log, stamped with ``harness`` when known.
 
-    Returns True when the line was written. An event with no ``delivery_id``
-    is always written.
+    With ``receipts``, an event whose ``delivery_id`` already has a receipt
+    there is skipped. Returns True when the line was written.
     """
-    event["harness"] = harness
-    path = buffer_path(weave_dir, session_id)
+    if harness:
+        event["harness"] = harness
     path.parent.mkdir(parents=True, exist_ok=True)
     receipt: Path | None = None
     delivery_id = event.get("delivery_id")
-    if delivery_id:
-        receipts = session_state_dir(weave_dir, session_id)
+    if delivery_id and receipts is not None:
         receipts.mkdir(parents=True, exist_ok=True)
         receipt = receipts / hashlib.sha256(
             str(delivery_id).encode("utf-8")

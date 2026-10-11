@@ -28,9 +28,7 @@ and pollute the log.
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from typing import Any
 
 # The closed set of MCP tool names whose calls produce a retrieval event.
@@ -173,15 +171,3 @@ def build_retrieval_event(
         "args": args,
         "returned_ids": returned_ids,
     }
-
-
-def append_event(buffer_path: Path, event: dict) -> None:
-    """Append a single event to the per-session JSONL buffer.
-
-    Thin wrapper kept here (rather than reaching into the hook handler's
-    ``_buffer_event``) so non-hook callers — tests, headless catch-up
-    flows — can write events without importing from ``surfaces/``.
-    """
-    buffer_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(buffer_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(event) + "\n")

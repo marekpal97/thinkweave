@@ -2414,8 +2414,9 @@ class TestLogicalSessionKey:
 
 TRANSCRIPTS = Path(__file__).parent / "fixtures" / "harness_transcripts"
 
-# One recorded session per harness: its transcript fixture, the model that
-# transcript names, and the argv flag `weave hooks install` writes for it.
+# One recorded session per harness: its transcript fixture, the model its hook
+# envelopes report (the Codex and Pi transcripts name it too; the Claude Code
+# one names none), and the argv flag `weave hooks install` writes for it.
 HARNESS_SESSIONS = {
     "claude-code": (
         TRANSCRIPTS / "claude-code" / "2f6b9c1e-0000-4000-8000-000000000001.jsonl",
@@ -2574,3 +2575,26 @@ class TestSessionHarnessAndModel:
             e for e in _read_buffer(vault.weave_dir, session_id)
             if e.get("type") == "model_change"
         ]
+
+    def test_model_tracking_failure_is_surfaced_and_capture_continues(
+        self, vault, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        def broken(*a, **k):
+            raise OSError("model store unwritable")
+
+        monkeypatch.setattr(handler_mod, "record_model", broken)
+        session_id = "ses-codex-broken"
+        monkeypatch.setattr("sys.argv", ["weave-hook", "user_prompt_submit", "--harness", "codex"])
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(json.dumps(
+                self._envelope("codex", session_id, "UserPromptSubmit", prompt="go")
+            )),
+        )
+        handler_mod.main()
+
+        out = json.loads(capsys.readouterr().out)
+        assert "model store unwritable" in out["systemMessage"]
+        assert [e["type"] for e in _read_buffer(vault.weave_dir, session_id)] == ["prompt"]

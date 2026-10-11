@@ -170,6 +170,15 @@ def _hook_harness() -> str:
     return ""
 
 
+#: Failure messages raised before the hook's own reply; :func:`_output` sends them.
+_pending_messages: list[str] = []
+
+
+def _harness_id() -> str:
+    """The firing harness's profile id; no ``--harness`` argv means Claude Code."""
+    return _hook_harness() or "claude-code"
+
+
 def _env_session_id() -> str:
     """Session id from the firing harness's own env var — the last resort when
     a hook payload omits ``session_id``.
@@ -220,6 +229,9 @@ def main() -> None:
         _track_model(hook_input)
     except Exception as e:
         _log_error(f"{hook_type}/model", e)
+        _pending_messages.append(
+            _report_failure(f"{hook_type}/model", hook_input, e)
+        )
 
     try:
         if hook_type == "post_tool_use":
@@ -380,7 +392,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
         session_key=session_id,
         project=detect_project(hook_input.get("cwd", "")),
         role=str(hook_input.get("agent_type", "")),
-        harness=_hook_harness() or "claude-code",
+        harness=_harness_id(),
         agent_id=agent_id,
     )
     _output(
@@ -401,7 +413,7 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     cfg = load_config()
     agent_id = str(hook_input.get("agent_id", ""))
     source = tasks.TranscriptSource.agent_file(
-        _hook_harness() or "claude-code",
+        _harness_id(),
         agent_id,
         agent_transcript=str(hook_input.get("agent_transcript_path") or ""),
         parent_transcript=str(hook_input.get("transcript_path") or ""),
@@ -533,7 +545,7 @@ def _bind_dispatched_session(
     for task_id in tasks.bind_session(
         cfg,
         prompt_text,
-        harness=_hook_harness() or "claude-code",
+        harness=_harness_id(),
         session_key=session_id,
         transcript_path=str(hook_input.get("transcript_path") or ""),
         since=now,
@@ -818,7 +830,7 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
 
     extra_fm: dict = {
         "source_session": session_id,
-        "harness": _hook_harness() or "claude-code",
+        "harness": _harness_id(),
     }
     model = str(hook_input.get("model") or "") or session_model(
         cfg.weave_dir, session_id
@@ -910,7 +922,10 @@ def _buffer_event(weave_dir: Path, session_id: str, event: dict) -> bool:
     """Append one event, stamped with the firing harness, unless its delivery
     receipt already exists (see :func:`_delivery_id`)."""
     return append_event(
-        weave_dir, session_id, event, harness=_hook_harness() or "claude-code"
+        buffer_path(weave_dir, session_id),
+        event,
+        harness=_harness_id(),
+        receipts=session_state_dir(weave_dir, session_id),
     )
 
 
@@ -1209,6 +1224,7 @@ def _build_auto_summary(
 from thinkweave.core.buffer import (  # noqa: E402, F401
     append_event,
     archive_buffer,
+    buffer_path,
     cleanup_buffer,
     mirror_buffer_events,
     record_model,
@@ -1833,6 +1849,8 @@ def _output(
             Required when ``additional_context`` is set.
     """
     result: dict = {}
+    system_message = "\n".join(filter(None, [*_pending_messages, system_message]))
+    _pending_messages.clear()
     if system_message:
         result["systemMessage"] = system_message
     if additional_context and hook_event_name:

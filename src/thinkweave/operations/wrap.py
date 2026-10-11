@@ -439,6 +439,7 @@ def _append_verdict_events(
     from a previous wrap is skipped outright, so re-wraps never
     double-write nor spill onto sibling prompts.
     """
+    from thinkweave.core.buffer import append_event
     from thinkweave.core.events import Prompt, extract_prompts, feedback_events
 
     if not chain:
@@ -465,7 +466,9 @@ def _append_verdict_events(
     # the fall-through so repeated same-prefix verdicts in one batch
     # distribute over distinct prompts.
     preexisting: set[tuple[str, str, str]] = set()
-    for events_file, _folder, _fm in chain:
+    harness_of: dict[Path, str] = {}
+    for events_file, _folder, fm in chain:
+        harness_of[events_file] = str((fm or {}).get("harness") or "")
         file_prompts = extract_prompts(events_file)
         prompts.extend((p, events_file) for p in file_prompts)
         preexisting.update(
@@ -489,7 +492,7 @@ def _append_verdict_events(
     )
     batch: set[tuple[str, str, str]] = set()
 
-    lines: dict[Path, list[str]] = {}
+    lines: dict[Path, list[dict]] = {}
     # Longest needle first (#181 review): the most specific verdict claims
     # its prompt before a broader prefix can take it — in-batch assignment
     # stops depending on the wrap LLM's verdict order.
@@ -567,14 +570,12 @@ def _append_verdict_events(
             event["register"] = register
         if about:
             event["about"] = about[:300]
-        lines.setdefault(target, []).append(
-            json.dumps(event, ensure_ascii=False)
-        )
+        lines.setdefault(target, []).append(event)
 
-    for events_file, file_lines in lines.items():
-        with events_file.open("a", encoding="utf-8") as fh:
-            fh.write("\n".join(file_lines) + "\n")
-        result.verdicts_written += len(file_lines)
+    for events_file, file_events in lines.items():
+        for event in file_events:
+            append_event(events_file, event, harness=harness_of.get(events_file, ""))
+        result.verdicts_written += len(file_events)
 
 
 def finalize_wrap(
