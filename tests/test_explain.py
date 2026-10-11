@@ -11,7 +11,6 @@ import argparse
 
 import pytest
 
-from thinkweave.core.schemas import NoteType
 from thinkweave.surfaces.cli.explain import cmd_explain, validate_explain_note
 
 UUID = "11111111-2222-3333-4444-555555555555"
