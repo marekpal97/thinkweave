@@ -270,6 +270,7 @@ class SessionRef:
     ses_id: str
     source_session: str
     session_dir: Path
+    harness: str = ""
 
 
 def resolve_session(cfg: Config, session: str) -> SessionRef | None:
@@ -280,7 +281,8 @@ def resolve_session(cfg: Config, session: str) -> SessionRef | None:
     idx = Indexer(config=cfg)
     try:
         row = idx.db.execute(
-            "SELECT id, path, json_extract(frontmatter, '$.source_session') AS src "
+            "SELECT id, path, json_extract(frontmatter, '$.source_session') AS src, "
+            "json_extract(frontmatter, '$.harness') AS harness "
             "FROM notes WHERE type = 'session' AND (id = ? OR "
             "json_extract(frontmatter, '$.source_session') = ?) LIMIT 1",
             (session, session),
@@ -289,7 +291,12 @@ def resolve_session(cfg: Config, session: str) -> SessionRef | None:
         idx.close()
     if not row or not row["src"]:
         return None
-    return SessionRef(row["id"], str(row["src"]), (cfg.vault_root / row["path"]).parent)
+    return SessionRef(
+        row["id"],
+        str(row["src"]),
+        (cfg.vault_root / row["path"]).parent,
+        str(row["harness"] or ""),
+    )
 
 
 def record_probe(cfg: Config, session: str, text: str) -> bool:
@@ -301,17 +308,18 @@ def record_probe(cfg: Config, session: str, text: str) -> bool:
     archived ``events.jsonl`` once Stop moved it. False when the session
     cannot be resolved.
     """
-    from thinkweave.operations.retrieval_log import append_event
+    from thinkweave.core.buffer import append_event, buffer_path
 
     text = text.strip()
     ref = resolve_session(cfg, session)
     if ref is None or not text:
         return False
-    live = cfg.weave_dir / "buffer" / f"{ref.source_session}.jsonl"
+    live = buffer_path(cfg.weave_dir, ref.source_session)
     archived = ref.session_dir / "events.jsonl"
     log = archived if archived.exists() and not live.exists() else live
     ts = datetime.now(timezone.utc).isoformat()
-    append_event(log, {"ts": ts, "type": "prompt", "text": text, "session_id": ref.source_session})
+    append_event(log, {"ts": ts, "type": "prompt", "text": text, "session_id": ref.source_session},
+                 harness=ref.harness)
     append_event(log, {"ts": ts, "type": "probe", "session_id": ref.source_session,
-                       "prompt_ref": text[:120]})
+                       "prompt_ref": text[:120]}, harness=ref.harness)
     return True

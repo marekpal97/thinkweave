@@ -1373,3 +1373,128 @@ class TestIncrementalEdges:
         assert indexer.db.execute(
             "SELECT COUNT(*) AS n FROM edges WHERE metadata LIKE '%ubiquitous%'"
         ).fetchone()["n"] == 0
+
+
+class TestTaskChildOfEdges:
+    """A child task's ``parent:`` and a round's ``children`` both yield one
+    ``child_of`` edge from the child to its work task."""
+
+    WORK = "tsk-00000001"
+
+    @staticmethod
+    def _write_task(vault: VaultManager, task_id: str, **fields) -> Path:
+        from thinkweave.core.vault import render_frontmatter
+
+        fm = {
+            "type": "note", "kind": "task", "id": task_id, "title": task_id,
+            "project": "p", "status": "open", "rounds": [], **fields,
+        }
+        path = vault.root / "tasks" / f"{task_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_frontmatter(fm) + "\n\nbody\n", encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _child_of(indexer: Indexer) -> set[tuple[str, str]]:
+        rows = indexer.db.execute(
+            "SELECT source, target FROM edges WHERE edge_type = 'child_of'"
+        ).fetchall()
+        return {(r["source"], r["target"]) for r in rows}
+
+    def _family(self, vault: VaultManager) -> dict[str, Path]:
+        """Work task listing two children in a round; only one child
+        carries ``parent:``, and that one is also named in the round."""
+        return {
+            "work": self._write_task(
+                vault, self.WORK, grain="work",
+                rounds=[{"route": "loop", "children": ["tsk-00000002", "tsk-00000003"]}],
+            ),
+            "named": self._write_task(
+                vault, "tsk-00000002", grain="per-dispatch", parent=self.WORK
+            ),
+            "listed": self._write_task(vault, "tsk-00000003", grain="per-dispatch"),
+        }
+
+    def test_parent_and_round_children_become_one_edge_each(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        self._family(vault)
+        indexer.rebuild(full=True)
+        assert self._child_of(indexer) == {
+            ("tsk-00000002", self.WORK),
+            ("tsk-00000003", self.WORK),
+        }
+
+    def test_reindexing_either_end_keeps_the_edges(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        paths = self._family(vault)
+        indexer.rebuild(full=True)
+        expected = self._child_of(indexer)
+        for path in paths.values():
+            indexer.index_file(path)
+            assert self._child_of(indexer) == expected
+
+    def test_dropping_a_round_child_drops_its_edge(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        self._family(vault)
+        indexer.rebuild(full=True)
+        work = self._write_task(
+            vault, self.WORK, grain="work",
+            rounds=[{"route": "loop", "children": ["tsk-00000002"]}],
+        )
+        indexer.index_file(work)
+        assert self._child_of(indexer) == {("tsk-00000002", self.WORK)}
+
+    def test_work_then_child_then_later_round_keeps_the_edge(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        """The wrap order: the work task lists the child, the child then
+        gains ``parent:``, then the work task gains a later round."""
+        self._write_task(vault, "tsk-00000002", grain="per-dispatch")
+        indexer.rebuild(full=True)
+        first = {"route": "session", "children": ["tsk-00000002"]}
+        indexer.index_file(self._write_task(vault, self.WORK, grain="work", rounds=[first]))
+        assert self._child_of(indexer) == {("tsk-00000002", self.WORK)}
+        indexer.index_file(
+            self._write_task(vault, "tsk-00000002", grain="per-dispatch", parent=self.WORK)
+        )
+        assert self._child_of(indexer) == {("tsk-00000002", self.WORK)}
+        indexer.index_file(self._write_task(
+            vault, self.WORK, grain="work", rounds=[first, {"route": "session"}],
+        ))
+        assert self._child_of(indexer) == {("tsk-00000002", self.WORK)}
+
+    def test_child_indexed_after_its_work_task_gets_the_edge(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        indexer.index_file(self._write_task(
+            vault, self.WORK, grain="work",
+            rounds=[{"route": "loop", "children": ["tsk-00000003"]}],
+        ))
+        assert self._child_of(indexer) == set()
+        indexer.index_file(self._write_task(vault, "tsk-00000003", grain="per-dispatch"))
+        assert self._child_of(indexer) == {("tsk-00000003", self.WORK)}
+
+    def test_work_indexed_after_its_parented_child_gets_the_edge(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        indexer.index_file(
+            self._write_task(vault, "tsk-00000002", grain="per-dispatch", parent=self.WORK)
+        )
+        indexer.index_file(self._write_task(vault, self.WORK, grain="work"))
+        assert self._child_of(indexer) == {("tsk-00000002", self.WORK)}
+
+    def test_removing_parent_keeps_the_round_edge_and_then_drops_it(
+        self, vault: VaultManager, indexer: Indexer
+    ):
+        self._family(vault)
+        indexer.rebuild(full=True)
+        indexer.index_file(self._write_task(vault, "tsk-00000002", grain="per-dispatch"))
+        assert ("tsk-00000002", self.WORK) in self._child_of(indexer)
+        indexer.index_file(self._write_task(
+            vault, self.WORK, grain="work",
+            rounds=[{"route": "loop", "children": ["tsk-00000003"]}],
+        ))
+        assert self._child_of(indexer) == {("tsk-00000003", self.WORK)}

@@ -9,7 +9,7 @@ shared ``sub = parser.add_subparsers(dest='command')`` so the
 from __future__ import annotations
 
 from thinkweave.core.harness import PROFILES
-from thinkweave.core.schemas import EdgeType, NoteType
+from thinkweave.core.schemas import LINKABLE_EDGE_TYPES, NoteType
 from thinkweave.core.task_contract import TASK_GRAINS
 from thinkweave.surfaces.cli.explain import SCOPES
 
@@ -95,7 +95,7 @@ def add_note_subparsers(sub) -> None:
     p_link.add_argument("source", help="Source note ID")
     p_link.add_argument("target", help="Target note ID")
     p_link.add_argument(
-        "--type", "-t", default="relates_to", choices=[e.value for e in EdgeType]
+        "--type", "-t", default="relates_to", choices=list(LINKABLE_EDGE_TYPES)
     )
 
     p_graph = sub.add_parser("graph", help="Show local graph around a note")
@@ -1182,7 +1182,7 @@ def add_admin_subparsers(sub) -> None:
     p_unlink.add_argument("target", help="Target note ID")
     p_unlink.add_argument(
         "--type", "-t", default="relates_to",
-        choices=[e.value for e in EdgeType],
+        choices=list(LINKABLE_EDGE_TYPES),
     )
 
     p_timeline = sub.add_parser(

@@ -386,3 +386,117 @@ class TestResolvesExistingNoteBySourceSession:
         assert note is not None and note.id == existing_id
         assert raw is not None and cc_uuid in raw
         assert read_note(config, "dddddddd-0000-0000-0000-000000000004") == (None, None)
+
+
+class TestRefEvidence:
+    """The extract result lists the session's ref evidence for the task
+    declaration: commit closing refs, the pushed branch's PRs, and open
+    tasks whose rounds touched the same files."""
+
+    def _session(self, vault: VaultManager, config: Config, **fm) -> str:
+        path = vault.create_note(
+            note_type=NoteType.SESSION,
+            title="evidence",
+            body="## Summary\n",
+            project="t",
+            extra_frontmatter=fm,
+        )
+        _index(config)
+        return vault.read_note(path).id
+
+    def _open_task(self, config: Config, vault: VaultManager, paths: list[str]):
+        from thinkweave.core.task_contract import Round, SessionRef
+        from thinkweave.operations.tasks import TaskStore
+
+        task = TaskStore(config).mint("work", "ship the greet CLI", "t")
+        task.put_round(
+            Round(
+                route="session",
+                session_ref=SessionRef.session("claude-code", "earlier"),
+                did={"paths": paths},
+            )
+        )
+        task.save(vault)
+        return task
+
+    def test_evidence_names_commit_closes_and_touching_task(
+        self, config: Config, vault: VaultManager, monkeypatch
+    ):
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
+
+        task = self._open_task(config, vault, ["src/greet/cli.py"])
+        self._open_task(config, vault, ["src/other.py"])
+        sess = self._session(
+            vault,
+            config,
+            commits=[
+                {
+                    "hash": "abc1234",
+                    "message": "Fix greet typo. Closes #12",
+                    "files": ["src/greet/cli.py"],
+                },
+                {"hash": "def5678", "message": "chore: bump", "files": ["README.md"]},
+            ],
+        )
+
+        out = extract_session(
+            config, session_id=sess, summary="ok", insights=[], decisions=[]
+        )
+
+        assert out.ref_evidence.commit_closes == {"#12": ["abc1234"]}
+        assert list(out.ref_evidence.tasks) == [task.id]
+        report = _format_extract_report(out)
+        assert "#12" in report and "abc1234" in report
+        assert task.id in report and "ship the greet CLI" in report
+
+    def test_evidence_matches_absolute_touched_paths(
+        self, config: Config, vault: VaultManager
+    ):
+        task = self._open_task(config, vault, ["src/greet/cli.py"])
+        sess = self._session(
+            vault, config, files_touched=["/home/u/repo/src/greet/cli.py"]
+        )
+
+        out = extract_session(
+            config, session_id=sess, summary="ok", insights=[], decisions=[]
+        )
+
+        assert list(out.ref_evidence.tasks) == [task.id]
+
+    def test_evidence_lists_pushed_branch_prs_and_their_closing_refs(
+        self, config: Config, vault: VaultManager, monkeypatch
+    ):
+        from thinkweave.surfaces.mcp.tools.extract import _format_extract_report
+
+        seen = []
+        monkeypatch.setattr(
+            "thinkweave.operations.tasks._gh_branch_prs",
+            lambda branch: seen.append(branch)
+            or {"https://github.com/o/r/pull/7": ["#12"]},
+        )
+        sess = self._session(vault, config, git_branch="feat/greet")
+
+        out = extract_session(
+            config, session_id=sess, summary="ok", insights=[], decisions=[]
+        )
+
+        assert seen == ["feat/greet"]
+        assert out.ref_evidence.prs == {"https://github.com/o/r/pull/7": ["#12"]}
+        assert "https://github.com/o/r/pull/7" in _format_extract_report(out)
+
+    def test_evidence_pr_lookup_failure_is_announced(
+        self, config: Config, vault: VaultManager, monkeypatch
+    ):
+        import subprocess
+
+        def boom(branch):
+            raise subprocess.CalledProcessError(1, "gh", stderr="gh: not logged in")
+
+        monkeypatch.setattr("thinkweave.operations.tasks._gh_branch_prs", boom)
+        sess = self._session(vault, config, git_branch="feat/greet")
+
+        out = extract_session(
+            config, session_id=sess, summary="ok", insights=[], decisions=[]
+        )
+
+        assert any("not logged in" in w for w in out.warnings)

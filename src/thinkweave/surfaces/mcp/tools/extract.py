@@ -53,6 +53,7 @@ def _format_extract_report(out) -> str:
     if not out.all_created:
         lines.append("  No insights or decisions extracted.")
     lines.extend(out.suggestions[:5])
+    lines.extend(out.ref_evidence.lines())
     lines.extend(f"Warning: {warning}" for warning in out.warnings)
     lines.append(f"Session marked processed={out.processed_at}")
     # Surface the exact finalize command — pass the minted ses-id (#181):

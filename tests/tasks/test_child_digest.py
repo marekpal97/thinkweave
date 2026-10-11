@@ -382,3 +382,77 @@ class TestNoSilentRound:
         assert "tools" not in entry
         err = capsys.readouterr().err
         assert all(f"digest: {g}" in err for g in gaps)
+
+
+def git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+class TestChildEvidence:
+    """What a closed child round carries as evidence of its work: its
+    trailer-tagged commits, its outputs and its summary envelope."""
+
+    def test_trailer_commits_on_one_branch_land_on_their_own_child(
+        self, cfg: Config, monkeypatch, tmp_path: Path
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "feature")
+        git(repo, "config", "user.email", "t@example.com")
+        git(repo, "config", "user.name", "t")
+        first = tasks.open_child(cfg, session_key="s-1", project="p")
+        second = tasks.open_child(cfg, session_key="s-1", project="p")
+        shas = {}
+        for n, child in enumerate((first, second, first)):
+            (repo / f"f{n}.txt").write_text(str(n), encoding="utf-8")
+            git(repo, "add", ".")
+            git(repo, "commit", "-q", "-m", f"change {n}\n\nTask: {child.task_id}")
+            shas.setdefault(child.task_id, []).append(git(repo, "rev-parse", "HEAD"))
+        monkeypatch.chdir(repo)
+
+        for child in (first, second):
+            result = tasks.close_child(cfg, child.task_id, session_key="s-1")
+            (entry,) = stub_fm(cfg, child.task_id)["rounds"]
+            assert sorted(entry["did"]["commits"]) == sorted(shas[child.task_id])
+            for sha in shas[child.task_id]:
+                assert {"kind": "commit", "ref": sha} in entry["outputs"]
+            assert not any("trailer" in gap for gap in result.gaps)
+
+    def test_a_failed_trailer_search_is_a_gap(self, cfg: Config, monkeypatch, tmp_path: Path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+        child = tasks.open_child(cfg, session_key="s-1", project="p")
+        result = tasks.close_child(cfg, child.task_id, session_key="s-1")
+        assert any("Task trailer" in gap for gap in result.gaps)
+
+    def test_a_research_worker_round_lists_its_note_and_summary(self, cfg: Config):
+        child = tasks.open_child(
+            cfg, session_key="s-1", project="p", harness="claude-code",
+            agent_id="a1f0e2d3c4b5a6978",
+        )
+        summary = "Briefed the market wrap as src-a10e8018."
+        Path(child.envelope_return).write_text(
+            json.dumps({"task_id": child.task_id, "outcome": summary}) + "\n",
+            encoding="utf-8",
+        )
+        source = TranscriptSource(
+            FOREGROUND, "", SessionRef.agent("claude-code", "a1f0e2d3c4b5a6978")
+        )
+        tasks.close_child(cfg, child.task_id, session_key="s-1", source=source)
+        (entry,) = stub_fm(cfg, child.task_id)["rounds"]
+        assert {"kind": "note", "ref": "src-a10e8018"} in entry["outputs"]
+        assert summary in [e["outcome"] for e in entry["envelopes"]]
+
+    def test_the_dispatch_descriptor_states_trailer_outputs_and_summary(
+        self, cfg: Config
+    ):
+        for harness in ("claude-code", "pi", "codex", ""):
+            child = tasks.open_child(cfg, session_key="s-1", project="p", harness=harness)
+            text = child.instructions
+            assert f"Task: {child.task_id}" in text
+            assert child.envelope_return in text
+            assert '"outcome"' in text and '"outputs"' in text

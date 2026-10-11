@@ -12,12 +12,14 @@ import logging
 import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
 from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config, load_config
+from thinkweave.core.schemas import LINKABLE_EDGE_TYPES
 from thinkweave.synthesis.landing import (
     LANDING_FILENAMES,
     landing_filename_set,
@@ -270,10 +272,49 @@ EDGE_FIELD_MAP: dict[str, str] = {
     "builds_on": "builds_on",
     "consumes": "consumes",
     "feedback_for": "feedback_for",
+    "parent": "child_of",
 }
 
-# Reverse map: edge_type -> frontmatter field name
-EDGE_TYPE_TO_FIELD: dict[str, str] = {v: k for k, v in EDGE_FIELD_MAP.items()}
+# Reverse map for link/unlink: edge_type -> frontmatter field name
+EDGE_TYPE_TO_FIELD: dict[str, str] = {
+    v: k for k, v in EDGE_FIELD_MAP.items() if v in LINKABLE_EDGE_TYPES
+}
+
+# Per-note lookup row for the edge passes; ``parent`` and ``rounds`` give
+# each task the work tasks it is a child of.
+_LOOKUP_SQL = (
+    "SELECT id, path, title, type, CASE WHEN json_valid(frontmatter) "
+    "THEN json_extract(frontmatter, '$.parent') END AS parent, "
+    "CASE WHEN json_valid(frontmatter) "
+    "THEN json_extract(frontmatter, '$.rounds') END AS rounds FROM notes"
+)
+
+
+@dataclass(frozen=True)
+class _EdgeLookup:
+    """Every note's link keys, type and path, each session directory's
+    session id, and each task's work tasks: what the edge passes resolve against."""
+
+    slug_to_id: dict[str, str]
+    id_to_type: dict[str, str]
+    id_to_path: dict[str, str]
+    session_dirs: dict[str, str]
+    # child id -> work tasks whose rounds list it
+    listed_in: dict[str, set[str]]
+    # work task id -> children naming it in ``parent:`` or listed in its rounds
+    children_of: dict[str, set[str]]
+
+    def resolve(self, target: str) -> str:
+        """The note id a frontmatter target or wikilink names, or ``""``."""
+        target = target.strip()
+        if not target or target in self.id_to_type:
+            return target
+        return self.slug_to_id.get(target.lower(), self.slug_to_id.get(target, ""))
+
+    def wikilink_edge_type(self, target_id: str) -> str:
+        """A wikilink cites a source, derives from a session, else relates."""
+        kind = self.id_to_type.get(target_id, "note")
+        return {"source": "cites", "session": "derived_from"}.get(kind, "relates_to")
 
 
 class Indexer:
@@ -965,78 +1006,23 @@ class Indexer:
         edge_count = 0
         total_notes = self.db.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
 
-        # ── Lookup maps ──────────────────────────────────────────────
-        slug_to_id: dict[str, str] = {}
-        id_to_type: dict[str, str] = {}
-        id_to_path: dict[str, str] = {}
-        for row in self.db.execute("SELECT id, path, title, type FROM notes"):
-            stem = Path(row["path"]).stem
-            slug_to_id[stem] = row["id"]
-            slug_to_id[row["title"].lower()] = row["id"]
-            # Resolve links by note id (bare ``[[dec-X]]``) and by vault path
-            # sans .md (path-based ``[[notes/foo|dec-X]]`` — extract_wikilink_ids
-            # recovers the id, but key the path too as a belt-and-braces fallback).
-            slug_to_id[row["id"].lower()] = row["id"]
-            rel = str(row["path"] or "").replace("\\", "/")
-            if rel.endswith(".md"):
-                rel = rel[:-3]
-            if rel:
-                slug_to_id[rel.lower()] = row["id"]
-            id_to_type[row["id"]] = row["type"]
-            id_to_path[row["id"]] = row["path"]
+        lookup = self._edge_lookup()
 
-        # ── 1. Frontmatter edges ─────────────────────────────────────
+        # ── 1+2. Outbound frontmatter, round-child and wikilink edges ─
         for row in self.db.execute("SELECT id, frontmatter, body_text FROM notes"):
-            note_id = row["id"]
             try:
                 fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
             except json.JSONDecodeError:
                 continue
-
-            for fm_field, edge_type in EDGE_FIELD_MAP.items():
-                targets = fm.get(fm_field, [])
-                if isinstance(targets, str):
-                    targets = [targets] if targets else []
-                for target in targets:
-                    target = str(target).strip()
-                    if not target:
-                        continue
-                    resolved = target if target in slug_to_id.values() else slug_to_id.get(
-                        target.lower(), slug_to_id.get(target, "")
-                    )
-                    if resolved and resolved != note_id:
-                        self._insert_edge(note_id, resolved, edge_type, now)
-                        edge_count += 1
-
-            # ── 2. Wikilink edges (with type inference) ──────────────
-            body = row["body_text"] or ""
-            for link in extract_wikilink_ids(body):
-                link_lower = link.lower().strip()
-                resolved = slug_to_id.get(link_lower, slug_to_id.get(link, ""))
-                if resolved and resolved != note_id:
-                    # Infer edge type from target note type
-                    target_type = id_to_type.get(resolved, "note")
-                    if target_type == "source":
-                        wl_edge_type = "cites"
-                    elif target_type == "session":
-                        wl_edge_type = "derived_from"
-                    else:
-                        wl_edge_type = "relates_to"
-                    self._insert_edge(note_id, resolved, wl_edge_type, now)
-                    edge_count += 1
+            edge_count += self._emit_outbound_edges(
+                row["id"], fm, row["body_text"] or "", lookup, now
+            )
 
         # ── 3. Session directory inference ────────────────────────────
         # Notes living in a session directory get derived_from edges
         # to the session.md in that directory.
-        session_dir_to_id: dict[str, str] = {}
-        for nid, path in id_to_path.items():
-            if path.endswith("/session.md") or path.endswith("\\session.md"):
-                session_dir = str(Path(path).parent)
-                session_dir_to_id[session_dir] = nid
-
-        for nid, path in id_to_path.items():
-            parent = str(Path(path).parent)
-            session_id = session_dir_to_id.get(parent)
+        for nid, path in lookup.id_to_path.items():
+            session_id = lookup.session_dirs.get(str(Path(path).parent))
             if session_id and nid != session_id:
                 meta = json.dumps({"via": "session_dir"})
                 self.db.execute(
@@ -1117,7 +1103,9 @@ class Indexer:
         unchanged source and are kept.
 
         **Outbound** categories (frontmatter, wikilink, session-dir) are
-        recomputed per changed note — fully scoped.
+        recomputed per changed note — fully scoped. A changed work task
+        adds its current and former children to the changed set, because a
+        child's outbound pass owns its ``child_of`` edges.
 
         **Pairwise** categories (concept, tag) pair each changed note only
         against notes that share at least one of its concepts/tags. Pair
@@ -1146,9 +1134,14 @@ class Indexer:
 
         now = datetime.now(timezone.utc).isoformat()
         edge_count = 0
-        changed_list = list(changed_ids)
         # SQLite's compile-time variable limit is 999 by default; chunk to be safe.
         CHUNK = 500
+        lookup = self._edge_lookup()
+        total_notes = len(lookup.id_to_type)
+        # A child owns its ``child_of`` edges, so a changed work task
+        # re-emits through its current and former children.
+        changed_ids = changed_ids | self._task_children(changed_ids, lookup)
+        changed_list = list(changed_ids)
 
         # ── Delete the edges this pass re-emits ──
         # Every edge out of a changed note, and the inbound edges derived
@@ -1165,28 +1158,6 @@ class Indexer:
                 chunk + chunk,
             )
 
-        # ── Lookup maps (one cheap SELECT — same shape as full rebuild) ──
-        slug_to_id: dict[str, str] = {}
-        id_to_type: dict[str, str] = {}
-        id_to_path: dict[str, str] = {}
-        for row in self.db.execute("SELECT id, path, title, type FROM notes"):
-            stem = Path(row["path"]).stem
-            slug_to_id[stem] = row["id"]
-            slug_to_id[row["title"].lower()] = row["id"]
-            # Resolve links by note id (bare ``[[dec-X]]``) and by vault path
-            # sans .md (path-based ``[[notes/foo|dec-X]]`` — extract_wikilink_ids
-            # recovers the id, but key the path too as a belt-and-braces fallback).
-            slug_to_id[row["id"].lower()] = row["id"]
-            rel = str(row["path"] or "").replace("\\", "/")
-            if rel.endswith(".md"):
-                rel = rel[:-3]
-            if rel:
-                slug_to_id[rel.lower()] = row["id"]
-            id_to_type[row["id"]] = row["type"]
-            id_to_path[row["id"]] = row["path"]
-        all_ids = set(slug_to_id.values())
-        total_notes = len(id_to_type)
-
         # ── 1+2. Outbound frontmatter + wikilink edges (changed notes) ──
         changed_rows: list = []
         for i in range(0, len(changed_list), CHUNK):
@@ -1201,54 +1172,21 @@ class Indexer:
             )
 
         for row in changed_rows:
-            note_id = row["id"]
             try:
                 fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
             except json.JSONDecodeError:
                 continue
-
-            for fm_field, edge_type in EDGE_FIELD_MAP.items():
-                targets = fm.get(fm_field, [])
-                if isinstance(targets, str):
-                    targets = [targets] if targets else []
-                for target in targets:
-                    target = str(target).strip()
-                    if not target:
-                        continue
-                    resolved = target if target in all_ids else slug_to_id.get(
-                        target.lower(), slug_to_id.get(target, "")
-                    )
-                    if resolved and resolved != note_id:
-                        self._insert_edge(note_id, resolved, edge_type, now)
-                        edge_count += 1
-
-            body = row["body_text"] or ""
-            for link in extract_wikilink_ids(body):
-                link_lower = link.lower().strip()
-                resolved = slug_to_id.get(link_lower, slug_to_id.get(link, ""))
-                if resolved and resolved != note_id:
-                    target_type = id_to_type.get(resolved, "note")
-                    if target_type == "source":
-                        wl_edge_type = "cites"
-                    elif target_type == "session":
-                        wl_edge_type = "derived_from"
-                    else:
-                        wl_edge_type = "relates_to"
-                    self._insert_edge(note_id, resolved, wl_edge_type, now)
-                    edge_count += 1
+            edge_count += self._emit_outbound_edges(
+                row["id"], fm, row["body_text"] or "", lookup, now
+            )
 
         # ── 3. Session-directory inference ───────────────────────────────
-        session_dir_to_id: dict[str, str] = {}
-        for nid, path in id_to_path.items():
-            if path.endswith("/session.md") or path.endswith("\\session.md"):
-                session_dir_to_id[str(Path(path).parent)] = nid
-
         # 3a. Each changed note → its session (outbound derived_from).
         for nid in changed_ids:
-            path = id_to_path.get(nid)
+            path = lookup.id_to_path.get(nid)
             if not path:
                 continue
-            sess_id = session_dir_to_id.get(str(Path(path).parent))
+            sess_id = lookup.session_dirs.get(str(Path(path).parent))
             if sess_id and nid != sess_id:
                 meta = json.dumps({"via": "session_dir"})
                 self.db.execute(
@@ -1262,13 +1200,13 @@ class Indexer:
         # 3b. If a changed note IS itself a session.md, the DELETE wiped its
         # siblings' inbound derived_from edges. Re-emit them.
         for nid in changed_ids:
-            if id_to_type.get(nid) != "session":
+            if lookup.id_to_type.get(nid) != "session":
                 continue
-            path = id_to_path.get(nid, "")
+            path = lookup.id_to_path.get(nid, "")
             if not (path.endswith("/session.md") or path.endswith("\\session.md")):
                 continue
             session_dir = str(Path(path).parent)
-            for sibling_id, sibling_path in id_to_path.items():
+            for sibling_id, sibling_path in lookup.id_to_path.items():
                 if sibling_id == nid:
                     continue
                 if str(Path(sibling_path).parent) == session_dir:
@@ -1392,6 +1330,75 @@ class Indexer:
                 edge_count += 1
 
         return edge_count
+
+    def _emit_outbound_edges(
+        self, note_id: str, fm: dict, body: str, lookup: _EdgeLookup, now: str
+    ) -> int:
+        """Insert the edges out of ``note_id``: its frontmatter fields, the
+        rounds that list it as a child, and its body wikilinks; return the count."""
+        count = 0
+        for fm_field, edge_type in EDGE_FIELD_MAP.items():
+            targets = fm.get(fm_field, [])
+            if isinstance(targets, str):
+                targets = [targets] if targets else []
+            for target in targets:
+                resolved = lookup.resolve(str(target))
+                if resolved and resolved != note_id:
+                    self._insert_edge(note_id, resolved, edge_type, now)
+                    count += 1
+        # A child owns its ``child_of`` edges: a work task's rounds list
+        # becomes edges from the child, so any reindex order converges.
+        for work_id in lookup.listed_in.get(note_id, set()) - {note_id}:
+            self._insert_edge(note_id, work_id, "child_of", now)
+            count += 1
+        for link in extract_wikilink_ids(body):
+            resolved = lookup.resolve(link)
+            if resolved and resolved != note_id:
+                self._insert_edge(note_id, resolved, lookup.wikilink_edge_type(resolved), now)
+                count += 1
+        return count
+
+    def _task_children(self, work_ids: set[str], lookup: _EdgeLookup) -> set[str]:
+        """Children of ``work_ids`` now, plus those an existing ``child_of``
+        edge still names, so a child dropped from a work task loses its edge."""
+        children = {c for w in work_ids for c in lookup.children_of.get(w, ())}
+        ids = list(work_ids)
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            children.update(r["source"] for r in self.db.execute(
+                f"SELECT source FROM edges WHERE edge_type = 'child_of' "
+                f"AND target IN ({','.join('?' * len(chunk))})",
+                chunk,
+            ))
+        return children
+
+    def _edge_lookup(self) -> _EdgeLookup:
+        """Load every note's link keys, type, path and ``parent:`` for the edge passes."""
+        lookup = _EdgeLookup({}, {}, {}, {}, defaultdict(set), defaultdict(set))
+        parent_of: dict[str, str] = {}
+        for row in self.db.execute(_LOOKUP_SQL):
+            note_id, path = row["id"], row["path"]
+            lookup.slug_to_id[Path(path).stem] = note_id
+            lookup.slug_to_id[row["title"].lower()] = note_id
+            # Resolve links by note id (bare ``[[dec-X]]``) and by vault path
+            # sans .md (path-based ``[[notes/foo|dec-X]]`` — extract_wikilink_ids
+            # recovers the id, but key the path too as a belt-and-braces fallback).
+            lookup.slug_to_id[note_id.lower()] = note_id
+            rel = str(path or "").replace("\\", "/").removesuffix(".md")
+            if rel:
+                lookup.slug_to_id[rel.lower()] = note_id
+            lookup.id_to_type[note_id] = row["type"]
+            lookup.id_to_path[note_id] = path
+            if row["parent"]:
+                parent_of[note_id] = str(row["parent"])
+            for child in _round_children(row["rounds"]):
+                lookup.listed_in[child].add(note_id)
+                lookup.children_of[note_id].add(child)
+            if path.endswith(("/session.md", "\\session.md")):
+                lookup.session_dirs[str(Path(path).parent)] = note_id
+        for child, parent in parent_of.items():
+            lookup.children_of[lookup.resolve(parent) or parent].add(child)
+        return lookup
 
     def _insert_edge(
         self,
@@ -1945,3 +1952,18 @@ class Indexer:
         row = self.db.execute("SELECT COUNT(DISTINCT concept) as cnt FROM note_concepts").fetchone()
         stats["concepts_total"] = row["cnt"]
         return stats
+
+
+def _round_children(rounds_json: str | None) -> list[str]:
+    """The child ids a task's ``rounds`` frontmatter (as JSON) lists."""
+    try:
+        rounds = json.loads(rounds_json) if rounds_json else []
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(rounds, list):
+        return []
+    return [
+        str(child)
+        for rnd in rounds if isinstance(rnd, dict)
+        for child in rnd.get("children") or []
+    ]

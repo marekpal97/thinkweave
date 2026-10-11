@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from thinkweave.core.config import Config
-from thinkweave.core.schemas import EdgeType, NoteType
+from thinkweave.core.schemas import LINKABLE_EDGE_TYPES, NoteType
 
 
 def tool_schemas() -> list:
@@ -157,7 +157,7 @@ def tool_schemas() -> list:
                     "target_id": {"type": "string", "description": "ID of the note being referenced."},
                     "edge_type": {
                         "type": "string",
-                        "enum": [e.value for e in EdgeType],
+                        "enum": list(LINKABLE_EDGE_TYPES),
                         "description": (
                             "Relationship type. Use derived_from for extraction lineage, "
                             "builds_on for refinement, supersedes for replacement, "
@@ -226,7 +226,7 @@ def tool_schemas() -> list:
                     "target_id": {"type": "string"},
                     "edge_type": {
                         "type": "string",
-                        "enum": [e.value for e in EdgeType],
+                        "enum": list(LINKABLE_EDGE_TYPES),
                     },
                 },
                 "required": ["source_id", "target_id", "edge_type"],

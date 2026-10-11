@@ -25,10 +25,11 @@ import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from thinkweave.core.buffer import archived_events_path, buffer_path
+from thinkweave.core.buffer import append_event, archived_events_path, buffer_path
+from thinkweave.core.config import tracker_project
 from thinkweave.core.events import feedback_events, iter_jsonl
 from thinkweave.core.harness import lookup
 from thinkweave.core.harness import active as active_harness
@@ -133,6 +134,13 @@ class Task:
         if self.closed:
             return False
         self.frontmatter["status"] = "closed"
+        return True
+
+    def reopen(self) -> bool:
+        """Reopen a closed task; False when it was already open."""
+        if not self.closed:
+            return False
+        self.frontmatter["status"] = "open"
         return True
 
     def attach_child(self, child: Task) -> bool:
@@ -251,15 +259,38 @@ class TaskStore:
                 return Task(fm, path)
         return None
 
+    def open_touching(self, paths: list[str]) -> list[Task]:
+        """Open tasks with a round whose ``did.paths`` names one of
+        ``paths``; absolute and repo-relative forms of a file match."""
+        wanted = [PurePosixPath(p).parts for p in paths if p]
+        found: list[Task] = []
+        for path in self._filed("tsk-*.md"):
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            if fm.get("kind") != TASK_KIND or fm.get("status") == "closed":
+                continue
+            touched = [
+                PurePosixPath(p).parts
+                for r in fm.get("rounds") or []
+                for p in (r.get("did") or {}).get("paths") or []
+            ]
+            if any(_same_file(a, b) for a in wanted for b in touched):
+                found.append(Task(fm, path))
+        return found
+
     def for_trajectory(self, note_id: str) -> Task | None:
         """The task, open or closed, holding the devloop round whose session
         ref names this trajectory note."""
-        ref = SessionRef.note("devloop", note_id).to_dict()
+        return next(iter(self.holding({SessionRef.note("devloop", note_id)})), None)
+
+    def holding(self, refs: set[SessionRef]) -> list[Task]:
+        """Tasks, open or closed, holding a round under one of ``refs``."""
+        wanted = [ref.to_dict() for ref in refs]
+        found: list[Task] = []
         for path in self._filed("tsk-*.md"):
             fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-            if any(r.get("session_ref") == ref for r in fm.get("rounds") or []):
-                return Task(fm, path)
-        return None
+            if any(r.get("session_ref") in wanted for r in fm.get("rounds") or []):
+                found.append(Task(fm, path))
+        return found
 
     def file_feedback(self, task: Task, feedback: Feedback) -> str:
         """Write ``feedback`` as a note beside ``task``, edged
@@ -346,6 +377,66 @@ class TaskStore:
         return Task(fm, project=project, session_key=session_key)
 
 
+@dataclass
+class RefEvidence:
+    """The session's tracker-ref evidence, served to the model before it
+    writes the task declaration; it informs ``asked``, never sets it."""
+
+    commit_closes: dict[str, list[str]] = field(default_factory=dict)
+    prs: dict[str, list[str]] = field(default_factory=dict)
+    tasks: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def gather(cls, cfg, session_fm: dict, warnings: list[str]) -> RefEvidence:
+        """Closing refs in the session's commits, the PRs of its pushed
+        branch, and open tasks touching its files. A failed lookup is
+        appended to ``warnings``, never dropped."""
+        evidence = cls()
+        commits = session_fm.get("commits") or []
+        for commit in commits:
+            for ref in _closing_refs(str(commit.get("message", ""))):
+                evidence.commit_closes.setdefault(ref, []).append(
+                    str(commit.get("hash", ""))
+                )
+        branch = session_fm.get("git_branch")
+        if branch:
+            try:
+                evidence.prs = _gh_branch_prs(branch)
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+                warnings.append(f"PR lookup for branch {branch} failed: {reason}")
+        paths = list(session_fm.get("files_touched") or [])
+        paths += [f for c in commits for f in c.get("files") or []]
+        if paths:
+            try:
+                evidence.tasks = {
+                    t.id: t.title for t in TaskStore(cfg).open_touching(paths)
+                }
+            except (OSError, ValueError) as exc:
+                warnings.append(f"open-task lookup by touched file failed: {exc}")
+        return evidence
+
+    def lines(self) -> list[str]:
+        """The report block; empty when there is no evidence."""
+        out = [
+            f"  {ref} closed by commit {', '.join(hashes)}"
+            for ref, hashes in self.commit_closes.items()
+        ]
+        out += [
+            f"  PR {url}" + (f" closes {', '.join(refs)}" if refs else "")
+            for url, refs in self.prs.items()
+        ]
+        out += [f"  open task {tid} ({title}) touched the same files"
+                for tid, title in self.tasks.items()]
+        return ["Ref evidence for the task declaration:", *out] if out else []
+
+    def closing_refs(self, repo: str) -> set[str]:
+        """Every ref the session's commits and PRs close, normalised
+        against ``repo``."""
+        pr_refs = [ref for refs in self.prs.values() for ref in refs]
+        return {normalize_tracker_ref(ref, repo) for ref in [*self.commit_closes, *pr_refs]}
+
+
 class Register:
     """One session's task rows in its shared event log: the live buffer, plus
     the session folder's archived events once a Stop filed them. Never a
@@ -393,6 +484,13 @@ class Register:
                     return ChildStop("pending", task_id)
                 duplicate = duplicate or task_id
         return ChildStop("duplicate", duplicate) if duplicate else ChildStop("orphan")
+
+    def wrap_closes(self) -> set[str]:
+        """Ids a wrap pass closed here; hook-route closes carry a ref."""
+        return {
+            row["task_id"] for row in self.rows()
+            if row["type"] == TASK_CLOSE and not row.get("session_ref")
+        }
 
     def unclosed(self) -> list[str]:
         """Ids opened here with no close here."""
@@ -445,9 +543,7 @@ class Register:
         }
         if ref:
             row["session_ref"] = ref.to_dict()
-        self._target.parent.mkdir(parents=True, exist_ok=True)
-        with self._target.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        append_event(self._target, row, harness=ref.harness if ref else "")
 
 
 @dataclass(frozen=True)
@@ -529,6 +625,9 @@ class TaskDispatch:
     envelope_return: str
     note: str
     title: str
+    instructions: str = ""
+    """What the performer owes the close: trailer-tagged commits, and one
+    envelope row with its outputs and a summary ``outcome``."""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -564,6 +663,29 @@ class RunLanded:
 
 
 @dataclass(frozen=True)
+class IssueNode:
+    """One GitHub issue's place in its sub-issue tree: how many sub-issues
+    it has, and its parent's tracker ref (``""`` for none)."""
+
+    sub_issues: int = 0
+    parent: str = ""
+
+    @classmethod
+    def from_api(cls, fields: dict) -> IssueNode:
+        """The node ``gh api``'s issue fields describe."""
+        parent = str(fields.get("parent_issue_url") or "")
+        return cls(
+            sub_issues=int((fields.get("sub_issues_summary") or {}).get("total") or 0),
+            parent=normalize_tracker_ref(parent.replace("api.github.com/repos/", "github.com/")),
+        )
+
+    def epic(self, ref: str) -> str:
+        """The nearest epic of the issue ``ref`` names: ``ref`` itself when
+        it has sub-issues, else its parent, else ``ref``."""
+        return ref if self.sub_issues else self.parent or ref
+
+
+@dataclass(frozen=True)
 class TrackerClosures:
     """Which tasks one tracker sweep closed, and why it skipped others
     (``{task id: reason}``)."""
@@ -589,15 +711,28 @@ class LedgerEntry:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
+@dataclass(frozen=True)
+class EntryLanding:
+    """Where one declared entry landed: its task, the ref it declared, and
+    how it matched — ``continuing``, ``ref``, ``epic`` or ``mint``."""
+
+    task_id: str
+    asked: str
+    match: str
+
+
 @dataclass
 class TaskPassResult:
     """What one wrap task pass reconciled — folded into the wrap report."""
 
+    landed: list[EntryLanding] = field(default_factory=list)
     minted: list[str] = field(default_factory=list)
     appended: list[str] = field(default_factory=list)
     closed: list[str] = field(default_factory=list)
     orphaned: list[str] = field(default_factory=list)
     attached: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)
+    reopened: list[str] = field(default_factory=list)
     stamped: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -652,7 +787,7 @@ def close_child(
     source = source or TranscriptSource.bound(cfg, task_id)
     errors: list[str] = []
     envelopes = _read_envelopes(_envelope_path(cfg, task_id), task_id, errors)
-    digest = ChildDigest.read(source, until=_now())
+    digest = ChildDigest.read(source, until=_now()).with_trailer_commits(task_id)
     data = {**digest.round_fields(envelopes), "envelopes": envelopes + digest.claims(task_id)}
     task.frontmatter.update(digest.note_fields(task.frontmatter))
     task.put_round(replace(Round.from_dict(data, grain=task.grain), session_ref=source.session_ref))
@@ -739,8 +874,16 @@ def apply_declaration(
     under its ``title``, else mints one;
     its ``round`` lands as a ``route: session`` round under the session
     note's ref, replacing this session's earlier round, so a re-wrap
-    re-applies rather than duplicates. ``done`` closes — the only closure
-    wrap performs. ``children`` gain this task as parent, and the decisions
+    re-applies rather than duplicates. A re-wrap that lands a round moves
+    this session's earlier round off every task its entries no longer name,
+    and reopens such a task when this session's own ``done`` closed it;
+    rounds other sessions wrote stay put. ``done`` closes the task only when
+    the declared ref is the task's own ``asked`` — the only closure wrap
+    performs; on an epic's task for a sub-issue the round records it. A
+    closed task's entry is skipped with a warning. Each landed entry is
+    recorded with how it matched; a ref-less mint while an open task
+    touched the session's files, and a declared ref the session's closing
+    refs do not name, are warned, never changed. ``children`` gain this task as parent, and the decisions
     the round minted gain its id. At ``boundary`` sparsity an open
     dispatch with no close is flagged orphan; a ``task-id-only`` declarer
     was not present, so an absent close is no evidence.
@@ -753,11 +896,14 @@ def apply_declaration(
         cfg, session_key=session_key, project=project, streams=streams, folders=folders or []
     )
     entries = declaration["declared"]
+    failed = False
     for entry in entries:
         try:
             wrap.apply(entry, solo=len(entries) == 1)
         except ValueError as exc:
+            failed = True
             wrap.result.errors.append(f"declared: {exc}")
+    wrap.move_rounds(blocked=failed)
     if declaration.get("sparsity", "boundary") == "boundary":
         wrap.flag_orphans()
     return wrap.result
@@ -776,8 +922,12 @@ class _DeclarationPass:
         self.project = project
         self.folders = folders
         self.result = TaskPassResult()
+        # Tasks this pass's entries resolved to, and those it put a round on.
+        self.named: set[str] = set()
+        self.rounded: set[str] = set()
         self.repo = current_repo()
-        notes = [fm for _path, fm in _folder_notes(folders)]
+        filed = list(_folder_notes(folders))
+        notes = [fm for _path, fm in filed]
         session_notes = [fm for fm in notes if fm.get("type") == "session"]
         sessions = [str(fm.get("id")) for fm in session_notes]
         # weave_extract derives insights from the harness session id.
@@ -793,6 +943,16 @@ class _DeclarationPass:
             and not fm.get("kind") and not fm.get("auto_extracted")
             and anchors & set(fm.get("derived_from") or [])
         ]
+        self.decisions = {
+            str(fm["id"]): path for path, fm in filed
+            if fm.get("type") == "decision" and fm.get("id")
+            and anchors & set(fm.get("derived_from") or [])
+        }
+        # The ref evidence weave_extract served the declaring model.
+        self.evidence = RefEvidence.gather(
+            cfg, session_notes[0] if session_notes else {}, self.result.warnings
+        )
+        self.closing_refs = self.evidence.closing_refs(self.repo)
         self.verdicts = [
             {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
             for stream in streams
@@ -814,14 +974,23 @@ class _DeclarationPass:
         task = self._task_for(entry, asked)
         if task is None:
             return
+        self.named.add(task.id)
+        self._land(entry, task, asked, issue)
         if asked:
             task.frontmatter["asked"] = asked
         if entry.get("consumes"):
             consumed = [*(task.frontmatter.get("consumes") or []), *entry["consumes"]]
             task.frontmatter["consumes"] = list(dict.fromkeys(consumed))
+        minted: list[str] = []
         if "round" in entry:
-            task.put_round(self._round(entry, task, solo, issue), replaces=(self.wrap_ref,))
-        closing = bool(entry.get("done")) and task.close()
+            new = self._round(entry, task, solo, issue)
+            minted = (new.decisions or {}).get("minted") or []
+            task.put_round(new, replaces=(self.wrap_ref,))
+            self.rounded.add(task.id)
+        # A sub-issue's done stays on its round; the epic's own close (or
+        # the tracker sweep) closes the epic's task.
+        own = not issue or issue == task.frontmatter.get("asked")
+        closing = bool(entry.get("done")) and own and task.close()
         minting = task.path is None
         self.result.warnings += task.save(self.vm)
         if minting:
@@ -830,8 +999,59 @@ class _DeclarationPass:
         if closing:
             self.register.close(task)
             self.result.closed.append(task.id)
-        self._stamp_decisions(entry, task)
+        self._stamp_decisions(minted, task)
         self._attach_children(entry, task)
+
+    def _land(self, entry: dict, task: Task, asked: str, issue: str) -> None:
+        """Record how the entry matched its task, and warn on the choices
+        the session's ref evidence puts in doubt."""
+        if entry.get("continuing"):
+            match = "continuing"
+        elif asked and task.path and task.frontmatter.get("asked") == asked:
+            match = "ref" if asked == issue else "epic"
+        else:
+            match = "mint"
+        self.result.landed.append(EntryLanding(task.id, issue, match))
+        touching = sorted(set(self.evidence.tasks) - {task.id})
+        if match == "mint" and not issue and touching:
+            self.result.warnings.append(
+                f"{task.id} minted with no ref while open task(s) "
+                f"{', '.join(touching)} touched the same files — declare "
+                "continuing or asked if it is that work"
+            )
+        if issue and self.closing_refs and not {issue, asked} & self.closing_refs:
+            self.result.warnings.append(
+                f"{task.id} declared {issue}, but the session's commits and PRs "
+                f"close {', '.join(sorted(self.closing_refs))}"
+            )
+
+    def move_rounds(self, *, blocked: bool) -> None:
+        """Take the session round this session's wraps wrote off each task no
+        entry named, once this pass landed a round elsewhere; reopen one whose
+        close this session's own ``done`` recorded in the register.
+        ``blocked`` — an entry failed — moves nothing, so the failed entry
+        never loses its earlier round, and says so."""
+        if not self.rounded:
+            return
+        if blocked:
+            self.result.warnings.append(
+                "this session's earlier rounds were not moved: a declared entry "
+                "failed, so its task is unknown — fix it and re-wrap"
+            )
+            return
+        refs = {self.session_ref, self.wrap_ref}
+        closed_here = self.register.wrap_closes()
+        for task in self.store.holding(refs):
+            if task.id in self.named:
+                continue
+            left = [r for r in task.rounds if r.session_ref in refs and r.route == "session"]
+            if not left:
+                continue
+            task.rounds = [r for r in task.rounds if r not in left]
+            if task.id in closed_here and any(r.done for r in left) and task.reopen():
+                self.result.reopened.append(task.id)
+            self.result.warnings += task.save(self.vm)
+            self.result.moved.append(task.id)
 
     def flag_orphans(self) -> None:
         """Flag each open with no close in the register; ids this pass
@@ -848,8 +1068,9 @@ class _DeclarationPass:
                 self.result.orphaned.append(task_id)
 
     def _task_for(self, entry: dict, asked: str) -> Task | None:
-        """The entry's task; ``None`` when a repeated ``done`` makes the
-        entry a no-op. A task that cannot take a session round is refused."""
+        """The entry's task; ``None`` when it is closed, so the entry is
+        skipped with a warning. Any other task that cannot take a session
+        round is refused."""
         continuing = str(entry.get("continuing") or "")
         title = str(entry.get("title", ""))
         by_ref = self.store.open_by_ref(asked) if asked and not continuing else None
@@ -861,9 +1082,12 @@ class _DeclarationPass:
             task = by_ref or self.store.get(self.minted_titles.get(title, ""))
         if task is None:
             grain = str(entry.get("grain", "work"))
-            return self.store.mint(grain, title, self.project, session_key=self.session_key)
+            project = tracker_project(asked, self.vm.config.vault_root) or self.project
+            return self.store.mint(grain, title, project, session_key=self.session_key)
         if refusal := task.refusal("session"):
-            if entry.get("done") and task.closed:
+            if task.closed:
+                self.named.add(task.id)
+                self.result.warnings.append(f"{task.id} {refusal} — entry skipped")
                 return None
             raise ValueError(f"{task.id} {refusal}")
         if (continuing or by_ref) and "round" in entry:
@@ -874,24 +1098,27 @@ class _DeclarationPass:
         """The entry's round under this session's ref, naming the ``issue``
         it worked. A single-task session credits it with every insight and
         verdict the session recorded; with several tasks only what each
-        entry declares is attributed."""
+        entry declares is attributed. Decisions credit the same way."""
         data = {"route": "session", "session_ref": self.session_ref.to_dict(), **entry["round"]}
         if issue:
             data.setdefault("asked", issue)
+        if entry.get("done"):
+            data["done"] = True
         if solo:
             for key, found in (("notes", self.insights), ("feedback", self.verdicts)):
                 if found:
                     data.setdefault(key, found)
+            if self.decisions:
+                data["decisions"] = {"minted": list(self.decisions), **(data.get("decisions") or {})}
         if entry.get("children"):
             data.setdefault("children", list(entry["children"]))
         return Round.from_dict(data, grain=task.grain)
 
-    def _stamp_decisions(self, entry: dict, task: Task) -> None:
-        """Stamp each decision the round declares minted with the task id,
-        wherever the index has it filed."""
-        minted = ((entry.get("round") or {}).get("decisions") or {}).get("minted")
-        for dec_id in minted or []:
-            path = indexed_note_path(self.vm.config, dec_id)
+    def _stamp_decisions(self, minted: list[str], task: Task) -> None:
+        """Stamp each decision the round lists minted with the task id,
+        in the session folder or wherever the index has it filed."""
+        for dec_id in minted:
+            path = self.decisions.get(dec_id) or indexed_note_path(self.vm.config, dec_id)
             if path is None:
                 self.result.warnings.append(
                     f"decision {dec_id} is not in the index — task_id stamp skipped"
@@ -923,24 +1150,29 @@ def record_run(
     cfg, payload: object, *, project: str, trajectory: str = "", session_key: str = ""
 ) -> RunLanded:
     """Land one devloop run as a ``route: devloop`` round on the open task
-    its epic ref resolves to — the payload's, else the issue's sub-issue
-    parent, else the issue ref itself — minting a work-grain
-    task, titled as its epic else as the trajectory, when none is open; a re-record of the same trajectory replaces its
-    round. A run never closes its task, and nothing closes it when its PR
+    of its issue's nearest epic — the payload's ``epic_url`` only when that
+    lookup fails — minting a work-grain task, titled as its epic else as
+    the trajectory, when none is open; a re-record of the same trajectory
+    replaces its round. A run never closes its task, and nothing closes it when its PR
     merges: its tracker issue closing does (``TaskStore.close_tracked``).
     With no ``session_key`` no register row is written: no session owns
     the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
     warnings: list[str] = []
-    asked = _tracker_ref(devloop_ask(payload), current_repo(), warnings)
+    repo = current_repo()
+    issue = _tracker_ref(devloop_ask(payload), repo, warnings)
     assert isinstance(payload, dict)
-    if not payload["frontmatter"].get("epic_url"):
-        asked = _epic_ref(asked, warnings)
+    epic_url = normalize_tracker_ref(str(payload["frontmatter"].get("epic_url") or ""), repo)
+    asked = _epic_ref(issue, warnings, fallback=epic_url)
     store = TaskStore(cfg)
     title = payload["frontmatter"].get("epic_title") or payload.get("title", "")
     task = store.open_by_ref(asked) or store.mint(
-        "work", str(title), project, asked=asked, session_key=session_key
+        "work",
+        str(title),
+        tracker_project(asked, cfg.vault_root) or project,
+        asked=asked,
+        session_key=session_key,
     )
     task.put_round(Round.from_devloop(payload, task_id=task.id, trajectory=trajectory))
     task.frontmatter["asked"] = asked
@@ -978,6 +1210,8 @@ def _round_parts(entry: Round, link, credit: dict[str, str]) -> list[str]:
     parts = [f"{entry.route or 'dispatch'} {head}"]
     if entry.asked:
         parts.append(f"asked {entry.asked}")
+    if entry.done:
+        parts.append("done")
     if entry.notes:
         parts.append("notes " + ", ".join(link(n) for n in entry.notes))
     decisions = entry.decisions or {}
@@ -1060,31 +1294,33 @@ def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:
     return ref
 
 
-def _epic_ref(ref: str, warnings: list[str]) -> str:
-    """The epic ref a GitHub sub-issue ``ref`` belongs to, else ``ref``; a
-    failed parent lookup keeps ``ref``, and is announced."""
+def _epic_ref(ref: str, warnings: list[str], fallback: str = "") -> str:
+    """The tracker ref of ``ref``'s nearest epic: ``ref`` itself when it has
+    sub-issues, else its sub-issue parent, else ``ref``. A ref no lookup can
+    take keeps ``fallback`` or ``ref``; so does a failed lookup, announced."""
     issue = GithubIssue.parse(ref)
     if not issue:
-        return ref
+        return fallback or ref
     try:
-        return _gh_parent(issue.repo, issue.number) or ref
-    except (OSError, subprocess.SubprocessError) as exc:
+        node = _gh_issue(issue.repo, issue.number)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        kept = fallback or ref
         reason = (getattr(exc, "stderr", "") or str(exc)).strip()
         warnings.append(
-            f"sub-issue parent lookup for {ref} failed ({reason}) — kept the "
-            "sub-issue ref, so the round misses its epic's task"
+            f"epic lookup for {ref} failed ({reason}) — kept {kept}, so the "
+            "round may miss its nearest epic's task"
         )
-        return ref
+        return kept
+    return node.epic(ref)
 
 
-def _gh_parent(repo: str, number: str) -> str:
-    """The tracker ref of ``repo#number``'s sub-issue parent, or ``""``."""
-    jq = '.parent_issue_url // empty | sub(".*/repos/"; "") | sub("/issues/"; "#")'
-    out = subprocess.run(
-        ["gh", "api", f"repos/{repo}/issues/{number}", "-q", jq],
+def _gh_issue(repo: str, number: str) -> IssueNode:
+    """``repo#number``'s place in its sub-issue tree, read through ``gh api``."""
+    return IssueNode.from_api(json.loads(subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{number}",
+         "-q", "{sub_issues_summary, parent_issue_url}"],
         capture_output=True, text=True, timeout=15, check=True,
-    ).stdout.strip()
-    return f"github:{out}" if out else ""
+    ).stdout))
 
 
 def _gh_issue_state(repo: str, number: str) -> str:
@@ -1095,13 +1331,50 @@ def _gh_issue_state(repo: str, number: str) -> str:
     ).stdout.strip()
 
 
+_CLOSING_REF_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+((?:[\w.-]+/[\w.-]+)?#\d+)",
+    re.IGNORECASE,
+)
+
+
+def _closing_refs(message: str) -> list[str]:
+    """The refs a commit message closes with GitHub's closing keywords."""
+    return _CLOSING_REF_RE.findall(message)
+
+
+def _gh_branch_prs(branch: str) -> dict[str, list[str]]:
+    """The URL of each PR whose head is ``branch``, with the issue refs it closes."""
+    out = subprocess.run(
+        ["gh", "pr", "list", "--head", branch, "--state", "all",
+         "--json", "url,closingIssuesReferences"],
+        capture_output=True, text=True, timeout=15, check=True,
+    ).stdout
+    return {
+        pr["url"]: [f"#{i['number']}" for i in pr.get("closingIssuesReferences") or []]
+        for pr in json.loads(out or "[]")
+    }
+
+
+_DISPATCH_INSTRUCTIONS = (
+    "End every commit message with the trailer line `Task: {task_id}`. "
+    "Before you finish, append one JSON line to {envelope_return}: "
+    '{{"task_id": "{task_id}", "outcome": "<a short summary of what you did, '
+    'or why you wrote nothing>", "outputs": [<each file you wrote and each '
+    'note id you created>]}}.'
+)
+
+
 def _descriptor(cfg, task: Task) -> TaskDispatch:
+    envelope_return = str(_envelope_path(cfg, task.id))
     return TaskDispatch(
         task_id=task.id,
         grain=task.grain,
-        envelope_return=str(_envelope_path(cfg, task.id)),
+        envelope_return=envelope_return,
         note=str(task.path),
         title=task.title,
+        instructions=_DISPATCH_INSTRUCTIONS.format(
+            task_id=task.id, envelope_return=envelope_return
+        ),
     )
 
 
@@ -1110,6 +1383,13 @@ def _folder_notes(folders: list[Path]):
     for folder in folders:
         for path in folder.rglob("*.md"):
             yield path, parse_frontmatter(path.read_text(encoding="utf-8"))[0]
+
+
+def _same_file(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """Whether two path-part tuples name one file: equal, or one is a
+    trailing suffix of the other (a repo-relative path under an absolute)."""
+    n = min(len(a), len(b))
+    return n > 0 and a[-n:] == b[-n:]
 
 
 def _now() -> str:
@@ -1231,6 +1511,22 @@ class ChildDigest:
         if self.duration is not None:
             fields["cost"] = {"duration": self.duration}
         return fields
+
+    def with_trailer_commits(self, task_id: str) -> ChildDigest:
+        """The digest plus every commit, on any ref of the working
+        directory's repo, whose ``Task:`` trailer names ``task_id``; a
+        failed search is a gap."""
+        try:
+            found = subprocess.run(
+                ["git", "log", "--all", f"--grep=^Task: {task_id}$", "--format=%H"],
+                capture_output=True, text=True, timeout=15, check=True,
+            ).stdout.split()
+        except (OSError, subprocess.SubprocessError) as exc:
+            reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+            return replace(self, gaps=self.gaps + (f"Task trailer search failed: {reason}",))
+        # A transcript's short sha of the same commit yields to the full one.
+        kept = tuple(c for c in self.commits if not any(f.startswith(c) for f in found))
+        return replace(self, commits=kept + tuple(found))
 
     def claims(self, task_id: str) -> list[dict]:
         """The child's own handback claim as an envelope row, when it made one."""

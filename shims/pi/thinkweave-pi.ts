@@ -24,6 +24,9 @@
 //                        outlives it keeps running as runHook's documented
 //                        orphan and finishes the buffer materialisation)
 //
+// Every envelope carries Pi's active model id as `model`, so a model switch
+// reaches the handler on the next call, which records it as a change.
+//
 // The SessionStart payload cannot ride a hook reply on Pi — there is no
 // additionalContext channel. It is queued here and prepended as a synthetic
 // user message by the `context` handler (superpowers.ts's proven pattern):
@@ -174,11 +177,21 @@ export default function thinkweavePi(pi: any) {
     }
   }
 
+  function modelId(ctx: any): string | undefined {
+    try {
+      const id = ctx?.model?.id;
+      return typeof id === "string" && id ? id : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   function envelope(event: CanonicalEvent, extra: HookEnvelope): HookEnvelope {
     return {
       hook_event_name: event,
       session_id: sessionId,
       cwd: process.cwd(),
+      model: modelId(lastCtx),
       ...extra,
     };
   }

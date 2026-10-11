@@ -5,8 +5,9 @@ wrap LLM composed (canned here; no model call). Each declared entry
 mints a task or appends a round to a continuing one, closes on explicit
 done, attaches declared seam children, and stamps minted decisions with
 the task id. Orphan flags are the one mechanical check, at boundary
-sparsity only. The pass never fills ``outcome``, never reopens a closed
-task, and never attributes a child by inference.
+sparsity only. The pass never fills ``outcome`` and never attributes a
+child by inference; it reopens a task only when a re-wrap moves off the
+round whose ``done`` closed it.
 """
 
 from __future__ import annotations
@@ -264,17 +265,149 @@ class TestRoundAppend:
         ]
         assert len(closes) == 1
 
+    def test_rewrap_moves_a_done_round_and_reopens_the_task(self, cfg: Config):
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        first = reconcile(
+            cfg,
+            {"declared": [{"title": "A", "done": True, "round": {"did": {"attempts": 1}}}]},
+        )
+        (task_a,) = first.minted
+        assert task_notes(cfg)[task_a]["status"] == "closed"
+
+        again = reconcile(
+            cfg,
+            {"declared": [{"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 2}}}]},
+        )
+        assert again.errors == []
+        assert again.moved == [task_a]
+        assert again.reopened == [task_a]
+        notes = task_notes(cfg)
+        assert notes[task_a]["rounds"] == []
+        assert notes[task_a]["status"] == "open"
+        assert [r["did"] for r in notes["tsk-bbbbbbbb"]["rounds"]] == [{"attempts": 2}]
+
+    def test_rewrap_move_leaves_other_sessions_rounds(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        tasks.apply_declaration(
+            cfg,
+            {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 9}}}]},
+            session_key="s-2", project="t", streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        for target in ("tsk-aaaaaaaa", "tsk-bbbbbbbb"):
+            reconcile(
+                cfg, {"declared": [{"continuing": target, "round": {"did": {"attempts": 1}}}]}
+            )
+        notes = task_notes(cfg)
+        assert [r["did"] for r in notes["tsk-aaaaaaaa"]["rounds"]] == [{"attempts": 9}]
+        assert notes["tsk-aaaaaaaa"]["status"] == "open"
+        assert len(notes["tsk-bbbbbbbb"]["rounds"]) == 1
+
+    def test_rewrap_naming_its_closed_task_moves_nothing(self, cfg: Config):
+        decl = {"declared": [{"title": "A", "done": True, "round": {"did": {"attempts": 1}}}]}
+        task_a = reconcile(cfg, decl).minted[0]
+        decl["declared"][0] = {"continuing": task_a, "round": {"did": {"attempts": 2}}}
+        again = reconcile(cfg, decl)
+        assert again.moved == [] and again.reopened == []
+        fm = task_notes(cfg)[task_a]
+        assert fm["status"] == "closed"
+        assert [r["did"] for r in fm["rounds"]] == [{"attempts": 1}]
+
+    def test_rewrap_does_not_reopen_a_task_another_session_closed(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        reconcile(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 1}}}]}
+        )
+        tasks.apply_declaration(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "done": True}]},
+            session_key="s-2", project="t", streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        again = reconcile(
+            cfg, {"declared": [{"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 2}}}]}
+        )
+        assert again.moved == ["tsk-aaaaaaaa"]
+        assert again.reopened == []
+        fm = task_notes(cfg)["tsk-aaaaaaaa"]
+        assert fm["rounds"] == [] and fm["status"] == "closed"
+
+    def test_rewrap_move_leaves_this_sessions_dispatch_round(self, cfg: Config):
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        child = tasks.open_child(cfg, session_key="parent", project="t").task_id
+        ref = tasks.SessionRef.session(harness.active().id, SESSION)
+        source = tasks.TranscriptSource(None, "", ref, ("no transcript",))
+        tasks.close_child(cfg, child, session_key="parent", source=source)
+        before = task_notes(cfg)[child]["rounds"]
+        assert len(before) == 1
+
+        result = reconcile(
+            cfg, {"declared": [{"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 1}}}]}
+        )
+        assert result.moved == []
+        assert task_notes(cfg)[child]["rounds"] == before
+
+    def test_rewrap_move_survives_an_unrelated_children_error(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        reconcile(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 1}}}]}
+        )
+        result = reconcile(
+            cfg,
+            {"declared": [{
+                "continuing": "tsk-bbbbbbbb",
+                "children": ["tsk-deadbeef"],
+                "round": {"did": {"attempts": 2}},
+            }]},
+        )
+        assert any("tsk-deadbeef" in e for e in result.errors)
+        assert result.moved == ["tsk-aaaaaaaa"]
+        assert task_notes(cfg)["tsk-aaaaaaaa"]["rounds"] == []
+
+    def test_rewrap_with_a_failed_entry_warns_that_nothing_moved(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        reconcile(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 1}}}]}
+        )
+        result = reconcile(
+            cfg,
+            {"declared": [
+                {"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 2}}},
+                {"continuing": "tsk-deadbeef", "round": {"did": {"attempts": 1}}},
+            ]},
+        )
+        assert result.moved == []
+        assert any("not moved" in w for w in result.warnings)
+        assert len(task_notes(cfg)["tsk-aaaaaaaa"]["rounds"]) == 1
+
     def test_continuing_unknown_task_is_an_error(self, cfg: Config):
         result = reconcile(
             cfg, {"declared": [{"continuing": "tsk-deadbeef"}]}
         )
         assert any("tsk-deadbeef" in e for e in result.errors)
 
-    def test_continuing_a_closed_task_is_an_error(self, cfg: Config):
+    def test_continuing_a_closed_task_warns_and_the_next_entry_lands(
+        self, cfg: Config
+    ):
         task_id = reconcile(cfg, load_declaration()).minted[0]
         reconcile(cfg, {"declared": [{"continuing": task_id, "done": True}]})
-        result = reconcile(cfg, {"declared": [{"continuing": task_id}]})
-        assert any("closed" in e for e in result.errors)
+        decl = {
+            "declared": [
+                {"continuing": task_id, "round": {"did": {"attempts": 2}}},
+                {"title": "next", "round": {"did": {"attempts": 1}}},
+            ]
+        }
+        result = tasks.apply_declaration(
+            cfg, decl, session_key="s-2", project="t",
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        assert result.errors == []
+        assert any(task_id in w and "closed" in w for w in result.warnings)
+        notes = task_notes(cfg)
+        assert len(notes[task_id]["rounds"]) == 1
+        (other,) = result.minted
+        assert notes[other]["rounds"][0]["did"] == {"attempts": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -553,11 +686,15 @@ def seed_session(cfg: Config, *, harness_derived: bool = False) -> tuple[Path, d
             extra_frontmatter={"derived_from": [derived]}, output_dir=folder,
         )
         ids[key] = vm.read_note(path).id
-    (folder / "use-sqlite.md").write_text(
-        "---\ntype: decision\nid: dec-aaaa1111\ntitle: Use SQLite\n---\n\nBody.\n",
-        encoding="utf-8",
-    )
-    ids["decision"] = "dec-aaaa1111"
+    for key, dec_id, title in (
+        ("decision", "dec-aaaa1111", "Use SQLite"), ("decision2", "dec-bbbb2222", "Keep FTS"),
+    ):
+        (folder / f"{dec_id}.md").write_text(
+            f"---\ntype: decision\nid: {dec_id}\ntitle: {title}\n"
+            f"derived_from:\n- {derived}\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        ids[key] = dec_id
     feedback = {
         "ts": "2026-10-02T10:00:00+00:00", "type": "feedback",
         "session_id": SESSION, "register": "correction",
@@ -649,6 +786,41 @@ class TestLedgerRound:
         a, b = (notes[t]["rounds"][0] for t in result.minted)
         assert a["notes"] == [ids["insight"]]
         assert "notes" not in b and "feedback" not in b
+        assert "decisions" not in a and "decisions" not in b
+
+    def test_solo_session_credits_and_stamps_every_minted_decision(
+        self, cfg: Config
+    ):
+        folder, _ids = seed_session(cfg, harness_derived=True)
+        decl = {"declared": [{"title": "a", "round": {"did": {"attempts": 1}}}]}
+        result = reconcile_session(cfg, decl, folder)
+        assert result.errors == []
+        assert result.stamped == 2
+        task_id = result.minted[0]
+        entry = task_notes(cfg)[task_id]["rounds"][0]
+        assert sorted(entry["decisions"]["minted"]) == ["dec-aaaa1111", "dec-bbbb2222"]
+        for dec_id in ("dec-aaaa1111", "dec-bbbb2222"):
+            fm, _ = parse_frontmatter((folder / f"{dec_id}.md").read_text(encoding="utf-8"))
+            assert fm["task_id"] == task_id
+
+    def test_multi_task_session_stamps_only_each_entrys_decisions(
+        self, cfg: Config
+    ):
+        folder, _ids = seed_session(cfg)
+        decl = {
+            "declared": [
+                {"title": "a", "round": {"decisions": {"minted": ["dec-aaaa1111"]}}},
+                {"title": "b", "round": {"did": {"attempts": 1}}},
+            ]
+        }
+        result = reconcile_session(cfg, decl, folder)
+        assert result.errors == [] and result.stamped == 1
+        stamped, unstamped = (
+            parse_frontmatter((folder / f"{d}.md").read_text(encoding="utf-8"))[0]
+            for d in ("dec-aaaa1111", "dec-bbbb2222")
+        )
+        assert stamped["task_id"] == result.minted[0]
+        assert "task_id" not in unstamped
 
     def test_body_lists_one_wikilink_line_per_round_in_order(self, cfg: Config):
         folder, ids = seed_session(cfg)
@@ -753,30 +925,56 @@ class TestTrackerIdentity:
 
 
 class TestEpicIdentity:
-    """A declared sub-issue lands on its epic's task, found through
-    GitHub's sub-issue parent."""
+    """A declared ref lands on its nearest epic's task: the ref itself when
+    it has sub-issues, else its GitHub sub-issue parent."""
 
-    SUB = "https://github.com/marekpal97/thinkweave/issues/241"
-    EPIC = "github:marekpal97/funloops#89"
+    SUB = "https://github.com/marekpal97/thinkweave/issues/256"
+    EPIC = "github:marekpal97/thinkweave#243"
+    ROOT = "github:marekpal97/thinkweave#184"
+    API = "https://api.github.com/repos/marekpal97/thinkweave/issues/"
 
-    def declare(self, cfg: Config):
-        decl = {"declared": [{"title": "t", "asked": self.SUB, "round": {}}]}
+    @pytest.fixture(autouse=True)
+    def nested_tree(self, tracker):
+        tracker["marekpal97/thinkweave#256"] = {"parent_issue_url": self.API + "243"}
+        tracker["marekpal97/thinkweave#243"] = {
+            "parent_issue_url": self.API + "184",
+            "sub_issues_summary": {"total": 11},
+        }
+
+    def declare(self, cfg: Config, asked: str):
+        decl = {"declared": [{"title": "t", "asked": asked, "round": {}}]}
         return reconcile(cfg, decl)
 
-    def test_a_sub_issue_lands_on_its_epic_task(self, cfg: Config, monkeypatch):
-        parents = {("marekpal97/thinkweave", "241"): self.EPIC}
-        monkeypatch.setattr(
-            tasks, "_gh_parent", lambda repo, number: parents.get((repo, number), "")
-        )
-        result = self.declare(cfg)
+    def test_a_sub_issue_lands_on_its_epic_task(self, cfg: Config):
+        result = self.declare(cfg, self.SUB)
         assert result.errors == [] and result.warnings == []
         fm = task_notes(cfg)[result.minted[0]]
         assert fm["asked"] == self.EPIC
-        assert fm["rounds"][0]["asked"] == "github:marekpal97/thinkweave#241"
+        assert fm["rounds"][0]["asked"] == "github:marekpal97/thinkweave#256"
 
-    def test_a_failed_parent_lookup_keeps_the_sub_issue_and_warns(
-        self, cfg: Config, monkeypatch
+    def test_an_epic_under_an_epic_owns_its_own_task(self, cfg: Config):
+        result = self.declare(cfg, self.EPIC)
+        assert result.errors == [] and result.warnings == []
+        assert task_notes(cfg)[result.minted[0]]["asked"] == self.EPIC
+
+    def test_done_on_a_sub_issue_records_done_and_leaves_the_epic_task_open(
+        self, cfg: Config
     ):
+        decl = {"declared": [{"title": "t", "asked": self.SUB, "done": True, "round": {}}]}
+        task_id = reconcile(cfg, decl).minted[0]
+        fm = task_notes(cfg)[task_id]
+        assert fm["status"] == "open"
+        assert fm["rounds"][0]["done"] is True
+
+        decl = {"declared": [{"title": "t", "asked": self.EPIC, "done": True, "round": {}}]}
+        result = tasks.apply_declaration(
+            cfg, decl, session_key="s-2", project="t",
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        assert result.closed == [task_id]
+        assert task_notes(cfg)[task_id]["status"] == "closed"
+
+    def test_a_failed_lookup_keeps_the_ref_and_warns(self, cfg: Config, monkeypatch):
         import subprocess
 
         def unreachable(repo, number):
@@ -784,13 +982,92 @@ class TestEpicIdentity:
                 1, ["gh"], stderr="error connecting to api.github.com"
             )
 
-        monkeypatch.setattr(tasks, "_gh_parent", unreachable)
-        result = self.declare(cfg)
+        monkeypatch.setattr(tasks, "_gh_issue", unreachable)
+        result = self.declare(cfg, self.SUB)
         fm = task_notes(cfg)[result.minted[0]]
-        assert fm["asked"] == "github:marekpal97/thinkweave#241"
+        assert fm["asked"] == "github:marekpal97/thinkweave#256"
         (warning,) = result.warnings
-        assert "github:marekpal97/thinkweave#241" in warning
+        assert "github:marekpal97/thinkweave#256" in warning
         assert "error connecting to api.github.com" in warning
+
+
+# ---------------------------------------------------------------------------
+# Landing: each entry reports where it landed; doubtful choices warn
+
+
+class TestLanding:
+    REF = "github:marekpal97/thinkweave#7"
+
+    def session_folder(self, cfg: Config, **fm) -> Path:
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        return vm.create_note(
+            NoteType.SESSION, "S", body="## Summary\nx\n", project="t",
+            extra_frontmatter={"source_session": SESSION, **fm},
+        ).parent
+
+    def seed_open(self, cfg: Config, task_id: str, *, asked: str = "", paths=()):
+        seed_stub(cfg, task_id, grain="work")
+        rounds = [{"route": "session", "did": {"paths": list(paths)}}] if paths else []
+        VaultManager(config=cfg).update_note(
+            note_path(cfg, task_id),
+            frontmatter_updates={"rounds": rounds, **({"asked": asked} if asked else {})},
+        )
+
+    def test_each_entry_records_its_task_ref_and_landing(self, cfg: Config, tracker):
+        tracker["marekpal97/thinkweave#8"] = {
+            "parent_issue_url": "https://api.github.com/repos/marekpal97/thinkweave/issues/7"
+        }
+        self.seed_open(cfg, "tsk-0e0e0e0e", asked=self.REF)
+        self.seed_open(cfg, "tsk-0c0c0c0c")
+        decl = {"declared": [
+            {"continuing": "tsk-0c0c0c0c", "round": {}},
+            {"title": "by ref", "asked": self.REF, "round": {}},
+            {"title": "by epic", "asked": "github:marekpal97/thinkweave#8", "round": {}},
+            {"title": "fresh", "round": {}},
+        ]}
+        result = reconcile(cfg, decl)
+        minted = result.minted[0]
+        assert [(e.task_id, e.asked, e.match) for e in result.landed] == [
+            ("tsk-0c0c0c0c", "", "continuing"),
+            ("tsk-0e0e0e0e", self.REF, "ref"),
+            ("tsk-0e0e0e0e", "github:marekpal97/thinkweave#8", "epic"),
+            (minted, "", "mint"),
+        ]
+        assert result.warnings == []
+
+    def test_a_refless_mint_warns_when_an_open_task_touched_its_files(self, cfg: Config):
+        self.seed_open(cfg, "tsk-0a0a0a0a", paths=["src/app.py"])
+        folder = self.session_folder(cfg, files_touched=["/repo/src/app.py"])
+        result = reconcile(cfg, {"declared": [{"title": "new", "round": {}}]}, [folder])
+        (warning,) = result.warnings
+        assert result.minted[0] in warning and "tsk-0a0a0a0a" in warning
+
+    def test_a_declared_ref_the_commits_contradict_warns(self, cfg: Config):
+        commit = {"hash": "abc1234", "message": "Fixes marekpal97/thinkweave#9", "files": []}
+        folder = self.session_folder(cfg, commits=[commit])
+        decl = {"declared": [{"title": "t", "asked": self.REF, "round": {}}]}
+        (warning,) = reconcile(cfg, decl, [folder]).warnings
+        assert self.REF in warning and "github:marekpal97/thinkweave#9" in warning
+
+    def test_a_declared_ref_the_commits_close_does_not_warn(self, cfg: Config):
+        commit = {"hash": "abc1234", "message": "Closes marekpal97/thinkweave#7", "files": []}
+        folder = self.session_folder(cfg, commits=[commit])
+        decl = {"declared": [{"title": "t", "asked": self.REF, "round": {}}]}
+        assert reconcile(cfg, decl, [folder]).warnings == []
+
+    def test_cli_prints_one_landing_line_per_entry(self, cfg: Config, capsys):
+        args = build_parser().parse_args(
+            ["wrap-finalize", SESSION, "--project", "t",
+             "--tasks", str(FIXTURES / "wrap-declaration.json")]
+        )
+        cmd_wrap_finalize(args)
+        (task_id,) = task_notes(cfg)
+        out = capsys.readouterr().out
+        assert any(
+            task_id in line and "github:marekpal97/thinkweave#189" in line and "mint" in line
+            for line in out.splitlines()
+        )
 
 
 # ---------------------------------------------------------------------------

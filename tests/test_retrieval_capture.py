@@ -14,9 +14,9 @@ import json
 from pathlib import Path
 
 
+from thinkweave.core.buffer import append_event
 from thinkweave.operations.retrieval_log import (
     RETRIEVAL_TOOLS,
-    append_event,
     build_retrieval_event,
     parse_returned_ids,
     summarize_args,
@@ -208,16 +208,16 @@ class TestRetrievalToolNaming:
 class TestAppendEvent:
     def test_writes_one_line_per_call(self, tmp_path: Path):
         buf = tmp_path / "buffer" / "ses-xxx.jsonl"
-        append_event(buf, {"a": 1})
-        append_event(buf, {"b": 2})
+        append_event(buf, {"a": 1}, harness="codex")
+        append_event(buf, {"b": 2}, harness="")
         lines = buf.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2
-        assert json.loads(lines[0]) == {"a": 1}
+        assert json.loads(lines[0]) == {"a": 1, "harness": "codex"}
         assert json.loads(lines[1]) == {"b": 2}
 
     def test_creates_parent_dir(self, tmp_path: Path):
         buf = tmp_path / "deep" / "nested" / "ses.jsonl"
-        append_event(buf, {"x": 1})
+        append_event(buf, {"x": 1}, harness="")
         assert buf.exists()
 
 
@@ -509,10 +509,7 @@ class TestRetrievalPipelineEndToEnd:
 
         # Stage 1: write a retrieval event to the buffer (simulates the
         # PostToolUse hook's _buffer_event call).
-        from thinkweave.operations.retrieval_log import (
-            append_event,
-            build_retrieval_event,
-        )
+        from thinkweave.operations.retrieval_log import build_retrieval_event
 
         buf_path = cfg.weave_dir / "buffer" / "ses-e2e-aaaa.jsonl"
         ev = build_retrieval_event(
@@ -521,7 +518,7 @@ class TestRetrievalPipelineEndToEnd:
             "[note] topic note (n-aaaaaaaa)",
             "2026-05-26T00:00:00+00:00",
         )
-        append_event(buf_path, ev)
+        append_event(buf_path, ev, harness="claude-code")
 
         # Stage 2: archive_buffer partitions retrieval events into the
         # sibling retrieval_log.jsonl.
@@ -560,10 +557,7 @@ class TestRetrievalPipelineEndToEnd:
         buffer and create one, otherwise the retrieval log is orphaned.
         """
         from thinkweave.core.config import Config
-        from thinkweave.operations.retrieval_log import (
-            append_event,
-            build_retrieval_event,
-        )
+        from thinkweave.operations.retrieval_log import build_retrieval_event
         from thinkweave.surfaces.hooks import handler as h
 
         vault = tmp_path / "vault"
@@ -577,7 +571,9 @@ class TestRetrievalPipelineEndToEnd:
             "(n-zzzz9999)",
             "2026-05-26T00:00:00+00:00",
         )
-        append_event(cfg.weave_dir / "buffer" / "ses-retrieval-only.jsonl", ev)
+        append_event(
+            cfg.weave_dir / "buffer" / "ses-retrieval-only.jsonl", ev, harness="claude-code"
+        )
 
         monkeypatch.setattr(
             "thinkweave.core.config.load_config", lambda: cfg

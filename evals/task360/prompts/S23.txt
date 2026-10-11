@@ -1,0 +1,1 @@
+Correction: the --help work this session did belongs to task ${TASK}. When you wrap again, declare exactly one entry, `continuing: ${TASK}`, with this session's round.

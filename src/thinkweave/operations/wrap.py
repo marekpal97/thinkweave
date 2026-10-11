@@ -344,8 +344,9 @@ def _wrap_landing_gap(
 
     - ``processed``: the session note carries ``processed: true``.
     - ``work_evidence``: the note carries non-empty ``commits`` or
-      ``files_touched`` — real file/code work. A pure Q&A wrap has none, so it
-      never trips the rail.
+      ``files_touched``, or the session's event streams record a file write
+      or a commit (a mid-session wrap, before Stop fills the note) — real
+      file/code work. A pure Q&A wrap has none, so it never trips the rail.
     - ``derived_landed``: notes that landed with a ``derived_from`` edge onto
       this session (insights + decisions + todos all carry it). ``-1`` when the
       index is unreadable — the caller treats that as "do not fire."
@@ -403,8 +404,30 @@ def _wrap_landing_gap(
         landed = -1
 
     processed = bool(fm.get("processed"))
-    work_evidence = bool(fm.get("commits")) or bool(fm.get("files_touched"))
+    work_evidence = (bool(fm.get("commits")) or bool(fm.get("files_touched"))
+                     or _streams_show_work(ev for ev, _d, _f in chain))
     return processed, work_evidence, landed
+
+
+_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+
+
+def _streams_show_work(streams) -> bool:
+    """True when a session's event streams record a file write or a commit.
+
+    The note's ``files_touched``/``commits`` are filled only by the Stop-time
+    extract, so a ``/wrap`` mid-session reads them empty; the streams already
+    hold the hook's tool events.
+    """
+    from thinkweave.core.events import iter_jsonl
+
+    for path in streams:
+        if not path or not Path(path).exists():
+            continue
+        for ev in iter_jsonl(Path(path)):
+            if ev.get("tool") in _WRITE_TOOLS or ev.get("commit"):
+                return True
+    return False
 
 
 def _append_verdict_events(
@@ -439,6 +462,7 @@ def _append_verdict_events(
     from a previous wrap is skipped outright, so re-wraps never
     double-write nor spill onto sibling prompts.
     """
+    from thinkweave.core.buffer import append_event
     from thinkweave.core.events import Prompt, extract_prompts, feedback_events
 
     if not chain:
@@ -465,7 +489,9 @@ def _append_verdict_events(
     # the fall-through so repeated same-prefix verdicts in one batch
     # distribute over distinct prompts.
     preexisting: set[tuple[str, str, str]] = set()
-    for events_file, _folder, _fm in chain:
+    harness_of: dict[Path, str] = {}
+    for events_file, _folder, fm in chain:
+        harness_of[events_file] = str((fm or {}).get("harness") or "")
         file_prompts = extract_prompts(events_file)
         prompts.extend((p, events_file) for p in file_prompts)
         preexisting.update(
@@ -489,7 +515,7 @@ def _append_verdict_events(
     )
     batch: set[tuple[str, str, str]] = set()
 
-    lines: dict[Path, list[str]] = {}
+    lines: dict[Path, list[dict]] = {}
     # Longest needle first (#181 review): the most specific verdict claims
     # its prompt before a broader prefix can take it — in-batch assignment
     # stops depending on the wrap LLM's verdict order.
@@ -567,14 +593,12 @@ def _append_verdict_events(
             event["register"] = register
         if about:
             event["about"] = about[:300]
-        lines.setdefault(target, []).append(
-            json.dumps(event, ensure_ascii=False)
-        )
+        lines.setdefault(target, []).append(event)
 
-    for events_file, file_lines in lines.items():
-        with events_file.open("a", encoding="utf-8") as fh:
-            fh.write("\n".join(file_lines) + "\n")
-        result.verdicts_written += len(file_lines)
+    for events_file, file_events in lines.items():
+        for event in file_events:
+            append_event(events_file, event, harness=harness_of.get(events_file, ""))
+        result.verdicts_written += len(file_events)
 
 
 def finalize_wrap(
@@ -612,7 +636,8 @@ def finalize_wrap(
        never acted on here.
     6. **silent-failure rail** — a session that changed files but landed zero
        derived notes is a broken ``/wrap`` (the extraction no-op'd). Records an
-       error (exit 1) unless ``allow_empty`` downgrades it to a warning.
+       error (exit 1) unless ``allow_empty`` downgrades it to a warning. A
+       session that changed files but declared no task is warned.
 
     Every step is wrapped: a failure in one is recorded in ``errors`` and the
     rest still run. Returns a :class:`WrapFinalizeResult`.
@@ -835,6 +860,11 @@ def finalize_wrap(
                 result.warnings.append(gap_msg)
             else:
                 result.errors.append(gap_msg)
+        if work_evidence and not (tasks or {}).get("declared"):
+            result.warnings.append(
+                "the session changed files but declared no task — its work "
+                "lands on none; pass --tasks to record where it belongs"
+            )
     except Exception as e:  # noqa: BLE001 — a broken rail must not mask the rest
         result.warnings.append(f"landing-gap check: {e}")
 

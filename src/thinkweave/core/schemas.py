@@ -34,6 +34,9 @@ class EdgeType(str, Enum):
     # the sealed task record is never mutated).
     CONSUMES = "consumes"
     FEEDBACK_FOR = "feedback_for"
+    # A child task points at its parent, from its own ``parent:`` or from a
+    # round's ``children`` list on the parent.
+    CHILD_OF = "child_of"
 
 
 class DecisionStatus(str, Enum):
@@ -41,6 +44,13 @@ class DecisionStatus(str, Enum):
     ACCEPTED = "accepted"
     DEPRECATED = "deprecated"
     SUPERSEDED = "superseded"
+
+
+# Edge types ``link``/``unlink`` may write. ``child_of`` is projected from a
+# task's scalar ``parent:``, which only the task's own attach step sets.
+LINKABLE_EDGE_TYPES: tuple[str, ...] = tuple(
+    e.value for e in EdgeType if e is not EdgeType.CHILD_OF
+)
 
 
 class DecisionOutcome(str, Enum):

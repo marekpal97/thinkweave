@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,9 @@ KNOWN = {
 }
 
 Row = tuple[str, bool, str]  # (assertion, ok, evidence)
+
+# The mini run (S20–S24) names the real tracker tree, read only: #184 → #243 → #256.
+T184, T243, T256 = (f"marekpal97/thinkweave#{n}" for n in (184, 243, 256))
 
 
 def mark(name: str, ok: bool) -> str:
@@ -49,14 +53,15 @@ class View:
     def tasks(self) -> dict:
         return self.snap["tasks"]
 
-    def ref(self, n: int) -> str:
-        return f"{self.snap['repo']}#{n}"
+    def ref(self, n: int | str) -> str:
+        """Sandbox ticket ``n``'s tracker ref; a string is a qualified ``owner/repo#n``."""
+        return f"github:{n}" if isinstance(n, str) else f"{self.snap['repo']}#{n}"
 
-    def work(self, n: int) -> list[dict]:
+    def work(self, n: int | str) -> list[dict]:
         return [t | {"id": i} for i, t in self.tasks.items()
                 if t["grain"] == "work" and t["asked"] == self.ref(n)]
 
-    def one_work(self, n: int) -> dict | None:
+    def one_work(self, n: int | str) -> dict | None:
         found = self.work(n)
         return found[0] if len(found) == 1 else None
 
@@ -277,8 +282,103 @@ def s15(v: View) -> list[Row]:
     ])
 
 
+def s20(v: View) -> list[Row]:
+    """A Claude session works sub-issue #256 with one committing subagent;
+    its round lands on the nearest epic's task, #243's."""
+    a = v.one_work(T243)
+    mine = v.rounds_from(a, "S20")
+    kids = [r | {"task": k["id"]} for k in (v.children(a["id"]) if a else []) for r in k["rounds"]]
+    trailed = [r["task"] for r in kids
+               if set((r.get("did") or {}).get("commits") or [])
+               & set(v.snap["trailers"].get(r["task"], []))]
+    # The child's own envelope row; a bare success/failure is the harness's claim.
+    summed = [e["outcome"] for r in kids for e in r.get("envelopes") or []
+              if e.get("outcome") not in (None, "success", "failure")]
+    return _base(v, T243, 1, "S20") + _children_closed(v, a, 1, "S20") + [
+        ("the S20 round names sub-issue #256", any(r.get("asked") == v.ref(T256) for r in mine),
+         str([r.get("asked") for r in mine])),
+        ("no work task for the sub-issue #256", not v.work(T256), f"found {len(v.work(T256))}"),
+        ("a child round lists its Task-trailer commit", bool(trailed),
+         f"trailers={v.snap['trailers']} rounds={[r.get('did') for r in kids]}"),
+        ("a child round carries its summary envelope", bool(summed), str(summed)),
+    ] + _recorded(v, "S20", "claude-code")
+
+
+def s21(v: View) -> list[Row]:
+    """#243 marked done closes its own task; the #184 epic's task stays open."""
+    a, root = v.one_work(T243), v.one_work(T184)
+    return [
+        ("S21 wrote a round on the #243 task", bool(v.rounds_from(a, "S21")),
+         f"{len(v.rounds_from(a, 'S21'))} round(s) from S21"),
+        ("the #243 task is closed", bool(a and a["status"] == "closed"), str(a and a["status"])),
+        ("the #184 task stays open", bool(root and root["status"] == "open"),
+         str(root and root["status"])),
+    ]
+
+
+def s22(v: View) -> list[Row]:
+    """A session edits a file under no ref and wraps without declaring a task."""
+    out = v.snap.get("s22_wrap") or ""
+    landing = [line.strip() for line in out.splitlines() if line.strip().startswith("landing:")]
+    return [
+        ("the wrap of S22 warns that it declared no task", "declared no task" in out,
+         out.strip()[-300:] or "no s22-wrap.txt"),
+        ("the wrap of S22 prints its landing line",
+         bool(landing) and "(none)" not in landing[0], str(landing)),
+    ]
+
+
+def s23(v: View) -> list[Row]:
+    """The S22 session re-wraps continuing the S20 task: its round moves there."""
+    a = v.one_work(T243)
+    elsewhere = [i for i, t in v.tasks.items()
+                 if not (a and i == a["id"]) and v.rounds_from(t, "S23")]
+    return [
+        ("the S20 task holds the S22 session's round", bool(v.rounds_from(a, "S23")),
+         f"{len(v.rounds_from(a, 'S23'))} round(s) from S22's session"),
+        ("no other task keeps a round from the S22 session", not elsewhere, str(elsewhere)),
+    ]
+
+
+def s24(v: View) -> list[Row]:
+    """A pi session on an OpenRouter model wraps. The mini run's last
+    scenario, so its checkpoint also reads the S20–S23 trace back."""
+    s = v.session("S24")
+    return [
+        ("the throwaway index holds the S24 session note", bool(s.get("id")), str(s.get("id"))),
+    ] + _recorded(v, "S24", "pi") + _readback(v)
+
+
+def _recorded(v: View, label: str, harness: str) -> list[Row]:
+    s = v.session(label)
+    got = s.get("recorded") or {}
+    want = s.get("want_model", "").rpartition("/")[2]
+    return [
+        (f"the {label} session note records harness {harness}", got.get("harness") == harness,
+         str(got)),
+        (f"the {label} session note records its model",
+         bool(got.get("model")) and want in got["model"], f"{got.get('model')!r} wants {want!r}"),
+    ]
+
+
+def _readback(v: View) -> list[Row]:
+    a = v.one_work(T243)
+    kids = {k["id"] for k in v.children(a["id"])} if a else set()
+    reached = set(v.snap["graph"].get(a["id"], [])) if a else set()
+    refs = {x for label in ("S20", "S21", "S22", "S23")
+            for x in (v.session(label).get("key"), v.session(label).get("id")) if x}
+    decs = [d for d in v.snap["decisions"] if refs & set(d["derived_from"])]
+    return [
+        ("read-back: weave_graph from the #243 task reaches its children",
+         bool(kids) and kids <= reached, f"children={sorted(kids)} missing={sorted(kids - reached)}"),
+        ("read-back: the mini run's decisions carry the #243 task id",
+         bool(decs) and all(a and d["task_id"] == a["id"] for d in decs), str(decs)),
+    ]
+
+
 CHECKS = {f"S{i}": f for i, f in enumerate(
-    [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15])}
+    [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15])} | {
+    "S20": s20, "S21": s21, "S22": s22, "S23": s23, "S24": s24}
 
 
 def open_rows_closed(v: View, label: str) -> tuple[bool, str]:
@@ -290,18 +390,19 @@ def open_rows_closed(v: View, label: str) -> tuple[bool, str]:
     return not unclosed, f"unclosed={unclosed}"
 
 
-def _base(v: View, n: int, rounds: int, label: str) -> list[Row]:
+def _base(v: View, n: int | str, rounds: int, label: str) -> list[Row]:
     a = v.one_work(n)
     have = len(a["rounds"]) if a else -1
+    tag = n if isinstance(n, str) else f"#{n}"
     rows: list[Row] = [
-        (f"exactly one work task for #{n}", a is not None, f"found {len(v.work(n))}"),
-        (f"#{n} has at least {rounds} round(s)", have >= rounds, f"has {have}"),
-        (f"#{n} conforms to the contract", bool(a) and not a["errors"], str(a and a["errors"])),
+        (f"exactly one work task for {tag}", a is not None, f"found {len(v.work(n))}"),
+        (f"{tag} has at least {rounds} round(s)", have >= rounds, f"has {have}"),
+        (f"{tag} conforms to the contract", bool(a) and not a["errors"], str(a and a["errors"])),
     ]
     if a:
         mine = v.rounds_from(a, label)
         rows += [
-            (f"{label} wrote a round on #{n} under its session note", bool(mine),
+            (f"{label} wrote a round on {tag} under its session note", bool(mine),
              f"{len(mine)} round(s) from {label}"),
             ("body has one wikilink line per round",
              sum("[[" in line for line in a["body"]) >= len(a["rounds"]),
@@ -370,7 +471,8 @@ def main(argv: list[str]) -> int:
         path.write_text(json.dumps(snapshot(args.root), indent=1, default=str))
         return 0
     failed, live = 0, None
-    for label in args.labels or list(CHECKS):
+    ran = json.loads((args.root / "state.json").read_text())["labels"] if not args.labels else {}
+    for label in args.labels or [label for label in CHECKS if label in ran]:
         frozen = args.root / "frozen" / f"{label}.json"
         if frozen.exists():
             view = View(json.loads(frozen.read_text()))
@@ -402,16 +504,20 @@ def snapshot(root: Path) -> dict:
     from thinkweave.core.events import iter_jsonl
     from thinkweave.core.indexer import Indexer
     from thinkweave.retrieval.context import build_project_context
+    from thinkweave.retrieval.search import Search
 
     Indexer(config=cfg).rebuild()
     db = sqlite3.connect(str(cfg.index_db))
     db.row_factory = sqlite3.Row
     before = root / "s9-before.json"
+    s22_wrap = root / "s22-wrap.txt"
     live = Path(state["live_vault"]) / "projects" / state["project"]
+    tasks = _tasks(cfg, db)
+    search = Search(config=cfg)
     return {
         "repo": f"github:{state['repo']}",
         "project": state["project"],
-        "tasks": _tasks(cfg, db),
+        "tasks": tasks,
         "sessions": {label: _session(cfg, db, d) for label, d in state["labels"].items()},
         "feedback": _feedback(db),
         "edges": _edges(db),
@@ -421,6 +527,11 @@ def snapshot(root: Path) -> dict:
             r.get("task_id") for r in iter_jsonl(buffer_path(cfg.weave_dir, "devloop"))
         ],
         "before": json.loads(before.read_text()) if before.exists() else None,
+        "s22_wrap": s22_wrap.read_text() if s22_wrap.exists() else "",
+        "trailers": _trailers(state["sandbox"]),
+        "graph": {i: [n.id for n in search.get_related(i, depth=1)]
+                  for i, t in tasks.items() if t["grain"] == "work"},
+        "decisions": _decisions(db),
         "live_leak": str(live) if live.exists() else "",
     }
 
@@ -458,25 +569,35 @@ def _tasks(cfg, db) -> dict:
     return tasks
 
 
+def _session_key(session: str) -> str:
+    """The harness session id a driven label recorded. pi records its
+    transcript path (``<ts>_<uuid>.jsonl``); the note keys on the uuid."""
+    if session.endswith(".jsonl"):
+        return Path(session).stem.rsplit("_", 1)[-1]
+    return session
+
+
 def _session(cfg, db, driven: dict) -> dict:
     """One driven session: its note id, task rows and verdict count."""
     from thinkweave.core.buffer import archived_events_path, buffer_path
     from thinkweave.core.events import feedback_events, iter_jsonl
     from thinkweave.operations.tasks import Register
 
-    key = driven.get("session", "")
+    key = _session_key(driven.get("session", ""))
     note = db.execute(
-        "SELECT id, path FROM notes WHERE type = 'session' AND frontmatter LIKE ?",
+        "SELECT id, path, frontmatter FROM notes WHERE type = 'session' AND frontmatter LIKE ?",
         (f'%"source_session": "{key}"%',),
     ).fetchone() if key else None
     folder = (cfg.vault_root / note["path"]).parent if note else None
     streams = ([archived_events_path(folder)] if folder else []) + (
         [buffer_path(cfg.weave_dir, key)] if key else [])
     rows = Register(cfg, key, streams).rows() if key else []
+    fm = json.loads(note["frontmatter"]) if note else {}
     return {
         **driven,
         "key": key,
         "id": note["id"] if note else "",
+        "recorded": {"harness": fm.get("harness", ""), "model": fm.get("model", "")},
         "events": sum(1 for st in streams for _ in iter_jsonl(st)),
         "opens": [{"task_id": r.get("task_id"), "grain": r.get("grain")}
                   for r in rows if r["type"] == "task_open"],
@@ -494,6 +615,32 @@ def _feedback(db) -> list[dict]:
             "WHERE json_extract(frontmatter, '$.feedback_for') IS NOT NULL"
         )
     ]
+
+
+def _decisions(db) -> list[dict]:
+    out = []
+    for r in db.execute(
+        "SELECT id, json_extract(frontmatter, '$.task_id') AS task_id, "
+        "json_extract(frontmatter, '$.derived_from') AS df FROM notes WHERE type = 'decision'"
+    ):
+        df = r["df"] or "[]"
+        out.append({"id": r["id"], "task_id": r["task_id"],
+                    "derived_from": json.loads(df) if df.startswith("[") else [df]})
+    return out
+
+
+def _trailers(sandbox: str) -> dict:
+    """Each task id's commits in the sandbox repo, by their ``Task:`` trailer."""
+    log = subprocess.run(
+        ["git", "-C", sandbox, "log", "--all",
+         "--format=%H %(trailers:key=Task,valueonly,separator=%x20)"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    found: dict[str, list[str]] = {}
+    for sha, *ids in (line.split() for line in log.splitlines() if line.strip()):
+        for task_id in ids:
+            found.setdefault(task_id, []).append(sha)
+    return found
 
 
 def _edges(db) -> dict:

@@ -29,6 +29,7 @@ from thinkweave.core.vault import (
     strip_section,
 )
 from thinkweave.retrieval.search import Search
+from thinkweave.operations.tasks import RefEvidence
 from thinkweave.synthesis.concepts import (
     build_keep_set,
     load_ontology,
@@ -66,6 +67,7 @@ class ExtractOutcome:
     processed_at: str = ""
     error: str = ""
     skipped_reason: str = ""
+    ref_evidence: RefEvidence = field(default_factory=RefEvidence)
 
     @property
     def all_created(self) -> list[NoteMeta]:
@@ -368,6 +370,9 @@ def extract_session(
     # and gates whether a `supersedes:` declaration is allowed to flip its
     # predecessors to `superseded` (see the supersession block below).
     session_commits = session_note.frontmatter.get("commits", [])
+    outcome.ref_evidence = RefEvidence.gather(
+        cfg, session_note.frontmatter, outcome.warnings
+    )
 
     for dec in decisions_in:
         outcome_value = dec.get("outcome", "committed")

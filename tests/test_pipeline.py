@@ -145,6 +145,30 @@ class TestLinkUnlinkMarkdown:
         }
         assert set(EDGE_TYPE_TO_FIELD.keys()) == expected_types
 
+    def test_child_of_is_not_linkable(self, vault: VaultManager, config: Config):
+        """A task's scalar ``parent:`` is never rewritten by a generic link."""
+        from thinkweave.core.task_contract import validate_task_note
+        from thinkweave.core.vault import render_frontmatter
+        from thinkweave.operations.notes import link_notes
+
+        def task(task_id: str, **fields) -> Path:
+            fm = {"type": "note", "kind": "task", "id": task_id, "title": task_id,
+                  "status": "open", "rounds": [], **fields}
+            path = vault.root / "tasks" / f"{task_id}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(render_frontmatter(fm) + "\n\nbody\n", encoding="utf-8")
+            return path
+
+        task("tsk-00000001", grain="work")
+        child = task("tsk-00000002", grain="per-dispatch", parent="tsk-00000001")
+        Indexer(config=config).rebuild(full=True)
+
+        with pytest.raises(KeyError):
+            link_notes(config, "tsk-00000002", "tsk-00000001", "child_of")
+        fm, _ = parse_frontmatter(child.read_text(encoding="utf-8"))
+        assert fm["parent"] == "tsk-00000001"
+        assert validate_task_note(fm) == []
+
     def test_link_multiple_targets(self, vault: VaultManager, indexer: Indexer):
         """Source can link to multiple targets via the same edge type."""
         p_src = vault.create_note(NoteType.NOTE, "Source", project="t")

@@ -153,11 +153,11 @@ def _hook_harness() -> str:
     ``weave hooks install`` appends ``--harness <id>`` for every harness but
     Claude Code; why argv rather than ``harness.active()`` is
     docs/HARNESSES.md § "Why the handler reads argv, not the profile". Empty
-    string means the Claude Code default, which keeps its buffer bytes
+    string means the Claude Code default, which keeps its ``surface`` stamp
     identical to every session written before #107.
 
-    The value is unvalidated on purpose and that is safe: it is only ever
-    stamped onto the buffer as ``surface``, and its one consumer looks it up
+    The value is unvalidated on purpose and that is safe: where it reaches
+    the buffer as ``surface``, its one consumer looks it up
     by ``indexer._startup_source`` (profile data), where anything unrecognised
     falls back to plain ``'startup'``. An argv nobody but this repo's installer
     writes therefore cannot reach the ``context_served`` CHECK constraint.
@@ -168,6 +168,15 @@ def _hook_harness() -> str:
         if i + 1 < len(argv):
             return argv[i + 1]
     return ""
+
+
+#: Failure messages raised before the hook's own reply; :func:`_output` sends them.
+_pending_messages: list[str] = []
+
+
+def _harness_id() -> str:
+    """The firing harness's profile id; no ``--harness`` argv means Claude Code."""
+    return _hook_harness() or "claude-code"
 
 
 def _env_session_id() -> str:
@@ -217,6 +226,14 @@ def main() -> None:
         return
 
     try:
+        _track_model(hook_input)
+    except Exception as e:
+        _log_error(f"{hook_type}/model", e)
+        _pending_messages.append(
+            _report_failure(f"{hook_type}/model", hook_input, e)
+        )
+
+    try:
         if hook_type == "post_tool_use":
             _handle_post(tool_name, hook_input)
         elif hook_type == "stop":
@@ -237,6 +254,30 @@ def main() -> None:
     except Exception as e:
         _log_error(hook_type, e)
         _output(system_message=_report_failure(hook_type, hook_input, e))
+
+
+def _track_model(hook_input: dict) -> None:
+    """Remember the model this hook reports, and buffer a ``model_change``
+    event when it differs from the session's previous one."""
+    from thinkweave.core.config import load_config
+
+    model = str(hook_input.get("model") or "")
+    session_id = hook_input.get("session_id") or _env_session_id()
+    if not (model and session_id):
+        return
+    weave_dir = load_config().weave_dir
+    previous = record_model(weave_dir, session_id, model)
+    if previous and previous != model:
+        _buffer_event(
+            weave_dir,
+            session_id,
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "type": "model_change",
+                "from": previous,
+                "to": model,
+            },
+        )
 
 
 def _handle_post(tool_name: str, hook_input: dict) -> None:
@@ -351,7 +392,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
         session_key=session_id,
         project=detect_project(hook_input.get("cwd", "")),
         role=str(hook_input.get("agent_type", "")),
-        harness=_hook_harness() or "claude-code",
+        harness=_harness_id(),
         agent_id=agent_id,
     )
     _output(
@@ -372,7 +413,7 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     cfg = load_config()
     agent_id = str(hook_input.get("agent_id", ""))
     source = tasks.TranscriptSource.agent_file(
-        _hook_harness() or "claude-code",
+        _harness_id(),
         agent_id,
         agent_transcript=str(hook_input.get("agent_transcript_path") or ""),
         parent_transcript=str(hook_input.get("transcript_path") or ""),
@@ -504,7 +545,7 @@ def _bind_dispatched_session(
     for task_id in tasks.bind_session(
         cfg,
         prompt_text,
-        harness=_hook_harness() or "claude-code",
+        harness=_harness_id(),
         session_key=session_id,
         transcript_path=str(hook_input.get("transcript_path") or ""),
         since=now,
@@ -787,7 +828,15 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     if _find_session_note(vm, session_id, project):
         return
 
-    extra_fm: dict = {"source_session": session_id}
+    extra_fm: dict = {
+        "source_session": session_id,
+        "harness": _harness_id(),
+    }
+    model = str(hook_input.get("model") or "") or session_model(
+        cfg.weave_dir, session_id
+    )
+    if model:
+        extra_fm["model"] = model
     # #180: stamp the compaction-segment chain key so the wrap verdict
     # join can resolve sibling segments of the same logical session.
     logical = _logical_session_key(hook_input)
@@ -870,35 +919,14 @@ def _delivery_id(phase: str, hook_input: dict, *, suffix: str = "") -> str:
 
 
 def _buffer_event(weave_dir: Path, session_id: str, event: dict) -> bool:
-    """Append one event unless its delivery receipt already exists.
-
-    Returns True when the line was written. An event with no ``delivery_id``
-    (see :func:`_delivery_id`) is always written.
-    """
-    buf_dir = weave_dir / "buffer"
-    buf_dir.mkdir(parents=True, exist_ok=True)
-    receipt: Path | None = None
-    delivery_id = event.get("delivery_id")
-    if delivery_id:
-        receipts = session_state_dir(weave_dir, session_id)
-        receipts.mkdir(parents=True, exist_ok=True)
-        receipt = receipts / hashlib.sha256(
-            str(delivery_id).encode("utf-8")
-        ).hexdigest()
-        try:
-            fd = os.open(receipt, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
-        except FileExistsError:
-            return False
-
-    try:
-        with open(buf_dir / f"{session_id}.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
-    except Exception:
-        if receipt is not None:
-            receipt.unlink(missing_ok=True)
-        raise
-    return True
+    """Append one event, stamped with the firing harness, unless its delivery
+    receipt already exists (see :func:`_delivery_id`)."""
+    return append_event(
+        buffer_path(weave_dir, session_id),
+        event,
+        harness=_harness_id(),
+        receipts=session_state_dir(weave_dir, session_id),
+    )
 
 
 def _extract_tool_output_text(hook_input: dict) -> str:
@@ -1194,9 +1222,13 @@ def _build_auto_summary(
 # legacy imports (`from thinkweave.surfaces.hooks.handler import ...`)
 # keep working.
 from thinkweave.core.buffer import (  # noqa: E402, F401
+    append_event,
     archive_buffer,
+    buffer_path,
     cleanup_buffer,
     mirror_buffer_events,
+    record_model,
+    session_model,
     session_state_dir,
 )
 
@@ -1817,6 +1849,8 @@ def _output(
             Required when ``additional_context`` is set.
     """
     result: dict = {}
+    system_message = "\n".join(filter(None, [*_pending_messages, system_message]))
+    _pending_messages.clear()
     if system_message:
         result["systemMessage"] = system_message
     if additional_context and hook_event_name:

@@ -53,10 +53,11 @@ wrap-coverage guarantee for headless runs. It is not duplicated here.
    frontmatter=<payload>)`, adding a `builds_on` list (under `frontmatter=`) of
    the ship-time insight note ids. MCP down → `weave add -f …` CLI fallback.
 3. `weave task record-run <payload.json> --trajectory <note-id> --project
-   <p> [--session <session-id>]` lands the run on the **epic's** task, not
-   the issue's. The task's `asked` is the epic ref: the payload's
-   `epic_url`, else the issue's GitHub sub-issue parent, else the issue ref
-   itself. When no open task carries that ref, record-run mints a work-grain
+   <p> [--session <session-id>]` lands the run on its issue's **nearest
+   epic's** task. The task's `asked` is that epic's ref: the issue itself
+   when it has sub-issues, else its GitHub sub-issue parent, else the issue
+   ref. The wrap pass resolves a declared ref the same way. The payload's
+   `epic_url` counts only when the GitHub lookup fails. When no open task carries that ref, record-run mints a work-grain
    task titled as the epic (`epic_title`), else as the trajectory. Every
    issue of one epic is one `route: devloop` round on that one task, so loop
    work and session work on one epic share it. A round carries:

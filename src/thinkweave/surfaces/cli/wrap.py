@@ -95,8 +95,14 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             f"  tasks:   {len(t['minted'])} minted, "
             f"{len(t['appended'])} round(s) appended, "
             f"{len(t['closed'])} closed, {len(t['orphaned'])} orphaned, "
-            f"{len(t['attached'])} child(ren) attached, {t['stamped']} stamped"
+            f"{len(t['attached'])} child(ren) attached, {t['stamped']} stamped, "
+            f"{len(t['moved'])} round(s) moved off, {len(t['reopened'])} reopened"
         )
+        for landing in t["landed"]:
+            print(
+                f"    {landing['task_id']} ← {landing['asked'] or '(no ref)'} "
+                f"via {landing['match']}"
+            )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)
         print(f"  prune:   {result.orphans_pruned} orphan folder(s), {mb:.1f} MB freed")

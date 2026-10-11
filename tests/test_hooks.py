@@ -2410,3 +2410,191 @@ class TestLogicalSessionKey:
         assert path is not None
         note = vm.read_note(path)
         assert note.frontmatter["logical_session"] == "cse_stamp1"
+
+
+TRANSCRIPTS = Path(__file__).parent / "fixtures" / "harness_transcripts"
+
+# One recorded session per harness: its transcript fixture, the model its hook
+# envelopes report (the Codex and Pi transcripts name it too; the Claude Code
+# one names none), and the argv flag `weave hooks install` writes for it.
+HARNESS_SESSIONS = {
+    "claude-code": (
+        TRANSCRIPTS / "claude-code" / "2f6b9c1e-0000-4000-8000-000000000001.jsonl",
+        "claude-opus-4-7",
+        [],
+    ),
+    "codex": (
+        TRANSCRIPTS
+        / "codex"
+        / "rollout-2026-10-03T10-00-00-01a10380-0000-7000-8000-000000000002.jsonl",
+        "gpt-5.6-terra",
+        ["--harness", "codex"],
+    ),
+    "pi": (
+        TRANSCRIPTS / "pi" / "2026-10-04T15-46-02-748Z_0199cccc-0000-7000-8000-000000000002.jsonl",
+        "moonshotai/kimi-k2.6",
+        ["--harness", "pi"],
+    ),
+}
+
+
+class TestSessionHarnessAndModel:
+    """Session notes and buffered events record the harness and model.
+
+    Envelopes follow each harness's wire: Claude Code reports ``model`` only
+    on SessionStart, Codex on every hook, and the Pi shim on every call.
+    """
+
+    @pytest.fixture
+    def vault(self, tmp_path: Path, monkeypatch):
+        cfg = Config(vault_root=tmp_path / "vault")
+        (cfg.vault_root / "config").mkdir(parents=True)
+        (cfg.vault_root / "config" / "sources.yaml").write_text("{}\n")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "proj")
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda *a, **k: "",
+        )
+        return cfg
+
+    @staticmethod
+    def _fire(monkeypatch, capsys, harness_id: str, hook: str, envelope: dict):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        flags = HARNESS_SESSIONS[harness_id][2]
+        monkeypatch.setattr("sys.argv", ["weave-hook", hook, *flags])
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(envelope)))
+        handler_mod.main()
+        out = json.loads(capsys.readouterr().out or "{}")
+        assert "systemMessage" not in out, out
+
+    @staticmethod
+    def _envelope(harness_id: str, session_id: str, event: str, **extra) -> dict:
+        transcript, model, _ = HARNESS_SESSIONS[harness_id]
+        env = {
+            "session_id": session_id,
+            "transcript_path": str(transcript),
+            "cwd": "/home/u/proj",
+            "hook_event_name": event,
+            **extra,
+        }
+        if harness_id != "claude-code" or event == "SessionStart":
+            env.setdefault("model", model)
+        return env
+
+    def _start_and_prompt(self, monkeypatch, capsys, harness_id, session_id):
+        self._fire(
+            monkeypatch, capsys, harness_id, "session_start",
+            self._envelope(harness_id, session_id, "SessionStart", source="startup"),
+        )
+        self._fire(
+            monkeypatch, capsys, harness_id, "user_prompt_submit",
+            self._envelope(harness_id, session_id, "UserPromptSubmit", prompt="go"),
+        )
+
+    @pytest.mark.parametrize("harness_id", sorted(HARNESS_SESSIONS))
+    def test_session_note_records_harness_and_model(
+        self, vault, monkeypatch, capsys, harness_id
+    ):
+        from thinkweave.core.vault import VaultManager
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        session_id = f"ses-{harness_id}"
+        self._start_and_prompt(monkeypatch, capsys, harness_id, session_id)
+
+        vm = VaultManager(config=vault)
+        path = handler_mod._find_session_note(vm, session_id)
+        assert path is not None
+        fm = vm.read_note(path).frontmatter
+        assert fm["harness"] == harness_id
+        assert fm["model"] == HARNESS_SESSIONS[harness_id][1]
+
+    @pytest.mark.parametrize("harness_id", sorted(HARNESS_SESSIONS))
+    def test_every_buffered_event_carries_the_harness(
+        self, vault, monkeypatch, capsys, harness_id
+    ):
+        session_id = f"ses-ev-{harness_id}"
+        self._start_and_prompt(monkeypatch, capsys, harness_id, session_id)
+        self._fire(
+            monkeypatch, capsys, harness_id, "post_tool_use",
+            self._envelope(
+                harness_id, session_id, "PostToolUse",
+                tool_name="Write", tool_use_id="call-w1",
+                tool_input={"file_path": "/home/u/proj/a.py", "content": "x = 1\n"},
+                tool_response={"success": True},
+            ),
+        )
+        self._fire(
+            monkeypatch, capsys, harness_id, "post_tool_use",
+            self._envelope(
+                harness_id, session_id, "PostToolUse",
+                tool_name="mcp__thinkweave__weave_search", tool_use_id="call-r1",
+                tool_input={"query": "x"}, tool_response="no results",
+            ),
+        )
+
+        events = _read_buffer(vault.weave_dir, session_id)
+        assert {e.get("type", e.get("tool")) for e in events} >= {
+            "startup", "prompt", "Write", "retrieval",
+        }
+        assert {e["harness"] for e in events} == {harness_id}
+
+    def test_model_change_is_recorded_as_an_event(self, vault, monkeypatch, capsys):
+        session_id = "ses-pi-switch"
+        self._start_and_prompt(monkeypatch, capsys, "pi", session_id)
+        # The first Stop archives the buffer; the switch lands a turn later.
+        self._fire(
+            monkeypatch, capsys, "pi", "stop",
+            self._envelope("pi", session_id, "Stop"),
+        )
+        self._fire(
+            monkeypatch, capsys, "pi", "user_prompt_submit",
+            self._envelope(
+                "pi", session_id, "UserPromptSubmit",
+                prompt="again", model="deepseek/deepseek-v4",
+            ),
+        )
+
+        changes = [
+            e for e in _read_buffer(vault.weave_dir, session_id)
+            if e.get("type") == "model_change"
+        ]
+        assert [(e["from"], e["to"], e["harness"]) for e in changes] == [
+            ("moonshotai/kimi-k2.6", "deepseek/deepseek-v4", "pi"),
+        ]
+
+    def test_unchanged_model_records_no_change(self, vault, monkeypatch, capsys):
+        session_id = "ses-codex-steady"
+        self._start_and_prompt(monkeypatch, capsys, "codex", session_id)
+        self._fire(
+            monkeypatch, capsys, "codex", "user_prompt_submit",
+            self._envelope("codex", session_id, "UserPromptSubmit", prompt="more"),
+        )
+        assert not [
+            e for e in _read_buffer(vault.weave_dir, session_id)
+            if e.get("type") == "model_change"
+        ]
+
+    def test_model_tracking_failure_is_surfaced_and_capture_continues(
+        self, vault, monkeypatch, capsys
+    ):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        def broken(*a, **k):
+            raise OSError("model store unwritable")
+
+        monkeypatch.setattr(handler_mod, "record_model", broken)
+        session_id = "ses-codex-broken"
+        monkeypatch.setattr("sys.argv", ["weave-hook", "user_prompt_submit", "--harness", "codex"])
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(json.dumps(
+                self._envelope("codex", session_id, "UserPromptSubmit", prompt="go")
+            )),
+        )
+        handler_mod.main()
+
+        out = json.loads(capsys.readouterr().out)
+        assert "model store unwritable" in out["systemMessage"]
+        assert [e["type"] for e in _read_buffer(vault.weave_dir, session_id)] == ["prompt"]

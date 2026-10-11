@@ -1,0 +1,1 @@
+No ticket for this one: give 'dogfood' a one-line --help description. Commit. When you wrap, declare no task at all: pass no --tasks file.
