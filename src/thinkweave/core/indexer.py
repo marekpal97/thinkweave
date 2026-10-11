@@ -280,24 +280,29 @@ EDGE_TYPE_TO_FIELD: dict[str, str] = {
     v: k for k, v in EDGE_FIELD_MAP.items() if v in LINKABLE_EDGE_TYPES
 }
 
-# Per-note lookup row for the edge passes; ``parent`` lets a round's child
-# list defer to the child's own ``parent:`` declaration.
+# Per-note lookup row for the edge passes; ``parent`` and ``rounds`` give
+# each task the work tasks it is a child of.
 _LOOKUP_SQL = (
     "SELECT id, path, title, type, CASE WHEN json_valid(frontmatter) "
-    "THEN json_extract(frontmatter, '$.parent') END AS parent FROM notes"
+    "THEN json_extract(frontmatter, '$.parent') END AS parent, "
+    "CASE WHEN json_valid(frontmatter) "
+    "THEN json_extract(frontmatter, '$.rounds') END AS rounds FROM notes"
 )
 
 
 @dataclass(frozen=True)
 class _EdgeLookup:
-    """Every note's link keys, type, path and declared parent, plus each
-    session directory's session id: what the edge passes resolve against."""
+    """Every note's link keys, type and path, each session directory's
+    session id, and each task's work tasks: what the edge passes resolve against."""
 
     slug_to_id: dict[str, str]
     id_to_type: dict[str, str]
     id_to_path: dict[str, str]
-    parent_of: dict[str, str]
     session_dirs: dict[str, str]
+    # child id -> work tasks whose rounds list it
+    listed_in: dict[str, set[str]]
+    # work task id -> children naming it in ``parent:`` or listed in its rounds
+    children_of: dict[str, set[str]]
 
     def resolve(self, target: str) -> str:
         """The note id a frontmatter target or wikilink names, or ``""``."""
@@ -1098,7 +1103,9 @@ class Indexer:
         unchanged source and are kept.
 
         **Outbound** categories (frontmatter, wikilink, session-dir) are
-        recomputed per changed note — fully scoped.
+        recomputed per changed note — fully scoped. A changed work task
+        adds its current and former children to the changed set, because a
+        child's outbound pass owns its ``child_of`` edges.
 
         **Pairwise** categories (concept, tag) pair each changed note only
         against notes that share at least one of its concepts/tags. Pair
@@ -1127,30 +1134,29 @@ class Indexer:
 
         now = datetime.now(timezone.utc).isoformat()
         edge_count = 0
-        changed_list = list(changed_ids)
         # SQLite's compile-time variable limit is 999 by default; chunk to be safe.
         CHUNK = 500
+        lookup = self._edge_lookup()
+        total_notes = len(lookup.id_to_type)
+        # A child owns its ``child_of`` edges, so a changed work task
+        # re-emits through its current and former children.
+        changed_ids = changed_ids | self._task_children(changed_ids, lookup)
+        changed_list = list(changed_ids)
 
         # ── Delete the edges this pass re-emits ──
         # Every edge out of a changed note, and the inbound edges derived
         # from it (concept, tag, session-dir pairs, which can land with X as
         # target). An inbound frontmatter or wikilink edge is declared by its
-        # unchanged source and is not re-emitted here, so it stays. A round
-        # child's edge is declared by its work task (the target), so it
-        # follows the target instead.
+        # unchanged source and is not re-emitted here, so it stays.
         for i in range(0, len(changed_list), CHUNK):
             chunk = changed_list[i:i + CHUNK]
             placeholders = ",".join("?" * len(chunk))
             self.db.execute(
-                f"DELETE FROM edges WHERE (source IN ({placeholders}) "
-                f"AND json_extract(metadata, '$.via') IS NOT 'rounds') "
+                f"DELETE FROM edges WHERE source IN ({placeholders}) "
                 f"OR (target IN ({placeholders}) AND json_extract(metadata, '$.via') "
-                f"IN ('concept', 'tag', 'session_dir', 'rounds'))",
+                f"IN ('concept', 'tag', 'session_dir'))",
                 chunk + chunk,
             )
-
-        lookup = self._edge_lookup()
-        total_notes = len(lookup.id_to_type)
 
         # ── 1+2. Outbound frontmatter + wikilink edges (changed notes) ──
         changed_rows: list = []
@@ -1328,8 +1334,8 @@ class Indexer:
     def _emit_outbound_edges(
         self, note_id: str, fm: dict, body: str, lookup: _EdgeLookup, now: str
     ) -> int:
-        """Insert the edges ``note_id`` declares in its frontmatter fields,
-        its rounds' child lists and its body wikilinks; return the count."""
+        """Insert the edges out of ``note_id``: its frontmatter fields, the
+        rounds that list it as a child, and its body wikilinks; return the count."""
         count = 0
         for fm_field, edge_type in EDGE_FIELD_MAP.items():
             targets = fm.get(fm_field, [])
@@ -1340,22 +1346,11 @@ class Indexer:
                 if resolved and resolved != note_id:
                     self._insert_edge(note_id, resolved, edge_type, now)
                     count += 1
-        # A round child whose own ``parent:`` names this task already got
-        # its edge from its own pass; the rounds edge would duplicate it.
-        for rnd in fm.get("rounds") or []:
-            if not isinstance(rnd, dict):
-                continue
-            for child in rnd.get("children") or []:
-                child = str(child)
-                if child == note_id or lookup.parent_of.get(child, note_id) == note_id:
-                    continue
-                self.db.execute(
-                    "INSERT OR IGNORE INTO edges "
-                    "(source, target, edge_type, metadata, created_at, weight) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (child, note_id, "child_of", json.dumps({"via": "rounds"}), now, 1.0),
-                )
-                count += 1
+        # A child owns its ``child_of`` edges: a work task's rounds list
+        # becomes edges from the child, so any reindex order converges.
+        for work_id in lookup.listed_in.get(note_id, set()) - {note_id}:
+            self._insert_edge(note_id, work_id, "child_of", now)
+            count += 1
         for link in extract_wikilink_ids(body):
             resolved = lookup.resolve(link)
             if resolved and resolved != note_id:
@@ -1363,9 +1358,24 @@ class Indexer:
                 count += 1
         return count
 
+    def _task_children(self, work_ids: set[str], lookup: _EdgeLookup) -> set[str]:
+        """Children of ``work_ids`` now, plus those an existing ``child_of``
+        edge still names, so a child dropped from a work task loses its edge."""
+        children = {c for w in work_ids for c in lookup.children_of.get(w, ())}
+        ids = list(work_ids)
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            children.update(r["source"] for r in self.db.execute(
+                f"SELECT source FROM edges WHERE edge_type = 'child_of' "
+                f"AND target IN ({','.join('?' * len(chunk))})",
+                chunk,
+            ))
+        return children
+
     def _edge_lookup(self) -> _EdgeLookup:
         """Load every note's link keys, type, path and ``parent:`` for the edge passes."""
-        lookup = _EdgeLookup({}, {}, {}, {}, {})
+        lookup = _EdgeLookup({}, {}, {}, {}, defaultdict(set), defaultdict(set))
+        parent_of: dict[str, str] = {}
         for row in self.db.execute(_LOOKUP_SQL):
             note_id, path = row["id"], row["path"]
             lookup.slug_to_id[Path(path).stem] = note_id
@@ -1379,9 +1389,15 @@ class Indexer:
                 lookup.slug_to_id[rel.lower()] = note_id
             lookup.id_to_type[note_id] = row["type"]
             lookup.id_to_path[note_id] = path
-            lookup.parent_of[note_id] = str(row["parent"] or "")
+            if row["parent"]:
+                parent_of[note_id] = str(row["parent"])
+            for child in _round_children(row["rounds"]):
+                lookup.listed_in[child].add(note_id)
+                lookup.children_of[note_id].add(child)
             if path.endswith(("/session.md", "\\session.md")):
                 lookup.session_dirs[str(Path(path).parent)] = note_id
+        for child, parent in parent_of.items():
+            lookup.children_of[lookup.resolve(parent) or parent].add(child)
         return lookup
 
     def _insert_edge(
@@ -1936,3 +1952,18 @@ class Indexer:
         row = self.db.execute("SELECT COUNT(DISTINCT concept) as cnt FROM note_concepts").fetchone()
         stats["concepts_total"] = row["cnt"]
         return stats
+
+
+def _round_children(rounds_json: str | None) -> list[str]:
+    """The child ids a task's ``rounds`` frontmatter (as JSON) lists."""
+    try:
+        rounds = json.loads(rounds_json) if rounds_json else []
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(rounds, list):
+        return []
+    return [
+        str(child)
+        for rnd in rounds if isinstance(rnd, dict)
+        for child in rnd.get("children") or []
+    ]
