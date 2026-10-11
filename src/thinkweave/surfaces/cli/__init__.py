@@ -86,7 +86,7 @@ _DISPATCH = {
     # `weave wrap-finalize`, `weave hubs apply-linkage`, `weave landing --doc`,
     # `weave judge --rejudge/--drain`, `weave health --json`, `weave learn
     # check/probe`, `weave explain locate/check` (retrieval is the skills'
-    # job, and MCP calls already land in context_served — dec-696bacfb).
+    # job, and MCP calls already land in context_served).
     # hubs / landing / judge / health double as admin surfaces.
     "wrap-finalize": cmd_wrap_finalize,
     "session-id": cmd_session_id,

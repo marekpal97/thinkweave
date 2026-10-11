@@ -55,8 +55,15 @@ def cmd_explain(args: argparse.Namespace) -> None:
 
 
 def _locate(cfg, session: str, scope: str, target: str) -> str:
-    """The id of the explain note in ``session``'s folder with this scope and target."""
+    """The id of the explain note in ``session``'s folder with this scope and target.
+
+    A blank session (a headless run) owns no folder, so it never matches.
+    """
     from thinkweave.core.indexer import Indexer
+
+    session = session.strip()
+    if not session:
+        return ""
 
     idx = Indexer(config=cfg)
     try:

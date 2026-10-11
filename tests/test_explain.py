@@ -114,6 +114,8 @@ def test_locate_matches_the_session_note_id_too(sessions, capsys):
         (OTHER, "diff", "#281"),      # same key in another session
         (UUID, "session", "#281"),    # same target, other scope
         (UUID, "diff", "#282"),       # same scope, other target
+        ("", "diff", "#281"),         # headless: no session id
+        ("  ", "diff", "#281"),       # headless: blank session id
     ],
 )
 def test_locate_prints_nothing_without_a_match(sessions, capsys, session, scope, target):

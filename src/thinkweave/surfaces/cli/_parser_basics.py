@@ -11,6 +11,7 @@ from __future__ import annotations
 from thinkweave.core.harness import PROFILES
 from thinkweave.core.schemas import EdgeType, NoteType
 from thinkweave.core.task_contract import TASK_GRAINS
+from thinkweave.surfaces.cli.explain import SCOPES
 
 
 def _add_harness_flag(*parsers) -> None:
@@ -417,7 +418,7 @@ def add_admin_subparsers(sub) -> None:
         "locate", help="Print the explain note id for (session, scope, target), or nothing."
     )
     p_el.add_argument("--session", required=True, help="Harness session UUID or ses- id.")
-    p_el.add_argument("--scope", required=True, choices=["session", "diff"])
+    p_el.add_argument("--scope", required=True, choices=SCOPES)
     p_el.add_argument("--target", required=True)
     p_ek = explain_sub.add_parser("check", help="Validate an explain note; exit 1 on problems.")
     p_ek.add_argument("--note", required=True)

@@ -45,7 +45,7 @@ id=$(weave session-id)          # empty + exit 1 when headless
 weave config show               # prints vault_root
 ```
 
-An empty id means no live session. Then the note goes to `sessions/misc/`, and step 2 has nothing to match: always create.
+An empty id means a headless run with no live session. Then skip step 2, omit `session_id` in step 6, and always create. The note goes to `sessions/misc/`. (`locate` also prints nothing for an empty session.)
 
 ### 2. Run `locate`
 
@@ -53,7 +53,7 @@ An empty id means no live session. Then the note goes to `sessions/misc/`, and s
 weave explain locate --session "$id" --scope <session|diff> --target "<target>"
 ```
 
-It prints the id of the explain note for this (session, scope, target), or nothing. An id means this is a **re-run**: step 6 updates that note. Nothing means a **first run**: step 6 creates one. Never decide this from search hits.
+Run it only when `$id` is non-empty. It prints the id of the explain note for this (session, scope, target), or nothing. An id means this is a **re-run**: step 6 updates that note. Nothing means a **first run**: step 6 creates one. Never decide this from search hits.
 
 ### 3. Gather the material
 
@@ -95,7 +95,7 @@ weave_create(
   title="Explain: <target or topic>",
   body=<the composed markdown>,
   project=<project>,
-  session_id="$id",
+  session_id="$id",                 # omit when $id is empty
   frontmatter={
     "kind": "explain",
     "scope": "<session|diff>",
