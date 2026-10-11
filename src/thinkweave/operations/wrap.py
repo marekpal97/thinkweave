@@ -344,8 +344,9 @@ def _wrap_landing_gap(
 
     - ``processed``: the session note carries ``processed: true``.
     - ``work_evidence``: the note carries non-empty ``commits`` or
-      ``files_touched`` — real file/code work. A pure Q&A wrap has none, so it
-      never trips the rail.
+      ``files_touched``, or the session's event streams record a file write
+      or a commit (a mid-session wrap, before Stop fills the note) — real
+      file/code work. A pure Q&A wrap has none, so it never trips the rail.
     - ``derived_landed``: notes that landed with a ``derived_from`` edge onto
       this session (insights + decisions + todos all carry it). ``-1`` when the
       index is unreadable — the caller treats that as "do not fire."
