@@ -425,6 +425,13 @@ class Register:
                 duplicate = duplicate or task_id
         return ChildStop("duplicate", duplicate) if duplicate else ChildStop("orphan")
 
+    def wrap_closes(self) -> set[str]:
+        """Ids a wrap pass closed here; hook-route closes carry a ref."""
+        return {
+            row["task_id"] for row in self.rows()
+            if row["type"] == TASK_CLOSE and not row.get("session_ref")
+        }
+
     def unclosed(self) -> list[str]:
         """Ids opened here with no close here."""
         return [t for t, pair in self._pairs().items() if pair["open"] and not pair["close"]]
@@ -829,12 +836,14 @@ def apply_declaration(
         cfg, session_key=session_key, project=project, streams=streams, folders=folders or []
     )
     entries = declaration["declared"]
+    failed = False
     for entry in entries:
         try:
             wrap.apply(entry, solo=len(entries) == 1)
         except ValueError as exc:
+            failed = True
             wrap.result.errors.append(f"declared: {exc}")
-    wrap.move_rounds()
+    wrap.move_rounds(blocked=failed)
     if declaration.get("sparsity", "boundary") == "boundary":
         wrap.flag_orphans()
     return wrap.result
@@ -962,23 +971,29 @@ class _DeclarationPass:
                 f"close {', '.join(sorted(self.closing_refs))}"
             )
 
-    def move_rounds(self) -> None:
-        """Take this session's earlier round off each task no entry named
-        once this pass landed a round elsewhere; reopen one whose close this
-        session's own ``done`` recorded in the register. A pass with errors
-        moves nothing, so a failed entry never loses its earlier round."""
-        if self.result.errors or not self.rounded:
+    def move_rounds(self, *, blocked: bool) -> None:
+        """Take the session round this session's wraps wrote off each task no
+        entry named, once this pass landed a round elsewhere; reopen one whose
+        close this session's own ``done`` recorded in the register.
+        ``blocked`` — an entry failed — moves nothing, so the failed entry
+        never loses its earlier round, and says so."""
+        if not self.rounded:
+            return
+        if blocked:
+            self.result.warnings.append(
+                "this session's earlier rounds were not moved: a declared entry "
+                "failed, so its task is unknown — fix it and re-wrap"
+            )
             return
         refs = {self.session_ref, self.wrap_ref}
-        closed_here = {
-            row["task_id"] for row in self.register.rows()
-            if row["type"] == TASK_CLOSE and not row.get("session_ref")
-        }
+        closed_here = self.register.wrap_closes()
         for task in self.store.holding(refs):
             if task.id in self.named:
                 continue
-            left = [r for r in task.rounds if r.session_ref in refs]
-            task.rounds = [r for r in task.rounds if r.session_ref not in refs]
+            left = [r for r in task.rounds if r.session_ref in refs and r.route == "session"]
+            if not left:
+                continue
+            task.rounds = [r for r in task.rounds if r not in left]
             if task.id in closed_here and any(r.done for r in left) and task.reopen():
                 self.result.reopened.append(task.id)
             self.result.warnings += task.save(self.vm)

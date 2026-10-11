@@ -331,6 +331,56 @@ class TestRoundAppend:
         fm = task_notes(cfg)["tsk-aaaaaaaa"]
         assert fm["rounds"] == [] and fm["status"] == "closed"
 
+    def test_rewrap_move_leaves_this_sessions_dispatch_round(self, cfg: Config):
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        child = tasks.open_child(cfg, session_key="parent", project="t").task_id
+        ref = tasks.SessionRef.session(harness.active().id, SESSION)
+        source = tasks.TranscriptSource(None, "", ref, ("no transcript",))
+        tasks.close_child(cfg, child, session_key="parent", source=source)
+        before = task_notes(cfg)[child]["rounds"]
+        assert len(before) == 1
+
+        result = reconcile(
+            cfg, {"declared": [{"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 1}}}]}
+        )
+        assert result.moved == []
+        assert task_notes(cfg)[child]["rounds"] == before
+
+    def test_rewrap_move_survives_an_unrelated_children_error(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        reconcile(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 1}}}]}
+        )
+        result = reconcile(
+            cfg,
+            {"declared": [{
+                "continuing": "tsk-bbbbbbbb",
+                "children": ["tsk-deadbeef"],
+                "round": {"did": {"attempts": 2}},
+            }]},
+        )
+        assert any("tsk-deadbeef" in e for e in result.errors)
+        assert result.moved == ["tsk-aaaaaaaa"]
+        assert task_notes(cfg)["tsk-aaaaaaaa"]["rounds"] == []
+
+    def test_rewrap_with_a_failed_entry_warns_that_nothing_moved(self, cfg: Config):
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        seed_stub(cfg, "tsk-bbbbbbbb", grain="work")
+        reconcile(
+            cfg, {"declared": [{"continuing": "tsk-aaaaaaaa", "round": {"did": {"attempts": 1}}}]}
+        )
+        result = reconcile(
+            cfg,
+            {"declared": [
+                {"continuing": "tsk-bbbbbbbb", "round": {"did": {"attempts": 2}}},
+                {"continuing": "tsk-deadbeef", "round": {"did": {"attempts": 1}}},
+            ]},
+        )
+        assert result.moved == []
+        assert any("not moved" in w for w in result.warnings)
+        assert len(task_notes(cfg)["tsk-aaaaaaaa"]["rounds"]) == 1
+
     def test_continuing_unknown_task_is_an_error(self, cfg: Config):
         result = reconcile(
             cfg, {"declared": [{"continuing": "tsk-deadbeef"}]}
