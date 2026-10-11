@@ -100,6 +100,8 @@ class Round:
     session_ref: SessionRef | None = None
     # The tracker ref this stint worked, when the task's ask is wider (an epic).
     asked: str | None = None
+    # The declarer called that ref done; the task closes only on its own ref.
+    done: bool | None = None
     notes: list | None = None
     decisions: dict | None = None
     feedback: list | None = None
@@ -592,6 +594,7 @@ _ROUND_CHECKERS = {
     "route": _enum(ROUTES),
     "session_ref": _session_ref,
     "asked": _str,
+    "done": _bool,
     "notes": _str_list,
     "children": _task_id_list,
     "tools": _str_int_map,

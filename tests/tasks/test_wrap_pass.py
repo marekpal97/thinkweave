@@ -270,11 +270,27 @@ class TestRoundAppend:
         )
         assert any("tsk-deadbeef" in e for e in result.errors)
 
-    def test_continuing_a_closed_task_is_an_error(self, cfg: Config):
+    def test_continuing_a_closed_task_warns_and_the_next_entry_lands(
+        self, cfg: Config
+    ):
         task_id = reconcile(cfg, load_declaration()).minted[0]
         reconcile(cfg, {"declared": [{"continuing": task_id, "done": True}]})
-        result = reconcile(cfg, {"declared": [{"continuing": task_id}]})
-        assert any("closed" in e for e in result.errors)
+        decl = {
+            "declared": [
+                {"continuing": task_id, "round": {"did": {"attempts": 2}}},
+                {"title": "next", "round": {"did": {"attempts": 1}}},
+            ]
+        }
+        result = tasks.apply_declaration(
+            cfg, decl, session_key="s-2", project="t",
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        assert result.errors == []
+        assert any(task_id in w and "closed" in w for w in result.warnings)
+        notes = task_notes(cfg)
+        assert len(notes[task_id]["rounds"]) == 1
+        (other,) = result.minted
+        assert notes[other]["rounds"][0]["did"] == {"attempts": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -823,6 +839,23 @@ class TestEpicIdentity:
         result = self.declare(cfg, self.EPIC)
         assert result.errors == [] and result.warnings == []
         assert task_notes(cfg)[result.minted[0]]["asked"] == self.EPIC
+
+    def test_done_on_a_sub_issue_records_done_and_leaves_the_epic_task_open(
+        self, cfg: Config
+    ):
+        decl = {"declared": [{"title": "t", "asked": self.SUB, "done": True, "round": {}}]}
+        task_id = reconcile(cfg, decl).minted[0]
+        fm = task_notes(cfg)[task_id]
+        assert fm["status"] == "open"
+        assert fm["rounds"][0]["done"] is True
+
+        decl = {"declared": [{"title": "t", "asked": self.EPIC, "done": True, "round": {}}]}
+        result = tasks.apply_declaration(
+            cfg, decl, session_key="s-2", project="t",
+            streams=[buffer_path(cfg.weave_dir, "s-2")],
+        )
+        assert result.closed == [task_id]
+        assert task_notes(cfg)[task_id]["status"] == "closed"
 
     def test_a_failed_lookup_keeps_the_ref_and_warns(self, cfg: Config, monkeypatch):
         import subprocess

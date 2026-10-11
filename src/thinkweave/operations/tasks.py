@@ -766,8 +766,10 @@ def apply_declaration(
     under its ``title``, else mints one;
     its ``round`` lands as a ``route: session`` round under the session
     note's ref, replacing this session's earlier round, so a re-wrap
-    re-applies rather than duplicates. ``done`` closes — the only closure
-    wrap performs. ``children`` gain this task as parent, and the decisions
+    re-applies rather than duplicates. ``done`` closes the task only when
+    the declared ref is the task's own ``asked`` — the only closure wrap
+    performs; on an epic's task for a sub-issue the round records it. A
+    closed task's entry is skipped with a warning. ``children`` gain this task as parent, and the decisions
     the round minted gain its id. At ``boundary`` sparsity an open
     dispatch with no close is flagged orphan; a ``task-id-only`` declarer
     was not present, so an absent close is no evidence.
@@ -857,7 +859,10 @@ class _DeclarationPass:
             new = self._round(entry, task, solo, issue)
             minted = (new.decisions or {}).get("minted") or []
             task.put_round(new, replaces=(self.wrap_ref,))
-        closing = bool(entry.get("done")) and task.close()
+        # A sub-issue's done stays on its round; the epic's own close (or
+        # the tracker sweep) closes the epic's task.
+        own = not issue or issue == task.frontmatter.get("asked")
+        closing = bool(entry.get("done")) and own and task.close()
         minting = task.path is None
         self.result.warnings += task.save(self.vm)
         if minting:
@@ -884,8 +889,9 @@ class _DeclarationPass:
                 self.result.orphaned.append(task_id)
 
     def _task_for(self, entry: dict, asked: str) -> Task | None:
-        """The entry's task; ``None`` when a repeated ``done`` makes the
-        entry a no-op. A task that cannot take a session round is refused."""
+        """The entry's task; ``None`` when it is closed, so the entry is
+        skipped with a warning. Any other task that cannot take a session
+        round is refused."""
         continuing = str(entry.get("continuing") or "")
         title = str(entry.get("title", ""))
         by_ref = self.store.open_by_ref(asked) if asked and not continuing else None
@@ -900,7 +906,8 @@ class _DeclarationPass:
             project = tracker_project(asked, self.vm.config.vault_root) or self.project
             return self.store.mint(grain, title, project, session_key=self.session_key)
         if refusal := task.refusal("session"):
-            if entry.get("done") and task.closed:
+            if task.closed:
+                self.result.warnings.append(f"{task.id} {refusal} — entry skipped")
                 return None
             raise ValueError(f"{task.id} {refusal}")
         if (continuing or by_ref) and "round" in entry:
@@ -915,6 +922,8 @@ class _DeclarationPass:
         data = {"route": "session", "session_ref": self.session_ref.to_dict(), **entry["round"]}
         if issue:
             data.setdefault("asked", issue)
+        if entry.get("done"):
+            data["done"] = True
         if solo:
             for key, found in (("notes", self.insights), ("feedback", self.verdicts)):
                 if found:
@@ -1021,6 +1030,8 @@ def _round_parts(entry: Round, link, credit: dict[str, str]) -> list[str]:
     parts = [f"{entry.route or 'dispatch'} {head}"]
     if entry.asked:
         parts.append(f"asked {entry.asked}")
+    if entry.done:
+        parts.append("done")
     if entry.notes:
         parts.append("notes " + ", ".join(link(n) for n in entry.notes))
     decisions = entry.decisions or {}
