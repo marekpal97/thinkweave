@@ -3,6 +3,87 @@
 Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
 `weave_*` MCP + CLI surface may still break between minors.
 
+## [0.3.0] — 2026-10-11
+
+Two headlines. **Harness profiles:** Claude Code, Codex and Pi are each
+one declarative `HarnessProfile`, with conformance tests over every row
+and a shared TypeScript shim runtime. A new harness is now a new
+profile, not a fork. **Task trace:** one durable `kind: task` note
+follows a unit of work across in-session subagents, `/wrap`, and devloop
+runs. The trace is verified end to end by the task-360 evaluation suite
+on real Claude and Pi sessions.
+
+### Upgrade notes
+
+- Run `weave doctor --migrate` once. It folds stored task asks to
+  `github:owner/repo#N` refs, rejoins split task notes, and upgrades
+  pre-#260 devloop rounds.
+- The Codex skill bundle moved from `skills/` to `codex/skills/` (PR
+  #276). Re-point hand-made links in `~/.codex/skills/` to
+  `<repo>/codex/skills/thinkweave-*`.
+- Pi needs the `pi-mcp-adapter` extension for MCP
+  (`pi install npm:pi-mcp-adapter`). `weave doctor --mcp --harness pi`
+  checks for it.
+
+### Added
+
+- **`HarnessProfile` contract** (#191, PR #201): Claude Code, Codex, Pi
+  and OpenCode are profile data. A parametrised conformance suite and an
+  AST guard against per-harness forks enforce it. `docs/HARNESSES.md`
+  generates its capability matrix from the profiles, and install output
+  names every degradation.
+- **shim-core** (#194, PR #201): a shared TypeScript translator runtime
+  for harnesses that expose lifecycle events but not Claude Code hooks.
+- **Pi at E3 (captured)** (#114, PRs #207, #211): the Pi shim captures
+  prompts, tool calls and stops, and injects SessionStart context.
+  `weave import pi` imports Pi transcripts. MCP routes through
+  `pi-mcp-adapter`, and skills link into `~/.pi/agent/skills`.
+- **Task trace** (#184 stack, PRs #222, #227, #229, #240, #260, #261,
+  #263, #277, #301): the `kind: task` note contract; live subagent
+  boundary capture; `weave task open|close|render`; a task note as a
+  ledger of rounds; a task pass in the `/wrap` finalize tail;
+  devloop rounds that land on the epic's task; `child_of` edges; and
+  an Open Tasks section in SessionStart. The outcome-judge closes tasks
+  whose tracker issue closed, and files PR review comments as
+  `feedback_for` notes.
+- **task-360 evaluation suite** (PRs #261, #264, #267, #272, #301):
+  `evals/task360/` drives named scenarios through Claude Code, Codex and
+  Pi in a throwaway vault. An oracle scores each scenario from the
+  index.
+- **`/explain`** (#298, PR #300): composes a session or diff explainer
+  into one vault note. `weave explain locate|check` finds and validates
+  these notes.
+- Session notes record their harness and model (#285, PR #301).
+
+### Changed
+
+- **Leaner Claude Code context** (PR #276): Claude Code no longer lists
+  each skill twice, and SessionStart drops placeholder sections.
+  `weave_project_snapshot` still serves the full payload.
+- **Index-backed retrieval** (PR #206): timelines, prompts and landings
+  query the index instead of scanning the vault. `weave timeline` drops
+  from over 60 s to about 0.04 s.
+- Plugin-route launchers bootstrap their dependencies once (#164, PR
+  #201).
+
+### Fixed
+
+- **`/wrap` fails loudly** (PR #278): a dropped `weave_create`, a no-op
+  `weave_extract`, or an empty finalize now reports an error instead of
+  exit 0.
+- **Codex capture fidelity** (PRs #208, #212): PostToolUse events land,
+  one session maps to one note, and guardian sidecars are filtered out.
+- Wrap and judge resolve session notes by exact id and the harness
+  session id (PRs #209, #214, #233).
+- shim-core builds and its test suite runs again: `npm test` passes a
+  file glob on Node 24, and the subagent hooks have timeout budgets
+  (PR #213).
+
+### Internal
+
+- The devloop pin follows funloops main, and `loop.toml` uses the
+  four-gate pipeline (PRs #216, #242, #260).
+
 ## [0.2.1] — 2026-08-31
 
 The release headline: **one logical conversation, however many session
