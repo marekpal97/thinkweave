@@ -64,6 +64,8 @@ export const DEFAULT_TIMEOUT_MS: Record<CanonicalEvent, number> = {
   SessionStart: 1500,
   UserPromptSubmit: 800,
   PostToolUse: 800,
+  SubagentStart: 800,
+  SubagentStop: 800,
   Stop: 800,
 };
 
