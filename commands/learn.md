@@ -39,7 +39,7 @@ weave_concepts(action="search", concepts=[<slug…>])     # concept-walk leg —
 
 Partition the union **by provenance** — every hit already carries `type` (and `source_type`); never hand-pick note types per track:
 
-- `trajectory` — authored by the user: `session`, `decision`, `note` (incl. `kind: learn`, `til`), plus ChatGPT imports (`type: source` but `source_type: conversation` — the user's own history). Sort by date. This **is** the presupposition check.
+- `trajectory` — authored by the user: `session`, `decision`, `note` (incl. `kind: learn`, `kind: explain`, `til`), plus ChatGPT imports (`type: source` but `source_type: conversation` — the user's own history). Sort by date. This **is** the presupposition check.
 - `material` — authored by the world: every other `source`, hub essences (paths under `concepts/`), themes, digests.
 - **mode** — `test-first` iff the trajectory holds a prior `kind: learn` note (only a learn note carries dated solid/shaky claims to re-probe); else `teach-first`.
 - **first contact** — trajectory empty → open with exactly *"First contact in the vault — no prior trajectory for '<topic>'."* **Never fabricate a recap.**
@@ -121,4 +121,4 @@ Compaction mid-session is fine; the note is composed at the end regardless. Repo
 
 ## Non-goals
 
-No new substrates (terminal + Obsidian only), no spaced-repetition state, no auto-selected topics, no fixed session length, no schema change. `/explain-diff` lives in funloops (fl#23).
+No new substrates (terminal + Obsidian only), no spaced-repetition state, no auto-selected topics, no fixed session length, no schema change. One-shot explanations of a session or a diff are `/explain`'s job; its `kind: explain` notes count as trajectory here.

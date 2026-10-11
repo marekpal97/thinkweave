@@ -49,6 +49,20 @@ Hooks accumulate events + insights + commits + tests into a session note. The St
 
 `solid`/`shaky` are legal under the no-unvalidatable-lifecycle rule because the transcript answers are the evidence (LLM judgment, no scores). Every note the session read or taught from lands in `context_served` through the standard MCP retrieval logging (no mark step — dec-696bacfb); unanswered questions and parked tangents become probe rows (`weave learn probe`, `operations/prompts.py::record_probe`, writes the same `prompt` + `probe` event pair the wrap verdict path does — see [Prompt](#prompt)).
 
+### Explain note (`kind: explain`)
+
+`/explain` persists one plain `type: note` per (session, scope, target) in the session folder — no new NoteType. The frontmatter is the contract `weave explain check --note <id>` enforces (`surfaces/cli/explain.py::validate_explain_note`):
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `kind` | `explain` | what makes it an explain note; `/learn` counts it as trajectory |
+| `scope` | `session` \| `diff` | the session's knowledge, or one code change |
+| `target` | str | the session hint (`all` without one), the diff ref, or `#<pr>` |
+| `concepts` | list, ≥2 | ontology slugs, gated like any note |
+| `html_path` | str, optional | file name of the HTML explainer beside the note |
+
+A re-run with the same key updates the note instead of minting a new one: `weave explain locate --session --scope --target` prints its id, and the skill appends a `## Follow-ups` section. The indexer globs only `.md`, so the HTML sibling stays out of the index.
+
 ## Concept
 
 Notes carry `concepts: [...]` (≥2 required). Notes sharing ≥1 concept auto-link (configurable via `concept_edge_threshold`, default 1). `vault/concepts/topics/{concept}.md` is the synthesis hub: `## Essence` (≤500w mental model) + `## Learning log` (append-only, every entry cites `[[note-id]]` with a flag — `new`/`agrees`/`contradicts`/`extends`). Backfill via `weave drain --target hubs` (batch path; the old `weave hubs run`); incremental via `/update-hubs`. Routine dedup runs nightly inside `/dream` (drift v2 — see below); `/tighten` is the on-demand front door over the same helpers (plus the ontology restructuring dream doesn't touch). The shipped `ontology.yaml` is a minimal seed — concept namespaces and the domain hierarchy are user-chosen; the framework imposes nothing. Concepts populate as the vault grows.
