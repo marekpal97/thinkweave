@@ -377,6 +377,66 @@ class TaskStore:
         return Task(fm, project=project, session_key=session_key)
 
 
+@dataclass
+class RefEvidence:
+    """The session's tracker-ref evidence, served to the model before it
+    writes the task declaration; it informs ``asked``, never sets it."""
+
+    commit_closes: dict[str, list[str]] = field(default_factory=dict)
+    prs: dict[str, list[str]] = field(default_factory=dict)
+    tasks: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def gather(cls, cfg, session_fm: dict, warnings: list[str]) -> RefEvidence:
+        """Closing refs in the session's commits, the PRs of its pushed
+        branch, and open tasks touching its files. A failed lookup is
+        appended to ``warnings``, never dropped."""
+        evidence = cls()
+        commits = session_fm.get("commits") or []
+        for commit in commits:
+            for ref in _closing_refs(str(commit.get("message", ""))):
+                evidence.commit_closes.setdefault(ref, []).append(
+                    str(commit.get("hash", ""))
+                )
+        branch = session_fm.get("git_branch")
+        if branch:
+            try:
+                evidence.prs = _gh_branch_prs(branch)
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+                warnings.append(f"PR lookup for branch {branch} failed: {reason}")
+        paths = list(session_fm.get("files_touched") or [])
+        paths += [f for c in commits for f in c.get("files") or []]
+        if paths:
+            try:
+                evidence.tasks = {
+                    t.id: t.title for t in TaskStore(cfg).open_touching(paths)
+                }
+            except (OSError, ValueError) as exc:
+                warnings.append(f"open-task lookup by touched file failed: {exc}")
+        return evidence
+
+    def lines(self) -> list[str]:
+        """The report block; empty when there is no evidence."""
+        out = [
+            f"  {ref} closed by commit {', '.join(hashes)}"
+            for ref, hashes in self.commit_closes.items()
+        ]
+        out += [
+            f"  PR {url}" + (f" closes {', '.join(refs)}" if refs else "")
+            for url, refs in self.prs.items()
+        ]
+        out += [f"  open task {tid} ({title}) touched the same files"
+                for tid, title in self.tasks.items()]
+        return ["Ref evidence for the task declaration:", *out] if out else []
+
+    def closing_refs(self, repo: str) -> set[str]:
+        """Every ref the session's commits and PRs close, normalised
+        against ``repo``."""
+        pr_refs = [ref for refs in self.prs.values() for ref in refs]
+        return {normalize_tracker_ref(ref, repo) for ref in [*self.commit_closes, *pr_refs]}
+
+
 class Register:
     """One session's task rows in its shared event log: the live buffer, plus
     the session folder's archived events once a Stop filed them. Never a
@@ -889,16 +949,10 @@ class _DeclarationPass:
             and anchors & set(fm.get("derived_from") or [])
         }
         # The ref evidence weave_extract served the declaring model.
-        from thinkweave.operations.extract import RefEvidence
-
         self.evidence = RefEvidence.gather(
             cfg, session_notes[0] if session_notes else {}, self.result.warnings
         )
-        pr_refs = [ref for refs in self.evidence.prs.values() for ref in refs]
-        self.closing_refs = {
-            normalize_tracker_ref(ref, self.repo)
-            for ref in [*self.evidence.commit_closes, *pr_refs]
-        }
+        self.closing_refs = self.evidence.closing_refs(self.repo)
         self.verdicts = [
             {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
             for stream in streams
@@ -1275,6 +1329,30 @@ def _gh_issue_state(repo: str, number: str) -> str:
         ["gh", "api", f"repos/{repo}/issues/{number}", "-q", ".state"],
         capture_output=True, text=True, timeout=15, check=True,
     ).stdout.strip()
+
+
+_CLOSING_REF_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+((?:[\w.-]+/[\w.-]+)?#\d+)",
+    re.IGNORECASE,
+)
+
+
+def _closing_refs(message: str) -> list[str]:
+    """The refs a commit message closes with GitHub's closing keywords."""
+    return _CLOSING_REF_RE.findall(message)
+
+
+def _gh_branch_prs(branch: str) -> dict[str, list[str]]:
+    """The URL of each PR whose head is ``branch``, with the issue refs it closes."""
+    out = subprocess.run(
+        ["gh", "pr", "list", "--head", branch, "--state", "all",
+         "--json", "url,closingIssuesReferences"],
+        capture_output=True, text=True, timeout=15, check=True,
+    ).stdout
+    return {
+        pr["url"]: [f"#{i['number']}" for i in pr.get("closingIssuesReferences") or []]
+        for pr in json.loads(out or "[]")
+    }
 
 
 _DISPATCH_INSTRUCTIONS = (

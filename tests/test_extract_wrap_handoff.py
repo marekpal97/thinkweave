@@ -470,7 +470,7 @@ class TestRefEvidence:
 
         seen = []
         monkeypatch.setattr(
-            "thinkweave.operations.extract._gh_branch_prs",
+            "thinkweave.operations.tasks._gh_branch_prs",
             lambda branch: seen.append(branch)
             or {"https://github.com/o/r/pull/7": ["#12"]},
         )
@@ -492,7 +492,7 @@ class TestRefEvidence:
         def boom(branch):
             raise subprocess.CalledProcessError(1, "gh", stderr="gh: not logged in")
 
-        monkeypatch.setattr("thinkweave.operations.extract._gh_branch_prs", boom)
+        monkeypatch.setattr("thinkweave.operations.tasks._gh_branch_prs", boom)
         sess = self._session(vault, config, git_branch="feat/greet")
 
         out = extract_session(
