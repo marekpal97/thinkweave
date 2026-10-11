@@ -875,6 +875,85 @@ class TestEpicIdentity:
 
 
 # ---------------------------------------------------------------------------
+# Landing: each entry reports where it landed; doubtful choices warn
+
+
+class TestLanding:
+    REF = "github:marekpal97/thinkweave#7"
+
+    def session_folder(self, cfg: Config, **fm) -> Path:
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        return vm.create_note(
+            NoteType.SESSION, "S", body="## Summary\nx\n", project="t",
+            extra_frontmatter={"source_session": SESSION, **fm},
+        ).parent
+
+    def seed_open(self, cfg: Config, task_id: str, *, asked: str = "", paths=()):
+        seed_stub(cfg, task_id, grain="work")
+        rounds = [{"route": "session", "did": {"paths": list(paths)}}] if paths else []
+        VaultManager(config=cfg).update_note(
+            note_path(cfg, task_id),
+            frontmatter_updates={"rounds": rounds, **({"asked": asked} if asked else {})},
+        )
+
+    def test_each_entry_records_its_task_ref_and_landing(self, cfg: Config, tracker):
+        tracker["marekpal97/thinkweave#8"] = {
+            "parent_issue_url": "https://api.github.com/repos/marekpal97/thinkweave/issues/7"
+        }
+        self.seed_open(cfg, "tsk-0e0e0e0e", asked=self.REF)
+        self.seed_open(cfg, "tsk-0c0c0c0c")
+        decl = {"declared": [
+            {"continuing": "tsk-0c0c0c0c", "round": {}},
+            {"title": "by ref", "asked": self.REF, "round": {}},
+            {"title": "by epic", "asked": "github:marekpal97/thinkweave#8", "round": {}},
+            {"title": "fresh", "round": {}},
+        ]}
+        result = reconcile(cfg, decl)
+        minted = result.minted[0]
+        assert [(e.task_id, e.asked, e.match) for e in result.landed] == [
+            ("tsk-0c0c0c0c", "", "continuing"),
+            ("tsk-0e0e0e0e", self.REF, "ref"),
+            ("tsk-0e0e0e0e", "github:marekpal97/thinkweave#8", "epic"),
+            (minted, "", "mint"),
+        ]
+        assert result.warnings == []
+
+    def test_a_refless_mint_warns_when_an_open_task_touched_its_files(self, cfg: Config):
+        self.seed_open(cfg, "tsk-0a0a0a0a", paths=["src/app.py"])
+        folder = self.session_folder(cfg, files_touched=["/repo/src/app.py"])
+        result = reconcile(cfg, {"declared": [{"title": "new", "round": {}}]}, [folder])
+        (warning,) = result.warnings
+        assert result.minted[0] in warning and "tsk-0a0a0a0a" in warning
+
+    def test_a_declared_ref_the_commits_contradict_warns(self, cfg: Config):
+        commit = {"hash": "abc1234", "message": "Fixes marekpal97/thinkweave#9", "files": []}
+        folder = self.session_folder(cfg, commits=[commit])
+        decl = {"declared": [{"title": "t", "asked": self.REF, "round": {}}]}
+        (warning,) = reconcile(cfg, decl, [folder]).warnings
+        assert self.REF in warning and "github:marekpal97/thinkweave#9" in warning
+
+    def test_a_declared_ref_the_commits_close_does_not_warn(self, cfg: Config):
+        commit = {"hash": "abc1234", "message": "Closes marekpal97/thinkweave#7", "files": []}
+        folder = self.session_folder(cfg, commits=[commit])
+        decl = {"declared": [{"title": "t", "asked": self.REF, "round": {}}]}
+        assert reconcile(cfg, decl, [folder]).warnings == []
+
+    def test_cli_prints_one_landing_line_per_entry(self, cfg: Config, capsys):
+        args = build_parser().parse_args(
+            ["wrap-finalize", SESSION, "--project", "t",
+             "--tasks", str(FIXTURES / "wrap-declaration.json")]
+        )
+        cmd_wrap_finalize(args)
+        (task_id,) = task_notes(cfg)
+        out = capsys.readouterr().out
+        assert any(
+            task_id in line and "github:marekpal97/thinkweave#189" in line and "mint" in line
+            for line in out.splitlines()
+        )
+
+
+# ---------------------------------------------------------------------------
 # Migration: existing task notes take the ledger shape
 
 

@@ -612,7 +612,8 @@ def finalize_wrap(
        never acted on here.
     6. **silent-failure rail** — a session that changed files but landed zero
        derived notes is a broken ``/wrap`` (the extraction no-op'd). Records an
-       error (exit 1) unless ``allow_empty`` downgrades it to a warning.
+       error (exit 1) unless ``allow_empty`` downgrades it to a warning. A
+       session that changed files but declared no task is warned.
 
     Every step is wrapped: a failure in one is recorded in ``errors`` and the
     rest still run. Returns a :class:`WrapFinalizeResult`.
@@ -835,6 +836,11 @@ def finalize_wrap(
                 result.warnings.append(gap_msg)
             else:
                 result.errors.append(gap_msg)
+        if work_evidence and not (tasks or {}).get("declared"):
+            result.warnings.append(
+                "the session changed files but declared no task — its work "
+                "lands on none; pass --tasks to record where it belongs"
+            )
     except Exception as e:  # noqa: BLE001 — a broken rail must not mask the rest
         result.warnings.append(f"landing-gap check: {e}")
 

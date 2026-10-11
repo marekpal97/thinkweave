@@ -634,10 +634,21 @@ class LedgerEntry:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
+@dataclass(frozen=True)
+class EntryLanding:
+    """Where one declared entry landed: its task, the ref it declared, and
+    how it matched — ``continuing``, ``ref``, ``epic`` or ``mint``."""
+
+    task_id: str
+    asked: str
+    match: str
+
+
 @dataclass
 class TaskPassResult:
     """What one wrap task pass reconciled — folded into the wrap report."""
 
+    landed: list[EntryLanding] = field(default_factory=list)
     minted: list[str] = field(default_factory=list)
     appended: list[str] = field(default_factory=list)
     closed: list[str] = field(default_factory=list)
@@ -787,7 +798,10 @@ def apply_declaration(
     re-applies rather than duplicates. ``done`` closes the task only when
     the declared ref is the task's own ``asked`` — the only closure wrap
     performs; on an epic's task for a sub-issue the round records it. A
-    closed task's entry is skipped with a warning. ``children`` gain this task as parent, and the decisions
+    closed task's entry is skipped with a warning. Each landed entry is
+    recorded with how it matched; a ref-less mint while an open task
+    touched the session's files, and a declared ref the session's closing
+    refs do not name, are warned, never changed. ``children`` gain this task as parent, and the decisions
     the round minted gain its id. At ``boundary`` sparsity an open
     dispatch with no close is flagged orphan; a ``task-id-only`` declarer
     was not present, so an absent close is no evidence.
@@ -846,6 +860,17 @@ class _DeclarationPass:
             if fm.get("type") == "decision" and fm.get("id")
             and anchors & set(fm.get("derived_from") or [])
         }
+        # The ref evidence weave_extract served the declaring model.
+        from thinkweave.operations.extract import RefEvidence
+
+        self.evidence = RefEvidence.gather(
+            cfg, session_notes[0] if session_notes else {}, self.result.warnings
+        )
+        pr_refs = [ref for refs in self.evidence.prs.values() for ref in refs]
+        self.closing_refs = {
+            normalize_tracker_ref(ref, self.repo)
+            for ref in [*self.evidence.commit_closes, *pr_refs]
+        }
         self.verdicts = [
             {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
             for stream in streams
@@ -867,6 +892,7 @@ class _DeclarationPass:
         task = self._task_for(entry, asked)
         if task is None:
             return
+        self._land(entry, task, asked, issue)
         if asked:
             task.frontmatter["asked"] = asked
         if entry.get("consumes"):
@@ -891,6 +917,29 @@ class _DeclarationPass:
             self.result.closed.append(task.id)
         self._stamp_decisions(minted, task)
         self._attach_children(entry, task)
+
+    def _land(self, entry: dict, task: Task, asked: str, issue: str) -> None:
+        """Record how the entry matched its task, and warn on the choices
+        the session's ref evidence puts in doubt."""
+        if entry.get("continuing"):
+            match = "continuing"
+        elif asked and task.path and task.frontmatter.get("asked") == asked:
+            match = "ref" if asked == issue else "epic"
+        else:
+            match = "mint"
+        self.result.landed.append(EntryLanding(task.id, issue, match))
+        touching = sorted(set(self.evidence.tasks) - {task.id})
+        if match == "mint" and not issue and touching:
+            self.result.warnings.append(
+                f"{task.id} minted with no ref while open task(s) "
+                f"{', '.join(touching)} touched the same files — declare "
+                "continuing or asked if it is that work"
+            )
+        if issue and self.closing_refs and not {issue, asked} & self.closing_refs:
+            self.result.warnings.append(
+                f"{task.id} declared {issue}, but the session's commits and PRs "
+                f"close {', '.join(sorted(self.closing_refs))}"
+            )
 
     def flag_orphans(self) -> None:
         """Flag each open with no close in the register; ids this pass

@@ -238,6 +238,17 @@ class TestFinalizeWrap:
         assert result.derived_landed >= 1
         assert result.errors == []
 
+    def test_work_without_a_task_declaration_warns(
+        self, config: Config, vault: VaultManager
+    ):
+        session_id = self._seed_work_only_session(vault, with_decision=True)
+        _index(config)
+
+        result = finalize_wrap(config, session_id=session_id, project="t")
+
+        assert result.errors == []
+        assert any("declared no task" in w for w in result.warnings)
+
     def test_landing_gap_skips_pure_qa(self, config: Config, vault: VaultManager):
         # No commits / files_touched → work_evidence False → rail never fires,
         # even with zero derived notes.
