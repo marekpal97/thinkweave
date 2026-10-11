@@ -311,6 +311,25 @@ handler reads its own argv. Claude Code's command is left unstamped, so the
 plugin route — which loads `hooks/hooks.json` directly, unstamped — keeps
 agreeing with what the installer writes.
 
+### Harness and model on sessions and events
+
+The session note a hook creates records `harness:` (the argv id, `claude-code`
+when unstamped) and `model:`. Every buffered event carries `harness` too. The
+model reaches the handler as the envelope's `model` field, which each harness
+supplies differently:
+
+| Harness | Where `model` arrives |
+|---|---|
+| Claude Code | SessionStart only; later hooks read the model it stored |
+| Codex | every hook envelope, natively |
+| Pi | every envelope; the shim reads `ctx.model.id` |
+
+The handler keeps each session's last reported model under
+`.weave/buffer/.models/`. A hook reporting a different one buffers a
+`model_change` event (`from`, `to`). Claude Code reports no model after
+SessionStart, so a `/model` switch there is recorded only at the next
+SessionStart (resume or compact).
+
 ### Session identity and the wrap resolver
 
 The hooks stamp the *harness* session id as `source_session:` on the session
