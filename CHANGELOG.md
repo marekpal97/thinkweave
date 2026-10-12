@@ -3,7 +3,22 @@
 Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
 `weave_*` MCP + CLI surface may still break between minors.
 
-## [Unreleased]
+## [0.3.1] — 2026-10-12
+
+OpenCode joins Claude Code, Codex and Pi as a fully supported harness:
+passive capture, `/wrap`, transcript import and task binding, all
+observed live on OpenCode 1.19.0. The same testing found capture gaps
+that affected every harness: chained and quiet commits, `gh pr` calls,
+and retrievals through Claude Code's plugin route.
+
+### Upgrade notes
+
+- OpenCode users: run `weave install --harness opencode`, then
+  `weave hooks install --harness opencode --scope user`. Dispatch
+  `opencode run` with stdin from `/dev/null`, or it hangs.
+- Claude Code and Codex users on the settings-file hook route: rerun
+  `weave hooks install` to pick up the new PostToolUse matcher. The old
+  entry is rewritten in place. The plugin route needs nothing.
 
 ### Added
 
