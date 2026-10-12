@@ -129,20 +129,19 @@ def parse_commit_from_output(command: str, output: str) -> dict | None:
 
     info: dict = {}
 
-    # Extract hash from [branch hash] pattern
-    m = re.search(r"\[[\w/.-]+\s+([0-9a-f]{7,})\]", output)
+    # Extract hash (and the subject after it) from the [branch hash] line
+    m = re.search(r"\[[\w/.-]+(?: \([^)]*\))?\s+([0-9a-f]{7,})\]\s*(.*)", output)
     if m:
         info["hash"] = m.group(1)
 
-    # Extract message from -m flag or from output
+    # Extract message from -m flag, else from the hash line itself. Never
+    # from any other bracketed line: `git push`'s `[new branch]  a -> b`
+    # used to be recorded as the commit message when -q hid the hash line.
     m_flag = re.search(r'-m\s+["\'](.+?)["\']', command)
     if m_flag:
         info["message"] = m_flag.group(1)[:120]
-    else:
-        # Message is after the hash bracket
-        m_msg = re.search(r"\[[^\]]+\]\s+(.+)", output)
-        if m_msg:
-            info["message"] = m_msg.group(1).strip()[:120]
+    elif m and m.group(2).strip():
+        info["message"] = m.group(2).strip()[:120]
 
     # Extract files from "N file(s) changed" line
     m_files = re.search(r"(\d+)\s+files?\s+changed", output)

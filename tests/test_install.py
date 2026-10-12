@@ -810,13 +810,13 @@ class TestPluginManifestContract:
             (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
         )
         matchers = {e["matcher"] for e in hooks["hooks"]["PostToolUse"]}
-        assert "mcp__thinkweave__.*" in matchers, (
+        assert "mcp__(plugin_thinkweave_)?thinkweave__.*" in matchers, (
             "hooks.json PostToolUse lacks the MCP-tool matcher — the plugin "
             "route never feeds retrieval_log/context_served without it"
         )
         mcp_entry = next(
             e for e in hooks["hooks"]["PostToolUse"]
-            if e["matcher"] == "mcp__thinkweave__.*"
+            if e["matcher"] == "mcp__(plugin_thinkweave_)?thinkweave__.*"
         )
         hook = mcp_entry["hooks"][0]
         # Same handler entry point + timeout as the action-tool gate.

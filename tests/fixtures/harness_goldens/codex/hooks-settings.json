@@ -41,7 +41,7 @@
         ]
       },
       {
-        "matcher": "mcp__thinkweave__.*",
+        "matcher": "mcp__(plugin_thinkweave_)?thinkweave__.*",
         "hooks": [
           {
             "type": "command",

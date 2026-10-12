@@ -35,6 +35,16 @@ Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
 - The PostToolUse hook dropped every chained commit
   (`git add … && git commit …`) on every harness: the significance gate
   read only the first segment.
+- A commit made with `git commit -q` or `-F -` lost its hash, because
+  the parser reads the `[branch hash]` line those flags suppress. The
+  parser also recorded `git push`'s `[new branch]` line as the commit
+  message. The hook now falls back to HEAD when HEAD is under two minutes
+  old.
+- Mutating `gh pr` calls (create, merge, close, …) are captured. The
+  session note gains `pull_requests` with the action, number and URL.
+- Retrieval logging missed every call through Claude Code's plugin route
+  (`mcp__plugin_thinkweave_thinkweave__…`). The PostToolUse matcher
+  covers both names, and a reinstall rewrites the old matcher in place.
 
 ## [0.3.0] — 2026-10-11
 
