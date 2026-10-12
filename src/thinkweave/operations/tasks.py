@@ -1695,6 +1695,65 @@ def pi_digest(transcript: Path, since: str, until: str) -> ChildDigest:
 _PI_FILE_TOOLS = ("edit", "write")
 
 
+def opencode_digest(transcript: Path, since: str, until: str) -> ChildDigest:
+    """OpenCode's digest reader. OpenCode keeps every session in one store,
+    so the bound transcript is ``<store>#<session id>`` (the shim's prompt
+    envelope); walk that session's part rows once."""
+    from collections import Counter
+
+    from thinkweave.acquisition.importers.opencode import store_rows
+
+    store, _, session_id = str(transcript).rpartition("#")
+    if not (store and session_id):
+        return ChildDigest(gaps=(f"transcript is not <store>#<session id>: {transcript}",))
+    meta, rows = store_rows(Path(store), session_id)
+    if not meta:
+        return ChildDigest(gaps=(f"session {session_id} not found in {store}",))
+    cwd = str(meta.get("directory", ""))
+    rows = _slice(rows, since, until, lambda row: str(row.get("user_text", "")))
+    tools: Counter = Counter()
+    models: Counter = Counter()
+    paths: dict[str, None] = {}
+    commits: dict[str, None] = {}
+    notes: dict[str, None] = {}
+    asked, errors = "", 0
+    for row in rows:
+        part = _dict(row.get("part"))
+        if row.get("role") == "user":
+            asked = asked or str(row.get("user_text", ""))
+            continue
+        if row.get("model"):
+            models[str(row["model"])] += 1
+        if part.get("type") != "tool" or not part.get("tool"):
+            continue
+        name, state = str(part["tool"]), _dict(part.get("state"))
+        tools[name] += 1
+        if state.get("status") == "error":
+            errors += 1
+            continue
+        args = _dict(state.get("input"))
+        if name in _PI_FILE_TOOLS and args.get("filePath"):
+            paths[_relative(str(args["filePath"]), cwd)] = None
+        elif name == "bash":
+            sha = _commit_sha(str(args.get("command", "")), {"stdout": state.get("output", "")})
+            if sha:
+                commits[sha] = None
+        elif name.endswith(_NOTE_TOOLS):
+            notes.update(dict.fromkeys(_created_ids(state.get("output", ""))))
+    return _assemble(
+        rows,
+        models,
+        asked,
+        [],
+        version=str(meta.get("version", "")),
+        paths=tuple(paths),
+        commits=tuple(commits),
+        notes=tuple(notes),
+        tools=dict(tools),
+        tool_errors=errors,
+    )
+
+
 def codex_digest(transcript: Path, since: str, until: str) -> ChildDigest:
     """Codex's digest reader: count the rollout slice's completed tool items
     (shell, patch, MCP, collab), whatever code-mode script issued them."""

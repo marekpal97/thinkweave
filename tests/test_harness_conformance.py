@@ -106,13 +106,13 @@ class TestSchemaInvariants:
         # The wrap resolver (`weave session-id`) reads this env var to land on
         # the note the hooks already created; a wrong/absent value is exactly
         # the mint-a-detached-slug fragmentation the field exists to close
-        # (Pi 2026-09-08, Codex 2026-09-05). OpenCode declares none and falls
-        # back to recency + guard.
+        # (Pi 2026-09-08, Codex 2026-09-05). OpenCode exports none itself;
+        # its shim's shell.env hook sets OPENCODE_SESSION_ID (2026-10-12).
         expected = {
             "claude-code": ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"),
             "codex": ("CODEX_SESSION_ID", "CODEX_THREAD_ID"),
             "pi": ("PI_SESSION_ID",),
-            "opencode": (),
+            "opencode": ("OPENCODE_SESSION_ID",),
         }
         assert profile.session_id_envs == expected[profile.id]
         for name in profile.session_id_envs:
@@ -240,7 +240,7 @@ class TestPiRow:
 
 
 class TestOpenCodeRow:
-    """Facts from blueprint n-767d66b4, declared-not-verified where marked."""
+    """Facts measured on OpenCode 1.19.0 (2026-10-12 probe + shim runs)."""
 
     def test_install_topology(self, tmp_path: Path):
         p = _build("opencode", tmp_path)
@@ -253,9 +253,11 @@ class TestOpenCodeRow:
     def test_state_facts(self, tmp_path: Path):
         p = _build("opencode", tmp_path)
         data = tmp_path / ".local" / "share" / "opencode"
-        assert p.transcript_glob == str(data / "storage" / "session" / "*" / "*.json")
-        assert p.transcript_format == "json-records"
-        assert p.eligibility == "E0"
+        # One store for every session, not a file per session.
+        assert p.transcript_glob == str(data / "opencode.db")
+        assert p.transcript_format == "sqlite-records"
+        assert p.eligibility == "E3"
+        assert p.skills_dir == tmp_path / ".config" / "opencode" / "commands"
 
     def test_dispatch_shape(self, tmp_path: Path):
         p = _build("opencode", tmp_path)
@@ -266,13 +268,13 @@ class TestOpenCodeRow:
             "--auto",
         ]
 
-    def test_stop_has_no_verified_native_event(self, tmp_path: Path):
+    def test_stop_maps_only_the_observed_idle_event(self, tmp_path: Path):
         # claude-mem #2462: their plugin subscribed to bus events that never
-        # fire and capture was silently dead. The profile therefore refuses to
-        # name a Stop mapping until one is proven, and carries the honesty as
-        # a degradation instead.
+        # fire and capture was silently dead. session.idle is the one end-of-
+        # turn event observed firing (probe 2026-10-12), and it is dated.
         p = _build("opencode", tmp_path)
-        assert p.hook_events["Stop"] is None
+        assert p.hook_events["Stop"] == "session.idle"
+        assert p.fires_verified["Stop"] == "2026-10-12"
 
 
 # --------------------------------------------------------------------------- #
@@ -678,6 +680,7 @@ class TestNoHarnessForks:
             ("src/thinkweave/onboarding/claude_code_seed.py", "claude-code"),
             ("src/thinkweave/acquisition/importers/codex.py", "codex"),
             ("src/thinkweave/acquisition/importers/pi.py", "pi"),
+            ("src/thinkweave/acquisition/importers/opencode.py", "opencode"),
         }
         offenders: list[str] = []
 
@@ -800,6 +803,7 @@ class TestTranscriptFormats:
             "thinkweave.onboarding.claude_code_seed",
             "thinkweave.acquisition.importers.codex",
             "thinkweave.acquisition.importers.pi",
+            "thinkweave.acquisition.importers.opencode",
         }
         for loaded in (
             profile.load_transcript_parser(),
@@ -865,6 +869,7 @@ class TestTaskRoute:
     def test_a_missing_reader_without_a_degradation_fails(self, tmp_path: Path):
         row = dataclasses.replace(
             _build("opencode", tmp_path),
+            digest_reader="",
             degradations=tuple(
                 d for d in _build("opencode", tmp_path).degradations
                 if "digest" not in d.capability.lower()
@@ -881,11 +886,43 @@ class TestTaskRoute:
     def test_declared_rows(self, tmp_path: Path):
         # Each reads its own transcripts: Claude Code natively, Codex through
         # its prompt hook's transcript path (docs/HARNESSES.md §Codex), Pi through its shim
-        # (sessionManager.getSessionFile(), probed live on 0.84.4).
+        # (sessionManager.getSessionFile(), probed live on 0.84.4), OpenCode
+        # through its shim's `<store>#<session id>` address (live 2026-10-12).
         rows = {i: _build(i, tmp_path) for i in ALL_IDS}
         assert {i: (bool(p.digest_reader), p.binds_workers) for i, p in rows.items()} == {
             "claude-code": (True, True),
             "codex": (True, True),
             "pi": (True, True),
-            "opencode": (False, False),
+            "opencode": (True, True),
         }
+
+
+class TestHiddenSkillPatterns:
+    """`weave install --harness opencode` hides the Codex `thinkweave-*`
+    projections a dev-link exposes, without touching the user's own rules."""
+
+    def _install(self, monkeypatch, tmp_path: Path, hide: bool) -> Path:
+        from thinkweave.surfaces.cli import install
+
+        monkeypatch.setattr(harness, "_OVERRIDE", _build("opencode", tmp_path))
+        install._hide_skill_patterns(hide=hide)
+        return tmp_path / ".config" / "opencode" / "opencode.json"
+
+    def test_install_denies_and_uninstall_removes(self, monkeypatch, tmp_path: Path):
+        import json
+
+        settings = self._install(monkeypatch, tmp_path, hide=True)
+        assert json.loads(settings.read_text())["permission"]["skill"] == {"thinkweave-*": "deny"}
+        self._install(monkeypatch, tmp_path, hide=False)
+        assert "permission" not in json.loads(settings.read_text())
+
+    def test_a_user_rule_is_kept(self, monkeypatch, tmp_path: Path):
+        import json
+
+        settings = tmp_path / ".config" / "opencode" / "opencode.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"mcp": {}, "permission": {"skill": {"thinkweave-*": "allow"}}}))
+        self._install(monkeypatch, tmp_path, hide=True)
+        self._install(monkeypatch, tmp_path, hide=False)
+        doc = json.loads(settings.read_text())
+        assert doc["permission"]["skill"] == {"thinkweave-*": "allow"} and "mcp" in doc

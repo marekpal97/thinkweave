@@ -369,13 +369,21 @@ def cmd_import(args: argparse.Namespace) -> None:
         # `--include-subagents` is a Codex-shaped concern (sidecar rollouts);
         # an importer that has no notion of it is told so rather than being
         # handed a kwarg it cannot take.
-        if getattr(args, "include_subagents", False):
-            import inspect
+        import inspect
 
-            if "include_subagents" in inspect.signature(importer).parameters:
+        params = inspect.signature(importer).parameters
+        if getattr(args, "include_subagents", False):
+            if "include_subagents" in params:
                 common["include_subagents"] = True
             else:
                 print(f"--include-subagents does not apply to {args.source}; ignored.")
+        # `--db` likewise: only a store-backed importer (OpenCode's SQLite)
+        # takes a database path rather than a directory of transcripts.
+        if getattr(args, "db", ""):
+            if "db_path" in params:
+                common["db_path"] = Path(args.db)
+            else:
+                print(f"--db does not apply to {args.source}; ignored.")
         stats = importer(
             cfg,
             sessions_root=Path(args.cc_root) if args.cc_root else profile.transcript_root,

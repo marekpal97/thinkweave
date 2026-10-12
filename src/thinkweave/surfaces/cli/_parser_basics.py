@@ -258,11 +258,20 @@ def add_index_subparsers(sub) -> None:
     p_import.add_argument("--dry-run", action="store_true", help="Show what would be imported")
     p_import.add_argument("--db-path", default="", help="Path to claude-mem database")
     p_import.add_argument(
+        "--db",
+        default="",
+        help=(
+            "opencode: path to the OpenCode SQLite store (default "
+            "~/.local/share/opencode/opencode.db; opened read-only)"
+        ),
+    )
+    p_import.add_argument(
         "--cc-root",
         default="",
         help=(
             "Override the harness session root (claude-code: "
-            "~/.claude/projects; codex: ~/.codex/sessions)"
+            "~/.claude/projects; codex: ~/.codex/sessions; opencode: the "
+            "store or its data directory)"
         ),
     )
     p_import.add_argument(

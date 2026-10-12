@@ -291,14 +291,15 @@ class HarnessProfile:
     context_channel: str = ""
     """How the SessionStart payload reaches the model: ``additionalContext``
     (hook reply field), ``context-injection`` (Pi's context-handler message
-    prepend), ``message-transform`` (OpenCode's transform hook)."""
+    prepend), ``system-transform`` (OpenCode's per-call system-prompt hook)."""
 
     transcript_glob: str = ""
     """Absolute glob over this harness's on-disk session transcripts."""
 
     transcript_format: str = ""
     """Open enum tag naming the transcript's shape. Format-plural on purpose —
-    #199's SQLite-backed store is one more tag, not a rewrite."""
+    OpenCode's SQLite store (``sqlite-records``) is one more tag, not a
+    rewrite."""
 
     transcript_parser: str = ""
     """Entry point of this format's parser as ``module:callable``, or empty
@@ -349,8 +350,9 @@ class HarnessProfile:
     session_id_envs: tuple[str, ...] = ()
     """Environment variables the harness exports carrying the current
     session's id, tried in order — ``CLAUDE_CODE_SESSION_ID`` on Claude Code,
-    ``PI_SESSION_ID`` on Pi, ``CODEX_SESSION_ID`` on Codex. Empty when the
-    harness sets none (OpenCode). A wrap runs as a *model turn* with no
+    ``PI_SESSION_ID`` on Pi, ``CODEX_SESSION_ID`` on Codex,
+    ``OPENCODE_SESSION_ID`` on OpenCode (set by its shim's shell.env hook).
+    Empty when nothing sets one. A wrap runs as a *model turn* with no
     ``--harness`` argv, so it reads these to land on the note the hooks
     already created; ``weave session-id`` resolves them harness-neutrally, and
     a harness that declares none falls back to recency + the identity guard
@@ -449,6 +451,15 @@ class HarnessProfile:
     """How a user invokes a shipped skill by name: ``/`` on Claude Code,
     ``/skill:`` on Pi (prompt expansion, no Skill tool). Used wherever
     post-install text names one."""
+
+    hidden_skill_patterns: tuple[str, ...] = ()
+    """Skill-name patterns ``weave install`` writes as ``deny`` under
+    ``permission.skill`` in :attr:`user_settings` (OpenCode's documented
+    skill permissions: a denied skill is hidden from the model). For skills
+    the harness discovers on its own that are wrong for it: OpenCode scans
+    ``~/.claude/skills`` recursively, so a ``weave dev-link`` checkout exposes
+    the Codex ``thinkweave-*`` projections — which only work under Codex —
+    beside the linked ``/wrap`` commands."""
 
     degradations: tuple[Degradation, ...] = ()
 
@@ -1038,13 +1049,17 @@ def pi(home: Path | None = None) -> HarnessProfile:
 
 
 def opencode(home: Path | None = None) -> HarnessProfile:
-    """OpenCode (sst/opencode) — an official E0 (steerable) row.
+    """OpenCode (anomalyco/opencode, formerly sst/opencode) — an E3 row.
 
-    Distilled from the evidence blueprint n-767d66b4 (2026-08-24: upstream
-    docs + three working plugins read in code). Not measured against a live
-    install; the plugin shim is #195. XDG env overrides of the config/data
-    homes are deliberately ignored here — the profile takes one ``home`` knob,
-    like every other row.
+    Measured on OpenCode 1.19.0 (2026-10-12): a probe plugin logged every
+    hook and bus event in headless ``opencode run`` and interactive TUI
+    sessions, and the shim (``shims/opencode/thinkweave-opencode.ts``) was
+    then driven end to end. Commands: OpenCode reads ``<config>/commands/
+    <name>.md`` as ``/<name>`` (description + body template; the canonical
+    contracts' extra frontmatter keys are ignored), so the root-file skill
+    route links the canonical ``commands/*.md`` there. XDG env overrides of
+    the config/data homes are deliberately ignored — the profile takes one
+    ``home`` knob, like every other row.
     """
     h = home or Path.home()
     cfg = h / ".config" / "opencode"
@@ -1052,25 +1067,34 @@ def opencode(home: Path | None = None) -> HarnessProfile:
     return HarnessProfile(
         id="opencode",
         display_name="OpenCode",
-        hooks=False,
+        hooks=True,
+        # OpenCode's `task` tool spawns child sessions, but no thinkweave
+        # worker contract is projected onto its agent format yet; the shim
+        # folds child sessions onto their root.
         subagents=False,
         native_memory=False,
         headless_slash=False,
         instructions_file=cfg / "AGENTS.md",
         instructions_block_body=(
-            f"{_NUDGE}. This harness fires no thinkweave lifecycle hooks, so "
-            "call `weave_extract` yourself before you finish — it is what "
-            "persists the session's insights and decisions into the vault. "
-            "If the `weave_*` tools did not load, fall back to the CLI: "
+            "Thinkweave (Obsidian-native memory layer) is your durable "
+            "memory. Its `weave_*` tools are served through OpenCode's MCP "
+            "client (as `thinkweave_weave_*`). Prefer `weave_search` / "
+            "`weave_context` / `weave_graph` over filesystem search; never "
+            "crawl the filesystem with find/grep/ls looking for thinkweave "
+            "or vault files. The thinkweave plugin captures this session "
+            "passively (context at start, prompts, tool events, session note "
+            "when each turn ends). NEVER call `weave_extract` mid-session or "
+            "per turn; end-of-session extraction is the explicit `/wrap` "
+            "command. If `weave_*` tools are absent, fall back to the CLI: "
             "`{weave} add <title> -t note -p <project> -b <body>` persists "
-            "a note (`-t decision` for a decision) and "
-            "`{weave} search <query>` retrieves."
+            "a note and `{weave} search <query>` retrieves."
         ),
         # NB: mcp_config, user_settings and installed_plugins all resolve to
-        # this one opencode.json — same merge-never-regenerate constraint as
-        # the Pi row when #195 flips hooks on.
+        # this one opencode.json — the MCP writer merges, never regenerates.
         mcp_config=cfg / "opencode.json",
-        skills_dir=cfg / "skills",
+        # OpenCode's custom commands dir: `<name>.md` → `/<name>` (live
+        # 2026-10-12, `opencode debug config` lists the linked contracts).
+        skills_dir=cfg / "commands",
         plugins_root=cfg / "plugins",
         plugins_cache=h / ".cache" / "opencode" / "node_modules",
         installed_plugins=cfg / "opencode.json",
@@ -1079,6 +1103,9 @@ def opencode(home: Path | None = None) -> HarnessProfile:
         project_settings_relpath=Path("opencode.json"),
         project_mcp_config_relpath=Path("opencode.json"),
         project_plugins_relpath=Path(".opencode") / "plugins",
+        root_file_skills=True,
+        skill_prefix="/",
+        hidden_skill_patterns=("thinkweave-*",),
         pause_marker=cfg / "thinkweave_paused.json",
         memory_projects_root=cfg / "projects",
         memory_global_dir=cfg / "memory",
@@ -1087,73 +1114,106 @@ def opencode(home: Path | None = None) -> HarnessProfile:
         prompt_flag="",
         exec_subcommand="run",
         bypass_permissions_flag="--auto",
-        eligibility="E0",
+        hooks_install_caveat=(
+            "\n  The plugin loads on the next OpenCode start; sessions already "
+            "running keep\n  going without it."
+        ),
+        eligibility="E3",
         detect_dir=cfg,
+        hook_mechanism="extension",
+        hook_extension_source="shims/opencode/thinkweave-opencode.ts",
         hook_events={
-            "SessionStart": "experimental.chat.messages.transform",
+            # No native session-start hook: the shim synthesises SessionStart
+            # on a root session's first sighting (`session.created` marks it
+            # fresh) and injects through the system transform.
+            "SessionStart": "experimental.chat.system.transform",
             "UserPromptSubmit": "chat.message",
             "PostToolUse": "tool.execute.after",
-            # Only session.idle / session.deleted are *confirmed* bus events;
-            # a Stop mapping stays None until one is proven to fire.
-            "Stop": None,
+            # Child sessions fire no dispatch/completion hook of their own
+            # (session.created carries parentID, nothing marks completion).
+            "SubagentStart": None,
+            "SubagentStop": None,
+            "Stop": "session.idle",
         },
-        context_channel="message-transform",
-        transcript_glob=str(data / "storage" / "session" / "*" / "*.json"),
-        transcript_format="json-records",
+        context_channel="system-transform",
+        transcript_glob=str(data / "opencode.db"),
+        transcript_format="sqlite-records",
+        transcript_parser="thinkweave.acquisition.importers.opencode:parse_session",
+        transcript_importer="thinkweave.acquisition.importers.opencode:import_opencode",
+        digest_reader="thinkweave.operations.tasks:opencode_digest",
+        # The shim's prompt envelope addresses the session inside the store
+        # as `<data>/opencode.db#<session id>` — there is no per-session file.
+        binds_workers=True,
         session_id_scheme="ses_<12-hex><14-base62> (ULID-style sortable)",
+        # Not exported by OpenCode itself: the shim's shell.env hook sets it
+        # (with THINKWEAVE_HARNESS) on every shell call — live 2026-10-12.
+        session_id_envs=("OPENCODE_SESSION_ID",),
         harness_flag="--harness opencode",
         mcp_servers_key="mcp",
         mcp_entry_shape="argv-array",
-        evidence="declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install",
+        evidence=(
+            "measured — OpenCode 1.19.0, 2026-10-12: `opencode mcp list` "
+            "connects the written entry; a probe plugin observed "
+            "chat.message, tool.execute.before/after, shell.env (with "
+            "sessionID), experimental.chat.system.transform (with sessionID) "
+            "and the session.created/status/idle bus events firing in "
+            "headless and TUI sessions; system-transform injection and the "
+            "shell.env session id were read back by the model"
+        ),
+        fires_verified={
+            "SessionStart": "2026-10-12",
+            "UserPromptSubmit": "2026-10-12",
+            "PostToolUse": "2026-10-12",
+            "Stop": "2026-10-12",
+        },
         degradations=(
             Degradation(
-                "lifecycle hooks",
+                "hook latency",
                 "documented",
-                "the OpenCode plugin shim is not yet shipped, so passive "
-                "capture does not run; end sessions with an explicit "
-                "weave_extract",
+                "the launcher's floor on the dev machine sits above shim-core's "
+                "telemetry defaults, so the shim carries the Pi budgets "
+                "(SessionStart 5 s, UserPromptSubmit 2.5 s, Stop 6 s) and a "
+                "10 s PostToolUse ceiling (fire-and-forget; at 800 ms a launcher "
+                "started under load was reaped before python ran). Stop drains "
+                "the turn's in-flight tool events first, and the plugin's "
+                "dispose hook drains everything, because `opencode run` exits "
+                "~10 ms after the final idle without awaiting event handlers",
+                "#195, shims/opencode",
+            ),
+            Degradation(
+                "headless stdin",
+                "documented",
+                "`opencode run` reads a non-TTY stdin to EOF before it creates "
+                "the session, so a dispatcher that leaves stdin open (a pipe, an "
+                "agent tool's inherited stdin) hangs it forever with no output; "
+                "dispatch with stdin from /dev/null (live 2026-10-12)",
                 "#195",
             ),
             Degradation(
-                "MCP registration",
+                "SessionStart injection",
                 "documented",
-                "weave install writes OpenCode's documented schema under the "
-                "`mcp` key (type local, command as one array, environment "
-                "map when non-empty — opencode.ai/docs/mcp-servers/ via "
-                "n-767d66b4 §4); NOT yet verified to parse on a live "
-                "install — #195 owns the live verification",
-                "n-767d66b4 §4",
-            ),
-            Degradation(
-                "Stop capture",
-                "documented",
-                "no verified Stop-equivalent event — claude-mem's plugin "
-                "subscribed to bus events that never fire and captured "
-                "nothing silently; only session.idle/session.deleted are "
-                "confirmed real",
-                "claude-mem#2462",
+                "OpenCode has no session-start hook: the payload is fetched on "
+                "the first model call of a session and appended to the system "
+                "prompt of every later call — including OpenCode's own small "
+                "title-generation call, which costs its tokens once per session",
+                "#195",
             ),
             Degradation(
                 "subagent fan-out",
                 "documented",
-                "no hook fires on subagent dispatch/completion in the docs "
-                "or any reference plugin",
-                "n-767d66b4 §2",
+                "OpenCode's `task` tool spawns child sessions, but no "
+                "thinkweave worker contract is projected onto OpenCode agents, "
+                "so worker-backed commands (/drain, /dream, …) are not linked; "
+                "child-session tool events are folded onto the root session",
+                "#195",
             ),
             Degradation(
-                "transcript import",
+                "SubagentStart/SubagentStop task capture",
                 "documented",
-                "sessions are per-record JSON files (session/message/part); "
-                "no importer reads them yet",
-                "n-767d66b4 §6",
-            ),
-            Degradation(
-                "task worker binding and digest",
-                "documented",
-                "no prompt hook runs, so a dispatched worker's transcript is "
-                "never bound, and no digest reader parses json-records; a "
-                "child task closed via `weave task close` records the gap",
-                "#243",
+                "no hook marks a child session's dispatch or completion, so "
+                "task correlation degrades to task-id-only via `weave task "
+                "open`/`close`",
+                "#195",
             ),
         ),
     )

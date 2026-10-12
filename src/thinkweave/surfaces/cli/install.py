@@ -790,6 +790,45 @@ def _install_root_file_skills() -> None:
         print(f"  skipped {p}: a file that is not a thinkweave link is already there")
 
 
+def _hide_skill_patterns(*, hide: bool) -> None:
+    """Converge ``permission.skill`` in the harness's JSON settings so each
+    ``profile.hidden_skill_patterns`` entry is ``deny`` (hidden from the
+    model), or remove the entries this installer wrote.
+
+    A value the user set themselves is left alone either way: only a missing
+    key is added, and only a ``deny`` is removed.
+    """
+    patterns = _profile().hidden_skill_patterns
+    settings = _profile().user_settings
+    if not patterns:
+        return
+    try:
+        doc = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"warning: could not read {settings} to hide skills: {exc}")
+        return
+    rules = doc.setdefault("permission", {}).setdefault("skill", {})
+    if not isinstance(rules, dict):
+        return  # a bare "allow"/"deny" string is the user's global choice
+    changed = []
+    for pattern in patterns:
+        if hide and pattern not in rules:
+            rules[pattern] = "deny"
+            changed.append(pattern)
+        elif not hide and rules.get(pattern) == "deny":
+            del rules[pattern]
+            changed.append(pattern)
+    if not changed:
+        return
+    if not rules:
+        del doc["permission"]["skill"]
+    if not doc["permission"]:
+        del doc["permission"]
+    fswrite.atomic_write_text(settings, json.dumps(doc, indent=2) + "\n")
+    verb = "Hid" if hide else "Unhid"
+    print(f"{verb} skill pattern(s) {', '.join(changed)} in {settings}.")
+
+
 def _installed_command_links() -> list[Path]:
     skills = _skills_dir()
     if not skills.is_dir():
@@ -941,6 +980,7 @@ def cmd_install(args: argparse.Namespace) -> None:
     _install_codex_windows_cli(project_root)
     if _profile().root_file_skills:
         _install_root_file_skills()
+    _hide_skill_patterns(hide=True)
     if not getattr(args, "no_claude_md", False):
         _install_claude_md_block(args.yes)
     _print_next_steps()
@@ -1001,6 +1041,7 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
     if skill_links:
         n = _uninstall_root_file_skills()
         print(f"Removed {n} skill link(s) from {_skills_dir()}.")
+    _hide_skill_patterns(hide=False)
     if _remove_claude_md_block():
         print(f"Removed thinkweave block from {_instructions()}.")
     if _marker().exists():

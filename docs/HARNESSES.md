@@ -14,34 +14,34 @@ profile is what runs; fix whichever is wrong.
 
 | | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0: credential-less spike 2026-08-02, two live interactive sessions 2026-09-05, two instrumented headless sessions 2026-09-07 with every envelope captured raw (docs/HARNESSES.md) | measured — Pi 0.84.4: live trial 2026-09-03 (E0 floor verified, settings-MCP falsified, n-fb74c7d0), headless events probe 2026-09-05 (all four native events fired), and an interactive session 2026-09-05 through pi-mcp-adapter 2.32.1 (17 bare-named weave_* tools, direct calls, /skill:wrap end-to-end on a hook-captured session; native route pivot 2026-10-10 on Pi 1.1.0 — `pi mcp list` connects 17 tools with `exposure: direct`) | declared — blueprint n-767d66b4 (2026-08-24); NOT verified on a live install |
-| eligibility (dec-5a076384 ladder) | E3 | E3 | E3 | E0 |
+| evidence | measured — daily live use on the dev machine; suite drives the handler end-to-end | measured — codex-cli 0.146.0: credential-less spike 2026-08-02, two live interactive sessions 2026-09-05, two instrumented headless sessions 2026-09-07 with every envelope captured raw (docs/HARNESSES.md) | measured — Pi 0.84.4: live trial 2026-09-03 (E0 floor verified, settings-MCP falsified, n-fb74c7d0), headless events probe 2026-09-05 (all four native events fired), and an interactive session 2026-09-05 through pi-mcp-adapter 2.32.1 (17 bare-named weave_* tools, direct calls, /skill:wrap end-to-end on a hook-captured session; native route pivot 2026-10-10 on Pi 1.1.0 — `pi mcp list` connects 17 tools with `exposure: direct`) | measured — OpenCode 1.19.0, 2026-10-12: `opencode mcp list` connects the written entry; a probe plugin observed chat.message, tool.execute.before/after, shell.env (with sessionID), experimental.chat.system.transform (with sessionID) and the session.created/status/idle bus events firing in headless and TUI sessions; system-transform injection and the shell.env session id were read back by the model |
+| eligibility (dec-5a076384 ladder) | E3 | E3 | E3 | E3 |
 | detected by | `~/.claude` | `~/.codex` | `~/.pi` | `~/.config/opencode` |
-| lifecycle hooks | plugin | file | extension | none |
+| lifecycle hooks | plugin | file | extension | extension |
 | subagent fan-out | yes | yes | no | no |
 | headless slash skills | yes | no | no | no |
 | native memory seam | `~/.claude/projects` | — | — | — |
-| context channel | `additionalContext` | `additionalContext` | `context-injection` | `message-transform` |
+| context channel | `additionalContext` | `additionalContext` | `context-injection` | `system-transform` |
 | dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
-| transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/storage/session/*/*.json` (json-records) |
-| task digest reader | `thinkweave.operations.tasks:claude_code_digest` | `thinkweave.operations.tasks:codex_digest` | `thinkweave.operations.tasks:pi_digest` | — (degraded) |
-| task worker binding | yes | yes | yes | no |
+| transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/opencode.db` (sqlite-records) |
+| task digest reader | `thinkweave.operations.tasks:claude_code_digest` | `thinkweave.operations.tasks:codex_digest` | `thinkweave.operations.tasks:pi_digest` | `thinkweave.operations.tasks:opencode_digest` |
+| task worker binding | yes | yes | yes | yes |
 | session ids | `uuid4` | `uuid7` | `uuid (session-header id)` | `ses_<12-hex><14-base62> (ULID-style sortable)` |
 | MCP config | `~/.claude.json` · key `mcpServers` | `~/.codex/config.toml` · key `mcp_servers` | `~/.pi/agent/mcp.json` · key `mcpServers` | `~/.config/opencode/opencode.json` · key `mcp` |
 | MCP native CLI | `claude mcp add` | `codex mcp add` | — | — |
 | instructions file | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` | `~/.pi/agent/AGENTS.md` | `~/.config/opencode/AGENTS.md` |
-| skills dir | `~/.claude/skills` | `~/.codex/skills` | `~/.pi/agent/skills` | `~/.config/opencode/skills` |
+| skills dir | `~/.claude/skills` | `~/.codex/skills` | `~/.pi/agent/skills` | `~/.config/opencode/commands` |
 
 ### Hook events (canonical → native, with observed-fire dates)
 
 | canonical | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| SessionStart | ✓ 2026-08-29 | ✓ 2026-09-05 | `session_start` ✓ 2026-09-05 | `experimental.chat.messages.transform` (declared) |
-| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-09-05 | `before_agent_start` ✓ 2026-09-05 | `chat.message` (declared) |
-| PostToolUse | ✓ 2026-08-29 | ✓ 2026-09-07 | `tool_result` ✓ 2026-09-05 | `tool.execute.after` (declared) |
-| SubagentStart | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
-| SubagentStop | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | unmapped — no verdict recorded |
-| Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | `agent_end` ✓ 2026-09-05 | — (no verified equivalent) |
+| SessionStart | ✓ 2026-08-29 | ✓ 2026-09-05 | `session_start` ✓ 2026-09-05 | `experimental.chat.system.transform` ✓ 2026-10-12 |
+| UserPromptSubmit | ✓ 2026-08-29 | ✓ 2026-09-05 | `before_agent_start` ✓ 2026-09-05 | `chat.message` ✓ 2026-10-12 |
+| PostToolUse | ✓ 2026-08-29 | ✓ 2026-09-07 | `tool_result` ✓ 2026-09-05 | `tool.execute.after` ✓ 2026-10-12 |
+| SubagentStart | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | — (no verified equivalent) |
+| SubagentStop | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | — (no verified equivalent) |
+| Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | `agent_end` ✓ 2026-09-05 | `session.idle` ✓ 2026-10-12 |
 
 ### Documented degradations
 
@@ -71,12 +71,11 @@ row above) everything unlisted works as on Claude Code; on a
 
 #### OpenCode
 
-- **lifecycle hooks** — documented: the OpenCode plugin shim is not yet shipped, so passive capture does not run; end sessions with an explicit weave_extract (#195)
-- **MCP registration** — documented: weave install writes OpenCode's documented schema under the `mcp` key (type local, command as one array, environment map when non-empty — opencode.ai/docs/mcp-servers/ via n-767d66b4 §4); NOT yet verified to parse on a live install — #195 owns the live verification (n-767d66b4 §4)
-- **Stop capture** — documented: no verified Stop-equivalent event — claude-mem's plugin subscribed to bus events that never fire and captured nothing silently; only session.idle/session.deleted are confirmed real (claude-mem#2462)
-- **subagent fan-out** — documented: no hook fires on subagent dispatch/completion in the docs or any reference plugin (n-767d66b4 §2)
-- **transcript import** — documented: sessions are per-record JSON files (session/message/part); no importer reads them yet (n-767d66b4 §6)
-- **task worker binding and digest** — documented: no prompt hook runs, so a dispatched worker's transcript is never bound, and no digest reader parses json-records; a child task closed via `weave task close` records the gap (#243)
+- **hook latency** — documented: the launcher's floor on the dev machine sits above shim-core's telemetry defaults, so the shim carries the Pi budgets (SessionStart 5 s, UserPromptSubmit 2.5 s, Stop 6 s) and a 10 s PostToolUse ceiling (fire-and-forget; at 800 ms a launcher started under load was reaped before python ran). Stop drains the turn's in-flight tool events first, and the plugin's dispose hook drains everything, because `opencode run` exits ~10 ms after the final idle without awaiting event handlers (#195, shims/opencode)
+- **headless stdin** — documented: `opencode run` reads a non-TTY stdin to EOF before it creates the session, so a dispatcher that leaves stdin open (a pipe, an agent tool's inherited stdin) hangs it forever with no output; dispatch with stdin from /dev/null (live 2026-10-12) (#195)
+- **SessionStart injection** — documented: OpenCode has no session-start hook: the payload is fetched on the first model call of a session and appended to the system prompt of every later call — including OpenCode's own small title-generation call, which costs its tokens once per session (#195)
+- **subagent fan-out** — documented: OpenCode's `task` tool spawns child sessions, but no thinkweave worker contract is projected onto OpenCode agents, so worker-backed commands (/drain, /dream, …) are not linked; child-session tool events are folded onto the root session (#195)
+- **SubagentStart/SubagentStop task capture** — documented: no hook marks a child session's dispatch or completion, so task correlation degrades to task-id-only via `weave task open`/`close` (#195)
 
 <!-- weave:harness-matrix:end -->
 
