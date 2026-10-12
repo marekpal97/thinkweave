@@ -895,3 +895,34 @@ class TestTaskRoute:
             "pi": (True, True),
             "opencode": (True, True),
         }
+
+
+class TestHiddenSkillPatterns:
+    """`weave install --harness opencode` hides the Codex `thinkweave-*`
+    projections a dev-link exposes, without touching the user's own rules."""
+
+    def _install(self, monkeypatch, tmp_path: Path, hide: bool) -> Path:
+        from thinkweave.surfaces.cli import install
+
+        monkeypatch.setattr(harness, "_OVERRIDE", _build("opencode", tmp_path))
+        install._hide_skill_patterns(hide=hide)
+        return tmp_path / ".config" / "opencode" / "opencode.json"
+
+    def test_install_denies_and_uninstall_removes(self, monkeypatch, tmp_path: Path):
+        import json
+
+        settings = self._install(monkeypatch, tmp_path, hide=True)
+        assert json.loads(settings.read_text())["permission"]["skill"] == {"thinkweave-*": "deny"}
+        self._install(monkeypatch, tmp_path, hide=False)
+        assert "permission" not in json.loads(settings.read_text())
+
+    def test_a_user_rule_is_kept(self, monkeypatch, tmp_path: Path):
+        import json
+
+        settings = tmp_path / ".config" / "opencode" / "opencode.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"mcp": {}, "permission": {"skill": {"thinkweave-*": "allow"}}}))
+        self._install(monkeypatch, tmp_path, hide=True)
+        self._install(monkeypatch, tmp_path, hide=False)
+        doc = json.loads(settings.read_text())
+        assert doc["permission"]["skill"] == {"thinkweave-*": "allow"} and "mcp" in doc

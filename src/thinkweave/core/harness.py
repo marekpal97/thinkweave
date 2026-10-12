@@ -452,6 +452,15 @@ class HarnessProfile:
     ``/skill:`` on Pi (prompt expansion, no Skill tool). Used wherever
     post-install text names one."""
 
+    hidden_skill_patterns: tuple[str, ...] = ()
+    """Skill-name patterns ``weave install`` writes as ``deny`` under
+    ``permission.skill`` in :attr:`user_settings` (OpenCode's documented
+    skill permissions: a denied skill is hidden from the model). For skills
+    the harness discovers on its own that are wrong for it: OpenCode scans
+    ``~/.claude/skills`` recursively, so a ``weave dev-link`` checkout exposes
+    the Codex ``thinkweave-*`` projections — which only work under Codex —
+    beside the linked ``/wrap`` commands."""
+
     degradations: tuple[Degradation, ...] = ()
 
     @property
@@ -1096,6 +1105,7 @@ def opencode(home: Path | None = None) -> HarnessProfile:
         project_plugins_relpath=Path(".opencode") / "plugins",
         root_file_skills=True,
         skill_prefix="/",
+        hidden_skill_patterns=("thinkweave-*",),
         pause_marker=cfg / "thinkweave_paused.json",
         memory_projects_root=cfg / "projects",
         memory_global_dir=cfg / "memory",

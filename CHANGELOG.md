@@ -19,6 +19,10 @@ Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
   `weave hooks install --harness opencode --scope user`.
 - **`weave import opencode`** reads OpenCode's SQLite store (read-only),
   and `opencode_digest` reads a bound worker session for task closes.
+- `weave install --harness opencode` hides the Codex `thinkweave-*`
+  skill projections through `permission.skill` in `opencode.json`.
+  OpenCode scans `~/.claude/skills` recursively, so a `weave dev-link`
+  checkout exposed them beside `/wrap`. A rule you set yourself is kept.
 
 ### Fixed
 
