@@ -571,6 +571,15 @@ def _strip_thinkweave_hooks(hooks: dict, hook_type: str) -> None:
         del hooks[hook_type]
 
 
+# Canonical matcher → matchers earlier releases wrote for the same slot, so a
+# reinstall rewrites the old entry in place (and snaps its matcher) instead of
+# appending a second one that would deliver every event twice.
+_PREVIOUS_MATCHERS: dict[str, tuple[str, ...]] = {
+    # The plugin route names its MCP tools `mcp__plugin_thinkweave_thinkweave__…`.
+    "mcp__(plugin_thinkweave_)?thinkweave__.*": ("mcp__thinkweave__.*",),
+}
+
+
 def _ensure_hook(
     entries: list,
     matcher: str,
@@ -606,7 +615,7 @@ def _ensure_hook(
         # slot. Lets a single phase own multiple thinkweave entries
         # (PostToolUse: action gate + MCP gate) without each install
         # call clobbering the other.
-        if slot is not None and entry_matcher != matcher:
+        if slot is not None and entry_matcher not in (matcher, *_PREVIOUS_MATCHERS.get(matcher, ())):
             continue
         for hook in entry.get("hooks", []):
             if _is_thinkweave_hook(hook.get("command", "")):

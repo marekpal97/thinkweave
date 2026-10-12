@@ -140,7 +140,7 @@ class TestInstalledArtifact:
         doc = json.loads((codex_home / "hooks.json").read_text())
 
         matchers = {g["matcher"] for g in doc["hooks"]["PostToolUse"]}
-        assert matchers == {"Write|Edit|Bash", "mcp__thinkweave__.*"}
+        assert matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
 
     def test_context_emitting_handlers_carry_an_explicit_limit(
         self, codex_home: Path
