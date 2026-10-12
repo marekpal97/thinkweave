@@ -90,6 +90,19 @@ def tool_schemas() -> list:
                             "frontmatter for those."
                         ),
                     },
+                    "concepts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Domain concepts (≥2). Run through the ontology gate: "
+                            "unlisted terms land in proposed_concepts."
+                        ),
+                    },
+                    "proposed_concepts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "New terms not yet in the ontology.",
+                    },
                     "frontmatter": {
                         "type": "object",
                         "description": (
@@ -273,6 +286,22 @@ def handle_create(cfg: Config, args: dict):
         ]
 
     note_type = NoteType(raw_type.strip())
+    # Models pass `concepts` top-level as often as nested in `frontmatter`
+    # (the description used to say "set via frontmatter"); before this, the
+    # top-level list was silently dropped. Both spellings merge, de-duplicated.
+    frontmatter = dict(args.get("frontmatter") or {})
+    for key in ("concepts", "proposed_concepts"):
+        top = args.get(key)
+        if isinstance(top, str):
+            top = [top]
+        if top:
+            nested = frontmatter.get(key) or []
+            if isinstance(nested, str):
+                nested = [nested]
+            frontmatter[key] = list(dict.fromkeys([*nested, *top]))
+    known = set(tool_schemas()[0].inputSchema["properties"])
+    ignored = sorted(set(args) - known)
+
     result = create_note(
         cfg,
         note_type=note_type,
@@ -280,7 +309,7 @@ def handle_create(cfg: Config, args: dict):
         body=args.get("body", ""),
         project=args.get("project", ""),
         tags=args.get("tags"),
-        extra_frontmatter=args.get("frontmatter") or None,
+        extra_frontmatter=frontmatter or None,
         session_id=args.get("session_id", ""),
     )
     note = result.note
@@ -300,6 +329,17 @@ def handle_create(cfg: Config, args: dict):
     if note_type == NoteType.SOURCE:
         # note.path is the relative path to source.md; parent is the bucket folder.
         msg += f"\nSource directory: {(cfg.vault_root / note.path).parent}"
+    fm = note.frontmatter or {}
+    canonical, proposed = fm.get("concepts") or [], fm.get("proposed_concepts") or []
+    if canonical or proposed:
+        msg += f"\nconcepts: {canonical}" + (f" · proposed: {proposed}" if proposed else "")
+    elif note_type in (NoteType.NOTE, NoteType.DECISION):
+        msg += (
+            "\nwarning: no concepts attached — add ≥2 via "
+            'weave_update(id, frontmatter={"concepts": [...]})'
+        )
+    if ignored:
+        msg += f"\nignored unknown argument(s): {', '.join(ignored)}"
     return [TextContent(type="text", text=msg)]
 
 

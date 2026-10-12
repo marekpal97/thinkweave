@@ -74,6 +74,12 @@ class TestHookHelpers:
         assert not _is_significant_command("cat file.txt")
         assert not _is_significant_command("echo hello")
 
+    def test_chained_commit_is_significant(self):
+        # The head segment is `git add`; the commit rides the chain.
+        assert _is_significant_command('git add calc.py && git commit -m "x"')
+        assert _is_significant_command("cd repo; uv run pytest -q")
+        assert not _is_significant_command("ls && cat file.txt")
+
     def test_detect_project(self, tmp_path: Path):
         # Env var takes priority
         with patch.dict("os.environ", {"THINKWEAVE_PROJECT": "from-env"}):

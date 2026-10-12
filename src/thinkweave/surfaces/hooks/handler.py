@@ -1242,10 +1242,17 @@ from thinkweave.operations.hook_events import (  # noqa: E402
 
 
 def _is_significant_command(command: str) -> bool:
-    """Only capture meaningful bash commands, not noise."""
+    """Only capture meaningful bash commands, not noise.
+
+    Any ``&&``/``||``/``;`` segment counts, as in ``_is_git_commit``: gating
+    on the head alone dropped every ``git add … && git commit …`` — the
+    commonest commit shape models emit — before the commit parser saw it."""
     significant = ["git commit", "git push", "pytest", "python", "uv run", "make", "npm", "deploy"]
-    cmd_lower = _command_head(command)
-    return any(cmd_lower.startswith(s) for s in significant)
+    return any(
+        head.startswith(s)
+        for head in map(_command_head, _command_segments(command))
+        for s in significant
+    )
 
 
 def _diff_context(tool_name: str, tool_input: dict) -> str:

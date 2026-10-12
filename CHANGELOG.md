@@ -3,6 +3,35 @@
 Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
 `weave_*` MCP + CLI surface may still break between minors.
 
+## [Unreleased]
+
+### Added
+
+- **OpenCode at Pi parity (E3)** (#195): `shims/opencode/` maps
+  OpenCode's plugin hooks onto the canonical events. It synthesises
+  SessionStart, injects context through the system-prompt transform, and
+  maps `chat.message`, `tool.execute.after` and `session.idle`. Its
+  `shell.env` hook exports `OPENCODE_SESSION_ID` and `THINKWEAVE_HARNESS`,
+  so `weave session-id` and `/wrap` resolve the live session. Worker-free
+  commands link into `~/.config/opencode/commands/` (`/wrap`, `/brief`, …).
+  Every mapped event was observed firing on OpenCode 1.19.0. Install with
+  `weave install --harness opencode` and
+  `weave hooks install --harness opencode --scope user`.
+- **`weave import opencode`** reads OpenCode's SQLite store (read-only),
+  and `opencode_digest` reads a bound worker session for task closes.
+
+### Fixed
+
+- `weave_create` accepts `concepts` / `proposed_concepts` as top-level
+  arguments. They were dropped silently before. The reply now reports the
+  concepts that landed, warns when a note has none, and names ignored
+  arguments.
+- MCP dispatch decodes JSON-encoded strings where a tool's schema wants
+  an array or object. Some models send `concepts="[\"a\"]"`.
+- The PostToolUse hook dropped every chained commit
+  (`git add … && git commit …`) on every harness: the significance gate
+  read only the first segment.
+
 ## [0.3.0] — 2026-10-11
 
 Two headlines. **Harness profiles:** Claude Code, Codex and Pi are each

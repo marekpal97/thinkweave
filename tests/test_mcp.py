@@ -520,3 +520,91 @@ class TestTypeFilterSchema:
         """A bare ``{}`` passes the union check vacuously; require prose too."""
         prop = _schema_for(tool_name)["properties"]["type"]
         assert prop.get("description", "").strip(), f"{tool_name}.type needs a description"
+
+
+# --------------------------------------------------------------------------- #
+# weave_create top-level concepts + JSON-string argument repair                 #
+# --------------------------------------------------------------------------- #
+
+
+def _created(config: Config, msg: str):
+    note_id = msg.split("[", 1)[1].split("]", 1)[0]
+    s = Search(config=config)
+    row = s.get_note_by_id(note_id)
+    s.close()
+    return VaultManager(config=config).read_note(config.vault_root / row["path"])
+
+
+class TestCreateTopLevelConcepts:
+    """Models pass ``concepts`` beside ``title`` as often as inside
+    ``frontmatter``; the top-level spelling used to vanish silently (seen
+    live on OpenCode, 2026-10-12)."""
+
+    def test_top_level_concepts_land_on_the_note(self, config, indexer):
+        from thinkweave.surfaces.mcp.tools import dispatch
+
+        out = dispatch(config, "weave_create", {
+            "type": "note", "title": "t", "body": "b", "project": "p",
+            "concepts": ["alpha-term", "beta-term"],
+        })[0].text
+        fm = _created(config, out).frontmatter
+        landed = (fm.get("concepts") or []) + (fm.get("proposed_concepts") or [])
+        assert set(landed) == {"alpha-term", "beta-term"}
+        assert "warning" not in out
+
+    def test_json_string_concepts_are_decoded(self, config, indexer):
+        from thinkweave.surfaces.mcp.tools import dispatch
+
+        out = dispatch(config, "weave_create", {
+            "type": "decision", "title": "t", "project": "p",
+            "concepts": '["alpha-term", "beta-term"]',
+        })[0].text
+        fm = _created(config, out).frontmatter
+        landed = (fm.get("concepts") or []) + (fm.get("proposed_concepts") or [])
+        assert set(landed) == {"alpha-term", "beta-term"}
+
+    def test_top_level_merges_with_nested(self, config, indexer):
+        from thinkweave.surfaces.mcp.tools import dispatch
+
+        out = dispatch(config, "weave_create", {
+            "type": "note", "title": "t", "project": "p",
+            "concepts": ["alpha-term"],
+            "frontmatter": {"concepts": ["beta-term", "alpha-term"]},
+        })[0].text
+        fm = _created(config, out).frontmatter
+        landed = (fm.get("concepts") or []) + (fm.get("proposed_concepts") or [])
+        assert sorted(landed) == ["alpha-term", "beta-term"]
+
+    def test_missing_concepts_and_unknown_keys_are_reported(self, config, indexer):
+        from thinkweave.surfaces.mcp.tools import dispatch
+
+        out = dispatch(config, "weave_create", {
+            "type": "note", "title": "t", "project": "p", "labels": ["x"],
+        })[0].text
+        assert "warning: no concepts attached" in out
+        assert "ignored unknown argument(s): labels" in out
+
+
+class TestDispatchCoercion:
+    def test_string_or_list_union_decodes_json_array(self):
+        from thinkweave.surfaces.mcp.tools import _coerce
+
+        schema = _schema_for("weave_search")
+        out = _coerce({"query": "", "type": '["session"]'}, schema)
+        assert out["type"] == ["session"]
+
+    def test_plain_strings_pass_through(self):
+        from thinkweave.surfaces.mcp.tools import _coerce
+
+        schema = _schema_for("weave_search")
+        out = _coerce({"query": "[not json", "type": "session"}, schema)
+        assert out == {"query": "[not json", "type": "session"}
+
+    def test_nested_item_objects_are_repaired(self):
+        from thinkweave.surfaces.mcp.tools import _coerce
+
+        schema = {"type": "object", "properties": {"insights": {
+            "type": "array", "items": {"type": "object", "properties": {
+                "concepts": {"type": "array", "items": {"type": "string"}}}}}}}
+        out = _coerce({"insights": '[{"concepts": "[\\"a\\"]"}]'}, schema)
+        assert out == {"insights": [{"concepts": ["a"]}]}

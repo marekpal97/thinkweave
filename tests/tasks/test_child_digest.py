@@ -115,9 +115,17 @@ class TestDigest:
             "Read": 1, "Bash": 1, "mcp__thinkweave__weave_create": 1,
         }
 
-    def test_a_harness_without_a_reader_names_the_gap_not_zero_tools(self):
-        digest = digest_of(FOREGROUND, harness="opencode")
-        assert any("opencode" in g and "digest reader" in g for g in digest.gaps)
+    def test_a_harness_without_a_reader_names_the_gap_not_zero_tools(self, monkeypatch):
+        # Every shipped row has a reader now; a reader-less one is synthesised.
+        import dataclasses
+
+        from thinkweave.core import harness as harness_mod
+        from thinkweave.operations import tasks as tasks_mod
+
+        bare = dataclasses.replace(harness_mod.lookup("pi"), id="bare", digest_reader="")
+        monkeypatch.setattr(tasks_mod, "lookup", lambda h: bare if h == "bare" else None)
+        digest = digest_of(FOREGROUND, harness="bare")
+        assert any("bare" in g and "digest reader" in g for g in digest.gaps)
         fields = digest.round_fields([])
         assert "tools" not in fields and "tool_errors" not in fields
         assert fields["digest"]["gaps"] == list(digest.gaps)

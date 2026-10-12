@@ -14,6 +14,7 @@ those two structures.
 
 from __future__ import annotations
 
+import json
 from typing import Callable
 
 from thinkweave.core.config import Config
@@ -82,7 +83,58 @@ def dispatch(cfg: Config, name: str, arguments: dict) -> list:
     handler = DISPATCH.get(name)
     if handler is None:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    schema = _input_schemas().get(name)
+    if schema is not None and isinstance(arguments, dict):
+        arguments = _coerce(arguments, schema)
     return handler(cfg, arguments)
+
+
+def _input_schemas() -> dict[str, dict]:
+    global _SCHEMAS
+    if _SCHEMAS is None:
+        _SCHEMAS = {t.name: t.inputSchema for t in all_schemas()}
+    return _SCHEMAS
+
+
+_SCHEMAS: dict[str, dict] | None = None
+
+
+def _allowed_types(schema: dict) -> set[str]:
+    kinds = schema.get("type")
+    allowed = set(kinds) if isinstance(kinds, list) else {kinds} if kinds else set()
+    for alt in schema.get("anyOf") or ():
+        allowed |= _allowed_types(alt)
+    return allowed
+
+
+def _coerce(value, schema: dict):
+    """Undo JSON-encoded strings where the schema wants an array or object.
+
+    Some models (seen live: Qwen via OpenCode) serialise list/object
+    arguments as JSON text — ``concepts="[\\"a\\", \\"b\\"]"``. Handlers
+    then iterate the characters of a string, or drop the value. A string
+    is replaced only when it parses as a JSON array/object and the schema
+    accepts that shape at that position; anything else passes through
+    untouched.
+    """
+    allowed = _allowed_types(schema)
+    if isinstance(value, str) and allowed & {"array", "object"}:
+        text = value.strip()
+        if text[:1] in "[{":
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+            if (isinstance(parsed, list) and "array" in allowed) or (
+                isinstance(parsed, dict) and "object" in allowed
+            ):
+                value = parsed
+    if isinstance(value, dict):
+        props = schema.get("properties") or {}
+        return {k: _coerce(v, props[k]) if k in props else v for k, v in value.items()}
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        return [_coerce(v, schema["items"]) for v in value]
+    return value
 
 
 __all__ = ["all_schemas", "DISPATCH", "dispatch"]
