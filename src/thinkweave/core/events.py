@@ -50,6 +50,7 @@ class ExtractResult:
     decision_skeletons: list[DecisionSkeleton]
     failure_signals: list[FailureSignal]
     concepts: list[str]  # concepts inferred from file paths
+    pull_requests: list[dict] = field(default_factory=list)  # mutating `gh pr` calls
 
 
 # Patterns mapping file path components to concepts
@@ -99,6 +100,7 @@ def extract_deterministic(
     test_runs: list[dict] = []
     insights: list[str] = []
     git_branch = ""
+    pull_requests: list[dict] = []
 
     for ev in events:
         if "file" in ev:
@@ -111,6 +113,8 @@ def extract_deterministic(
             insights.extend(ev["insights"])
         if "git_branch" in ev:
             git_branch = ev["git_branch"]
+        if "pull_request" in ev:
+            pull_requests.append(ev["pull_request"])
 
     # Deduplicate files preserving order
     seen: set[str] = set()
@@ -150,6 +154,7 @@ def extract_deterministic(
         decision_skeletons=skeletons,
         failure_signals=failures,
         concepts=concepts,
+        pull_requests=pull_requests,
     )
 
 

@@ -51,6 +51,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -204,10 +205,19 @@ def _env_session_id() -> str:
     return ""
 
 
+_PLUGIN_MCP_PREFIX = "mcp__plugin_thinkweave_thinkweave__"
+
+
 def main() -> None:
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
     tool_name = hook_input.get("tool_name", "")
+    # Claude Code's plugin route serves the same MCP server under
+    # `mcp__plugin_thinkweave_thinkweave__…`; the retrieval log keys on the
+    # `.mcp.json` names, so fold the alias at this one wire boundary.
+    if tool_name.startswith(_PLUGIN_MCP_PREFIX):
+        tool_name = "mcp__thinkweave__" + tool_name[len(_PLUGIN_MCP_PREFIX):]
+        hook_input["tool_name"] = tool_name
 
     # Early-return gate: if the vault hasn't been initialised yet, every
     # hook is a no-op. Replaces the bash gate in hooks/hooks.json — that
@@ -1104,7 +1114,11 @@ def _build_event(tool_name: str, tool_input: dict, tool_output, now: str) -> dic
 
         # Enrich with structured metadata
         if _is_git_commit(command):
-            commit_info = _parse_commit_from_output(command, output_str)
+            commit_info = _parse_commit_from_output(command, output_str) or {}
+            if not commit_info.get("hash"):
+                # `git commit -q` / `-F -` print no `[branch hash]` line; the
+                # commit that just landed is HEAD, if HEAD is that fresh.
+                commit_info.update(_fresh_head_commit())
             if commit_info:
                 if commit_info.get("hash"):
                     files = _get_commit_files(commit_info["hash"])
@@ -1119,6 +1133,9 @@ def _build_event(tool_name: str, tool_input: dict, tool_output, now: str) -> dic
             branch = _parse_push_branch(command)
             if branch:
                 event["git_branch"] = branch
+        pull_request = _parse_gh_pr(command, output_str)
+        if pull_request:
+            event["pull_request"] = pull_request
     else:
         return None
 
@@ -1252,7 +1269,7 @@ def _is_significant_command(command: str) -> bool:
         head.startswith(s)
         for head in map(_command_head, _command_segments(command))
         for s in significant
-    )
+    ) or _parse_gh_pr(command, "") is not None
 
 
 def _diff_context(tool_name: str, tool_input: dict) -> str:
@@ -1277,6 +1294,58 @@ def _first_meaningful_line(text: str) -> str:
         if stripped and not stripped.startswith("#") and not stripped.startswith("//"):
             return stripped
     return ""
+
+
+# How old HEAD may be and still count as "the commit this Bash call made".
+# Hooks run right after the tool returns, so seconds suffice; the margin
+# covers a slow hook start under load.
+_FRESH_COMMIT_SECONDS = 120
+
+
+def _fresh_head_commit() -> dict:
+    """``{hash, message}`` of HEAD in the hook's cwd when it was committed in
+    the last ``_FRESH_COMMIT_SECONDS``; ``{}`` otherwise — an older HEAD
+    means the commit failed, and claiming it would misattribute work."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%h%x00%ct%x00%s"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return {}
+    parts = result.stdout.strip().split("\x00")
+    if result.returncode != 0 or len(parts) != 3 or not parts[1].isdigit():
+        return {}
+    if time.time() - int(parts[1]) > _FRESH_COMMIT_SECONDS:
+        return {}
+    return {"hash": parts[0], "message": parts[2][:120]}
+
+
+# `gh pr` subcommands that change a pull request. Read-only ones (view,
+# list, checks, diff, status) are not evidence of work and stay out.
+_GH_PR_ACTIONS = ("create", "merge", "close", "reopen", "ready", "review", "edit", "comment")
+_GH_PR_URL_RE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)")
+
+
+def _parse_gh_pr(command: str, output: str) -> dict | None:
+    """``{action, number?, url?}`` for the first mutating ``gh pr`` segment;
+    None when the command has none. The number comes from the PR URL in the
+    output (``gh pr create`` prints it) or the command's own argument."""
+    for segment in _command_segments(command):
+        words = _command_head(segment).split()
+        if words[:2] != ["gh", "pr"] or len(words) < 3 or words[2] not in _GH_PR_ACTIONS:
+            continue
+        info: dict = {"action": words[2]}
+        url = _GH_PR_URL_RE.search(output or "") or _GH_PR_URL_RE.search(segment)
+        if url:
+            info["url"] = url.group(0)
+            info["number"] = int(url.group(1))
+        elif len(words) > 3 and words[3].lstrip("#").isdigit():
+            info["number"] = int(words[3].lstrip("#"))
+        return info
+    return None
 
 
 def _get_commit_files(commit_hash: str) -> list[str]:
@@ -1453,6 +1522,8 @@ def _handle_stop(hook_input: dict) -> None:
             fm["test_runs"] = result.test_runs
         if result.git_branch:
             fm["git_branch"] = result.git_branch
+        if result.pull_requests:
+            fm["pull_requests"] = result.pull_requests
         if result.concepts:
             fm["concepts"] = result.concepts
         if result.decision_skeletons:
@@ -1591,6 +1662,8 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
         updates["test_runs"] = _merge_evidence(fm.get("test_runs"), result.test_runs)
     if result.git_branch:
         updates["git_branch"] = result.git_branch
+    if result.pull_requests:
+        updates["pull_requests"] = _merge_evidence(fm.get("pull_requests"), result.pull_requests)
     if result.failure_signals:
         updates["has_failures"] = True
 

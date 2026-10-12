@@ -405,7 +405,7 @@ class TestHookInstaller:
         # Two PostToolUse entries: action-tool gate + MCP-tool gate.
         matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
         assert "Write|Edit|Bash" in matchers
-        assert "mcp__thinkweave__.*" in matchers
+        assert "mcp__(plugin_thinkweave_)?thinkweave__.*" in matchers
         # Timeouts come from the canonical hooks.json (30s for PostToolUse
         # since PR #10), not the retired hand-maintained 5s default.
         for entry in settings["hooks"]["PostToolUse"]:
@@ -449,7 +449,7 @@ class TestHookInstaller:
         ]
         assert len(weave_entries) == 2
         weave_matchers = {e["matcher"] for e in weave_entries}
-        assert weave_matchers == {"Write|Edit|Bash", "mcp__thinkweave__.*"}
+        assert weave_matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
@@ -523,7 +523,7 @@ class TestHookInstaller:
         # Identify the action vs MCP PostToolUse entry by matcher.
         post_entries = settings["hooks"]["PostToolUse"]
         action_entry = next(e for e in post_entries if e["matcher"] == "Write|Edit|Bash")
-        mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__thinkweave__.*")
+        mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__(plugin_thinkweave_)?thinkweave__.*")
         action_cmd = action_entry["hooks"][0]["command"]
         mcp_cmd = mcp_entry["hooks"][0]["command"]
         stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
@@ -631,7 +631,7 @@ class TestHookInstaller:
         # within slot. Single-matcher phases stay at exactly one.
         assert len(settings["hooks"]["PostToolUse"]) == 2
         post_matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
-        assert post_matchers == {"Write|Edit|Bash", "mcp__thinkweave__.*"}
+        assert post_matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
         assert len(settings["hooks"]["SessionStart"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
 
@@ -686,7 +686,7 @@ class TestHookInstaller:
         post_entries = settings["hooks"]["PostToolUse"]
         # The MCP-matcher entry must be present.
         mcp_entry = next(
-            (e for e in post_entries if e["matcher"] == "mcp__thinkweave__.*"),
+            (e for e in post_entries if e["matcher"] == "mcp__(plugin_thinkweave_)?thinkweave__.*"),
             None,
         )
         assert mcp_entry is not None, (
@@ -709,9 +709,26 @@ class TestHookInstaller:
         )
         mcp_entries = [
             e for e in settings["hooks"]["PostToolUse"]
-            if e["matcher"] == "mcp__thinkweave__.*"
+            if e["matcher"] == "mcp__(plugin_thinkweave_)?thinkweave__.*"
         ]
         assert len(mcp_entries) == 1
+
+    def test_reinstall_migrates_the_previous_mcp_matcher(self, tmp_path: Path):
+        """An install written before the plugin-route matcher is rewritten in
+        place (matcher snapped), not joined by a second MCP entry."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        install_hooks(project_dir=str(project_dir))
+        path = project_dir / ".claude" / "settings.local.json"
+        settings = json.loads(path.read_text())
+        for e in settings["hooks"]["PostToolUse"]:
+            if e["matcher"].startswith("mcp__"):
+                e["matcher"] = "mcp__thinkweave__.*"
+        path.write_text(json.dumps(settings))
+        install_hooks(project_dir=str(project_dir))
+        matchers = [e["matcher"] for e in json.loads(path.read_text())["hooks"]["PostToolUse"]]
+        assert matchers.count("mcp__(plugin_thinkweave_)?thinkweave__.*") == 1
+        assert "mcp__thinkweave__.*" not in matchers
 
     def test_uninstall(self, tmp_path: Path):
         project_dir = tmp_path / "project"
@@ -2604,3 +2621,72 @@ class TestSessionHarnessAndModel:
         out = json.loads(capsys.readouterr().out)
         assert "model store unwritable" in out["systemMessage"]
         assert [e["type"] for e in _read_buffer(vault.weave_dir, session_id)] == ["prompt"]
+
+
+class TestCaptureGaps:
+    """Commit, `gh pr` and plugin-route retrieval capture (2026-10-12)."""
+
+    def test_push_line_is_not_a_commit_message(self):
+        from thinkweave.operations.hook_events import parse_commit_from_output
+
+        out = " * [new branch]      feat/x -> feat/x\n"
+        assert parse_commit_from_output("git commit -q -F - && git push", out) is None
+
+    def test_quiet_commit_falls_back_to_fresh_head(self, tmp_path: Path, monkeypatch):
+        import subprocess
+
+        from thinkweave.surfaces.hooks.handler import _build_events
+
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        subprocess.run([*git, "-C", str(tmp_path), "commit", "-q", "--allow-empty", "-m", "root"], check=True)
+        (tmp_path / "a.py").write_text("x = 1\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True)
+        subprocess.run([*git, "-C", str(tmp_path), "commit", "-q", "-m", "quiet one"], check=True)
+        monkeypatch.chdir(tmp_path)
+        [event] = _build_events("Bash", {"command": "git commit -q -F msg.txt"}, "", "now")
+        assert event["commit"]["message"] == "quiet one"
+        assert len(event["commit"]["hash"]) >= 7
+        assert event["commit"]["files"] == ["a.py"]
+
+    def test_stale_head_is_not_claimed(self, tmp_path: Path, monkeypatch):
+        from thinkweave.surfaces.hooks import handler
+
+        monkeypatch.chdir(tmp_path)  # not a repo: no HEAD at all
+        assert handler._fresh_head_commit() == {}
+
+    def test_gh_pr_create_and_merge(self):
+        from thinkweave.surfaces.hooks.handler import _is_significant_command, _parse_gh_pr
+
+        url = "https://github.com/o/r/pull/303"
+        assert _parse_gh_pr("gh pr create --title x --body-file -", url + "\n") == {
+            "action": "create", "url": url, "number": 303,
+        }
+        assert _parse_gh_pr("cd repo && gh pr merge 303 --merge", "") == {
+            "action": "merge", "number": 303,
+        }
+        assert _parse_gh_pr("gh pr view 303", "") is None
+        assert _is_significant_command("gh pr merge 303 --merge")
+        assert not _is_significant_command("gh pr checks 303")
+
+    def test_pull_requests_reach_the_extract_result(self):
+        from thinkweave.core.events import extract_deterministic
+
+        result = extract_deterministic([
+            {"tool": "Bash", "command": "gh pr create", "pull_request": {"action": "create", "number": 7}},
+        ])
+        assert result.pull_requests == [{"action": "create", "number": 7}]
+
+    def test_plugin_route_tool_name_counts_as_retrieval(self, monkeypatch):
+        from thinkweave.surfaces.hooks import handler
+
+        seen = {}
+        monkeypatch.setattr(handler, "_handle_post", lambda name, hi: seen.update(name=name))
+        monkeypatch.setattr(handler, "_track_model", lambda hi: None)
+        monkeypatch.setattr(handler, "_read_stdin", lambda: {
+            "tool_name": "mcp__plugin_thinkweave_thinkweave__weave_search", "session_id": "s",
+        })
+        monkeypatch.setattr("sys.argv", ["handler", "post_tool_use"])
+        monkeypatch.setattr("thinkweave.core.config.is_vault_initialized", lambda cfg: True)
+        handler.main()
+        assert seen["name"] == "mcp__thinkweave__weave_search"

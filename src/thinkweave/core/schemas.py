@@ -125,6 +125,7 @@ LIST_FRONTMATTER_KEYS: frozenset[str] = frozenset({
     "files_touched",
     "commit_refs",
     "commits",
+    "pull_requests",
     # Compaction-segment chain (#180) — list[str] of harness UUIDs; a
     # scalar here would be char-iterated by the chain resolver
     "segments",
