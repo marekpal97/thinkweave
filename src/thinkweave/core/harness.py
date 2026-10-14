@@ -25,11 +25,13 @@ from typing import Callable
 
 from thinkweave.core.plugin_route import PLUGIN_NAME, namespace_prompt, plugin_namespace
 
-# What the SessionStart hook asks `build_project_context` for. Lives here so a
-# harness that has to be *told* the payload's size (`additional_context_limit`)
-# derives its cap from the same number the handler spends — raising the budget
-# used to leave the cap behind, silently, and the payload spilled to a temp
-# file with no error (#107).
+# What the SessionStart hook asks `build_project_context` for where the
+# harness declares no inline cap (see `HarnessProfile
+# .additional_context_cap_chars`). Lives here so a harness that has to be
+# *told* the payload's size (`additional_context_limit`) derives its limit
+# from the same number the handler spends — raising the budget used to leave
+# the cap behind, silently, and the payload spilled to a temp file with no
+# error (#107).
 SESSION_START_BUDGET_TOKENS = 10_000
 
 #: The canonical lifecycle vocabulary — Claude Code's, exactly the events
@@ -194,6 +196,16 @@ class HarnessProfile:
     """Per-handler cap the harness needs to be told before it will pass a
     large ``additionalContext`` through to the model. ``None`` ⇒ the harness
     has no such knob and the installer writes nothing."""
+
+    additional_context_cap_chars: int | None = None
+    """Length of ``additionalContext`` above which the harness stops putting it
+    in the model's context on its own, in characters. Claude Code files the
+    text to a temp path and shows a 2KB preview instead (measured 2026-10-14:
+    a 14.1KB payload spilled), so anything above the cap is context the model
+    never received. No knob turns this cap — unlike
+    :attr:`additional_context_limit` — so the SessionStart budget is derived
+    from it (``retrieval.context.session_start_budget_tokens``). ``None`` ⇒ no
+    measured cap, and the builder's default budget applies unchanged."""
 
     hooks_install_caveat: str = ""
     """Anything standing between "the file is written" and "the hooks fire",
@@ -623,6 +635,10 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
             "Stop": "2026-08-29",
         },
         context_channel="additionalContext",
+        # Measured 2026-10-14: a 14.1KB SessionStart payload came back as a
+        # 2KB preview plus a temp-file path, so the rest never reached the
+        # model. There is no setting for this; the payload stays under it.
+        additional_context_cap_chars=10_000,
         transcript_glob=str(cc / "projects" / "*" / "*.jsonl"),
         transcript_format="jsonl-flat",
         transcript_parser="thinkweave.onboarding.claude_code_seed:parse_session",
