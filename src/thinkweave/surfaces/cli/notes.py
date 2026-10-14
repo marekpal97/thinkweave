@@ -284,7 +284,8 @@ def cmd_decisions(args: argparse.Namespace) -> None:
 
 
 def cmd_project(args: argparse.Namespace) -> None:
-    """Print a structured project snapshot — same payload as the SessionStart hook."""
+    """Print a structured project snapshot — every section, a superset of what
+    the SessionStart hook serves."""
     from thinkweave.retrieval.context import build_project_context
 
     cfg = load_config()
