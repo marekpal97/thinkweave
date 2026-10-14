@@ -120,6 +120,9 @@ Does in one process, zero model turns:
 - prune orphan session folders (conservative GC; this session is protected)
 - incremental reindex (picks up freshly written notes, drops pruned rows)
 - `judge_and_writeback` on the new decisions (verdict + status from git evidence)
+- citation lint: every decision this wrap minted whose body cites no note id is
+  listed under `warnings` (never an error), together with the notes served to
+  this session spelled out as ready-made `[[path|id]]` links — see §C3
 - regenerate DECISIONS.md + BACKLOG.md
 - concept-drift advisory (read-only — proposes nothing, just reports)
 
@@ -184,6 +187,8 @@ Per decision dict: `title`, `rationale` (the C/D/C prose), `outcome` (`committed
   - **BAD**: `"this should improve performance"` — no measurable claim, no manifestation pointer.
 
   Do NOT also restate the prediction in the rationale — the field IS the prediction. `wrap-finalize` will initialize new predictions to `prediction_match: pending`; the `/judge-prediction` skill takes over from there (live during a future `/wrap` that supersedes the decision, or via the cron drain).
+
+**Cite the notes you used, as `[[path|id]]`.** When a decision's reasoning rests on a note served this session — the SessionStart payload or one of your retrievals — the body links it: `[[sessions/2026-10-14-wrap-prior/n-9c3f1a2b|n-9c3f1a2b]]`. Vault-relative path sans `.md`, note id after the pipe: the wikilink convention the rest of the vault uses (catalyst logs, `## See Also`, `weave index --full`'s link repair). It is also the only link form the RLVR export counts as a citation — a link to a source *file*, or a bare `[[title]]`, cites no note. Where to find the served ids: the session's `retrieval_log.jsonl`, beside `events.jsonl` in the session folder. `weave wrap-finalize` lists every served note as a ready-made link in its zero-citation warning, so a flagged decision is a one-line fix on the next wrap. Cite only notes the reasoning actually used — never a note just because recall served it.
 
 ### C4. Concepts are mandatory
 Every insight and every decision: a `concepts` array, **≥2**, from the vocabulary loaded in C1. Pick concepts that connect this note to *other* notes (thematic, not descriptive). Prefer specific domain terms (`fts5`, `write-ahead-log`) over generic ones (`architecture`, `testing`). Test: "would another note about this topic share this concept?" Terms not in the ontology are accepted automatically into `proposed_concepts:` by the server — you don't pre-canonicalise.
