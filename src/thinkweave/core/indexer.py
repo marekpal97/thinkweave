@@ -320,8 +320,9 @@ class _EdgeLookup:
 class Indexer:
     """Builds and maintains the SQLite index from vault markdown."""
 
-    def __init__(self, config: Config | None = None):
+    def __init__(self, config: Config | None = None, *, busy_timeout_ms: int = 30000):
         self.config = config or load_config()
+        self.busy_timeout_ms = busy_timeout_ms
         self.vault = VaultManager(self.config)
         self._db: sqlite3.Connection | None = None
 
@@ -333,14 +334,15 @@ class Indexer:
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA foreign_keys=ON")
-            # Wait up to 30s for a busy lock before raising. Without this,
-            # concurrent writers (e.g. `weave hubs run` applying entries while
-            # a live MCP server indexer is writing) fail immediately with
-            # `sqlite3.OperationalError: database is locked`. With the
-            # timeout set, SQLite's default behaviour is to block and retry
-            # internally, which is exactly what we want for these short
-            # contended windows.
-            self._db.execute("PRAGMA busy_timeout = 30000")
+            # Wait for a busy lock before raising. Without this, concurrent
+            # writers (e.g. `weave hubs run` applying entries while a live MCP
+            # server indexer is writing) fail immediately with
+            # `sqlite3.OperationalError: database is locked`. With the timeout
+            # set, SQLite blocks and retries internally, which is what a
+            # long-running batch caller wants. A latency-bounded caller (a
+            # hook) passes a short value and retries itself, so each wait is
+            # visible in its own log.
+            self._db.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
             self._init_schema()
         return self._db
 

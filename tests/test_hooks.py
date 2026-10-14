@@ -2690,3 +2690,143 @@ class TestCaptureGaps:
         monkeypatch.setattr("thinkweave.core.config.is_vault_initialized", lambda cfg: True)
         handler.main()
         assert seen["name"] == "mcp__thinkweave__weave_search"
+
+
+def _hold_index_write_lock(db_path: Path, ready, release, seconds=None) -> None:
+    """Take the index db's write lock.
+
+    It is handed back after ``seconds`` when given, otherwise when ``release``
+    is set.
+    """
+    import sqlite3
+    import time
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("BEGIN IMMEDIATE")
+    ready.set()
+    if seconds is None:
+        release.wait(30)
+    else:
+        time.sleep(seconds)
+    conn.execute("ROLLBACK")
+    conn.close()
+
+
+class TestIndexWriteLockRetry:
+    """The hook's index write retries a locked db instead of losing the note.
+
+    Two harness sessions writing one vault used to fail the index step with
+    ``sqlite3.OperationalError: database is locked``: the session note reached
+    disk but never entered the index until a manual ``weave index --only-new``.
+    """
+
+    @staticmethod
+    def _warmed_vault(tmp_path: Path, monkeypatch):
+        """A vault whose index db exists before anyone takes a lock."""
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.vault import VaultManager
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+        vm = VaultManager(config=cfg)
+        vm.ensure_dirs()
+        idx = Indexer(config=cfg)
+        idx.rebuild()
+        idx.close()
+        return cfg, vm
+
+    @staticmethod
+    def _indexed_ids(cfg: Config, note_id: str) -> int:
+        from thinkweave.core.indexer import Indexer
+
+        idx = Indexer(config=cfg)
+        try:
+            return idx.db.execute(
+                "SELECT COUNT(*) FROM notes WHERE id = ?", (note_id,)
+            ).fetchone()[0]
+        finally:
+            idx.close()
+
+    def test_index_retry_clears_a_one_second_write_lock(
+        self, tmp_path: Path, monkeypatch
+    ):
+        import threading
+
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg, vm = self._warmed_vault(tmp_path, monkeypatch)
+        ready, release = threading.Event(), threading.Event()
+        holder = threading.Thread(
+            target=_hold_index_write_lock,
+            args=(cfg.index_db, ready, release, 1.0),
+            daemon=True,
+        )
+        holder.start()
+        assert ready.wait(10)
+        try:
+            handler_mod._ensure_session(
+                cfg, "lock-seg-a", {"session_id": "lock-seg-a", "cwd": str(tmp_path)}
+            )
+        finally:
+            release.set()
+            holder.join(10)
+
+        path = handler_mod._find_session_note(vm, "lock-seg-a")
+        assert path is not None
+        note_id = vm.read_note(path).frontmatter["id"]
+        assert self._indexed_ids(cfg, note_id) == 1
+
+        log_text = (cfg.weave_dir / "hooks.log").read_text(encoding="utf-8")
+        assert "locked" in log_text.lower()
+        assert "retrying" in log_text.lower()
+
+    def test_index_retry_budget_leaves_the_note_on_disk(
+        self, tmp_path: Path, monkeypatch
+    ):
+        import threading
+
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg, vm = self._warmed_vault(tmp_path, monkeypatch)
+        # Shrink the backoff ladder; the per-attempt wait stays real.
+        monkeypatch.setattr(handler_mod, "_INDEX_RETRY_DELAYS_S", (0.01, 0.02, 0.03))
+        ready, release = threading.Event(), threading.Event()
+        holder = threading.Thread(
+            target=_hold_index_write_lock,
+            args=(cfg.index_db, ready, release),
+            daemon=True,
+        )
+        holder.start()
+        assert ready.wait(10)
+        try:
+            handler_mod._ensure_session(
+                cfg, "lock-seg-b", {"session_id": "lock-seg-b", "cwd": str(tmp_path)}
+            )
+        finally:
+            release.set()
+            holder.join(10)
+
+        path = handler_mod._find_session_note(vm, "lock-seg-b")
+        assert path is not None and path.exists()
+        note_id = vm.read_note(path).frontmatter["id"]
+        assert self._indexed_ids(cfg, note_id) == 0
+
+        log_text = (cfg.weave_dir / "hooks.log").read_text(encoding="utf-8")
+        assert "database is locked" in log_text
+
+    def test_index_retry_does_not_swallow_an_ordinary_index_failure(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg, _ = self._warmed_vault(tmp_path, monkeypatch)
+
+        def boom(self, path):
+            raise ValueError("not a lock")
+
+        monkeypatch.setattr(Indexer, "index_file", boom)
+        with pytest.raises(ValueError, match="not a lock"):
+            handler_mod._index_with_retry(cfg, tmp_path / "note.md", "stop/index")

@@ -820,6 +820,54 @@ def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str)
     return False
 
 
+# Index-write lock budget. The indexer's 30s default wait is longer than the
+# 30s envelope a hook fires under, so a hook waits briefly per attempt and
+# spends the rest of its budget on retries it logs.
+# ponytail: the budget bounds the total wait at ~5s, so a writer that holds the
+# lock longer (a full rebuild on a large vault) still leaves the index behind.
+# Upgrade path: a single-writer queue for stop-time indexing. Heal: `weave index
+# --only-new`.
+_INDEX_ATTEMPT_BUSY_MS = 250
+_INDEX_RETRY_DELAYS_S = (0.5, 1.0, 2.0)
+
+
+def _index_with_retry(cfg, path: Path, where: str) -> None:
+    """Index one note, retrying a locked index db with backoff.
+
+    ``where`` names the hook site in the log (``"stop/index"``, …). A lock that
+    outlasts the budget is logged and dropped: the note is on disk, its prompt
+    survives in the buffer, and ``weave index --only-new`` heals the index. Any
+    other failure raises to the caller.
+    """
+    import sqlite3
+
+    from thinkweave.core.indexer import Indexer
+
+    attempts = len(_INDEX_RETRY_DELAYS_S) + 1
+    for attempt in range(1, attempts + 1):
+        idx = Indexer(config=cfg, busy_timeout_ms=_INDEX_ATTEMPT_BUSY_MS)
+        try:
+            idx.index_file(path)
+            if attempt > 1:
+                _log_info(where, f"index write recovered on attempt {attempt}")
+            return
+        except sqlite3.OperationalError as err:
+            if "locked" not in str(err).lower():
+                raise
+            if attempt == attempts:
+                _log_error(where, err)
+                return
+            delay = _INDEX_RETRY_DELAYS_S[attempt - 1]
+            _log_info(
+                where,
+                f"index write attempt {attempt} hit a locked db; "
+                f"retrying in {delay}s ({err})",
+            )
+            time.sleep(delay)
+        finally:
+            idx.close()
+
+
 def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     """Create session note on first event, index it once for MCP discoverability."""
     if not session_id:
@@ -860,11 +908,7 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     )
 
     # Index once so MCP tools (weave_search) can find this session mid-conversation
-    from thinkweave.core.indexer import Indexer
-
-    idx = Indexer(config=cfg)
-    idx.index_file(session_path)
-    idx.close()
+    _index_with_retry(cfg, session_path, "ensure-session/index")
 
 
 # Directory markers — matched anywhere in the path, since every file under
@@ -1448,7 +1492,6 @@ def _handle_stop(hook_input: dict) -> None:
 
     try:
         from thinkweave.core.config import load_config
-        from thinkweave.core.indexer import Indexer
         from thinkweave.core.vault import (
             VaultManager,
             render_frontmatter,
@@ -1566,11 +1609,7 @@ def _handle_stop(hook_input: dict) -> None:
         # Index once
         diagnostic = ""
         try:
-            idx = Indexer(config=cfg)
-            try:
-                idx.index_file(session_path)
-            finally:
-                idx.close()
+            _index_with_retry(cfg, session_path, "stop/index")
         except Exception as e:
             _log_error("stop/index", e)
             diagnostic = _report_failure("stop/index", hook_input, e)
@@ -1630,7 +1669,6 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
     materialised this note", which is still true.
     """
     from thinkweave.core.events import extract_deterministic
-    from thinkweave.core.indexer import Indexer
     from thinkweave.core.vault import parse_frontmatter, render_frontmatter
 
     live = _read_buffer(cfg.weave_dir, source_session)
@@ -1679,11 +1717,7 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
 
     mirrored = mirror_buffer_events(cfg.weave_dir, source_session, session_dir)
     if updates or mirrored:
-        idx = Indexer(config=cfg)
-        try:
-            idx.index_file(session_path)
-        finally:
-            idx.close()
+        _index_with_retry(cfg, session_path, "fold/index")
 
 
 def _handle_session_start(hook_input: dict) -> None:
