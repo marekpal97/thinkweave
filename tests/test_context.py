@@ -8,10 +8,14 @@ from pathlib import Path
 import pytest
 
 from thinkweave.core.config import Config
+from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
 from thinkweave.retrieval.context import (
     CHARS_PER_TOKEN,
     SECTIONS,
+    SESSION_START_GUARD_HEADROOM_CHARS,
+    SESSION_START_SECTIONS,
     build_project_context,
+    session_start_budget_tokens,
     _extract_insight_titles,
     _extract_summary,
     _slice_markdown_section,
@@ -340,6 +344,111 @@ class TestBuildProjectContext:
         assert "themes" in SECTIONS
         assert "footer" in SECTIONS
         assert len(SECTIONS) == 12
+
+
+# ---------------------------------------------------------------------------
+# The harness inline cap (#317)
+# ---------------------------------------------------------------------------
+
+
+# Claude Code renders an ``additionalContext`` this long inline; above it it
+# files the text and shows the model a 2KB preview. The issue's measured
+# number, independent of how the profile or the derivation is written.
+CLAUDE_CODE_CAP = 10_000
+
+
+class TestHookContextCap:
+    """The SessionStart payload must land inline, not as a file preview."""
+
+    def test_claude_code_profile_declares_the_inline_cap(self):
+        from thinkweave.core import harness
+
+        assert harness.claude_code().additional_context_cap_chars == CLAUDE_CODE_CAP
+
+    def test_derived_budget_leaves_room_for_the_guard(self):
+        # The handler prepends the memory-seam guard to the payload, so the
+        # payload's own budget has to leave the guard's share of the cap.
+        spent = session_start_budget_tokens(CLAUDE_CODE_CAP) * CHARS_PER_TOKEN
+        assert spent + SESSION_START_GUARD_HEADROOM_CHARS <= CLAUDE_CODE_CAP
+
+    def test_unknown_cap_falls_back_to_the_default_budget(self):
+        assert session_start_budget_tokens(None) == SESSION_START_BUDGET_TOKENS
+
+    def test_session_start_leads_with_the_continuation_cues(self):
+        assert SESSION_START_SECTIONS[:3] == ("header", "tasks", "sessions")
+
+    def test_session_start_omits_tools_footer_and_state(self):
+        # A section that is neither served at startup nor named here would be
+        # lost silently — the explicit exclusion set is the guard.
+        assert set(SECTIONS) - set(SESSION_START_SECTIONS) == {
+            "tools",
+            "footer",
+            "state",
+        }
+
+    def test_state_absent_from_the_startup_payload_and_present_in_the_snapshot(
+        self,
+        config: Config,
+        vault: VaultManager,
+        indexer: Indexer,
+        vault_dir: Path,
+    ):
+        project_dir = vault_dir / "projects" / "withstate"
+        project_dir.mkdir(parents=True)
+        (project_dir / "STATE.md").write_text(
+            "# State\n\nThe big picture of this project.\n", encoding="utf-8"
+        )
+        _populate_wrapped_session(
+            vault, "withstate", title="Kickoff session", processed_at="2026-04-05"
+        )
+        indexer.rebuild(full=True)
+
+        startup = build_project_context(
+            config,
+            project="withstate",
+            sections=list(SESSION_START_SECTIONS),
+            budget_tokens=session_start_budget_tokens(CLAUDE_CODE_CAP),
+            omit_empty=True,
+        )
+        assert "## State of Play" not in startup
+        assert "The big picture" not in startup
+
+        snapshot = build_project_context(config, project="withstate")
+        assert "## State of Play" in snapshot
+        assert "The big picture" in snapshot
+
+    def test_tool_events_only_session_is_not_listed(
+        self, config: Config, vault: VaultManager, indexer: Indexer
+    ):
+        """A session whose only summary is the no-metadata fallback says
+        nothing to a new session, so it is skipped — and it is the NEWER of
+        the two here, so a builder that lists by recency would show it."""
+        _populate_wrapped_session(
+            vault, "demo", title="Session with a summary", processed_at="2026-04-05"
+        )
+        vault.create_note(
+            NoteType.SESSION,
+            "Session with no metadata",
+            body="## Summary\n7 tool events recorded.\n",
+            project="demo",
+            extra_frontmatter={
+                "processed": True,
+                "processed_at": "2026-04-06",
+                "source_session": "cc-quiet",
+            },
+        )
+        indexer.rebuild(full=True)
+
+        payload = build_project_context(
+            config,
+            project="demo",
+            sections=list(SESSION_START_SECTIONS),
+            budget_tokens=session_start_budget_tokens(CLAUDE_CODE_CAP),
+            omit_empty=True,
+        )
+        assert "Session with a summary" in payload
+        assert "Session with no metadata" not in payload
+        assert "tool events recorded" not in payload
 
 
 class TestToolManifestConsolidation:

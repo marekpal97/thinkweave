@@ -158,6 +158,19 @@ def extract_deterministic(
     )
 
 
+#: The no-metadata auto-summary: what a session's summary says when it has no
+#: files, commits or test runs. Its producer formats this and the SessionStart
+#: payload builder filters on it, so the shape is declared once instead of
+#: being a string each site re-types.
+TOOL_EVENTS_FALLBACK = "tool events recorded"
+
+
+def is_tool_events_fallback(summary: str) -> bool:
+    """True when a session summary says nothing but "N tool events recorded"."""
+    count, marker, rest = summary.strip().rstrip(".").partition(TOOL_EVENTS_FALLBACK)
+    return bool(marker) and not rest.strip() and count.strip().isdigit()
+
+
 def _build_summary(
     files_touched: list[str],
     commits: list[dict],
@@ -185,7 +198,7 @@ def _build_summary(
                 f = tr.get("failed", 0)
                 parts.append(f"Tests: {p} passed, {f} failed")
     if not parts:
-        parts.append(f"{event_count} tool events recorded")
+        parts.append(f"{event_count} {TOOL_EVENTS_FALLBACK}")
     return ". ".join(parts) + "."
 
 

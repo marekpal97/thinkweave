@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from thinkweave.core.config import Config, load_config, normalize_project_name
+from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
 
 # Rough approximation: 1 token ≈ 4 characters for English markdown. Used
 # to convert caller-facing token budgets into char budgets.
@@ -39,14 +40,56 @@ SECTIONS = (
     "footer",
 )
 
-# SessionStart omits "tools" and "footer": Claude Code defers MCP tool schemas
-# and surfaces them through ToolSearch, so a manifest of the weave_* tools and a
-# retrieval-hints table restate what the tool descriptions already carry.
-# ``weave_project_snapshot`` still serves every section on request.
-SESSION_START_SECTIONS = tuple(s for s in SECTIONS if s not in ("tools", "footer"))
+# SessionStart's section set and order. The first three carry what a new
+# session needs before it can act — identity, the open-task continuation cue,
+# the wrapped-session history — so they render first: if a payload ever
+# overflows its harness again, the harness's preview still shows them.
+#
+# Excluded, each for a stated reason:
+# - ``tools``/``footer``: Claude Code defers MCP tool schemas and surfaces them
+#   through ToolSearch, so a manifest and a hints table restate what the tool
+#   descriptions already carry (dec-7c6dfa2b).
+# - ``state``: STATE.md goes stale between wraps and nothing refreshes it, so
+#   an always-on copy is a stale claim in every session's context. Its excerpt
+#   was also the biggest single contributor to the overflow the cap now
+#   prevents, and ``weave_project_snapshot`` still serves it on demand.
+SESSION_START_SECTIONS = (
+    "header",
+    "tasks",
+    "sessions",
+    "backlog",
+    "decisions",
+    "probes",
+    "themes",
+    "concepts",
+    "sources",
+)
 
-# Drop order when over budget. Header/tools/state/sessions are load-bearing
-# and dropped last; decorative sections go first.
+# Characters the SessionStart handler reserves for the memory-seam guard it
+# prepends to the payload (``synthesis.memory_seam.session_guard_section``:
+# a header block plus at most 8 hit lines). The payload budget is the cap
+# minus this reserve, so payload + guard stay inside the cap.
+SESSION_START_GUARD_HEADROOM_CHARS = 2_000
+
+
+def session_start_budget_tokens(cap_chars: int | None) -> int:
+    """Token budget that keeps the SessionStart payload inside a harness's cap.
+
+    ``cap_chars`` is the harness profile's ``additional_context_cap_chars``;
+    ``None`` (no measured cap) leaves the default budget standing, so every
+    harness but Claude Code renders as it did before.
+    """
+    if not cap_chars:
+        return SESSION_START_BUDGET_TOKENS
+    usable = cap_chars - SESSION_START_GUARD_HEADROOM_CHARS
+    return max(usable // CHARS_PER_TOKEN, 1)
+
+
+# Drop order when over budget. Header/tasks/sessions carry the continuation
+# cue and are never dropped; decorative sections go first, cheapest-to-lose
+# last. ``state`` and ``tools`` appear in neither list: the SessionStart set
+# excludes them, and the snapshot route treats them as load-bearing — they
+# reach the truncation fallback below rather than a whole-section drop.
 _DROP_ORDER = ("sources", "themes", "concepts", "probes", "decisions", "backlog")
 
 
@@ -292,6 +335,8 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
     finally:
         db.close()
 
+    from thinkweave.core.events import is_tool_events_fallback
+
     # Filter to wrapped sessions and sort by processed_at (falling back to date)
     # in Python — avoids reliance on SQLite JSON1 extension.
     wrapped: list[tuple] = []
@@ -302,8 +347,14 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
             fm = {}
         if not fm.get("processed"):
             continue
+        summary = _extract_summary(row["body_text"] or "")
+        # A session whose only summary is the no-metadata fallback reports
+        # that nothing was captured, not what happened — no use to a session
+        # starting now, and it spends a chunk of the cap.
+        if is_tool_events_fallback(summary):
+            continue
         sort_key = str(fm.get("processed_at") or row["date"] or "")
-        wrapped.append((sort_key, row, fm))
+        wrapped.append((sort_key, row, fm, summary))
 
     wrapped.sort(key=lambda t: t[0], reverse=True)
     wrapped = wrapped[:n]
@@ -312,21 +363,20 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
         return Section(
             key="sessions",
             title=_default_title("sessions"),
-            body="_(no wrapped sessions found — run `/wrap` at session end)_",
+            body="_(no wrapped session summaries yet — run `/wrap` at session end)_",
             empty=True,
             soft_budget_chars=200,
         )
 
     # Collect session IDs to batch-query derived notes.
-    session_ids = [row["id"] for _sk, row, _fm in wrapped]
+    session_ids = [row["id"] for _sk, row, _fm, _summary in wrapped]
     derived_map = _get_derived_artifacts(cfg, session_ids)
 
     chunks = []
-    for _sort_key, row, fm in wrapped:
+    for _sort_key, row, fm, summary in wrapped:
         ses_id = row["id"]
         title = row["title"] or fm.get("id", "session")
         date = fm.get("processed_at") or row["date"] or ""
-        summary = _extract_summary(row["body_text"] or "")
         insight_titles = _extract_insight_titles(row["body_text"] or "")
 
         chunk = f"### {title} (`{ses_id}`)\n_{date}_\n\n{summary}"
