@@ -211,6 +211,25 @@ class TestRegistrationScopes:
         assert result.passed, result.detail
 
 
+    def test_an_entry_with_and_without_the_safe_path_flag_is_one_invocation(
+        self, tmp_path, use_profile):
+        """``weave install`` writes ``python -P -m …``; every entry written
+        before that carries ``python -m …``. The flag changes how the
+        interpreter builds sys.path, not what is launched, so a machine entry
+        beside an older project entry must not read as a phantom conflict."""
+        claude_json = tmp_path / "claude.json"
+        with_safe_path = dict(CANONICAL_ENTRY)
+        with_safe_path["args"] = [
+            "run", "--project", ".", "--extra", "mcp",
+            "python", "-P", "-m", "thinkweave.surfaces.mcp.server",
+        ]
+        _write_claude_json(claude_json, with_safe_path)
+        _write_mcp_json(tmp_path, CANONICAL_ENTRY)  # no -P
+        use_profile(mcp_config=claude_json)
+        result = md.check_registration_scopes(tmp_path)
+        assert result.passed, result.detail
+        assert "identically" in result.detail
+
     def test_machine_uv_plus_project_launcher_is_equivalent(
         self, tmp_path, use_profile):
         """The portable launcher IS the uv-run invocation (#52): a machine
