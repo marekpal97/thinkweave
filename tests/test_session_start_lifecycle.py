@@ -439,9 +439,8 @@ def _session_body(i: int) -> str:
 def fat_vault(vault_factory, monkeypatch):
     """Ten wrapped sessions, seven open tasks, and a 15KB STATE.md.
 
-    The shape of the vault whose payload measured 14.1KB on 2026-10-14: the
-    STATE.md excerpt alone could reach 12KB, so a builder that still served
-    it would blow the cap on this fixture.
+    The overflow shape: the STATE.md excerpt alone can fill 12KB of the
+    payload, so a builder that still serves it blows the cap here.
     """
     from thinkweave.core.indexer import Indexer
     from thinkweave.core.schemas import NoteType
