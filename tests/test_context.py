@@ -347,13 +347,13 @@ class TestBuildProjectContext:
 
 
 # ---------------------------------------------------------------------------
-# The harness inline cap (#317)
+# The harness inline cap
 # ---------------------------------------------------------------------------
 
 
 # Claude Code renders an ``additionalContext`` this long inline; above it it
-# files the text and shows the model a 2KB preview. The issue's measured
-# number, independent of how the profile or the derivation is written.
+# files the text and shows the model a 2KB preview. Hand-written from that
+# harness behaviour, independent of the profile field it is compared against.
 CLAUDE_CODE_CAP = 10_000
 
 
@@ -449,6 +449,59 @@ class TestHookContextCap:
         assert "Session with a summary" in payload
         assert "Session with no metadata" not in payload
         assert "tool events recorded" not in payload
+
+    def test_a_section_too_big_for_the_budget_drops_before_the_ranked_ones(
+        self, config: Config, vault: VaultManager, indexer: Indexer, vault_dir: Path
+    ):
+        """One oversized section must not evict the sections that do fit.
+
+        The backlog landing doc here is 9,000 chars against a 8,000-char
+        budget, so it can never fit beside anything. A drop order that walks
+        by rank alone (sources, themes, concepts, probes, decisions, backlog)
+        spends the small sections first and delivers a payload of just the
+        header, discarding budget it had already reserved.
+        """
+        project_dir = vault_dir / "projects" / "demo"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "BACKLOG.md").write_text(
+            "# Backlog\n\n## Open\n\n" + "- [ ] Item worth reading. " * 400 +
+            "\n\n## Closed\n\n- [x] Done\n",
+            encoding="utf-8",
+        )
+        vault.create_note(
+            NoteType.DECISION,
+            "Use FTS5",
+            body="Rationale body",
+            project="demo",
+            extra_frontmatter={"status": "accepted", "summary": "FTS5 is fast enough"},
+        )
+        indexer.rebuild(full=True)
+
+        payload = build_project_context(config, project="demo", budget_tokens=2_000)
+
+        assert "## Backlog" not in payload
+        # The section that fits survives, instead of paying for the one that
+        # never could.
+        assert "## Recent Decisions" in payload
+        assert "Use FTS5" in payload
+
+    def test_dropped_sections_are_announced_in_the_payload(
+        self, config: Config, vault: VaultManager, indexer: Indexer, vault_dir: Path
+    ):
+        """A payload that lost sections says which, so the reader knows what
+        to fetch on demand rather than assuming the vault is quiet."""
+        project_dir = vault_dir / "projects" / "demo"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "BACKLOG.md").write_text(
+            "# Backlog\n\n## Open\n\n" + "- [ ] Item worth reading. " * 400 + "\n",
+            encoding="utf-8",
+        )
+        indexer.rebuild(full=True)
+
+        payload = build_project_context(config, project="demo", budget_tokens=2_000)
+
+        assert "Backlog (Open Items)" in payload
+        assert "omitted" in payload
 
 
 class TestToolManifestConsolidation:

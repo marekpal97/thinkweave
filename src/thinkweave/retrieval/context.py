@@ -48,11 +48,11 @@ SECTIONS = (
 # Excluded, each for a stated reason:
 # - ``tools``/``footer``: Claude Code defers MCP tool schemas and surfaces them
 #   through ToolSearch, so a manifest and a hints table restate what the tool
-#   descriptions already carry (dec-7c6dfa2b).
+#   descriptions already carry.
 # - ``state``: STATE.md goes stale between wraps and nothing refreshes it, so
 #   an always-on copy is a stale claim in every session's context. Its excerpt
-#   was also the biggest single contributor to the overflow the cap now
-#   prevents, and ``weave_project_snapshot`` still serves it on demand.
+#   is also the biggest single contributor to the overflow the cap prevents,
+#   and ``weave_project_snapshot`` still serves it on demand.
 SESSION_START_SECTIONS = (
     "header",
     "tasks",
@@ -262,7 +262,7 @@ def _build_tools_manifest() -> Section:
         "- `weave_search(query, mode='fts'|'similar'|'hybrid', project, type, tags, concepts, since, until, limit)` — keyword, semantic, or RRF-fused hybrid. Empty `query` = list mode. `concepts=[…]` combines text + concept filter.\n"
         "- `weave_context(query, project, type, concepts, since, until, limit)` — 3-layer composition (FTS → similarity-via-concept → recency), deduped budget blob.\n"
         "- `weave_timeline(project, days)` — chronological window of sessions + decisions.\n"
-        "- `weave_project_snapshot(project, sections, budget_tokens)` — re-fetch this SessionStart payload on demand.\n"
+        "- `weave_project_snapshot(project, sections, budget_tokens)` — re-fetch the full project context on demand: every section, including the state, tools and footer sections SessionStart leaves out.\n"
         "\n"
         "**Graph (filter-dispatched)**\n"
         "- `weave_graph(id, depth, filter, …)` — typed-edge walk. `filter` dispatches the variant:\n"
@@ -951,19 +951,29 @@ def _assemble(collected: dict[str, Section], wanted: list[str], max_chars: int) 
     if len(rendered) <= max_chars:
         return rendered
 
-    # Over budget — drop sections in _DROP_ORDER until we fit. Never drop
-    # header/tools/state/sessions/footer.
     kept = {s.key: s for s in ordered}
+
+    # A section bigger than the whole budget can never fit beside anything, so
+    # it goes before the ranked drops rather than evicting every other section
+    # on its way out.
+    for s in ordered:
+        if len(s.body) > max_chars:
+            kept.pop(s.key, None)
+    rendered = _render_kept(ordered, kept)
+    if len(rendered) <= max_chars:
+        return rendered
+
+    # Still over — drop sections in _DROP_ORDER until we fit. Never drop
+    # header/tasks/sessions/tools/footer.
     for drop_key in _DROP_ORDER:
         if drop_key in kept:
             del kept[drop_key]
-            remaining = [s for s in ordered if s.key in kept]
-            rendered = _render(remaining)
+            rendered = _render_kept(ordered, kept)
             if len(rendered) <= max_chars:
                 return rendered
 
-    # Still over — truncate the sessions body, then state body, as last resort.
-    # This preserves the structure but allows big STATE/history files to fit.
+    # Still over — truncate the sessions body, then the state body, as last resort.
+    # This preserves the structure but allows big history files to fit.
     remaining = [s for s in ordered if s.key in kept]
     for target_key in ("sessions", "state"):
         for s in remaining:
@@ -972,7 +982,7 @@ def _assemble(collected: dict[str, Section], wanted: list[str], max_chars: int) 
                     s.body[: max(2000, max_chars // 4)]
                     + "\n\n_... (truncated to fit budget)_"
                 )
-        rendered = _render(remaining)
+        rendered = _render_kept(ordered, kept)
         if len(rendered) <= max_chars:
             return rendered
 
@@ -980,10 +990,22 @@ def _assemble(collected: dict[str, Section], wanted: list[str], max_chars: int) 
     return rendered[: max_chars - 40] + "\n\n_... (payload capped)_"
 
 
-def _render(sections: list[Section]) -> str:
-    parts = []
-    for s in sections:
-        parts.append(f"## {s.title}\n\n{s.body}")
+def _render_kept(ordered: list[Section], kept: dict[str, Section]) -> str:
+    """The kept sections in order, plus the line naming the dropped ones.
+
+    A reader that sees a short payload must be able to tell a quiet vault from a
+    section the budget removed, so the omission is stated, not left to infer.
+    """
+    return _render(
+        [s for s in ordered if s.key in kept],
+        [s.title for s in ordered if s.key not in kept],
+    )
+
+
+def _render(sections: list[Section], dropped: list[str] | None = None) -> str:
+    parts = [f"## {s.title}\n\n{s.body}" for s in sections]
+    if dropped:
+        parts.append("_(sections omitted to fit the budget: " + ", ".join(dropped) + ")_")
     return "\n\n".join(parts)
 
 
