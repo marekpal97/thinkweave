@@ -2790,8 +2790,12 @@ class TestIndexWriteLockRetry:
         from thinkweave.surfaces.hooks import handler as handler_mod
 
         cfg, vm = self._warmed_vault(tmp_path, monkeypatch)
-        # Shrink the backoff ladder; the per-attempt wait stays real.
-        monkeypatch.setattr(handler_mod, "_INDEX_RETRY_DELAYS_S", (0.01, 0.02, 0.03))
+        # Scale the real ladder down; the attempt count and the per-attempt
+        # wait stay production's.
+        monkeypatch.setattr(
+            handler_mod, "_INDEX_RETRY_DELAYS_S",
+            tuple(d / 50 for d in handler_mod._INDEX_RETRY_DELAYS_S),
+        )
         ready, release = threading.Event(), threading.Event()
         holder = threading.Thread(
             target=_hold_index_write_lock,

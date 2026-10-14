@@ -821,14 +821,16 @@ def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str)
 
 
 # Index-write lock budget. The indexer's 30s default wait is longer than the
-# 30s envelope a hook fires under, so a hook waits briefly per attempt and
-# spends the rest of its budget on retries it logs.
-# ponytail: the budget bounds the total wait at ~5s, so a writer that holds the
-# lock longer (a full rebuild on a large vault) still leaves the index behind.
-# Upgrade path: a single-writer queue for stop-time indexing. Heal: `weave index
-# --only-new`.
+# 30s envelope every indexing hook fires under, so a hook waits briefly per
+# attempt and spends the rest of its budget on retries it logs. The ladder sums
+# to ~9s: room for two or three contended writes on a large vault, with margin
+# left in the envelope for the rest of the hook's work.
+# ponytail: a writer that holds the lock longer than the budget — a full rebuild,
+# or eight sessions prompting at once on a cold 700MB index — still leaves the
+# note unindexed. Upgrade path: a single-writer queue for stop-time indexing.
+# Heal: `weave index --only-new`.
 _INDEX_ATTEMPT_BUSY_MS = 250
-_INDEX_RETRY_DELAYS_S = (0.5, 1.0, 2.0)
+_INDEX_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0)
 
 
 def _index_with_retry(cfg, path: Path, where: str) -> None:
@@ -839,6 +841,7 @@ def _index_with_retry(cfg, path: Path, where: str) -> None:
     survives in the buffer, and ``weave index --only-new`` heals the index. Any
     other failure raises to the caller.
     """
+    import random
     import sqlite3
 
     from thinkweave.core.indexer import Indexer
@@ -857,7 +860,9 @@ def _index_with_retry(cfg, path: Path, where: str) -> None:
             if attempt == attempts:
                 _log_error(where, err)
                 return
-            delay = _INDEX_RETRY_DELAYS_S[attempt - 1]
+            # Processes that lost the same lock wake together, so the wait is
+            # jittered down to half its length at most.
+            delay = round(_INDEX_RETRY_DELAYS_S[attempt - 1] * (0.5 + random.random() / 2), 3)
             _log_info(
                 where,
                 f"index write attempt {attempt} hit a locked db; "
