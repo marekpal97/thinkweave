@@ -909,6 +909,11 @@ def apply_declaration(
     return wrap.result
 
 
+#: The feedback event keys a round copies; an absent or empty one stays off
+#: the round, so a stream written before a key existed compiles unchanged.
+_FEEDBACK_KEYS = ("register", "prompt_ref", "ts", "text")
+
+
 class _DeclarationPass:
     """One wrap's task pass: the session it wraps, and what it reconciled."""
 
@@ -954,7 +959,7 @@ class _DeclarationPass:
         )
         self.closing_refs = self.evidence.closing_refs(self.repo)
         self.verdicts = [
-            {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
+            {k: str(row[k]) for k in _FEEDBACK_KEYS if row.get(k)}
             for stream in streams
             for row in feedback_events(stream)
         ]

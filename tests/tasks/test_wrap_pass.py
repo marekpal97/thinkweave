@@ -753,6 +753,35 @@ class TestLedgerRound:
             }
         ]
 
+    def test_the_round_carries_a_feedback_event_s_full_text_when_it_records_one(
+        self, cfg: Config
+    ):
+        """A stream whose verdict event carries the whole prompt compiles it
+        onto the round; a row written before that key still compiles as its
+        three join keys."""
+        folder, _ids = seed_session(cfg)
+        quote = "no, keep rounds sealed — " + "x" * 200
+        with (folder / "events.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": "2026-10-02T11:00:00+00:00", "type": "feedback",
+                "session_id": SESSION, "register": "correction",
+                "prompt_ref": quote[:120], "text": quote,
+            }) + "\n")
+        result = reconcile_session(cfg, load_declaration(), folder)
+        assert task_notes(cfg)[result.minted[0]]["rounds"][0]["feedback"] == [
+            {
+                "register": "correction",
+                "prompt_ref": "no, keep rounds sealed",
+                "ts": "2026-10-02T10:00:00+00:00",
+            },
+            {
+                "register": "correction",
+                "prompt_ref": quote[:120],
+                "ts": "2026-10-02T11:00:00+00:00",
+                "text": quote,
+            },
+        ]
+
     def test_round_names_the_harness_the_wrap_runs_under(self, cfg: Config, monkeypatch):
         monkeypatch.setattr(harness, "_OVERRIDE", None)
         monkeypatch.setenv("THINKWEAVE_HARNESS", "codex")

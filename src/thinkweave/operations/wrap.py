@@ -104,6 +104,10 @@ class WrapFinalizeResult:
 # non-neutral verdicts.
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
+#: Characters of the prompted text a feedback event carries beside its
+#: 120-character ``prompt_ref`` join key.
+_FEEDBACK_TEXT_CHARS = 4000
+
 
 def _resolve_session_chain(
     cfg: Config, session_id: str, project: str
@@ -445,10 +449,12 @@ def _append_verdict_events(
     prompt (#181 — a prefix matching several rows must not fan out),
     reusing the prompt event's own ``ts`` so the join back onto the prompt
     is exact.
-    ``correction`` / ``confirmation`` write ``feedback`` events (the base
-    schema predates #101 and is frozen; ``about`` is an additive optional
-    key); ``probe`` writes a sibling ``probe`` event that
-    ``extract_prompts`` folds into ``Prompt.classification``.
+    ``correction`` / ``confirmation`` write ``feedback`` events; ``probe``
+    writes a sibling ``probe`` event that ``extract_prompts`` folds into
+    ``Prompt.classification``. Each carries ``prompt_ref`` — the 120-char
+    prefix the labeler has always joined on — beside the additive optional
+    ``about`` and ``text`` keys: ``text`` is the whole prompt, capped, so a
+    quoted correction is readable instead of cut mid-word.
 
     ``about`` is the grounding clause — WHAT the feedback was about / what
     the probe sought, composed from full session context — so downstream
@@ -588,6 +594,7 @@ def _append_verdict_events(
             "type": channel,
             "session_id": p.session_id,
             "prompt_ref": p.text[:120],
+            "text": p.text[:_FEEDBACK_TEXT_CHARS],
         }
         if register != "probe":
             event["register"] = register

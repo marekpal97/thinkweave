@@ -8,7 +8,10 @@ Five actions over :mod:`thinkweave.operations.tasks`:
   and the digest of the session a prompt bound to it become its round.
   Envelope rows that fail the schema are reported on stderr and the exit
   code is 1; the close row is recorded either way.
-- ``weave task render <task-id>`` — re-emit the dispatch descriptor JSON.
+- ``weave task render <task-id>`` — re-emit the dispatch descriptor JSON,
+  with the task's rounds: each round's ``base`` commit and its feedback
+  entries, the quoted prompt carried whole rather than as its 120-character
+  ref.
 - ``weave task ledger`` — list one session's task boundaries as JSON. The
   hooks mint seam children silently, so this is how the wrap declaration
   composer learns their ids before declaring ``children``.
@@ -106,8 +109,18 @@ def _cmd_close(args: argparse.Namespace) -> None:
 def _cmd_render(args: argparse.Namespace) -> None:
     from thinkweave.operations import tasks
 
-    dispatch = tasks.dispatch_descriptor(_load_config(), args.task_id)
-    print(json.dumps(dispatch.to_dict(), indent=2))
+    cfg = _load_config()
+    task = tasks.TaskStore(cfg).get(args.task_id)
+    if task is None:
+        print(f"render: no task note for {args.task_id}", file=sys.stderr)
+        sys.exit(2)
+    dispatch = tasks.dispatch_descriptor(cfg, args.task_id)
+    print(
+        json.dumps(
+            {**dispatch.to_dict(), "rounds": [r.to_dict() for r in task.rounds]},
+            indent=2,
+        )
+    )
 
 
 def _cmd_ledger(args: argparse.Namespace) -> None:

@@ -13,8 +13,13 @@ from tests.tasks.conftest import run_hook
 from thinkweave.core.buffer import buffer_path
 from thinkweave.core.config import Config
 from thinkweave.core.harness import PROFILES
-from thinkweave.core.task_contract import TASK_ID_RE, SessionRef, validate_task_note
-from thinkweave.core.vault import parse_frontmatter
+from thinkweave.core.task_contract import (
+    TASK_ID_RE,
+    Round,
+    SessionRef,
+    validate_task_note,
+)
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 from thinkweave.operations import tasks
 from thinkweave.operations.tasks import ChildStop, Register, Task, TaskStore
 from thinkweave.surfaces.cli.parser import build_parser
@@ -266,6 +271,32 @@ class TestCli:
         assert descriptor["task_id"] == task_id
         assert descriptor["grain"] == "per-dispatch"
         assert Path(descriptor["envelope_return"]).name == f"{task_id}.jsonl"
+
+    def test_render_prints_each_round_s_base_sha_and_feedback_text(
+        self, cfg: Config, capsys
+    ):
+        """The replay view: the descriptor plus the round's compiled fields —
+        the commit its work started from, and the whole quoted prompt."""
+        sha = "9c1b7f0a3e5d4c6b8a2f10d3c5b7e9a1f2d3c4b5"
+        quote = "no, the round must not carry the body — " + "z" * 200
+        task = tasks.TaskStore(cfg).mint("work", "replay me", "p")
+        task.put_round(Round.from_dict(
+            {
+                "route": "session",
+                "base": sha,
+                "feedback": [
+                    {"register": "correction", "prompt_ref": quote[:120],
+                     "text": quote},
+                ],
+            },
+            grain="work",
+        ))
+        task.save(VaultManager(config=cfg))
+        self._dispatch(["task", "render", task.id])
+        view = json.loads(capsys.readouterr().out)
+        assert view["task_id"] == task.id
+        assert view["rounds"][0]["base"] == sha
+        assert view["rounds"][0]["feedback"][0]["text"] == quote
 
     def test_close_correlates_by_task_id_alone(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
