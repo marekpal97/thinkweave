@@ -8,7 +8,9 @@ The payload is built from the index and vault, with zero LLM calls. Each
 section is assembled independently and labelled by a ``## Heading`` so
 Claude can skim or deep-read. Sections are budgeted as whole units —
 when the total exceeds the caller's budget, whole sections are dropped
-(never items chopped mid-line).
+(never items chopped mid-line), a section too large to fit at all goes
+first, and the payload names what it dropped so a short one reads as a
+budget decision rather than a quiet vault.
 """
 
 from __future__ import annotations
