@@ -35,6 +35,8 @@ from thinkweave.surfaces.cli.wrap import cmd_wrap_finalize
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SESSION = "s-1"
+BASE_SHA = "9c1b7f0a3e5d4c6b8a2f10d3c5b7e9a1f2d3c4b5"
+FORK_SHA = "4b5c3d2f1a9e7b5c3d2f1a9e7b5c3d2f1a9e7b5c"
 
 
 def load_declaration() -> dict:
@@ -781,6 +783,43 @@ class TestLedgerRound:
                 "text": quote,
             },
         ]
+
+    def test_the_round_carries_the_base_sha_the_session_recorded(self, cfg: Config):
+        """The hook's one base event compiles onto the round this wrap
+        writes; a session that recorded none leaves the key off."""
+        folder, _ids = seed_session(cfg)
+        with (folder / "events.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": "2026-10-02T09:00:00+00:00", "type": "base",
+                "session_id": SESSION, "hash": BASE_SHA,
+            }) + "\n")
+        result = reconcile_session(cfg, load_declaration(), folder)
+        assert task_notes(cfg)[result.minted[0]]["rounds"][0]["base"] == BASE_SHA
+
+    def test_a_chained_session_round_takes_its_earliest_base_sha(
+        self, cfg: Config, tmp_path: Path
+    ):
+        """Two segments, two HEADs: the round names the commit the session
+        began from, whichever stream holds it."""
+        folder, _ids = seed_session(cfg)
+        older = tmp_path / "older-events.jsonl"
+        older.write_text(
+            json.dumps({
+                "ts": "2026-10-01T09:00:00+00:00", "type": "base",
+                "session_id": SESSION, "hash": FORK_SHA,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        with (folder / "events.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": "2026-10-02T09:00:00+00:00", "type": "base",
+                "session_id": SESSION, "hash": BASE_SHA,
+            }) + "\n")
+        result = tasks.apply_declaration(
+            cfg, load_declaration(), session_key=SESSION, project="t",
+            streams=[folder / "events.jsonl", older], folders=[folder],
+        )
+        assert task_notes(cfg)[result.minted[0]]["rounds"][0]["base"] == FORK_SHA
 
     def test_round_names_the_harness_the_wrap_runs_under(self, cfg: Config, monkeypatch):
         monkeypatch.setattr(harness, "_OVERRIDE", None)

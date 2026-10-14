@@ -510,6 +510,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         if not _buffer_event(cfg.weave_dir, session_id, event):
             _output()
             return
+        _record_base(cfg.weave_dir, session_id, now, cwd)
 
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to.
@@ -544,6 +545,31 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _output(
             system_message=_report_failure("user_prompt_submit", hook_input, e)
         )
+
+
+def _record_base(weave_dir: Path, session_id: str, now: str, cwd: str) -> None:
+    """Append the repo HEAD this prompt saw, once per session buffer.
+
+    The first prompt of a session is the replay anchor: a task round lifts
+    ``base`` from that row. The claim is a marker file in the session's
+    scratch dir — the same primitive as a failure marker — so a long buffer
+    costs no read on the prompts after the first, and a multiply-registered
+    hook writes one row, not several. Outside a repo nothing is recorded:
+    a round's ``base`` is optional.
+    """
+    from thinkweave.operations.tasks import head_sha
+
+    state = session_state_dir(weave_dir, session_id)
+    state.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(state / "base", os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return
+    sha = head_sha(cwd)
+    if sha:
+        _buffer_event(weave_dir, session_id, {
+            "ts": now, "type": "base", "session_id": session_id, "hash": sha,
+        })
 
 
 def _bind_dispatched_session(

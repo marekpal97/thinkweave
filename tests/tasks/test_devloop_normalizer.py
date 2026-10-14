@@ -18,6 +18,7 @@ from thinkweave.core.task_contract import (
 )
 from thinkweave.core.vault import parse_frontmatter
 from thinkweave.core.buffer import buffer_path
+from tests.conftest import commit_file, run_git, scratch_repo
 from thinkweave.operations import tasks
 from thinkweave.operations.tasks import TaskStore
 
@@ -375,3 +376,28 @@ class TestLedgerRoute:
         out = capsys.readouterr()
         assert "#218" in out.err and "kept bare" in out.err
         assert note_fm(cfg, out.out.strip())["asked"] == "#218"
+
+
+class TestBaseCommit:
+    """The devloop route's base commit: the merge base of the run's branch,
+    so a replay starts where the loop forked from."""
+
+    def test_a_recorded_run_carries_the_base_sha_its_branch_forked_at(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        repo = scratch_repo(tmp_path, monkeypatch)
+        run_git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=repo)
+        base = run_git("rev-parse", "HEAD", cwd=repo)
+        run_git("checkout", "-q", "-b", "loop/dag-184", cwd=repo)
+        commit_file(repo, "run-work", "the run's commit")
+        note = recorded(cfg, "devloop-run-rich.json")
+        assert validate_task_note(note) == []
+        assert note["rounds"][0]["base"] == base
+
+    def test_a_run_outside_any_repo_records_no_base_sha(self, cfg, tmp_path, monkeypatch):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
+        note = recorded(cfg, "devloop-run-rich.json")
+        assert validate_task_note(note) == []
+        assert "base" not in note["rounds"][0]

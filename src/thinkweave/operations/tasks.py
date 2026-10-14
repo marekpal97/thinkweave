@@ -459,8 +459,12 @@ class Register:
             if row.get("type") in (TASK_OPEN, TASK_CLOSE)
         ]
 
-    def open(self, task: Task, ref: SessionRef | None = None) -> None:
-        self._append(TASK_OPEN, task.id, ref, grain=task.grain)
+    def open(self, task: Task, ref: SessionRef | None = None, base: str = "") -> None:
+        """Record the open; ``base`` is the repo HEAD the work starts from."""
+        extra = {"grain": task.grain}
+        if base:
+            extra["base"] = base
+        self._append(TASK_OPEN, task.id, ref, **extra)
 
     def close(
         self, task: Task | None, ref: SessionRef | None = None, *, orphan: bool = False
@@ -495,6 +499,13 @@ class Register:
     def unclosed(self) -> list[str]:
         """Ids opened here with no close here."""
         return [t for t, pair in self._pairs().items() if pair["open"] and not pair["close"]]
+
+    def opened_base(self, task_id: str) -> str:
+        """The repo HEAD this task's ``task_open`` row recorded; ``""`` when
+        it recorded none (a dispatch made outside a repo, or an open row
+        written before the base was kept)."""
+        opened = self._pairs().get(task_id, {}).get("open") or {}
+        return str(opened.get("base", ""))
 
     def listing(self) -> list[LedgerEntry]:
         """One entry per task this session opened or closed, with its note's
@@ -766,7 +777,11 @@ def open_child(
         grain, title, project, asked=asked, role=role, harness=harness, session_key=session_key
     )
     task.save(VaultManager(config=cfg))
-    Register(cfg, session_key).open(task, SessionRef.agent(harness, agent_id) if agent_id else None)
+    Register(cfg, session_key).open(
+        task,
+        SessionRef.agent(harness, agent_id) if agent_id else None,
+        base=head_sha(),
+    )
     _envelope_path(cfg, task.id).parent.mkdir(parents=True, exist_ok=True)
     return _descriptor(cfg, task)
 
@@ -785,15 +800,18 @@ def close_child(
     if not task.accepts_round("dispatch"):
         raise ValueError(f"{task_id} {task.refusal('dispatch')}")
     source = source or TranscriptSource.bound(cfg, task_id)
+    register = Register(cfg, session_key)
     errors: list[str] = []
     envelopes = _read_envelopes(_envelope_path(cfg, task_id), task_id, errors)
     digest = ChildDigest.read(source, until=_now()).with_trailer_commits(task_id)
     data = {**digest.round_fields(envelopes), "envelopes": envelopes + digest.claims(task_id)}
+    if base := register.opened_base(task_id):
+        data["base"] = base
     task.frontmatter.update(digest.note_fields(task.frontmatter))
     task.put_round(replace(Round.from_dict(data, grain=task.grain), session_ref=source.session_ref))
     task.close()
     task.save(VaultManager(config=cfg))
-    Register(cfg, session_key).close(task, source.session_ref)
+    register.close(task, source.session_ref)
     return TaskClose(
         task_id=task_id,
         note=str(task.path),
@@ -963,6 +981,16 @@ class _DeclarationPass:
             for stream in streams
             for row in feedback_events(stream)
         ]
+        # The repo HEAD the session's first prompt saw, as its hook recorded
+        # it. The chain's earliest record wins, so a resumed session names
+        # the commit it began from; "" when no stream records one.
+        bases = [
+            (str(row.get("ts", "")), str(row.get("hash", "")))
+            for stream in streams
+            for row in iter_jsonl(stream)
+            if row.get("type") == "base" and row.get("hash")
+        ]
+        self.base = min(bases)[1] if bases else ""
         # The pass writes its own opens without a session ref; hook-route
         # opens always carry one, so they never match a declared title.
         self.minted_titles: dict[str, str] = {}
@@ -1107,6 +1135,8 @@ class _DeclarationPass:
         data = {"route": "session", "session_ref": self.session_ref.to_dict(), **entry["round"]}
         if issue:
             data.setdefault("asked", issue)
+        if self.base:
+            data.setdefault("base", self.base)
         if entry.get("done"):
             data["done"] = True
         if solo:
@@ -1179,7 +1209,12 @@ def record_run(
         asked=asked,
         session_key=session_key,
     )
-    task.put_round(Round.from_devloop(payload, task_id=task.id, trajectory=trajectory))
+    task.put_round(Round.from_devloop(
+        payload,
+        task_id=task.id,
+        trajectory=trajectory,
+        base=_merge_base(str(payload["frontmatter"].get("branch") or "")),
+    ))
     task.frontmatter["asked"] = asked
     minting = task.path is None
     warnings += task.save(VaultManager(config=cfg))
@@ -1276,15 +1311,40 @@ _NO_TRANSCRIPT = "no transcript bound to the task"
 
 def current_repo() -> str:
     """``owner/name`` of the working directory's GitHub ``origin``, or ``""``."""
-    try:
-        url = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5, check=True,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    url = _git("remote", "get-url", "origin")
     found = re.search(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$", url)
     return found[1] if found else ""
+
+
+def head_sha(cwd: str = "") -> str:
+    """The full sha of ``cwd``'s (default: the working directory's) repo
+    HEAD; ``""`` outside a repo, where no base commit exists to record."""
+    return _git("rev-parse", "HEAD", cwd=cwd)
+
+
+def _merge_base(branch: str) -> str:
+    """The commit ``branch`` forked from — its merge base with the trunk;
+    ``""`` when the branch, the trunk or the repo itself does not resolve."""
+    # ponytail: the trunk is probed as a candidate list, not read from the
+    # remote's HEAD symref like ``synthesis/judge.py`` reads it; upgrade
+    # path is one shared git helper for both callers.
+    for trunk in ("origin/HEAD", "origin/main", "origin/master"):
+        if sha := _git("merge-base", trunk, branch):
+            return sha
+    return ""
+
+
+def _git(*args: str, cwd: str = "") -> str:
+    """One git call's stdout, stripped; ``""`` when git refuses or cannot
+    run."""
+    try:
+        result = subprocess.run(
+            ["git", *args], capture_output=True, text=True, timeout=5,
+            check=True, cwd=cwd or None,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
 
 
 def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import commit_file, run_git, scratch_repo
 from tests.tasks.conftest import run_hook
 from thinkweave.core.buffer import buffer_path
 from thinkweave.core.config import Config
@@ -187,6 +188,32 @@ class TestOpenClose:
 
         types = [r["type"] for r in register_rows(cfg, "s-1")]
         assert types == ["task_open", "task_close"]
+
+    def test_a_dispatch_round_carries_the_base_sha_its_open_held(
+        self, cfg: Config, tmp_path: Path, monkeypatch
+    ):
+        """The worktree HEAD when the task is minted — not the HEAD the
+        child's own commit moves to before the close."""
+        repo = scratch_repo(tmp_path, monkeypatch)
+        base = run_git("rev-parse", "HEAD", cwd=repo)
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        commit_file(repo, "child-work", "the child commits")
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        fm, _ = parse_frontmatter(Path(result.note).read_text(encoding="utf-8"))
+        assert validate_task_note(fm) == []
+        assert fm["rounds"][0]["base"] == base
+
+    def test_a_dispatch_round_outside_any_repo_carries_no_base_sha(
+        self, cfg: Config, tmp_path: Path, monkeypatch
+    ):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        fm, _ = parse_frontmatter(Path(result.note).read_text(encoding="utf-8"))
+        assert validate_task_note(fm) == []
+        assert "base" not in fm["rounds"][0]
 
     def test_close_renders_the_ledger_body(self, cfg: Config):
         dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")

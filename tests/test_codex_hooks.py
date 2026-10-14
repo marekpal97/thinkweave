@@ -871,7 +871,11 @@ class TestMeasuredHeadlessReplay:
             json.loads(line)
             for line in (session_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         ]
-        assert [e.get("type") or e.get("tool") for e in events] == ["prompt", "Bash"]
+        # The base row is optional here: it records the HEAD of the measured
+        # cwd, a path that exists only on the machine that recorded it.
+        kinds = [e.get("type") or e.get("tool") for e in events]
+        assert [k for k in kinds if k != "base"] == ["prompt", "Bash"]
+        assert kinds.count("base") <= 1
         retrievals = [
             json.loads(line)
             for line in (session_dir / "retrieval_log.jsonl")
