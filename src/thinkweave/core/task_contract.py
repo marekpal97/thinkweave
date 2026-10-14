@@ -29,6 +29,7 @@ TASK_STATUSES = frozenset({"open", "closed"})
 # spans sessions.
 TASK_GRAINS = frozenset({"batch", "per-dispatch", "work"})
 TASK_ID_RE = re.compile(r"\btsk-[0-9a-f]{8}\b")
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 # Capture-richness tiers — the same vocabulary HarnessProfile.task_correlation
 # declares. The wrap pass gates evidence-dependent duties on it: an absent
@@ -106,6 +107,9 @@ class Round:
     decisions: dict | None = None
     feedback: list | None = None
     outputs: list | None = None
+    # The commit the round's work started from: a full sha, so a replay
+    # begins where the work did.
+    base: str | None = None
     did: dict | None = None
     children: list | None = None
     envelopes: list | None = None
@@ -132,14 +136,15 @@ class Round:
 
     @classmethod
     def from_devloop(
-        cls, payload: object, *, task_id: str, trajectory: str = ""
+        cls, payload: object, *, task_id: str, trajectory: str = "", base: str = ""
     ) -> Round:
         """One devloop run's emitted trajectory payload as a ``route:
         devloop`` round naming its issue: each stage-dispatch record is one
         envelope row, the semantic trace nests inside, the trajectory note
         (when its id is known) is the session ref, and the PR is the
-        deliverable. Keys the emitter dropped stay absent; a value that
-        cannot land raises ``ValueError`` naming the field."""
+        deliverable. ``base`` is the commit the run forked from. Keys the
+        emitter dropped stay absent; a value that cannot land raises
+        ``ValueError`` naming the field."""
         src = _devloop_frontmatter(payload)
         stages = src.get("skills") or []
         data: dict = {
@@ -151,6 +156,8 @@ class Round:
                 "attempts": int(src.get("fix_rounds") or 0),
             },
         }
+        if base:
+            data["base"] = base
         if "commit_shas" in src:
             data["did"]["commits"] = list(src["commit_shas"])
         if trajectory:
@@ -442,6 +449,12 @@ def _task_id_list(value, where):
     return [e for i, v in enumerate(value) for e in _task_id(v, f"{where}[{i}]")]
 
 
+def _base_sha(value, where):
+    if not isinstance(value, str) or not _FULL_SHA_RE.fullmatch(value):
+        return [f"{where}: expected a full 40-character commit sha"]
+    return []
+
+
 def _enum(allowed):
     def check(value, where):
         if value not in allowed:
@@ -608,12 +621,13 @@ _ROUND_CHECKERS = {
         {"minted": _str_list, "re_served": _str_list, "reverted": _str_list}
     ),
     "feedback": _dict_list(
-        {"register": _str, "prompt_ref": _str, "ts": _str}
+        {"register": _str, "prompt_ref": _str, "ts": _str, "text": _str}
     ),
     "cost": _COST,
     # The child digest's provenance: the harness version whose transcript
     # it read, and what that read could not recover.
     "digest": _closed_dict({"version": _str, "gaps": _str_list}),
+    "base": _base_sha,
 }
 
 _GITHUB_ITEM_URL = re.compile(
