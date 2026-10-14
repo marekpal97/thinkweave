@@ -601,6 +601,75 @@ def _append_verdict_events(
         result.verdicts_written += len(file_events)
 
 
+# ponytail: the cap is a scan ceiling, not a semantic one — a startup payload
+# can serve dozens of notes. Upgrade path: rank by concept overlap with the
+# uncited decision and keep the top few.
+_SERVED_LINK_LIMIT = 8
+
+
+def _served_links(cfg: Config, session_ids: list[str]) -> list[str]:
+    """Ready-made ``[[path|id]]`` links for the notes served to these sessions.
+
+    Reads the ``context_served`` projection the index step just refreshed from
+    each session's ``retrieval_log.jsonl``, and resolves every id to its
+    vault-relative path — no other surface hands a note's path to a wrap, and
+    the citation convention is path-based.
+    """
+    from thinkweave.core.indexer import Indexer
+    from thinkweave.synthesis.hub import build_id_path_map
+
+    idx = Indexer(config=cfg)
+    try:
+        placeholders = ",".join("?" for _ in session_ids)
+        rows = idx.db.execute(
+            f"SELECT DISTINCT note_id FROM context_served "
+            f"WHERE session_id IN ({placeholders}) ORDER BY note_id",
+            session_ids,
+        ).fetchall()
+        ids = [str(r["note_id"]) for r in rows]
+        idmap = build_id_path_map(idx.db)
+    finally:
+        idx.close()
+
+    links = [
+        f"[[{p}|{nid}]]" if (p := idmap.get(nid)) else f"[[{nid}]]"
+        for nid in ids[:_SERVED_LINK_LIMIT]
+    ]
+    if len(ids) > _SERVED_LINK_LIMIT:
+        links.append(f"(+{len(ids) - _SERVED_LINK_LIMIT} more)")
+    return links
+
+
+def _lint_citations(
+    cfg: Config, judged: list, session_ids: list[str], result: WrapFinalizeResult
+) -> None:
+    """Warn on decisions this wrap minted whose body cites no note id.
+
+    The RLVR export counts body wikilinks that resolve to a note id
+    (:func:`thinkweave.operations.rlvr_export.extract_cited_ids`), so a body
+    that links only files carries no citation and the served-then-cited signal
+    has no producer. Which served note the reasoning used is the wrap's call;
+    this rail only says the citation is missing and spells the candidates out
+    in the exact link form the export counts.
+    """
+    from thinkweave.operations.rlvr_export import extract_cited_ids
+
+    uncited = [dec for dec, _res in judged if not extract_cited_ids(dec.body)]
+    if not uncited:
+        return
+    for dec in uncited:
+        result.warnings.append(
+            f"{dec.id} ({dec.title}) cites no note id — link every note its "
+            "reasoning used as [[path|id]]; the served ids are in the "
+            "session's retrieval_log.jsonl"
+        )
+    links = _served_links(cfg, session_ids)
+    if links:
+        result.warnings.append(
+            "served to this session, ready to cite: " + ", ".join(links)
+        )
+
+
 def finalize_wrap(
     cfg: Config,
     *,
@@ -629,6 +698,10 @@ def finalize_wrap(
        wrote and removes any pruned folders' rows in the same pass.
     3. **judge** — ``judge_and_writeback(session_id=...)``: verdict + status
        onto each new decision, batched, re-indexing touched files.
+    3.5. **citation lint** — decisions this wrap minted whose body cites no
+       note id are listed under ``warnings`` (never an error), with the notes
+       served to this session spelled out as ready-made ``[[path|id]]`` links
+       (:func:`_lint_citations`).
     4. **landing** — regenerate DECISIONS.md + BACKLOG.md (cheap; always done).
        STATE.md is *not* touched — refreshing it is an LLM judgment call the
        wrap skill makes, not this deterministic tail.
@@ -758,6 +831,7 @@ def finalize_wrap(
 
     # 3. judge extracted decisions + write back verdict/status ------------
     _t = time.perf_counter()
+    judged: list = []
     try:
         from thinkweave.operations.decisions import (
             judge_and_writeback,
@@ -802,6 +876,15 @@ def finalize_wrap(
         result.errors.append(f"judge: {e}")
     finally:
         result.timings["judge"] = time.perf_counter() - _t
+
+    # 3.5 citation lint ---------------------------------------------------
+    try:
+        session_ids = list(
+            dict.fromkeys([session_id, *_chain_note_ids(chain, session_id)])
+        )
+        _lint_citations(cfg, judged, session_ids, result)
+    except Exception as e:  # noqa: BLE001 — a lint never fails a wrap
+        result.warnings.append(f"citation lint: {e}")
 
     # 4. refresh DECISIONS + BACKLOG landing docs -------------------------
     # Two cheap SQL renders, not collapsible: ``write_landing_docs`` has no

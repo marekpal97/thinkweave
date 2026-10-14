@@ -1329,3 +1329,118 @@ class TestSegmentChain:
                 (base / name / "session.md").read_text(encoding="utf-8")
             )
             assert "segments" not in fm
+
+
+# ---------------------------------------------------------------------------
+# Citation lint — the served-then-cited producer
+
+
+class TestCitationLint:
+    """Decisions this wrap minted that cite no note id.
+
+    The RLVR export counts body wikilinks that resolve to a note id
+    (``extract_cited_ids``), so a body that links only files yields an empty
+    citation list. The lint lists each such decision under ``warnings`` —
+    never an error — and names the notes served to this session as
+    ready-made ``[[path|id]]`` links.
+    """
+
+    UNCITED = (
+        "## Context\n\nThe FTS leg was slow on big vaults.\n\n"
+        "## Decision\n\nKeep hybrid as the fallback.\n"
+    )
+
+    def _seed(self, vault: VaultManager, *, cited: bool) -> tuple[str, str, str]:
+        """Session + one served note + one derived decision.
+
+        Returns ``(session_id, decision_id, served_link)``. ``cited`` decides
+        whether the decision body links the served note. ``served_link`` is
+        the ``[[path|id]]`` form built from the served note's own indexed
+        path — the independent source of truth for the path half of the link.
+        """
+        sess_path = vault.create_note(
+            NoteType.SESSION,
+            "Decided from a served note",
+            body="## Summary\nUsed one served note.\n",
+            project="t",
+            extra_frontmatter={"processed": True},
+        )
+        session_id = vault.read_note(sess_path).id
+        served = vault.read_note(
+            vault.create_note(
+                NoteType.NOTE,
+                "RRF k=60 tuning",
+                body="## Insight\nFusion constant.\n",
+                project="t",
+                extra_frontmatter={"concepts": ["fts5", "reciprocal-rank-fusion"]},
+            )
+        )
+        (sess_path.parent / "retrieval_log.jsonl").write_text(
+            json.dumps({
+                "ts": "2026-10-14T09:00:00+00:00",
+                "type": "retrieval",
+                "tool": "mcp__thinkweave__weave_search",
+                "returned_ids": [served.id],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        link = f"[[{served.path.removesuffix('.md')}|{served.id}]]"
+        body = self.UNCITED
+        if cited:
+            body += f"\nThe tuning note behind it: {link}.\n"
+        decision_id = vault.read_note(
+            vault.create_note(
+                NoteType.DECISION,
+                "Keep hybrid as the fallback",
+                body=body,
+                project="t",
+                extra_frontmatter={
+                    "status": "proposed",
+                    "source_session": session_id,
+                    "derived_from": [session_id],
+                    "concepts": ["fts5", "reciprocal-rank-fusion"],
+                },
+                output_dir=sess_path.parent,
+            )
+        ).id
+        return session_id, decision_id, link
+
+    def test_zero_citation_decision_is_listed_under_warnings(
+        self, config: Config, vault: VaultManager
+    ):
+        session_id, decision_id, link = self._seed(vault, cited=False)
+        _index(config)
+
+        result = finalize_wrap(config, session_id=session_id, project="t")
+
+        assert result.errors == []
+        flagged = [w for w in result.warnings if decision_id in w]
+        assert len(flagged) == 1
+        assert "cites no note id" in flagged[0]
+        # actionable: the note served to this session is spelled out as a link
+        assert [w for w in result.warnings if link in w] != []
+
+    def test_cited_served_note_is_absent_from_the_zero_citation_list(
+        self, config: Config, vault: VaultManager
+    ):
+        session_id, _decision_id, link = self._seed(vault, cited=True)
+        _index(config)
+
+        result = finalize_wrap(config, session_id=session_id, project="t")
+
+        assert result.errors == []
+        assert result.warnings == []
+
+    def test_wrap_doc_and_tool_description_state_the_citation_form(self):
+        wrap_doc = (
+            Path(__file__).parents[1] / "commands" / "wrap.md"
+        ).read_text(encoding="utf-8")
+        assert "[[path|id]]" in wrap_doc
+        assert "retrieval_log.jsonl" in wrap_doc
+
+        from thinkweave.surfaces.mcp.tools._extract_schemas import tool_schemas
+
+        description = next(
+            t.description for t in tool_schemas() if t.name == "weave_extract"
+        )
+        assert "[[path|id]]" in description
