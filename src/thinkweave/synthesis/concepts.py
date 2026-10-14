@@ -8,6 +8,7 @@ to find near-duplicate concepts and a YAML aliases file for canonical mappings.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -15,6 +16,8 @@ from pathlib import Path
 
 from thinkweave.core.config import Config
 from thinkweave.core._utils import as_list
+
+log = logging.getLogger(__name__)
 
 
 def _aliases_path(config: Config) -> Path:
@@ -772,17 +775,26 @@ def get_all_proposed_concepts(db) -> dict[str, int]:
     indexes only canonical assignments), so we read it from the
     `notes.frontmatter` JSON column. Returns `{concept: count}` keyed
     by lowercased term, sorted at the call site if needed.
+
+    A non-string entry (a nested list, a map) counts nothing: the note is
+    named in the log so its frontmatter can be corrected.
     """
     counts: dict[str, int] = {}
-    for row in db.execute("SELECT frontmatter FROM notes"):
+    for row in db.execute("SELECT id, path, frontmatter FROM notes"):
         fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
         proposed = fm.get("proposed_concepts") or []
         if isinstance(proposed, str):
             proposed = [c.strip() for c in proposed.split(",") if c.strip()]
         for c in proposed:
-            if not c:
+            if not isinstance(c, str):
+                log.warning(
+                    "proposed_concepts on %s (%s) carries a non-string entry "
+                    "%r; skipped", row["path"], row["id"], c
+                )
                 continue
             term = c.lower().strip()
+            if not term:
+                continue
             counts[term] = counts.get(term, 0) + 1
     return counts
 
