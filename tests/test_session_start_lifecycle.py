@@ -408,17 +408,17 @@ class TestSeamGuardUnion:
 
 
 # --------------------------------------------------------------------------- #
-# The harness inline cap (#317)
+# The harness inline cap
 # --------------------------------------------------------------------------- #
 
 
 # Claude Code renders an ``additionalContext`` this long inline; above it it
-# files the text to a temp path and shows the model a 2KB preview. The issue's
-# measured number, declared here independently of the profile field.
+# files the text to a temp path and shows the model a 2KB preview. Hand-written
+# from that harness behaviour, independent of the profile field it compares to.
 CAP = 10_000
 
 # Long enough that ten of these cannot ride inline beside the tasks section —
-# the fixture has to be at least as fat as the vault that overflowed.
+# the fixture has to be at least as fat as a vault that overflows the cap.
 _FAT_SUMMARY = (
     "Reworked the SessionStart payload assembly and chased an FTS5 quoting "
     "bug through the indexer; the drop order now protects the cue sections. "
@@ -602,3 +602,51 @@ class TestHookContextCap:
         msg = outputs[-1]["system_message"]
         assert str(CAP) in msg
         assert "preview" in msg
+
+    def test_a_stamp_naming_no_harness_is_announced_not_absorbed(
+        self, env, tmp_path, monkeypatch, capsys
+    ):
+        """The ``--harness`` stamp selects the profile whose cap and session-id
+        envs the handler spends. A stamp that names nothing must not silently
+        spend Claude Code's values for a harness they do not describe.
+
+        Asserted on the wire (stdout), because the notice rides the
+        ``systemMessage`` channel the real :func:`_output` composes.
+        """
+        import sys
+
+        from thinkweave.surfaces.hooks import handler as h
+
+        monkeypatch.setattr(
+            sys, "argv", ["weave-hook", "session_start", "--harness", "not-a-harness"]
+        )
+        h._handle_session_start({
+            "session_id": "uuid-stamp1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        reply = json.loads(capsys.readouterr().out)
+        assert "not-a-harness" in reply["systemMessage"]
+        # The payload still ships — the notice is a degraded path, not a halt.
+        assert (
+            reply["hookSpecificOutput"]["additionalContext"] == FULL_PAYLOAD
+        )
+
+    def test_a_known_stamp_stays_silent(
+        self, env, tmp_path, monkeypatch, capsys
+    ):
+        import sys
+
+        from thinkweave.surfaces.hooks import handler as h
+
+        monkeypatch.setattr(
+            sys, "argv", ["weave-hook", "session_start", "--harness", "codex"]
+        )
+        h._handle_session_start({
+            "session_id": "uuid-stamp2",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        assert "systemMessage" not in json.loads(capsys.readouterr().out)

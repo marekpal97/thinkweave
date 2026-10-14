@@ -205,7 +205,23 @@ def _firing_profile():
     envs, the inline context cap) live on it."""
     from thinkweave.core import harness
 
-    return harness.lookup(_hook_harness()) or harness.active()
+    stamp = _hook_harness()
+    profile = harness.lookup(stamp) if stamp else None
+    if profile is not None:
+        return profile
+    default = harness.active()
+    if stamp:
+        # A stamp naming no registered profile would otherwise spend the
+        # default profile's cap and session-id vars unnoticed, so the reply
+        # says which profile ran and why.
+        notice = (
+            f"thinkweave: the hook was stamped --harness {stamp!r}, which names "
+            f"no registered profile; the default profile ({default.id!r}) "
+            "supplies the cap and session-id vars."
+        )
+        if notice not in _pending_messages:
+            _pending_messages.append(notice)
+    return default
 
 
 def _env_session_id() -> str:
