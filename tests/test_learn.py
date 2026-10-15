@@ -107,6 +107,21 @@ def test_probe_rows_carry_the_session_harness(arc):
     assert [(r["type"], r["harness"]) for r in rows] == [("prompt", "pi"), ("probe", "pi")]
 
 
+def test_a_probe_row_carries_the_feedback_text_the_wrap_row_writes(arc):
+    """``wrap-finalize --verdicts`` and ``record_probe`` write the same probe
+    event: ``prompt_ref`` as the 120-char join key, ``text`` as the whole
+    prompt."""
+    prompt = " ".join(["Why does the derived index rebuild every note it has not touched?"] * 3)
+    assert len(prompt) > 120
+    assert record_probe(arc.config, UUID, prompt) is True
+    buf = arc.config.weave_dir / "buffer" / f"{UUID}.jsonl"
+    rows = [json.loads(line) for line in buf.read_text(encoding="utf-8").splitlines()]
+    (_prompt, probe) = rows
+    assert probe["type"] == "probe"
+    assert probe["prompt_ref"] == prompt[:120]
+    assert probe["text"] == prompt
+
+
 def test_probe_unresolvable_session_writes_nothing(arc):
     assert record_probe(arc.config, "nope", "x?") is False
     assert not (arc.config.weave_dir / "buffer").exists()

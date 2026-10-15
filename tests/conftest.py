@@ -49,6 +49,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import json
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,6 +118,42 @@ def write_transcript(tmp_path: Path, rows: list[dict]) -> Path:
         "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     return f
+
+
+def run_git(*args: str, cwd: Path) -> str:
+    """One git command's stdout, stripped; raises when git refuses."""
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def init_repo(path: Path) -> Path:
+    """A ``main``-branch repo at ``path`` holding one commit; returns its
+    root. Leaves the working directory alone."""
+    path.mkdir(parents=True, exist_ok=True)
+    run_git("init", "-q", "-b", "main", str(path), cwd=path.parent)
+    run_git("config", "user.email", "scratch@example.com", cwd=path)
+    run_git("config", "user.name", "Scratch", cwd=path)
+    commit_file(path, "a", f"first on {path.name}")
+    return path
+
+
+def scratch_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A ``main``-branch repo at ``tmp_path/repo`` holding one commit, made
+    the working directory; returns its root. ``run_git("rev-parse", "HEAD",
+    cwd=repo)`` is the commit it starts from.
+    """
+    repo = init_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    return repo
+
+
+def commit_file(repo: Path, name: str, message: str) -> str:
+    """One committed change on ``repo``'s working branch; returns its sha."""
+    (repo / f"{name}.txt").write_text(message + "\n", encoding="utf-8")
+    run_git("add", f"{name}.txt", cwd=repo)
+    run_git("commit", "-qm", message, cwd=repo)
+    return run_git("rev-parse", "HEAD", cwd=repo)
 
 
 @functools.cache

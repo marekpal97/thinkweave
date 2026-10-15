@@ -303,12 +303,13 @@ def record_probe(cfg: Config, session: str, text: str) -> bool:
     """Record ``text`` as a probe-classified prompt on the session's log.
 
     Same two-line shape the wrap verdict path writes (``prompt`` + ``probe``
-    sharing ``ts``/``prompt_ref``), so ``extract_prompts`` classifies it
-    without new schema. Targets the live buffer while the session runs, the
-    archived ``events.jsonl`` once Stop moved it. False when the session
-    cannot be resolved.
+    sharing ``ts``/``prompt_ref``/``text``), so ``extract_prompts``
+    classifies it without new schema. Targets the live buffer while the
+    session runs, the archived ``events.jsonl`` once Stop moved it. False
+    when the session cannot be resolved.
     """
     from thinkweave.core.buffer import append_event, buffer_path
+    from thinkweave.operations.wrap import FEEDBACK_TEXT_CHARS
 
     text = text.strip()
     ref = resolve_session(cfg, session)
@@ -321,5 +322,6 @@ def record_probe(cfg: Config, session: str, text: str) -> bool:
     append_event(log, {"ts": ts, "type": "prompt", "text": text, "session_id": ref.source_session},
                  harness=ref.harness)
     append_event(log, {"ts": ts, "type": "probe", "session_id": ref.source_session,
-                       "prompt_ref": text[:120]}, harness=ref.harness)
+                       "prompt_ref": text[:120], "text": text[:FEEDBACK_TEXT_CHARS]},
+                 harness=ref.harness)
     return True
