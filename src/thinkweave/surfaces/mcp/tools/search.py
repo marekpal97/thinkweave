@@ -125,8 +125,9 @@ def tool_schemas() -> list:
         Tool(
             name="weave_project_snapshot",
             description=(
-                "On-demand structured project overview — the same payload that the "
-                "SessionStart hook injects at session startup.\n\n"
+                "On-demand structured project overview — the full section set, "
+                "a superset of what the SessionStart hook injects (it adds the "
+                "state-of-play, tools and footer sections).\n\n"
                 "Sections: header, MCP tools manifest, last 5 wrapped sessions, "
                 "state-of-play landing doc, backlog open items, recent decisions, "
                 "open probes, concept histogram, recent sources, retrieval hints.\n\n"

@@ -9,9 +9,11 @@ Output: JSON to stdout following Claude Code hook protocol.
 Exit 0 = protocol success. Persistence failures use the visible
 ``systemMessage`` response field as well as the best-effort hook log.
 
-SessionStart: Injects ~7–10k tokens of structured project context
-  (recent sessions, STATE, backlog, decisions, tool manifest) so Claude
-  wakes up oriented. Never blocks the harness; failures remain visible.
+SessionStart: Injects structured project context (open tasks, recent
+  sessions, backlog, decisions, themes) sized to stay inside the harness's
+  inline ``additionalContext`` cap, so Claude wakes up oriented with the
+  whole payload in its context. Never blocks the harness; failures remain
+  visible.
 UserPromptSubmit: Captures every user prompt as a structured "prompt"
   event in the JSONL buffer. Promotes user prompts into a first-class
   primitive (`Prompt`) — replaces the heuristic `probe`-tag flow.
@@ -197,6 +199,31 @@ def _hook_budget_remaining(event: str, started: float) -> float | None:
     return budget_ms / 1000 - (time.monotonic() - started) - _HOOK_BUDGET_MARGIN_SECONDS
 
 
+def _firing_profile():
+    """The profile of the harness that fired this hook: its ``--harness`` stamp,
+    or the process default. Both per-hook facts the handler reads (session-id
+    envs, the inline context cap) live on it."""
+    from thinkweave.core import harness
+
+    stamp = _hook_harness()
+    profile = harness.lookup(stamp) if stamp else None
+    if profile is not None:
+        return profile
+    default = harness.active()
+    if stamp:
+        # A stamp naming no registered profile would otherwise spend the
+        # default profile's cap and session-id vars unnoticed, so the reply
+        # says which profile ran and why.
+        notice = (
+            f"thinkweave: the hook was stamped --harness {stamp!r}, which names "
+            f"no registered profile; the default profile ({default.id!r}) "
+            "supplies the cap and session-id vars."
+        )
+        if notice not in _pending_messages:
+            _pending_messages.append(notice)
+    return default
+
+
 def _env_session_id() -> str:
     """Session id from the firing harness's own env var — the last resort when
     a hook payload omits ``session_id``.
@@ -210,10 +237,7 @@ def _env_session_id() -> str:
     ``session_id`` as a payload field, so this is genuinely a backstop — but
     on the harnesses that do export a var it now backstops correctly.
     """
-    from thinkweave.core import harness
-
-    hid = _hook_harness()
-    profile = harness.lookup(hid) or harness.active()
+    profile = _firing_profile()
     envs = profile.session_id_envs
     for env in envs:
         value = os.environ.get(env, "")
@@ -1226,37 +1250,6 @@ def _summarize_events(events: list[dict]) -> dict:
     }
 
 
-def _build_auto_summary(
-    files_touched: list[str],
-    commits: list[dict],
-    test_runs: list[dict],
-    event_count: int,
-) -> str:
-    """Build a metadata-based auto-summary for the Stop hook."""
-    parts: list[str] = []
-    if files_touched:
-        basenames = [Path(f).name for f in files_touched[:5]]
-        more = f" (+{len(files_touched) - 5} more)" if len(files_touched) > 5 else ""
-        parts.append(f"Edited {len(files_touched)} files: {', '.join(basenames)}{more}")
-    if commits:
-        msgs = []
-        for c in commits[:3]:
-            if isinstance(c, dict):
-                msgs.append(c.get("message", "")[:60])
-            else:
-                msgs.append(str(c)[:60])
-        parts.append(f"Commits: {'; '.join(msgs)}")
-    if test_runs:
-        for tr in test_runs[:2]:
-            if isinstance(tr, dict):
-                p = tr.get("passed", 0)
-                f = tr.get("failed", 0)
-                parts.append(f"Tests: {p} passed, {f} failed")
-    if not parts:
-        parts.append(f"{event_count} tool events recorded")
-    return ". ".join(parts) + "."
-
-
 # Buffer I/O lives in thinkweave.core.buffer so MCP tools can call it
 # without crossing the surfaces/ → surfaces/ boundary. Re-exported here so
 # legacy imports (`from thinkweave.surfaces.hooks.handler import ...`)
@@ -1712,9 +1705,13 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
 def _handle_session_start(hook_input: dict) -> None:
     """SessionStart: inject structured project context before the first user turn.
 
-    Emits a ``hookSpecificOutput.additionalContext`` payload (~7–10k tokens)
-    built by ``thinkweave.retrieval.context.build_project_context``. Never blocks;
-    exceptions produce a valid hook response with an actionable diagnostic.
+    Emits a ``hookSpecificOutput.additionalContext`` payload built by
+    ``thinkweave.retrieval.context.build_project_context``, budgeted to land
+    inside the firing harness's inline cap (``HarnessProfile
+    .additional_context_cap_chars``) with the guard's share left over — above
+    that cap a harness files the context and shows a preview instead. Never
+    blocks; exceptions produce a valid hook response with an actionable
+    diagnostic.
 
     Serve-once (#175, reworked per the PR #203 review): the initial context
     is served exactly once per session — ``startup``/``clear`` (or absent —
@@ -1740,15 +1737,16 @@ def _handle_session_start(hook_input: dict) -> None:
     """
     try:
         from thinkweave.core.config import load_config
-        from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
         from thinkweave.retrieval.context import (
             SESSION_START_SECTIONS,
             build_project_context,
+            session_start_budget_tokens,
         )
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
         cfg = load_config()
+        profile = _firing_profile()
         session_id = hook_input.get("session_id") or _env_session_id()
         lifecycle = str(hook_input.get("source") or "")
 
@@ -1786,11 +1784,16 @@ def _handle_session_start(hook_input: dict) -> None:
             return
 
         project = detect_project(hook_input.get("cwd", ""))
+        # The budget comes from the harness's own inline cap, less the room
+        # the memory-seam guard needs at the front of the payload: above the
+        # cap the harness files the context and shows a preview, and a
+        # preview is not context the model has.
+        cap = profile.additional_context_cap_chars
         payload = build_project_context(
             cfg,
             project,
             sections=list(SESSION_START_SECTIONS),
-            budget_tokens=SESSION_START_BUDGET_TOKENS,
+            budget_tokens=session_start_budget_tokens(cap),
             omit_empty=True,
         )
 
@@ -1919,6 +1922,16 @@ def _handle_session_start(hook_input: dict) -> None:
         # Guard rides at the TOP — it's a correctness interrupt on notes the
         # model is about to rely on, so it must be seen before the context.
         full = f"{guard}\n{payload}" if guard else payload
+        if cap and len(full) > cap:
+            # The reserve is an estimate of the guard's size. A guard that
+            # outgrows it spills the payload anyway, and a silent spill is
+            # what this issue exists to close — so it says so.
+            notice = (
+                f"thinkweave: the SessionStart payload is {len(full)} chars, "
+                f"above this harness's {cap}-char inline cap — the harness "
+                "files the rest and shows only a preview."
+            )
+            sysmsg = f"{sysmsg}\n{notice}" if sysmsg else notice
         _output(
             system_message=sysmsg,
             additional_context=full,

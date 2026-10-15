@@ -22,6 +22,7 @@ profile is what runs; fix whichever is wrong.
 | headless slash skills | yes | no | no | no |
 | native memory seam | `~/.claude/projects` | — | — | — |
 | context channel | `additionalContext` | `additionalContext` | `context-injection` | `system-transform` |
+| inline context cap (chars) | `10000` | — (none measured) | — (none measured) | — (none measured) |
 | dispatch | `claude -p <prompt>` | `codex exec <prompt>` | `pi -p <prompt>` | `opencode run <prompt>` |
 | transcripts | `~/.claude/projects/*/*.jsonl` (jsonl-flat) | `~/.codex/sessions/*/*/*/rollout-*.jsonl` (jsonl-rollout) | `~/.pi/agent/sessions/*/*.jsonl` (jsonl-tree) | `~/.local/share/opencode/opencode.db` (sqlite-records) |
 | task digest reader | `thinkweave.operations.tasks:claude_code_digest` | `thinkweave.operations.tasks:codex_digest` | `thinkweave.operations.tasks:pi_digest` | `thinkweave.operations.tasks:opencode_digest` |
@@ -78,6 +79,24 @@ row above) everything unlisted works as on Claude Code; on a
 - **SubagentStart/SubagentStop task capture** — documented: no hook marks a child session's dispatch or completion, so task correlation degrades to task-id-only via `weave task open`/`close` (#195)
 
 <!-- weave:harness-matrix:end -->
+
+## Claude Code
+
+The reference harness: every other row is measured against it. One fact about
+its `additionalContext` channel costs real work, and it is not in the manual.
+
+1. **The inline cap has no knob.** `[measured 2026-10-14]` Above about 10,000
+   characters Claude Code writes the text to a file and shows the model a 2KB
+   preview plus the path. The rest is readable, but it is not in context
+   unless the model chooses to read it — so a payload that big is not served
+   context, and every `context_served` row it projects overstates exposure.
+   No setting raises it, unlike Codex's `additionalContextLimit`. So the
+   SessionStart budget is derived from `additional_context_cap_chars`, less
+   `SESSION_START_GUARD_HEADROOM_CHARS` (`retrieval/context.py`) — the room
+   the handler's memory-seam guard needs at the front of the payload. A guard
+   that outgrows the reserve says so in `systemMessage` rather than spilling
+   silently. A harness with no measured cap declares `None` and spends the
+   default `SESSION_START_BUDGET_TOKENS`, unchanged.
 
 ## Codex
 
@@ -190,14 +209,16 @@ so `Write|Edit|Bash` is already a correct Codex matcher. `UserPromptSubmit` and
 2. **`additionalContext` is capped at ~2500 tokens by default.** `[manual]`
    Above it Codex "spills": saves the full text to
    `<temp_dir>/hook_outputs/<session_id>/<uuid>.txt` and shows the model a
-   head-and-tail preview. thinkweave's SessionStart payload is built with
-   `budget_tokens=SESSION_START_BUDGET_TOKENS` (`core/harness.py`), so without
-   an explicit `additionalContextLimit` the headline promise ("the session
-   receives the context payload") fails *silently*. The profile derives its
-   limit from that same constant — `2 *` it, since the budget is spent against
-   a chars//4 estimate that note-id-dense markdown beats — and writes it on the
-   two events whose handler can emit additional context; Codex logs a
-   configuration warning if the key rides any other event.
+   head-and-tail preview. thinkweave's SessionStart payload is built with the
+   default budget, `SESSION_START_BUDGET_TOKENS` (`core/harness.py`) — the
+   budget a profile pays when it measures no inline cap of its own, which
+   Claude Code does and so derives a smaller one (see §"Claude Code") — so
+   without an explicit `additionalContextLimit` the headline promise ("the
+   session receives the context payload") fails *silently*. The profile derives
+   its limit from that same constant — `2 *` it, since the budget is spent
+   against a chars//4 estimate that note-id-dense markdown beats — and writes
+   it on the two events whose handler can emit additional context; Codex logs
+   a configuration warning if the key rides any other event.
 
 3. **Hooks are trust-gated.** `[manual]``[measured]` "Before a non-managed
    command hook can run, Codex requires you to review and trust the exact hook
