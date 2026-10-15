@@ -7,7 +7,7 @@ entries so that Claude Code's MCP launcher sees the same invocation
 regardless of how the user installed the package.
 
 "Equivalent" here means: every route converges on the same invocation,
-``uv run [--no-sync] --project <root> --extra mcp python -m
+``uv run [--no-sync] --project <root> --extra mcp python -P -m
 thinkweave.surfaces.mcp.server`` — module execution rather than the
 ``weave-mcp`` console script, because a lock-interrupted sync on Windows
 deletes the ``.exe`` shim and leaves the script form permanently broken.
@@ -129,7 +129,9 @@ class TestMcpInvocationConsistency:
         assert entry["args"][:3] == ["run", "--no-sync", "--project"]
         assert "--extra" in entry["args"]
         assert "mcp" in entry["args"]
-        assert entry["args"][-3:] == ["python", "-m", "thinkweave.surfaces.mcp.server"]
+        assert entry["args"][-4:] == [
+            "python", "-P", "-m", "thinkweave.surfaces.mcp.server",
+        ]
 
     def test_weave_install_writes_the_module_invocation(self):
         """The machine-scope entry's exact argv.
@@ -144,7 +146,7 @@ class TestMcpInvocationConsistency:
         norm = _normalise_args_for_compare(install_entry["args"], "<PROJECT_PATH>")
         assert norm == [
             "run", "--no-sync", "--project", "<PROJECT_PATH>",
-            "--extra", "mcp", "python", "-m",
+            "--extra", "mcp", "python", "-P", "-m",
             "thinkweave.surfaces.mcp.server",
         ]
 
@@ -175,8 +177,8 @@ class TestMcpInvocationConsistency:
             assert invocations, f"{launcher} has no uv invocation line"
             for line in invocations:
                 assert "--no-sync" in line, f"{launcher} re-syncs at launch"
-                assert "python -m thinkweave." in line, (
-                    f"{launcher} invokes a console script: {line.strip()}"
+                assert "python -P -m thinkweave." in line, (
+                    f"{launcher} misses the safe-path module invocation: {line.strip()}"
                 )
 
     def test_the_two_shapes_still_fingerprint_as_one_invocation(self):
