@@ -87,11 +87,23 @@ _HEADER = "📎 Possibly relevant from your vault (optional — weave_read to ex
 # Never emit if the remaining char budget can't fit a single useful line.
 _MIN_PIECE_CHARS = 80
 
+#: The least remaining harness budget worth starting the similarity arm
+#: with. Below it the arm is not attempted and the turn counts as a miss, so
+#: a harness whose hook budget is already spent still feeds the adaptive skip.
+_MIN_DEADLINE_SECONDS = 0.25
+
 
 def build_enrichment(
-    cfg: Config, session_id: str, prompt_text: str
+    cfg: Config, session_id: str, prompt_text: str, *, deadline: float | None = None
 ) -> tuple[str | None, list[str], bool]:
     """Build the prompt-time enrichment block for one prompt.
+
+    ``deadline`` is the caller's remaining wall-clock budget in seconds (the
+    firing harness's hook budget less what the handler already spent). The
+    similarity arm runs for the smaller of it and the configured
+    ``embed_deadline_seconds``. A remaining budget under
+    ``_MIN_DEADLINE_SECONDS`` means the arm is not attempted and the turn is
+    a miss; the configured deadline alone is never floored.
 
     Returns ``(block, served_ids, missed)``:
 
@@ -132,13 +144,19 @@ def build_enrichment(
     if _consecutive_trailing_misses(cfg, session_id) >= rpt.deadline_miss_limit:
         return None, [], False
 
+    deadline_s = rpt.embed_deadline_seconds
+    if deadline is not None:
+        if deadline < _MIN_DEADLINE_SECONDS:
+            return None, [], True
+        deadline_s = min(deadline, deadline_s)
+
     limit = max(rpt.max_pieces_per_turn * 3, 10)
     results, missed = _retrieve(
         cfg,
         prompt_text,
         list(rpt.bias_types),
         limit=limit,
-        deadline=rpt.embed_deadline_seconds,
+        deadline=deadline_s,
         min_similarity=rpt.min_similarity,
     )
     if missed:

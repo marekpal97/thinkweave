@@ -180,6 +180,23 @@ def _harness_id() -> str:
     return _hook_harness() or "claude-code"
 
 
+#: Seconds kept back from a harness hook budget for writing the reply.
+_HOOK_BUDGET_MARGIN_SECONDS = 0.3
+
+
+def _hook_budget_remaining(event: str, started: float) -> float | None:
+    """Seconds left of the firing harness's budget for ``event`` (its
+    profile's ``hook_budget_ms``) since ``started``, less the reply margin;
+    ``None`` when the profile sets no budget for the event."""
+    from thinkweave.core import harness
+
+    profile = harness.lookup(_harness_id())
+    budget_ms = (profile.hook_budget_ms if profile else {}).get(event)
+    if not budget_ms:
+        return None
+    return budget_ms / 1000 - (time.monotonic() - started) - _HOOK_BUDGET_MARGIN_SECONDS
+
+
 def _env_session_id() -> str:
     """Session id from the firing harness's own env var — the last resort when
     a hook payload omits ``session_id``.
@@ -480,6 +497,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
     older heuristic ``probe`` tag flow. Never blocks the harness; persistence
     failures use its visible diagnostic channel.
     """
+    started = time.monotonic()
     try:
         from thinkweave.core.config import load_config
 
@@ -517,10 +535,12 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
 
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
-        # live buffer, hard-capped. Any failure here must fall through to a
-        # plain (empty) response — never break the user's turn.
+        # live buffer, hard-capped, and held inside what the harness still
+        # waits for. Any failure here must fall through to a plain (empty)
+        # response — never break the user's turn.
         block = _prompt_time_enrichment(
-            cfg, session_id, prompt_text, now, delivery_id=delivery_id
+            cfg, session_id, prompt_text, now, delivery_id=delivery_id,
+            deadline=_hook_budget_remaining("UserPromptSubmit", started),
         )
 
         # Feedback classification does NOT happen here (#101): hooks capture,
@@ -564,7 +584,8 @@ def _bind_dispatched_session(
 
 
 def _prompt_time_enrichment(
-    cfg, session_id: str, prompt_text: str, now: str, *, delivery_id: str = ""
+    cfg, session_id: str, prompt_text: str, now: str, *, delivery_id: str = "",
+    deadline: float | None = None,
 ) -> str | None:
     """Build the R2 enrichment block and record the outcome to the buffer.
 
@@ -590,7 +611,9 @@ def _prompt_time_enrichment(
             build_enrichment,
         )
 
-        block, served_ids, missed = build_enrichment(cfg, session_id, prompt_text)
+        block, served_ids, missed = build_enrichment(
+            cfg, session_id, prompt_text, deadline=deadline
+        )
 
         if missed:
             miss = {

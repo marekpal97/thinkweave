@@ -282,6 +282,13 @@ class HarnessProfile:
     claude-mem's silently-dead OpenCode plugin, #2462). Claude Code's
     vocabulary is canonical; ``operations.hook_events`` does the swapping."""
 
+    hook_budget_ms: dict[str, int] = field(default_factory=dict)
+    """Canonical event → milliseconds the harness waits for the hook before it
+    abandons it (the plugin route's ``hooks.json`` timeout, a shim's
+    ``BUDGET_MS``). The handler spends no more than this on optional work
+    such as prompt-time retrieval; an absent event means the harness sets no
+    wall-clock cap of its own and the handler's own deadlines stand alone."""
+
     fires_verified: dict[str, str] = field(default_factory=dict)
     """Canonical event → ISO date a real run was *observed* firing it. Absent
     key = wired but unobserved (Pi's events until the shim probe lands a
@@ -600,6 +607,7 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         detect_dir=cc,
         hook_mechanism="plugin",
         hook_events={e: e for e in CANONICAL_EVENTS},
+        hook_budget_ms={**{e: 30_000 for e in CANONICAL_EVENTS}, "SessionStart": 300_000},
         # Literal per-event entries, not a comprehension: each date is one
         # recorded observation (the first four seen firing in live sessions
         # on the dev machine on 2026-08-29; SubagentStart/SubagentStop in
@@ -945,6 +953,7 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "SubagentStop": None,
             "Stop": "agent_end",
         },
+        hook_budget_ms={"UserPromptSubmit": 2_500, "Stop": 6_000},
         context_channel="context-injection",
         transcript_glob=str(agent / "sessions" / "*" / "*.jsonl"),
         transcript_format="jsonl-tree",
@@ -1134,6 +1143,12 @@ def opencode(home: Path | None = None) -> HarnessProfile:
             "SubagentStart": None,
             "SubagentStop": None,
             "Stop": "session.idle",
+        },
+        hook_budget_ms={
+            "SessionStart": 5_000,
+            "UserPromptSubmit": 2_500,
+            "PostToolUse": 10_000,
+            "Stop": 6_000,
         },
         context_channel="system-transform",
         transcript_glob=str(data / "opencode.db"),
