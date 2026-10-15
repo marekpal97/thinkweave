@@ -767,10 +767,13 @@ def open_child(
     harness: str = "",
     agent_id: str = "",
     asked: str = "",
+    cwd: str = "",
 ) -> TaskDispatch:
     """Mint a child task at its dispatch boundary: the note, then its
     ``task_open`` row. The descriptor names the envelope return file the
-    performer appends to, whose directory exists from here on."""
+    performer appends to, whose directory exists from here on. ``cwd`` is
+    the worktree the child starts in (default: the working directory); its
+    HEAD is the round's base commit."""
     if asked:
         asked = normalize_tracker_ref(asked, current_repo())
     task = TaskStore(cfg).mint(
@@ -780,7 +783,7 @@ def open_child(
     Register(cfg, session_key).open(
         task,
         SessionRef.agent(harness, agent_id) if agent_id else None,
-        base=head_sha(),
+        base=head_sha(cwd),
     )
     _envelope_path(cfg, task.id).parent.mkdir(parents=True, exist_ok=True)
     return _descriptor(cfg, task)
@@ -1213,7 +1216,7 @@ def record_run(
         payload,
         task_id=task.id,
         trajectory=trajectory,
-        base=_merge_base(str(payload["frontmatter"].get("branch") or "")),
+        base=_merge_base(str(payload["frontmatter"].get("branch") or ""), warnings),
     ))
     task.frontmatter["asked"] = asked
     minting = task.path is None
@@ -1322,15 +1325,22 @@ def head_sha(cwd: str = "") -> str:
     return _git("rev-parse", "HEAD", cwd=cwd)
 
 
-def _merge_base(branch: str) -> str:
-    """The commit ``branch`` forked from — its merge base with the trunk;
-    ``""`` when the branch, the trunk or the repo itself does not resolve."""
-    # ponytail: the trunk is probed as a candidate list, not read from the
-    # remote's HEAD symref like ``synthesis/judge.py`` reads it; upgrade
-    # path is one shared git helper for both callers.
+def _merge_base(branch: str, warnings: list[str]) -> str:
+    """The commit ``branch`` forked from — its merge base with the trunk.
+    ``""`` outside any repo, where no base commit exists to record; inside
+    one, a branch or trunk git cannot resolve leaves the round unanchored,
+    and that is announced."""
+    if not branch:
+        return ""
+    if not _git("rev-parse", "--git-dir"):
+        return ""
     for trunk in ("origin/HEAD", "origin/main", "origin/master"):
         if sha := _git("merge-base", trunk, branch):
             return sha
+    warnings.append(
+        f"no merge base for branch {branch!r} — the round carries no base "
+        "commit, so a replay has no git anchor to start from"
+    )
     return ""
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import commit_file, run_git, scratch_repo
+from tests.conftest import commit_file, init_repo, run_git, scratch_repo
 from tests.tasks.conftest import run_hook
 from thinkweave.core.buffer import buffer_path
 from thinkweave.core.config import Config
@@ -445,6 +445,23 @@ class TestHookHandlers:
         rows = register_rows(cfg, SESSION)
         assert [r["type"] for r in rows] == ["task_open"]
         assert rows[0]["session_ref"]["value"] == "agent-a1"
+
+    def test_a_dispatch_anchors_on_the_payload_cwd_s_base_sha(
+        self, cfg: Config, monkeypatch, tmp_path: Path
+    ):
+        """The subagent starts in the worktree the payload names, not in
+        whatever checkout the hook process happens to sit in."""
+        lead = init_repo(tmp_path / "lead")
+        worktree = init_repo(tmp_path / "worktree")
+        commit_file(worktree, "own", "the worktree's own commit")
+        base = run_git("rev-parse", "HEAD", cwd=worktree)
+        assert base != run_git("rev-parse", "HEAD", cwd=lead)
+        monkeypatch.chdir(lead)
+
+        run_hook(monkeypatch, "subagent_start", self._start_payload(worktree))
+
+        rows = register_rows(cfg, SESSION)
+        assert rows[0]["base"] == base
 
     def test_subagent_stop_closes_the_matching_open(
         self, cfg: Config, monkeypatch, tmp_path: Path

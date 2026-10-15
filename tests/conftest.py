@@ -127,17 +127,23 @@ def run_git(*args: str, cwd: Path) -> str:
     ).stdout.strip()
 
 
+def init_repo(path: Path) -> Path:
+    """A ``main``-branch repo at ``path`` holding one commit; returns its
+    root. Leaves the working directory alone."""
+    path.mkdir(parents=True, exist_ok=True)
+    run_git("init", "-q", "-b", "main", str(path), cwd=path.parent)
+    run_git("config", "user.email", "scratch@example.com", cwd=path)
+    run_git("config", "user.name", "Scratch", cwd=path)
+    commit_file(path, "a", f"first on {path.name}")
+    return path
+
+
 def scratch_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A ``main``-branch repo at ``tmp_path/repo`` holding one commit, made
     the working directory; returns its root. ``run_git("rev-parse", "HEAD",
     cwd=repo)`` is the commit it starts from.
     """
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    run_git("init", "-q", "-b", "main", str(repo), cwd=tmp_path)
-    run_git("config", "user.email", "scratch@example.com", cwd=repo)
-    run_git("config", "user.name", "Scratch", cwd=repo)
-    commit_file(repo, "a", "first")
+    repo = init_repo(tmp_path / "repo")
     monkeypatch.chdir(repo)
     return repo
 

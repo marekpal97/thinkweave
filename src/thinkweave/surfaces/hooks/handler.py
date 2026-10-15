@@ -390,6 +390,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
     cfg = load_config()
     session_id = _subagent_session_id(hook_input)
     _ensure_session(cfg, session_id, hook_input)
+    cwd = str(hook_input.get("cwd", ""))
     agent_id = str(hook_input.get("agent_id", ""))
     if not agent_id:
         _log_info(
@@ -400,10 +401,11 @@ def _handle_subagent_start(hook_input: dict) -> None:
     dispatch = tasks.open_child(
         cfg,
         session_key=session_id,
-        project=detect_project(hook_input.get("cwd", "")),
+        project=detect_project(cwd),
         role=str(hook_input.get("agent_type", "")),
         harness=_harness_id(),
         agent_id=agent_id,
+        cwd=cwd,
     )
     _output(
         additional_context=json.dumps({"thinkweave_task": dispatch.to_dict()}),

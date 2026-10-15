@@ -104,9 +104,10 @@ class WrapFinalizeResult:
 # non-neutral verdicts.
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
-#: Characters of the prompted text a feedback event carries beside its
-#: 120-character ``prompt_ref`` join key.
-_FEEDBACK_TEXT_CHARS = 4000
+#: Characters of prompted text a feedback or probe event carries beside its
+#: 120-character ``prompt_ref`` join key. Both writers of that shape —
+#: ``wrap-finalize --verdicts`` and ``record_probe`` — cap at it.
+FEEDBACK_TEXT_CHARS = 4000
 
 
 def _resolve_session_chain(
@@ -594,7 +595,7 @@ def _append_verdict_events(
             "type": channel,
             "session_id": p.session_id,
             "prompt_ref": p.text[:120],
-            "text": p.text[:_FEEDBACK_TEXT_CHARS],
+            "text": p.text[:FEEDBACK_TEXT_CHARS],
         }
         if register != "probe":
             event["register"] = register
