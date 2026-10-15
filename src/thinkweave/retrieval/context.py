@@ -87,11 +87,10 @@ def session_start_budget_tokens(cap_chars: int | None) -> int:
     return max(usable // CHARS_PER_TOKEN, 1)
 
 
-# Drop order when over budget. Header/tasks/sessions carry the continuation
-# cue and are never dropped; decorative sections go first, cheapest-to-lose
-# last. ``state`` and ``tools`` appear in neither list: the SessionStart set
-# excludes them, and the snapshot route treats them as load-bearing — they
-# reach the truncation fallback below rather than a whole-section drop.
+# Drop order when over budget, cheapest-to-lose first. Sections not listed
+# (header/tasks/sessions carry the continuation cue; the snapshot route also
+# treats state/tools/footer as load-bearing) never drop whole: ``_assemble``
+# cuts their tail instead.
 _DROP_ORDER = ("sources", "themes", "concepts", "probes", "decisions", "backlog")
 
 
@@ -945,51 +944,40 @@ def _build_active_themes(cfg: Config, project: str, n: int = 10) -> Section:
 
 
 def _assemble(collected: dict[str, Section], wanted: list[str], max_chars: int) -> str:
-    """Render sections in the requested order, dropping whole sections if over budget."""
-    # Preserve wanted order, skipping missing sections.
+    """Render sections in the requested order, inside ``max_chars``.
+
+    Ranked sections (``_DROP_ORDER``) drop whole, cheapest first, until the
+    payload fits; then each dropped one comes back, most valuable first, if it
+    fits the room left. The other sections never drop: when they alone
+    overflow, the largest is cut to fit, its head kept.
+    """
     ordered = [collected[k] for k in wanted if k in collected]
-
-    rendered = _render(ordered)
-    if len(rendered) <= max_chars:
-        return rendered
-
     kept = {s.key: s for s in ordered}
 
-    # A section bigger than the whole budget can never fit beside anything, so
-    # it goes before the ranked drops rather than evicting every other section
-    # on its way out.
-    for s in ordered:
-        if len(s.body) > max_chars:
-            kept.pop(s.key, None)
+    dropped: list[Section] = []
+    for key in _DROP_ORDER:
+        if len(_render_kept(ordered, kept)) <= max_chars:
+            break
+        if key in kept:
+            dropped.append(kept.pop(key))
+    for s in reversed(dropped):
+        kept[s.key] = s
+        if len(_render_kept(ordered, kept)) > max_chars:
+            del kept[s.key]
+
     rendered = _render_kept(ordered, kept)
-    if len(rendered) <= max_chars:
-        return rendered
-
-    # Still over — drop sections in _DROP_ORDER until we fit. Never drop
-    # header/tasks/sessions/tools/footer.
-    for drop_key in _DROP_ORDER:
-        if drop_key in kept:
-            del kept[drop_key]
-            rendered = _render_kept(ordered, kept)
-            if len(rendered) <= max_chars:
-                return rendered
-
-    # Still over — truncate the sessions body, then the state body, as last resort.
-    # This preserves the structure but allows big history files to fit.
-    remaining = [s for s in ordered if s.key in kept]
-    for target_key in ("sessions", "state"):
-        for s in remaining:
-            if s.key == target_key and len(s.body) > 2000:
-                s.body = (
-                    s.body[: max(2000, max_chars // 4)]
-                    + "\n\n_... (truncated to fit budget)_"
-                )
+    while len(rendered) > max_chars:
+        largest = max(kept.values(), key=lambda s: len(s.body))
+        keep = len(largest.body) - (len(rendered) - max_chars) - len(_CUT_MARK)
+        if keep <= 0:
+            return rendered[: max_chars - len(_CAP_MARK)] + _CAP_MARK
+        largest.body = largest.body[:keep].rsplit("\n", 1)[0] + _CUT_MARK
         rendered = _render_kept(ordered, kept)
-        if len(rendered) <= max_chars:
-            return rendered
+    return rendered
 
-    # Hard cap as a last resort — guarantees we never blow the token budget.
-    return rendered[: max_chars - 40] + "\n\n_... (payload capped)_"
+
+_CUT_MARK = "\n\n_... (truncated to fit budget)_"
+_CAP_MARK = "\n\n_... (payload capped)_"
 
 
 def _render_kept(ordered: list[Section], kept: dict[str, Section]) -> str:

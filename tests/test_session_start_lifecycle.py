@@ -442,7 +442,6 @@ def fat_vault(vault_factory, monkeypatch):
     The overflow shape: the STATE.md excerpt alone can fill 12KB of the
     payload, so a builder that still serves it blows the cap here.
     """
-    from thinkweave.core.indexer import Indexer
     from thinkweave.core.schemas import NoteType
 
     handle = vault_factory()
@@ -477,6 +476,48 @@ def fat_vault(vault_factory, monkeypatch):
     (project_dir / "STATE.md").write_text(
         "# State\n\n" + "Stale state prose. " * 800, encoding="utf-8"
     )
+    return _served(handle, monkeypatch)
+
+
+@pytest.fixture
+def task_heavy_vault(vault_factory, monkeypatch):
+    """One wrapped session and twenty open tasks whose lines alone pass the cap."""
+    from thinkweave.core.schemas import NoteType
+
+    handle = vault_factory()
+    handle.with_note(
+        "The one wrapped session",
+        note_type=NoteType.SESSION,
+        body=_session_body(0),
+        project="t",
+        extra_frontmatter={
+            "processed": True,
+            "processed_at": "2026-10-01T09:00:00+00:00",
+            "source_session": "cc-heavy0",
+        },
+    )
+    wide = "A task title long enough to crowd the payload. " * 12
+    for i in range(20):
+        handle.with_note(
+            f"Wide task {i}",
+            note_id=f"tsk-wide{i:04d}",
+            project="t",
+            extra_frontmatter={
+                "kind": "task",
+                "status": "open",
+                "grain": "work",
+                "rounds": [],
+                "title": f"Wide task {i}: {wide}",
+                "asked": f"#{400 + i}",
+            },
+        )
+    return _served(handle, monkeypatch)
+
+
+def _served(handle, monkeypatch):
+    """Index ``handle``'s vault and point the hook handler at it as project ``t``."""
+    from thinkweave.core.indexer import Indexer
+
     idx = Indexer(config=handle.config)
     try:
         idx.rebuild(full=True)
@@ -523,6 +564,25 @@ class TestHookContextCap:
         assert "## Open Tasks" in head
         assert "tsk-open" in head
         assert "## Recent Wrapped Sessions" in head
+
+    def test_open_tasks_past_the_cap_are_capped_not_dropped(
+        self, task_heavy_vault, outputs, tmp_path
+    ):
+        from thinkweave.surfaces.hooks import handler as h
+
+        h._handle_session_start({
+            "session_id": "uuid-heavy1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        ctx = outputs[-1]["additional_context"]
+        assert len(ctx) <= CAP
+        # The continuation cue keeps its head: the heading and the newest task.
+        assert "## Open Tasks" in ctx
+        assert "tsk-wide0019" in ctx or "tsk-wide0000" in ctx
+        assert "## Recent Wrapped Sessions" in ctx
+        assert "The one wrapped session" in ctx
 
     def test_handler_spends_a_cap_derived_budget(
         self, env, outputs, tmp_path, monkeypatch
