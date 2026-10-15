@@ -2690,3 +2690,52 @@ class TestCaptureGaps:
         monkeypatch.setattr("thinkweave.core.config.is_vault_initialized", lambda cfg: True)
         handler.main()
         assert seen["name"] == "mcp__thinkweave__weave_search"
+
+
+# ---------------------------------------------------------------------------
+# UserPromptSubmit — the harness's hook budget bounds prompt-time retrieval
+# ---------------------------------------------------------------------------
+
+
+class TestUserPromptSubmitHookBudget:
+    def _run(self, cfg, monkeypatch, harness_id: str, captured: dict):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+        monkeypatch.setattr(handler_mod, "_ensure_session", lambda *a, **k: None)
+        monkeypatch.setattr(handler_mod, "_hook_harness", lambda: harness_id)
+        monkeypatch.setattr(
+            "thinkweave.operations.prompt_time_retrieval.build_enrichment",
+            lambda cfg, sid, text, *, deadline=None: captured.__setitem__("deadline", deadline)
+            or (None, [], False),
+        )
+        handler_mod._handle_user_prompt_submit(
+            {"session_id": "ses-budget", "prompt": "please explain how the indexer resolves a session note", "cwd": "/p"}
+        )
+
+    def test_pi_budget_reaches_the_enrichment_less_the_reply_margin(self, tmp_path: Path, monkeypatch):
+        from thinkweave.core.config import Config
+
+        captured: dict = {}
+        self._run(Config(vault_root=tmp_path / "vault"), monkeypatch, "pi", captured)
+        # Pi's shim waits 2.5 s; the handler keeps 0.3 s back for the reply.
+        assert 0 < captured["deadline"] <= 2.2
+
+    def test_a_harness_without_a_budget_leaves_the_configured_deadline_alone(self, tmp_path: Path, monkeypatch):
+        from thinkweave.core.config import Config
+
+        captured: dict = {}
+        self._run(Config(vault_root=tmp_path / "vault"), monkeypatch, "codex", captured)
+        assert captured["deadline"] is None
+
+    def test_remaining_budget_counts_from_the_handler_start(self, monkeypatch):
+        import time
+
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        monkeypatch.setattr(handler_mod, "_hook_harness", lambda: "pi")
+        fresh = handler_mod._hook_budget_remaining("UserPromptSubmit", time.monotonic())
+        assert 2.1 < fresh <= 2.2
+        spent = handler_mod._hook_budget_remaining("UserPromptSubmit", time.monotonic() - 10)
+        assert spent < 0
+        assert handler_mod._hook_budget_remaining("SubagentStart", time.monotonic()) is None
