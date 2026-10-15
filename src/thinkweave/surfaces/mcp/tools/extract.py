@@ -58,10 +58,10 @@ def _format_extract_report(out) -> str:
     lines.append(f"Session marked processed={out.processed_at}")
     # Surface the exact finalize command — pass the minted ses-id (#181):
     # a forced re-extract leaves two folders claiming the same source UUID,
-    # and only the session-note id unambiguously names the one this extract
-    # just wrote. The judge step maps a ses-id back to `source_session`
-    # itself (finalize_wrap), so the 2026-05-14 trap (ses-id → 0 decisions
-    # judged) no longer applies.
+    # and only the note id names the one this extract just wrote. Decisions
+    # are stamped with that same id, so the judge step finds them on its
+    # first lookup — the 2026-05-14 trap (ses-id → 0 decisions judged) is
+    # unreachable from a fresh wrap.
     project = ""
     if out.created_decisions:
         project = out.created_decisions[0].frontmatter.get("project", "") or ""
