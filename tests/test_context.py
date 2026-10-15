@@ -375,7 +375,9 @@ class TestHookContextCap:
         assert session_start_budget_tokens(None) == SESSION_START_BUDGET_TOKENS
 
     def test_session_start_leads_with_the_continuation_cues(self):
-        assert SESSION_START_SECTIONS[:3] == ("header", "tasks", "sessions")
+        assert SESSION_START_SECTIONS[:4] == (
+            "header", "tasks", "sessions", "decisions"
+        )
 
     def test_session_start_omits_tools_footer_and_state(self):
         # A section that is neither served at startup nor named here would be
@@ -450,16 +452,15 @@ class TestHookContextCap:
         assert "Session with no metadata" not in payload
         assert "tool events recorded" not in payload
 
-    def test_a_section_too_big_for_the_budget_drops_before_the_ranked_ones(
+    def test_a_dropped_section_that_fits_the_room_left_comes_back(
         self, config: Config, vault: VaultManager, indexer: Indexer, vault_dir: Path
     ):
         """One oversized section must not evict the sections that do fit.
 
         The backlog landing doc here is 9,000 chars against a 8,000-char
-        budget, so it can never fit beside anything. A drop order that walks
-        by rank alone (sources, themes, concepts, probes, decisions, backlog)
-        spends the small sections first and delivers a payload of just the
-        header, discarding budget it had already reserved.
+        budget, so it can never fit beside anything. The ranked walk drops
+        sources before it reaches the backlog; once the backlog is gone the
+        sources fit again, so they must be back in the payload.
         """
         project_dir = vault_dir / "projects" / "demo"
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -468,22 +469,14 @@ class TestHookContextCap:
             "\n\n## Closed\n\n- [x] Done\n",
             encoding="utf-8",
         )
-        vault.create_note(
-            NoteType.DECISION,
-            "Use FTS5",
-            body="Rationale body",
-            project="demo",
-            extra_frontmatter={"status": "accepted", "summary": "FTS5 is fast enough"},
-        )
+        vault.create_note(NoteType.SOURCE, "Some paper", body="Body", project="demo")
         indexer.rebuild(full=True)
 
         payload = build_project_context(config, project="demo", budget_tokens=2_000)
 
         assert "## Backlog" not in payload
-        # The section that fits survives, instead of paying for the one that
-        # never could.
-        assert "## Recent Decisions" in payload
-        assert "Use FTS5" in payload
+        assert "## Recent Sources" in payload
+        assert "Some paper" in payload
 
     def test_dropped_sections_are_announced_in_the_payload(
         self, config: Config, vault: VaultManager, indexer: Indexer, vault_dir: Path

@@ -42,10 +42,11 @@ SECTIONS = (
     "footer",
 )
 
-# SessionStart's section set and order. The first three carry what a new
+# SessionStart's section set and order. The first four carry what a new
 # session needs before it can act — identity, the open-task continuation cue,
-# the wrapped-session history — so they render first: if a payload ever
-# overflows its harness again, the harness's preview still shows them.
+# the wrapped-session history, the recent decisions — so they render first: if
+# a payload ever overflows its harness again, the harness's preview still
+# shows them.
 #
 # Excluded, each for a stated reason:
 # - ``tools``/``footer``: Claude Code defers MCP tool schemas and surfaces them
@@ -59,8 +60,8 @@ SESSION_START_SECTIONS = (
     "header",
     "tasks",
     "sessions",
-    "backlog",
     "decisions",
+    "backlog",
     "probes",
     "themes",
     "concepts",
@@ -88,10 +89,10 @@ def session_start_budget_tokens(cap_chars: int | None) -> int:
 
 
 # Drop order when over budget, cheapest-to-lose first. Sections not listed
-# (header/tasks/sessions carry the continuation cue; the snapshot route also
-# treats state/tools/footer as load-bearing) never drop whole: ``_assemble``
-# cuts their tail instead.
-_DROP_ORDER = ("sources", "themes", "concepts", "probes", "decisions", "backlog")
+# (header/tasks/sessions/decisions carry the continuation cue; the snapshot
+# route also treats state/tools/footer as load-bearing) never drop whole:
+# ``_assemble`` cuts their tail instead.
+_DROP_ORDER = ("sources", "themes", "concepts", "probes", "backlog")
 
 
 @dataclass

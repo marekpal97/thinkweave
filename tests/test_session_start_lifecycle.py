@@ -481,7 +481,8 @@ def fat_vault(vault_factory, monkeypatch):
 
 @pytest.fixture
 def task_heavy_vault(vault_factory, monkeypatch):
-    """One wrapped session and twenty open tasks whose lines alone pass the cap."""
+    """One wrapped session, one decision, and twenty open tasks whose lines
+    alone pass the cap."""
     from thinkweave.core.schemas import NoteType
 
     handle = vault_factory()
@@ -495,6 +496,12 @@ def task_heavy_vault(vault_factory, monkeypatch):
             "processed_at": "2026-10-01T09:00:00+00:00",
             "source_session": "cc-heavy0",
         },
+    )
+    handle.with_note(
+        "Keep the cue sections whole",
+        note_type=NoteType.DECISION,
+        body="## Decision\nCue sections are cut, never dropped.\n",
+        project="t",
     )
     wide = "A task title long enough to crowd the payload. " * 12
     for i in range(20):
@@ -583,6 +590,8 @@ class TestHookContextCap:
         assert "tsk-wide0019" in ctx or "tsk-wide0000" in ctx
         assert "## Recent Wrapped Sessions" in ctx
         assert "The one wrapped session" in ctx
+        assert "## Recent Decisions" in ctx
+        assert "Keep the cue sections whole" in ctx
 
     def test_handler_spends_a_cap_derived_budget(
         self, env, outputs, tmp_path, monkeypatch
