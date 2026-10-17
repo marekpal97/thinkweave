@@ -58,6 +58,9 @@ import of a target and exactly one baseline line becomes deletable.
    public module outside code is expected to import), a rule is added that
    imports from *outside* the primitive must target that front door, not its
    internal submodules. Added one primitive at a time, as each front door lands.
+   (Status: all six package doors landed in #13 — curated ``__init__`` +
+   ``__all__``, pinned by ``tests/test_package_doors.py`` — but no rule-3
+   enforcement is wired here yet; callers still import submodules freely.)
 4. *Tests import privates only from the primitive they test.* A companion rule
    (scoped to ``tests/``) will assert that a ``test_<primitive>*.py`` file may
    reach into ``_underscore`` internals only of the primitive it names —
