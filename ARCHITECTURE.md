@@ -173,7 +173,7 @@ flowchart LR
 
 ### Memory seam — CC auto-memory ↔ vault reconciliation
 
-Two always-on knowledge channels feed every session and are assembled *independently*: **Claude Code auto-memory** (`~/.claude/projects/*/memory/*.md`, the *durable* layer — preferences, feedback, hard-won lessons) and **the vault SessionStart payload** (the *fresh* layer — recent sessions / decisions / state, regenerated each session). The seam is the missing reconciliation between them — an active correctness guard that keeps the durable layer from going **stale** against, or silently **duplicating**, the fresh layer (empirically, staleness concentrates in `project`-type CC facts that race the vault — "14 MCP tools" when the vault has 17 — and almost never in durable `feedback` facts).
+Two always-on knowledge channels feed every session and are assembled *independently*: **Claude Code auto-memory** (`~/.claude/projects/*/memory/*.md`, the *durable* layer — preferences, feedback, hard-won lessons) and **the vault SessionStart payload** (the *fresh* layer — open tasks / recent sessions / decisions, regenerated each session and sized to land inside the harness's inline context cap). The seam is the missing reconciliation between them — an active correctness guard that keeps the durable layer from going **stale** against, or silently **duplicating**, the fresh layer (empirically, staleness concentrates in `project`-type CC facts that race the vault — "14 MCP tools" when the vault has 17 — and almost never in durable `feedback` facts).
 
 The mechanic splits deterministic-Python from agent-judgment, exactly like concepts/themes:
 

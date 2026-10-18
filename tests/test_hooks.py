@@ -11,9 +11,11 @@ import pytest
 
 from tests.conftest import write_transcript
 from thinkweave.core.config import Config, detect_project
+# The auto-summary shape has one producer (core.events, via
+# extract_deterministic); the Stop hook's duplicate of it is gone.
+from thinkweave.core.events import _build_summary as _build_auto_summary
 from thinkweave.surfaces.hooks.handler import (
     _buffer_event,
-    _build_auto_summary,
     _build_event,
     _diff_context,
     _extract_insight_blocks,

@@ -8,7 +8,9 @@ The payload is built from the index and vault, with zero LLM calls. Each
 section is assembled independently and labelled by a ``## Heading`` so
 Claude can skim or deep-read. Sections are budgeted as whole units —
 when the total exceeds the caller's budget, whole sections are dropped
-(never items chopped mid-line).
+(never items chopped mid-line), a section too large to fit at all goes
+first, and the payload names what it dropped so a short one reads as a
+budget decision rather than a quiet vault.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from thinkweave.core.config import Config, load_config, normalize_project_name
+from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
 
 # Rough approximation: 1 token ≈ 4 characters for English markdown. Used
 # to convert caller-facing token budgets into char budgets.
@@ -39,15 +42,57 @@ SECTIONS = (
     "footer",
 )
 
-# SessionStart omits "tools" and "footer": Claude Code defers MCP tool schemas
-# and surfaces them through ToolSearch, so a manifest of the weave_* tools and a
-# retrieval-hints table restate what the tool descriptions already carry.
-# ``weave_project_snapshot`` still serves every section on request.
-SESSION_START_SECTIONS = tuple(s for s in SECTIONS if s not in ("tools", "footer"))
+# SessionStart's section set and order. The first four carry what a new
+# session needs before it can act — identity, the open-task continuation cue,
+# the wrapped-session history, the recent decisions — so they render first: if
+# a payload ever overflows its harness again, the harness's preview still
+# shows them.
+#
+# Excluded, each for a stated reason:
+# - ``tools``/``footer``: Claude Code defers MCP tool schemas and surfaces them
+#   through ToolSearch, so a manifest and a hints table restate what the tool
+#   descriptions already carry.
+# - ``state``: STATE.md goes stale between wraps and nothing refreshes it, so
+#   an always-on copy is a stale claim in every session's context. Its excerpt
+#   is also the biggest single contributor to the overflow the cap prevents,
+#   and ``weave_project_snapshot`` still serves it on demand.
+SESSION_START_SECTIONS = (
+    "header",
+    "tasks",
+    "sessions",
+    "decisions",
+    "backlog",
+    "probes",
+    "themes",
+    "concepts",
+    "sources",
+)
 
-# Drop order when over budget. Header/tools/state/sessions are load-bearing
-# and dropped last; decorative sections go first.
-_DROP_ORDER = ("sources", "themes", "concepts", "probes", "decisions", "backlog")
+# Characters the SessionStart handler reserves for the memory-seam guard it
+# prepends to the payload (``synthesis.memory_seam.session_guard_section``:
+# a header block plus at most 8 hit lines). The payload budget is the cap
+# minus this reserve, so payload + guard stay inside the cap.
+SESSION_START_GUARD_HEADROOM_CHARS = 2_000
+
+
+def session_start_budget_tokens(cap_chars: int | None) -> int:
+    """Token budget that keeps the SessionStart payload inside a harness's cap.
+
+    ``cap_chars`` is the harness profile's ``additional_context_cap_chars``;
+    ``None`` (no measured cap) leaves the default budget standing, so every
+    harness but Claude Code renders as it did before.
+    """
+    if not cap_chars:
+        return SESSION_START_BUDGET_TOKENS
+    usable = cap_chars - SESSION_START_GUARD_HEADROOM_CHARS
+    return max(usable // CHARS_PER_TOKEN, 1)
+
+
+# Drop order when over budget, cheapest-to-lose first. Sections not listed
+# (header/tasks/sessions/decisions carry the continuation cue; the snapshot
+# route also treats state/tools/footer as load-bearing) never drop whole:
+# ``_assemble`` cuts their tail instead.
+_DROP_ORDER = ("sources", "themes", "concepts", "probes", "backlog")
 
 
 @dataclass
@@ -219,7 +264,7 @@ def _build_tools_manifest() -> Section:
         "- `weave_search(query, mode='fts'|'similar'|'hybrid', project, type, tags, concepts, since, until, limit)` — keyword, semantic, or RRF-fused hybrid. Empty `query` = list mode. `concepts=[…]` combines text + concept filter.\n"
         "- `weave_context(query, project, type, concepts, since, until, limit)` — 3-layer composition (FTS → similarity-via-concept → recency), deduped budget blob.\n"
         "- `weave_timeline(project, days)` — chronological window of sessions + decisions.\n"
-        "- `weave_project_snapshot(project, sections, budget_tokens)` — re-fetch this SessionStart payload on demand.\n"
+        "- `weave_project_snapshot(project, sections, budget_tokens)` — re-fetch the full project context on demand: every section, including the state, tools and footer sections SessionStart leaves out.\n"
         "\n"
         "**Graph (filter-dispatched)**\n"
         "- `weave_graph(id, depth, filter, …)` — typed-edge walk. `filter` dispatches the variant:\n"
@@ -292,6 +337,8 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
     finally:
         db.close()
 
+    from thinkweave.core.events import is_tool_events_fallback
+
     # Filter to wrapped sessions and sort by processed_at (falling back to date)
     # in Python — avoids reliance on SQLite JSON1 extension.
     wrapped: list[tuple] = []
@@ -302,8 +349,14 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
             fm = {}
         if not fm.get("processed"):
             continue
+        summary = _extract_summary(row["body_text"] or "")
+        # A session whose only summary is the no-metadata fallback reports
+        # that nothing was captured, not what happened — no use to a session
+        # starting now, and it spends a chunk of the cap.
+        if is_tool_events_fallback(summary):
+            continue
         sort_key = str(fm.get("processed_at") or row["date"] or "")
-        wrapped.append((sort_key, row, fm))
+        wrapped.append((sort_key, row, fm, summary))
 
     wrapped.sort(key=lambda t: t[0], reverse=True)
     wrapped = wrapped[:n]
@@ -312,21 +365,20 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
         return Section(
             key="sessions",
             title=_default_title("sessions"),
-            body="_(no wrapped sessions found — run `/wrap` at session end)_",
+            body="_(no wrapped session summaries yet — run `/wrap` at session end)_",
             empty=True,
             soft_budget_chars=200,
         )
 
     # Collect session IDs to batch-query derived notes.
-    session_ids = [row["id"] for _sk, row, _fm in wrapped]
+    session_ids = [row["id"] for _sk, row, _fm, _summary in wrapped]
     derived_map = _get_derived_artifacts(cfg, session_ids)
 
     chunks = []
-    for _sort_key, row, fm in wrapped:
+    for _sort_key, row, fm, summary in wrapped:
         ses_id = row["id"]
         title = row["title"] or fm.get("id", "session")
         date = fm.get("processed_at") or row["date"] or ""
-        summary = _extract_summary(row["body_text"] or "")
         insight_titles = _extract_insight_titles(row["body_text"] or "")
 
         chunk = f"### {title} (`{ses_id}`)\n_{date}_\n\n{summary}"
@@ -893,47 +945,58 @@ def _build_active_themes(cfg: Config, project: str, n: int = 10) -> Section:
 
 
 def _assemble(collected: dict[str, Section], wanted: list[str], max_chars: int) -> str:
-    """Render sections in the requested order, dropping whole sections if over budget."""
-    # Preserve wanted order, skipping missing sections.
+    """Render sections in the requested order, inside ``max_chars``.
+
+    Ranked sections (``_DROP_ORDER``) drop whole, cheapest first, until the
+    payload fits; then each dropped one comes back, most valuable first, if it
+    fits the room left. The other sections never drop: when they alone
+    overflow, the largest is cut to fit, its head kept.
+    """
     ordered = [collected[k] for k in wanted if k in collected]
-
-    rendered = _render(ordered)
-    if len(rendered) <= max_chars:
-        return rendered
-
-    # Over budget — drop sections in _DROP_ORDER until we fit. Never drop
-    # header/tools/state/sessions/footer.
     kept = {s.key: s for s in ordered}
-    for drop_key in _DROP_ORDER:
-        if drop_key in kept:
-            del kept[drop_key]
-            remaining = [s for s in ordered if s.key in kept]
-            rendered = _render(remaining)
-            if len(rendered) <= max_chars:
-                return rendered
 
-    # Still over — truncate the sessions body, then state body, as last resort.
-    # This preserves the structure but allows big STATE/history files to fit.
-    remaining = [s for s in ordered if s.key in kept]
-    for target_key in ("sessions", "state"):
-        for s in remaining:
-            if s.key == target_key and len(s.body) > 2000:
-                s.body = (
-                    s.body[: max(2000, max_chars // 4)]
-                    + "\n\n_... (truncated to fit budget)_"
-                )
-        rendered = _render(remaining)
-        if len(rendered) <= max_chars:
-            return rendered
+    dropped: list[Section] = []
+    for key in _DROP_ORDER:
+        if len(_render_kept(ordered, kept)) <= max_chars:
+            break
+        if key in kept:
+            dropped.append(kept.pop(key))
+    for s in reversed(dropped):
+        kept[s.key] = s
+        if len(_render_kept(ordered, kept)) > max_chars:
+            del kept[s.key]
 
-    # Hard cap as a last resort — guarantees we never blow the token budget.
-    return rendered[: max_chars - 40] + "\n\n_... (payload capped)_"
+    rendered = _render_kept(ordered, kept)
+    while len(rendered) > max_chars:
+        largest = max(kept.values(), key=lambda s: len(s.body))
+        keep = len(largest.body) - (len(rendered) - max_chars) - len(_CUT_MARK)
+        if keep <= 0:
+            return rendered[: max_chars - len(_CAP_MARK)] + _CAP_MARK
+        largest.body = largest.body[:keep].rsplit("\n", 1)[0] + _CUT_MARK
+        rendered = _render_kept(ordered, kept)
+    return rendered
 
 
-def _render(sections: list[Section]) -> str:
-    parts = []
-    for s in sections:
-        parts.append(f"## {s.title}\n\n{s.body}")
+_CUT_MARK = "\n\n_... (truncated to fit budget)_"
+_CAP_MARK = "\n\n_... (payload capped)_"
+
+
+def _render_kept(ordered: list[Section], kept: dict[str, Section]) -> str:
+    """The kept sections in order, plus the line naming the dropped ones.
+
+    A reader that sees a short payload must be able to tell a quiet vault from a
+    section the budget removed, so the omission is stated, not left to infer.
+    """
+    return _render(
+        [s for s in ordered if s.key in kept],
+        [s.title for s in ordered if s.key not in kept],
+    )
+
+
+def _render(sections: list[Section], dropped: list[str] | None = None) -> str:
+    parts = [f"## {s.title}\n\n{s.body}" for s in sections]
+    if dropped:
+        parts.append("_(sections omitted to fit the budget: " + ", ".join(dropped) + ")_")
     return "\n\n".join(parts)
 
 

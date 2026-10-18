@@ -18,7 +18,7 @@ Three modalities, plus compositions on top.
 Compositions:
 
 - `weave_context(query, type=[…])` — FTS → similarity-via-concept → recency, deduped budget blob.
-- `weave_project_snapshot(project)` — re-fetch the SessionStart context payload.
+- `weave_project_snapshot(project)` — re-fetch the full project context (a superset of the SessionStart payload: it adds state, tools and footer).
 - `weave_timeline(project, days)` — chronological window of sessions + decisions.
 
 All filters take `since` / `until` ISO dates; `weave_search` accepts `concepts=[…]` to combine text + concept; `weave_graph` accepts `note_type` / `project` projection.

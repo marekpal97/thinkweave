@@ -8,10 +8,14 @@ from pathlib import Path
 import pytest
 
 from thinkweave.core.config import Config
+from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
 from thinkweave.retrieval.context import (
     CHARS_PER_TOKEN,
     SECTIONS,
+    SESSION_START_GUARD_HEADROOM_CHARS,
+    SESSION_START_SECTIONS,
     build_project_context,
+    session_start_budget_tokens,
     _extract_insight_titles,
     _extract_summary,
     _slice_markdown_section,
@@ -340,6 +344,157 @@ class TestBuildProjectContext:
         assert "themes" in SECTIONS
         assert "footer" in SECTIONS
         assert len(SECTIONS) == 12
+
+
+# ---------------------------------------------------------------------------
+# The harness inline cap
+# ---------------------------------------------------------------------------
+
+
+# Claude Code renders an ``additionalContext`` this long inline; above it it
+# files the text and shows the model a 2KB preview. Hand-written from that
+# harness behaviour, independent of the profile field it is compared against.
+CLAUDE_CODE_CAP = 10_000
+
+
+class TestHookContextCap:
+    """The SessionStart payload must land inline, not as a file preview."""
+
+    def test_claude_code_profile_declares_the_inline_cap(self):
+        from thinkweave.core import harness
+
+        assert harness.claude_code().additional_context_cap_chars == CLAUDE_CODE_CAP
+
+    def test_derived_budget_leaves_room_for_the_guard(self):
+        # The handler prepends the memory-seam guard to the payload, so the
+        # payload's own budget has to leave the guard's share of the cap.
+        spent = session_start_budget_tokens(CLAUDE_CODE_CAP) * CHARS_PER_TOKEN
+        assert spent + SESSION_START_GUARD_HEADROOM_CHARS <= CLAUDE_CODE_CAP
+
+    def test_unknown_cap_falls_back_to_the_default_budget(self):
+        assert session_start_budget_tokens(None) == SESSION_START_BUDGET_TOKENS
+
+    def test_session_start_leads_with_the_continuation_cues(self):
+        assert SESSION_START_SECTIONS[:4] == (
+            "header", "tasks", "sessions", "decisions"
+        )
+
+    def test_session_start_omits_tools_footer_and_state(self):
+        # A section that is neither served at startup nor named here would be
+        # lost silently — the explicit exclusion set is the guard.
+        assert set(SECTIONS) - set(SESSION_START_SECTIONS) == {
+            "tools",
+            "footer",
+            "state",
+        }
+
+    def test_state_absent_from_the_startup_payload_and_present_in_the_snapshot(
+        self,
+        config: Config,
+        vault: VaultManager,
+        indexer: Indexer,
+        vault_dir: Path,
+    ):
+        project_dir = vault_dir / "projects" / "withstate"
+        project_dir.mkdir(parents=True)
+        (project_dir / "STATE.md").write_text(
+            "# State\n\nThe big picture of this project.\n", encoding="utf-8"
+        )
+        _populate_wrapped_session(
+            vault, "withstate", title="Kickoff session", processed_at="2026-04-05"
+        )
+        indexer.rebuild(full=True)
+
+        startup = build_project_context(
+            config,
+            project="withstate",
+            sections=list(SESSION_START_SECTIONS),
+            budget_tokens=session_start_budget_tokens(CLAUDE_CODE_CAP),
+            omit_empty=True,
+        )
+        assert "## State of Play" not in startup
+        assert "The big picture" not in startup
+
+        snapshot = build_project_context(config, project="withstate")
+        assert "## State of Play" in snapshot
+        assert "The big picture" in snapshot
+
+    def test_tool_events_only_session_is_not_listed(
+        self, config: Config, vault: VaultManager, indexer: Indexer
+    ):
+        """A session whose only summary is the no-metadata fallback says
+        nothing to a new session, so it is skipped — and it is the NEWER of
+        the two here, so a builder that lists by recency would show it."""
+        _populate_wrapped_session(
+            vault, "demo", title="Session with a summary", processed_at="2026-04-05"
+        )
+        vault.create_note(
+            NoteType.SESSION,
+            "Session with no metadata",
+            body="## Summary\n7 tool events recorded.\n",
+            project="demo",
+            extra_frontmatter={
+                "processed": True,
+                "processed_at": "2026-04-06",
+                "source_session": "cc-quiet",
+            },
+        )
+        indexer.rebuild(full=True)
+
+        payload = build_project_context(
+            config,
+            project="demo",
+            sections=list(SESSION_START_SECTIONS),
+            budget_tokens=session_start_budget_tokens(CLAUDE_CODE_CAP),
+            omit_empty=True,
+        )
+        assert "Session with a summary" in payload
+        assert "Session with no metadata" not in payload
+        assert "tool events recorded" not in payload
+
+    def test_a_dropped_section_that_fits_the_room_left_comes_back(
+        self, config: Config, vault: VaultManager, indexer: Indexer, vault_dir: Path
+    ):
+        """One oversized section must not evict the sections that do fit.
+
+        The backlog landing doc here is 9,000 chars against a 8,000-char
+        budget, so it can never fit beside anything. The ranked walk drops
+        sources before it reaches the backlog; once the backlog is gone the
+        sources fit again, so they must be back in the payload.
+        """
+        project_dir = vault_dir / "projects" / "demo"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "BACKLOG.md").write_text(
+            "# Backlog\n\n## Open\n\n" + "- [ ] Item worth reading. " * 400 +
+            "\n\n## Closed\n\n- [x] Done\n",
+            encoding="utf-8",
+        )
+        vault.create_note(NoteType.SOURCE, "Some paper", body="Body", project="demo")
+        indexer.rebuild(full=True)
+
+        payload = build_project_context(config, project="demo", budget_tokens=2_000)
+
+        assert "## Backlog" not in payload
+        assert "## Recent Sources" in payload
+        assert "Some paper" in payload
+
+    def test_dropped_sections_are_announced_in_the_payload(
+        self, config: Config, vault: VaultManager, indexer: Indexer, vault_dir: Path
+    ):
+        """A payload that lost sections says which, so the reader knows what
+        to fetch on demand rather than assuming the vault is quiet."""
+        project_dir = vault_dir / "projects" / "demo"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "BACKLOG.md").write_text(
+            "# Backlog\n\n## Open\n\n" + "- [ ] Item worth reading. " * 400 + "\n",
+            encoding="utf-8",
+        )
+        indexer.rebuild(full=True)
+
+        payload = build_project_context(config, project="demo", budget_tokens=2_000)
+
+        assert "Backlog (Open Items)" in payload
+        assert "omitted" in payload
 
 
 class TestToolManifestConsolidation:

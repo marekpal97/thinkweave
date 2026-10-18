@@ -88,6 +88,12 @@ def render_matrix() -> str:
         ),
         row("context channel", lambda p: f"`{p.context_channel}`"),
         row(
+            "inline context cap (chars)",
+            lambda p: f"`{p.additional_context_cap_chars}`"
+            if p.additional_context_cap_chars
+            else "— (none measured)",
+        ),
+        row(
             "dispatch",
             lambda p: "`" + " ".join(p.headless_argv("<prompt>")) + "`",
         ),

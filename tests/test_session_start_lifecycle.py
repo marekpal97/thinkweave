@@ -29,6 +29,12 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import read_jsonl, write_session_md, write_transcript
+from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
+from thinkweave.retrieval.context import (
+    CHARS_PER_TOKEN,
+    SESSION_START_GUARD_HEADROOM_CHARS,
+    SESSION_START_SECTIONS,
+)
 
 # One full-snapshot payload used by every test; the chain fixture
 # pre-serves dec-aaaa1111 + ses-cccc3333 so serve-state on disk is
@@ -399,3 +405,316 @@ class TestSeamGuardUnion:
         assert captured[-1] >= {
             "dec-aaaa1111", "dec-bbbb2222", "ses-cccc3333", "n-ddd44444",
         }
+
+
+# --------------------------------------------------------------------------- #
+# The harness inline cap
+# --------------------------------------------------------------------------- #
+
+
+# Claude Code renders an ``additionalContext`` this long inline; above it it
+# files the text to a temp path and shows the model a 2KB preview. Hand-written
+# from that harness behaviour, independent of the profile field it compares to.
+CAP = 10_000
+
+# Long enough that ten of these cannot ride inline beside the tasks section —
+# the fixture has to be at least as fat as a vault that overflows the cap.
+_FAT_SUMMARY = (
+    "Reworked the SessionStart payload assembly and chased an FTS5 quoting "
+    "bug through the indexer; the drop order now protects the cue sections. "
+) * 6
+
+
+def _session_body(i: int) -> str:
+    return (
+        f"## Summary\n{_FAT_SUMMARY}\n\n"
+        "## Candidate Insights\n\n"
+        f"- **Insight one of session {i}** body text\n\n"
+        f"- **Insight two of session {i}** body text\n\n"
+        f"- **Insight three of session {i}** body text\n"
+    )
+
+
+@pytest.fixture
+def fat_vault(vault_factory, monkeypatch):
+    """Ten wrapped sessions, seven open tasks, and a 15KB STATE.md.
+
+    The overflow shape: the STATE.md excerpt alone can fill 12KB of the
+    payload, so a builder that still serves it blows the cap here.
+    """
+    from thinkweave.core.schemas import NoteType
+
+    handle = vault_factory()
+    for i in range(10):
+        handle.with_note(
+            f"Wrapped session {i}",
+            note_type=NoteType.SESSION,
+            body=_session_body(i),
+            project="t",
+            extra_frontmatter={
+                "processed": True,
+                "processed_at": f"2026-10-{1 + i:02d}T09:00:00+00:00",
+                "source_session": f"cc-fat{i}",
+            },
+        )
+    for i in range(7):
+        handle.with_note(
+            f"Open task {i}",
+            note_id=f"tsk-open000{i}",
+            project="t",
+            extra_frontmatter={
+                "kind": "task",
+                "status": "open",
+                "grain": "work",
+                "rounds": [],
+                "title": f"Open task {i}",
+                "asked": f"#{300 + i}",
+            },
+        )
+    project_dir = handle.dir / "projects" / "t"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "STATE.md").write_text(
+        "# State\n\n" + "Stale state prose. " * 800, encoding="utf-8"
+    )
+    return _served(handle, monkeypatch)
+
+
+@pytest.fixture
+def task_heavy_vault(vault_factory, monkeypatch):
+    """One wrapped session, one decision, and twenty open tasks whose lines
+    alone pass the cap."""
+    from thinkweave.core.schemas import NoteType
+
+    handle = vault_factory()
+    handle.with_note(
+        "The one wrapped session",
+        note_type=NoteType.SESSION,
+        body=_session_body(0),
+        project="t",
+        extra_frontmatter={
+            "processed": True,
+            "processed_at": "2026-10-01T09:00:00+00:00",
+            "source_session": "cc-heavy0",
+        },
+    )
+    handle.with_note(
+        "Keep the cue sections whole",
+        note_type=NoteType.DECISION,
+        body="## Decision\nCue sections are cut, never dropped.\n",
+        project="t",
+    )
+    wide = "A task title long enough to crowd the payload. " * 12
+    for i in range(20):
+        handle.with_note(
+            f"Wide task {i}",
+            note_id=f"tsk-wide{i:04d}",
+            project="t",
+            extra_frontmatter={
+                "kind": "task",
+                "status": "open",
+                "grain": "work",
+                "rounds": [],
+                "title": f"Wide task {i}: {wide}",
+                "asked": f"#{400 + i}",
+            },
+        )
+    return _served(handle, monkeypatch)
+
+
+def _served(handle, monkeypatch):
+    """Index ``handle``'s vault and point the hook handler at it as project ``t``."""
+    from thinkweave.core.indexer import Indexer
+
+    idx = Indexer(config=handle.config)
+    try:
+        idx.rebuild(full=True)
+    finally:
+        idx.close()
+    monkeypatch.setattr(
+        "thinkweave.core.config.load_config", lambda: handle.config
+    )
+    monkeypatch.setattr(
+        "thinkweave.surfaces.hooks.handler.detect_project", lambda cwd: "t"
+    )
+    return handle
+
+
+class TestHookContextCap:
+    """The delivered payload lands inline, inside the harness's own cap."""
+
+    def test_claude_code_payload_lands_inside_the_cap(
+        self, fat_vault, outputs, tmp_path
+    ):
+        from thinkweave.core import harness
+        from thinkweave.surfaces.hooks import handler as h
+
+        cap = harness.active().additional_context_cap_chars
+        assert cap == CAP
+
+        h._handle_session_start({
+            "session_id": "uuid-cap1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        ctx = outputs[-1]["additional_context"]
+        assert len(ctx) <= cap
+        # It fits by whole-section selection, not by a mid-string cut.
+        assert "payload capped" not in ctx
+        # Nothing spilled, so there is nothing to announce.
+        assert outputs[-1]["system_message"] == ""
+        assert "## State of Play" not in ctx
+        assert "Stale state prose" not in ctx
+        # Ordering: the first 2KB carries the continuation cue and the
+        # wrapped-session history.
+        head = ctx[:2048]
+        assert "## Open Tasks" in head
+        assert "tsk-open" in head
+        assert "## Recent Wrapped Sessions" in head
+
+    def test_open_tasks_past_the_cap_are_capped_not_dropped(
+        self, task_heavy_vault, outputs, tmp_path
+    ):
+        from thinkweave.surfaces.hooks import handler as h
+
+        h._handle_session_start({
+            "session_id": "uuid-heavy1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        ctx = outputs[-1]["additional_context"]
+        assert len(ctx) <= CAP
+        # The continuation cue keeps its head: the heading and the newest task.
+        assert "## Open Tasks" in ctx
+        assert "tsk-wide0019" in ctx or "tsk-wide0000" in ctx
+        assert "## Recent Wrapped Sessions" in ctx
+        assert "The one wrapped session" in ctx
+        assert "## Recent Decisions" in ctx
+        assert "Keep the cue sections whole" in ctx
+
+    def test_handler_spends_a_cap_derived_budget(
+        self, env, outputs, tmp_path, monkeypatch
+    ):
+        from thinkweave.core import harness
+        from thinkweave.surfaces.hooks import handler as h
+
+        spent: dict = {}
+
+        def spy(*args, **kwargs):
+            spent.update(kwargs)
+            return FULL_PAYLOAD
+
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context", spy
+        )
+        h._handle_session_start({
+            "session_id": "uuid-budget1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        cap = harness.active().additional_context_cap_chars
+        assert spent["budget_tokens"] * CHARS_PER_TOKEN + (
+            SESSION_START_GUARD_HEADROOM_CHARS
+        ) <= cap
+        # STATE.md is served on demand, never at startup.
+        assert "state" not in spent["sections"]
+        assert spent["sections"] == list(SESSION_START_SECTIONS)
+
+    def test_profile_without_a_cap_spends_the_default_budget(
+        self, env, outputs, tmp_path, monkeypatch, use_profile
+    ):
+        from thinkweave.surfaces.hooks import handler as h
+
+        spent: dict = {}
+
+        def spy(*args, **kwargs):
+            spent.update(kwargs)
+            return FULL_PAYLOAD
+
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context", spy
+        )
+        use_profile(additional_context_cap_chars=None)
+        h._handle_session_start({
+            "session_id": "uuid-default1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        assert spent["budget_tokens"] == SESSION_START_BUDGET_TOKENS
+
+    def test_a_guard_that_pushes_past_the_cap_announces_the_spill(
+        self, env, outputs, tmp_path, monkeypatch
+    ):
+        from thinkweave.surfaces.hooks import handler as h
+
+        monkeypatch.setattr(
+            "thinkweave.retrieval.context.build_project_context",
+            lambda *a, **kw: "x" * 8_000,
+        )
+        monkeypatch.setattr(
+            "thinkweave.synthesis.memory_seam.session_guard_section",
+            lambda cfg, ids: "y" * 3_000,
+        )
+        h._handle_session_start({
+            "session_id": "uuid-spill1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        # The guard is a correctness interrupt: it is never cut to fit, and
+        # the residual overflow announces itself instead of passing silently.
+        assert len(outputs[-1]["additional_context"]) == 11_001
+        msg = outputs[-1]["system_message"]
+        assert str(CAP) in msg
+        assert "preview" in msg
+
+    def test_a_stamp_naming_no_harness_is_announced_not_absorbed(
+        self, env, tmp_path, monkeypatch, capsys
+    ):
+        """The ``--harness`` stamp selects the profile whose cap and session-id
+        envs the handler spends. A stamp that names nothing must not silently
+        spend Claude Code's values for a harness they do not describe.
+
+        Asserted on the wire (stdout), because the notice rides the
+        ``systemMessage`` channel the real :func:`_output` composes.
+        """
+        import sys
+
+        from thinkweave.surfaces.hooks import handler as h
+
+        monkeypatch.setattr(
+            sys, "argv", ["weave-hook", "session_start", "--harness", "not-a-harness"]
+        )
+        h._handle_session_start({
+            "session_id": "uuid-stamp1",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        reply = json.loads(capsys.readouterr().out)
+        assert "not-a-harness" in reply["systemMessage"]
+        # The payload still ships — the notice is a degraded path, not a halt.
+        assert (
+            reply["hookSpecificOutput"]["additionalContext"] == FULL_PAYLOAD
+        )
+
+    def test_a_known_stamp_stays_silent(
+        self, env, tmp_path, monkeypatch, capsys
+    ):
+        import sys
+
+        from thinkweave.surfaces.hooks import handler as h
+
+        monkeypatch.setattr(
+            sys, "argv", ["weave-hook", "session_start", "--harness", "codex"]
+        )
+        h._handle_session_start({
+            "session_id": "uuid-stamp2",
+            "source": "startup",
+            "cwd": str(tmp_path),
+        })
+
+        assert "systemMessage" not in json.loads(capsys.readouterr().out)
