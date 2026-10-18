@@ -139,13 +139,23 @@ def _first_failure(hook_type: str, hook_input: dict) -> bool:
         session_id = str(hook_input.get("session_id", "")) or "_unknown"
         state = session_state_dir(load_config().weave_dir, session_id)
         state.mkdir(parents=True, exist_ok=True)
-        marker = state / f"failed.{hook_type.replace('/', '-')}"
-        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        return True
-    except FileExistsError:
-        return False
+        return _claim_once(state / f"failed.{hook_type.replace('/', '-')}")
     except Exception:
         return True
+
+
+def _claim_once(marker: Path) -> bool:
+    """Create ``marker``; True on the first claim, False once it exists.
+
+    The once-per-session bit every hook shares: each hook fires in its own
+    process, so the claim lives on disk, in the session's scratch dir that
+    is cleaned with the buffer at Stop.
+    """
+    try:
+        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return False
+    return True
 
 
 def _hook_harness() -> str:
@@ -574,7 +584,7 @@ def _record_base(weave_dir: Path, session_id: str, now: str, cwd: str) -> None:
 
     The first prompt of a session is the replay anchor: a task round lifts
     ``base`` from that row. The claim is a marker file in the session's
-    scratch dir — the same primitive as a failure marker — so a long buffer
+    scratch dir (``_claim_once``, the failure marker's primitive) so a long buffer
     costs no read on the prompts after the first, and a multiply-registered
     hook writes one row, not several. Outside a repo nothing is recorded:
     a round's ``base`` is optional.
@@ -583,9 +593,7 @@ def _record_base(weave_dir: Path, session_id: str, now: str, cwd: str) -> None:
 
     state = session_state_dir(weave_dir, session_id)
     state.mkdir(parents=True, exist_ok=True)
-    try:
-        os.close(os.open(state / "base", os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-    except FileExistsError:
+    if not _claim_once(state / "base"):
         return
     sha = head_sha(cwd)
     if sha:
