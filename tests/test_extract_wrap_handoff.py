@@ -3,7 +3,8 @@
 When a caller passes a non-``ses-XXX`` value as ``session_id`` (e.g. a Claude
 Code UUID), ``weave_extract`` auto-mints a session note whose own ``id:`` is a
 fresh ``ses-XXX`` but whose ``source_session:`` frontmatter is the input value.
-Decisions written for that session inherit ``source_session = <input>``.
+The minted ``ses-XXX`` is the identity every note written beside it is stamped
+with — the harness id stays on the session note alone.
 
 Since #181 the finalize hint prints the **minted ses-id**: a forced
 re-extract leaves two folders claiming the same source UUID, and only the
@@ -19,6 +20,10 @@ These tests pin:
 - The format report ends with a ``▶ To finalize: weave wrap-finalize ...``
   line that uses the **minted ses-id**, and following it verbatim after a
   forced re-extract matches prompts (#181 AC2)
+- A decision's ``source_session`` is the ``id`` of the ``session.md`` beside
+  it — never the harness id, never a folder slug — so ``weave rlvr export``
+  resolves the session chain, including for a session the Stop hook
+  auto-extracted first
 """
 
 from __future__ import annotations
@@ -30,8 +35,29 @@ import pytest
 from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
-from thinkweave.core.vault import VaultManager
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 from thinkweave.operations.extract import extract_session
+
+
+def _decision_spec(body: str = "Did the work because the old path missed.") -> dict:
+    """One ``extract_session`` decision payload, in the shape /wrap composes."""
+    return {
+        "title": "Stamp the vault session id",
+        "rationale": f"## Context\n\n{body}\n",
+        "outcome": "committed",
+        "concepts": ["session-management", "memory-system"],
+    }
+
+
+def _session_id_beside(config: Config, decision_relpath: str) -> str:
+    """The ``id`` in the ``session.md`` of the folder holding this decision.
+
+    Read straight off disk: the session note is the independent source of
+    truth for what a co-located stamp must equal.
+    """
+    folder = config.vault_root / Path(decision_relpath).parent
+    fm, _ = parse_frontmatter((folder / "session.md").read_text(encoding="utf-8"))
+    return str(fm["id"])
 
 
 @pytest.fixture
@@ -500,3 +526,189 @@ class TestRefEvidence:
         )
 
         assert any("not logged in" in w for w in out.warnings)
+
+
+class TestDecisionSourceSessionStamp:
+    """A decision's ``source_session`` is the co-located session note's ``id``.
+
+    ``context_served`` is keyed by the ``ses-`` id. A decision stamped with the
+    harness id the caller passed in joins nothing, so ``weave rlvr export``
+    emits an empty context block for it. The session note keeps the harness id
+    under its own ``source_session``; the decision borrows the note's ``id``.
+    """
+
+    CC_UUID = "7a1b2c3d-1111-4aa3-a9ff-7d8bdad37951"
+
+    def _hook_shaped_session(self, vault: VaultManager) -> tuple[Path, str]:
+        """A session note as hooks leave it: harness id under ``source_session``."""
+        path = vault.create_note(
+            NoteType.SESSION,
+            "hooked",
+            body="## Summary\n\n## Events\n",
+            project="t",
+            extra_frontmatter={"source_session": self.CC_UUID, "processed": False},
+        )
+        return path, vault.read_note(path).id
+
+    def test_decisions_carry_the_fixture_session_note_id(
+        self, config: Config, vault: VaultManager
+    ):
+        self._hook_shaped_session(vault)
+        _index(config)
+
+        out = extract_session(
+            config, session_id=self.CC_UUID, project="t", summary="did things",
+            insights=[], decisions=[_decision_spec(), _decision_spec("Second one.")],
+        )
+
+        assert out.error == ""
+        assert len(out.created_decisions) == 2
+        for dec in out.created_decisions:
+            # Disk truth: the id in the session.md beside the decision.
+            assert dec.frontmatter["source_session"] == _session_id_beside(
+                config, dec.path
+            )
+            assert dec.frontmatter["source_session"] != self.CC_UUID
+            assert dec.frontmatter["source_session"].startswith("ses-")
+
+    def test_decisions_carry_the_id_extract_mints_when_input_diverges(
+        self, config: Config, vault: VaultManager
+    ):
+        # No session note yet: extract mints one, and the decision must name
+        # that minted note, not the slug or the uuid it was handed.
+        _index(config)
+
+        out = extract_session(
+            config, session_id=self.CC_UUID, project="t", summary="did things",
+            insights=[], decisions=[_decision_spec()],
+        )
+
+        dec = out.created_decisions[0]
+        assert dec.frontmatter["source_session"] == out.session_note_id
+        assert dec.frontmatter["source_session"] == _session_id_beside(config, dec.path)
+
+    def test_judge_still_resolves_the_decision_by_either_form(
+        self, config: Config, vault: VaultManager
+    ):
+        # The judge lookup and the session resolver match on either form, so
+        # stamping the note id must not cost a caller who passes the harness id.
+        from thinkweave.synthesis.judge import find_decisions
+
+        _, note_id = self._hook_shaped_session(vault)
+        _index(config)
+
+        out = extract_session(
+            config, session_id=self.CC_UUID, project="t", summary="did things",
+            insights=[], decisions=[_decision_spec()],
+        )
+        dec_id = out.created_decisions[0].id
+
+        idx = Indexer(config=config)
+        try:
+            by_note = find_decisions(idx.db, vault, session_id=note_id)
+            by_harness = find_decisions(idx.db, vault, session_id=self.CC_UUID)
+        finally:
+            idx.close()
+        assert [d.id for d in by_note] == [dec_id]
+        assert [d.id for d in by_harness] == [dec_id]
+
+    def test_rlvr_export_resolves_the_session_chain(
+        self, config: Config, vault: VaultManager, monkeypatch, capsys
+    ):
+        import json
+
+        from thinkweave.surfaces.cli.rlvr import cmd_rlvr
+
+        _index(config)
+        out = extract_session(
+            config, session_id=self.CC_UUID, project="t", summary="did things",
+            insights=[],
+            decisions=[_decision_spec(
+                "Read [[n-boot0001]] at startup and pulled [[n-pull0002]]."
+            )],
+        )
+        dec = out.created_decisions[0]
+        session_dir = config.vault_root / Path(dec.path).parent
+        (session_dir / "retrieval_log.jsonl").write_text(
+            "\n".join(json.dumps(line) for line in [
+                {"ts": "t1", "type": "startup", "surface": "",
+                 "returned_ids": ["n-boot0001"], "token_est": 4321},
+                {"ts": "t2", "type": "retrieval", "tool": "weave_search",
+                 "returned_ids": ["n-pull0002"]},
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        _index(config)
+
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(config.vault_root))
+        args = type("Args", (), {
+            "rlvr_action": "export", "project": "t", "since": "", "until": "",
+            "committed_only": False, "verbose": False, "explode_history": False,
+        })()
+        cmd_rlvr(args)
+
+        rows = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines() if line.strip()
+        ]
+        mine = [r for r in rows if r["decision_id"] == dec.id]
+        assert len(mine) == 1
+        row = mine[0]
+        assert row["session_id"] == out.session_note_id
+        assert row["context"]["cited_startup_only_ids"] == ["n-boot0001"]
+        assert row["context"]["cited_onthefly_ids"] == ["n-pull0002"]
+        assert row["context"]["n_retrievals_onthefly"] == 1
+        assert row["context"]["startup_token_est"] == 4321
+
+
+class TestStopHookAutoExtractStamp:
+    """The Stop hook auto-extracts first; the wrap that follows stamps the same id.
+
+    Stop marks the note ``processed`` + ``auto_extracted`` without minting
+    decision notes, so the interactive ``/wrap`` catch-up runs
+    ``extract_session(force=True)`` on the harness id. Its decisions land in
+    the folder Stop materialised and must carry that note's ``ses-`` id.
+    """
+
+    CC_UUID = "9f8e7d6c-2222-4aa3-a9ff-7d8bdad37951"
+
+    def test_forced_wrap_after_stop_carries_the_note_id(
+        self, config: Config, vault: VaultManager, monkeypatch
+    ):
+        import json
+
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        path = vault.create_note(
+            NoteType.SESSION,
+            "live",
+            body="## Summary\n\n## Events\n",
+            project="t",
+            extra_frontmatter={"source_session": self.CC_UUID},
+        )
+        note_id = vault.read_note(path).id
+        _index(config)
+
+        buf = config.weave_dir / "buffer" / f"{self.CC_UUID}.jsonl"
+        buf.parent.mkdir(parents=True, exist_ok=True)
+        buf.write_text(
+            json.dumps({
+                "ts": "2026-10-14T09:00:00+00:00", "type": "prompt",
+                "text": "stamp the session id", "session_id": self.CC_UUID,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr("thinkweave.core.config.load_config", lambda: config)
+        handler_mod._handle_stop({"session_id": self.CC_UUID})
+        assert vault.read_note(path).frontmatter.get("auto_extracted") is True
+
+        out = extract_session(
+            config, session_id=self.CC_UUID, force=True, summary="wrapped",
+            insights=[], decisions=[_decision_spec()],
+        )
+
+        assert out.skipped_reason == ""
+        dec = out.created_decisions[0]
+        assert dec.frontmatter["source_session"] == note_id
+        assert dec.frontmatter["source_session"] == _session_id_beside(config, dec.path)
