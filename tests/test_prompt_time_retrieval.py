@@ -322,3 +322,39 @@ def test_search_construction_failure_returns_empty_not_missed(tmp_path: Path, mo
     out, missed = ptr._retrieve(cfg, "q", ["note"], limit=5, deadline=2.0, min_similarity=0.38)
     assert out == []
     assert missed is False
+
+
+# ---------------------------------------------------------------------------
+# build_enrichment — the caller's remaining hook budget caps the arm
+# ---------------------------------------------------------------------------
+
+
+def test_caller_deadline_caps_the_similarity_arm(tmp_path: Path, monkeypatch):
+    """The arm runs for the smaller of the caller's remaining budget and the
+    configured embed deadline; a generous caller budget changes nothing."""
+    cfg = _cfg(tmp_path)
+    cfg.retrieval_prompt_time.embed_deadline_seconds = 4.0
+    seen: list[float] = []
+    monkeypatch.setattr(
+        ptr, "_retrieve",
+        lambda *a, **k: seen.append(k["deadline"]) or ([], False),
+    )
+    ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT, deadline=1.0)
+    ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT, deadline=10.0)
+    ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    assert seen == [1.0, 4.0, 4.0]
+
+
+def test_a_spent_budget_is_a_miss_without_starting_the_arm(tmp_path: Path, monkeypatch):
+    """Under the floor the arm is not attempted and the turn counts as a
+    miss, so a harness that kills the hook early still feeds the adaptive
+    skip instead of paying the full budget on every prompt."""
+    cfg = _cfg(tmp_path)
+    called = {"n": 0}
+    monkeypatch.setattr(
+        ptr, "_retrieve",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ([], False),
+    )
+    for spent in (0.1, 0.0, -2.0):
+        assert ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT, deadline=spent) == (None, [], True)
+    assert called["n"] == 0

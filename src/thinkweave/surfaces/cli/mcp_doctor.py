@@ -219,7 +219,9 @@ def _key(entry: dict) -> tuple:
     the environment, not what gets launched into it. Every current entry shape
     passes it (#156; the plugin route's first sync is the launchers' guarded
     bootstrap, #164), but legacy entries without it must not report a phantom
-    cross-scope conflict.
+    cross-scope conflict. ``-P`` is dropped likewise: it is an interpreter
+    start-up flag, so the safe-path form and the bare ``python -m`` form are
+    one invocation.
 
     ``mcp_config.invocation`` first folds OpenCode's merged argv-array body
     onto the split shape, so both spellings of one invocation fingerprint
@@ -234,7 +236,7 @@ def _key(entry: dict) -> tuple:
             norm.extend(["--project", "<scope-specific>"])
             i += 2
             continue
-        if raw_args[i] == "--no-sync":
+        if raw_args[i] == "--no-sync" or raw_args[i] == "-P":
             i += 1
             continue
         norm.append(raw_args[i])

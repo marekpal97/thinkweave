@@ -151,6 +151,12 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
     (#164) owns the first sync instead. ``mcp_doctor._key`` normalises the
     flag away so entry shapes with and without it fingerprint as one
     invocation.
+
+    ``-P`` runs the interpreter on a safe path, so the cwd a harness launches
+    from never reaches ``sys.path``. A project carrying a local package named
+    like a stdlib module would otherwise have that module imported in the real
+    one's place, and the server would die at startup with nothing surfaced to
+    the user. ``mcp_doctor._key`` normalises this flag for the same reason.
     """
     args = [
         "run",
@@ -160,6 +166,7 @@ def _build_server_entry(project_root: Path, vault_root: str | None) -> dict[str,
         "--extra",
         "mcp",
         "python",
+        "-P",
         "-m",
         MCP_MODULE,
     ]
@@ -368,7 +375,9 @@ def _render_codex_windows_cli_launcher(
         # that leaves behind is an empty entry, which Python reads as the cwd.
         f'if defined PYTHONPATH (set "PYTHONPATH={pythonpath};%PYTHONPATH%")'
         f' else (set "PYTHONPATH={pythonpath}")\n'
-        f'"{base_python}" -S -m thinkweave %*\n'
+        # `-P` for the same reason as every other launch surface: the cwd a
+        # sandboxed shell starts in must not become an import path.
+        f'"{base_python}" -S -P -m thinkweave %*\n'
         "exit /b %ERRORLEVEL%\n"
     )
 

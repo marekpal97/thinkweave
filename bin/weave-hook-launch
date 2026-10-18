@@ -58,4 +58,5 @@ fi
 
 # Hooks are runtime callbacks, never an environment-management surface.
 # Module invocation remains available when weave-hook.exe is stale or absent.
-exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -m thinkweave.surfaces.hooks.handler "$@"
+# `-P`: the harness cwd must never reach sys.path — a local package named like a stdlib module would shadow the real one and the hook would die at import, silently.
+exec "$uv_bin" run --no-sync --project "$root" --extra mcp python -P -m thinkweave.surfaces.hooks.handler "$@"

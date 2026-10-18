@@ -585,7 +585,7 @@ class TestMcpInstallSurface:
         entry = self._install(inst)
         uv_args = [
             "run", "--no-sync", "--project", "/repo", "--extra", "mcp",
-            "python", "-m", "thinkweave.surfaces.mcp.server",
+            "python", "-P", "-m", "thinkweave.surfaces.mcp.server",
         ]
         if profile.id == "opencode":
             # opencode.ai/docs/mcp-servers/ (blueprint n-767d66b4 §4):
@@ -926,3 +926,35 @@ class TestHiddenSkillPatterns:
         self._install(monkeypatch, tmp_path, hide=False)
         doc = json.loads(settings.read_text())
         assert doc["permission"]["skill"] == {"thinkweave-*": "allow"} and "mcp" in doc
+
+
+class TestHookBudgets:
+    """A profile's ``hook_budget_ms`` is the number the harness side really
+    waits: the shim's ``BUDGET_MS`` literal, or the plugin route's
+    ``hooks.json`` timeout. The handler bounds optional work by it, so a
+    drifted number would silently reopen the kill-before-deadline gap."""
+
+    REPO = Path(__file__).resolve().parents[1]
+
+    def test_budget_keys_are_canonical_events_with_positive_values(self, profile):
+        assert set(profile.hook_budget_ms) <= set(hook_events.CANONICAL_EVENTS)
+        for event, ms in profile.hook_budget_ms.items():
+            assert isinstance(ms, int) and ms > 0, (profile.id, event, ms)
+
+    def test_shim_budgets_match_the_shim_source(self, profile):
+        if profile.hook_mechanism != "extension":
+            pytest.skip("no shim")
+        source = (self.REPO / profile.hook_extension_source).read_text(encoding="utf-8")
+        block = re.search(r"BUDGET_MS = \{(.*?)\}", source, re.S).group(1)
+        literal = {m.group(1): int(m.group(2)) for m in re.finditer(r"(\w+): (\d+)", block)}
+        assert profile.hook_budget_ms == literal
+
+    def test_plugin_budget_matches_hooks_json(self):
+        hooks = json.loads((self.REPO / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        timeouts = {
+            event: entry["hooks"][0]["timeout"] * 1000
+            for event, entries in hooks["hooks"].items()
+            for entry in entries
+        }
+        cc = harness.claude_code()
+        assert {e: cc.hook_budget_ms[e] for e in timeouts} == timeouts
