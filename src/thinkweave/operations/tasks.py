@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from thinkweave.core._utils import as_list
 from thinkweave.core.buffer import append_event, archived_events_path, buffer_path
 from thinkweave.core.config import tracker_project
 from thinkweave.core.events import feedback_events, iter_jsonl
@@ -732,6 +733,16 @@ class EntryLanding:
     match: str
 
 
+@dataclass(frozen=True)
+class HeldOpen:
+    """One declared ``done`` the pass did not close: the task stays open
+    until git holds every path in ``uncommitted`` — the files it recorded —
+    in a commit."""
+
+    task_id: str
+    uncommitted: list[str]
+
+
 @dataclass
 class TaskPassResult:
     """What one wrap task pass reconciled — folded into the wrap report."""
@@ -740,6 +751,7 @@ class TaskPassResult:
     minted: list[str] = field(default_factory=list)
     appended: list[str] = field(default_factory=list)
     closed: list[str] = field(default_factory=list)
+    held_open: list[HeldOpen] = field(default_factory=list)
     orphaned: list[str] = field(default_factory=list)
     attached: list[str] = field(default_factory=list)
     moved: list[str] = field(default_factory=list)
@@ -900,9 +912,11 @@ def apply_declaration(
     and reopens such a task when this session's own ``done`` closed it;
     rounds other sessions wrote stay put. ``done`` closes the task only when
     the declared ref is the task's own ``asked`` — the only closure wrap
-    performs; on an epic's task for a sub-issue the round records it. A
-    closed task's entry is skipped with a warning. Each landed entry is
-    recorded with how it matched; a ref-less mint while an open task
+    performs; on an epic's task for a sub-issue the round records it, and a
+    done whose task still records an uncommitted file lands its round and
+    holds the task open instead, reported as ``held_open`` with the files to
+    commit. A closed task's entry is skipped with a warning. Each landed
+    entry is recorded with how it matched; a ref-less mint while an open task
     touched the session's files, and a declared ref the session's closing
     refs do not name, are warned, never changed. ``children`` gain this task as parent, and the decisions
     the round minted gain its id. At ``boundary`` sparsity an open
@@ -975,9 +989,9 @@ class _DeclarationPass:
             and anchors & set(fm.get("derived_from") or [])
         }
         # The ref evidence weave_extract served the declaring model.
-        self.evidence = RefEvidence.gather(
-            cfg, session_notes[0] if session_notes else {}, self.result.warnings
-        )
+        session_fm = session_notes[0] if session_notes else {}
+        self.session_files = as_list(session_fm.get("files_touched"))
+        self.evidence = RefEvidence.gather(cfg, session_fm, self.result.warnings)
         self.closing_refs = self.evidence.closing_refs(self.repo)
         self.verdicts = [
             {k: str(row[k]) for k in _FEEDBACK_KEYS if row.get(k)}
@@ -1026,7 +1040,9 @@ class _DeclarationPass:
         # A sub-issue's done stays on its round; the epic's own close (or
         # the tracker sweep) closes the epic's task.
         own = not issue or issue == task.frontmatter.get("asked")
-        closing = bool(entry.get("done")) and own and task.close()
+        declared = bool(entry.get("done")) and own
+        held = self._holds_open(task, solo) if declared else []
+        closing = declared and not held and task.close()
         minting = task.path is None
         self.result.warnings += task.save(self.vm)
         if minting:
@@ -1035,6 +1051,8 @@ class _DeclarationPass:
         if closing:
             self.register.close(task)
             self.result.closed.append(task.id)
+        if held:
+            self.result.held_open.append(HeldOpen(task.id, held))
         self._stamp_decisions(minted, task)
         self._attach_children(entry, task)
 
@@ -1060,6 +1078,35 @@ class _DeclarationPass:
                 f"{task.id} declared {issue}, but the session's commits and PRs "
                 f"close {', '.join(sorted(self.closing_refs))}"
             )
+
+    def _holds_open(self, task: Task, solo: bool) -> list[str]:
+        """The recorded files git has not committed. A declared ``done``
+        carrying any holds the task open: the round lands, the files are
+        named, and a later wrap closes once they are committed. A task that
+        records no file, and one git cannot answer for, close on the
+        declaration; the missing check is announced, never passed off as a
+        clean one."""
+        try:
+            return _uncommitted(self._recorded(task, solo))
+        except (OSError, subprocess.SubprocessError) as exc:
+            reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+            self.result.warnings.append(
+                f"{task.id} closed on the declaration alone — no git commit "
+                f"state to check ({reason})"
+            )
+            return []
+
+    def _recorded(self, task: Task, solo: bool) -> list[str]:
+        """Every file the task records: each round's ``did.paths`` and file
+        outputs, plus this session's touched files when it declared one
+        task, whose round under-states what the session changed."""
+        paths: list[str] = []
+        for round_ in task.rounds:
+            paths += as_list((round_.did or {}).get("paths"))
+            paths += [o["ref"] for o in round_.outputs or [] if o["kind"] == "file"]
+        if solo:
+            paths += self.session_files
+        return list(dict.fromkeys(paths))
 
     def move_rounds(self, *, blocked: bool) -> None:
         """Take the session round this session's wraps wrote off each task no
@@ -1355,6 +1402,42 @@ def _git(*args: str, cwd: str = "") -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip()
+
+def _uncommitted(paths: list[str]) -> list[str]:
+    """The recorded ``paths`` the working tree still holds uncommitted, in
+    the order given. An ignored path never counts — ``git status`` reports
+    no such row — and neither does a path off disk, which no commit can
+    restore. Raises ``subprocess.SubprocessError`` outside a repository,
+    where there is no commit state to check."""
+    if not paths:
+        return []
+    top = _git("rev-parse", "--show-toplevel")
+    if not top:
+        raise subprocess.SubprocessError("not inside a git repository")
+    root = Path(top).resolve()
+    changed = _changed_paths(root)
+    out: list[str] = []
+    for raw in paths:
+        full = (root / raw).resolve()
+        if not full.is_relative_to(root) or not full.exists():
+            continue
+        if full.relative_to(root).as_posix() in changed:
+            out.append(raw)
+    return out
+
+
+def _changed_paths(root: Path) -> set[str]:
+    """Every path the repository at ``root`` holds uncommitted — modified,
+    staged or untracked — as one repo-relative posix path per row.
+    ``-uall`` names an untracked file instead of its directory, and
+    ``--no-renames`` splits a rename into two records so a row is a path.
+    Not routed through ``_git``: its strip would eat the leading status
+    column of the first row. One whole-tree scan per close check."""
+    out = subprocess.run(
+        ["git", "status", "--porcelain", "-uall", "--no-renames", "-z"],
+        cwd=root, capture_output=True, text=True, timeout=20, check=True,
+    ).stdout
+    return {row[3:] for row in out.split("\0") if row}
 
 
 def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:
