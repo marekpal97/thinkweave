@@ -83,13 +83,13 @@ _VAULT_TOML = r'"C:\\srv\\vault"' if _WINDOWS else '"/srv/vault"'
 EXPECTED_CONFIG_TOML = f"""\
 [mcp_servers.thinkweave]
 command = {_UV_TOML}
-args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-m", "thinkweave.surfaces.mcp.server"]
+args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-P", "-m", "thinkweave.surfaces.mcp.server"]
 """
 
 EXPECTED_CONFIG_TOML_WITH_VAULT = f"""\
 [mcp_servers.thinkweave]
 command = {_UV_TOML}
-args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-m", "thinkweave.surfaces.mcp.server"]
+args = ["run", "--no-sync", "--project", {_ROOT_TOML}, "--extra", "mcp", "python", "-P", "-m", "thinkweave.surfaces.mcp.server"]
 env = {{ "THINKWEAVE_VAULT" = {_VAULT_TOML} }}
 """
 
@@ -387,7 +387,7 @@ class TestConfigTomlWriter:
         assert tomllib.loads(text)["mcp_servers"]["thinkweave"] == {
             "command": UV_PATH,
             "args": ["run", "--no-sync", "--project", str(PROJECT_ROOT),
-                     "--extra", "mcp", "python", "-m",
+                     "--extra", "mcp", "python", "-P", "-m",
                      "thinkweave.surfaces.mcp.server"],
         }
 
