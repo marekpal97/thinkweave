@@ -104,6 +104,7 @@ class WrapFinalizeResult:
 # non-neutral verdicts.
 _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
+
 #: Characters of prompted text a feedback or probe event carries beside its
 #: 120-character ``prompt_ref`` join key. Both writers of that shape —
 #: ``wrap-finalize --verdicts`` and ``record_probe`` — cap at it.
@@ -609,58 +610,23 @@ def _append_verdict_events(
         result.verdicts_written += len(file_events)
 
 
-# ponytail: the cap is a scan ceiling, not a semantic one — a startup payload
-# can serve dozens of notes. Upgrade path: rank by concept overlap with the
-# uncited decision and keep the top few.
 _SERVED_LINK_LIMIT = 8
 
 
-def _served_links(cfg: Config, session_ids: list[str]) -> list[str]:
-    """Ready-made ``[[path|id]]`` links for the notes served to these sessions.
-
-    Reads the ``context_served`` projection the index step just refreshed from
-    each session's ``retrieval_log.jsonl``, and resolves every id to its
-    vault-relative path — no other surface hands a note's path to a wrap, and
-    the citation convention is path-based.
-    """
-    from thinkweave.core.indexer import Indexer
-    from thinkweave.synthesis.hub import build_id_path_map
-
-    idx = Indexer(config=cfg)
-    try:
-        placeholders = ",".join("?" for _ in session_ids)
-        rows = idx.db.execute(
-            f"SELECT DISTINCT note_id FROM context_served "
-            f"WHERE session_id IN ({placeholders}) ORDER BY note_id",
-            session_ids,
-        ).fetchall()
-        ids = [str(r["note_id"]) for r in rows]
-        idmap = build_id_path_map(idx.db)
-    finally:
-        idx.close()
-
-    links = [
-        f"[[{p}|{nid}]]" if (p := idmap.get(nid)) else f"[[{nid}]]"
-        for nid in ids[:_SERVED_LINK_LIMIT]
-    ]
-    if len(ids) > _SERVED_LINK_LIMIT:
-        links.append(f"(+{len(ids) - _SERVED_LINK_LIMIT} more)")
-    return links
-
-
-def _lint_citations(
-    cfg: Config, judged: list, session_ids: list[str], result: WrapFinalizeResult
-) -> None:
+def _lint_citations(cfg: Config, judged: list, result: WrapFinalizeResult) -> None:
     """Warn on decisions this wrap minted whose body cites no note id.
 
     The RLVR export counts body wikilinks that resolve to a note id
     (:func:`thinkweave.operations.rlvr_export.extract_cited_ids`), so a body
-    that links only files carries no citation and the served-then-cited signal
-    has no producer. Which served note the reasoning used is the wrap's call;
-    this rail only says the citation is missing and spells the candidates out
-    in the exact link form the export counts.
+    that links only files carries no citation. Which served note the
+    reasoning used is the wrap's call; this rail only says the citation is
+    missing and spells out the notes the export would count — the same
+    ``served_rows`` lookup, keyed by the decision's own session — as
+    ready-made ``[[path|id]]`` links.
     """
-    from thinkweave.operations.rlvr_export import extract_cited_ids
+    from thinkweave.core.indexer import Indexer
+    from thinkweave.operations.rlvr_export import extract_cited_ids, served_rows
+    from thinkweave.synthesis.hub import build_id_path_map, reflink
 
     uncited = [dec for dec, _res in judged if not extract_cited_ids(dec.body)]
     if not uncited:
@@ -671,11 +637,23 @@ def _lint_citations(
             "reasoning used as [[path|id]]; the served ids are in the "
             "session's retrieval_log.jsonl"
         )
-    links = _served_links(cfg, session_ids)
-    if links:
-        result.warnings.append(
-            "served to this session, ready to cite: " + ", ".join(links)
-        )
+    sessions = {str(d.frontmatter.get("source_session") or "") for d in uncited}
+    idx = Indexer(config=cfg)
+    try:
+        served = sorted({
+            r["note_id"] for sid in sessions if sid for r in served_rows(idx, sid)
+        })
+        idmap = build_id_path_map(idx.db)
+    finally:
+        idx.close()
+    if not served:
+        return
+    links = [reflink(nid, idmap) for nid in served[:_SERVED_LINK_LIMIT]]
+    if len(served) > _SERVED_LINK_LIMIT:
+        links.append(f"(+{len(served) - _SERVED_LINK_LIMIT} more)")
+    result.warnings.append(
+        "served to this session, ready to cite: " + ", ".join(links)
+    )
 
 
 def finalize_wrap(
@@ -886,10 +864,7 @@ def finalize_wrap(
 
     # 3.5 citation lint ---------------------------------------------------
     try:
-        session_ids = list(
-            dict.fromkeys([session_id, *_chain_note_ids(chain, session_id)])
-        )
-        _lint_citations(cfg, judged, session_ids, result)
+        _lint_citations(cfg, judged, result)
     except Exception as e:  # noqa: BLE001 — a lint never fails a wrap
         result.warnings.append(f"citation lint: {e}")
 
