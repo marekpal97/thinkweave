@@ -20,9 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # launcher name → the module the exec'd `uv run` line must invoke.
 LAUNCHERS = {
-    "weave": "python -m thinkweave",
-    "weave-hook-launch": "python -m thinkweave.surfaces.hooks.handler",
-    "weave-mcp-launch": "python -m thinkweave.surfaces.mcp.server",
+    "weave": "python -P -m thinkweave",
+    "weave-hook-launch": "python -P -m thinkweave.surfaces.hooks.handler",
+    "weave-mcp-launch": "python -P -m thinkweave.surfaces.mcp.server",
 }
 
 # Both venv layouts the sentinel must recognise: POSIX and native Windows

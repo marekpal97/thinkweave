@@ -11,6 +11,7 @@
         "--extra",
         "mcp",
         "python",
+        "-P",
         "-m",
         "thinkweave.surfaces.mcp.server"
       ],

@@ -70,7 +70,7 @@ def test_windows_launcher_bypasses_uv_and_editable_pth(tmp_path: Path) -> None:
     assert str(project / "src") in rendered
     assert str(purelib) in rendered
     assert "PYTHONDONTWRITEBYTECODE=1" in rendered
-    assert "-S -m thinkweave %*" in rendered
+    assert "-S -P -m thinkweave %*" in rendered
 
 
 def test_windows_launcher_preserves_an_existing_pythonpath(tmp_path: Path) -> None:
@@ -138,7 +138,7 @@ def test_codex_install_writes_launcher_and_prepends_user_path(
     launcher = tmp_path / ".codex" / "bin" / "weave.cmd"
     assert launcher.is_file()
     assert prepended == [launcher.parent]
-    assert "-S -m thinkweave %*" in launcher.read_text(encoding="utf-8")
+    assert "-S -P -m thinkweave %*" in launcher.read_text(encoding="utf-8")
 
 
 def test_posix_install_writes_no_launcher(tmp_path: Path, monkeypatch) -> None:
