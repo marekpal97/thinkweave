@@ -1777,6 +1777,23 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
         _index_with_retry(cfg, session_path, "fold/index")
 
 
+def _spill_notice(payload_chars: int, cap: int | None) -> str:
+    """The reply line for a SessionStart payload above the harness's inline
+    cap; ``""`` when it fits or no cap is measured.
+
+    The guard headroom is an estimate of the guard's size. A guard that
+    outgrows it spills the payload anyway, and a silent spill is what the
+    cap exists to close, so the spill is said out loud.
+    """
+    if not cap or payload_chars <= cap:
+        return ""
+    return (
+        f"thinkweave: the SessionStart payload is {payload_chars} chars, "
+        f"above this harness's {cap}-char inline cap — the harness "
+        "files the rest and shows only a preview."
+    )
+
+
 def _handle_session_start(hook_input: dict) -> None:
     """SessionStart: inject structured project context before the first user turn.
 
@@ -1997,15 +2014,7 @@ def _handle_session_start(hook_input: dict) -> None:
         # Guard rides at the TOP — it's a correctness interrupt on notes the
         # model is about to rely on, so it must be seen before the context.
         full = f"{guard}\n{payload}" if guard else payload
-        if cap and len(full) > cap:
-            # The reserve is an estimate of the guard's size. A guard that
-            # outgrows it spills the payload anyway, and a silent spill is
-            # what this issue exists to close — so it says so.
-            notice = (
-                f"thinkweave: the SessionStart payload is {len(full)} chars, "
-                f"above this harness's {cap}-char inline cap — the harness "
-                "files the rest and shows only a preview."
-            )
+        if notice := _spill_notice(len(full), cap):
             sysmsg = f"{sysmsg}\n{notice}" if sysmsg else notice
         _output(
             system_message=sysmsg,
