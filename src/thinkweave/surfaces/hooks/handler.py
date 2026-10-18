@@ -9,9 +9,11 @@ Output: JSON to stdout following Claude Code hook protocol.
 Exit 0 = protocol success. Persistence failures use the visible
 ``systemMessage`` response field as well as the best-effort hook log.
 
-SessionStart: Injects ~7–10k tokens of structured project context
-  (recent sessions, STATE, backlog, decisions, tool manifest) so Claude
-  wakes up oriented. Never blocks the harness; failures remain visible.
+SessionStart: Injects structured project context (open tasks, recent
+  sessions, backlog, decisions, themes) sized to stay inside the harness's
+  inline ``additionalContext`` cap, so Claude wakes up oriented with the
+  whole payload in its context. Never blocks the harness; failures remain
+  visible.
 UserPromptSubmit: Captures every user prompt as a structured "prompt"
   event in the JSONL buffer. Promotes user prompts into a first-class
   primitive (`Prompt`) — replaces the heuristic `probe`-tag flow.
@@ -139,13 +141,23 @@ def _first_failure(hook_type: str, hook_input: dict) -> bool:
         session_id = str(hook_input.get("session_id", "")) or "_unknown"
         state = session_state_dir(load_config().weave_dir, session_id)
         state.mkdir(parents=True, exist_ok=True)
-        marker = state / f"failed.{hook_type.replace('/', '-')}"
-        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        return True
-    except FileExistsError:
-        return False
+        return _claim_once(state / f"failed.{hook_type.replace('/', '-')}")
     except Exception:
         return True
+
+
+def _claim_once(marker: Path) -> bool:
+    """Create ``marker``; True on the first claim, False once it exists.
+
+    The once-per-session bit every hook shares: each hook fires in its own
+    process, so the claim lives on disk, in the session's scratch dir that
+    is cleaned with the buffer at Stop.
+    """
+    try:
+        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return False
+    return True
 
 
 def _hook_harness() -> str:
@@ -197,6 +209,31 @@ def _hook_budget_remaining(event: str, started: float) -> float | None:
     return budget_ms / 1000 - (time.monotonic() - started) - _HOOK_BUDGET_MARGIN_SECONDS
 
 
+def _firing_profile():
+    """The profile of the harness that fired this hook: its ``--harness`` stamp,
+    or the process default. Both per-hook facts the handler reads (session-id
+    envs, the inline context cap) live on it."""
+    from thinkweave.core import harness
+
+    stamp = _hook_harness()
+    profile = harness.lookup(stamp) if stamp else None
+    if profile is not None:
+        return profile
+    default = harness.active()
+    if stamp:
+        # A stamp naming no registered profile would otherwise spend the
+        # default profile's cap and session-id vars unnoticed, so the reply
+        # says which profile ran and why.
+        notice = (
+            f"thinkweave: the hook was stamped --harness {stamp!r}, which names "
+            f"no registered profile; the default profile ({default.id!r}) "
+            "supplies the cap and session-id vars."
+        )
+        if notice not in _pending_messages:
+            _pending_messages.append(notice)
+    return default
+
+
 def _env_session_id() -> str:
     """Session id from the firing harness's own env var — the last resort when
     a hook payload omits ``session_id``.
@@ -210,10 +247,7 @@ def _env_session_id() -> str:
     ``session_id`` as a payload field, so this is genuinely a backstop — but
     on the harnesses that do export a var it now backstops correctly.
     """
-    from thinkweave.core import harness
-
-    hid = _hook_harness()
-    profile = harness.lookup(hid) or harness.active()
+    profile = _firing_profile()
     envs = profile.session_id_envs
     for env in envs:
         value = os.environ.get(env, "")
@@ -407,6 +441,7 @@ def _handle_subagent_start(hook_input: dict) -> None:
     cfg = load_config()
     session_id = _subagent_session_id(hook_input)
     _ensure_session(cfg, session_id, hook_input)
+    cwd = str(hook_input.get("cwd", ""))
     agent_id = str(hook_input.get("agent_id", ""))
     if not agent_id:
         _log_info(
@@ -417,10 +452,11 @@ def _handle_subagent_start(hook_input: dict) -> None:
     dispatch = tasks.open_child(
         cfg,
         session_key=session_id,
-        project=detect_project(hook_input.get("cwd", "")),
+        project=detect_project(cwd),
         role=str(hook_input.get("agent_type", "")),
         harness=_harness_id(),
         agent_id=agent_id,
+        cwd=cwd,
     )
     _output(
         additional_context=json.dumps({"thinkweave_task": dispatch.to_dict()}),
@@ -528,6 +564,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         if not _buffer_event(cfg.weave_dir, session_id, event):
             _output()
             return
+        _record_base(cfg.weave_dir, session_id, now, cwd)
 
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to.
@@ -564,6 +601,29 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _output(
             system_message=_report_failure("user_prompt_submit", hook_input, e)
         )
+
+
+def _record_base(weave_dir: Path, session_id: str, now: str, cwd: str) -> None:
+    """Append the repo HEAD this prompt saw, once per session buffer.
+
+    The first prompt of a session is the replay anchor: a task round lifts
+    ``base`` from that row. The claim is a marker file in the session's
+    scratch dir (``_claim_once``, the failure marker's primitive) so a long buffer
+    costs no read on the prompts after the first, and a multiply-registered
+    hook writes one row, not several. Outside a repo nothing is recorded:
+    a round's ``base`` is optional.
+    """
+    from thinkweave.operations.tasks import head_sha
+
+    state = session_state_dir(weave_dir, session_id)
+    state.mkdir(parents=True, exist_ok=True)
+    if not _claim_once(state / "base"):
+        return
+    sha = head_sha(cwd)
+    if sha:
+        _buffer_event(weave_dir, session_id, {
+            "ts": now, "type": "base", "session_id": session_id, "hash": sha,
+        })
 
 
 def _bind_dispatched_session(
@@ -843,6 +903,59 @@ def _replay_already_recorded(weave_dir: Path, session_id: str, delivery_id: str)
     return False
 
 
+# Index-write lock budget. The indexer's 30s default wait is longer than the
+# 30s envelope every indexing hook fires under, so a hook waits briefly per
+# attempt and spends the rest of its budget on retries it logs. The ladder sums
+# to ~9s: room for two or three contended writes on a large vault, with margin
+# left in the envelope for the rest of the hook's work.
+# ponytail: a writer that holds the lock longer than the budget — a full rebuild,
+# or eight sessions prompting at once on a cold 700MB index — still leaves the
+# note unindexed. Upgrade path: a single-writer queue for stop-time indexing.
+# Heal: `weave index --only-new`.
+_INDEX_ATTEMPT_BUSY_MS = 250
+_INDEX_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0)
+
+
+def _index_with_retry(cfg, path: Path, where: str) -> None:
+    """Index one note, retrying a locked index db with backoff.
+
+    ``where`` names the hook site in the log (``"stop/index"``, …). A lock that
+    outlasts the budget is logged and dropped: the note is on disk, its prompt
+    survives in the buffer, and ``weave index --only-new`` heals the index. Any
+    other failure raises to the caller.
+    """
+    import random
+    import sqlite3
+
+    from thinkweave.core.indexer import Indexer
+
+    attempts = len(_INDEX_RETRY_DELAYS_S) + 1
+    for attempt in range(1, attempts + 1):
+        idx = Indexer(config=cfg, busy_timeout_ms=_INDEX_ATTEMPT_BUSY_MS)
+        try:
+            idx.index_file(path)
+            if attempt > 1:
+                _log_info(where, f"index write recovered on attempt {attempt}")
+            return
+        except sqlite3.OperationalError as err:
+            if "locked" not in str(err).lower():
+                raise
+            if attempt == attempts:
+                _log_error(where, err)
+                return
+            # Processes that lost the same lock wake together, so the wait is
+            # jittered down to half its length at most.
+            delay = round(_INDEX_RETRY_DELAYS_S[attempt - 1] * (0.5 + random.random() / 2), 3)
+            _log_info(
+                where,
+                f"index write attempt {attempt} hit a locked db; "
+                f"retrying in {delay}s ({err})",
+            )
+            time.sleep(delay)
+        finally:
+            idx.close()
+
+
 def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     """Create session note on first event, index it once for MCP discoverability."""
     if not session_id:
@@ -883,11 +996,7 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     )
 
     # Index once so MCP tools (weave_search) can find this session mid-conversation
-    from thinkweave.core.indexer import Indexer
-
-    idx = Indexer(config=cfg)
-    idx.index_file(session_path)
-    idx.close()
+    _index_with_retry(cfg, session_path, "ensure-session/index")
 
 
 # Directory markers — matched anywhere in the path, since every file under
@@ -1226,37 +1335,6 @@ def _summarize_events(events: list[dict]) -> dict:
     }
 
 
-def _build_auto_summary(
-    files_touched: list[str],
-    commits: list[dict],
-    test_runs: list[dict],
-    event_count: int,
-) -> str:
-    """Build a metadata-based auto-summary for the Stop hook."""
-    parts: list[str] = []
-    if files_touched:
-        basenames = [Path(f).name for f in files_touched[:5]]
-        more = f" (+{len(files_touched) - 5} more)" if len(files_touched) > 5 else ""
-        parts.append(f"Edited {len(files_touched)} files: {', '.join(basenames)}{more}")
-    if commits:
-        msgs = []
-        for c in commits[:3]:
-            if isinstance(c, dict):
-                msgs.append(c.get("message", "")[:60])
-            else:
-                msgs.append(str(c)[:60])
-        parts.append(f"Commits: {'; '.join(msgs)}")
-    if test_runs:
-        for tr in test_runs[:2]:
-            if isinstance(tr, dict):
-                p = tr.get("passed", 0)
-                f = tr.get("failed", 0)
-                parts.append(f"Tests: {p} passed, {f} failed")
-    if not parts:
-        parts.append(f"{event_count} tool events recorded")
-    return ". ".join(parts) + "."
-
-
 # Buffer I/O lives in thinkweave.core.buffer so MCP tools can call it
 # without crossing the surfaces/ → surfaces/ boundary. Re-exported here so
 # legacy imports (`from thinkweave.surfaces.hooks.handler import ...`)
@@ -1471,7 +1549,6 @@ def _handle_stop(hook_input: dict) -> None:
 
     try:
         from thinkweave.core.config import load_config
-        from thinkweave.core.indexer import Indexer
         from thinkweave.core.vault import (
             VaultManager,
             render_frontmatter,
@@ -1589,11 +1666,7 @@ def _handle_stop(hook_input: dict) -> None:
         # Index once
         diagnostic = ""
         try:
-            idx = Indexer(config=cfg)
-            try:
-                idx.index_file(session_path)
-            finally:
-                idx.close()
+            _index_with_retry(cfg, session_path, "stop/index")
         except Exception as e:
             _log_error("stop/index", e)
             diagnostic = _report_failure("stop/index", hook_input, e)
@@ -1653,7 +1726,6 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
     materialised this note", which is still true.
     """
     from thinkweave.core.events import extract_deterministic
-    from thinkweave.core.indexer import Indexer
     from thinkweave.core.vault import parse_frontmatter, render_frontmatter
 
     live = _read_buffer(cfg.weave_dir, source_session)
@@ -1702,19 +1774,36 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
 
     mirrored = mirror_buffer_events(cfg.weave_dir, source_session, session_dir)
     if updates or mirrored:
-        idx = Indexer(config=cfg)
-        try:
-            idx.index_file(session_path)
-        finally:
-            idx.close()
+        _index_with_retry(cfg, session_path, "fold/index")
+
+
+def _spill_notice(payload_chars: int, cap: int | None) -> str:
+    """The reply line for a SessionStart payload above the harness's inline
+    cap; ``""`` when it fits or no cap is measured.
+
+    The guard headroom is an estimate of the guard's size. A guard that
+    outgrows it spills the payload anyway, and a silent spill is what the
+    cap exists to close, so the spill is said out loud.
+    """
+    if not cap or payload_chars <= cap:
+        return ""
+    return (
+        f"thinkweave: the SessionStart payload is {payload_chars} chars, "
+        f"above this harness's {cap}-char inline cap — the harness "
+        "files the rest and shows only a preview."
+    )
 
 
 def _handle_session_start(hook_input: dict) -> None:
     """SessionStart: inject structured project context before the first user turn.
 
-    Emits a ``hookSpecificOutput.additionalContext`` payload (~7–10k tokens)
-    built by ``thinkweave.retrieval.context.build_project_context``. Never blocks;
-    exceptions produce a valid hook response with an actionable diagnostic.
+    Emits a ``hookSpecificOutput.additionalContext`` payload built by
+    ``thinkweave.retrieval.context.build_project_context``, budgeted to land
+    inside the firing harness's inline cap (``HarnessProfile
+    .additional_context_cap_chars``) with the guard's share left over — above
+    that cap a harness files the context and shows a preview instead. Never
+    blocks; exceptions produce a valid hook response with an actionable
+    diagnostic.
 
     Serve-once (#175, reworked per the PR #203 review): the initial context
     is served exactly once per session — ``startup``/``clear`` (or absent —
@@ -1740,15 +1829,16 @@ def _handle_session_start(hook_input: dict) -> None:
     """
     try:
         from thinkweave.core.config import load_config
-        from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
         from thinkweave.retrieval.context import (
             SESSION_START_SECTIONS,
             build_project_context,
+            session_start_budget_tokens,
         )
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
         cfg = load_config()
+        profile = _firing_profile()
         session_id = hook_input.get("session_id") or _env_session_id()
         lifecycle = str(hook_input.get("source") or "")
 
@@ -1786,11 +1876,16 @@ def _handle_session_start(hook_input: dict) -> None:
             return
 
         project = detect_project(hook_input.get("cwd", ""))
+        # The budget comes from the harness's own inline cap, less the room
+        # the memory-seam guard needs at the front of the payload: above the
+        # cap the harness files the context and shows a preview, and a
+        # preview is not context the model has.
+        cap = profile.additional_context_cap_chars
         payload = build_project_context(
             cfg,
             project,
             sections=list(SESSION_START_SECTIONS),
-            budget_tokens=SESSION_START_BUDGET_TOKENS,
+            budget_tokens=session_start_budget_tokens(cap),
             omit_empty=True,
         )
 
@@ -1919,6 +2014,8 @@ def _handle_session_start(hook_input: dict) -> None:
         # Guard rides at the TOP — it's a correctness interrupt on notes the
         # model is about to rely on, so it must be seen before the context.
         full = f"{guard}\n{payload}" if guard else payload
+        if notice := _spill_notice(len(full), cap):
+            sysmsg = f"{sysmsg}\n{notice}" if sysmsg else notice
         _output(
             system_message=sysmsg,
             additional_context=full,

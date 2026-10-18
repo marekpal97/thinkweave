@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -1182,6 +1183,37 @@ class TestProposedConceptCounts:
 
         assert counts["emerging-term"] == 3
         assert counts["one-off"] == 1
+
+    def test_proposed_concepts_nested_list_is_skipped_and_the_note_is_named(
+        self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch, caplog
+    ):
+        _write_ontology(monkeypatch, "swe-python:\n  - python\n")
+        note_path = vault.create_note(
+            note_type=NoteType.NOTE,
+            title="Nested",
+            extra_frontmatter={"proposed_concepts": ["good-term", ["nested", "junk"]]},
+        )
+        fm = vault.read_note(note_path).frontmatter
+        # The premise: a nested list survives the write/read round-trip, so
+        # this is the shape the aggregator meets in a live vault.
+        assert fm["proposed_concepts"] == ["good-term", ["nested", "junk"]]
+        vault.create_note(
+            note_type=NoteType.SESSION,
+            title="S",
+            project="p",
+            extra_frontmatter={"source_session": "sess-1"},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            indexer.rebuild()
+            counts = get_all_proposed_concepts(indexer.db)
+
+        assert counts == {"good-term": 1}
+        assert fm["id"] in caplog.text
+        assert not [
+            r for r in caplog.records
+            if r.exc_info and isinstance(r.exc_info[1], AttributeError)
+        ]
 
     def test_returns_empty_when_no_proposed(
         self, vault: VaultManager, indexer: Indexer, config: Config, monkeypatch

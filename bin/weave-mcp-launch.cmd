@@ -64,5 +64,6 @@ rem uv reinstalls the project by replacing .venv\Scripts\weave-*.exe, a live
 rem MCP server holds its own image open, and the sync then dies with
 rem `os error 32 ... used by another process` - having already deleted the OTHER
 rem shims, which is why module execution is used rather than a console script.
-"%uv_bin%" run --no-sync --project "%root%" --extra mcp python -m thinkweave.surfaces.mcp.server %*
+rem `-P`: the launching cwd must never reach sys.path — a local package named like a stdlib module would shadow the real one and the server would die at startup, silently.
+"%uv_bin%" run --no-sync --project "%root%" --extra mcp python -P -m thinkweave.surfaces.mcp.server %*
 exit /b %ERRORLEVEL%

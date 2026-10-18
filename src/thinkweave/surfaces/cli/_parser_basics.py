@@ -78,7 +78,11 @@ def add_note_subparsers(sub) -> None:
     p_decisions.add_argument("--limit", "-n", type=int, default=50)
 
     p_project = sub.add_parser(
-        "project", help="Print a structured project snapshot (same payload as SessionStart hook)"
+        "project",
+        help=(
+            "Print a structured project snapshot (every section; SessionStart "
+            "serves a subset)"
+        ),
     )
     p_project.add_argument("name", help="Project slug")
     p_project.add_argument(
@@ -1208,7 +1212,7 @@ def add_admin_subparsers(sub) -> None:
     p_snap = sub.add_parser(
         "project-snapshot",
         help=(
-            "Re-fetch the SessionStart context payload for a project "
+            "Re-fetch the full project context for a project "
             "(CLI parity for weave_project_snapshot)."
         ),
     )

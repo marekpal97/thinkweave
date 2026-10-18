@@ -51,9 +51,8 @@ class ExtractOutcome:
 
     **Pass ``session_note_id`` to** ``weave wrap-finalize`` (#181) — after
     a forced re-extract the source UUID is claimed by two folders, and only
-    the note id names the one just written. Decisions are still stamped
-    with ``source_session = session_id`` (the input form); ``finalize_wrap``
-    maps a ses-id back to that source id for the judge step.
+    the note id names the one just written. Decisions are stamped with it
+    too, so the judge step needs no mapping back to the input form.
     """
 
     session_id: str
@@ -386,7 +385,10 @@ def extract_session(
         extra_fm = {
             "status": "proposed",
             "committed": outcome_value == "committed",
-            "source_session": session_id,
+            # The note's id is what `context_served` and the judge key on, so
+            # the caller's harness UUID here would join nothing. `derived_from`
+            # keeps that input form — both lookups still match on it.
+            "source_session": session_note.id,
             "derived_from": [session_id],
         }
         if dec.get("file_paths"):

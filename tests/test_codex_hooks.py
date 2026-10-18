@@ -798,7 +798,13 @@ class TestMeasuredHeadlessReplay:
     2026-09-07, minus the `test_runs` it could not classify then."""
 
     @staticmethod
-    def _dispatch(env: dict) -> None:
+    def _dispatch(env: dict, *, cwd: str = "") -> None:
+        """One captured envelope through the real handler. ``cwd`` replaces
+        the measured working directory: it names the recorder's own checkout,
+        so a replay that kept it would read a repo on one machine and nothing
+        on the next."""
+        if cwd:
+            env = {**env, "cwd": cwd}
         event = env["hook_event_name"]
         if event == "SessionStart":
             handler_mod._handle_session_start(env)
@@ -842,10 +848,14 @@ class TestMeasuredHeadlessReplay:
             }
             assert end["reason"] == "other"
 
-    def test_full_session_yields_one_note_with_all_evidence(self, hook_vault, serves):
+    def test_full_session_yields_one_note_with_all_evidence(
+        self, hook_vault, serves, tmp_path
+    ):
         """Session B — the one whose SessionStart and UserPromptSubmit survived."""
         cfg = hook_vault.config
         serves("## Recent\n- [[n-1|n-1]]\n")
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
         envelopes = _measured(session=PROBE_B)
         assert [e["hook_event_name"] for e in envelopes] == [
             "SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUse",
@@ -853,7 +863,7 @@ class TestMeasuredHeadlessReplay:
         ]
 
         for env in envelopes:
-            self._dispatch(env)
+            self._dispatch(env, cwd=str(checkout))
 
         note = self._note_for(hook_vault, PROBE_B)
         fm = note.frontmatter
@@ -871,6 +881,7 @@ class TestMeasuredHeadlessReplay:
             json.loads(line)
             for line in (session_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         ]
+        # The replay's cwd is outside any repo, so no base row is recorded.
         assert [e.get("type") or e.get("tool") for e in events] == ["prompt", "Bash"]
         retrievals = [
             json.loads(line)
@@ -881,15 +892,19 @@ class TestMeasuredHeadlessReplay:
         assert [r["type"] for r in retrievals] == ["startup", "retrieval"]
         assert retrievals[1]["returned_ids"] == ["dec-e3525a07", "n-a1d3beba"]
 
-    def test_session_missing_its_opening_envelopes_still_lands(self, hook_vault):
+    def test_session_missing_its_opening_envelopes_still_lands(
+        self, hook_vault, tmp_path
+    ):
         """Session A — first envelopes lost to the probe's file reset, so the
         replay opens on a PostToolUse. The action-tool path materialises the
         note; Stop still closes it with the same evidence."""
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
         envelopes = _measured(session=PROBE_A)
         assert envelopes[0]["hook_event_name"] == "PostToolUse"
 
         for env in envelopes:
-            self._dispatch(env)
+            self._dispatch(env, cwd=str(checkout))
 
         fm = self._note_for(hook_vault, PROBE_A).frontmatter
         assert fm.get("processed") is True

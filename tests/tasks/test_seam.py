@@ -9,12 +9,18 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import commit_file, init_repo, run_git, scratch_repo
 from tests.tasks.conftest import run_hook
 from thinkweave.core.buffer import buffer_path
 from thinkweave.core.config import Config
 from thinkweave.core.harness import PROFILES
-from thinkweave.core.task_contract import TASK_ID_RE, SessionRef, validate_task_note
-from thinkweave.core.vault import parse_frontmatter
+from thinkweave.core.task_contract import (
+    TASK_ID_RE,
+    Round,
+    SessionRef,
+    validate_task_note,
+)
+from thinkweave.core.vault import VaultManager, parse_frontmatter
 from thinkweave.operations import tasks
 from thinkweave.operations.tasks import ChildStop, Register, Task, TaskStore
 from thinkweave.surfaces.cli.parser import build_parser
@@ -183,6 +189,32 @@ class TestOpenClose:
         types = [r["type"] for r in register_rows(cfg, "s-1")]
         assert types == ["task_open", "task_close"]
 
+    def test_a_dispatch_round_carries_the_base_sha_its_open_held(
+        self, cfg: Config, tmp_path: Path, monkeypatch
+    ):
+        """The worktree HEAD when the task is minted — not the HEAD the
+        child's own commit moves to before the close."""
+        repo = scratch_repo(tmp_path, monkeypatch)
+        base = run_git("rev-parse", "HEAD", cwd=repo)
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        commit_file(repo, "child-work", "the child commits")
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        fm, _ = parse_frontmatter(Path(result.note).read_text(encoding="utf-8"))
+        assert validate_task_note(fm) == []
+        assert fm["rounds"][0]["base"] == base
+
+    def test_a_dispatch_round_outside_any_repo_carries_no_base_sha(
+        self, cfg: Config, tmp_path: Path, monkeypatch
+    ):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
+        dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
+        result = tasks.close_child(cfg, dispatch.task_id, session_key="s-1")
+        fm, _ = parse_frontmatter(Path(result.note).read_text(encoding="utf-8"))
+        assert validate_task_note(fm) == []
+        assert "base" not in fm["rounds"][0]
+
     def test_close_renders_the_ledger_body(self, cfg: Config):
         dispatch = tasks.open_child(cfg, session_key="s-1", project="proj")
         _, body = parse_frontmatter(Path(dispatch.note).read_text(encoding="utf-8"))
@@ -266,6 +298,32 @@ class TestCli:
         assert descriptor["task_id"] == task_id
         assert descriptor["grain"] == "per-dispatch"
         assert Path(descriptor["envelope_return"]).name == f"{task_id}.jsonl"
+
+    def test_render_prints_each_round_s_base_sha_and_feedback_text(
+        self, cfg: Config, capsys
+    ):
+        """The replay view: the descriptor plus the round's compiled fields —
+        the commit its work started from, and the whole quoted prompt."""
+        sha = "9c1b7f0a3e5d4c6b8a2f10d3c5b7e9a1f2d3c4b5"
+        quote = "no, the round must not carry the body — " + "z" * 200
+        task = tasks.TaskStore(cfg).mint("work", "replay me", "p")
+        task.put_round(Round.from_dict(
+            {
+                "route": "session",
+                "base": sha,
+                "feedback": [
+                    {"register": "correction", "prompt_ref": quote[:120],
+                     "text": quote},
+                ],
+            },
+            grain="work",
+        ))
+        task.save(VaultManager(config=cfg))
+        self._dispatch(["task", "render", task.id])
+        view = json.loads(capsys.readouterr().out)
+        assert view["task_id"] == task.id
+        assert view["rounds"][0]["base"] == sha
+        assert view["rounds"][0]["feedback"][0]["text"] == quote
 
     def test_close_correlates_by_task_id_alone(self, cfg: Config, capsys):
         self._dispatch(["task", "open", "--session", "s-1", "--project", "p"])
@@ -387,6 +445,23 @@ class TestHookHandlers:
         rows = register_rows(cfg, SESSION)
         assert [r["type"] for r in rows] == ["task_open"]
         assert rows[0]["session_ref"]["value"] == "agent-a1"
+
+    def test_a_dispatch_anchors_on_the_payload_cwd_s_base_sha(
+        self, cfg: Config, monkeypatch, tmp_path: Path
+    ):
+        """The subagent starts in the worktree the payload names, not in
+        whatever checkout the hook process happens to sit in."""
+        lead = init_repo(tmp_path / "lead")
+        worktree = init_repo(tmp_path / "worktree")
+        commit_file(worktree, "own", "the worktree's own commit")
+        base = run_git("rev-parse", "HEAD", cwd=worktree)
+        assert base != run_git("rev-parse", "HEAD", cwd=lead)
+        monkeypatch.chdir(lead)
+
+        run_hook(monkeypatch, "subagent_start", self._start_payload(worktree))
+
+        rows = register_rows(cfg, SESSION)
+        assert rows[0]["base"] == base
 
     def test_subagent_stop_closes_the_matching_open(
         self, cfg: Config, monkeypatch, tmp_path: Path

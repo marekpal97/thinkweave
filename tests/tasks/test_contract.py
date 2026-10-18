@@ -290,6 +290,44 @@ def test_round_from_dict_names_every_bad_field():
     assert "route" in str(exc.value) and "nonsense" in str(exc.value)
 
 
+BASE_SHA = "9c1b7f0a3e5d4c6b8a2f10d3c5b7e9a1f2d3c4b5"
+
+
+def test_a_round_declares_its_base_sha_and_feedback_text():
+    """The replay pair: the commit the round's work started from, and the
+    full prompt text behind a feedback quote."""
+    entry = {**ledger_round(), "base": BASE_SHA}
+    entry["feedback"] = [{**entry["feedback"][0], "text": "no, " + "x" * 300}]
+    fm = load("declared-only")
+    fm["rounds"] = [entry]
+    assert validate_task_note(fm) == []
+    parsed = Round.from_dict(entry, grain="work")
+    assert parsed.base == BASE_SHA
+    assert len(parsed.feedback[0]["text"]) == 304
+
+
+def test_a_base_sha_shorter_than_a_full_one_is_refused():
+    fm = load("declared-only")
+    fm["rounds"] = [{**ledger_round(), "base": "abc1234"}]
+    errors = validate_task_note(fm)
+    assert errors and all("base" in e for e in errors)
+
+
+def test_an_older_round_without_text_or_base_sha_still_validates():
+    """Both additions are optional: the shipped golden fixture, whose
+    feedback carries only its join keys and whose round names no commit,
+    validates unchanged."""
+    fm = load("devloop-rich")
+    entry = fm["rounds"][0]
+    assert "base" not in entry
+    assert set(entry["feedback"][0]) == {"register", "prompt_ref"}
+    assert validate_task_note(fm) == []
+
+
+def test_a_round_omits_an_absent_base_sha_from_disk():
+    assert "base" not in Round.from_dict(ledger_round(), grain="work").to_dict()
+
+
 def test_trace_fields_are_refused_off_the_work_grain():
     with pytest.raises(ValueError, match="work-grain"):
         Round.from_dict({"criteria": []}, grain="per-dispatch")

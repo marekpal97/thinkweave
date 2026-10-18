@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,10 +42,11 @@ PROJECT_ROOT_PHYSICAL = _shell_path(REPO_ROOT)
 PHASE = "session_start"
 
 # What the launcher must hand to uv — the fire-time-resolution shape, with the
-# root made absolute and the phase passed through.
+# root made absolute, the interpreter on a safe path (-P: the harness cwd must
+# never reach sys.path), and the phase passed through.
 EXPECTED_UV_ARGV = (
     f"run --no-sync --project {PROJECT_ROOT_PHYSICAL} --extra mcp "
-    f"python -m thinkweave.surfaces.hooks.handler {PHASE}"
+    f"python -P -m thinkweave.surfaces.hooks.handler {PHASE}"
 )
 
 # The actionable one-line failure contract.
@@ -79,7 +81,10 @@ def _launcher_command(*args: str) -> list[str]:
 
 
 def _run_launcher(
-    env: dict[str, str], cwd: Path, *args: str
+    env: dict[str, str],
+    cwd: Path,
+    *args: str,
+    stdin: str = "",
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         _launcher_command(*args),
@@ -88,6 +93,7 @@ def _run_launcher(
         capture_output=True,
         text=True,
         timeout=30,
+        input=stdin,
     )
 
 
@@ -206,3 +212,88 @@ class TestScriptHygiene:
         ):
             assert probe in hook_src, f"hook launcher missing ladder line: {probe}"
             assert probe in mcp_src, f"mcp launcher missing ladder line: {probe}"
+
+
+# Project-local packages named like stdlib modules. `collections` is the one
+# that actually kills the launch: it is pure Python on every build and
+# `functools` does `from collections import namedtuple` at import time.
+# `signal` is the shape the report names — it shadows the stdlib module too,
+# but nothing in the handler's import graph reads an attribute off it.
+SHADOWED_STDLIB = ("signal", "collections")
+
+
+def _shadowing_project(tmp_path: Path) -> Path:
+    """A test project whose own packages stand on the import path a plain
+    `python -m` launch builds from its cwd."""
+    project = tmp_path / "test-project"
+    for name in SHADOWED_STDLIB:
+        package = project / name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    return project
+
+
+def _make_executing_uv(directory: Path, interpreter: str) -> Path:
+    """A ``uv`` that discards the uv-level argv and execs a real interpreter
+    with the launcher's ``python …`` tail, so the module import genuinely
+    happens against the launcher's own flags."""
+    directory.mkdir(parents=True, exist_ok=True)
+    fake = directory / "uv"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'while [ $# -gt 0 ] && [ "$1" != "python" ]; do shift; done\n'
+        '[ $# -gt 0 ] && shift\n'
+        f'exec "{interpreter}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def _sandbox_env(tmp_path: Path, path_dir: Path) -> dict[str, str]:
+    """A hermetic environment: no user HOME, no real vault."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    vault = tmp_path / "vault"
+    vault.mkdir(exist_ok=True)
+    return {
+        "PATH": str(path_dir),
+        "HOME": str(home),
+        "THINKWEAVE_VAULT": str(vault),
+    }
+
+
+class TestSafePath:
+    """The harness cwd must never reach ``sys.path`` at launch. A hook that
+    fails to import captures nothing, and the failure is invisible to the
+    user — so the launcher runs the interpreter on a safe path (``-P``)."""
+
+    def test_handler_launches_from_a_project_that_shadows_a_stdlib_module(
+        self, tmp_path
+    ):
+        path_dir = tmp_path / "fakepath"
+        _make_executing_uv(path_dir, sys.executable)
+        project = _shadowing_project(tmp_path)
+
+        result = _run_launcher(_sandbox_env(tmp_path, path_dir), project, PHASE)
+
+        assert "ImportError" not in result.stderr, result.stderr
+        assert result.returncode == 0, result.stderr
+
+    def test_the_shadow_does_break_a_launch_without_safe_path(self, tmp_path):
+        """Fixture guard: if the project stops shadowing on this interpreter,
+        the test above proves nothing and must say so."""
+        project = _shadowing_project(tmp_path)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "thinkweave.surfaces.hooks.handler", PHASE],
+            cwd=project,
+            env=_sandbox_env(tmp_path, tmp_path / "unused-path-dir"),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            input="",
+        )
+
+        assert result.returncode != 0, result.stdout
+        assert "ImportError" in result.stderr, result.stderr
