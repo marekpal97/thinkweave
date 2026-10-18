@@ -1820,7 +1820,7 @@ class TestUserPromptSubmitHook:
         # No buffer should have been created
         assert not (cfg.weave_dir / "buffer" / "ses-cc-2.jsonl").exists()
 
-    def _run_prompt(self, cfg, monkeypatch, session_id: str, prompt: str):
+    def _run_prompt(self, cfg, monkeypatch, session_id: str, prompt: str, cwd: str = "/p"):
         """Drive _handle_user_prompt_submit with session-note creation stubbed."""
         from thinkweave.surfaces.hooks import handler as handler_mod
 
@@ -1830,7 +1830,7 @@ class TestUserPromptSubmitHook:
             lambda *a, **k: None,
         )
         handler_mod._handle_user_prompt_submit(
-            {"session_id": session_id, "prompt": prompt, "cwd": "/p"}
+            {"session_id": session_id, "prompt": prompt, "cwd": cwd}
         )
         buf_file = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
         if not buf_file.exists():
@@ -1850,6 +1850,46 @@ class TestUserPromptSubmitHook:
         ) == []
         typed = self._run_prompt(cfg, monkeypatch, "ses-inj-3", f"{notice}\nwhy did it fail?")
         assert [r["type"] for r in typed] == ["prompt"]
+
+    def test_the_first_prompt_records_the_session_s_base_sha(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The session's base commit: the repo HEAD its first prompt saw,
+        recorded once per buffer. Every later prompt already has one."""
+        from thinkweave.core.config import Config
+        from tests.conftest import run_git, scratch_repo
+
+        repo = scratch_repo(tmp_path, monkeypatch)
+        head = run_git("rev-parse", "HEAD", cwd=repo)
+        cfg = Config(vault_root=tmp_path / "vault")
+        rows = self._run_prompt(
+            cfg, monkeypatch, "ses-base-1", "do the thing", cwd=str(repo)
+        )
+        assert [r["type"] for r in rows] == ["prompt", "base"]
+        assert rows[1]["hash"] == head
+        assert rows[1]["session_id"] == "ses-base-1"
+        assert rows[1]["ts"] == rows[0]["ts"]
+
+        again = self._run_prompt(
+            cfg, monkeypatch, "ses-base-1", "and now?", cwd=str(repo)
+        )
+        assert [r["type"] for r in again if r["type"] == "base"] == ["base"]
+        assert [r["type"] for r in again] == ["prompt", "base", "prompt"]
+
+    def test_a_session_outside_any_repo_records_no_base_sha(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """No repo at the prompt's cwd: nothing is recorded, and the prompt
+        still lands — a round's ``base`` is optional."""
+        from thinkweave.core.config import Config
+
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        cfg = Config(vault_root=tmp_path / "vault")
+        rows = self._run_prompt(
+            cfg, monkeypatch, "ses-base-2", "do the thing", cwd=str(plain)
+        )
+        assert [r["type"] for r in rows] == ["prompt"]
 
     def test_hook_never_writes_feedback_events(self, tmp_path: Path, monkeypatch):
         # #101 — hooks capture, never judge. Even an unambiguous correction
@@ -2025,7 +2065,9 @@ class TestPromptTimeEnrichment:
             .read_text().splitlines()
             if x.strip()
         ]
-        assert len(lines) == 1 and lines[0]["type"] == "prompt"
+        # The prompt is captured, and with it the base commit the first
+        # prompt saw; the disabled enrichment writes nothing back.
+        assert [r["type"] for r in lines] == ["prompt", "base"]
 
     def test_enrichment_failure_never_breaks_turn(
         self, tmp_path: Path, monkeypatch, capsys
