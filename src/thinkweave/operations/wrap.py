@@ -766,10 +766,9 @@ def finalize_wrap(
 
         judged = judge_and_writeback(cfg, session_id=session_id)
         if not judged and session_id.startswith("ses-"):
-            # #181: the extract report hints the minted ses- id, but
-            # decisions are stamped with the extract *input* (often a
-            # Claude Code UUID). Fall back to that source id so the judge
-            # still finds them.
+            # Decisions written before the extract path stamped the note id
+            # carry the harness UUID instead. Fall back to that source id so
+            # the judge still finds them (the repair migration is separate).
             src = _source_session_of(cfg, session_id)
             if src and src != session_id:
                 judged = judge_and_writeback(cfg, session_id=src)
