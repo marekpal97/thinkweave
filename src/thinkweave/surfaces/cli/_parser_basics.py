@@ -209,8 +209,9 @@ def add_index_subparsers(sub) -> None:
         "--migrate",
         action="store_true",
         help=(
-            "Run idempotent one-shot data migrations (e.g. todo+research → "
-            "queue) before printing the report."
+            "Run idempotent one-shot data migrations (todo+research → "
+            "queue, decision source_session backfill, …) before printing "
+            "the report."
         ),
     )
     p_doctor.add_argument(

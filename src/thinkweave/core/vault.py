@@ -325,6 +325,32 @@ def find_session_note_by_source(
     return None
 
 
+def session_folder_slug(folder_name: str) -> str:
+    """A session folder's leading slug: the name with its trailing date cut.
+
+    Folder names are ``{slug}-{YYYY-MM-DD}`` (see ``recent_session_dirs``);
+    the slug is a session note id or a harness UUID, never derived here —
+    callers test it against indexed session ids.
+    """
+    return _SESSION_DIR_DATE_RE.sub("", folder_name)
+
+
+def find_session_note(note_path: Path) -> Path | None:
+    """The ``session.md`` co-located with a note filed inside a session folder.
+
+    Extraction writes derived notes (decisions, insights) beside the owning
+    session note, so the parent folder IS the session folder; the
+    ``sessions`` grandparent guard keeps any other ``session.md`` from
+    counting as an owner. None when the note is not in a session folder or
+    the folder carries no session note — the caller lists, never guesses.
+    """
+    note_path = Path(note_path)
+    if note_path.name == "session.md" or note_path.parent.parent.name != "sessions":
+        return None
+    candidate = note_path.parent / "session.md"
+    return candidate if candidate.is_file() else None
+
+
 def is_chain_sibling(
     fm: dict, keys: set[str], segment_ids: set[str] = frozenset()
 ) -> bool:
