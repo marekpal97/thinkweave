@@ -18,6 +18,7 @@ from thinkweave.core.task_contract import (
 )
 from thinkweave.core.vault import parse_frontmatter
 from thinkweave.core.buffer import buffer_path
+from tests.conftest import commit_file, run_git, scratch_repo
 from thinkweave.operations import tasks
 from thinkweave.operations.tasks import TaskStore
 
@@ -34,6 +35,18 @@ def rich_tree(tracker):
     sub-issues of #184."""
     tracker["marekpal97/thinkweave#217"] = {"parent_issue_url": API + "184"}
     tracker["marekpal97/thinkweave#218"] = {"parent_issue_url": API + "184"}
+
+
+@pytest.fixture(autouse=True)
+def _outside_any_repo(monkeypatch, tmp_path):
+    """Every run in this file starts outside a repo.
+
+    The devloop route reads the working directory's git state, so a test left
+    in the invoking checkout would record that repo's base commit and warn
+    about a fixture branch it has never held. A test that wants a repo builds
+    one (``scratch_repo``).
+    """
+    monkeypatch.chdir(tmp_path)
 
 
 def payload(name: str) -> dict:
@@ -375,3 +388,59 @@ class TestLedgerRoute:
         out = capsys.readouterr()
         assert "#218" in out.err and "kept bare" in out.err
         assert note_fm(cfg, out.out.strip())["asked"] == "#218"
+
+
+class TestBaseCommit:
+    """The devloop route's base commit: the merge base of the run's branch,
+    so a replay starts where the loop forked from."""
+
+    def test_a_recorded_run_carries_the_base_sha_its_branch_forked_at(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        repo = scratch_repo(tmp_path, monkeypatch)
+        run_git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=repo)
+        base = run_git("rev-parse", "HEAD", cwd=repo)
+        run_git("checkout", "-q", "-b", "loop/dag-184", cwd=repo)
+        commit_file(repo, "run-work", "the run's commit")
+        note = recorded(cfg, "devloop-run-rich.json")
+        assert validate_task_note(note) == []
+        assert note["rounds"][0]["base"] == base
+
+    def test_a_run_outside_any_repo_records_no_base_sha(self, cfg, tmp_path, monkeypatch):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
+        landed = tasks.record_run(
+            cfg, payload("devloop-run-rich.json"), project="t"
+        )
+        note = note_fm(cfg, landed.task_id)
+        assert validate_task_note(note) == []
+        assert "base" not in note["rounds"][0]
+        # Absence outside a repo is the legal shape, not a degraded path: it
+        # announces nothing.
+        assert landed.warnings == ()
+
+    def test_an_unresolvable_branch_announces_the_missing_base_sha(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        """Inside a repo the round owes a base, so a branch git cannot
+        resolve is a degraded path and says so."""
+        repo = scratch_repo(tmp_path, monkeypatch)
+        run_git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=repo)
+        run = payload("devloop-run-rich.json")
+        run["frontmatter"]["branch"] = "loop/does-not-exist"
+        landed = tasks.record_run(cfg, run, project="t")
+        note = note_fm(cfg, landed.task_id)
+        assert "base" not in note["rounds"][0]
+        assert ["loop/does-not-exist" in w for w in landed.warnings] == [True]
+
+    def test_a_branch_that_resolves_but_has_no_trunk_announces_it(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        """A repo with no remote fork point is still a repo the run could
+        anchor on, so the missing base is announced, not swallowed."""
+        repo = scratch_repo(tmp_path, monkeypatch)
+        run_git("checkout", "-q", "-b", "loop/dag-184", cwd=repo)
+        landed = tasks.record_run(cfg, payload("devloop-run-rich.json"), project="t")
+        assert "base" not in note_fm(cfg, landed.task_id)["rounds"][0]
+        assert len(landed.warnings) == 1

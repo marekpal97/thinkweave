@@ -94,7 +94,8 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
         print(
             f"  tasks:   {len(t['minted'])} minted, "
             f"{len(t['appended'])} round(s) appended, "
-            f"{len(t['closed'])} closed, {len(t['orphaned'])} orphaned, "
+            f"{len(t['closed'])} closed, {len(t['held_open'])} held open, "
+            f"{len(t['orphaned'])} orphaned, "
             f"{len(t['attached'])} child(ren) attached, {t['stamped']} stamped, "
             f"{len(t['moved'])} round(s) moved off, {len(t['reopened'])} reopened"
         )
@@ -102,6 +103,11 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             print(
                 f"    {landing['task_id']} ← {landing['asked'] or '(no ref)'} "
                 f"via {landing['match']}"
+            )
+        for held in t["held_open"]:
+            print(
+                f"    {held['task_id']} held open — commit "
+                f"{', '.join(held['uncommitted'])} and re-wrap to close"
             )
     if result.orphans_pruned:
         mb = result.orphans_freed_bytes / (1024 * 1024)

@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from thinkweave.core._utils import as_list
 from thinkweave.core.buffer import append_event, archived_events_path, buffer_path
 from thinkweave.core.config import tracker_project
 from thinkweave.core.events import feedback_events, iter_jsonl
@@ -459,8 +460,12 @@ class Register:
             if row.get("type") in (TASK_OPEN, TASK_CLOSE)
         ]
 
-    def open(self, task: Task, ref: SessionRef | None = None) -> None:
-        self._append(TASK_OPEN, task.id, ref, grain=task.grain)
+    def open(self, task: Task, ref: SessionRef | None = None, base: str = "") -> None:
+        """Record the open; ``base`` is the repo HEAD the work starts from."""
+        extra = {"grain": task.grain}
+        if base:
+            extra["base"] = base
+        self._append(TASK_OPEN, task.id, ref, **extra)
 
     def close(
         self, task: Task | None, ref: SessionRef | None = None, *, orphan: bool = False
@@ -495,6 +500,13 @@ class Register:
     def unclosed(self) -> list[str]:
         """Ids opened here with no close here."""
         return [t for t, pair in self._pairs().items() if pair["open"] and not pair["close"]]
+
+    def opened_base(self, task_id: str) -> str:
+        """The repo HEAD this task's ``task_open`` row recorded; ``""`` when
+        it recorded none (a dispatch made outside a repo, or an open row
+        written before the base was kept)."""
+        opened = self._pairs().get(task_id, {}).get("open") or {}
+        return str(opened.get("base", ""))
 
     def listing(self) -> list[LedgerEntry]:
         """One entry per task this session opened or closed, with its note's
@@ -721,6 +733,16 @@ class EntryLanding:
     match: str
 
 
+@dataclass(frozen=True)
+class HeldOpen:
+    """One declared ``done`` the pass did not close: the task stays open
+    until git holds every path in ``uncommitted`` — the files it recorded —
+    in a commit."""
+
+    task_id: str
+    uncommitted: list[str]
+
+
 @dataclass
 class TaskPassResult:
     """What one wrap task pass reconciled — folded into the wrap report."""
@@ -729,6 +751,7 @@ class TaskPassResult:
     minted: list[str] = field(default_factory=list)
     appended: list[str] = field(default_factory=list)
     closed: list[str] = field(default_factory=list)
+    held_open: list[HeldOpen] = field(default_factory=list)
     orphaned: list[str] = field(default_factory=list)
     attached: list[str] = field(default_factory=list)
     moved: list[str] = field(default_factory=list)
@@ -756,17 +779,24 @@ def open_child(
     harness: str = "",
     agent_id: str = "",
     asked: str = "",
+    cwd: str = "",
 ) -> TaskDispatch:
     """Mint a child task at its dispatch boundary: the note, then its
     ``task_open`` row. The descriptor names the envelope return file the
-    performer appends to, whose directory exists from here on."""
+    performer appends to, whose directory exists from here on. ``cwd`` is
+    the worktree the child starts in (default: the working directory); its
+    HEAD is the round's base commit."""
     if asked:
         asked = normalize_tracker_ref(asked, current_repo())
     task = TaskStore(cfg).mint(
         grain, title, project, asked=asked, role=role, harness=harness, session_key=session_key
     )
     task.save(VaultManager(config=cfg))
-    Register(cfg, session_key).open(task, SessionRef.agent(harness, agent_id) if agent_id else None)
+    Register(cfg, session_key).open(
+        task,
+        SessionRef.agent(harness, agent_id) if agent_id else None,
+        base=head_sha(cwd),
+    )
     _envelope_path(cfg, task.id).parent.mkdir(parents=True, exist_ok=True)
     return _descriptor(cfg, task)
 
@@ -785,15 +815,18 @@ def close_child(
     if not task.accepts_round("dispatch"):
         raise ValueError(f"{task_id} {task.refusal('dispatch')}")
     source = source or TranscriptSource.bound(cfg, task_id)
+    register = Register(cfg, session_key)
     errors: list[str] = []
     envelopes = _read_envelopes(_envelope_path(cfg, task_id), task_id, errors)
     digest = ChildDigest.read(source, until=_now()).with_trailer_commits(task_id)
     data = {**digest.round_fields(envelopes), "envelopes": envelopes + digest.claims(task_id)}
+    if base := register.opened_base(task_id):
+        data["base"] = base
     task.frontmatter.update(digest.note_fields(task.frontmatter))
     task.put_round(replace(Round.from_dict(data, grain=task.grain), session_ref=source.session_ref))
     task.close()
     task.save(VaultManager(config=cfg))
-    Register(cfg, session_key).close(task, source.session_ref)
+    register.close(task, source.session_ref)
     return TaskClose(
         task_id=task_id,
         note=str(task.path),
@@ -879,9 +912,11 @@ def apply_declaration(
     and reopens such a task when this session's own ``done`` closed it;
     rounds other sessions wrote stay put. ``done`` closes the task only when
     the declared ref is the task's own ``asked`` — the only closure wrap
-    performs; on an epic's task for a sub-issue the round records it. A
-    closed task's entry is skipped with a warning. Each landed entry is
-    recorded with how it matched; a ref-less mint while an open task
+    performs; on an epic's task for a sub-issue the round records it, and a
+    done whose task still records an uncommitted file lands its round and
+    holds the task open instead, reported as ``held_open`` with the files to
+    commit. A closed task's entry is skipped with a warning. Each landed
+    entry is recorded with how it matched; a ref-less mint while an open task
     touched the session's files, and a declared ref the session's closing
     refs do not name, are warned, never changed. ``children`` gain this task as parent, and the decisions
     the round minted gain its id. At ``boundary`` sparsity an open
@@ -907,6 +942,11 @@ def apply_declaration(
     if declaration.get("sparsity", "boundary") == "boundary":
         wrap.flag_orphans()
     return wrap.result
+
+
+#: The feedback event keys a round copies; an absent or empty one stays off
+#: the round, so a stream written before a key existed compiles unchanged.
+_FEEDBACK_KEYS = ("register", "prompt_ref", "ts", "text")
 
 
 class _DeclarationPass:
@@ -949,15 +989,25 @@ class _DeclarationPass:
             and anchors & set(fm.get("derived_from") or [])
         }
         # The ref evidence weave_extract served the declaring model.
-        self.evidence = RefEvidence.gather(
-            cfg, session_notes[0] if session_notes else {}, self.result.warnings
-        )
+        session_fm = session_notes[0] if session_notes else {}
+        self.session_files = as_list(session_fm.get("files_touched"))
+        self.evidence = RefEvidence.gather(cfg, session_fm, self.result.warnings)
         self.closing_refs = self.evidence.closing_refs(self.repo)
         self.verdicts = [
-            {k: str(row.get(k, "")) for k in ("register", "prompt_ref", "ts")}
+            {k: str(row[k]) for k in _FEEDBACK_KEYS if row.get(k)}
             for stream in streams
             for row in feedback_events(stream)
         ]
+        # The repo HEAD the session's first prompt saw, as its hook recorded
+        # it. The chain's earliest record wins, so a resumed session names
+        # the commit it began from; "" when no stream records one.
+        bases = [
+            (str(row.get("ts", "")), str(row.get("hash", "")))
+            for stream in streams
+            for row in iter_jsonl(stream)
+            if row.get("type") == "base" and row.get("hash")
+        ]
+        self.base = min(bases)[1] if bases else ""
         # The pass writes its own opens without a session ref; hook-route
         # opens always carry one, so they never match a declared title.
         self.minted_titles: dict[str, str] = {}
@@ -990,7 +1040,9 @@ class _DeclarationPass:
         # A sub-issue's done stays on its round; the epic's own close (or
         # the tracker sweep) closes the epic's task.
         own = not issue or issue == task.frontmatter.get("asked")
-        closing = bool(entry.get("done")) and own and task.close()
+        declared = bool(entry.get("done")) and own
+        held = self._holds_open(task, solo) if declared else []
+        closing = declared and not held and task.close()
         minting = task.path is None
         self.result.warnings += task.save(self.vm)
         if minting:
@@ -999,6 +1051,8 @@ class _DeclarationPass:
         if closing:
             self.register.close(task)
             self.result.closed.append(task.id)
+        if held:
+            self.result.held_open.append(HeldOpen(task.id, held))
         self._stamp_decisions(minted, task)
         self._attach_children(entry, task)
 
@@ -1024,6 +1078,35 @@ class _DeclarationPass:
                 f"{task.id} declared {issue}, but the session's commits and PRs "
                 f"close {', '.join(sorted(self.closing_refs))}"
             )
+
+    def _holds_open(self, task: Task, solo: bool) -> list[str]:
+        """The recorded files git has not committed. A declared ``done``
+        carrying any holds the task open: the round lands, the files are
+        named, and a later wrap closes once they are committed. A task that
+        records no file, and one git cannot answer for, close on the
+        declaration; the missing check is announced, never passed off as a
+        clean one."""
+        try:
+            return _uncommitted(self._recorded(task, solo))
+        except (OSError, subprocess.SubprocessError) as exc:
+            reason = (getattr(exc, "stderr", "") or str(exc)).strip()
+            self.result.warnings.append(
+                f"{task.id} closed on the declaration alone — no git commit "
+                f"state to check ({reason})"
+            )
+            return []
+
+    def _recorded(self, task: Task, solo: bool) -> list[str]:
+        """Every file the task records: each round's ``did.paths`` and file
+        outputs, plus this session's touched files when it declared one
+        task, whose round under-states what the session changed."""
+        paths: list[str] = []
+        for round_ in task.rounds:
+            paths += as_list((round_.did or {}).get("paths"))
+            paths += [o["ref"] for o in round_.outputs or [] if o["kind"] == "file"]
+        if solo:
+            paths += self.session_files
+        return list(dict.fromkeys(paths))
 
     def move_rounds(self, *, blocked: bool) -> None:
         """Take the session round this session's wraps wrote off each task no
@@ -1102,6 +1185,8 @@ class _DeclarationPass:
         data = {"route": "session", "session_ref": self.session_ref.to_dict(), **entry["round"]}
         if issue:
             data.setdefault("asked", issue)
+        if self.base:
+            data.setdefault("base", self.base)
         if entry.get("done"):
             data["done"] = True
         if solo:
@@ -1174,7 +1259,12 @@ def record_run(
         asked=asked,
         session_key=session_key,
     )
-    task.put_round(Round.from_devloop(payload, task_id=task.id, trajectory=trajectory))
+    task.put_round(Round.from_devloop(
+        payload,
+        task_id=task.id,
+        trajectory=trajectory,
+        base=_merge_base(str(payload["frontmatter"].get("branch") or ""), warnings),
+    ))
     task.frontmatter["asked"] = asked
     minting = task.path is None
     warnings += task.save(VaultManager(config=cfg))
@@ -1271,15 +1361,83 @@ _NO_TRANSCRIPT = "no transcript bound to the task"
 
 def current_repo() -> str:
     """``owner/name`` of the working directory's GitHub ``origin``, or ``""``."""
-    try:
-        url = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5, check=True,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    url = _git("remote", "get-url", "origin")
     found = re.search(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$", url)
     return found[1] if found else ""
+
+
+def head_sha(cwd: str = "") -> str:
+    """The full sha of ``cwd``'s (default: the working directory's) repo
+    HEAD; ``""`` outside a repo, where no base commit exists to record."""
+    return _git("rev-parse", "HEAD", cwd=cwd)
+
+
+def _merge_base(branch: str, warnings: list[str]) -> str:
+    """The commit ``branch`` forked from — its merge base with the trunk.
+    ``""`` outside any repo, where no base commit exists to record; inside
+    one, a branch or trunk git cannot resolve leaves the round unanchored,
+    and that is announced."""
+    if not branch:
+        return ""
+    if not _git("rev-parse", "--git-dir"):
+        return ""
+    for trunk in ("origin/HEAD", "origin/main", "origin/master"):
+        if sha := _git("merge-base", trunk, branch):
+            return sha
+    warnings.append(
+        f"no merge base for branch {branch!r} — the round carries no base "
+        "commit, so a replay has no git anchor to start from"
+    )
+    return ""
+
+
+def _git(*args: str, cwd: str = "") -> str:
+    """One git call's stdout, stripped; ``""`` when git refuses or cannot
+    run."""
+    try:
+        result = subprocess.run(
+            ["git", *args], capture_output=True, text=True, timeout=5,
+            check=True, cwd=cwd or None,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
+
+def _uncommitted(paths: list[str]) -> list[str]:
+    """The recorded ``paths`` the working tree still holds uncommitted, in
+    the order given. An ignored path never counts — ``git status`` reports
+    no such row — and neither does a path off disk, which no commit can
+    restore. Raises ``subprocess.SubprocessError`` outside a repository,
+    where there is no commit state to check."""
+    if not paths:
+        return []
+    top = _git("rev-parse", "--show-toplevel")
+    if not top:
+        raise subprocess.SubprocessError("not inside a git repository")
+    root = Path(top).resolve()
+    changed = _changed_paths(root)
+    out: list[str] = []
+    for raw in paths:
+        full = (root / raw).resolve()
+        if not full.is_relative_to(root) or not full.exists():
+            continue
+        if full.relative_to(root).as_posix() in changed:
+            out.append(raw)
+    return out
+
+
+def _changed_paths(root: Path) -> set[str]:
+    """Every path the repository at ``root`` holds uncommitted — modified,
+    staged or untracked — as one repo-relative posix path per row.
+    ``-uall`` names an untracked file instead of its directory, and
+    ``--no-renames`` splits a rename into two records so a row is a path.
+    Not routed through ``_git``: its strip would eat the leading status
+    column of the first row. One whole-tree scan per close check."""
+    out = subprocess.run(
+        ["git", "status", "--porcelain", "-uall", "--no-renames", "-z"],
+        cwd=root, capture_output=True, text=True, timeout=20, check=True,
+    ).stdout
+    return {row[3:] for row in out.split("\0") if row}
 
 
 def _tracker_ref(value: str, repo: str, warnings: list[str]) -> str:

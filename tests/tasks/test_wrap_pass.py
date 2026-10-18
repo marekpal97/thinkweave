@@ -3,8 +3,8 @@
 The pass runs inside ``weave wrap-finalize`` on a declaration file the
 wrap LLM composed (canned here; no model call). Each declared entry
 mints a task or appends a round to a continuing one, closes on explicit
-done, attaches declared seam children, and stamps minted decisions with
-the task id. Orphan flags are the one mechanical check, at boundary
+done once every file the task recorded is committed, attaches declared
+seam children, and stamps minted decisions with the task id. Orphan flags are the one mechanical check, at boundary
 sparsity only. The pass never fills ``outcome`` and never attributes a
 child by inference; it reopens a task only when a re-wrap moves off the
 round whose ``done`` closed it.
@@ -13,6 +13,7 @@ round whose ``done`` closed it.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,8 @@ from thinkweave.surfaces.cli.wrap import cmd_wrap_finalize
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SESSION = "s-1"
+BASE_SHA = "9c1b7f0a3e5d4c6b8a2f10d3c5b7e9a1f2d3c4b5"
+FORK_SHA = "4b5c3d2f1a9e7b5c3d2f1a9e7b5c3d2f1a9e7b5c"
 
 
 def load_declaration() -> dict:
@@ -431,6 +434,199 @@ class TestClosure:
 
 
 # ---------------------------------------------------------------------------
+# Held open — a declared done waits for its recorded files to be committed
+
+
+@pytest.fixture()
+def workrepo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A scratch git repository as the working directory, so the close gate
+    reads a real commit state."""
+    repo = tmp_path / "work"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    monkeypatch.chdir(repo)
+    return repo
+
+
+def git_commit(*names: str) -> None:
+    """Commit the named paths in the working directory's repository."""
+    for step in (["add", "--"], ["commit", "-q", "-m", "seed"]):
+        subprocess.run(
+            ["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
+             "-c", "commit.gpgsign=false", *step, *names],
+            check=True, capture_output=True, text=True,
+        )
+
+
+def session_folder(cfg: Config, **fm) -> Path:
+    """One wrapped session note folder carrying ``fm`` (``files_touched``,
+    ``commits`` …) as its frontmatter."""
+    vm = VaultManager(config=cfg)
+    vm.ensure_dirs()
+    return vm.create_note(
+        NoteType.SESSION, "S", body="## Summary\nx\n", project="t",
+        extra_frontmatter={"source_session": SESSION, **fm},
+    ).parent
+
+
+class TestHeldOpen:
+    """``done`` closes only once every file the task recorded is committed.
+    Otherwise the round lands, the task stays open, and the pass names the
+    files under ``held_open`` so the wrap report can say what to commit."""
+
+    def done(self, **round_: object) -> dict:
+        return {"declared": [{"title": "A", "done": True, "round": round_}]}
+
+    def test_an_uncommitted_recorded_path_holds_the_task_open(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / "a.py").write_text("x\n", encoding="utf-8")
+        result = reconcile(cfg, self.done(did={"paths": ["a.py"]}))
+        (task_id,) = result.minted
+        assert result.closed == []
+        assert [(h.task_id, h.uncommitted) for h in result.held_open] == [
+            (task_id, ["a.py"])
+        ]
+        fm = task_notes(cfg)[task_id]
+        assert fm["status"] == "open"
+        assert len(fm["rounds"]) == 1  # the round still lands
+        assert [r["type"] for r in stream_rows(cfg)] == ["task_open"]
+
+    def test_a_rewrap_after_the_commit_closes_the_task(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / "a.py").write_text("x\n", encoding="utf-8")
+        decl = self.done(did={"paths": ["a.py"]})
+        (task_id,) = reconcile(cfg, decl).minted
+        git_commit("a.py")
+        again = reconcile(cfg, decl)
+        assert again.held_open == []
+        assert again.closed == [task_id]
+        assert again.minted == []  # the same declaration reuses the note
+        assert task_notes(cfg)[task_id]["status"] == "closed"
+        assert [r["type"] for r in stream_rows(cfg)] == ["task_open", "task_close"]
+
+    def test_a_staged_path_still_holds_the_task_open(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / "a.py").write_text("x\n", encoding="utf-8")
+        git_commit("a.py")
+        (workrepo / "a.py").write_text("y\n", encoding="utf-8")
+        subprocess.run(["git", "add", "--", "a.py"], check=True, cwd=workrepo)
+        result = reconcile(cfg, self.done(did={"paths": ["a.py"]}))
+        assert result.closed == []
+        assert [h.uncommitted for h in result.held_open] == [["a.py"]]
+
+    def test_an_uncommitted_file_output_holds_the_task_open(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / "deck.html").write_text("<html>\n", encoding="utf-8")
+        result = reconcile(cfg, self.done(outputs=[
+            {"kind": "file", "ref": "deck.html", "role": "deliverable"},
+        ]))
+        assert result.closed == []
+        assert [h.uncommitted for h in result.held_open] == [["deck.html"]]
+
+    def test_an_off_disk_output_never_holds_the_task_open(
+        self, cfg: Config, workrepo: Path
+    ):
+        result = reconcile(cfg, self.done(outputs=[
+            {"kind": "url", "ref": "https://example.com/deck", "role": "deliverable"},
+            {"kind": "pr", "ref": "https://github.com/o/r/pull/1", "role": "deliverable"},
+        ]))
+        assert result.held_open == []
+        assert len(result.closed) == 1
+
+    def test_an_ignored_path_never_holds_the_task_open(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / ".gitignore").write_text("gen/\n", encoding="utf-8")
+        (workrepo / "gen").mkdir()
+        (workrepo / "gen" / "out.py").write_text("x\n", encoding="utf-8")
+        result = reconcile(cfg, self.done(did={"paths": ["gen/out.py"]}))
+        assert result.held_open == []
+        assert len(result.closed) == 1
+
+    def test_a_deleted_path_never_holds_the_task_open(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / "a.py").write_text("x\n", encoding="utf-8")
+        git_commit("a.py")
+        (workrepo / "a.py").unlink()
+        result = reconcile(cfg, self.done(did={"paths": ["a.py"]}))
+        assert result.held_open == []
+        assert len(result.closed) == 1
+
+    def test_an_earlier_rounds_uncommitted_path_holds_the_task_open(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / "a.py").write_text("x\n", encoding="utf-8")
+        git_commit("a.py")
+        (workrepo / "b.py").write_text("y\n", encoding="utf-8")
+        seed_stub(cfg, "tsk-aaaaaaaa", grain="work")
+        VaultManager(config=cfg).update_note(
+            note_path(cfg, "tsk-aaaaaaaa"),
+            frontmatter_updates={
+                "rounds": [{"route": "session", "did": {"paths": ["b.py"]}}],
+            },
+        )
+        result = reconcile(cfg, {"declared": [{
+            "continuing": "tsk-aaaaaaaa", "done": True,
+            "round": {"did": {"paths": ["a.py"]}}}]})
+        assert result.closed == []
+        assert [h.uncommitted for h in result.held_open] == [["b.py"]]
+
+    def test_the_session_files_hold_a_solo_done_open(self, cfg: Config, workrepo: Path):
+        (workrepo / "c.py").write_text("z\n", encoding="utf-8")
+        touched = str(workrepo / "c.py")
+        folder = session_folder(cfg, files_touched=[touched])
+        result = reconcile(cfg, self.done(), [folder])
+        assert result.closed == []
+        assert [h.uncommitted for h in result.held_open] == [[touched]]
+
+    def test_the_session_files_count_only_for_one_task(
+        self, cfg: Config, workrepo: Path
+    ):
+        (workrepo / "c.py").write_text("z\n", encoding="utf-8")
+        folder = session_folder(cfg, files_touched=[str(workrepo / "c.py")])
+        result = reconcile(cfg, {"declared": [
+            {"title": "A", "done": True, "round": {"did": {"paths": ["a.py"]}}},
+            {"title": "B", "done": True, "round": {"did": {"paths": ["b.py"]}}},
+        ]}, [folder])
+        assert result.held_open == []
+        assert len(result.closed) == 2
+
+    def test_a_done_outside_a_repository_closes_with_a_warning(
+        self, cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        (plain / "a.py").write_text("x\n", encoding="utf-8")
+        monkeypatch.chdir(plain)
+        result = reconcile(cfg, self.done(did={"paths": ["a.py"]}))
+        assert result.held_open == []
+        assert len(result.closed) == 1
+        assert any("git" in w for w in result.warnings)
+
+    def test_the_cli_names_the_files_that_hold_the_task_open(
+        self, cfg: Config, workrepo: Path, tmp_path: Path, capsys
+    ):
+        (workrepo / "a.py").write_text("x\n", encoding="utf-8")
+        decl = tmp_path / "decl.json"
+        decl.write_text(json.dumps(self.done(did={"paths": ["a.py"]})), encoding="utf-8")
+        args = build_parser().parse_args(
+            ["wrap-finalize", SESSION, "--project", "t", "--tasks", str(decl)]
+        )
+        cmd_wrap_finalize(args)
+        (task_id,) = task_notes(cfg)
+        out = capsys.readouterr().out
+        assert any(
+            task_id in line and "a.py" in line and "held" in line
+            for line in out.splitlines()
+        )
+
+
+# ---------------------------------------------------------------------------
 # Orphan flags — an open with no id-matched close, at boundary sparsity
 
 
@@ -608,9 +804,9 @@ class TestDecisionStamp:
         idx = Indexer(config=cfg)
         idx.index_file(dec)
         idx.close()
-        session_folder = tmp_path / "session-folder"
-        session_folder.mkdir()
-        result = reconcile(cfg, load_declaration(), folders=[session_folder])
+        stray = tmp_path / "session-folder"
+        stray.mkdir()
+        result = reconcile(cfg, load_declaration(), folders=[stray])
         fm, _ = parse_frontmatter(dec.read_text(encoding="utf-8"))
         assert fm["task_id"] == result.minted[0]
         assert result.stamped == 1
@@ -752,6 +948,72 @@ class TestLedgerRound:
                 "ts": "2026-10-02T10:00:00+00:00",
             }
         ]
+
+    def test_the_round_carries_a_feedback_event_s_full_text_when_it_records_one(
+        self, cfg: Config
+    ):
+        """A stream whose verdict event carries the whole prompt compiles it
+        onto the round; a row written before that key still compiles as its
+        three join keys."""
+        folder, _ids = seed_session(cfg)
+        quote = "no, keep rounds sealed — " + "x" * 200
+        with (folder / "events.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": "2026-10-02T11:00:00+00:00", "type": "feedback",
+                "session_id": SESSION, "register": "correction",
+                "prompt_ref": quote[:120], "text": quote,
+            }) + "\n")
+        result = reconcile_session(cfg, load_declaration(), folder)
+        assert task_notes(cfg)[result.minted[0]]["rounds"][0]["feedback"] == [
+            {
+                "register": "correction",
+                "prompt_ref": "no, keep rounds sealed",
+                "ts": "2026-10-02T10:00:00+00:00",
+            },
+            {
+                "register": "correction",
+                "prompt_ref": quote[:120],
+                "ts": "2026-10-02T11:00:00+00:00",
+                "text": quote,
+            },
+        ]
+
+    def test_the_round_carries_the_base_sha_the_session_recorded(self, cfg: Config):
+        """The hook's one base event compiles onto the round this wrap
+        writes; a session that recorded none leaves the key off."""
+        folder, _ids = seed_session(cfg)
+        with (folder / "events.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": "2026-10-02T09:00:00+00:00", "type": "base",
+                "session_id": SESSION, "hash": BASE_SHA,
+            }) + "\n")
+        result = reconcile_session(cfg, load_declaration(), folder)
+        assert task_notes(cfg)[result.minted[0]]["rounds"][0]["base"] == BASE_SHA
+
+    def test_a_chained_session_round_takes_its_earliest_base_sha(
+        self, cfg: Config, tmp_path: Path
+    ):
+        """Two segments, two HEADs: the round names the commit the session
+        began from, whichever stream holds it."""
+        folder, _ids = seed_session(cfg)
+        older = tmp_path / "older-events.jsonl"
+        older.write_text(
+            json.dumps({
+                "ts": "2026-10-01T09:00:00+00:00", "type": "base",
+                "session_id": SESSION, "hash": FORK_SHA,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        with (folder / "events.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": "2026-10-02T09:00:00+00:00", "type": "base",
+                "session_id": SESSION, "hash": BASE_SHA,
+            }) + "\n")
+        result = tasks.apply_declaration(
+            cfg, load_declaration(), session_key=SESSION, project="t",
+            streams=[folder / "events.jsonl", older], folders=[folder],
+        )
+        assert task_notes(cfg)[result.minted[0]]["rounds"][0]["base"] == FORK_SHA
 
     def test_round_names_the_harness_the_wrap_runs_under(self, cfg: Config, monkeypatch):
         monkeypatch.setattr(harness, "_OVERRIDE", None)
@@ -908,8 +1170,6 @@ class TestTrackerIdentity:
     def test_a_bare_issue_number_normalizes_to_the_current_repo(
         self, cfg: Config, tmp_path: Path, monkeypatch
     ):
-        import subprocess
-
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -975,8 +1235,6 @@ class TestEpicIdentity:
         assert task_notes(cfg)[task_id]["status"] == "closed"
 
     def test_a_failed_lookup_keeps_the_ref_and_warns(self, cfg: Config, monkeypatch):
-        import subprocess
-
         def unreachable(repo, number):
             raise subprocess.CalledProcessError(
                 1, ["gh"], stderr="error connecting to api.github.com"
@@ -997,14 +1255,6 @@ class TestEpicIdentity:
 
 class TestLanding:
     REF = "github:marekpal97/thinkweave#7"
-
-    def session_folder(self, cfg: Config, **fm) -> Path:
-        vm = VaultManager(config=cfg)
-        vm.ensure_dirs()
-        return vm.create_note(
-            NoteType.SESSION, "S", body="## Summary\nx\n", project="t",
-            extra_frontmatter={"source_session": SESSION, **fm},
-        ).parent
 
     def seed_open(self, cfg: Config, task_id: str, *, asked: str = "", paths=()):
         seed_stub(cfg, task_id, grain="work")
@@ -1038,21 +1288,21 @@ class TestLanding:
 
     def test_a_refless_mint_warns_when_an_open_task_touched_its_files(self, cfg: Config):
         self.seed_open(cfg, "tsk-0a0a0a0a", paths=["src/app.py"])
-        folder = self.session_folder(cfg, files_touched=["/repo/src/app.py"])
+        folder = session_folder(cfg, files_touched=["/repo/src/app.py"])
         result = reconcile(cfg, {"declared": [{"title": "new", "round": {}}]}, [folder])
         (warning,) = result.warnings
         assert result.minted[0] in warning and "tsk-0a0a0a0a" in warning
 
     def test_a_declared_ref_the_commits_contradict_warns(self, cfg: Config):
         commit = {"hash": "abc1234", "message": "Fixes marekpal97/thinkweave#9", "files": []}
-        folder = self.session_folder(cfg, commits=[commit])
+        folder = session_folder(cfg, commits=[commit])
         decl = {"declared": [{"title": "t", "asked": self.REF, "round": {}}]}
         (warning,) = reconcile(cfg, decl, [folder]).warnings
         assert self.REF in warning and "github:marekpal97/thinkweave#9" in warning
 
     def test_a_declared_ref_the_commits_close_does_not_warn(self, cfg: Config):
         commit = {"hash": "abc1234", "message": "Closes marekpal97/thinkweave#7", "files": []}
-        folder = self.session_folder(cfg, commits=[commit])
+        folder = session_folder(cfg, commits=[commit])
         decl = {"declared": [{"title": "t", "asked": self.REF, "round": {}}]}
         assert reconcile(cfg, decl, [folder]).warnings == []
 

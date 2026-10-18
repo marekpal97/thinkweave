@@ -585,7 +585,7 @@ class TestMcpInstallSurface:
         entry = self._install(inst)
         uv_args = [
             "run", "--no-sync", "--project", "/repo", "--extra", "mcp",
-            "python", "-m", "thinkweave.surfaces.mcp.server",
+            "python", "-P", "-m", "thinkweave.surfaces.mcp.server",
         ]
         if profile.id == "opencode":
             # opencode.ai/docs/mcp-servers/ (blueprint n-767d66b4 §4):

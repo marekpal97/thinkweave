@@ -970,6 +970,27 @@ has either converged or the cache is warm enough that the next attempt
 finishes. Each attempt logs a `first-run bootstrap` breadcrumb to stderr so a
 hook killed at its timeout is diagnosable rather than silent.
 
+### `-P` on every launch surface
+
+A harness starts a hook or an MCP server with its own cwd. Plain `python -m`
+puts that cwd on `sys.path`, so a project-local package named like a standard-library
+module is imported in the real one's place. The launch then dies at import, and the
+host shows nothing. Every launch surface therefore passes `-P` (safe path): the three
+POSIX launchers, the two `.cmd` twins, the machine-scope MCP entry `weave install`
+writes, and the rendered Codex Windows CLI launcher.
+
+`[measured]` On CPython 3.13.7, a cwd holding an empty `collections/__init__.py` fails
+`python -m thinkweave.surfaces.hooks.handler` with
+`ImportError: cannot import name 'namedtuple' from 'collections'`. Adding `-P` fixes it.
+A `signal/__init__.py` also shadows the stdlib module on that build, but the handler's
+import graph never reads an attribute off it, so it launches either way — `collections`
+is the shadow that shows the failure. `-P` does not disable `PYTHONPATH` or the
+`.pth` files an editable install relies on, so the module still resolves.
+
+`mcp_doctor._key` normalises `-P` away beside `--no-sync`: both change how the process
+starts, not what it launches, so an entry written before the flag landed must keep
+fingerprinting as the same invocation.
+
 ### A latent bug this surfaced
 
 (This one is fixed here; the launcher and probe items above are #156's, and the

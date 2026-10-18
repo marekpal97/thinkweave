@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from thinkweave.core.config import Config
+from thinkweave.core.events import extract_prompts
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager, parse_frontmatter
@@ -399,12 +400,58 @@ class TestVerdictStep:
         assert result.verdicts_unmatched == 0
         fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
         assert [r["register"] for r in fb] == ["correction", "confirmation"]
-        # Frozen schema: exactly the keys the pre-#101 hook labeler wrote,
-        # and ts reuses the prompt event's own timestamp (exact join).
-        assert set(fb[0]) == {"ts", "type", "register", "session_id", "prompt_ref"}
+        # The hook-labeler keys, ts reusing the prompt event's own timestamp
+        # (exact join), plus the full prompt text the quote is cut from.
+        assert set(fb[0]) == {
+            "ts", "type", "register", "session_id", "prompt_ref", "text",
+        }
         assert fb[0]["ts"] == "2026-08-03T10:00:00+00:00"
         assert fb[0]["prompt_ref"].startswith("no, that's wrong")
+        assert fb[0]["text"] == "no, that's wrong — use a dict instead"
         assert "verdicts" in result.timings
+
+    def test_feedback_text_is_the_whole_prompt_capped_at_four_thousand(
+        self, config: Config, vault: VaultManager
+    ):
+        """``prompt_ref`` stays the 120-character join key; ``text`` is what
+        an audit view reads."""
+        long = "no, the round must not carry the body — " + "y" * 300
+        f = self._write_buffer(config, "cc-uuid-9", [
+            {"ts": "2026-08-03T10:00:00+00:00", "type": "prompt",
+             "text": long, "session_id": "cc-uuid-9", "cwd": "/p"},
+            {"ts": "2026-08-03T10:05:00+00:00", "type": "prompt",
+             "text": "z" * 5000, "session_id": "cc-uuid-9", "cwd": "/p"},
+        ])
+        result = finalize_wrap(
+            config, session_id="cc-uuid-9", project="t", prune=False,
+            verdicts=[
+                {"prompt": long[:120], "register": "correction"},
+                {"prompt": "zzz", "register": "correction"},
+            ],
+        )
+        assert result.verdicts_written == 2
+        fb = [r for r in read_jsonl(f) if r.get("type") == "feedback"]
+        assert fb[0]["prompt_ref"] == long[:120]
+        assert fb[0]["text"] == long
+        assert fb[1]["prompt_ref"] == "z" * 120
+        assert fb[1]["text"] == "z" * 4000
+
+    def test_a_probe_verdict_on_a_long_prompt_still_joins_on_prompt_ref(
+        self, config: Config, vault: VaultManager
+    ):
+        """The full text rides beside ``prompt_ref``; the join in
+        ``core.events`` still matches on the truncated prefix."""
+        long = "How do you propose to organise this — " + "q" * 300
+        f = self._write_buffer(config, "cc-uuid-10", [
+            {"ts": "2026-08-03T10:00:00+00:00", "type": "prompt",
+             "text": long, "session_id": "cc-uuid-10", "cwd": "/p"},
+        ])
+        finalize_wrap(
+            config, session_id="cc-uuid-10", project="t", prune=False,
+            verdicts=[{"prompt": "how do you propose", "register": "probe"}],
+        )
+        probes = [p for p in extract_prompts(f) if p.classification == "probe"]
+        assert [p.text for p in probes] == [long]
 
     def test_rewrap_is_idempotent(self, config: Config, vault: VaultManager):
         f = self._write_buffer(config, "cc-uuid-2", [

@@ -39,7 +39,7 @@ PROJECT_ROOT_PHYSICAL = _shell_path(REPO_ROOT)
 # `.mcp.json` entry and `weave install`, with the root made absolute.
 EXPECTED_UV_ARGV = (
     f"run --no-sync --project {PROJECT_ROOT_PHYSICAL} --extra mcp "
-    "python -m thinkweave.surfaces.mcp.server"
+    "python -P -m thinkweave.surfaces.mcp.server"
 )
 
 # The actionable one-line failure contract (acceptance criterion 1).
