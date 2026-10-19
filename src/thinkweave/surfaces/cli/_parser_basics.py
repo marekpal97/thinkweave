@@ -210,7 +210,8 @@ def add_index_subparsers(sub) -> None:
         action="store_true",
         help=(
             "Run idempotent one-shot data migrations (todo+research → "
-            "queue, task-round feedback text backfill) before printing "
+            "queue, decision source_session backfill, task-round feedback text "
+            "backfill) before printing "
             "the report."
         ),
     )
