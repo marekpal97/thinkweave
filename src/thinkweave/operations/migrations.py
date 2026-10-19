@@ -262,6 +262,73 @@ def _extract_url(body: str) -> str:
     return ""
 
 
+@dataclass(frozen=True)
+class SourceSessionMigration:
+    """What :func:`migrate_decision_source_sessions` changed."""
+
+    filled: int
+    unresolved: tuple[str, ...] = ()
+
+
+def migrate_decision_source_sessions(config: Config) -> SourceSessionMigration:
+    """Rewrite decision ``source_session`` to the owning session note's id.
+
+    Older extraction stamped the harness session id (a Claude Code UUID, an
+    old slug, or nothing) on decisions, so the RLVR join against indexed
+    ``ses-`` ids misses them. For each indexed decision whose
+    ``source_session`` is missing or is not an indexed session id: the
+    co-located ``session.md``'s ``id`` wins; failing that, a session folder
+    whose leading slug (date suffix stripped) is itself an indexed session
+    id resolves through the path. A resolved id is only written when it is
+    an indexed session id — anything else is reported as unresolved and
+    left unchanged, never guessed. Touched notes are reindexed. Idempotent.
+    """
+    from thinkweave.core.indexer import Indexer
+    from thinkweave.core.vault import (
+        find_session_note,
+        read_session_fm,
+        session_folder_slug,
+    )
+
+    idx = Indexer(config=config)
+    try:
+        session_ids = {
+            r[0] for r in idx.db.execute("SELECT id FROM notes WHERE type='session'")
+        }
+        rows = idx.db.execute(
+            "SELECT id, path, json_extract(frontmatter, '$.source_session') "
+            "FROM notes WHERE type='decision'"
+        ).fetchall()
+        vm = VaultManager(config)
+        touched: list[Path] = []
+        unresolved: list[str] = []
+        for dec_id, rel, src in rows:
+            if src and src in session_ids:
+                continue
+            dec_path = config.vault_root / rel
+            new_id = ""
+            session_md = find_session_note(dec_path) if dec_path.is_file() else None
+            if session_md is not None:
+                fm = read_session_fm(session_md) or {}
+                candidate = str(fm.get("id") or "")
+                if candidate in session_ids:
+                    new_id = candidate
+            if not new_id and dec_path.parent.parent.name == "sessions":
+                slug = session_folder_slug(dec_path.parent.name)
+                if slug in session_ids:
+                    new_id = slug
+            if not new_id:
+                unresolved.append(str(dec_id or rel))
+                continue
+            vm.update_note(dec_path, frontmatter_updates={"source_session": new_id})
+            touched.append(dec_path)
+        if touched:
+            idx.index_paths(touched)
+        return SourceSessionMigration(len(touched), tuple(unresolved))
+    finally:
+        idx.close()
+
+
 def _strip_todo_tag(path: Path, fm: dict, body: str) -> None:
     """Rewrite ``path`` with ``todo`` removed from its tags. Other
     frontmatter fields and the body are preserved verbatim."""
