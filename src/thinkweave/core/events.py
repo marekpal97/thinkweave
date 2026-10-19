@@ -271,7 +271,7 @@ class Prompt:
     classification: str | None = None
 
 
-def _parse_ts(raw: str) -> datetime:
+def parse_ts(raw: str) -> datetime:
     """Tolerant ISO timestamp parser for prompt events.
 
     Handler emits ``datetime.now(timezone.utc).isoformat()`` which yields
@@ -356,7 +356,7 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
         if not isinstance(row, dict):
             continue
         if row.get("type") == "probe":
-            t = _parse_ts(row.get("ts", ""))
+            t = parse_ts(row.get("ts", ""))
             if t != datetime.min:
                 probe_marks.append((t, str(row.get("prompt_ref", ""))))
             continue
@@ -368,7 +368,7 @@ def extract_prompts(events_jsonl: Path) -> list[Prompt]:
             continue
         out.append(
             Prompt(
-                ts=_parse_ts(row.get("ts", "")),
+                ts=parse_ts(row.get("ts", "")),
                 text=str(text),
                 session_id=str(session_id),
                 project=row.get("project"),
@@ -503,7 +503,7 @@ def feedback_events(events_jsonl: Path) -> list[dict]:
             r.get("register", ""),
             r.get("prompt_ref", ""),
         ),
-        ts=lambda r: _parse_ts(r.get("ts", "")),
+        ts=lambda r: parse_ts(r.get("ts", "")),
     )
 
 

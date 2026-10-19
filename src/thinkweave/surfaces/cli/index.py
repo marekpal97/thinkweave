@@ -220,6 +220,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             from thinkweave.operations.migrations import (
                 migrate_decision_source_sessions,
                 migrate_dormant_themes_to_resolved,
+                migrate_feedback_text,
                 migrate_task_notes_to_ledger,
                 migrate_todo_research_to_queue,
             )
@@ -232,13 +233,19 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             print(f"migrate_task_notes_to_ledger: {ledgered.rewritten} task note(s) rewritten")
             for shared in ledgered.shared:
                 print(f"  {shared.asked} keys {', '.join(shared.task_ids)}")
-            backfilled = migrate_decision_source_sessions(cfg)
+            sessions = migrate_decision_source_sessions(cfg)
             print(
-                f"migrate_decision_source_sessions: {backfilled.filled} decision(s) filled, "
-                f"{len(backfilled.unresolved)} unresolved"
+                f"migrate_decision_source_sessions: {sessions.filled} decision(s) filled, "
+                f"{len(sessions.unresolved)} unresolved"
             )
-            for dec_id in backfilled.unresolved:
+            for dec_id in sessions.unresolved:
                 print(f"  unresolved: {dec_id}")
+            feedback = migrate_feedback_text(cfg)
+            print(
+                f"migrate_feedback_text: {feedback.filled} filled, "
+                f"{feedback.no_events} no events file, "
+                f"{feedback.no_match} no matching prompt"
+            )
 
         include_isolation = bool(getattr(args, "isolation", False))
         report = doctor_report(cfg, include_isolation=include_isolation)

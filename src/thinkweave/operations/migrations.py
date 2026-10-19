@@ -16,6 +16,7 @@ from thinkweave.core._utils import as_list
 from thinkweave.core.config import Config
 from thinkweave.core.vault import (
     VaultManager,
+    indexed_session_path,
     parse_frontmatter,
     render_frontmatter,
     unquote_scalar,
@@ -174,6 +175,131 @@ def _legacy_route(entry) -> str:
 
     traced = any(getattr(entry, key) is not None for key in DEVLOOP_TRACE_KEYS)
     return "devloop" if traced else "session"
+
+
+@dataclass(frozen=True)
+class FeedbackTextMigration:
+    """What :func:`migrate_feedback_text` changed."""
+
+    filled: int
+    no_events: int
+    no_match: int
+
+
+def migrate_feedback_text(config: Config) -> FeedbackTextMigration:
+    """Fill ``text`` on task-round feedback entries from their prompt events.
+
+    Rounds wrapped before the verdict events carried the whole prompt hold
+    only the join keys (``register``, ``prompt_ref``, ``ts``). For each such
+    entry, resolve the round's session through its ``session_ref``, read the
+    session's events stream, and copy the prompt with the same ``ts`` whose
+    text starts with ``prompt_ref``, capped at ``FEEDBACK_TEXT_CHARS``.
+    Entries whose session has no events file and entries no prompt matches
+    are counted, not guessed. Touched notes reindex through ``Task.save``.
+    Idempotent: entries carrying ``text`` are skipped. ``base`` is not
+    backfilled — a past round's git state is unrecoverable.
+    """
+    from thinkweave.core.events import parse_ts
+    from thinkweave.operations.tasks import Task
+    from thinkweave.operations.wrap import FEEDBACK_TEXT_CHARS
+
+    vm = VaultManager(config)
+    resolver = _SessionPrompts(config)
+    filled = no_events = no_match = 0
+    for path in config.vault_root.rglob("tsk-*.md"):
+        task = Task.load(path)
+        changed = False
+        for round_ in task.rounds:
+            for entry in round_.feedback or []:
+                if not isinstance(entry, dict) or entry.get("text"):
+                    continue
+                ref = round_.session_ref
+                text, seen = resolver.find(
+                    ref.value if ref else "",
+                    _task_project(task),
+                    parse_ts(str(entry.get("ts", ""))),
+                    str(entry.get("prompt_ref", "")),
+                )
+                if not seen:
+                    no_events += 1
+                elif not text:
+                    no_match += 1
+                else:
+                    entry["text"] = text[:FEEDBACK_TEXT_CHARS]
+                    filled += 1
+                    changed = True
+        if changed:
+            task.save(vm)
+    return FeedbackTextMigration(filled, no_events, no_match)
+
+
+class _SessionPrompts:
+    """Per-run resolver from a session ref's value to a prompt's full text.
+
+    Fast path: the indexed session note's archived stream, one SQL probe.
+    Only when that yields no match does a ref widen to the logical
+    session's whole segment chain (one scan of the project's sessions dir),
+    so a prompt a sibling segment holds still resolves. Resolved files and
+    parsed prompts are cached for the run.
+    """
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._files: dict[str, list[Path]] = {}
+        self._widened: set[str] = set()
+        self._prompts: dict[Path, list] = {}
+
+    def find(self, value: str, project: str, ts, prefix: str) -> tuple[str, bool]:
+        """(prompt text, any events file seen) for an entry's join keys."""
+        if not value:
+            return "", False
+        text = self._match(self._files_for(value), ts, prefix)
+        if not text and value not in self._widened:
+            self._widened.add(value)
+            self._widen(value, project)
+            text = self._match(self._files_for(value), ts, prefix)
+        return text, bool(self._files_for(value))
+
+    def _files_for(self, value: str) -> list[Path]:
+        if value not in self._files:
+            files: list[Path] = []
+            note = indexed_session_path(self._config, value)
+            if note is not None:
+                events = note.parent / "events.jsonl"
+                if events.exists():
+                    files.append(events)
+            self._files[value] = files
+        return self._files[value]
+
+    def _widen(self, value: str, project: str) -> None:
+        from thinkweave.operations.wrap import _resolve_session_chain
+
+        files = self._files_for(value)
+        for events, _folder, _fm in _resolve_session_chain(self._config, value, project):
+            if events not in files:
+                files.append(events)
+
+    def _match(self, files: list[Path], ts, prefix: str) -> str:
+        from thinkweave.core.events import extract_prompts
+
+        if not prefix:
+            return ""
+        for path in files:
+            if path not in self._prompts:
+                self._prompts[path] = extract_prompts(path)
+            for prompt in self._prompts[path]:
+                if prompt.ts == ts and prompt.text.startswith(prefix):
+                    return prompt.text
+        return ""
+
+
+def _task_project(task) -> str:
+    """The task's project: its frontmatter's, else the ``projects/`` folder
+    it is filed under."""
+    if project := str(task.frontmatter.get("project") or ""):
+        return project
+    parts = task.path.parts if task.path else ()
+    return parts[parts.index("projects") + 1] if "projects" in parts else ""
 
 
 def migrate_todo_research_to_queue(vault_root: Path) -> int:
