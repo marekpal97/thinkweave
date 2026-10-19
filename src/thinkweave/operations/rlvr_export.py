@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -216,6 +217,19 @@ def _chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
     return ids
 
 
+def served_rows(idx: Indexer, session_id: str) -> list[sqlite3.Row]:
+    """Every ``context_served`` row for the logical session ``session_id``
+    belongs to — the chain union of :func:`_chain_session_ids` joined onto
+    the projection. Rows carry ``note_id``, ``source`` and ``ts``."""
+    session_ids = sorted(_chain_session_ids(idx, session_id))
+    placeholders = ",".join("?" * len(session_ids))
+    return idx.db.execute(
+        f"SELECT note_id, source, ts FROM context_served "
+        f"WHERE session_id IN ({placeholders}) ORDER BY note_id, source",
+        session_ids,
+    ).fetchall()
+
+
 def _assemble_with_indexer(
     idx: Indexer,
     vm: VaultManager,
@@ -249,32 +263,17 @@ def _assemble_with_indexer(
     startup_ids: set[str] = set()
     n_retrievals_onthefly = 0
     if session_id:
-        # #175 serve-once: only the chain's first segment receives the
-        # startup snapshot. A decision minted in a later segment must still
-        # see that exposure, so the lookup unions context_served across
-        # every session note sharing this session's logical_session.
-        session_ids = sorted(_chain_session_ids(idx, session_id))
-        placeholders = ",".join("?" * len(session_ids))
-        rows = idx.db.execute(
-            f"SELECT note_id, source FROM context_served "
-            f"WHERE session_id IN ({placeholders})",
-            session_ids,
-        ).fetchall()
-        for r in rows:
+        onthefly_ts: set[str] = set()
+        for r in served_rows(idx, session_id):
             if r["source"] == "onthefly":
                 onthefly_ids.add(r["note_id"])
+                # One MCP call → one ts shared by every note it returned.
+                onthefly_ts.add(r["ts"])
             elif r["source"] == "prompttime":
                 prompttime_ids.add(r["note_id"])
             elif r["source"] == "startup":
                 startup_ids.add(r["note_id"])
-        # Retrieval-event count = distinct ts among onthefly rows. One MCP
-        # call → one ts → multiple note_ids share that ts.
-        n_row = idx.db.execute(
-            f"SELECT COUNT(DISTINCT ts) AS n FROM context_served "
-            f"WHERE session_id IN ({placeholders}) AND source = 'onthefly'",
-            session_ids,
-        ).fetchone()
-        n_retrievals_onthefly = int(n_row["n"] or 0) if n_row else 0
+        n_retrievals_onthefly = len(onthefly_ts)
 
     # Source precedence for a note served via multiple channels:
     # onthefly (agent pulled) > prompttime (system pushed) > startup (boot).

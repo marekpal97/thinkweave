@@ -95,19 +95,284 @@ class WrapFinalizeResult:
         }
 
 
-# The registers the prompt-verdict rail accepts. ``correction`` /
-# ``confirmation`` persist as frozen-shape ``feedback`` events (the human
-# reward channel); ``probe`` persists as a sibling ``probe`` event that
-# ``extract_prompts`` joins back onto the prompt as
-# ``classification="probe"`` (probe pressure, /discover, the prompts
-# projection). ``neutral`` is not an event — the wrap LLM only lists the
-# non-neutral verdicts.
-_VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
+def finalize_wrap(
+    cfg: Config,
+    *,
+    session_id: str,
+    project: str = "",
+    prune: bool = True,
+    verdicts: list[dict] | None = None,
+    tasks: dict | None = None,
+    allow_empty: bool = False,
+) -> WrapFinalizeResult:
+    """Run the deterministic post-extraction chain in one process.
 
-#: Characters of prompted text a feedback or probe event carries beside its
-#: 120-character ``prompt_ref`` join key. Both writers of that shape —
-#: ``wrap-finalize --verdicts`` and ``record_probe`` — cap at it.
-FEEDBACK_TEXT_CHARS = 4000
+    Order:
+
+    0. **verdicts** — append the wrap LLM's prompt verdicts (feedback
+       registers + probe labels) as events (:func:`_append_verdict_events`).
+       Runs first so the events land before any archival/indexing the
+       later steps trigger.
+    0.5. **tasks** — the wrap task pass
+       (:func:`thinkweave.operations.tasks.apply_declaration`) over the
+       declaration file the wrap LLM composed. Before the reindex, so the
+       task notes it writes land in the same index pass.
+    1. **prune** orphan session folders (conservative GC; ``session_id`` is
+       protected). Done first so the reindex in step 2 also drops their rows.
+    2. **index** — incremental rebuild. Picks up the notes ``weave_extract`` just
+       wrote and removes any pruned folders' rows in the same pass.
+    3. **judge** — ``judge_and_writeback(session_id=...)``: verdict + status
+       onto each new decision, batched, re-indexing touched files.
+    3.5. **citation lint** — decisions this wrap minted whose body cites no
+       note id are listed under ``warnings`` (never an error), with the notes
+       served to this session spelled out as ready-made ``[[path|id]]`` links
+       (:func:`_lint_citations`).
+    4. **landing** — regenerate DECISIONS.md + BACKLOG.md (cheap; always done).
+       STATE.md is *not* touched — refreshing it is an LLM judgment call the
+       wrap skill makes, not this deterministic tail.
+    5. **drift** — read-only concept-drift advisory; surfaced in the result,
+       never acted on here.
+    6. **silent-failure rail** — a session that changed files but landed zero
+       derived notes is a broken ``/wrap`` (the extraction no-op'd). Records an
+       error (exit 1) unless ``allow_empty`` downgrades it to a warning. A
+       session that changed files but declared no task is warned.
+
+    Every step is wrapped: a failure in one is recorded in ``errors`` and the
+    rest still run. Returns a :class:`WrapFinalizeResult`.
+    """
+    result = WrapFinalizeResult(session_id=session_id, project=project)
+
+    # Resolve the segment chain ONCE — the verdict join, segments record,
+    # prune shield and reprojection all consume the same resolution (it
+    # re-reads every candidate's events per call, so 4 calls was 4 scans).
+    try:
+        chain = _resolve_session_chain(cfg, session_id, project)
+    except Exception as e:  # noqa: BLE001
+        chain = []
+        result.errors.append(f"resolve: {e}")
+
+    # 0. prompt verdicts → events (#101) -----------------------------------
+    if verdicts:
+        _t = time.perf_counter()
+        try:
+            _append_verdict_events(session_id, verdicts, result, chain)
+        except Exception as e:  # noqa: BLE001 — best-effort labeler
+            result.errors.append(f"verdicts: {e}")
+        # ponytail: the segments: record only lands on verdict-bearing
+        # wraps — a verdict-less multi-segment wrap leaves no durable
+        # chain. Upgrade path: hoist _record_segments out of this
+        # branch once a verdict-less consumer (task-trace) needs it.
+        try:
+            _record_segments(chain, result)
+        except Exception as e:  # noqa: BLE001 — bookkeeping must not
+            # flip the exit code after successful verdict writes
+            result.warnings.append(f"segments: {e}")
+        result.timings["verdicts"] = time.perf_counter() - _t
+
+    # 0.5. wrap task pass -------------------------------------------------
+    if tasks is not None:
+        _t = time.perf_counter()
+        try:
+            from thinkweave.core.buffer import buffer_path
+            from thinkweave.operations.tasks import apply_declaration
+
+            streams = [ev for ev, _d, _fm in chain] or [
+                buffer_path(cfg.weave_dir, session_id)
+            ]
+            folders = [d for _ev, d, _fm in chain if d is not None]
+            pass_result = apply_declaration(
+                cfg,
+                tasks,
+                session_key=session_id,
+                project=project,
+                streams=streams,
+                folders=folders,
+            )
+            result.tasks = pass_result.as_dict()
+            result.errors.extend(f"tasks: {e}" for e in pass_result.errors)
+            result.warnings.extend(f"tasks: {w}" for w in pass_result.warnings)
+        except Exception as e:  # noqa: BLE001
+            result.errors.append(f"tasks: {e}")
+        finally:
+            result.timings["tasks"] = time.perf_counter() - _t
+
+    # 1. prune orphan session folders -------------------------------------
+    if prune:
+        _t = time.perf_counter()
+        try:
+            from thinkweave.operations.prune import find_orphans, prune_orphans
+
+            # #181/#180: shield every folder the chain resolved to —
+            # verdicts were just written there, and their id fields may
+            # name a sibling note (force-minted ses- id) or an earlier
+            # compaction segment the caller's id doesn't match.
+            chain_dirs = {d for _ev, d, _fm in chain if d is not None}
+            orphans = [
+                o
+                for o in find_orphans(
+                    cfg, project=project, current_session_id=session_id
+                )
+                if o not in chain_dirs
+            ]
+            if orphans:
+                pr = prune_orphans(orphans, dry_run=False)
+                result.orphans_pruned = pr.deleted
+                result.orphans_freed_bytes = pr.freed_bytes
+        except Exception as e:  # noqa: BLE001 — best-effort GC
+            result.errors.append(f"prune: {e}")
+        finally:
+            result.timings["prune"] = time.perf_counter() - _t
+
+    # 2. reindex ----------------------------------------------------------
+    _t = time.perf_counter()
+    try:
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.core.vault import VaultManager
+
+        VaultManager(config=cfg).ensure_dirs()
+        idx = Indexer(config=cfg)
+        try:
+            stats = idx.rebuild(full=False)
+        finally:
+            idx.close()
+        result.indexed = stats.get("indexed", 0)
+        result.removed = stats.get("removed", 0)
+        result.edges = stats.get("edges", 0)
+        # Verdicts landed in events.jsonl, not session.md — the incremental
+        # rebuild above won't re-project this session's prompts on its own.
+        if verdicts:
+            idx = Indexer(config=cfg)
+            try:
+                result.prompts_reprojected = sum(
+                    idx.reproject_session_prompts(nid)
+                    for nid in _chain_note_ids(chain, session_id)
+                )
+            finally:
+                idx.close()
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"index: {e}")
+    finally:
+        result.timings["index"] = time.perf_counter() - _t
+
+    # 3. judge extracted decisions + write back verdict/status ------------
+    _t = time.perf_counter()
+    judged: list = []
+    try:
+        from thinkweave.operations.decisions import (
+            judge_and_writeback,
+            rejudge_supersession_predecessors,
+        )
+
+        judged = judge_and_writeback(cfg, session_id=session_id)
+        if not judged and session_id.startswith("ses-"):
+            # Decisions written before the extract path stamped the note id
+            # carry the harness UUID instead. Fall back to that source id so
+            # the judge still finds them (the repair migration is separate).
+            src = _source_session_of(cfg, session_id)
+            if src and src != session_id:
+                judged = judge_and_writeback(cfg, session_id=src)
+        result.decisions_judged = len(judged)
+        for _dec, res in judged:
+            verdict = res.get("verdict", "unknown")
+            result.verdicts[verdict] = result.verdicts.get(verdict, 0) + 1
+
+        # Evidence-gated supersession flip. weave_extract only *enqueues* a
+        # predecessor when a new decision declares ``supersedes: [dec-X]`` —
+        # it never flips status. The wrap worker holds this session's commits,
+        # so re-judge every such predecessor now: blame survival decides
+        # whether the predecessor's lines were actually replaced (→
+        # ``superseded``) or still co-contribute (→ ``kept``). Predecessors
+        # whose successor isn't committed yet stay put and wait for a later
+        # cycle (dream apply drains the headless/deferred backlog).
+        pred_ids: list[str] = []
+        for _dec, _res in judged:
+            sup = _dec.frontmatter.get("supersedes") or []
+            if isinstance(sup, str):
+                sup = [sup]
+            pred_ids.extend(str(s) for s in sup if s)
+        if pred_ids:
+            pred_judged = rejudge_supersession_predecessors(cfg, pred_ids)
+            result.decisions_judged += len(pred_judged)
+            for _dec, res in pred_judged:
+                verdict = res.get("verdict", "unknown")
+                result.verdicts[verdict] = result.verdicts.get(verdict, 0) + 1
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"judge: {e}")
+    finally:
+        result.timings["judge"] = time.perf_counter() - _t
+
+    # 3.5 citation lint ---------------------------------------------------
+    try:
+        _lint_citations(cfg, judged, result)
+    except Exception as e:  # noqa: BLE001 — a lint never fails a wrap
+        result.warnings.append(f"citation lint: {e}")
+
+    # 4. refresh DECISIONS + BACKLOG landing docs -------------------------
+    # Two cheap SQL renders, not collapsible: ``write_landing_docs`` has no
+    # project-scoped ``all`` value — ``docs="all"`` would wrongly regenerate
+    # STATE.md (LLM-owned) and THEMES.md (global). Timings confirm sub-second.
+    _t = time.perf_counter()
+    if project:
+        try:
+            from thinkweave.synthesis.landing import write_landing_docs
+
+            for doc in ("decisions", "backlog"):
+                written = write_landing_docs(cfg, project, docs=doc)
+                result.landing_written.extend(sorted(written.keys()))
+        except Exception as e:  # noqa: BLE001
+            result.errors.append(f"landing: {e}")
+    else:
+        result.errors.append("landing: skipped (no project)")
+    result.timings["landing"] = time.perf_counter() - _t
+
+    # 5. concept-drift advisory (read-only) -------------------------------
+    _t = time.perf_counter()
+    try:
+        from thinkweave.operations.concepts import drift as concept_drift
+
+        d = concept_drift(cfg, project=project)
+        result.drift_text = (d.get("text") or "").strip()
+    except Exception as e:  # noqa: BLE001
+        result.errors.append(f"drift: {e}")
+    finally:
+        result.timings["drift"] = time.perf_counter() - _t
+
+    # 6. silent-failure rail (2026-10-10) --------------------------------
+    # A passive Stop-hook marks the live session processed BEFORE an explicit
+    # /wrap runs. A model that then treats the ``already processed`` no-op as
+    # final (instead of re-running weave_extract with force=true) writes
+    # NOTHING — and the old tail reindexed 0 notes and exited 0, so the loss
+    # was silent. Fire loudly when the session changed files (work_evidence)
+    # but zero derived notes landed. Pure Q&A wraps have no work evidence and
+    # stay green; ``allow_empty`` downgrades the error for a deliberate
+    # nothing-to-capture wrap.
+    try:
+        processed, work_evidence, landed = _wrap_landing_gap(cfg, session_id, chain)
+        result.work_evidence = work_evidence
+        result.derived_landed = landed
+        if work_evidence and landed == 0:
+            gap_msg = (
+                "no insights/decisions/todos landed for a session that changed "
+                "files (work_evidence=True, derived_landed=0) — /wrap most "
+                "likely skipped weave_extract on an 'already processed' no-op "
+                "instead of re-running with force=true; this session's "
+                "knowledge was NOT captured. Re-run weave_extract with "
+                "force=true (pass --allow-empty only if there was genuinely "
+                "nothing to record)."
+            )
+            if allow_empty:
+                result.warnings.append(gap_msg)
+            else:
+                result.errors.append(gap_msg)
+        if work_evidence and not (tasks or {}).get("declared"):
+            result.warnings.append(
+                "the session changed files but declared no task — its work "
+                "lands on none; pass --tasks to record where it belongs"
+            )
+    except Exception as e:  # noqa: BLE001 — a broken rail must not mask the rest
+        result.warnings.append(f"landing-gap check: {e}")
+
+    return result
 
 
 def _resolve_session_chain(
@@ -219,100 +484,6 @@ def _resolve_session_chain(
     return []
 
 
-def _chain_note_ids(
-    chain: list[tuple[Path, Path | None, dict | None]], session_id: str
-) -> list[str]:
-    """Note ids of every chain folder, primary first — the notes whose
-    prompts need reprojection after verdicts land (#181: for a force-minted
-    ses- id the primary can be the SIBLING note owning the source-UUID
-    folder; #180: verdicts land across the whole segment chain). Falls back
-    to the input id unchanged when nothing resolves."""
-    out: list[str] = []
-    for _ev, _d, fm in chain:
-        nid = str((fm or {}).get("id") or "")
-        if nid and nid not in out:
-            out.append(nid)
-    return out or [session_id]
-
-
-def _record_segments(
-    chain: list[tuple[Path, Path | None, dict | None]],
-    result: WrapFinalizeResult,
-) -> None:
-    """Durable chain record (#180): once a wrap sees more than one segment
-    UUID, the primary session note gains ``segments: [uuid, ...]`` in
-    chronological order — by each segment's earliest prompt timestamp, NOT
-    file mtime: the verdict appends that just ran bumped the labeled
-    files' mtimes to now (and mtime isn't durable across clone/restore —
-    the same argument the resolver's ranking makes). Promptless segments
-    sort last. Markdown-truth for later consumers — the task-trace epic
-    (#184) keys subagent attribution on the same list — and honoured by
-    the resolver, so the chain survives re-wraps even if a segment's
-    ``logical_session`` stamp is lost.
-
-    The write UNIONS with the UUIDs already stored on the primary: the
-    chain this join resolved can be narrower than the session chain (a
-    sibling drops out once its own real wrap runs), and the record
-    documents the chain, not one join's span. Merge rule (deterministic):
-    members seen this run keep this run's timestamp order; stored-only
-    members keep their stored position relative to the shared members
-    (inserted after their nearest stored predecessor that survives)."""
-    if len(chain) < 2:
-        return
-    primary = chain[0][1]
-    if primary is None or not (primary / "session.md").exists():
-        return
-    from thinkweave.core.events import extract_prompts
-    from thinkweave.core.vault import parse_frontmatter, render_frontmatter
-
-    stamped: list[tuple[float, str]] = []
-    for ev, d, fm in chain:
-        # Raw buffer files are named by their UUID; a folder without a
-        # resolvable UUID never puts a placeholder in the durable list.
-        sid = (
-            ev.stem
-            if d is None
-            else str((fm or {}).get("source_session") or "")
-        )
-        if not sid:
-            continue
-        prompt_ts = [
-            p.ts for p in extract_prompts(ev) if p.ts != datetime.min
-        ]
-        key = min(prompt_ts).timestamp() if prompt_ts else float("inf")
-        stamped.append((key, sid))
-    stamped.sort()
-    ordered = list(dict.fromkeys(sid for _ts, sid in stamped))
-    # Gate on distinct UUIDs, not file count: the #181 force-mint shape is
-    # two folders over ONE source UUID — not a multi-segment session.
-    if len(ordered) < 2:
-        return
-    sm = primary / "session.md"
-    fm, body = parse_frontmatter(sm.read_text(encoding="utf-8"))
-    # Union with the stored record (see docstring): walk the stored list
-    # with an insert cursor — a shared member moves the cursor behind
-    # itself, a stored-only member is inserted at the cursor.
-    stored = fm.get("segments") or []
-    pos = 0
-    for sid in (str(s) for s in stored if s):
-        if sid in ordered:
-            pos = ordered.index(sid) + 1
-        else:
-            ordered.insert(pos, sid)
-            pos += 1
-    # Direct frontmatter write, controlled-merge semantics: update_note's
-    # blind union-merge would freeze a previously stored (possibly wrong)
-    # order forever — shared members must take the recomputed chronology.
-    if fm.get("segments") != ordered:
-        fm["segments"] = ordered
-        sm.write_text(
-            render_frontmatter(fm) + "\n\n" + body,
-            encoding="utf-8",
-            newline="\n",
-        )
-    result.segments = ordered
-
-
 def _source_session_of(cfg: Config, session_note_id: str) -> str:
     """Inverse of :func:`_session_note_id`: map a ``ses-…`` note id to the
     ``source_session`` its decisions are stamped with (the extract input).
@@ -337,102 +508,19 @@ def _source_session_of(cfg: Config, session_note_id: str) -> str:
     return str(fm.get("source_session") or "")
 
 
-def _wrap_landing_gap(
-    cfg: Config, session_id: str, chain: list[tuple[Path, Path | None, dict | None]]
-) -> tuple[bool, bool, int]:
-    """Return ``(processed, work_evidence, derived_landed)`` for a wrapped session.
+# The registers the prompt-verdict rail accepts. ``correction`` /
+# ``confirmation`` persist as frozen-shape ``feedback`` events (the human
+# reward channel); ``probe`` persists as a sibling ``probe`` event that
+# ``extract_prompts`` joins back onto the prompt as
+# ``classification="probe"`` (probe pressure, /discover, the prompts
+# projection). ``neutral`` is not an event — the wrap LLM only lists the
+# non-neutral verdicts.
+_VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 
-    Powers the silent-failure rail. A passive Stop-hook can leave a session
-    marked ``processed`` while an explicit ``/wrap`` extraction silently no-ops
-    (the model saw ``already processed`` and skipped ``force=true``). The old
-    tail hid that: it reindexed 0 notes and exited 0.
-
-    - ``processed``: the session note carries ``processed: true``.
-    - ``work_evidence``: the note carries non-empty ``commits`` or
-      ``files_touched``, or the session's event streams record a file write
-      or a commit (a mid-session wrap, before Stop fills the note) — real
-      file/code work. A pure Q&A wrap has none, so it never trips the rail.
-    - ``derived_landed``: notes that landed with a ``derived_from`` edge onto
-      this session (insights + decisions + todos all carry it). ``-1`` when the
-      index is unreadable — the caller treats that as "do not fire."
-    """
-    from thinkweave.retrieval.search import Search
-
-    fm: dict = {}
-    for _ev, _d, f in chain:
-        if f:
-            fm = f
-            break
-
-    landed = -1
-    try:
-        s = Search(config=cfg)
-        try:
-            row = s.get_note_by_id(session_id)
-            if row is None:
-                # Caller passed a raw harness UUID — find the note stamped with
-                # it as source_session (extract keys derived edges off that).
-                found = s.list_notes(
-                    note_type="session", source_sessions=[session_id], limit=1
-                )
-                if found:
-                    row = s.get_note_by_id(found[0].id)
-            if row is not None:
-                try:
-                    note_fm = json.loads(row["frontmatter"] or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    note_fm = {}
-                # The derived index is authoritative for commits / files_touched
-                # (the chain frontmatter can be sparse in synthetic callers).
-                for k in (
-                    "processed", "commits", "files_touched",
-                    "id", "source_session",
-                ):
-                    if k in note_fm:
-                        fm[k] = note_fm[k]
-
-            ids: set[str] = {session_id}
-            for key in ("id", "source_session"):
-                v = fm.get(key)
-                if v:
-                    ids.add(str(v))
-            ph = ",".join("?" for _ in ids)
-            cur = s.db.execute(
-                "SELECT COUNT(DISTINCT source) FROM edges "
-                f"WHERE edge_type = 'derived_from' AND target IN ({ph})",
-                list(ids),
-            ).fetchone()
-            landed = int(cur[0]) if cur else 0
-        finally:
-            s.close()
-    except (FileNotFoundError, sqlite3.Error):
-        landed = -1
-
-    processed = bool(fm.get("processed"))
-    work_evidence = (bool(fm.get("commits")) or bool(fm.get("files_touched"))
-                     or _streams_show_work(ev for ev, _d, _f in chain))
-    return processed, work_evidence, landed
-
-
-_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
-
-
-def _streams_show_work(streams) -> bool:
-    """True when a session's event streams record a file write or a commit.
-
-    The note's ``files_touched``/``commits`` are filled only by the Stop-time
-    extract, so a ``/wrap`` mid-session reads them empty; the streams already
-    hold the hook's tool events.
-    """
-    from thinkweave.core.events import iter_jsonl
-
-    for path in streams:
-        if not path or not Path(path).exists():
-            continue
-        for ev in iter_jsonl(Path(path)):
-            if ev.get("tool") in _WRITE_TOOLS or ev.get("commit"):
-                return True
-    return False
+#: Characters of prompted text a feedback or probe event carries beside its
+#: 120-character ``prompt_ref`` join key. Both writers of that shape —
+#: ``wrap-finalize --verdicts`` and ``record_probe`` — cap at it.
+FEEDBACK_TEXT_CHARS = 4000
 
 
 def _append_verdict_events(
@@ -609,270 +697,239 @@ def _append_verdict_events(
         result.verdicts_written += len(file_events)
 
 
-def finalize_wrap(
-    cfg: Config,
-    *,
-    session_id: str,
-    project: str = "",
-    prune: bool = True,
-    verdicts: list[dict] | None = None,
-    tasks: dict | None = None,
-    allow_empty: bool = False,
-) -> WrapFinalizeResult:
-    """Run the deterministic post-extraction chain in one process.
+def _record_segments(
+    chain: list[tuple[Path, Path | None, dict | None]],
+    result: WrapFinalizeResult,
+) -> None:
+    """Durable chain record (#180): once a wrap sees more than one segment
+    UUID, the primary session note gains ``segments: [uuid, ...]`` in
+    chronological order — by each segment's earliest prompt timestamp, NOT
+    file mtime: the verdict appends that just ran bumped the labeled
+    files' mtimes to now (and mtime isn't durable across clone/restore —
+    the same argument the resolver's ranking makes). Promptless segments
+    sort last. Markdown-truth for later consumers — the task-trace epic
+    (#184) keys subagent attribution on the same list — and honoured by
+    the resolver, so the chain survives re-wraps even if a segment's
+    ``logical_session`` stamp is lost.
 
-    Order:
+    The write UNIONS with the UUIDs already stored on the primary: the
+    chain this join resolved can be narrower than the session chain (a
+    sibling drops out once its own real wrap runs), and the record
+    documents the chain, not one join's span. Merge rule (deterministic):
+    members seen this run keep this run's timestamp order; stored-only
+    members keep their stored position relative to the shared members
+    (inserted after their nearest stored predecessor that survives)."""
+    if len(chain) < 2:
+        return
+    primary = chain[0][1]
+    if primary is None or not (primary / "session.md").exists():
+        return
+    from thinkweave.core.events import extract_prompts
+    from thinkweave.core.vault import parse_frontmatter, render_frontmatter
 
-    0. **verdicts** — append the wrap LLM's prompt verdicts (feedback
-       registers + probe labels) as events (:func:`_append_verdict_events`).
-       Runs first so the events land before any archival/indexing the
-       later steps trigger.
-    0.5. **tasks** — the wrap task pass
-       (:func:`thinkweave.operations.tasks.apply_declaration`) over the
-       declaration file the wrap LLM composed. Before the reindex, so the
-       task notes it writes land in the same index pass.
-    1. **prune** orphan session folders (conservative GC; ``session_id`` is
-       protected). Done first so the reindex in step 2 also drops their rows.
-    2. **index** — incremental rebuild. Picks up the notes ``weave_extract`` just
-       wrote and removes any pruned folders' rows in the same pass.
-    3. **judge** — ``judge_and_writeback(session_id=...)``: verdict + status
-       onto each new decision, batched, re-indexing touched files.
-    4. **landing** — regenerate DECISIONS.md + BACKLOG.md (cheap; always done).
-       STATE.md is *not* touched — refreshing it is an LLM judgment call the
-       wrap skill makes, not this deterministic tail.
-    5. **drift** — read-only concept-drift advisory; surfaced in the result,
-       never acted on here.
-    6. **silent-failure rail** — a session that changed files but landed zero
-       derived notes is a broken ``/wrap`` (the extraction no-op'd). Records an
-       error (exit 1) unless ``allow_empty`` downgrades it to a warning. A
-       session that changed files but declared no task is warned.
-
-    Every step is wrapped: a failure in one is recorded in ``errors`` and the
-    rest still run. Returns a :class:`WrapFinalizeResult`.
-    """
-    result = WrapFinalizeResult(session_id=session_id, project=project)
-
-    # Resolve the segment chain ONCE — the verdict join, segments record,
-    # prune shield and reprojection all consume the same resolution (it
-    # re-reads every candidate's events per call, so 4 calls was 4 scans).
-    try:
-        chain = _resolve_session_chain(cfg, session_id, project)
-    except Exception as e:  # noqa: BLE001
-        chain = []
-        result.errors.append(f"resolve: {e}")
-
-    # 0. prompt verdicts → events (#101) -----------------------------------
-    if verdicts:
-        _t = time.perf_counter()
-        try:
-            _append_verdict_events(session_id, verdicts, result, chain)
-        except Exception as e:  # noqa: BLE001 — best-effort labeler
-            result.errors.append(f"verdicts: {e}")
-        # ponytail: the segments: record only lands on verdict-bearing
-        # wraps — a verdict-less multi-segment wrap leaves no durable
-        # chain. Upgrade path: hoist _record_segments out of this
-        # branch once a verdict-less consumer (task-trace) needs it.
-        try:
-            _record_segments(chain, result)
-        except Exception as e:  # noqa: BLE001 — bookkeeping must not
-            # flip the exit code after successful verdict writes
-            result.warnings.append(f"segments: {e}")
-        result.timings["verdicts"] = time.perf_counter() - _t
-
-    # 0.5. wrap task pass -------------------------------------------------
-    if tasks is not None:
-        _t = time.perf_counter()
-        try:
-            from thinkweave.core.buffer import buffer_path
-            from thinkweave.operations.tasks import apply_declaration
-
-            streams = [ev for ev, _d, _fm in chain] or [
-                buffer_path(cfg.weave_dir, session_id)
-            ]
-            folders = [d for _ev, d, _fm in chain if d is not None]
-            pass_result = apply_declaration(
-                cfg,
-                tasks,
-                session_key=session_id,
-                project=project,
-                streams=streams,
-                folders=folders,
-            )
-            result.tasks = pass_result.as_dict()
-            result.errors.extend(f"tasks: {e}" for e in pass_result.errors)
-            result.warnings.extend(f"tasks: {w}" for w in pass_result.warnings)
-        except Exception as e:  # noqa: BLE001
-            result.errors.append(f"tasks: {e}")
-        finally:
-            result.timings["tasks"] = time.perf_counter() - _t
-
-    # 1. prune orphan session folders -------------------------------------
-    if prune:
-        _t = time.perf_counter()
-        try:
-            from thinkweave.operations.prune import find_orphans, prune_orphans
-
-            # #181/#180: shield every folder the chain resolved to —
-            # verdicts were just written there, and their id fields may
-            # name a sibling note (force-minted ses- id) or an earlier
-            # compaction segment the caller's id doesn't match.
-            chain_dirs = {d for _ev, d, _fm in chain if d is not None}
-            orphans = [
-                o
-                for o in find_orphans(
-                    cfg, project=project, current_session_id=session_id
-                )
-                if o not in chain_dirs
-            ]
-            if orphans:
-                pr = prune_orphans(orphans, dry_run=False)
-                result.orphans_pruned = pr.deleted
-                result.orphans_freed_bytes = pr.freed_bytes
-        except Exception as e:  # noqa: BLE001 — best-effort GC
-            result.errors.append(f"prune: {e}")
-        finally:
-            result.timings["prune"] = time.perf_counter() - _t
-
-    # 2. reindex ----------------------------------------------------------
-    _t = time.perf_counter()
-    try:
-        from thinkweave.core.indexer import Indexer
-        from thinkweave.core.vault import VaultManager
-
-        VaultManager(config=cfg).ensure_dirs()
-        idx = Indexer(config=cfg)
-        try:
-            stats = idx.rebuild(full=False)
-        finally:
-            idx.close()
-        result.indexed = stats.get("indexed", 0)
-        result.removed = stats.get("removed", 0)
-        result.edges = stats.get("edges", 0)
-        # Verdicts landed in events.jsonl, not session.md — the incremental
-        # rebuild above won't re-project this session's prompts on its own.
-        if verdicts:
-            idx = Indexer(config=cfg)
-            try:
-                result.prompts_reprojected = sum(
-                    idx.reproject_session_prompts(nid)
-                    for nid in _chain_note_ids(chain, session_id)
-                )
-            finally:
-                idx.close()
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"index: {e}")
-    finally:
-        result.timings["index"] = time.perf_counter() - _t
-
-    # 3. judge extracted decisions + write back verdict/status ------------
-    _t = time.perf_counter()
-    try:
-        from thinkweave.operations.decisions import (
-            judge_and_writeback,
-            rejudge_supersession_predecessors,
+    stamped: list[tuple[float, str]] = []
+    for ev, d, fm in chain:
+        # Raw buffer files are named by their UUID; a folder without a
+        # resolvable UUID never puts a placeholder in the durable list.
+        sid = (
+            ev.stem
+            if d is None
+            else str((fm or {}).get("source_session") or "")
         )
+        if not sid:
+            continue
+        prompt_ts = [
+            p.ts for p in extract_prompts(ev) if p.ts != datetime.min
+        ]
+        key = min(prompt_ts).timestamp() if prompt_ts else float("inf")
+        stamped.append((key, sid))
+    stamped.sort()
+    ordered = list(dict.fromkeys(sid for _ts, sid in stamped))
+    # Gate on distinct UUIDs, not file count: the #181 force-mint shape is
+    # two folders over ONE source UUID — not a multi-segment session.
+    if len(ordered) < 2:
+        return
+    sm = primary / "session.md"
+    fm, body = parse_frontmatter(sm.read_text(encoding="utf-8"))
+    # Union with the stored record (see docstring): walk the stored list
+    # with an insert cursor — a shared member moves the cursor behind
+    # itself, a stored-only member is inserted at the cursor.
+    stored = fm.get("segments") or []
+    pos = 0
+    for sid in (str(s) for s in stored if s):
+        if sid in ordered:
+            pos = ordered.index(sid) + 1
+        else:
+            ordered.insert(pos, sid)
+            pos += 1
+    # Direct frontmatter write, controlled-merge semantics: update_note's
+    # blind union-merge would freeze a previously stored (possibly wrong)
+    # order forever — shared members must take the recomputed chronology.
+    if fm.get("segments") != ordered:
+        fm["segments"] = ordered
+        sm.write_text(
+            render_frontmatter(fm) + "\n\n" + body,
+            encoding="utf-8",
+            newline="\n",
+        )
+    result.segments = ordered
 
-        judged = judge_and_writeback(cfg, session_id=session_id)
-        if not judged and session_id.startswith("ses-"):
-            # Decisions written before the extract path stamped the note id
-            # carry the harness UUID instead. Fall back to that source id so
-            # the judge still finds them (the repair migration is separate).
-            src = _source_session_of(cfg, session_id)
-            if src and src != session_id:
-                judged = judge_and_writeback(cfg, session_id=src)
-        result.decisions_judged = len(judged)
-        for _dec, res in judged:
-            verdict = res.get("verdict", "unknown")
-            result.verdicts[verdict] = result.verdicts.get(verdict, 0) + 1
 
-        # Evidence-gated supersession flip. weave_extract only *enqueues* a
-        # predecessor when a new decision declares ``supersedes: [dec-X]`` —
-        # it never flips status. The wrap worker holds this session's commits,
-        # so re-judge every such predecessor now: blame survival decides
-        # whether the predecessor's lines were actually replaced (→
-        # ``superseded``) or still co-contribute (→ ``kept``). Predecessors
-        # whose successor isn't committed yet stay put and wait for a later
-        # cycle (dream apply drains the headless/deferred backlog).
-        pred_ids: list[str] = []
-        for _dec, _res in judged:
-            sup = _dec.frontmatter.get("supersedes") or []
-            if isinstance(sup, str):
-                sup = [sup]
-            pred_ids.extend(str(s) for s in sup if s)
-        if pred_ids:
-            pred_judged = rejudge_supersession_predecessors(cfg, pred_ids)
-            result.decisions_judged += len(pred_judged)
-            for _dec, res in pred_judged:
-                verdict = res.get("verdict", "unknown")
-                result.verdicts[verdict] = result.verdicts.get(verdict, 0) + 1
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"judge: {e}")
+def _chain_note_ids(
+    chain: list[tuple[Path, Path | None, dict | None]], session_id: str
+) -> list[str]:
+    """Note ids of every chain folder, primary first — the notes whose
+    prompts need reprojection after verdicts land (#181: for a force-minted
+    ses- id the primary can be the SIBLING note owning the source-UUID
+    folder; #180: verdicts land across the whole segment chain). Falls back
+    to the input id unchanged when nothing resolves."""
+    out: list[str] = []
+    for _ev, _d, fm in chain:
+        nid = str((fm or {}).get("id") or "")
+        if nid and nid not in out:
+            out.append(nid)
+    return out or [session_id]
+
+
+_SERVED_LINK_LIMIT = 8
+
+
+def _lint_citations(cfg: Config, judged: list, result: WrapFinalizeResult) -> None:
+    """Warn on decisions this wrap minted whose body cites no note id.
+
+    The RLVR export counts body wikilinks that resolve to a note id
+    (:func:`thinkweave.operations.rlvr_export.extract_cited_ids`), so a body
+    that links only files carries no citation. Which served note the
+    reasoning used is the wrap's call; this rail only says the citation is
+    missing and spells out the notes the export would count — the same
+    ``served_rows`` lookup, keyed by the decision's own session — as
+    ready-made ``[[path|id]]`` links.
+    """
+    from thinkweave.core.indexer import Indexer
+    from thinkweave.operations.rlvr_export import extract_cited_ids, served_rows
+    from thinkweave.synthesis.hub import build_id_path_map, reflink
+
+    uncited = [dec for dec, _res in judged if not extract_cited_ids(dec.body)]
+    if not uncited:
+        return
+    for dec in uncited:
+        result.warnings.append(
+            f"{dec.id} ({dec.title}) cites no note id — link every note its "
+            "reasoning used as [[path|id]]; the served ids are in the "
+            "session's retrieval_log.jsonl"
+        )
+    sessions = {str(d.frontmatter.get("source_session") or "") for d in uncited}
+    idx = Indexer(config=cfg)
+    try:
+        served = sorted({
+            r["note_id"] for sid in sessions if sid for r in served_rows(idx, sid)
+        })
+        idmap = build_id_path_map(idx.db)
     finally:
-        result.timings["judge"] = time.perf_counter() - _t
+        idx.close()
+    if not served:
+        return
+    links = [reflink(nid, idmap) for nid in served[:_SERVED_LINK_LIMIT]]
+    if len(served) > _SERVED_LINK_LIMIT:
+        links.append(f"(+{len(served) - _SERVED_LINK_LIMIT} more)")
+    result.warnings.append(
+        "served to this session, ready to cite: " + ", ".join(links)
+    )
 
-    # 4. refresh DECISIONS + BACKLOG landing docs -------------------------
-    # Two cheap SQL renders, not collapsible: ``write_landing_docs`` has no
-    # project-scoped ``all`` value — ``docs="all"`` would wrongly regenerate
-    # STATE.md (LLM-owned) and THEMES.md (global). Timings confirm sub-second.
-    _t = time.perf_counter()
-    if project:
+
+def _wrap_landing_gap(
+    cfg: Config, session_id: str, chain: list[tuple[Path, Path | None, dict | None]]
+) -> tuple[bool, bool, int]:
+    """Return ``(processed, work_evidence, derived_landed)`` for a wrapped session.
+
+    Powers the silent-failure rail. A passive Stop-hook can leave a session
+    marked ``processed`` while an explicit ``/wrap`` extraction silently no-ops
+    (the model saw ``already processed`` and skipped ``force=true``). The old
+    tail hid that: it reindexed 0 notes and exited 0.
+
+    - ``processed``: the session note carries ``processed: true``.
+    - ``work_evidence``: the note carries non-empty ``commits`` or
+      ``files_touched``, or the session's event streams record a file write
+      or a commit (a mid-session wrap, before Stop fills the note) — real
+      file/code work. A pure Q&A wrap has none, so it never trips the rail.
+    - ``derived_landed``: notes that landed with a ``derived_from`` edge onto
+      this session (insights + decisions + todos all carry it). ``-1`` when the
+      index is unreadable — the caller treats that as "do not fire."
+    """
+    from thinkweave.retrieval.search import Search
+
+    fm: dict = {}
+    for _ev, _d, f in chain:
+        if f:
+            fm = f
+            break
+
+    landed = -1
+    try:
+        s = Search(config=cfg)
         try:
-            from thinkweave.synthesis.landing import write_landing_docs
+            row = s.get_note_by_id(session_id)
+            if row is None:
+                # Caller passed a raw harness UUID — find the note stamped with
+                # it as source_session (extract keys derived edges off that).
+                found = s.list_notes(
+                    note_type="session", source_sessions=[session_id], limit=1
+                )
+                if found:
+                    row = s.get_note_by_id(found[0].id)
+            if row is not None:
+                try:
+                    note_fm = json.loads(row["frontmatter"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    note_fm = {}
+                # The derived index is authoritative for commits / files_touched
+                # (the chain frontmatter can be sparse in synthetic callers).
+                for k in (
+                    "processed", "commits", "files_touched",
+                    "id", "source_session",
+                ):
+                    if k in note_fm:
+                        fm[k] = note_fm[k]
 
-            for doc in ("decisions", "backlog"):
-                written = write_landing_docs(cfg, project, docs=doc)
-                result.landing_written.extend(sorted(written.keys()))
-        except Exception as e:  # noqa: BLE001
-            result.errors.append(f"landing: {e}")
-    else:
-        result.errors.append("landing: skipped (no project)")
-    result.timings["landing"] = time.perf_counter() - _t
+            ids: set[str] = {session_id}
+            for key in ("id", "source_session"):
+                v = fm.get(key)
+                if v:
+                    ids.add(str(v))
+            ph = ",".join("?" for _ in ids)
+            cur = s.db.execute(
+                "SELECT COUNT(DISTINCT source) FROM edges "
+                f"WHERE edge_type = 'derived_from' AND target IN ({ph})",
+                list(ids),
+            ).fetchone()
+            landed = int(cur[0]) if cur else 0
+        finally:
+            s.close()
+    except (FileNotFoundError, sqlite3.Error):
+        landed = -1
 
-    # 5. concept-drift advisory (read-only) -------------------------------
-    _t = time.perf_counter()
-    try:
-        from thinkweave.operations.concepts import drift as concept_drift
+    processed = bool(fm.get("processed"))
+    work_evidence = (bool(fm.get("commits")) or bool(fm.get("files_touched"))
+                     or _streams_show_work(ev for ev, _d, _f in chain))
+    return processed, work_evidence, landed
 
-        d = concept_drift(cfg, project=project)
-        result.drift_text = (d.get("text") or "").strip()
-    except Exception as e:  # noqa: BLE001
-        result.errors.append(f"drift: {e}")
-    finally:
-        result.timings["drift"] = time.perf_counter() - _t
 
-    # 6. silent-failure rail (2026-10-10) --------------------------------
-    # A passive Stop-hook marks the live session processed BEFORE an explicit
-    # /wrap runs. A model that then treats the ``already processed`` no-op as
-    # final (instead of re-running weave_extract with force=true) writes
-    # NOTHING — and the old tail reindexed 0 notes and exited 0, so the loss
-    # was silent. Fire loudly when the session changed files (work_evidence)
-    # but zero derived notes landed. Pure Q&A wraps have no work evidence and
-    # stay green; ``allow_empty`` downgrades the error for a deliberate
-    # nothing-to-capture wrap.
-    try:
-        processed, work_evidence, landed = _wrap_landing_gap(cfg, session_id, chain)
-        result.work_evidence = work_evidence
-        result.derived_landed = landed
-        if work_evidence and landed == 0:
-            gap_msg = (
-                "no insights/decisions/todos landed for a session that changed "
-                "files (work_evidence=True, derived_landed=0) — /wrap most "
-                "likely skipped weave_extract on an 'already processed' no-op "
-                "instead of re-running with force=true; this session's "
-                "knowledge was NOT captured. Re-run weave_extract with "
-                "force=true (pass --allow-empty only if there was genuinely "
-                "nothing to record)."
-            )
-            if allow_empty:
-                result.warnings.append(gap_msg)
-            else:
-                result.errors.append(gap_msg)
-        if work_evidence and not (tasks or {}).get("declared"):
-            result.warnings.append(
-                "the session changed files but declared no task — its work "
-                "lands on none; pass --tasks to record where it belongs"
-            )
-    except Exception as e:  # noqa: BLE001 — a broken rail must not mask the rest
-        result.warnings.append(f"landing-gap check: {e}")
+_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 
-    return result
+
+def _streams_show_work(streams) -> bool:
+    """True when a session's event streams record a file write or a commit.
+
+    The note's ``files_touched``/``commits`` are filled only by the Stop-time
+    extract, so a ``/wrap`` mid-session reads them empty; the streams already
+    hold the hook's tool events.
+    """
+    from thinkweave.core.events import iter_jsonl
+
+    for path in streams:
+        if not path or not Path(path).exists():
+            continue
+        for ev in iter_jsonl(Path(path)):
+            if ev.get("tool") in _WRITE_TOOLS or ev.get("commit"):
+                return True
+    return False
