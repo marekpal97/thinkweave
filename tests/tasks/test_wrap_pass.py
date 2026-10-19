@@ -1367,6 +1367,44 @@ class TestLedgerMigration:
         assert len(round_lines(task_body(cfg, "tsk-0dd0dd00"))) == 1
         assert migrate_task_notes_to_ledger(cfg).rewritten == 0  # idempotent
 
+    def test_a_note_already_in_shape_is_neither_rewritten_nor_reindexed(
+        self, cfg: Config, monkeypatch
+    ):
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.operations.migrations import migrate_task_notes_to_ledger
+
+        self.seed_existing(cfg)
+        migrate_task_notes_to_ledger(cfg)
+        paths = sorted(cfg.vault_root.rglob("tsk-*.md"))
+        before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in paths}
+        opened: list[int] = []
+        original = Indexer.__init__
+
+        def counting(self, *a, **kw):
+            opened.append(1)
+            original(self, *a, **kw)
+
+        monkeypatch.setattr(Indexer, "__init__", counting)
+        assert migrate_task_notes_to_ledger(cfg).rewritten == 0
+        assert {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in paths} == before
+        assert opened == []  # nothing to reindex, so the index is never opened
+
+    def test_rewritten_notes_reindex_in_one_pass(self, cfg: Config, monkeypatch):
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.operations.migrations import migrate_task_notes_to_ledger
+
+        self.seed_existing(cfg)
+        opened: list[int] = []
+        original = Indexer.__init__
+
+        def counting(self, *a, **kw):
+            opened.append(1)
+            original(self, *a, **kw)
+
+        monkeypatch.setattr(Indexer, "__init__", counting)
+        assert migrate_task_notes_to_ledger(cfg).rewritten == 4
+        assert len(opened) == 1
+
     def test_a_note_split_by_a_multiline_asked_is_rejoined(self, cfg: Config):
         from thinkweave.operations.migrations import migrate_task_notes_to_ledger
 

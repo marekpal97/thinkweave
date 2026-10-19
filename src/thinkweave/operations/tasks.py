@@ -173,15 +173,26 @@ class Task:
     def to_frontmatter(self) -> dict:
         return {**self.frontmatter, "rounds": [r.to_dict() for r in self.rounds]}
 
-    def save(self, vm: VaultManager) -> list[str]:
-        """Validate, render the ledger body and write the note; returns what
-        the render could not resolve. A note that would not conform raises
-        ``ValueError`` and nothing is written."""
+    def render(self, cfg) -> tuple[str, list[str]]:
+        """The note text :meth:`save` writes, and what the ledger render could
+        not resolve. A task that would not conform raises ``ValueError``."""
         fm = self.to_frontmatter()
         errors = validate_task_note(fm)
         if errors:
             raise ValueError(f"{self.id} does not conform: " + "; ".join(errors))
+        warnings: list[str] = []
+        body = _ledger_body(cfg, self.rounds, warnings)
+        return render_frontmatter(fm) + "\n\n" + body, warnings
+
+    def save(self, vm: VaultManager) -> list[str]:
+        """Validate, render the ledger body, write the note and index it;
+        returns what the render could not resolve. A note that would not
+        conform raises ``ValueError`` and nothing is written."""
         if self.path is None:
+            fm = self.to_frontmatter()
+            errors = validate_task_note(fm)
+            if errors:
+                raise ValueError(f"{self.id} does not conform: " + "; ".join(errors))
             vm.ensure_dirs()
             # Filed by the task id itself, so no harness value ever reaches
             # a filename; the human title lives in frontmatter.
@@ -194,12 +205,8 @@ class Task:
                 note_id=self.id,
             )
             self.frontmatter = Task.load(self.path).frontmatter
-            fm = self.to_frontmatter()
-        warnings: list[str] = []
-        body = _ledger_body(vm.config, self.rounds, warnings)
-        self.path.write_text(
-            render_frontmatter(fm) + "\n\n" + body, encoding="utf-8", newline="\n"
-        )
+        text, warnings = self.render(vm.config)
+        self.path.write_text(text, encoding="utf-8", newline="\n")
         _index_now(vm, self.path)
         return warnings
 
