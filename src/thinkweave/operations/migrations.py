@@ -76,17 +76,19 @@ def migrate_task_notes_to_ledger(config: Config) -> LedgerMigration:
     normalized tracker ref, the unwritten ``outcome`` field goes, and the
     body is re-rendered from the rounds. A quoted value an older writer
     split across raw lines is rejoined first. Work-grain tasks that share
-    one ``asked`` are reported, not changed. Idempotent. Returns the count
-    of notes rewritten, and every shared ``asked``.
+    one ``asked`` are reported, not changed. A note the shape already fits
+    is left untouched; the rewritten ones reindex together at the end.
+    Idempotent. Returns the count of notes rewritten, and every shared
+    ``asked``.
     """
     from dataclasses import replace
 
+    from thinkweave.core.indexer import Indexer
     from thinkweave.core.task_contract import normalize_tracker_ref
     from thinkweave.operations.tasks import Task, current_repo
 
     repo = current_repo()
-    vm = VaultManager(config)
-    changed = 0
+    rewritten: list[Path] = []
     by_ask: dict[str, list[str]] = {}
     for path in config.vault_root.rglob("tsk-*.md"):
         before = path.read_text(encoding="utf-8")
@@ -103,14 +105,22 @@ def migrate_task_notes_to_ledger(config: Config) -> LedgerMigration:
             ]
         if fm.get("asked"):
             task.frontmatter["asked"] = normalize_tracker_ref(str(fm["asked"]), repo)
-        task.save(vm)
-        changed += path.read_text(encoding="utf-8") != before
+        text, _ = task.render(config)
+        if text != before:
+            path.write_text(text, encoding="utf-8", newline="\n")
+            rewritten.append(path)
         if task.grain == "work" and task.frontmatter.get("asked"):
             by_ask.setdefault(str(task.frontmatter["asked"]), []).append(task.id)
+    if rewritten:
+        idx = Indexer(config=config)
+        try:
+            idx.index_paths(rewritten)
+        finally:
+            idx.close()
     shared = tuple(
         SharedAsk(asked, tuple(sorted(ids))) for asked, ids in by_ask.items() if len(ids) > 1
     )
-    return LedgerMigration(changed, shared)
+    return LedgerMigration(len(rewritten), shared)
 
 
 def _rejoin_split_scalars(text: str) -> str:
