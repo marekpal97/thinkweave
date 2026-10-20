@@ -101,6 +101,9 @@ export interface HookResponse {
   [key: string]: unknown;
 }
 
+/** Env var carrying the hook's spawn time (unix epoch ms) to the handler. */
+export const SPAWNED_AT_ENV = "THINKWEAVE_HOOK_SPAWNED_AT";
+
 /** Why a runHook call fell back to `{}`, for the onFailure channel. */
 export interface RunHookFailure {
   kind: "spawn-error" | "timeout" | "exit" | "bad-output";
@@ -171,8 +174,12 @@ export function runHook(
     let stdout = "";
     let stderr = "";
 
+    // The handler's hook budget runs from this spawn, not from its own first
+    // line: launcher + uv + python start-up is spent inside the harness's
+    // wait, so the stamp lets the handler count it (#329 follow-up).
     const child = spawn(opts.launcher, argv, {
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, [SPAWNED_AT_ENV]: String(Date.now()) },
     });
     // utf8 via StringDecoder: a multi-byte character straddling a 64KiB pipe
     // chunk must not decode as U+FFFD — JSON.parse would still succeed and

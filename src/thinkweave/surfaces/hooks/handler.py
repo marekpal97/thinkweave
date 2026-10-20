@@ -198,6 +198,28 @@ def _harness_id() -> str:
 _HOOK_BUDGET_MARGIN_SECONDS = 0.3
 
 
+#: Env var the shims set to the hook's spawn time (unix epoch ms).
+_SPAWNED_AT_ENV = "THINKWEAVE_HOOK_SPAWNED_AT"
+#: Longest pre-handler gap the spawn stamp may claim; a wilder value is a
+#: clock skew or a stale env, not a start-up cost.
+_MAX_SPAWN_LAG_SECONDS = 60.0
+
+
+def _hook_started() -> float:
+    """The budget clock's zero on the monotonic scale: the shim's spawn stamp
+    when it carries one (launcher + uv + python start-up then count against
+    the harness budget, as the harness itself counts them), else now."""
+    now = time.monotonic()
+    raw = os.environ.get(_SPAWNED_AT_ENV, "")
+    try:
+        lag = time.time() - float(raw) / 1000
+    except ValueError:
+        return now
+    if not 0 <= lag <= _MAX_SPAWN_LAG_SECONDS:
+        return now
+    return now - lag
+
+
 def _hook_budget_remaining(event: str, started: float) -> float | None:
     """Seconds left of the firing harness's budget for ``event`` (its
     profile's ``hook_budget_ms``) since ``started``, less the reply margin;
@@ -543,7 +565,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
     older heuristic ``probe`` tag flow. Never blocks the harness; persistence
     failures use its visible diagnostic channel.
     """
-    started = time.monotonic()
+    started = _hook_started()
     try:
         from thinkweave.core.config import load_config
 
@@ -581,8 +603,14 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         _record_base(cfg, session_id, now, cwd)
 
         # Eagerly create the session note too, so a buffer that begins
-        # with prompts (no Edit/Bash yet) still has a note to attach to.
-        _ensure_session(cfg, session_id, hook_input)
+        # with prompts (no Edit/Bash yet) still has a note to attach to. Its
+        # index write stops retrying once the harness budget is spent: the
+        # note is on disk either way, and the retrieval arm below still
+        # needs what is left of the wait.
+        _ensure_session(
+            cfg, session_id, hook_input,
+            deadline=_hook_budget_remaining("UserPromptSubmit", started),
+        )
         _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
 
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
@@ -951,19 +979,26 @@ _INDEX_ATTEMPT_BUSY_MS = 250
 _INDEX_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0)
 
 
-def _index_with_retry(cfg, path: Path, where: str) -> None:
+def _index_with_retry(
+    cfg, path: Path, where: str, *, deadline: float | None = None
+) -> None:
     """Index one note, retrying a locked index db with backoff.
 
     ``where`` names the hook site in the log (``"stop/index"``, …). A lock that
     outlasts the budget is logged and dropped: the note is on disk, its prompt
     survives in the buffer, and ``weave index --only-new`` heals the index. Any
     other failure raises to the caller.
+
+    ``deadline`` is the caller's remaining wall-clock budget in seconds; a
+    retry whose wait would land past it is dropped the same way, so a hook
+    the harness is timing never spends the ladder's full 7.5 s on one note.
     """
     import random
     import sqlite3
 
     from thinkweave.core.indexer import Indexer
 
+    begun = time.monotonic()
     attempts = len(_INDEX_RETRY_DELAYS_S) + 1
     for attempt in range(1, attempts + 1):
         idx = Indexer(config=cfg, busy_timeout_ms=_INDEX_ATTEMPT_BUSY_MS)
@@ -981,6 +1016,13 @@ def _index_with_retry(cfg, path: Path, where: str) -> None:
             # Processes that lost the same lock wake together, so the wait is
             # jittered down to half its length at most.
             delay = round(_INDEX_RETRY_DELAYS_S[attempt - 1] * (0.5 + random.random() / 2), 3)
+            if deadline is not None and (time.monotonic() - begun) + delay >= deadline:
+                _log_info(
+                    where,
+                    f"index write attempt {attempt} hit a locked db; "
+                    f"dropping with {deadline:.2f}s of hook budget left ({err})",
+                )
+                return
             _log_info(
                 where,
                 f"index write attempt {attempt} hit a locked db; "
@@ -991,8 +1033,13 @@ def _index_with_retry(cfg, path: Path, where: str) -> None:
             idx.close()
 
 
-def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
-    """Create session note on first event, index it once for MCP discoverability."""
+def _ensure_session(
+    cfg, session_id: str, hook_input: dict, *, deadline: float | None = None
+) -> None:
+    """Create session note on first event, index it once for MCP discoverability.
+
+    ``deadline`` bounds the index write's lock retries (see
+    :func:`_index_with_retry`); ``None`` lets the full ladder run."""
     if not session_id:
         return
 
@@ -1031,7 +1078,7 @@ def _ensure_session(cfg, session_id: str, hook_input: dict) -> None:
     )
 
     # Index once so MCP tools (weave_search) can find this session mid-conversation
-    _index_with_retry(cfg, session_path, "ensure-session/index")
+    _index_with_retry(cfg, session_path, "ensure-session/index", deadline=deadline)
 
 
 # Directory markers — matched anywhere in the path, since every file under

@@ -2927,6 +2927,44 @@ class TestIndexWriteLockRetry:
 
         path = handler_mod._find_session_note(vm, "lock-seg-b")
         assert path is not None and path.exists()
+
+    def test_index_retry_stops_at_the_hook_deadline(self, tmp_path: Path, monkeypatch):
+        """A hook the harness is timing drops the locked write once the next
+        wait would land past its budget — the note stays on disk, the ladder's
+        7.5 s is never spent inside a 2.5 s Pi hook."""
+        import threading
+        import time
+
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        cfg, vm = self._warmed_vault(tmp_path, monkeypatch)
+        ready, release = threading.Event(), threading.Event()
+        holder = threading.Thread(
+            target=_hold_index_write_lock,
+            args=(cfg.index_db, ready, release),
+            daemon=True,
+        )
+        holder.start()
+        assert ready.wait(10)
+        try:
+            begun = time.monotonic()
+            handler_mod._ensure_session(
+                cfg, "lock-seg-c",
+                {"session_id": "lock-seg-c", "cwd": str(tmp_path)},
+                deadline=0.1,
+            )
+            elapsed = time.monotonic() - begun
+        finally:
+            release.set()
+            holder.join(10)
+
+        # One busy-timeout attempt (0.25 s), then the drop; well under the
+        # first unscaled retry delay of the production ladder.
+        assert elapsed < 1.5, elapsed
+        log_text = (cfg.weave_dir / "hooks.log").read_text(encoding="utf-8")
+        assert "dropping with" in log_text
+        path = handler_mod._find_session_note(vm, "lock-seg-c")
+        assert path is not None and path.exists()
         note_id = vm.read_note(path).frontmatter["id"]
         assert self._indexed_ids(cfg, note_id) == 0
 
@@ -3229,3 +3267,24 @@ class TestRailLinks:
 
         assert "No rsi-rail repo configured" in capsys.readouterr().out
         assert not (home / ".codex").exists()
+    def test_the_shim_spawn_stamp_moves_the_clock_back(self, monkeypatch):
+        import time
+
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        monkeypatch.setattr(handler_mod, "_hook_harness", lambda: "pi")
+        # The shim spawned the launcher 1.5 s ago; that start-up is Pi's wait.
+        monkeypatch.setenv(handler_mod._SPAWNED_AT_ENV, str(int((time.time() - 1.5) * 1000)))
+        spent = handler_mod._hook_budget_remaining("UserPromptSubmit", handler_mod._hook_started())
+        assert 0.55 < spent <= 0.75
+
+    def test_a_bad_or_stale_spawn_stamp_is_ignored(self, monkeypatch):
+        import time
+
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
+        monkeypatch.setattr(handler_mod, "_hook_harness", lambda: "pi")
+        for raw in ("garbage", "", str(int((time.time() - 600) * 1000)), str(int((time.time() + 60) * 1000))):
+            monkeypatch.setenv(handler_mod._SPAWNED_AT_ENV, raw)
+            fresh = handler_mod._hook_budget_remaining("UserPromptSubmit", handler_mod._hook_started())
+            assert 2.1 < fresh <= 2.2, raw

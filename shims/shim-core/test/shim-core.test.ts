@@ -64,6 +64,20 @@ test("runHook spawns the launcher with the phase argv and payload on stdin", asy
   });
 });
 
+test("runHook stamps the spawn time into the launcher's environment", async () => {
+  const envEcho = fakeLauncher(
+    "env-echo",
+    `process.stdin.on("data", () => {});
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({ at: process.env.THINKWEAVE_HOOK_SPAWNED_AT }));
+});`,
+  );
+  const before = Date.now();
+  const res = (await runHook("UserPromptSubmit", {}, { launcher: envEcho })) as { at: string };
+  const at = Number(res.at);
+  assert.ok(at >= before && at <= Date.now(), `spawn stamp ${res.at} outside the call window`);
+});
+
 test("runHook appends --harness <id> when given (the handler reads its own argv)", async () => {
   const res = (await runHook("PostToolUse", {}, { launcher: echoBack, harness: "pi" })) as {
     argv?: string[];
