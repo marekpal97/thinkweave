@@ -473,6 +473,78 @@ def test_dispatch_unknown_tool_sentinel():
     assert "Unknown tool" in out[0].text
 
 
+class TestUnknownArguments:
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments", "unknown"),
+        [
+            ("weave_create", {"type": "note", "title": "t", "labels": ["x"]}, "labels"),
+            ("weave_update", {"id": "n-missing", "mystery": "x"}, "mystery"),
+            (
+                "weave_extract",
+                {"session_id": "ses-missing", "force": True, "mystery": "x"},
+                "mystery",
+            ),
+        ],
+    )
+    def test_unknown_args_are_named_and_rejected(
+        self, config: Config, tool_name: str, arguments: dict, unknown: str
+    ):
+        from thinkweave.surfaces.mcp.tools import dispatch
+
+        out = dispatch(config, tool_name, arguments)[0].text
+        assert f"{tool_name} rejected unknown argument(s)" in out
+        assert unknown in out
+        assert "No changes were made" in out
+
+    def test_extract_unknown_args_do_not_touch_processed_session(
+        self, config: Config, vault: VaultManager, indexer: Indexer
+    ):
+        from thinkweave.surfaces.mcp.tools import dispatch
+
+        path = vault.create_note(
+            NoteType.SESSION,
+            "Processed",
+            body="## Summary\n",
+            project="test",
+            extra_frontmatter={"processed": True, "processed_at": "2026-10-25"},
+        )
+        indexer.index_file(path)
+        session_id = vault.read_note(path).id
+        before = vault.read_note(path).frontmatter.copy()
+
+        out = dispatch(config, "weave_extract", {
+            "session_id": session_id,
+            "force": True,
+            "invented_parameter": "corrupt",
+        })[0].text
+
+        assert "invented_parameter" in out
+        assert vault.read_note(path).frontmatter == before
+
+
+class TestExtractEmpty:
+    def test_empty_extract_is_rejected_through_mcp(
+        self, config: Config, vault: VaultManager, indexer: Indexer
+    ):
+        from thinkweave.surfaces.mcp.tools import dispatch
+
+        path = vault.create_note(
+            NoteType.SESSION,
+            "Empty",
+            body="## Summary\n\n## Events\n",
+            project="test",
+            extra_frontmatter={"processed": False},
+        )
+        indexer.index_file(path)
+        session_id = vault.read_note(path).id
+
+        out = dispatch(config, "weave_extract", {"session_id": session_id})[0].text
+
+        assert "Empty extraction refused" in out
+        assert "allow_empty" in out
+        assert vault.read_note(path).frontmatter.get("processed") is False
+
+
 # --------------------------------------------------------------------------- #
 # advertised tool schemas
 # --------------------------------------------------------------------------- #
@@ -520,6 +592,14 @@ class TestTypeFilterSchema:
         """A bare ``{}`` passes the union check vacuously; require prose too."""
         prop = _schema_for(tool_name)["properties"]["type"]
         assert prop.get("description", "").strip(), f"{tool_name}.type needs a description"
+
+
+def test_extract_schema_advertises_allow_empty_default():
+    schema = _schema_for("weave_extract")
+    prop = schema["properties"]["allow_empty"]
+    assert prop["type"] == "boolean"
+    assert prop["default"] is False
+    assert schema["additionalProperties"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -575,14 +655,15 @@ class TestCreateTopLevelConcepts:
         landed = (fm.get("concepts") or []) + (fm.get("proposed_concepts") or [])
         assert sorted(landed) == ["alpha-term", "beta-term"]
 
-    def test_missing_concepts_and_unknown_keys_are_reported(self, config, indexer):
+    def test_unknown_args_are_rejected_before_create(self, config, indexer):
         from thinkweave.surfaces.mcp.tools import dispatch
 
         out = dispatch(config, "weave_create", {
             "type": "note", "title": "t", "project": "p", "labels": ["x"],
         })[0].text
-        assert "warning: no concepts attached" in out
-        assert "ignored unknown argument(s): labels" in out
+        assert "weave_create rejected unknown argument(s)" in out
+        assert "labels" in out
+        assert "No changes were made" in out
 
 
 class TestDispatchCoercion:

@@ -83,6 +83,58 @@ def _index(config: Config) -> None:
     idx.close()
 
 
+class TestEmptyExtraction:
+    def _session(self, config: Config, vault: VaultManager) -> tuple[Path, str]:
+        path = vault.create_note(
+            NoteType.SESSION,
+            "Empty extraction",
+            body="## Summary\n\n## Events\n",
+            project="t",
+            extra_frontmatter={"processed": False},
+        )
+        session_id = vault.read_note(path).id
+        _index(config)
+        return path, session_id
+
+    def test_empty_extract_refuses_without_allow_empty(
+        self, config: Config, vault: VaultManager
+    ):
+        path, session_id = self._session(config, vault)
+        before = vault.read_note(path)
+
+        out = extract_session(
+            config,
+            session_id=session_id,
+            summary="",
+            insights=[],
+            decisions=[],
+        )
+
+        assert "Empty extraction refused" in out.error
+        assert "allow_empty" in out.error
+        after = vault.read_note(path)
+        assert after.frontmatter.get("processed") is False
+        assert "processed_at" not in after.frontmatter
+        assert after.body == before.body
+
+    def test_empty_extract_can_be_explicitly_allowed(
+        self, config: Config, vault: VaultManager
+    ):
+        path, session_id = self._session(config, vault)
+
+        out = extract_session(
+            config,
+            session_id=session_id,
+            summary="",
+            insights=[],
+            decisions=[],
+            allow_empty=True,
+        )
+
+        assert out.error == ""
+        assert vault.read_note(path).frontmatter.get("processed") is True
+
+
 class TestSessionNoteIdSurfacing:
     def test_diverges_when_input_is_uuid(self, config: Config, vault: VaultManager):
         # UUID-shaped input → weave_extract auto-mints a ses-XXX note.

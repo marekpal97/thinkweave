@@ -1579,6 +1579,9 @@ class TestCitationLint:
         ).read_text(encoding="utf-8")
         assert "[[path|id]]" in wrap_doc
         assert "retrieval_log.jsonl" in wrap_doc
+        assert "zero extracted notes or decisions" in wrap_doc
+        assert "weave add --session" in wrap_doc
+        assert "minimal test call" in wrap_doc
 
         from thinkweave.surfaces.mcp.tools._extract_schemas import tool_schemas
 
