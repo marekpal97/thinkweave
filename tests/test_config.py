@@ -364,18 +364,18 @@ def test_load_config_user_config_overrides_vault_internal_vault_root(
     assert cfg.vault_root == preferred
 
 
-def test_load_config_ignores_malformed_user_config(
+def test_load_config_rejects_malformed_user_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """A broken user-config TOML must not brick `weave`; fall through silently."""
+    """A broken user-config TOML fails loudly, naming the file: it may carry
+    the policy-repo path, so falling through would silently drop that tier."""
     monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
     user_path = _isolate_user_config(monkeypatch, tmp_path)
     user_path.parent.mkdir(parents=True)
     user_path.write_text("not = valid = toml = at = all\n", encoding="utf-8")
 
-    cfg = load_config()
-    # Falls through to the built-in default — same as a fresh Config().
-    assert cfg.vault_root == Config().vault_root
+    with pytest.raises(ValueError, match=str(user_path)):
+        load_config()
 
 
 # ---------------------------------------------------------------------------

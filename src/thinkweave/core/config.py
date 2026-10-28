@@ -465,18 +465,17 @@ def is_vault_initialized(cfg: Config) -> bool:
 def _load_user_config() -> dict:
     """Read the user-scope config document (``vault_root``, ``rsi_rail``).
 
-    Returns ``{}`` on a missing file or any parse error — callers fall
-    through to the next tier. We deliberately swallow parse errors here
-    rather than raising; the user-scope file is populated by ``/onboard``
-    and a malformed file shouldn't brick every ``weave`` invocation.
+    A missing file is the normal case and yields ``{}``. A file that does
+    not parse raises with its path: it may name the policy repo, so a
+    silent fall-through would serve the vault's values in its place.
     """
     path = user_config_path()
     if not path.exists():
         return {}
     try:
         return _read_toml(path)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"user-scope config {path} is not valid TOML: {e}") from e
 
 
 def _read_toml(path: Path) -> dict:
@@ -586,15 +585,14 @@ def _apply_knobs(cfg: Config, data: dict) -> None:
     if "cap" in seam_cfg:
         cfg.seam_cap = int(seam_cfg["cap"])
 
-    # Evidence-gated steering ([steering] — issue #62)
+    # Evidence-gated steering ([steering])
     steering_cfg = data.get("steering", {})
     if "weekly_budget" in steering_cfg:
         cfg.steering_weekly_budget = int(steering_cfg["weekly_budget"])
     # Signal weights arrive as ``weight_<signal>`` keys (weight_rework,
     # weight_fix_rounds, weight_superseded, weight_gate_failures); strip
-    # the prefix into the steering_weights map. Unknown signals (e.g. the
-    # #96-deleted weight_hub_pressure) pass through inert — evidence_for
-    # only reads the known signal keys.
+    # the prefix into the steering_weights map. A weight for a signal the
+    # evidence reader no longer knows passes through inert.
     weights: dict = {}
     for key, val in steering_cfg.items():
         if key.startswith("weight_"):
