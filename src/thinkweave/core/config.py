@@ -7,9 +7,15 @@ Priority (vault_root resolution):
    a pre-2026-06-13 file at ``vault/.weave/config.toml`` is read as a fallback)
 4. Built-in defaults
 
-The user-scope tier (2) only ever provides ``vault_root``; vault-internal
-fields (embeddings, edges, dream gates) remain owned by the vault-internal
-file at tier 3.
+The user-scope tier (2) only ever provides ``vault_root`` and ``rsi_rail``;
+vault-internal fields (embeddings, edges, dream gates) remain owned by the
+vault-internal file at tier 3.
+
+Knob precedence: the ``rsi-rail`` policy repo's ``thinkweave/config.toml``
+(located by ``THINKWEAVE_RSI_RAIL`` or the user-scope ``rsi_rail`` key)
+merges over the vault file with the same key handling, so a harness-level
+knob the user tunes lives in the repo while the vault keeps everything
+else. No repo configured means no change.
 """
 
 from __future__ import annotations
@@ -105,6 +111,9 @@ class Config:
     # WSL2 via 9P — measured ~30x slower SQLite reads — or a NAS/Dropbox
     # mount). None (default) keeps the historical vault_root/.weave layout.
     weave_dir_override: Path | None = None
+    # The rsi-rail policy repo, when configured; its thinkweave/config.toml
+    # is the last knob tier. None when the user has no repo.
+    rsi_rail: Path | None = None
     default_project: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key_env: str = "OPENAI_API_KEY"  # env var name holding the key
@@ -453,27 +462,235 @@ def is_vault_initialized(cfg: Config) -> bool:
     return True
 
 
-def _load_user_config_vault_root() -> Path | None:
-    """Read ``vault_root`` from the user-scope config, if present.
+def _load_user_config() -> dict:
+    """Read the user-scope config document (``vault_root``, ``rsi_rail``).
 
-    Returns ``None`` on missing file, missing key, or any parse error —
-    callers fall through to the next tier. We deliberately swallow
-    parse errors here rather than raising; the user-scope file is
-    populated by ``/onboard`` and a malformed file shouldn't brick
-    every ``weave`` invocation.
+    Returns ``{}`` on a missing file or any parse error — callers fall
+    through to the next tier. We deliberately swallow parse errors here
+    rather than raising; the user-scope file is populated by ``/onboard``
+    and a malformed file shouldn't brick every ``weave`` invocation.
     """
     path = user_config_path()
     if not path.exists():
-        return None
+        return {}
     try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+        return _read_toml(path)
     except (OSError, tomllib.TOMLDecodeError):
-        return None
-    vr = data.get("vault_root")
-    if not vr:
-        return None
-    return Path(vr)
+        return {}
+
+
+def _read_toml(path: Path) -> dict:
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _apply_knobs(cfg: Config, data: dict) -> None:
+    """Apply one config.toml document's knob sections onto ``cfg``.
+
+    Shared by the vault file and the rsi-rail repo file so both tiers
+    read every key the same way; ``vault_root`` is the caller's.
+    """
+    if "default_project" in data:
+        cfg.default_project = data["default_project"]
+    if "weave_dir" in data:
+        cfg.weave_dir_override = _resolve_weave_dir_value(
+            data["weave_dir"], cfg.vault_root
+        )
+    embed = data.get("embeddings", {})
+    if "model" in embed:
+        cfg.embedding_model = embed["model"]
+    if "api_key_env" in embed:
+        cfg.embedding_api_key_env = embed["api_key_env"]
+    if "api_url" in embed:
+        cfg.embedding_api_url = embed["api_url"]
+
+    # Edge generation config
+    edges = data.get("edges", {})
+    if "concept_threshold" in edges:
+        cfg.concept_edge_threshold = int(edges["concept_threshold"])
+    if "concept_max_freq_pct" in edges:
+        cfg.concept_edge_max_freq_pct = float(edges["concept_max_freq_pct"])
+    if "tag_threshold" in edges:
+        cfg.tag_edge_threshold = int(edges["tag_threshold"])
+    if "tag_max_freq_pct" in edges:
+        cfg.tag_edge_max_freq_pct = float(edges["tag_max_freq_pct"])
+    if "tag_exclude" in edges:
+        cfg.tag_edge_exclude = tuple(edges["tag_exclude"])
+
+    # Dream apply-phase gates
+    dream_cfg = data.get("dream", {})
+    if "enqueue_priority_signals" in dream_cfg:
+        cfg.dream_enqueue_priority_signals = bool(
+            dream_cfg["enqueue_priority_signals"]
+        )
+    if "compute_pagerank" in dream_cfg:
+        cfg.dream_compute_pagerank = bool(dream_cfg["compute_pagerank"])
+    if "essence_cap" in dream_cfg:
+        cfg.dream_essence_cap = int(dream_cfg["essence_cap"])
+    if "cosine_threshold" in dream_cfg:
+        cfg.dream_cosine_threshold = float(dream_cfg["cosine_threshold"])
+    if "drift_cap" in dream_cfg:
+        cfg.dream_drift_cap = int(dream_cfg["drift_cap"])
+    if "coarsen_threshold" in dream_cfg:
+        cfg.dream_coarsen_threshold = float(dream_cfg["coarsen_threshold"])
+    if "coarsen_cap" in dream_cfg:
+        cfg.dream_coarsen_cap = int(dream_cfg["coarsen_cap"])
+    if "coarsen_max_size" in dream_cfg:
+        cfg.dream_coarsen_max_size = int(dream_cfg["coarsen_max_size"])
+    if "coarsen_apply" in dream_cfg:
+        cfg.dream_coarsen_apply = bool(dream_cfg["coarsen_apply"])
+    if "seam_link_cap" in dream_cfg:
+        cfg.dream_seam_link_cap = int(dream_cfg["seam_link_cap"])
+    if "promotion_threshold" in dream_cfg:
+        cfg.dream_promotion_threshold = int(dream_cfg["promotion_threshold"])
+    if "promotion_cap" in dream_cfg:
+        cfg.dream_promotion_cap = int(dream_cfg["promotion_cap"])
+    if "probe_window_days" in dream_cfg:
+        cfg.dream_probe_window_days = int(dream_cfg["probe_window_days"])
+    if "rejudge_cap" in dream_cfg:
+        cfg.dream_rejudge_cap = int(dream_cfg["rejudge_cap"])
+    if "trajectory_phase2_days" in dream_cfg:
+        cfg.dream_trajectory_phase2_days = int(dream_cfg["trajectory_phase2_days"])
+    if "trajectory_rework_threshold" in dream_cfg:
+        cfg.dream_trajectory_rework_threshold = float(
+            dream_cfg["trajectory_rework_threshold"]
+        )
+    if "trajectory_agent_identities" in dream_cfg:
+        raw = dream_cfg["trajectory_agent_identities"]
+        if isinstance(raw, str):
+            raw = [t.strip() for t in raw.split(",") if t.strip()]
+        cfg.dream_trajectory_agent_identities = tuple(raw)
+    if "knowledge_delta_hours" in dream_cfg:
+        cfg.dream_knowledge_delta_hours = int(
+            dream_cfg["knowledge_delta_hours"]
+        )
+    if "essence_max_catalysts" in dream_cfg:
+        cfg.dream_essence_max_catalysts = int(
+            dream_cfg["essence_max_catalysts"]
+        )
+    if "essence_placeholder_max_catalysts" in dream_cfg:
+        cfg.dream_essence_placeholder_max_catalysts = int(
+            dream_cfg["essence_placeholder_max_catalysts"]
+        )
+
+    # Memory seam ([seam])
+    seam_cfg = data.get("seam", {})
+    if "cosine_twin" in seam_cfg:
+        cfg.seam_cosine_twin = float(seam_cfg["cosine_twin"])
+    if "cosine_none" in seam_cfg:
+        cfg.seam_cosine_none = float(seam_cfg["cosine_none"])
+    if "stale_age_days" in seam_cfg:
+        cfg.seam_stale_age_days = int(seam_cfg["stale_age_days"])
+    if "recheck_days" in seam_cfg:
+        cfg.seam_recheck_days = int(seam_cfg["recheck_days"])
+    if "cap" in seam_cfg:
+        cfg.seam_cap = int(seam_cfg["cap"])
+
+    # Evidence-gated steering ([steering] — issue #62)
+    steering_cfg = data.get("steering", {})
+    if "weekly_budget" in steering_cfg:
+        cfg.steering_weekly_budget = int(steering_cfg["weekly_budget"])
+    # Signal weights arrive as ``weight_<signal>`` keys (weight_rework,
+    # weight_fix_rounds, weight_superseded, weight_gate_failures); strip
+    # the prefix into the steering_weights map. Unknown signals (e.g. the
+    # #96-deleted weight_hub_pressure) pass through inert — evidence_for
+    # only reads the known signal keys.
+    weights: dict = {}
+    for key, val in steering_cfg.items():
+        if key.startswith("weight_"):
+            weights[key[len("weight_"):]] = float(val)
+    if weights:
+        cfg.steering_weights = weights
+
+    # Extraction policy
+    extract_cfg = data.get("extract", {})
+    if "insights_cap" in extract_cfg:
+        cfg.extract_insights_cap = int(extract_cfg["insights_cap"])
+
+    # Behavioral-salience window for the digest active-focus block.
+    salience_cfg = data.get("salience", {})
+    if "activity_window_days" in salience_cfg:
+        cfg.salience_activity_window_days = int(
+            salience_cfg["activity_window_days"]
+        )
+
+    # Inline backfill fan-out policy (/seed-enrich)
+    enrich_cfg = data.get("enrich", {})
+    if "fanout_threshold" in enrich_cfg:
+        cfg.enrich_fanout_threshold = int(enrich_cfg["fanout_threshold"])
+    if "batch_size" in enrich_cfg:
+        cfg.enrich_batch_size = int(enrich_cfg["batch_size"])
+    if "parallelism" in enrich_cfg:
+        cfg.enrich_parallelism = int(enrich_cfg["parallelism"])
+
+    # Theme cluster detection
+    themes_cfg = data.get("themes", {})
+    if "min_cluster_size" in themes_cfg:
+        cfg.theme_min_cluster_size = int(themes_cfg["min_cluster_size"])
+    if "recent_days" in themes_cfg:
+        cfg.theme_recent_days = int(themes_cfg["recent_days"])
+    if "min_shared_concepts" in themes_cfg:
+        cfg.theme_min_shared_concepts = int(
+            themes_cfg["min_shared_concepts"]
+        )
+    if "name_family_jaccard" in themes_cfg:
+        cfg.theme_name_family_jaccard = float(
+            themes_cfg["name_family_jaccard"]
+        )
+    if "generic_concept_ratio" in themes_cfg:
+        cfg.theme_generic_concept_ratio = float(
+            themes_cfg["generic_concept_ratio"]
+        )
+    if "resolve_after_days" in themes_cfg:
+        cfg.theme_resolve_after_days = int(themes_cfg["resolve_after_days"])
+
+    # Landing docs
+    landing_cfg = data.get("landing", {})
+    if "open_probes_cap" in landing_cfg:
+        cfg.landing_open_probes_cap = int(landing_cfg["open_probes_cap"])
+    if "probes_display_cap" in landing_cfg:
+        cfg.landing_probes_display_cap = int(
+            landing_cfg["probes_display_cap"]
+        )
+
+    # Retrieval ([retrieval] top-level keys + [retrieval.prompt_time])
+    retrieval_cfg = data.get("retrieval", {})
+    if "rrf_k" in retrieval_cfg:
+        cfg.retrieval_rrf_k = int(retrieval_cfg["rrf_k"])
+
+    # `weave health` ([health])
+    health_cfg = data.get("health", {})
+    if "stale_factor" in health_cfg:
+        cfg.health_stale_factor = float(health_cfg["stale_factor"])
+    if "backlog_days" in health_cfg:
+        cfg.health_backlog_days = int(health_cfg["backlog_days"])
+
+    # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
+    pt = retrieval_cfg.get("prompt_time", {})
+    if pt:
+        rpt = cfg.retrieval_prompt_time
+        if "enabled" in pt:
+            rpt.enabled = bool(pt["enabled"])
+        if "min_prompt_chars" in pt:
+            rpt.min_prompt_chars = int(pt["min_prompt_chars"])
+        if "embed_deadline_seconds" in pt:
+            rpt.embed_deadline_seconds = float(pt["embed_deadline_seconds"])
+        if "deadline_miss_limit" in pt:
+            rpt.deadline_miss_limit = int(pt["deadline_miss_limit"])
+        if "min_similarity" in pt:
+            rpt.min_similarity = float(pt["min_similarity"])
+        if "max_pieces_per_turn" in pt:
+            rpt.max_pieces_per_turn = int(pt["max_pieces_per_turn"])
+        if "max_injected_chars_per_turn" in pt:
+            rpt.max_injected_chars_per_turn = int(pt["max_injected_chars_per_turn"])
+        if "max_firings_per_session" in pt:
+            rpt.max_firings_per_session = int(pt["max_firings_per_session"])
+        if "max_injected_chars_per_session" in pt:
+            rpt.max_injected_chars_per_session = int(
+                pt["max_injected_chars_per_session"]
+            )
+        if "bias_types" in pt:
+            rpt.bias_types = tuple(pt["bias_types"])
 
 
 def load_config() -> Config:
@@ -484,6 +701,10 @@ def load_config() -> Config:
     2. ``~/.config/thinkweave/config.toml`` (or ``$XDG_CONFIG_HOME``)
     3. ``vault/config/config.toml`` (fallback: legacy ``vault/.weave/config.toml``)
     4. Built-in default (``~/vault``)
+
+    Knob flow: vault ``config.toml`` → rsi-rail ``thinkweave/config.toml``
+    (when ``THINKWEAVE_RSI_RAIL`` or the user-scope ``rsi_rail`` key names
+    the repo) → per-field env overrides.
     """
     cfg = Config()
 
@@ -494,223 +715,41 @@ def load_config() -> Config:
     # Tier 2: user-scope TOML (~/.config/thinkweave/config.toml).
     # Only sets vault_root; embedding/edge/dream fields stay owned
     # by the vault-internal config at tier 3.
-    user_vault = _load_user_config_vault_root() if not vault_env else None
+    user_cfg = _load_user_config()
+    user_vault = (
+        Path(user_cfg["vault_root"])
+        if user_cfg.get("vault_root") and not vault_env
+        else None
+    )
     if vault_env:
         cfg.vault_root = Path(vault_env)
     elif user_vault is not None:
         cfg.vault_root = user_vault
 
     # Tier 3: vault-internal config.toml. Only sets vault_root when
-    # neither tier 1 (env) nor tier 2 (user-config) provided one — the
-    # embedding/edge/dream fields below are always honoured because
-    # they're owned by this tier alone.
+    # neither tier 1 (env) nor tier 2 (user-config) provided one; every
+    # other key is always honoured.
     toml_path = cfg.config_path
     if toml_path.exists():
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
+        data = _read_toml(toml_path)
         if "vault_root" in data and not vault_env and user_vault is None:
             cfg.vault_root = Path(data["vault_root"])
-        if "default_project" in data:
-            cfg.default_project = data["default_project"]
-        if "weave_dir" in data:
-            cfg.weave_dir_override = _resolve_weave_dir_value(
-                data["weave_dir"], cfg.vault_root
+        _apply_knobs(cfg, data)
+
+    # Tier 4: the rsi-rail policy repo. Harness-level knobs the user tunes
+    # live there and win over the vault file; a configured repo whose file
+    # is missing is an error, never a silent fall-through.
+    rail = os.environ.get("THINKWEAVE_RSI_RAIL") or user_cfg.get("rsi_rail")
+    if rail:
+        cfg.rsi_rail = Path(rail).expanduser()
+        rail_toml = cfg.rsi_rail / "thinkweave" / "config.toml"
+        if not rail_toml.exists():
+            raise FileNotFoundError(
+                f"rsi-rail is set to {cfg.rsi_rail} but {rail_toml} does not "
+                "exist; create it or unset THINKWEAVE_RSI_RAIL / the "
+                "user-scope rsi_rail key"
             )
-        embed = data.get("embeddings", {})
-        if "model" in embed:
-            cfg.embedding_model = embed["model"]
-        if "api_key_env" in embed:
-            cfg.embedding_api_key_env = embed["api_key_env"]
-        if "api_url" in embed:
-            cfg.embedding_api_url = embed["api_url"]
-
-        # Edge generation config
-        edges = data.get("edges", {})
-        if "concept_threshold" in edges:
-            cfg.concept_edge_threshold = int(edges["concept_threshold"])
-        if "concept_max_freq_pct" in edges:
-            cfg.concept_edge_max_freq_pct = float(edges["concept_max_freq_pct"])
-        if "tag_threshold" in edges:
-            cfg.tag_edge_threshold = int(edges["tag_threshold"])
-        if "tag_max_freq_pct" in edges:
-            cfg.tag_edge_max_freq_pct = float(edges["tag_max_freq_pct"])
-        if "tag_exclude" in edges:
-            cfg.tag_edge_exclude = tuple(edges["tag_exclude"])
-
-        # Dream apply-phase gates
-        dream_cfg = data.get("dream", {})
-        if "enqueue_priority_signals" in dream_cfg:
-            cfg.dream_enqueue_priority_signals = bool(
-                dream_cfg["enqueue_priority_signals"]
-            )
-        if "compute_pagerank" in dream_cfg:
-            cfg.dream_compute_pagerank = bool(dream_cfg["compute_pagerank"])
-        if "essence_cap" in dream_cfg:
-            cfg.dream_essence_cap = int(dream_cfg["essence_cap"])
-        if "cosine_threshold" in dream_cfg:
-            cfg.dream_cosine_threshold = float(dream_cfg["cosine_threshold"])
-        if "drift_cap" in dream_cfg:
-            cfg.dream_drift_cap = int(dream_cfg["drift_cap"])
-        if "coarsen_threshold" in dream_cfg:
-            cfg.dream_coarsen_threshold = float(dream_cfg["coarsen_threshold"])
-        if "coarsen_cap" in dream_cfg:
-            cfg.dream_coarsen_cap = int(dream_cfg["coarsen_cap"])
-        if "coarsen_max_size" in dream_cfg:
-            cfg.dream_coarsen_max_size = int(dream_cfg["coarsen_max_size"])
-        if "coarsen_apply" in dream_cfg:
-            cfg.dream_coarsen_apply = bool(dream_cfg["coarsen_apply"])
-        if "seam_link_cap" in dream_cfg:
-            cfg.dream_seam_link_cap = int(dream_cfg["seam_link_cap"])
-        if "promotion_threshold" in dream_cfg:
-            cfg.dream_promotion_threshold = int(dream_cfg["promotion_threshold"])
-        if "promotion_cap" in dream_cfg:
-            cfg.dream_promotion_cap = int(dream_cfg["promotion_cap"])
-        if "probe_window_days" in dream_cfg:
-            cfg.dream_probe_window_days = int(dream_cfg["probe_window_days"])
-        if "rejudge_cap" in dream_cfg:
-            cfg.dream_rejudge_cap = int(dream_cfg["rejudge_cap"])
-        if "trajectory_phase2_days" in dream_cfg:
-            cfg.dream_trajectory_phase2_days = int(dream_cfg["trajectory_phase2_days"])
-        if "trajectory_rework_threshold" in dream_cfg:
-            cfg.dream_trajectory_rework_threshold = float(
-                dream_cfg["trajectory_rework_threshold"]
-            )
-        if "trajectory_agent_identities" in dream_cfg:
-            raw = dream_cfg["trajectory_agent_identities"]
-            if isinstance(raw, str):
-                raw = [t.strip() for t in raw.split(",") if t.strip()]
-            cfg.dream_trajectory_agent_identities = tuple(raw)
-        if "knowledge_delta_hours" in dream_cfg:
-            cfg.dream_knowledge_delta_hours = int(
-                dream_cfg["knowledge_delta_hours"]
-            )
-        if "essence_max_catalysts" in dream_cfg:
-            cfg.dream_essence_max_catalysts = int(
-                dream_cfg["essence_max_catalysts"]
-            )
-        if "essence_placeholder_max_catalysts" in dream_cfg:
-            cfg.dream_essence_placeholder_max_catalysts = int(
-                dream_cfg["essence_placeholder_max_catalysts"]
-            )
-
-        # Memory seam ([seam])
-        seam_cfg = data.get("seam", {})
-        if "cosine_twin" in seam_cfg:
-            cfg.seam_cosine_twin = float(seam_cfg["cosine_twin"])
-        if "cosine_none" in seam_cfg:
-            cfg.seam_cosine_none = float(seam_cfg["cosine_none"])
-        if "stale_age_days" in seam_cfg:
-            cfg.seam_stale_age_days = int(seam_cfg["stale_age_days"])
-        if "recheck_days" in seam_cfg:
-            cfg.seam_recheck_days = int(seam_cfg["recheck_days"])
-        if "cap" in seam_cfg:
-            cfg.seam_cap = int(seam_cfg["cap"])
-
-        # Evidence-gated steering ([steering] — issue #62)
-        steering_cfg = data.get("steering", {})
-        if "weekly_budget" in steering_cfg:
-            cfg.steering_weekly_budget = int(steering_cfg["weekly_budget"])
-        # Signal weights arrive as ``weight_<signal>`` keys (weight_rework,
-        # weight_fix_rounds, weight_superseded, weight_gate_failures); strip
-        # the prefix into the steering_weights map. Unknown signals (e.g. the
-        # #96-deleted weight_hub_pressure) pass through inert — evidence_for
-        # only reads the known signal keys.
-        weights: dict = {}
-        for key, val in steering_cfg.items():
-            if key.startswith("weight_"):
-                weights[key[len("weight_"):]] = float(val)
-        if weights:
-            cfg.steering_weights = weights
-
-        # Extraction policy
-        extract_cfg = data.get("extract", {})
-        if "insights_cap" in extract_cfg:
-            cfg.extract_insights_cap = int(extract_cfg["insights_cap"])
-
-        # Behavioral-salience window for the digest active-focus block.
-        salience_cfg = data.get("salience", {})
-        if "activity_window_days" in salience_cfg:
-            cfg.salience_activity_window_days = int(
-                salience_cfg["activity_window_days"]
-            )
-
-        # Inline backfill fan-out policy (/seed-enrich)
-        enrich_cfg = data.get("enrich", {})
-        if "fanout_threshold" in enrich_cfg:
-            cfg.enrich_fanout_threshold = int(enrich_cfg["fanout_threshold"])
-        if "batch_size" in enrich_cfg:
-            cfg.enrich_batch_size = int(enrich_cfg["batch_size"])
-        if "parallelism" in enrich_cfg:
-            cfg.enrich_parallelism = int(enrich_cfg["parallelism"])
-
-        # Theme cluster detection
-        themes_cfg = data.get("themes", {})
-        if "min_cluster_size" in themes_cfg:
-            cfg.theme_min_cluster_size = int(themes_cfg["min_cluster_size"])
-        if "recent_days" in themes_cfg:
-            cfg.theme_recent_days = int(themes_cfg["recent_days"])
-        if "min_shared_concepts" in themes_cfg:
-            cfg.theme_min_shared_concepts = int(
-                themes_cfg["min_shared_concepts"]
-            )
-        if "name_family_jaccard" in themes_cfg:
-            cfg.theme_name_family_jaccard = float(
-                themes_cfg["name_family_jaccard"]
-            )
-        if "generic_concept_ratio" in themes_cfg:
-            cfg.theme_generic_concept_ratio = float(
-                themes_cfg["generic_concept_ratio"]
-            )
-        if "resolve_after_days" in themes_cfg:
-            cfg.theme_resolve_after_days = int(themes_cfg["resolve_after_days"])
-
-        # Landing docs
-        landing_cfg = data.get("landing", {})
-        if "open_probes_cap" in landing_cfg:
-            cfg.landing_open_probes_cap = int(landing_cfg["open_probes_cap"])
-        if "probes_display_cap" in landing_cfg:
-            cfg.landing_probes_display_cap = int(
-                landing_cfg["probes_display_cap"]
-            )
-
-        # Retrieval ([retrieval] top-level keys + [retrieval.prompt_time])
-        retrieval_cfg = data.get("retrieval", {})
-        if "rrf_k" in retrieval_cfg:
-            cfg.retrieval_rrf_k = int(retrieval_cfg["rrf_k"])
-
-        # `weave health` ([health])
-        health_cfg = data.get("health", {})
-        if "stale_factor" in health_cfg:
-            cfg.health_stale_factor = float(health_cfg["stale_factor"])
-        if "backlog_days" in health_cfg:
-            cfg.health_backlog_days = int(health_cfg["backlog_days"])
-
-        # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
-        pt = retrieval_cfg.get("prompt_time", {})
-        if pt:
-            rpt = cfg.retrieval_prompt_time
-            if "enabled" in pt:
-                rpt.enabled = bool(pt["enabled"])
-            if "min_prompt_chars" in pt:
-                rpt.min_prompt_chars = int(pt["min_prompt_chars"])
-            if "embed_deadline_seconds" in pt:
-                rpt.embed_deadline_seconds = float(pt["embed_deadline_seconds"])
-            if "deadline_miss_limit" in pt:
-                rpt.deadline_miss_limit = int(pt["deadline_miss_limit"])
-            if "min_similarity" in pt:
-                rpt.min_similarity = float(pt["min_similarity"])
-            if "max_pieces_per_turn" in pt:
-                rpt.max_pieces_per_turn = int(pt["max_pieces_per_turn"])
-            if "max_injected_chars_per_turn" in pt:
-                rpt.max_injected_chars_per_turn = int(pt["max_injected_chars_per_turn"])
-            if "max_firings_per_session" in pt:
-                rpt.max_firings_per_session = int(pt["max_firings_per_session"])
-            if "max_injected_chars_per_session" in pt:
-                rpt.max_injected_chars_per_session = int(
-                    pt["max_injected_chars_per_session"]
-                )
-            if "bias_types" in pt:
-                rpt.bias_types = tuple(pt["bias_types"])
+        _apply_knobs(cfg, _read_toml(rail_toml))
 
     # Per-field env overrides. PERSONAL_MEM_* are the pre-rename names,
     # honoured as migration fallbacks (rename → thinkweave, 2026-06-13).

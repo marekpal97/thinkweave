@@ -344,6 +344,10 @@ backlog_days = 7                   # queue item counts as backlog after N days u
 
 The `weave dream scan` flags (`--promotion-cap`, `--promotion-threshold`, `--essence-cap`) override their config fields per-invocation; cron (which passes no flags) is steered by the file.
 
+#### The `rsi-rail` tier — harness-level knobs read from the policy repo
+
+The user's private `rsi-rail` repo (one folder per reader; see dec-6d5f1913) may carry a `thinkweave/config.toml`. `load_config` merges it over the vault file after tier 3 with the same key handling, so a key present in both resolves to the repo value and a key only in the vault file keeps the vault value. Intended contents are the harness-level knobs the user tunes — `[retrieval]`, `[retrieval.prompt_time]`, `[landing]` — while `sources.yaml`, `PRIORITIES.yaml`, `api.yaml` and the ontology stay in the vault (knowledge-layer preferences, not policy). The repo is located by `THINKWEAVE_RSI_RAIL` or the user-scope `rsi_rail` key in `~/.config/thinkweave/config.toml` (env wins); the resolved path is `Config.rsi_rail`. Nothing configured means nothing changes. A configured repo whose `thinkweave/config.toml` is missing raises at load time rather than silently serving the vault value. The repo file never sets `vault_root`.
+
 `weave_dir` relocates the derived-state directory (`index.db`, `embeddings.db`, `buffer/`, logs) independently of `vault_root` — a top-level key, resolved like `vault_root`/`default_project` above (absolute paths pass through, `~` expands, relative paths anchor at `vault_root`). Use it when the vault markdown lives on slow, remote, or virtualized storage — a Windows drive crossed from WSL2 via 9P (measured ~30x slower SQLite reads there), a NAS, a Dropbox mount — while keeping the markdown itself wherever Obsidian expects it: everything under `weave_dir` is derived and rebuildable via `weave index --full`, so it's safe to point at fast local disk. The `THINKWEAVE_WEAVE_DIR` env var overrides this key, same precedence as the other per-field env overrides in `load_config`.
 
 ### `PRIORITIES.yaml` — discover bias + intake registries
