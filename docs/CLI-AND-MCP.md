@@ -30,7 +30,7 @@ weave graph <id>                              # local graph
 weave context "q" [--type X]                  # 3-layer retrieval (FTS → concept → recency)
 weave stats                                   # vault health (deprecated → weave doctor)
 weave doctor [--migrate]                      # coherence linter (+ optional data migrations)
-weave doctor --mcp [--harness X]              # MCP wiring: registration scopes, launcher probe, venv
+weave doctor --mcp [--harness X]              # MCP wiring: registration scopes, launcher probe, venv, rsi-rail links (every profile's links into the policy repo resolve)
                                             # extras; on a native-MCP harness with a legacy
                                             # suppression package (Pi: pi-mcp-adapter) also warns
                                             # that package would replace the built-in client
@@ -47,7 +47,7 @@ weave hubs {status|plan|link|repair}          # concept-hub backfill (use `weave
 weave themes rebuild-registry                 # rebuild themes.yaml from canonical theme files
 weave drain --target hubs --via {inline|batch}  # batch path replaces `weave hubs run`
 weave queue {list|inspect|peek}               # per-source-type acquisition queues
-weave hooks {install|uninstall|status}
+weave hooks {install|uninstall|status}       # install first fans the configured rsi-rail repo out to every registered profile (skills/ folders into skills_dir, claude/CLAUDE.md into instructions_file; linked, or spliced between sentinels when the file holds other content), idempotent
 weave landing [--project X] [--doc all]       # regenerate DECISIONS/BACKLOG/STATE/THEMES
 weave flow {list|show|run}                    # named workflow pipelines
 weave schedule {list|install|uninstall}       # render scheduling.yaml onto the host

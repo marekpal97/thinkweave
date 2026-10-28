@@ -287,6 +287,38 @@ def _sandbox_harness_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     monkeypatch.setattr(
         harness, "_OVERRIDE", harness.claude_code(home=tmp_path / "harness-home")
     )
+    # The rail installer fans out to every profile's REAL home, so a test that
+    # reaches the real ``load_config()`` must never see the developer's
+    # configured rsi-rail repo — neither by env nor by the user-scope file.
+    monkeypatch.delenv("THINKWEAVE_RSI_RAIL", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@pytest.fixture
+def rail_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requires_symlinks
+) -> tuple[Path, Path]:
+    """A two-skill rsi-rail repo and a fresh home every profile derives from;
+    ``load_config()`` names the repo. Returns ``(repo, home)``."""
+    repo = tmp_path / "rsi-rail"
+    for skill in ("tdd", "retro"):
+        (repo / "skills" / skill).mkdir(parents=True)
+        (repo / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n")
+    (repo / "skills" / "README.md").write_text("not a skill\n")
+    (repo / "claude").mkdir()
+    (repo / "claude" / "CLAUDE.md").write_text("# Global rules\n\n- rule one\n")
+    (repo / "thinkweave").mkdir()
+    (repo / "thinkweave" / "config.toml").write_text("")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    monkeypatch.setattr(harness, "_OVERRIDE", harness.claude_code(home=home))
+    cfg = Config(vault_root=tmp_path / "vault", rsi_rail=repo)
+    monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+    return repo, home
 
 
 # ---------------------------------------------------------------------------

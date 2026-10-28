@@ -29,7 +29,14 @@ from thinkweave.core.harness import active as _profile
 # Borrowed from the installer so the doctor's Windows gate and the remedy it
 # prints are the same ones the installer acts on.
 from thinkweave.surfaces.cli.install import _detect_project_root, _is_windows
-from thinkweave.surfaces.hooks.install import _extension_stub_path
+from thinkweave.surfaces.hooks.install import (
+    RAIL_BLOCK_START,
+    _extension_stub_path,
+    has_rules_block,
+    links_into_rail,
+    rail_rules,
+    rail_targets,
+)
 from thinkweave.surfaces.hooks.install import _repo_root as _running_checkout
 
 SERVER_NAME = "thinkweave"
@@ -439,6 +446,59 @@ def check_command_symlinks(cwd: Path) -> CheckResult:
             for name, _ in dangling
         ),
     )
+
+
+def check_rail_links() -> CheckResult:
+    """FAIL when a link ``weave hooks install`` made into the rsi-rail repo
+    is missing, dangles or aims elsewhere, or an instructions file carries
+    no current rules block — the harness drops the skill or the rules with
+    no error anywhere. Walks every registered profile, as the install does.
+    """
+    from thinkweave.core.config import load_config
+
+    name = "rsi-rail links"
+    try:
+        repo = load_config().rsi_rail
+        targets = rail_targets(repo) if repo else []
+    except (FileNotFoundError, ValueError) as exc:
+        return CheckResult(name=name, passed=False, detail=str(exc))
+    if repo is None:
+        return CheckResult(
+            name=name, passed=True, detail="no rsi-rail repo configured"
+        )
+    rules = rail_rules(repo)
+    broken = [
+        f"{link} ({_rail_fault(link, target, rules)})"
+        for link, target in targets
+        if not (
+            links_into_rail(link, target)
+            or (target == rules and has_rules_block(link, rules))
+        )
+    ]
+    if not broken:
+        return CheckResult(
+            name=name,
+            passed=True,
+            detail=f"{len(targets)} links into {repo} resolve",
+        )
+    return CheckResult(
+        name=name,
+        passed=False,
+        detail="broken: " + ", ".join(broken),
+        fix="weave hooks install --scope user",
+    )
+
+
+def _rail_fault(link: Path, target: Path, rules: Path) -> str:
+    """Why ``link`` does not carry ``target``, in two or three words."""
+    if link.is_symlink():
+        return "dangling" if not link.exists() else f"points at {link.resolve()}"
+    if not link.exists():
+        return "missing"
+    if target == rules and link.is_file():
+        stale = RAIL_BLOCK_START in link.read_text(encoding="utf-8")
+        return "stale rules block" if stale else "no rules block"
+    return "not a link"
 
 
 def _git_bash_path(path: Path) -> str:
@@ -1093,6 +1153,7 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # Harness-independent: the dangling link is a fact about the checkout, not
     # about which harness is reading it.
     result.checks.append(check_command_symlinks(cwd))
+    result.checks.append(check_rail_links())
     result.checks.append(check_vault_env())
     result.checks.append(check_venv_extras())
     result.checks.append(check_weave_mcp_on_path())

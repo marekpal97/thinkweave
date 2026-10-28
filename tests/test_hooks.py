@@ -2997,3 +2997,155 @@ class TestUserPromptSubmitHookBudget:
         spent = handler_mod._hook_budget_remaining("UserPromptSubmit", time.monotonic() - 10)
         assert spent < 0
         assert handler_mod._hook_budget_remaining("SubagentStart", time.monotonic()) is None
+
+
+# ---------------------------------------------------------------------------
+# rsi-rail fan-out: skills and the rules file linked into every profile
+# ---------------------------------------------------------------------------
+
+# The link each registered profile should end up with, by the paths the
+# harness docs declare (not derived from PROFILES).
+_RAIL_SKILL_LINKS = (
+    ".claude/skills/{name}",
+    ".codex/skills/{name}",
+    ".pi/agent/skills/{name}",
+    ".config/opencode/commands/{name}",
+)
+_RAIL_INSTRUCTIONS = (
+    ".claude/CLAUDE.md",
+    ".codex/AGENTS.md",
+    ".pi/agent/AGENTS.md",
+    ".config/opencode/AGENTS.md",
+)
+
+
+class TestRailLinks:
+    """``weave hooks install`` links the rsi-rail repo's ``skills/`` and
+    ``claude/CLAUDE.md`` into every profile, idempotently."""
+
+    def test_first_run_links_every_profile(self, rail_home, capsys):
+        repo, home = rail_home
+
+        install_hooks(scope="user")
+
+        for name in ("tdd", "retro"):
+            for rel in _RAIL_SKILL_LINKS:
+                link = home / rel.format(name=name)
+                assert link.is_symlink(), link
+                assert link.resolve() == repo / "skills" / name
+        for rel in _RAIL_INSTRUCTIONS:
+            link = home / rel
+            assert link.is_symlink(), link
+            assert link.resolve() == repo / "claude" / "CLAUDE.md"
+        # A file beside the skill folders is not a skill.
+        assert not (home / ".claude" / "skills" / "README.md").exists()
+        out = capsys.readouterr().out
+        assert str(home / ".pi" / "agent" / "skills" / "retro") in out
+        assert "12 changed" in out
+
+    def test_second_run_changes_nothing(self, rail_home, capsys):
+        repo, home = rail_home
+        install_hooks(scope="user")
+        before = {p: p.readlink() for p in home.rglob("*") if p.is_symlink()}
+        capsys.readouterr()
+
+        install_hooks(scope="user")
+
+        assert {p: p.readlink() for p in home.rglob("*") if p.is_symlink()} == before
+        out = capsys.readouterr().out
+        assert "0 changed, 12 already current" in out
+
+    def test_links_that_already_resolve_into_the_repo_are_kept(self, rail_home, capsys):
+        """A hand-made link through an intermediate dir is already correct."""
+        repo, home = rail_home
+        shared = home / ".agents" / "skills"
+        shared.parent.mkdir(parents=True)
+        shared.symlink_to(repo / "skills")
+        link = home / ".claude" / "skills" / "tdd"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(shared / "tdd")
+
+        install_hooks(scope="user")
+
+        assert link.readlink() == shared / "tdd"
+        assert "11 changed, 1 already current" in capsys.readouterr().out
+
+    def test_rules_are_spliced_into_an_instructions_file_with_other_content(
+        self, rail_home, capsys
+    ):
+        repo, home = rail_home
+        agents = home / ".codex" / "AGENTS.md"
+        agents.parent.mkdir(parents=True)
+        own = "# mine\n\n<!-- thinkweave:start -->\nnudge\n<!-- thinkweave:end -->\n"
+        agents.write_text(own, encoding="utf-8")
+
+        install_hooks(scope="user")
+
+        assert not agents.is_symlink()
+        text = agents.read_text(encoding="utf-8")
+        assert text.startswith(own)
+        assert "<!-- rsi-rail:start -->" in text and "<!-- rsi-rail:end -->" in text
+        assert "- rule one" in text
+        assert str(repo / "claude" / "CLAUDE.md") in text
+        assert "splice" in capsys.readouterr().out
+
+        # Idempotent: a second run leaves the bytes alone.
+        install_hooks(scope="user")
+        assert agents.read_text(encoding="utf-8") == text
+        assert "0 changed" in capsys.readouterr().out
+
+        # The repo moved on: the block is refreshed in place, nothing else moves.
+        (repo / "claude" / "CLAUDE.md").write_text("# Global rules\n\n- rule two\n")
+        install_hooks(scope="user")
+        text = agents.read_text(encoding="utf-8")
+        assert text.startswith(own)
+        assert "- rule two" in text and "- rule one" not in text
+        assert text.count("<!-- rsi-rail:start -->") == 1
+
+    def test_foreign_entries_are_left_alone_and_dangling_links_repointed(
+        self, rail_home, capsys
+    ):
+        repo, home = rail_home
+        skills = home / ".claude" / "skills"
+        skills.mkdir(parents=True)
+        (skills / "tdd").mkdir()  # the user's own tdd skill
+        elsewhere = home / "my-retro"
+        elsewhere.mkdir()
+        (skills / "retro").symlink_to(elsewhere)  # their own link, resolves
+        dangling = home / ".codex" / "skills" / "tdd"
+        dangling.parent.mkdir(parents=True)
+        dangling.symlink_to(home / "gone")
+
+        install_hooks(scope="user")
+
+        assert (skills / "tdd").is_dir() and not (skills / "tdd").is_symlink()
+        assert (skills / "retro").readlink() == elsewhere
+        assert dangling.resolve() == repo / "skills" / "tdd"
+        out = capsys.readouterr().out
+        assert f"skipped {skills / 'tdd'}" in out
+        assert f"skipped {skills / 'retro'}" in out
+        assert f"relink {dangling}" in out
+
+    def test_dry_run_writes_nothing(self, rail_home, capsys):
+        repo, home = rail_home
+
+        install_hooks(scope="user", dry_run=True)
+
+        assert not (home / ".codex").exists()
+        assert not (home / ".claude" / "CLAUDE.md").exists()
+        out = capsys.readouterr().out
+        assert f"Would link {home / '.claude' / 'CLAUDE.md'}" in out
+
+    def test_no_repo_configured_says_so(self, tmp_path, monkeypatch, capsys):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            "thinkweave.core.config.load_config",
+            lambda: Config(vault_root=tmp_path / "vault"),
+        )
+
+        install_hooks(scope="user")
+
+        assert "No rsi-rail repo configured" in capsys.readouterr().out
+        assert not (home / ".codex").exists()
