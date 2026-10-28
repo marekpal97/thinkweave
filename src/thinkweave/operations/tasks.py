@@ -29,6 +29,8 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from thinkweave.core._utils import as_list
+from thinkweave.core._utils import git_stdout as _git
+from thinkweave.core import manifest
 from thinkweave.core.buffer import append_event, archived_events_path, buffer_path
 from thinkweave.core.config import tracker_project
 from thinkweave.core.events import feedback_events, iter_jsonl
@@ -1005,16 +1007,22 @@ class _DeclarationPass:
             for stream in streams
             for row in feedback_events(stream)
         ]
-        # The repo HEAD the session's first prompt saw, as its hook recorded
-        # it. The chain's earliest record wins, so a resumed session names
-        # the commit it began from; "" when no stream records one.
-        bases = [
-            (str(row.get("ts", "")), str(row.get("hash", "")))
-            for stream in streams
-            for row in iter_jsonl(stream)
-            if row.get("type") == "base" and row.get("hash")
-        ]
+        # The repo HEAD the session's first prompt saw and the manifest it
+        # ran under, as its hook recorded them. The chain's earliest record
+        # wins, so a resumed session names the commit and policy it began
+        # from; "" / None when no stream records one.
+        bases: list[tuple[str, str]] = []
+        stamps: list[tuple[str, dict]] = []
+        for stream in streams:
+            for row in iter_jsonl(stream):
+                if row.get("type") == "base" and row.get("hash"):
+                    bases.append((str(row.get("ts", "")), str(row["hash"])))
+                elif row.get("type") == "manifest" and isinstance(row.get("manifest"), dict):
+                    stamps.append((str(row.get("ts", "")), row["manifest"]))
         self.base = min(bases)[1] if bases else ""
+        self.manifest = min(stamps, key=lambda s: s[0])[1] if stamps else None
+        # What the session's fold counted (skill invocations, nudges).
+        self.tools = dict(session_fm.get("tools") or {})
         # The pass writes its own opens without a session ref; hook-route
         # opens always carry one, so they never match a declared title.
         self.minted_titles: dict[str, str] = {}
@@ -1194,6 +1202,10 @@ class _DeclarationPass:
             data.setdefault("asked", issue)
         if self.base:
             data.setdefault("base", self.base)
+        if self.manifest:
+            data.setdefault("manifest", self.manifest)
+        if self.tools:
+            data.setdefault("tools", self.tools)
         if entry.get("done"):
             data["done"] = True
         if solo:
@@ -1247,8 +1259,8 @@ def record_run(
     the trajectory, when none is open; a re-record of the same trajectory
     replaces its round. A run never closes its task, and nothing closes it when its PR
     merges: its tracker issue closing does (``TaskStore.close_tracked``).
-    With no ``session_key`` no register row is written: no session owns
-    the run.
+    The round carries the manifest the run lands under. With no
+    ``session_key`` no register row is written: no session owns the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
     warnings: list[str] = []
@@ -1271,6 +1283,7 @@ def record_run(
         task_id=task.id,
         trajectory=trajectory,
         base=_merge_base(str(payload["frontmatter"].get("branch") or ""), warnings),
+        manifest=manifest.collect(cfg, active_harness().id),
     ))
     task.frontmatter["asked"] = asked
     minting = task.path is None
@@ -1397,18 +1410,6 @@ def _merge_base(branch: str, warnings: list[str]) -> str:
     )
     return ""
 
-
-def _git(*args: str, cwd: str = "") -> str:
-    """One git call's stdout, stripped; ``""`` when git refuses or cannot
-    run."""
-    try:
-        result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=5,
-            check=True, cwd=cwd or None,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip()
 
 def _uncommitted(paths: list[str]) -> list[str]:
     """The recorded ``paths`` the working tree still holds uncommitted, in

@@ -406,7 +406,7 @@ class TestHookInstaller:
 
         # Two PostToolUse entries: action-tool gate + MCP-tool gate.
         matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
-        assert "Write|Edit|Bash" in matchers
+        assert "Skill|Write|Edit|Bash" in matchers
         assert "mcp__(plugin_thinkweave_)?thinkweave__.*" in matchers
         # Timeouts come from the canonical hooks.json (30s for PostToolUse
         # since PR #10), not the retired hand-maintained 5s default.
@@ -451,7 +451,7 @@ class TestHookInstaller:
         ]
         assert len(weave_entries) == 2
         weave_matchers = {e["matcher"] for e in weave_entries}
-        assert weave_matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
+        assert weave_matchers == {"Skill|Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
@@ -479,7 +479,7 @@ class TestHookInstaller:
                 ],
                 "PostToolUse": [
                     {
-                        "matcher": "Write|Edit|Bash",
+                        "matcher": "Skill|Write|Edit|Bash",
                         "hooks": [
                             {
                                 "type": "command",
@@ -524,7 +524,7 @@ class TestHookInstaller:
 
         # Identify the action vs MCP PostToolUse entry by matcher.
         post_entries = settings["hooks"]["PostToolUse"]
-        action_entry = next(e for e in post_entries if e["matcher"] == "Write|Edit|Bash")
+        action_entry = next(e for e in post_entries if e["matcher"] == "Skill|Write|Edit|Bash")
         mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__(plugin_thinkweave_)?thinkweave__.*")
         action_cmd = action_entry["hooks"][0]["command"]
         mcp_cmd = mcp_entry["hooks"][0]["command"]
@@ -633,7 +633,7 @@ class TestHookInstaller:
         # within slot. Single-matcher phases stay at exactly one.
         assert len(settings["hooks"]["PostToolUse"]) == 2
         post_matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
-        assert post_matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
+        assert post_matchers == {"Skill|Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
         assert len(settings["hooks"]["SessionStart"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
 
@@ -669,7 +669,7 @@ class TestHookInstaller:
         Claude Code matches PostToolUse entries against the dispatched
         tool's ``tool_name`` string. MCP calls arrive with names like
         ``mcp__thinkweave__weave_search`` — they don't match
-        ``Write|Edit|Bash``. Without a second matcher targeting
+        ``Skill|Write|Edit|Bash``. Without a second matcher targeting
         ``mcp__thinkweave__.*``, ``_handle_post``'s retrieval branch
         (see operations/retrieval_log.RETRIEVAL_TOOLS) never fires and
         ``retrieval_log.jsonl`` only contains the SessionStart entry.
@@ -885,6 +885,11 @@ class TestHookInstaller:
 
 
 class TestBuildEventEnrichment:
+    def test_a_skill_tool_call_is_one_skill_row(self):
+        event = _build_event("Skill", {"skill": "wrap", "args": "--force"}, "", "14:00")
+        assert event == {"ts": "14:00", "tool": "Skill", "skill": "wrap", "declared": "tool"}
+        assert _build_event("Skill", {"args": "x"}, "", "14:00") is None
+
     """Tests for _build_event metadata enrichment (commit, test, insights)."""
 
     def test_bash_with_commit(self):
@@ -1795,7 +1800,8 @@ class TestUserPromptSubmitHook:
         buf_file = cfg.weave_dir / "buffer" / "ses-cc-1.jsonl"
         assert buf_file.exists()
         lines = buf_file.read_text().splitlines()
-        assert len(lines) == 1
+        # The prompt, then the manifest the first prompt stamps.
+        assert len(lines) == 2
         row = json.loads(lines[0])
         assert row["type"] == "prompt"
         assert row["text"] == "What does the indexer skip?"
@@ -1851,7 +1857,7 @@ class TestUserPromptSubmitHook:
             f"<system-reminder>\nnote\n</system-reminder>\n{notice}\n",
         ) == []
         typed = self._run_prompt(cfg, monkeypatch, "ses-inj-3", f"{notice}\nwhy did it fail?")
-        assert [r["type"] for r in typed] == ["prompt"]
+        assert [r["type"] for r in typed] == ["prompt", "manifest"]
 
     def test_the_first_prompt_records_the_session_s_base_sha(
         self, tmp_path: Path, monkeypatch
@@ -1867,7 +1873,7 @@ class TestUserPromptSubmitHook:
         rows = self._run_prompt(
             cfg, monkeypatch, "ses-base-1", "do the thing", cwd=str(repo)
         )
-        assert [r["type"] for r in rows] == ["prompt", "base"]
+        assert [r["type"] for r in rows] == ["prompt", "base", "manifest"]
         assert rows[1]["hash"] == head
         assert rows[1]["session_id"] == "ses-base-1"
         assert rows[1]["ts"] == rows[0]["ts"]
@@ -1876,7 +1882,7 @@ class TestUserPromptSubmitHook:
             cfg, monkeypatch, "ses-base-1", "and now?", cwd=str(repo)
         )
         assert [r["type"] for r in again if r["type"] == "base"] == ["base"]
-        assert [r["type"] for r in again] == ["prompt", "base", "prompt"]
+        assert [r["type"] for r in again] == ["prompt", "base", "manifest", "prompt"]
 
     def test_a_session_outside_any_repo_records_no_base_sha(
         self, tmp_path: Path, monkeypatch
@@ -1891,7 +1897,63 @@ class TestUserPromptSubmitHook:
         rows = self._run_prompt(
             cfg, monkeypatch, "ses-base-2", "do the thing", cwd=str(plain)
         )
-        assert [r["type"] for r in rows] == ["prompt"]
+        assert [r["type"] for r in rows] == ["prompt", "manifest"]
+
+    def test_the_first_prompt_stamps_the_manifest_beside_the_base(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The policy the session runs under: the rsi-rail commit and dirty
+        flag, the firing harness, the reader versions — once per buffer."""
+        from thinkweave.core.config import Config
+        from tests.conftest import init_repo, run_git, scratch_repo
+
+        repo = scratch_repo(tmp_path, monkeypatch)
+        rail = init_repo(tmp_path / "rail")
+        cfg = Config(vault_root=tmp_path / "vault", rsi_rail=rail)
+        rows = self._run_prompt(cfg, monkeypatch, "ses-man-1", "go", cwd=str(repo))
+        stamp = rows[2]
+        assert stamp["type"] == "manifest" and stamp["ts"] == rows[0]["ts"]
+        assert stamp["manifest"]["harness"] == "claude-code"
+        assert stamp["manifest"]["rsi_rail"] == {
+            "repo": str(rail), "commit": run_git("rev-parse", "HEAD", cwd=rail), "dirty": False,
+        }
+        assert stamp["manifest"]["readers"]["thinkweave"]
+        again = self._run_prompt(cfg, monkeypatch, "ses-man-1", "more", cwd=str(repo))
+        assert [r["type"] for r in again].count("manifest") == 1
+
+    def test_a_leading_skill_token_records_a_prompt_declared_skill_row(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """What the user invoked by its slash form, in the Skill tool's row
+        shape, tagged as declared on the prompt."""
+        from thinkweave.core.config import Config
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-1", "/wrap")
+        assert [r["type"] for r in rows if "type" in r] == ["prompt", "manifest"]
+        (skill,) = [r for r in rows if r.get("tool") == "Skill"]
+        assert skill == {
+            "ts": rows[0]["ts"], "tool": "Skill", "skill": "wrap",
+            "declared": "prompt", "harness": "claude-code",
+        }
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-2", "/drain --source-type news")
+        assert [r["skill"] for r in rows if r.get("tool") == "Skill"] == ["drain"]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-3", "/thinkweave:wrap now")
+        assert [r["skill"] for r in rows if r.get("tool") == "Skill"] == ["thinkweave:wrap"]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-4", "look under /etc/hosts")
+        assert [r for r in rows if r.get("tool") == "Skill"] == []
+
+    def test_a_skill_mention_follows_the_firing_harness_s_prefix(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thinkweave.core.config import Config
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("sys.argv", ["weave-hook", "user_prompt_submit", "--harness", "pi"])
+        rows = self._run_prompt(cfg, monkeypatch, "ses-pi-1", "/skill:wrap")
+        assert [(r["skill"], r["harness"]) for r in rows if r.get("tool") == "Skill"] == [("wrap", "pi")]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-pi-2", "/wrap")
+        assert [r for r in rows if r.get("tool") == "Skill"] == []
 
     def test_hook_never_writes_feedback_events(self, tmp_path: Path, monkeypatch):
         # #101 — hooks capture, never judge. Even an unambiguous correction
@@ -2067,9 +2129,9 @@ class TestPromptTimeEnrichment:
             .read_text().splitlines()
             if x.strip()
         ]
-        # The prompt is captured, and with it the base commit the first
-        # prompt saw; the disabled enrichment writes nothing back.
-        assert [r["type"] for r in lines] == ["prompt", "base"]
+        # The prompt is captured, and with it the base commit and manifest
+        # the first prompt saw; the disabled enrichment writes nothing back.
+        assert [r["type"] for r in lines] == ["prompt", "base", "manifest"]
 
     def test_enrichment_failure_never_breaks_turn(
         self, tmp_path: Path, monkeypatch, capsys
@@ -2664,7 +2726,7 @@ class TestSessionHarnessAndModel:
 
         out = json.loads(capsys.readouterr().out)
         assert "model store unwritable" in out["systemMessage"]
-        assert [e["type"] for e in _read_buffer(vault.weave_dir, session_id)] == ["prompt"]
+        assert [e["type"] for e in _read_buffer(vault.weave_dir, session_id)] == ["prompt", "manifest"]
 
 
 class TestCaptureGaps:

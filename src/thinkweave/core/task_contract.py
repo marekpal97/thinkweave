@@ -118,6 +118,9 @@ class Round:
     tool_errors: int | None = None
     cost: dict | None = None
     digest: dict | None = None
+    # The policy the round ran under — the rsi-rail commit, the harness and
+    # the reader versions — as ``core.manifest.collect`` produced it.
+    manifest: dict | None = None
     # Devloop's trace (DEVLOOP_TRACE_KEYS), valid on a work-grain round only.
     reviews: list | None = None
     criteria: list | None = None
@@ -136,15 +139,17 @@ class Round:
 
     @classmethod
     def from_devloop(
-        cls, payload: object, *, task_id: str, trajectory: str = "", base: str = ""
+        cls, payload: object, *, task_id: str, trajectory: str = "", base: str = "",
+        manifest: dict | None = None,
     ) -> Round:
         """One devloop run's emitted trajectory payload as a ``route:
         devloop`` round naming its issue: each stage-dispatch record is one
         envelope row, the semantic trace nests inside, the trajectory note
         (when its id is known) is the session ref, and the PR is the
-        deliverable. ``base`` is the commit the run forked from. Keys the
-        emitter dropped stay absent; a value that cannot land raises
-        ``ValueError`` naming the field."""
+        deliverable. ``base`` is the commit the run forked from and
+        ``manifest`` the policy it ran under. Keys the emitter dropped stay
+        absent; a value that cannot land raises ``ValueError`` naming the
+        field."""
         src = _devloop_frontmatter(payload)
         stages = src.get("skills") or []
         data: dict = {
@@ -158,6 +163,8 @@ class Round:
         }
         if base:
             data["base"] = base
+        if manifest:
+            data["manifest"] = manifest
         if "commit_shas" in src:
             data["did"]["commits"] = list(src["commit_shas"])
         if trajectory:
@@ -177,6 +184,7 @@ class Round:
                 {
                     "id": s.get("id", ""),
                     "role": s.get("role", ""),
+                    **({"skill": s["skill"]} if s.get("skill") else {}),
                     **({"posture": s["posture"]} if s.get("posture") else {}),
                     "outcome": s.get("outcome", ""),
                     "fix_rounds_attributed": int(s.get("fix_rounds_attributed") or 0),
@@ -528,6 +536,14 @@ def _str_int_map(value, where):
     ]
 
 
+def _str_map(value, where):
+    if not isinstance(value, dict):
+        return [f"{where}: expected a mapping of name to string"]
+    return [
+        e for k, v in value.items() for e in _str(v, f"{where}.{k}")
+    ]
+
+
 def _outputs(role_required: bool):
     """Round outputs: ``{kind, ref}`` plus a ``role`` the work grain owes."""
     entries = _dict_list({
@@ -564,6 +580,14 @@ def _envelopes(value, where):
 
 _COST = _closed_dict({"tokens": _number, "duration": _number})
 
+# The policy a round ran under (``core.manifest``): the rsi-rail repo state,
+# the harness, and the versions of what read the policy.
+_MANIFEST = _closed_dict({
+    "harness": _str,
+    "rsi_rail": _closed_dict({"repo": _str, "commit": _base_sha, "dirty": _bool}),
+    "readers": _closed_dict({"thinkweave": _str, "funloops": _str, "plugins": _str_map}),
+})
+
 _ENVELOPE_CHECKERS = {
     "task_id": _task_id,
     "outcome": _str,
@@ -594,6 +618,7 @@ _TRACE_CHECKERS = {
     "skills": _dict_list({
         "id": _str,
         "role": _str,
+        "skill": _str,
         "posture": _str,
         "outcome": _str,
         "fix_rounds_attributed": _int,
@@ -628,6 +653,7 @@ _ROUND_CHECKERS = {
     # it read, and what that read could not recover.
     "digest": _closed_dict({"version": _str, "gaps": _str_list}),
     "base": _base_sha,
+    "manifest": _MANIFEST,
 }
 
 _GITHUB_ITEM_URL = re.compile(

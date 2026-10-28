@@ -140,7 +140,7 @@ class TestInstalledArtifact:
         doc = json.loads((codex_home / "hooks.json").read_text())
 
         matchers = {g["matcher"] for g in doc["hooks"]["PostToolUse"]}
-        assert matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
+        assert matchers == {"Skill|Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
 
     def test_context_emitting_handlers_carry_an_explicit_limit(
         self, codex_home: Path
@@ -881,8 +881,9 @@ class TestMeasuredHeadlessReplay:
             json.loads(line)
             for line in (session_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         ]
-        # The replay's cwd is outside any repo, so no base row is recorded.
-        assert [e.get("type") or e.get("tool") for e in events] == ["prompt", "Bash"]
+        # The replay's cwd is outside any repo, so no base row is recorded;
+        # the manifest the first prompt stamps still is.
+        assert [e.get("type") or e.get("tool") for e in events] == ["prompt", "manifest", "Bash"]
         retrievals = [
             json.loads(line)
             for line in (session_dir / "retrieval_log.jsonl")

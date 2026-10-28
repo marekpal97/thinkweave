@@ -13,6 +13,8 @@ Produces structured metadata from JSONL event buffers:
 
 from __future__ import annotations
 
+from collections import Counter
+
 import json
 import re
 from collections.abc import Iterable, Iterator
@@ -51,6 +53,9 @@ class ExtractResult:
     failure_signals: list[FailureSignal]
     concepts: list[str]  # concepts inferred from file paths
     pull_requests: list[dict] = field(default_factory=list)  # mutating `gh pr` calls
+    # What the rail fired, by row tag: ``Skill`` rows (a skill invoked by
+    # tool or declared on a prompt) and ``nudge`` rows.
+    tools: dict[str, int] = field(default_factory=dict)
 
 
 # Patterns mapping file path components to concepts
@@ -101,8 +106,13 @@ def extract_deterministic(
     insights: list[str] = []
     git_branch = ""
     pull_requests: list[dict] = []
+    tools: Counter = Counter()
 
     for ev in events:
+        if ev.get("tool") == "Skill":
+            tools["Skill"] += 1
+        if ev.get("type") == "nudge":
+            tools["nudge"] += 1
         if "file" in ev:
             files.append(ev["file"])
         if "commit" in ev:
@@ -155,6 +165,7 @@ def extract_deterministic(
         failure_signals=failures,
         concepts=concepts,
         pull_requests=pull_requests,
+        tools=dict(tools),
     )
 
 

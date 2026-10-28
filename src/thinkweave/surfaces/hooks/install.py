@@ -577,6 +577,7 @@ def _strip_thinkweave_hooks(hooks: dict, hook_type: str) -> None:
 _PREVIOUS_MATCHERS: dict[str, tuple[str, ...]] = {
     # The plugin route names its MCP tools `mcp__plugin_thinkweave_thinkweave__…`.
     "mcp__(plugin_thinkweave_)?thinkweave__.*": ("mcp__thinkweave__.*",),
+    "Skill|Write|Edit|Bash": ("Write|Edit|Bash",),
 }
 
 
