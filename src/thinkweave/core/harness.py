@@ -466,8 +466,9 @@ class HarnessProfile:
 
     skill_prefix: str = "/"
     """How a user invokes a shipped skill by name: ``/`` on Claude Code,
-    ``/skill:`` on Pi (prompt expansion, no Skill tool). Used wherever
-    post-install text names one."""
+    ``/skill:`` on Pi (prompt expansion, no Skill tool), ``$`` on Codex (a
+    mention). Used wherever post-install text names one, and by the prompt
+    hook to record a prompt-declared skill row."""
 
     hidden_skill_patterns: tuple[str, ...] = ()
     """Skill-name patterns ``weave install`` writes as ``deny`` under
@@ -716,6 +717,7 @@ def codex(home: Path | None = None) -> HarnessProfile:
         native_memory=False,
         # `codex exec` resolves no slash commands; skill tokens stay bare.
         headless_slash=False,
+        skill_prefix="$",
         instructions_file=cx / "AGENTS.md",
         # #107 gave this harness hooks, but they are trust-gated. Routine thin
         # capture belongs to Stop; rich synthesis belongs to the wrap skill.

@@ -1954,6 +1954,13 @@ class TestUserPromptSubmitHook:
         assert [(r["skill"], r["harness"]) for r in rows if r.get("tool") == "Skill"] == [("wrap", "pi")]
         rows = self._run_prompt(cfg, monkeypatch, "ses-pi-2", "/wrap")
         assert [r for r in rows if r.get("tool") == "Skill"] == []
+        monkeypatch.setattr("sys.argv", ["weave-hook", "user_prompt_submit", "--harness", "codex"])
+        rows = self._run_prompt(cfg, monkeypatch, "ses-cx-1", "$thinkweave-wrap")
+        assert [(r["skill"], r["harness"]) for r in rows if r.get("tool") == "Skill"] == [
+            ("thinkweave-wrap", "codex")
+        ]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-cx-2", "/wrap")
+        assert [r for r in rows if r.get("tool") == "Skill"] == []
 
     def test_hook_never_writes_feedback_events(self, tmp_path: Path, monkeypatch):
         # #101 — hooks capture, never judge. Even an unambiguous correction

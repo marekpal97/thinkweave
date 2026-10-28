@@ -203,6 +203,10 @@ class TestPiRow:
         assert p.root_file_skills and p.skill_prefix == "/skill:"
         assert not p.ships_skills  # /onboard is Claude-Code-shaped
 
+    def test_codex_invokes_skills_by_dollar_mention(self, tmp_path: Path):
+        # docs/HARNESSES.md §Q2: Codex supports `$` mentions for skills.
+        assert _build("codex", tmp_path).skill_prefix == "$"
+
     def test_e3_posture_in_the_instructions_block(self, tmp_path: Path):
         body = _build("pi", tmp_path).instructions_block_body
         assert "NEVER call `weave_extract`" in body
