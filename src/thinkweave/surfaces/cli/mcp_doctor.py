@@ -29,12 +29,7 @@ from thinkweave.core.harness import active as _profile
 # Borrowed from the installer so the doctor's Windows gate and the remedy it
 # prints are the same ones the installer acts on.
 from thinkweave.surfaces.cli.install import _detect_project_root, _is_windows
-from thinkweave.surfaces.hooks.install import (
-    RAIL_BLOCK_START,
-    RailTarget,
-    _extension_stub_path,
-    rail_targets,
-)
+from thinkweave.surfaces.hooks.install import _extension_stub_path, rail_targets
 from thinkweave.surfaces.hooks.install import _repo_root as _running_checkout
 
 SERVER_NAME = "thinkweave"
@@ -464,7 +459,7 @@ def check_rail_links() -> CheckResult:
         return CheckResult(
             name=name, passed=True, detail="no rsi-rail repo configured"
         )
-    broken = [f"{t.link} ({_rail_fault(t)})" for t in targets if not t.carried]
+    broken = [f"{t.link} ({t.state})" for t in targets if not t.carried]
     if not broken:
         return CheckResult(
             name=name,
@@ -477,19 +472,6 @@ def check_rail_links() -> CheckResult:
         detail="broken: " + ", ".join(broken),
         fix="weave hooks install --scope user",
     )
-
-
-def _rail_fault(entry: RailTarget) -> str:
-    """Why the entry's link does not carry its target, in a few words."""
-    link = entry.link
-    if link.is_symlink():
-        return "dangling" if not link.exists() else f"points at {link.resolve()}"
-    if not link.exists():
-        return "missing"
-    if entry.kind == "rules" and link.is_file():
-        stale = RAIL_BLOCK_START in link.read_text(encoding="utf-8")
-        return "stale rules block" if stale else "no rules block"
-    return "not a link"
 
 
 def _git_bash_path(path: Path) -> str:

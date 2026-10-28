@@ -404,6 +404,29 @@ RAIL_BLOCK_START = "<!-- rsi-rail:start -->"
 RAIL_BLOCK_END = "<!-- rsi-rail:end -->"
 
 
+RailState = Literal[
+    "carried",
+    "foreign-symlink",
+    "foreign-file",
+    "dangling",
+    "missing",
+    "rules-missing",
+    "rules-stale",
+]
+
+# What the installer does about each state, and the words it prints.
+_RAIL_ACTIONS: dict[str, str] = {
+    "missing": "link",
+    "dangling": "relink",
+    "rules-missing": "splice rules into",
+    "rules-stale": "splice rules into",
+}
+_RAIL_SKIPS: dict[str, str] = {
+    "foreign-symlink": "a symlink elsewhere, left alone",
+    "foreign-file": "not a thinkweave link, left alone",
+}
+
+
 @dataclass(frozen=True)
 class RailTarget:
     """One place a rail file is carried: ``link`` is the profile path that
@@ -415,12 +438,29 @@ class RailTarget:
     kind: Literal["skill", "rules"]
 
     @property
+    def state(self) -> RailState:
+        """Classify the link once: ``carried`` (resolves to the target, or a
+        rules file holding the current block), ``foreign-symlink`` (resolves
+        elsewhere), ``foreign-file`` (the user's own file or directory),
+        ``dangling``, ``missing``, or a rules file with ``rules-missing`` /
+        ``rules-stale`` block."""
+        link = self.link
+        if links_into_rail(link, self.target):
+            return "carried"
+        if link.is_symlink():
+            return "foreign-symlink" if link.exists() else "dangling"
+        if not link.exists():
+            return "missing"
+        if self.kind != "rules" or not link.is_file():
+            return "foreign-file"
+        text = link.read_text(encoding="utf-8")
+        if rules_block(self.target) in text:
+            return "carried"
+        return "rules-stale" if RAIL_BLOCK_START in text else "rules-missing"
+
+    @property
     def carried(self) -> bool:
-        """True when ``link`` resolves to ``target``, or holds the current
-        rules block."""
-        return links_into_rail(self.link, self.target) or (
-            self.kind == "rules" and has_rules_block(self.link, self.target)
-        )
+        return self.state == "carried"
 
 
 def install_rail_links(dry_run: bool = False) -> None:
@@ -446,28 +486,22 @@ def install_rail_links(dry_run: bool = False) -> None:
     changed = current = 0
     print(f"rsi-rail links from {repo}:")
     for entry in rail_targets(repo):
-        link, target = entry.link, entry.target
-        if entry.carried:
+        link, target, state = entry.link, entry.target, entry.state
+        if state == "carried":
             current += 1
             continue
-        if link.is_symlink() and link.resolve().exists():
-            print(f"  skipped {link}: a symlink to {link.resolve()}, left alone")
+        if state in _RAIL_SKIPS:
+            print(f"  skipped {link}: {_RAIL_SKIPS[state]}")
             continue
-        if link.exists() and not link.is_symlink():
-            if entry.kind != "rules":
-                print(f"  skipped {link}: not a thinkweave link, left alone")
-                continue
-            action = "splice rules into"
-        else:
-            action = "relink" if link.is_symlink() else "link"
+        action = _RAIL_ACTIONS[state]
         changed += 1
         print(f"  {would}{action} {link} -> {target}")
         if dry_run:
             continue
-        if action == "splice rules into":
+        if state.startswith("rules-"):
             atomic_write_text(link, _with_rules_block(link, target))
             continue
-        if link.is_symlink():
+        if state == "dangling":
             link.unlink()
         link.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -518,14 +552,6 @@ def rules_block(rules: Path) -> str:
         "then re-run -->\n"
         f"{body}\n{RAIL_BLOCK_END}"
     )
-
-
-def has_rules_block(path: Path, rules: Path) -> bool:
-    """True when ``path`` is a regular file carrying the current rendering
-    of ``rules``."""
-    if path.is_symlink() or not path.is_file():
-        return False
-    return rules_block(rules) in path.read_text(encoding="utf-8")
 
 
 def _with_rules_block(path: Path, rules: Path) -> str:

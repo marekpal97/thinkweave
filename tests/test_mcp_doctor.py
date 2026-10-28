@@ -691,7 +691,7 @@ class TestRailLinks:
 
         assert not result.passed
         assert f"{dangling} (dangling)" in result.detail
-        assert f"{agents} (stale rules block)" in result.detail
+        assert f"{agents} (rules-stale)" in result.detail
 
     def test_every_link_present_passes(self, rail_home):
         from thinkweave.surfaces.hooks.install import install_hooks

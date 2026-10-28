@@ -3152,6 +3152,60 @@ class TestRailLinks:
         assert "0 changed, 12 already current" in capsys.readouterr().out
         assert claude_md.read_text(encoding="utf-8").count("- rule one") == 1
 
+    def test_each_state_is_classified_once_and_read_by_both_consumers(
+        self, rail_home, capsys
+    ):
+        """One home holding every state; `RailTarget.state` names each, the
+        doctor reports those names, and the installer acts on them."""
+        from thinkweave.surfaces.cli import mcp_doctor
+        from thinkweave.surfaces.hooks.install import rail_targets
+
+        repo, home = rail_home
+        cc, cx, pi = home / ".claude", home / ".codex", home / ".pi" / "agent"
+        (cc / "skills").mkdir(parents=True)
+        (cc / "skills" / "tdd").symlink_to(repo / "skills" / "tdd")  # carried
+        (home / "elsewhere").mkdir()
+        (cc / "skills" / "retro").symlink_to(home / "elsewhere")  # foreign-symlink
+        (cx / "skills").mkdir(parents=True)
+        (cx / "skills" / "tdd").mkdir()  # foreign-file
+        (cx / "skills" / "retro").symlink_to(home / "gone")  # dangling
+        (cx / "AGENTS.md").write_text("# mine\n", encoding="utf-8")  # rules-missing
+        pi.mkdir(parents=True)
+        (pi / "AGENTS.md").write_text(
+            "<!-- rsi-rail:start -->\nold\n<!-- rsi-rail:end -->\n", encoding="utf-8"
+        )  # rules-stale; everything else: missing
+        expected = {
+            cc / "skills" / "tdd": "carried",
+            cc / "skills" / "retro": "foreign-symlink",
+            cx / "skills" / "tdd": "foreign-file",
+            cx / "skills" / "retro": "dangling",
+            cx / "AGENTS.md": "rules-missing",
+            pi / "AGENTS.md": "rules-stale",
+            pi / "skills" / "tdd": "missing",
+        }
+
+        states = {t.link: t.state for t in rail_targets(repo)}
+        assert {link: states[link] for link in expected} == expected
+        doctor = mcp_doctor.check_rail_links().detail
+        for link, state in expected.items():
+            assert (f"{link} ({state})" in doctor) == (state != "carried")
+
+        install_hooks(scope="user")
+
+        out = capsys.readouterr().out
+        assert f"skipped {cc / 'skills' / 'retro'}: a symlink elsewhere" in out
+        assert f"skipped {cx / 'skills' / 'tdd'}: not a thinkweave link" in out
+        assert f"relink {cx / 'skills' / 'retro'}" in out
+        assert f"splice rules into {cx / 'AGENTS.md'}" in out
+        assert f"splice rules into {pi / 'AGENTS.md'}" in out
+        assert f"link {pi / 'skills' / 'tdd'}" in out
+        assert "9 changed, 1 already current" in out
+        assert "old" not in (pi / "AGENTS.md").read_text(encoding="utf-8")
+        assert mcp_doctor.check_rail_links().detail == (
+            f"broken: {cc / 'skills' / 'retro'} (foreign-symlink), "
+            f"{cx / 'skills' / 'tdd'} (foreign-file)"
+        )
+
     def test_dry_run_writes_nothing(self, rail_home, capsys):
         repo, home = rail_home
 
