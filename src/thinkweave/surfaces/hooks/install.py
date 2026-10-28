@@ -17,7 +17,9 @@ import copy
 import difflib
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from thinkweave.core.fswrite import atomic_write_text, replace_between
 from thinkweave.core.harness import PROFILES
@@ -402,6 +404,25 @@ RAIL_BLOCK_START = "<!-- rsi-rail:start -->"
 RAIL_BLOCK_END = "<!-- rsi-rail:end -->"
 
 
+@dataclass(frozen=True)
+class RailTarget:
+    """One place a rail file is carried: ``link`` is the profile path that
+    should resolve to ``target`` in the repo. A ``rules`` target may also be
+    carried as a sentinel-wrapped block inside an existing file."""
+
+    link: Path
+    target: Path
+    kind: Literal["skill", "rules"]
+
+    @property
+    def carried(self) -> bool:
+        """True when ``link`` resolves to ``target``, or holds the current
+        rules block."""
+        return links_into_rail(self.link, self.target) or (
+            self.kind == "rules" and has_rules_block(self.link, self.target)
+        )
+
+
 def install_rail_links(dry_run: bool = False) -> None:
     """Fan the rsi-rail repo out to every registered profile, idempotently.
 
@@ -421,21 +442,19 @@ def install_rail_links(dry_run: bool = False) -> None:
             "rsi_rail key); no policy links to make."
         )
         return
-    rules = rail_rules(repo)
     would = "Would " if dry_run else ""
     changed = current = 0
     print(f"rsi-rail links from {repo}:")
-    for link, target in rail_targets(repo):
-        if links_into_rail(link, target) or (
-            target == rules and has_rules_block(link, rules)
-        ):
+    for entry in rail_targets(repo):
+        link, target = entry.link, entry.target
+        if entry.carried:
             current += 1
             continue
         if link.is_symlink() and link.resolve().exists():
             print(f"  skipped {link}: a symlink to {link.resolve()}, left alone")
             continue
         if link.exists() and not link.is_symlink():
-            if target != rules:
+            if entry.kind != "rules":
                 print(f"  skipped {link}: not a thinkweave link, left alone")
                 continue
             action = "splice rules into"
@@ -446,7 +465,7 @@ def install_rail_links(dry_run: bool = False) -> None:
         if dry_run:
             continue
         if action == "splice rules into":
-            atomic_write_text(link, _with_rules_block(link, rules))
+            atomic_write_text(link, _with_rules_block(link, target))
             continue
         if link.is_symlink():
             link.unlink()
@@ -467,17 +486,21 @@ def rail_rules(repo: Path) -> Path:
     return repo / "claude" / "CLAUDE.md"
 
 
-def rail_targets(repo: Path) -> list[tuple[Path, Path]]:
-    """``(link, target)`` pairs the rail fans out, for every registered
-    profile: one per ``skills/<name>`` folder into ``skills_dir``, then the
-    rules file into ``instructions_file``."""
+def rail_targets(repo: Path) -> list[RailTarget]:
+    """Every place the rail is carried, for every registered profile: one
+    ``skill`` target per ``skills/<name>`` folder into ``skills_dir``, then
+    the ``rules`` target into ``instructions_file``."""
     skills = sorted(p for p in (repo / "skills").iterdir() if p.is_dir())
-    pairs: list[tuple[Path, Path]] = []
+    targets: list[RailTarget] = []
     for make in PROFILES.values():
         profile = make()
-        pairs += [(profile.skills_dir / s.name, s) for s in skills]
-        pairs.append((profile.instructions_file, rail_rules(repo)))
-    return pairs
+        targets += [
+            RailTarget(profile.skills_dir / s.name, s, "skill") for s in skills
+        ]
+        targets.append(
+            RailTarget(profile.instructions_file, rail_rules(repo), "rules")
+        )
+    return targets
 
 
 def links_into_rail(link: Path, target: Path) -> bool:

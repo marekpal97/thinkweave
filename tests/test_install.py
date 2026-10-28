@@ -273,6 +273,34 @@ class TestClaudeMdBlock:
         assert result.count(CLAUDE_MD_BLOCK_START) == 2  # the dangling + the fresh
 
 
+class TestClaudeMdBlockThroughSymlink:
+    def test_block_is_written_through_a_symlink_not_over_it(
+        self, tmp_path, monkeypatch, use_profile, requires_symlinks
+    ):
+        """A user who keeps the instructions file in a dotfiles checkout
+        links it in; the block lands in the real file and the link stays."""
+        from thinkweave.core.config import Config
+        from thinkweave.surfaces.cli.install import _install_claude_md_block
+
+        monkeypatch.setattr(
+            "thinkweave.core.config.load_config",
+            lambda: Config(vault_root=tmp_path / "vault"),
+        )
+        real = tmp_path / "dotfiles" / "CLAUDE.md"
+        real.parent.mkdir()
+        real.write_text("# mine\n", encoding="utf-8")
+        link = tmp_path / "home" / ".claude" / "CLAUDE.md"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(real)
+        use_profile(instructions_file=link)
+
+        _install_claude_md_block(yes=True)
+
+        assert link.is_symlink() and link.resolve() == real
+        text = real.read_text(encoding="utf-8")
+        assert text.startswith("# mine\n") and CLAUDE_MD_BLOCK_START in text
+
+
 class TestMcpJsonSyntax:
     """Basic sanity: every checked-in MCP-bearing JSON file is valid JSON
     and parses to a dict with the expected top-level shape."""

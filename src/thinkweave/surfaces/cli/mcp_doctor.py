@@ -31,10 +31,8 @@ from thinkweave.core.harness import active as _profile
 from thinkweave.surfaces.cli.install import _detect_project_root, _is_windows
 from thinkweave.surfaces.hooks.install import (
     RAIL_BLOCK_START,
+    RailTarget,
     _extension_stub_path,
-    has_rules_block,
-    links_into_rail,
-    rail_rules,
     rail_targets,
 )
 from thinkweave.surfaces.hooks.install import _repo_root as _running_checkout
@@ -466,15 +464,7 @@ def check_rail_links() -> CheckResult:
         return CheckResult(
             name=name, passed=True, detail="no rsi-rail repo configured"
         )
-    rules = rail_rules(repo)
-    broken = [
-        f"{link} ({_rail_fault(link, target, rules)})"
-        for link, target in targets
-        if not (
-            links_into_rail(link, target)
-            or (target == rules and has_rules_block(link, rules))
-        )
-    ]
+    broken = [f"{t.link} ({_rail_fault(t)})" for t in targets if not t.carried]
     if not broken:
         return CheckResult(
             name=name,
@@ -489,13 +479,14 @@ def check_rail_links() -> CheckResult:
     )
 
 
-def _rail_fault(link: Path, target: Path, rules: Path) -> str:
-    """Why ``link`` does not carry ``target``, in two or three words."""
+def _rail_fault(entry: RailTarget) -> str:
+    """Why the entry's link does not carry its target, in a few words."""
+    link = entry.link
     if link.is_symlink():
         return "dangling" if not link.exists() else f"points at {link.resolve()}"
     if not link.exists():
         return "missing"
-    if target == rules and link.is_file():
+    if entry.kind == "rules" and link.is_file():
         stale = RAIL_BLOCK_START in link.read_text(encoding="utf-8")
         return "stale rules block" if stale else "no rules block"
     return "not a link"

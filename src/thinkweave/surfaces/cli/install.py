@@ -593,10 +593,27 @@ def _install_claude_md_block(yes: bool) -> None:
     Mirrors the consent posture of the ``~/.claude.json`` write: announce
     what would change, require ``--yes`` to actually write. Skip path is
     ``--no-claude-md`` on the parser (see ``cmd_install``).
-    """
-    new_block = _render_claude_md_block()
 
-    if not _instructions().exists():
+    A symlinked instructions file is written through, never replaced. When
+    it links to the rsi-rail rules file, which every harness shares, this
+    per-harness block is refused rather than written into the repo.
+    """
+    from thinkweave.core.config import load_config
+    from thinkweave.surfaces.hooks.install import links_into_rail, rail_rules
+
+    rail = load_config().rsi_rail
+    if rail is not None and links_into_rail(_instructions(), rail_rules(rail)):
+        print(
+            f"{_instructions()} links to the rsi-rail rules file "
+            f"{rail_rules(rail)}, shared by every harness; the per-harness "
+            "thinkweave block is not written there. Add it to the rules file "
+            "yourself to carry it in every harness."
+        )
+        return
+    new_block = _render_claude_md_block()
+    target = _instructions().resolve()
+
+    if not target.exists():
         print()
         print(f"{_instructions()} does not exist. `weave install` will create it")
         print("with a small thinkweave block (loaded into every session):")
@@ -607,13 +624,13 @@ def _install_claude_md_block(yes: bool) -> None:
             print()
             print("Re-run with --yes to write, or --no-claude-md to skip.")
             sys.exit(1)
-        _instructions().parent.mkdir(parents=True, exist_ok=True)
-        _instructions().write_text(new_block + "\n", encoding="utf-8")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(new_block + "\n", encoding="utf-8")
         print()
         print(f"Wrote {_instructions()} with thinkweave block.")
         return
 
-    text = _instructions().read_text(encoding="utf-8")
+    text = target.read_text(encoding="utf-8")
     existing = _extract_claude_md_block(text)
     if existing == new_block:
         print(f"thinkweave block already present in {_instructions()} (no change).")
@@ -630,7 +647,7 @@ def _install_claude_md_block(yes: bool) -> None:
         print("Re-run with --yes to apply, or --no-claude-md to skip.")
         sys.exit(1)
 
-    fswrite.atomic_write_text(_instructions(), _splice_claude_md_block(text, new_block))
+    fswrite.atomic_write_text(target, _splice_claude_md_block(text, new_block))
     print()
     verb = "Updated" if existing is not None else "Appended"
     print(f"{verb} thinkweave block in {_instructions()}.")

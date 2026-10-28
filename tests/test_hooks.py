@@ -3126,6 +3126,32 @@ class TestRailLinks:
         assert f"skipped {skills / 'retro'}" in out
         assert f"relink {dangling}" in out
 
+    def test_nudge_block_writer_keeps_the_rail_link(self, rail_home, capsys):
+        """`weave install`'s block writer, run after the rail install, must
+        not turn the instructions link into a copy: the rules file is the
+        rail's and shared by every harness, so the per-harness block is
+        refused there and the link survives."""
+        from thinkweave.surfaces.cli import mcp_doctor
+        from thinkweave.surfaces.cli.install import _install_claude_md_block
+
+        repo, home = rail_home
+        rules = repo / "claude" / "CLAUDE.md"
+        rules_before = rules.read_bytes()
+        install_hooks(scope="user")
+        capsys.readouterr()
+
+        _install_claude_md_block(yes=True)
+
+        claude_md = home / ".claude" / "CLAUDE.md"
+        assert claude_md.is_symlink() and claude_md.resolve() == rules
+        assert rules.read_bytes() == rules_before
+        out = capsys.readouterr().out
+        assert str(rules) in out and "not written" in out
+        assert mcp_doctor.check_rail_links().passed
+        install_hooks(scope="user")
+        assert "0 changed, 12 already current" in capsys.readouterr().out
+        assert claude_md.read_text(encoding="utf-8").count("- rule one") == 1
+
     def test_dry_run_writes_nothing(self, rail_home, capsys):
         repo, home = rail_home
 
