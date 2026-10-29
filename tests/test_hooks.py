@@ -406,7 +406,7 @@ class TestHookInstaller:
 
         # Two PostToolUse entries: action-tool gate + MCP-tool gate.
         matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
-        assert "Write|Edit|Bash" in matchers
+        assert "Skill|Write|Edit|Bash" in matchers
         assert "mcp__(plugin_thinkweave_)?thinkweave__.*" in matchers
         # Timeouts come from the canonical hooks.json (30s for PostToolUse
         # since PR #10), not the retired hand-maintained 5s default.
@@ -451,7 +451,7 @@ class TestHookInstaller:
         ]
         assert len(weave_entries) == 2
         weave_matchers = {e["matcher"] for e in weave_entries}
-        assert weave_matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
+        assert weave_matchers == {"Skill|Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
 
     def test_install_migrates_legacy_shell_wrapper_command(self, tmp_path: Path):
         """Every historical hook form (run_hook.sh, `python -m`, bare
@@ -479,7 +479,7 @@ class TestHookInstaller:
                 ],
                 "PostToolUse": [
                     {
-                        "matcher": "Write|Edit|Bash",
+                        "matcher": "Skill|Write|Edit|Bash",
                         "hooks": [
                             {
                                 "type": "command",
@@ -524,7 +524,7 @@ class TestHookInstaller:
 
         # Identify the action vs MCP PostToolUse entry by matcher.
         post_entries = settings["hooks"]["PostToolUse"]
-        action_entry = next(e for e in post_entries if e["matcher"] == "Write|Edit|Bash")
+        action_entry = next(e for e in post_entries if e["matcher"] == "Skill|Write|Edit|Bash")
         mcp_entry = next(e for e in post_entries if e["matcher"] == "mcp__(plugin_thinkweave_)?thinkweave__.*")
         action_cmd = action_entry["hooks"][0]["command"]
         mcp_cmd = mcp_entry["hooks"][0]["command"]
@@ -633,7 +633,7 @@ class TestHookInstaller:
         # within slot. Single-matcher phases stay at exactly one.
         assert len(settings["hooks"]["PostToolUse"]) == 2
         post_matchers = {e["matcher"] for e in settings["hooks"]["PostToolUse"]}
-        assert post_matchers == {"Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
+        assert post_matchers == {"Skill|Write|Edit|Bash", "mcp__(plugin_thinkweave_)?thinkweave__.*"}
         assert len(settings["hooks"]["SessionStart"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
 
@@ -669,7 +669,7 @@ class TestHookInstaller:
         Claude Code matches PostToolUse entries against the dispatched
         tool's ``tool_name`` string. MCP calls arrive with names like
         ``mcp__thinkweave__weave_search`` — they don't match
-        ``Write|Edit|Bash``. Without a second matcher targeting
+        ``Skill|Write|Edit|Bash``. Without a second matcher targeting
         ``mcp__thinkweave__.*``, ``_handle_post``'s retrieval branch
         (see operations/retrieval_log.RETRIEVAL_TOOLS) never fires and
         ``retrieval_log.jsonl`` only contains the SessionStart entry.
@@ -885,6 +885,11 @@ class TestHookInstaller:
 
 
 class TestBuildEventEnrichment:
+    def test_a_skill_tool_call_is_one_skill_row(self):
+        event = _build_event("Skill", {"skill": "wrap", "args": "--force"}, "", "14:00")
+        assert event == {"ts": "14:00", "tool": "Skill", "skill": "wrap", "declared": "tool"}
+        assert _build_event("Skill", {"args": "x"}, "", "14:00") is None
+
     """Tests for _build_event metadata enrichment (commit, test, insights)."""
 
     def test_bash_with_commit(self):
@@ -1795,7 +1800,8 @@ class TestUserPromptSubmitHook:
         buf_file = cfg.weave_dir / "buffer" / "ses-cc-1.jsonl"
         assert buf_file.exists()
         lines = buf_file.read_text().splitlines()
-        assert len(lines) == 1
+        # The prompt, then the manifest the first prompt stamps.
+        assert len(lines) == 2
         row = json.loads(lines[0])
         assert row["type"] == "prompt"
         assert row["text"] == "What does the indexer skip?"
@@ -1851,7 +1857,7 @@ class TestUserPromptSubmitHook:
             f"<system-reminder>\nnote\n</system-reminder>\n{notice}\n",
         ) == []
         typed = self._run_prompt(cfg, monkeypatch, "ses-inj-3", f"{notice}\nwhy did it fail?")
-        assert [r["type"] for r in typed] == ["prompt"]
+        assert [r["type"] for r in typed] == ["prompt", "manifest"]
 
     def test_the_first_prompt_records_the_session_s_base_sha(
         self, tmp_path: Path, monkeypatch
@@ -1867,7 +1873,7 @@ class TestUserPromptSubmitHook:
         rows = self._run_prompt(
             cfg, monkeypatch, "ses-base-1", "do the thing", cwd=str(repo)
         )
-        assert [r["type"] for r in rows] == ["prompt", "base"]
+        assert [r["type"] for r in rows] == ["prompt", "base", "manifest"]
         assert rows[1]["hash"] == head
         assert rows[1]["session_id"] == "ses-base-1"
         assert rows[1]["ts"] == rows[0]["ts"]
@@ -1876,7 +1882,7 @@ class TestUserPromptSubmitHook:
             cfg, monkeypatch, "ses-base-1", "and now?", cwd=str(repo)
         )
         assert [r["type"] for r in again if r["type"] == "base"] == ["base"]
-        assert [r["type"] for r in again] == ["prompt", "base", "prompt"]
+        assert [r["type"] for r in again] == ["prompt", "base", "manifest", "prompt"]
 
     def test_a_session_outside_any_repo_records_no_base_sha(
         self, tmp_path: Path, monkeypatch
@@ -1891,7 +1897,70 @@ class TestUserPromptSubmitHook:
         rows = self._run_prompt(
             cfg, monkeypatch, "ses-base-2", "do the thing", cwd=str(plain)
         )
-        assert [r["type"] for r in rows] == ["prompt"]
+        assert [r["type"] for r in rows] == ["prompt", "manifest"]
+
+    def test_the_first_prompt_stamps_the_manifest_beside_the_base(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The policy the session runs under: the rsi-rail commit and dirty
+        flag, the firing harness, the reader versions — once per buffer."""
+        from thinkweave.core.config import Config
+        from tests.conftest import init_repo, run_git, scratch_repo
+
+        repo = scratch_repo(tmp_path, monkeypatch)
+        rail = init_repo(tmp_path / "rail")
+        cfg = Config(vault_root=tmp_path / "vault", rsi_rail=rail)
+        rows = self._run_prompt(cfg, monkeypatch, "ses-man-1", "go", cwd=str(repo))
+        stamp = rows[2]
+        assert stamp["type"] == "manifest" and stamp["ts"] == rows[0]["ts"]
+        assert stamp["manifest"]["harness"] == "claude-code"
+        assert stamp["manifest"]["rsi_rail"] == {
+            "repo": str(rail), "commit": run_git("rev-parse", "HEAD", cwd=rail), "dirty": False,
+        }
+        assert stamp["manifest"]["readers"]["thinkweave"]
+        again = self._run_prompt(cfg, monkeypatch, "ses-man-1", "more", cwd=str(repo))
+        assert [r["type"] for r in again].count("manifest") == 1
+
+    def test_a_leading_skill_token_records_a_prompt_declared_skill_row(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """What the user invoked by its slash form, in the Skill tool's row
+        shape, tagged as declared on the prompt."""
+        from thinkweave.core.config import Config
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-1", "/wrap")
+        assert [r["type"] for r in rows if "type" in r] == ["prompt", "manifest"]
+        (skill,) = [r for r in rows if r.get("tool") == "Skill"]
+        assert skill == {
+            "ts": rows[0]["ts"], "tool": "Skill", "skill": "wrap",
+            "declared": "prompt", "harness": "claude-code",
+        }
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-2", "/drain --source-type news")
+        assert [r["skill"] for r in rows if r.get("tool") == "Skill"] == ["drain"]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-3", "/thinkweave:wrap now")
+        assert [r["skill"] for r in rows if r.get("tool") == "Skill"] == ["thinkweave:wrap"]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-sk-4", "look under /etc/hosts")
+        assert [r for r in rows if r.get("tool") == "Skill"] == []
+
+    def test_a_skill_mention_follows_the_firing_harness_s_prefix(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from thinkweave.core.config import Config
+
+        cfg = Config(vault_root=tmp_path / "vault")
+        monkeypatch.setattr("sys.argv", ["weave-hook", "user_prompt_submit", "--harness", "pi"])
+        rows = self._run_prompt(cfg, monkeypatch, "ses-pi-1", "/skill:wrap")
+        assert [(r["skill"], r["harness"]) for r in rows if r.get("tool") == "Skill"] == [("wrap", "pi")]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-pi-2", "/wrap")
+        assert [r for r in rows if r.get("tool") == "Skill"] == []
+        monkeypatch.setattr("sys.argv", ["weave-hook", "user_prompt_submit", "--harness", "codex"])
+        rows = self._run_prompt(cfg, monkeypatch, "ses-cx-1", "$thinkweave-wrap")
+        assert [(r["skill"], r["harness"]) for r in rows if r.get("tool") == "Skill"] == [
+            ("thinkweave-wrap", "codex")
+        ]
+        rows = self._run_prompt(cfg, monkeypatch, "ses-cx-2", "/wrap")
+        assert [r for r in rows if r.get("tool") == "Skill"] == []
 
     def test_hook_never_writes_feedback_events(self, tmp_path: Path, monkeypatch):
         # #101 — hooks capture, never judge. Even an unambiguous correction
@@ -2067,9 +2136,9 @@ class TestPromptTimeEnrichment:
             .read_text().splitlines()
             if x.strip()
         ]
-        # The prompt is captured, and with it the base commit the first
-        # prompt saw; the disabled enrichment writes nothing back.
-        assert [r["type"] for r in lines] == ["prompt", "base"]
+        # The prompt is captured, and with it the base commit and manifest
+        # the first prompt saw; the disabled enrichment writes nothing back.
+        assert [r["type"] for r in lines] == ["prompt", "base", "manifest"]
 
     def test_enrichment_failure_never_breaks_turn(
         self, tmp_path: Path, monkeypatch, capsys
@@ -2664,7 +2733,7 @@ class TestSessionHarnessAndModel:
 
         out = json.loads(capsys.readouterr().out)
         assert "model store unwritable" in out["systemMessage"]
-        assert [e["type"] for e in _read_buffer(vault.weave_dir, session_id)] == ["prompt"]
+        assert [e["type"] for e in _read_buffer(vault.weave_dir, session_id)] == ["prompt", "manifest"]
 
 
 class TestCaptureGaps:
@@ -2928,3 +2997,235 @@ class TestUserPromptSubmitHookBudget:
         spent = handler_mod._hook_budget_remaining("UserPromptSubmit", time.monotonic() - 10)
         assert spent < 0
         assert handler_mod._hook_budget_remaining("SubagentStart", time.monotonic()) is None
+
+
+# ---------------------------------------------------------------------------
+# rsi-rail fan-out: skills and the rules file linked into every profile
+# ---------------------------------------------------------------------------
+
+# The link each registered profile should end up with, by the paths the
+# harness docs declare (not derived from PROFILES).
+_RAIL_SKILL_LINKS = (
+    ".claude/skills/{name}",
+    ".codex/skills/{name}",
+    ".pi/agent/skills/{name}",
+    ".config/opencode/commands/{name}",
+)
+_RAIL_INSTRUCTIONS = (
+    ".claude/CLAUDE.md",
+    ".codex/AGENTS.md",
+    ".pi/agent/AGENTS.md",
+    ".config/opencode/AGENTS.md",
+)
+
+
+class TestRailLinks:
+    """``weave hooks install`` links the rsi-rail repo's ``skills/`` and
+    ``claude/CLAUDE.md`` into every profile, idempotently."""
+
+    def test_first_run_links_every_profile(self, rail_home, capsys):
+        repo, home = rail_home
+
+        install_hooks(scope="user")
+
+        for name in ("tdd", "retro"):
+            for rel in _RAIL_SKILL_LINKS:
+                link = home / rel.format(name=name)
+                assert link.is_symlink(), link
+                assert link.resolve() == repo / "skills" / name
+        for rel in _RAIL_INSTRUCTIONS:
+            link = home / rel
+            assert link.is_symlink(), link
+            assert link.resolve() == repo / "claude" / "CLAUDE.md"
+        # A file beside the skill folders is not a skill.
+        assert not (home / ".claude" / "skills" / "README.md").exists()
+        out = capsys.readouterr().out
+        assert str(home / ".pi" / "agent" / "skills" / "retro") in out
+        assert "12 changed" in out
+
+    def test_second_run_changes_nothing(self, rail_home, capsys):
+        repo, home = rail_home
+        install_hooks(scope="user")
+        before = {p: p.readlink() for p in home.rglob("*") if p.is_symlink()}
+        capsys.readouterr()
+
+        install_hooks(scope="user")
+
+        assert {p: p.readlink() for p in home.rglob("*") if p.is_symlink()} == before
+        out = capsys.readouterr().out
+        assert "0 changed, 12 already current" in out
+
+    def test_links_that_already_resolve_into_the_repo_are_kept(self, rail_home, capsys):
+        """A hand-made link through an intermediate dir is already correct."""
+        repo, home = rail_home
+        shared = home / ".agents" / "skills"
+        shared.parent.mkdir(parents=True)
+        shared.symlink_to(repo / "skills")
+        link = home / ".claude" / "skills" / "tdd"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(shared / "tdd")
+
+        install_hooks(scope="user")
+
+        assert link.readlink() == shared / "tdd"
+        assert "11 changed, 1 already current" in capsys.readouterr().out
+
+    def test_rules_are_spliced_into_an_instructions_file_with_other_content(
+        self, rail_home, capsys
+    ):
+        repo, home = rail_home
+        agents = home / ".codex" / "AGENTS.md"
+        agents.parent.mkdir(parents=True)
+        own = "# mine\n\n<!-- thinkweave:start -->\nnudge\n<!-- thinkweave:end -->\n"
+        agents.write_text(own, encoding="utf-8")
+
+        install_hooks(scope="user")
+
+        assert not agents.is_symlink()
+        text = agents.read_text(encoding="utf-8")
+        assert text.startswith(own)
+        assert "<!-- rsi-rail:start -->" in text and "<!-- rsi-rail:end -->" in text
+        assert "- rule one" in text
+        assert str(repo / "claude" / "CLAUDE.md") in text
+        assert "splice" in capsys.readouterr().out
+
+        # Idempotent: a second run leaves the bytes alone.
+        install_hooks(scope="user")
+        assert agents.read_text(encoding="utf-8") == text
+        assert "0 changed" in capsys.readouterr().out
+
+        # The repo moved on: the block is refreshed in place, nothing else moves.
+        (repo / "claude" / "CLAUDE.md").write_text("# Global rules\n\n- rule two\n")
+        install_hooks(scope="user")
+        text = agents.read_text(encoding="utf-8")
+        assert text.startswith(own)
+        assert "- rule two" in text and "- rule one" not in text
+        assert text.count("<!-- rsi-rail:start -->") == 1
+
+    def test_foreign_entries_are_left_alone_and_dangling_links_repointed(
+        self, rail_home, capsys
+    ):
+        repo, home = rail_home
+        skills = home / ".claude" / "skills"
+        skills.mkdir(parents=True)
+        (skills / "tdd").mkdir()  # the user's own tdd skill
+        elsewhere = home / "my-retro"
+        elsewhere.mkdir()
+        (skills / "retro").symlink_to(elsewhere)  # their own link, resolves
+        dangling = home / ".codex" / "skills" / "tdd"
+        dangling.parent.mkdir(parents=True)
+        dangling.symlink_to(home / "gone")
+
+        install_hooks(scope="user")
+
+        assert (skills / "tdd").is_dir() and not (skills / "tdd").is_symlink()
+        assert (skills / "retro").readlink() == elsewhere
+        assert dangling.resolve() == repo / "skills" / "tdd"
+        out = capsys.readouterr().out
+        assert f"skipped {skills / 'tdd'}" in out
+        assert f"skipped {skills / 'retro'}" in out
+        assert f"relink {dangling}" in out
+
+    def test_nudge_block_writer_keeps_the_rail_link(self, rail_home, capsys):
+        """`weave install`'s block writer, run after the rail install, must
+        not turn the instructions link into a copy: the rules file is the
+        rail's and shared by every harness, so the per-harness block is
+        refused there and the link survives."""
+        from thinkweave.surfaces.cli import mcp_doctor
+        from thinkweave.surfaces.cli.install import _install_claude_md_block
+
+        repo, home = rail_home
+        rules = repo / "claude" / "CLAUDE.md"
+        rules_before = rules.read_bytes()
+        install_hooks(scope="user")
+        capsys.readouterr()
+
+        _install_claude_md_block(yes=True)
+
+        claude_md = home / ".claude" / "CLAUDE.md"
+        assert claude_md.is_symlink() and claude_md.resolve() == rules
+        assert rules.read_bytes() == rules_before
+        out = capsys.readouterr().out
+        assert str(rules) in out and "not written" in out
+        assert mcp_doctor.check_rail_links().passed
+        install_hooks(scope="user")
+        assert "0 changed, 12 already current" in capsys.readouterr().out
+        assert claude_md.read_text(encoding="utf-8").count("- rule one") == 1
+
+    def test_each_state_is_classified_once_and_read_by_both_consumers(
+        self, rail_home, capsys
+    ):
+        """One home holding every state; `RailTarget.state` names each, the
+        doctor reports those names, and the installer acts on them."""
+        from thinkweave.surfaces.cli import mcp_doctor
+        from thinkweave.surfaces.hooks.install import rail_targets
+
+        repo, home = rail_home
+        cc, cx, pi = home / ".claude", home / ".codex", home / ".pi" / "agent"
+        (cc / "skills").mkdir(parents=True)
+        (cc / "skills" / "tdd").symlink_to(repo / "skills" / "tdd")  # carried
+        (home / "elsewhere").mkdir()
+        (cc / "skills" / "retro").symlink_to(home / "elsewhere")  # foreign-symlink
+        (cx / "skills").mkdir(parents=True)
+        (cx / "skills" / "tdd").mkdir()  # foreign-file
+        (cx / "skills" / "retro").symlink_to(home / "gone")  # dangling
+        (cx / "AGENTS.md").write_text("# mine\n", encoding="utf-8")  # rules-missing
+        pi.mkdir(parents=True)
+        (pi / "AGENTS.md").write_text(
+            "<!-- rsi-rail:start -->\nold\n<!-- rsi-rail:end -->\n", encoding="utf-8"
+        )  # rules-stale; everything else: missing
+        expected = {
+            cc / "skills" / "tdd": "carried",
+            cc / "skills" / "retro": "foreign-symlink",
+            cx / "skills" / "tdd": "foreign-file",
+            cx / "skills" / "retro": "dangling",
+            cx / "AGENTS.md": "rules-missing",
+            pi / "AGENTS.md": "rules-stale",
+            pi / "skills" / "tdd": "missing",
+        }
+
+        states = {t.link: t.state for t in rail_targets(repo)}
+        assert {link: states[link] for link in expected} == expected
+        doctor = mcp_doctor.check_rail_links().detail
+        for link, state in expected.items():
+            assert (f"{link} ({state})" in doctor) == (state != "carried")
+
+        install_hooks(scope="user")
+
+        out = capsys.readouterr().out
+        assert f"skipped {cc / 'skills' / 'retro'}: a symlink elsewhere" in out
+        assert f"skipped {cx / 'skills' / 'tdd'}: not a thinkweave link" in out
+        assert f"relink {cx / 'skills' / 'retro'}" in out
+        assert f"splice rules into {cx / 'AGENTS.md'}" in out
+        assert f"splice rules into {pi / 'AGENTS.md'}" in out
+        assert f"link {pi / 'skills' / 'tdd'}" in out
+        assert "9 changed, 1 already current" in out
+        assert "old" not in (pi / "AGENTS.md").read_text(encoding="utf-8")
+        assert mcp_doctor.check_rail_links().detail == (
+            f"broken: {cc / 'skills' / 'retro'} (foreign-symlink), "
+            f"{cx / 'skills' / 'tdd'} (foreign-file)"
+        )
+
+    def test_dry_run_writes_nothing(self, rail_home, capsys):
+        repo, home = rail_home
+
+        install_hooks(scope="user", dry_run=True)
+
+        assert not (home / ".codex").exists()
+        assert not (home / ".claude" / "CLAUDE.md").exists()
+        out = capsys.readouterr().out
+        assert f"Would link {home / '.claude' / 'CLAUDE.md'}" in out
+
+    def test_no_repo_configured_says_so(self, tmp_path, monkeypatch, capsys):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            "thinkweave.core.config.load_config",
+            lambda: Config(vault_root=tmp_path / "vault"),
+        )
+
+        install_hooks(scope="user")
+
+        assert "No rsi-rail repo configured" in capsys.readouterr().out
+        assert not (home / ".codex").exists()

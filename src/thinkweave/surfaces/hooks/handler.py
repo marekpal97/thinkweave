@@ -17,8 +17,10 @@ SessionStart: Injects structured project context (open tasks, recent
 UserPromptSubmit: Captures every user prompt as a structured "prompt"
   event in the JSONL buffer. Promotes user prompts into a first-class
   primitive (`Prompt`) — replaces the heuristic `probe`-tag flow.
-PostToolUse (Write|Edit|Bash): Buffers events to JSONL. Session note
-  materialization is deferred to Stop hook.
+PostToolUse (Skill|Write|Edit|Bash): Buffers events to JSONL. Session note
+  materialization is deferred to Stop hook. A Skill call is one ``Skill``
+  row; a prompt that invokes a skill by the harness's slash form writes the
+  same row tagged ``declared: prompt``.
 Stop: Reconstructs session from buffer, writes summary, indexes once.
 
 Duplicate deliveries (#161): when a lifecycle event arrives carrying a
@@ -449,15 +451,20 @@ def _handle_subagent_start(hook_input: dict) -> None:
             "payload carries no agent_id; the task opens without an agent "
             "ref and its SubagentStop cannot pair",
         )
+    role = str(hook_input.get("agent_type", ""))
     dispatch = tasks.open_child(
         cfg,
         session_key=session_id,
         project=detect_project(cwd),
-        role=str(hook_input.get("agent_type", "")),
+        role=role,
         harness=_harness_id(),
         agent_id=agent_id,
         cwd=cwd,
     )
+    _buffer_event(cfg.weave_dir, session_id, {
+        "ts": datetime.now(timezone.utc).isoformat(), "type": "subagent_start",
+        "task_id": dispatch.task_id, "agent_id": agent_id, "role": role,
+    })
     _output(
         additional_context=json.dumps({"thinkweave_task": dispatch.to_dict()}),
         hook_event_name="SubagentStart",
@@ -474,6 +481,7 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     from thinkweave.operations import tasks
 
     cfg = load_config()
+    session_id = _subagent_session_id(hook_input)
     agent_id = str(hook_input.get("agent_id", ""))
     source = tasks.TranscriptSource.agent_file(
         _harness_id(),
@@ -481,9 +489,11 @@ def _handle_subagent_stop(hook_input: dict) -> None:
         agent_transcript=str(hook_input.get("agent_transcript_path") or ""),
         parent_transcript=str(hook_input.get("transcript_path") or ""),
     )
-    stop = tasks.stop_child(
-        cfg, session_key=_subagent_session_id(hook_input), source=source
-    )
+    stop = tasks.stop_child(cfg, session_key=session_id, source=source)
+    _buffer_event(cfg.weave_dir, session_id, {
+        "ts": datetime.now(timezone.utc).isoformat(), "type": "subagent_stop",
+        "task_id": stop.task_id, "agent_id": agent_id, "kind": stop.kind,
+    })
     if stop.closed and stop.closed.gaps:
         _log_info(
             "subagent_stop", f"{stop.task_id} digest gaps: {'; '.join(stop.closed.gaps)}"
@@ -564,7 +574,11 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         if not _buffer_event(cfg.weave_dir, session_id, event):
             _output()
             return
-        _record_base(cfg.weave_dir, session_id, now, cwd)
+        if skill := _declared_skill(prompt_text, _firing_profile().skill_prefix):
+            _buffer_event(cfg.weave_dir, session_id, {
+                "ts": now, "tool": "Skill", "skill": skill, "declared": "prompt",
+            })
+        _record_base(cfg, session_id, now, cwd)
 
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to.
@@ -603,27 +617,48 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         )
 
 
-def _record_base(weave_dir: Path, session_id: str, now: str, cwd: str) -> None:
-    """Append the repo HEAD this prompt saw, once per session buffer.
+# A skill name as the harnesses spell it: bare, or namespaced by colons.
+_SKILL_NAME_RE = re.compile(r"[\w-]+(?::[\w-]+)*")
+
+
+def _declared_skill(prompt: str, prefix: str) -> str:
+    """The skill a prompt invokes by the harness's slash form — its leading
+    token, after ``prefix`` — or ``""`` when the prompt opens with
+    anything else."""
+    head = prompt.split(None, 1)[0] if prompt.strip() else ""
+    name = head[len(prefix):] if head.startswith(prefix) else ""
+    return name if _SKILL_NAME_RE.fullmatch(name) else ""
+
+
+def _record_base(cfg, session_id: str, now: str, cwd: str) -> None:
+    """Append the repo HEAD this prompt saw and the manifest the session
+    runs under, once per session buffer.
 
     The first prompt of a session is the replay anchor: a task round lifts
-    ``base`` from that row. The claim is a marker file in the session's
-    scratch dir (``_claim_once``, the failure marker's primitive) so a long buffer
-    costs no read on the prompts after the first, and a multiply-registered
-    hook writes one row, not several. Outside a repo nothing is recorded:
-    a round's ``base`` is optional.
+    ``base`` and ``manifest`` from these rows. The claim is a marker file in
+    the session's scratch dir (``_claim_once``, the failure marker's
+    primitive) so a long buffer costs no read on the prompts after the
+    first, and a multiply-registered hook writes one row, not several.
+    Outside a repo no base is recorded: a round's ``base`` is optional. The
+    manifest is always recorded; a misconfigured rail raises and the hook
+    reports it.
     """
+    from thinkweave.core import manifest
     from thinkweave.operations.tasks import head_sha
 
-    state = session_state_dir(weave_dir, session_id)
+    state = session_state_dir(cfg.weave_dir, session_id)
     state.mkdir(parents=True, exist_ok=True)
     if not _claim_once(state / "base"):
         return
     sha = head_sha(cwd)
     if sha:
-        _buffer_event(weave_dir, session_id, {
+        _buffer_event(cfg.weave_dir, session_id, {
             "ts": now, "type": "base", "session_id": session_id, "hash": sha,
         })
+    _buffer_event(cfg.weave_dir, session_id, {
+        "ts": now, "type": "manifest", "session_id": session_id,
+        "manifest": manifest.collect(cfg, _harness_id()),
+    })
 
 
 def _bind_dispatched_session(
@@ -1170,7 +1205,7 @@ def _raw_tool_response(hook_input: dict):
 # edit through a single `apply_patch` call and reports that as the tool name
 # (`Edit`/`Write` are matcher aliases only — they never appear in the
 # payload). Union rather than profile data, for the reason in `_is_internal`.
-ACTION_TOOLS = ("Write", "Edit", "Bash", "apply_patch")
+ACTION_TOOLS = ("Write", "Edit", "Bash", "apply_patch", "Skill")
 
 # Codex's apply_patch envelope. Markers transcribed from the codex-cli 0.146.0
 # binary: `*** Add File: `, `*** Update File:`, `*** Delete File: `,
@@ -1268,6 +1303,11 @@ def _build_event(tool_name: str, tool_input: dict, tool_output, now: str) -> dic
         pull_request = _parse_gh_pr(command, output_str)
         if pull_request:
             event["pull_request"] = pull_request
+    elif tool_name == "Skill":
+        skill = str(tool_input.get("skill") or "")
+        if not skill:
+            return None
+        return {"ts": now, "tool": "Skill", "skill": skill, "declared": "tool"}
     else:
         return None
 
@@ -1624,6 +1664,8 @@ def _handle_stop(hook_input: dict) -> None:
             fm["git_branch"] = result.git_branch
         if result.pull_requests:
             fm["pull_requests"] = result.pull_requests
+        if result.tools:
+            fm["tools"] = result.tools
         if result.concepts:
             fm["concepts"] = result.concepts
         if result.decision_skeletons:
@@ -1713,8 +1755,9 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
     - Recomputes the deterministic evidence (``core.events.extract_
       deterministic``) over the archived ``events.jsonl`` UNION the live
       buffer, and writes only the evidence fields — ``files_touched``,
-      ``commits``, ``test_runs``, ``git_branch``, ``has_failures``. Lists
-      are union-merged so anything a wrap wrote survives. The body is never
+      ``commits``, ``test_runs``, ``git_branch``, ``tools``, ``has_failures``.
+      Lists are union-merged so anything a wrap wrote survives; ``tools``
+      is recomputed over the union. The body is never
       touched: a wrap's LLM summary must not be clobbered by a later turn.
     - Mirrors the buffer's action/prompt lines into ``events.jsonl``
       (append-unique) so prompts project at the next index. The buffer
@@ -1759,6 +1802,8 @@ def _fold_processed_session(cfg, vm, session_path: Path, source_session: str) ->
         updates["git_branch"] = result.git_branch
     if result.pull_requests:
         updates["pull_requests"] = _merge_evidence(fm.get("pull_requests"), result.pull_requests)
+    if result.tools:
+        updates["tools"] = result.tools
     if result.failure_signals:
         updates["has_failures"] = True
 

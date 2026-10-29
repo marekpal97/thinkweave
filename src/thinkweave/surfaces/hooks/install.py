@@ -1,4 +1,5 @@
-"""Install/uninstall thinkweave hooks into Claude Code settings.
+"""Install/uninstall thinkweave hooks into Claude Code settings, and fan
+the rsi-rail policy repo out to every registered harness profile.
 
 Merge pattern — reads existing settings, appends hooks,
 preserves permissions. Non-destructive.
@@ -16,9 +17,12 @@ import copy
 import difflib
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from thinkweave.core.fswrite import atomic_write_text
+from thinkweave.core.fswrite import atomic_write_text, replace_between
+from thinkweave.core.harness import PROFILES
 from thinkweave.core.harness import active as active_harness
 from thinkweave.core.plugin_route import plugin_namespace
 
@@ -396,6 +400,171 @@ def _install_extension_stub(
     )
 
 
+RAIL_BLOCK_START = "<!-- rsi-rail:start -->"
+RAIL_BLOCK_END = "<!-- rsi-rail:end -->"
+
+
+RailState = Literal[
+    "carried",
+    "foreign-symlink",
+    "foreign-file",
+    "dangling",
+    "missing",
+    "rules-missing",
+    "rules-stale",
+]
+
+# What the installer does about each state, and the words it prints.
+_RAIL_ACTIONS: dict[str, str] = {
+    "missing": "link",
+    "dangling": "relink",
+    "rules-missing": "splice rules into",
+    "rules-stale": "splice rules into",
+}
+_RAIL_SKIPS: dict[str, str] = {
+    "foreign-symlink": "a symlink elsewhere, left alone",
+    "foreign-file": "not a thinkweave link, left alone",
+}
+
+
+@dataclass(frozen=True)
+class RailTarget:
+    """One place a rail file is carried: ``link`` is the profile path that
+    should resolve to ``target`` in the repo. A ``rules`` target may also be
+    carried as a sentinel-wrapped block inside an existing file."""
+
+    link: Path
+    target: Path
+    kind: Literal["skill", "rules"]
+
+    @property
+    def state(self) -> RailState:
+        """Classify the link once: ``carried`` (resolves to the target, or a
+        rules file holding the current block), ``foreign-symlink`` (resolves
+        elsewhere), ``foreign-file`` (the user's own file or directory),
+        ``dangling``, ``missing``, or a rules file with ``rules-missing`` /
+        ``rules-stale`` block."""
+        link = self.link
+        if links_into_rail(link, self.target):
+            return "carried"
+        if link.is_symlink():
+            return "foreign-symlink" if link.exists() else "dangling"
+        if not link.exists():
+            return "missing"
+        if self.kind != "rules" or not link.is_file():
+            return "foreign-file"
+        text = link.read_text(encoding="utf-8")
+        if rules_block(self.target) in text:
+            return "carried"
+        return "rules-stale" if RAIL_BLOCK_START in text else "rules-missing"
+
+    @property
+    def carried(self) -> bool:
+        return self.state == "carried"
+
+
+def install_rail_links(dry_run: bool = False) -> None:
+    """Fan the rsi-rail repo out to every registered profile, idempotently.
+
+    Each ``skills/<name>`` folder is linked into the profile's skills dir and
+    ``claude/CLAUDE.md`` into its instructions file; an instructions file that
+    already holds other content gets the rules spliced in between sentinels
+    instead. A link that already resolves into the repo is kept, a dangling
+    one is re-pointed, and anything of the user's own is left alone and
+    named. Prints one line per change.
+    """
+    from thinkweave.core.config import load_config
+
+    repo = load_config().rsi_rail
+    if repo is None:
+        print(
+            "No rsi-rail repo configured (THINKWEAVE_RSI_RAIL or the user-scope "
+            "rsi_rail key); no policy links to make."
+        )
+        return
+    would = "Would " if dry_run else ""
+    changed = current = 0
+    print(f"rsi-rail links from {repo}:")
+    for entry in rail_targets(repo):
+        link, target, state = entry.link, entry.target, entry.state
+        if state == "carried":
+            current += 1
+            continue
+        if state in _RAIL_SKIPS:
+            print(f"  skipped {link}: {_RAIL_SKIPS[state]}")
+            continue
+        action = _RAIL_ACTIONS[state]
+        changed += 1
+        print(f"  {would}{action} {link} -> {target}")
+        if dry_run:
+            continue
+        if state.startswith("rules-"):
+            atomic_write_text(link, _with_rules_block(link, target))
+            continue
+        if state == "dangling":
+            link.unlink()
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            # Windows without the symlink privilege: say so and keep going.
+            print(f"  warning: could not link {link} -> {target}: {exc}")
+    print(
+        f"  {changed} {'to change' if dry_run else 'changed'}, "
+        f"{current} already current."
+    )
+
+
+def rail_rules(repo: Path) -> Path:
+    """The rules file every profile's instructions file carries."""
+    return repo / "claude" / "CLAUDE.md"
+
+
+def rail_targets(repo: Path) -> list[RailTarget]:
+    """Every place the rail is carried, for every registered profile: one
+    ``skill`` target per ``skills/<name>`` folder into ``skills_dir``, then
+    the ``rules`` target into ``instructions_file``."""
+    skills = sorted(p for p in (repo / "skills").iterdir() if p.is_dir())
+    targets: list[RailTarget] = []
+    for make in PROFILES.values():
+        profile = make()
+        targets += [
+            RailTarget(profile.skills_dir / s.name, s, "skill") for s in skills
+        ]
+        targets.append(
+            RailTarget(profile.instructions_file, rail_rules(repo), "rules")
+        )
+    return targets
+
+
+def links_into_rail(link: Path, target: Path) -> bool:
+    """True when ``link`` is a symlink that resolves to ``target``."""
+    return link.is_symlink() and link.resolve() == target.resolve()
+
+
+def rules_block(rules: Path) -> str:
+    """The rules file rendered as the sentinel-wrapped block an instructions
+    file with other content carries."""
+    body = rules.read_text(encoding="utf-8").rstrip()
+    return (
+        f"{RAIL_BLOCK_START}\n"
+        f"<!-- copied from {rules} by `weave hooks install`; edit the repo, "
+        "then re-run -->\n"
+        f"{body}\n{RAIL_BLOCK_END}"
+    )
+
+
+def _with_rules_block(path: Path, rules: Path) -> str:
+    """``path``'s text with the rules block replaced in place or appended."""
+    return replace_between(
+        path.read_text(encoding="utf-8"),
+        RAIL_BLOCK_START,
+        RAIL_BLOCK_END,
+        rules_block(rules),
+        on_missing="append",
+    )
+
+
 def install_hooks(
     project_dir: str = "",
     scope: str = "project",
@@ -421,7 +590,12 @@ def install_hooks(
 
     ``hooks_json`` overrides the canonical-definitions source (contract
     tests only); defaults to the repo's ``hooks/hooks.json``.
+
+    Whatever the scope, the configured rsi-rail repo is first fanned out to
+    every registered profile (:func:`install_rail_links`).
     """
+    install_rail_links(dry_run)
+
     # Documented degradation (epic #103 anti-goals): a harness without hook
     # support is pointed at manual `/wrap`, not handed a file it never reads.
     profile = active_harness()
@@ -577,6 +751,7 @@ def _strip_thinkweave_hooks(hooks: dict, hook_type: str) -> None:
 _PREVIOUS_MATCHERS: dict[str, tuple[str, ...]] = {
     # The plugin route names its MCP tools `mcp__plugin_thinkweave_thinkweave__…`.
     "mcp__(plugin_thinkweave_)?thinkweave__.*": ("mcp__thinkweave__.*",),
+    "Skill|Write|Edit|Bash": ("Write|Edit|Bash",),
 }
 
 

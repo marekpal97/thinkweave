@@ -1,6 +1,6 @@
 """``weave task`` — the task routes' CLI verbs (the headless route).
 
-Five actions over :mod:`thinkweave.operations.tasks`:
+Six actions over :mod:`thinkweave.operations.tasks`:
 
 - ``weave task open`` — mint a child task at a dispatch boundary. Prints
   the minted task id.
@@ -17,6 +17,10 @@ Five actions over :mod:`thinkweave.operations.tasks`:
   composer learns their ids before declaring ``children``.
 - ``weave task record-run <payload.json>`` — land a devloop run as a
   ``route: devloop`` round on the open task its issue ref resolves to.
+- ``weave task feedback <verdicts-json>`` — pin prompt verdicts (the
+  ``wrap-finalize --verdicts`` shape) to the running session's live buffer
+  mid-session, so the next wrap lands them on the round. Exit code 1 when
+  a verdict matched no prompt.
 
 Open and close correlate by the task id alone — a harness without hooks
 runs exactly this route and loses only the boundary automation.
@@ -49,9 +53,11 @@ def cmd_task(args: argparse.Namespace) -> None:
         _cmd_ledger(args)
     elif action == "record-run":
         _cmd_record_run(args)
+    elif action == "feedback":
+        _cmd_feedback(args)
     else:
         print(
-            "Usage: weave task {open|close|render|ledger|record-run}",
+            "Usage: weave task {open|close|render|ledger|record-run|feedback}",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -151,3 +157,22 @@ def _cmd_record_run(args: argparse.Namespace) -> None:
     for warning in landed.warnings:
         print(f"record-run: {warning}", file=sys.stderr)
     print(landed.task_id)
+
+
+def _cmd_feedback(args: argparse.Namespace) -> None:
+    from thinkweave.operations.wrap import pin_verdicts
+
+    try:
+        verdicts = json.loads(args.verdicts)
+    except json.JSONDecodeError as exc:
+        print(f"feedback: verdicts are not JSON: {exc}", file=sys.stderr)
+        sys.exit(2)
+    result = pin_verdicts(_load_config(), _session_key(args), verdicts)
+    for error in result.errors:
+        print(f"feedback: {error}", file=sys.stderr)
+    print(
+        f"feedback: session {result.session_id} · {result.verdicts_written} written, "
+        f"{result.verdicts_skipped} already labeled, {result.verdicts_unmatched} unmatched"
+    )
+    if result.errors or result.verdicts_unmatched:
+        sys.exit(1)

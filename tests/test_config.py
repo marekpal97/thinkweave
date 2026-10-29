@@ -267,6 +267,9 @@ def _isolate_user_config(
     # PERSONAL_MEM_VAULT would otherwise leak into "nothing set" cases.
     for legacy in ("PERSONAL_MEM_VAULT", "PERSONAL_MEM_PROJECT"):
         monkeypatch.delenv(legacy, raising=False)
+    # A developer shell pointing at the real policy repo would otherwise
+    # merge that repo's keys into every "nothing set" case.
+    monkeypatch.delenv("THINKWEAVE_RSI_RAIL", raising=False)
     return xdg / "thinkweave" / "config.toml"
 
 
@@ -361,18 +364,18 @@ def test_load_config_user_config_overrides_vault_internal_vault_root(
     assert cfg.vault_root == preferred
 
 
-def test_load_config_ignores_malformed_user_config(
+def test_load_config_rejects_malformed_user_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """A broken user-config TOML must not brick `weave`; fall through silently."""
+    """A broken user-config TOML fails loudly, naming the file: it may carry
+    the policy-repo path, so falling through would silently drop that tier."""
     monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
     user_path = _isolate_user_config(monkeypatch, tmp_path)
     user_path.parent.mkdir(parents=True)
     user_path.write_text("not = valid = toml = at = all\n", encoding="utf-8")
 
-    cfg = load_config()
-    # Falls through to the built-in default — same as a fresh Config().
-    assert cfg.vault_root == Config().vault_root
+    with pytest.raises(ValueError, match=str(user_path)):
+        load_config()
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +472,103 @@ def test_rrf_k_override_coexists_with_prompt_time_block(
     cfg = load_config()
     assert cfg.retrieval_rrf_k == 30
     assert cfg.retrieval_prompt_time.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# rsi-rail policy repo tier (<repo>/thinkweave/config.toml)
+# ---------------------------------------------------------------------------
+
+
+def _vault_with_toml(tmp_path: Path, text: str) -> Path:
+    vault = tmp_path / "vault"
+    (vault / "config").mkdir(parents=True)
+    (vault / "config" / "config.toml").write_text(text, encoding="utf-8")
+    return vault
+
+
+def _rail_with_toml(tmp_path: Path, text: str) -> Path:
+    rail = tmp_path / "rsi-rail"
+    (rail / "thinkweave").mkdir(parents=True)
+    (rail / "thinkweave" / "config.toml").write_text(text, encoding="utf-8")
+    return rail
+
+
+def test_rsi_rail_key_wins_over_vault_and_vault_fills_the_rest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A key in both files resolves to the repo value; a key only in the
+    vault file keeps the vault value; the repo never moves the vault."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = _vault_with_toml(
+        tmp_path,
+        "[retrieval]\nrrf_k = 30\n\n[landing]\nopen_probes_cap = 5\n",
+    )
+    rail = _rail_with_toml(
+        tmp_path,
+        _toml_line("vault_root", tmp_path / "elsewhere")
+        + "[retrieval]\nrrf_k = 7\n\n[retrieval.prompt_time]\nmax_pieces_per_turn = 9\n",
+    )
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+    monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(rail))
+
+    cfg = load_config()
+    assert cfg.retrieval_rrf_k == 7
+    assert cfg.landing_open_probes_cap == 5
+    assert cfg.retrieval_prompt_time.max_pieces_per_turn == 9
+    assert cfg.vault_root == vault
+    assert cfg.rsi_rail == rail
+
+
+def test_rsi_rail_located_by_user_scope_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The user-scope file's ``rsi_rail`` key locates the repo when the env
+    var is absent; the env var wins when both are set."""
+    user_path = _isolate_user_config(monkeypatch, tmp_path)
+    vault = _vault_with_toml(tmp_path, "")
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+    user_rail = _rail_with_toml(tmp_path, "[retrieval]\nrrf_k = 11\n")
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(_toml_line("rsi_rail", user_rail), encoding="utf-8")
+
+    assert load_config().retrieval_rrf_k == 11
+
+    env_rail = tmp_path / "env-rail"
+    (env_rail / "thinkweave").mkdir(parents=True)
+    (env_rail / "thinkweave" / "config.toml").write_text(
+        "[retrieval]\nrrf_k = 13\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(env_rail))
+    assert load_config().retrieval_rrf_k == 13
+
+
+def test_rsi_rail_unset_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A user without the repo sees the vault value and no repo path."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = _vault_with_toml(tmp_path, "[retrieval]\nrrf_k = 30\n")
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+
+    cfg = load_config()
+    assert cfg.retrieval_rrf_k == 30
+    assert cfg.rsi_rail is None
+
+
+def test_rsi_rail_set_but_file_missing_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A configured repo without its thinkweave/config.toml is an error,
+    never a silent fall-through to the vault value."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault = _vault_with_toml(tmp_path, "")
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+    rail = tmp_path / "rsi-rail"
+    rail.mkdir()
+    monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(rail))
+
+    with pytest.raises(FileNotFoundError, match="thinkweave/config.toml"):
+        load_config()
 
 
 def test_config_toml_canonical_location_is_config_dir(

@@ -647,3 +647,99 @@ class TestVenvExtrasCheck:
         result = md.check_venv_extras()
         assert not result.passed
         assert "broken_extra_xyz [news]" in result.detail
+
+
+# ---------- rsi-rail links ----------
+
+
+class TestRailLinks:
+    """A link `weave hooks install` made into the rsi-rail repo that goes
+    missing or dangles takes a skill or the rules off a harness silently;
+    the doctor names it."""
+
+    def test_missing_link_fails_and_names_it(self, rail_home):
+        from thinkweave.surfaces.hooks.install import install_hooks
+
+        repo, home = rail_home
+        install_hooks(scope="user")
+        gone = home / ".pi" / "agent" / "skills" / "retro"
+        gone.unlink()
+
+        result = md.check_rail_links()
+
+        assert result.name == "rsi-rail links"
+        assert not result.passed
+        assert str(gone) in result.detail
+        assert str(home / ".pi" / "agent" / "skills" / "tdd") not in result.detail
+        assert "weave hooks install" in result.fix
+
+    def test_dangling_link_and_stale_rules_block_fail(self, rail_home):
+        from thinkweave.surfaces.hooks.install import install_hooks
+
+        repo, home = rail_home
+        agents = home / ".codex" / "AGENTS.md"
+        agents.parent.mkdir(parents=True)
+        agents.write_text("# mine\n", encoding="utf-8")
+        install_hooks(scope="user")
+        assert md.check_rail_links().passed
+        dangling = home / ".claude" / "skills" / "tdd"
+        dangling.unlink()
+        dangling.symlink_to(home / "gone")
+        (repo / "claude" / "CLAUDE.md").write_text("# Global rules\n\n- rule two\n")
+
+        result = md.check_rail_links()
+
+        assert not result.passed
+        assert f"{dangling} (dangling)" in result.detail
+        assert f"{agents} (rules-stale)" in result.detail
+
+    def test_every_link_present_passes(self, rail_home):
+        from thinkweave.surfaces.hooks.install import install_hooks
+
+        install_hooks(scope="user")
+
+        result = md.check_rail_links()
+
+        assert result.passed
+        assert "12" in result.detail
+
+    def test_unconfigured_repo_passes_and_says_so(self, tmp_path, monkeypatch):
+        from thinkweave.core.config import Config
+
+        monkeypatch.setattr(
+            "thinkweave.core.config.load_config",
+            lambda: Config(vault_root=tmp_path / "vault"),
+        )
+
+        result = md.check_rail_links()
+
+        assert result.passed
+        assert "no rsi-rail repo configured" in result.detail
+
+    def test_unloadable_config_fails_loud(self, monkeypatch):
+        def boom():
+            raise FileNotFoundError("rsi-rail is set to /x but /x/thinkweave/config.toml does not exist")
+
+        monkeypatch.setattr("thinkweave.core.config.load_config", boom)
+
+        result = md.check_rail_links()
+
+        assert not result.passed
+        assert "/x/thinkweave/config.toml" in result.detail
+
+    def test_runs_in_the_lane(self, tmp_path, monkeypatch, use_profile, rail_home):
+        claude_json = tmp_path / "claude.json"
+        _write_claude_json(claude_json, CANONICAL_ENTRY)
+        use_profile(mcp_config=claude_json)
+        monkeypatch.setattr(
+            md.subprocess,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(cmd="uv", timeout=5.0)
+            ),
+        )
+
+        result = md.run_mcp_doctor(cwd=tmp_path)
+
+        names = [c.name for c in result.checks]
+        assert names.index("rsi-rail links") == names.index("command symlinks") + 1

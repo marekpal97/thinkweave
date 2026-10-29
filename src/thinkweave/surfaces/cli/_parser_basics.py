@@ -1120,7 +1120,8 @@ def add_admin_subparsers(sub) -> None:
             "prints the task id), close (record the boundary close, compile "
             "the round), render (re-emit the dispatch descriptor JSON), "
             "ledger (list a session's task boundaries as JSON), record-run "
-            "(land a devloop run as a round on its ticket's task)."
+            "(land a devloop run as a round on its ticket's task), feedback "
+            "(pin prompt verdicts to the live session mid-session)."
         ),
     )
     task_sub = p_task.add_subparsers(dest="task_action")
@@ -1187,6 +1188,23 @@ def add_admin_subparsers(sub) -> None:
         help="Project (default: THINKWEAVE_PROJECT, else the cwd's git repo, else the cwd).",
     )
     p_task_run.add_argument("--session", default="")
+    p_task_feedback = task_sub.add_parser(
+        "feedback",
+        help=(
+            "Pin prompt verdicts to the running session's live buffer, "
+            "mid-session: the wrap-finalize --verdicts shape, matched against "
+            "the prompts captured so far; the next wrap lands them on the "
+            "round. Exit 1 when a verdict matched no prompt."
+        ),
+    )
+    p_task_feedback.add_argument(
+        "verdicts",
+        help='JSON list: [{"prompt": "<text or prefix>", "register": "correction|confirmation|probe", "about": "<referent>"}]',
+    )
+    p_task_feedback.add_argument(
+        "--session", default="",
+        help="Session key (default: the harness session-id env var, else 'unattributed').",
+    )
 
     # --- C24: CLI parity for MCP-only tools -------------------------------
     p_unlink = sub.add_parser(

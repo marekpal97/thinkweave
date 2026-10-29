@@ -523,6 +523,20 @@ _VERDICT_REGISTERS = frozenset({"correction", "confirmation", "probe"})
 FEEDBACK_TEXT_CHARS = 4000
 
 
+def pin_verdicts(cfg: Config, session_id: str, verdicts: list[dict]) -> WrapFinalizeResult:
+    """Label prompts in the session's live buffer with the wrap verdict
+    shape while the session runs — the entry point a skill calls to pin a
+    correction to the round before the wrap. Same matching and idempotency
+    as ``finalize_wrap``'s verdicts; the result counts what matched."""
+    from thinkweave.core.buffer import buffer_path
+    from thinkweave.core.harness import active
+
+    result = WrapFinalizeResult(session_id=session_id)
+    chain = [(buffer_path(cfg.weave_dir, session_id), None, {"harness": active().id})]
+    _append_verdict_events(session_id, verdicts, result, chain)
+    return result
+
+
 def _append_verdict_events(
     session_id: str,
     verdicts: list[dict],
