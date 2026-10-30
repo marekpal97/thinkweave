@@ -33,7 +33,7 @@ from thinkweave.core._utils import git_stdout as _git
 from thinkweave.core import manifest
 from thinkweave.core.buffer import append_event, archived_events_path, buffer_path
 from thinkweave.core.config import tracker_project
-from thinkweave.core.events import feedback_events, iter_jsonl
+from thinkweave.core.events import extract_deterministic, feedback_events, iter_jsonl
 from thinkweave.core.harness import lookup
 from thinkweave.core.harness import active as active_harness
 from thinkweave.core.schemas import NoteType
@@ -1013,16 +1013,21 @@ class _DeclarationPass:
         # from; "" / None when no stream records one.
         bases: list[tuple[str, str]] = []
         stamps: list[tuple[str, dict]] = []
+        rows: list[dict] = []
         for stream in streams:
             for row in iter_jsonl(stream):
+                rows.append(row)
                 if row.get("type") == "base" and row.get("hash"):
                     bases.append((str(row.get("ts", "")), str(row["hash"])))
                 elif row.get("type") == "manifest" and isinstance(row.get("manifest"), dict):
                     stamps.append((str(row.get("ts", "")), row["manifest"]))
         self.base = min(bases)[1] if bases else ""
         self.manifest = min(stamps, key=lambda s: s[0])[1] if stamps else None
-        # What the session's fold counted (skill invocations, nudges).
-        self.tools = dict(session_fm.get("tools") or {})
+        # What the session did under that manifest (skill invocations,
+        # nudges), folded from the same streams: a mid-session /wrap runs
+        # before any Stop fold writes ``tools`` onto the note, so the note's
+        # key is only the fallback for streams that no longer hold the rows.
+        self.tools = dict(extract_deterministic(rows).tools) or dict(session_fm.get("tools") or {})
         # The pass writes its own opens without a session ref; hook-route
         # opens always carry one, so they never match a declared title.
         self.minted_titles: dict[str, str] = {}

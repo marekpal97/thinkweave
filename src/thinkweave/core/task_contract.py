@@ -439,6 +439,12 @@ def _bool(value, where):
     return [] if isinstance(value, bool) else [f"{where}: expected a boolean"]
 
 
+def _scalar(value, where):
+    if isinstance(value, (str, bool, int, float)):
+        return []
+    return [f"{where}: expected a string, number or boolean"]
+
+
 def _number(value, where):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return [f"{where}: expected a number"]
@@ -586,6 +592,15 @@ _MANIFEST = _closed_dict({
     "harness": _str,
     "rsi_rail": _closed_dict({"repo": _str, "commit": _base_sha, "dirty": _bool}),
     "readers": _closed_dict({"thinkweave": _str, "funloops": _str, "plugins": _str_map}),
+    # The harness readout (dec-4f158b58): witnessed settings values, the
+    # registered hook events and the profile's hook literals.
+    "harness_settings": _closed_dict({
+        "model": _str, "effortLevel": _scalar, "outputStyle": _scalar, "tui": _scalar,
+    }),
+    "hook_events": _str_list,
+    "literals": _closed_dict({
+        "hook_budget_ms": _str_int_map, "additional_context_cap_chars": _int,
+    }),
 })
 
 _ENVELOPE_CHECKERS = {

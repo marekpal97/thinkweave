@@ -64,20 +64,47 @@ from thinkweave.core.config import detect_project
 # Lazy imports to keep hook startup fast
 
 
+#: The weave dir of the config this hook process last loaded, so the error
+#: logger never has to load the config itself: the error it is logging is
+#: often the config failing to load (a configured rsi-rail without its
+#: ``thinkweave/config.toml``, a malformed user-scope file).
+_LOG_DIR: Path | None = None
+
+
+def _load_config():
+    """``load_config()``, remembering where this hook's log lives."""
+    global _LOG_DIR
+    from thinkweave.core import config
+
+    cfg = config.load_config()
+    _LOG_DIR = cfg.weave_dir
+    return cfg
+
+
+def _hooks_log_path() -> Path:
+    """``<weave_dir>/hooks.log`` once this process has loaded its config,
+    else the fixed fallback beside the user-scope config file
+    (``~/.config/thinkweave/hooks.log``): the one place a hook whose config
+    cannot load still writes to."""
+    if _LOG_DIR is not None:
+        return _LOG_DIR / "hooks.log"
+    from thinkweave.core.config import user_config_path
+
+    return user_config_path().parent / "hooks.log"
+
+
 def _log_error(hook_type: str, error: Exception) -> None:
-    """Log hook errors to file. Never blocks Claude Code."""
+    """Log hook errors to file. Never blocks Claude Code, never loads the
+    config (see :data:`_LOG_DIR`)."""
     try:
         import traceback
 
-        from thinkweave.core.config import load_config
-
-        cfg = load_config()
-        log_path = cfg.weave_dir / "hooks.log"
+        log_path = _hooks_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{now}] {hook_type}: {error}\n")
-            traceback.print_exc(file=f)
+            f.write(f"[{now}] {hook_type}: {type(error).__name__}: {error}\n")
+            traceback.print_exception(error, file=f)
             f.write("\n")
     except Exception:
         pass  # Last resort: silent failure on logging itself
@@ -90,10 +117,12 @@ def _log_info(hook_type: str, message: str) -> None:
     expected/handled outcomes, not failures. Never blocks Claude Code.
     """
     try:
-        from thinkweave.core.config import load_config
+        try:
+            from thinkweave.core.config import load_config
 
-        cfg = load_config()
-        log_path = cfg.weave_dir / "hooks.log"
+            log_path = load_config().weave_dir / "hooks.log"
+        except Exception:
+            log_path = _hooks_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
         with open(log_path, "a", encoding="utf-8") as f:
@@ -107,7 +136,7 @@ def _failure_message(hook_type: str, error: Exception) -> str:
     return (
         f"ThinkWeave {hook_type} failed; lifecycle data was not persisted "
         f"({type(error).__name__}: {error}). Check vault access and "
-        "<vault>/.weave/hooks.log."
+        f"{_hooks_log_path()}."
     )
 
 
@@ -284,6 +313,8 @@ _PLUGIN_MCP_PREFIX = "mcp__plugin_thinkweave_thinkweave__"
 
 
 def main() -> None:
+    global _LOG_DIR
+    _LOG_DIR = None  # this delivery's config decides where its log goes
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
     tool_name = hook_input.get("tool_name", "")
@@ -300,9 +331,9 @@ def main() -> None:
     # that don't parse under cmd.exe. Matches the "fail-silent, exit 0"
     # posture of the existing try/except below.
     try:
-        from thinkweave.core.config import is_vault_initialized, load_config
+        from thinkweave.core.config import is_vault_initialized
 
-        if not is_vault_initialized(load_config()):
+        if not is_vault_initialized(_load_config()):
             _output()
             return
     except Exception as e:
@@ -344,13 +375,11 @@ def main() -> None:
 def _track_model(hook_input: dict) -> None:
     """Remember the model this hook reports, and buffer a ``model_change``
     event when it differs from the session's previous one."""
-    from thinkweave.core.config import load_config
-
     model = str(hook_input.get("model") or "")
     session_id = hook_input.get("session_id") or _env_session_id()
     if not (model and session_id):
         return
-    weave_dir = load_config().weave_dir
+    weave_dir = _load_config().weave_dir
     previous = record_model(weave_dir, session_id, model)
     if previous and previous != model:
         _buffer_event(
@@ -398,9 +427,7 @@ def _handle_post(tool_name: str, hook_input: dict) -> None:
     tool_input = hook_input.get("tool_input", {})
 
     try:
-        from thinkweave.core.config import load_config
-
-        cfg = load_config()
+        cfg = _load_config()
 
         session_id = hook_input.get("session_id") or _env_session_id()
         now = datetime.now(timezone.utc).isoformat()
@@ -459,10 +486,9 @@ def _handle_subagent_start(hook_input: dict) -> None:
     descriptor via ``additionalContext``; the agent id is recorded only as
     a qualified session ref — never a join key, never a filename.
     """
-    from thinkweave.core.config import load_config
     from thinkweave.operations import tasks
 
-    cfg = load_config()
+    cfg = _load_config()
     session_id = _subagent_session_id(hook_input)
     _ensure_session(cfg, session_id, hook_input)
     cwd = str(hook_input.get("cwd", ""))
@@ -499,10 +525,9 @@ def _handle_subagent_stop(hook_input: dict) -> None:
     The hook only detects; ``tasks.stop_child`` pairs the stop with the
     session's register, and wrap reconciles what stays unpaired.
     """
-    from thinkweave.core.config import load_config
     from thinkweave.operations import tasks
 
-    cfg = load_config()
+    cfg = _load_config()
     session_id = _subagent_session_id(hook_input)
     agent_id = str(hook_input.get("agent_id", ""))
     source = tasks.TranscriptSource.agent_file(
@@ -567,9 +592,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
     """
     started = _hook_started()
     try:
-        from thinkweave.core.config import load_config
-
-        cfg = load_config()
+        cfg = _load_config()
 
         session_id = hook_input.get("session_id") or _env_session_id()
         prompt_text = hook_input.get("prompt", hook_input.get("user_prompt", ""))
@@ -600,7 +623,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
             _buffer_event(cfg.weave_dir, session_id, {
                 "ts": now, "tool": "Skill", "skill": skill, "declared": "prompt",
             })
-        _record_base(cfg, session_id, now, cwd)
+        _record_base(cfg, session_id, now, cwd, model=str(hook_input.get("model") or ""))
 
         # Eagerly create the session note too, so a buffer that begins
         # with prompts (no Edit/Bash yet) still has a note to attach to. Its
@@ -658,7 +681,7 @@ def _declared_skill(prompt: str, prefix: str) -> str:
     return name if _SKILL_NAME_RE.fullmatch(name) else ""
 
 
-def _record_base(cfg, session_id: str, now: str, cwd: str) -> None:
+def _record_base(cfg, session_id: str, now: str, cwd: str, *, model: str = "") -> None:
     """Append the repo HEAD this prompt saw and the manifest the session
     runs under, once per session buffer.
 
@@ -667,16 +690,25 @@ def _record_base(cfg, session_id: str, now: str, cwd: str) -> None:
     the session's scratch dir (``_claim_once``, the failure marker's
     primitive) so a long buffer costs no read on the prompts after the
     first, and a multiply-registered hook writes one row, not several.
-    Outside a repo no base is recorded: a round's ``base`` is optional. The
-    manifest is always recorded; a misconfigured rail raises and the hook
-    reports it.
+    Outside a repo no base is recorded: a round's ``base`` is optional.
+
+    The manifest is collected BEFORE the claim: a misconfigured rail raises
+    here, the hook reports it, and the next prompt tries again — so a rail
+    fixed mid-session still stamps the session's round. ``model`` is the
+    hook input's, else the one an earlier hook of this session reported.
     """
     from thinkweave.core import manifest
     from thinkweave.operations.tasks import head_sha
 
     state = session_state_dir(cfg.weave_dir, session_id)
+    marker = state / "base"
+    if marker.exists():
+        return
+    stamp = manifest.collect(
+        cfg, _harness_id(), model=model or session_model(cfg.weave_dir, session_id)
+    )
     state.mkdir(parents=True, exist_ok=True)
-    if not _claim_once(state / "base"):
+    if not _claim_once(marker):
         return
     sha = head_sha(cwd)
     if sha:
@@ -684,8 +716,7 @@ def _record_base(cfg, session_id: str, now: str, cwd: str) -> None:
             "ts": now, "type": "base", "session_id": session_id, "hash": sha,
         })
     _buffer_event(cfg.weave_dir, session_id, {
-        "ts": now, "type": "manifest", "session_id": session_id,
-        "manifest": manifest.collect(cfg, _harness_id()),
+        "ts": now, "type": "manifest", "session_id": session_id, "manifest": stamp,
     })
 
 
@@ -1635,13 +1666,12 @@ def _handle_stop(hook_input: dict) -> None:
         return
 
     try:
-        from thinkweave.core.config import load_config
         from thinkweave.core.vault import (
             VaultManager,
             render_frontmatter,
         )
 
-        cfg = load_config()
+        cfg = _load_config()
         vm = VaultManager(config=cfg)
 
         session_path = _find_session_note(vm, session_id)
@@ -1920,7 +1950,6 @@ def _handle_session_start(hook_input: dict) -> None:
     signal than one that fetched the note mid-session).
     """
     try:
-        from thinkweave.core.config import load_config
         from thinkweave.retrieval.context import (
             SESSION_START_SECTIONS,
             build_project_context,
@@ -1929,7 +1958,7 @@ def _handle_session_start(hook_input: dict) -> None:
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
 
-        cfg = load_config()
+        cfg = _load_config()
         profile = _firing_profile()
         session_id = hook_input.get("session_id") or _env_session_id()
         lifecycle = str(hook_input.get("source") or "")
