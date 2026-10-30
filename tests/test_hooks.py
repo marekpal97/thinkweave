@@ -3059,7 +3059,7 @@ _RAIL_INSTRUCTIONS = (
 
 class TestRailLinks:
     """``weave hooks install`` links the rsi-rail repo's ``skills/`` and
-    ``claude/CLAUDE.md`` into every profile, idempotently."""
+    ``rules/RULES.md`` into every profile, idempotently."""
 
     def test_first_run_links_every_profile(self, rail_home, capsys):
         repo, home = rail_home
@@ -3074,7 +3074,7 @@ class TestRailLinks:
         for rel in _RAIL_INSTRUCTIONS:
             link = home / rel
             assert link.is_symlink(), link
-            assert link.resolve() == repo / "claude" / "CLAUDE.md"
+            assert link.resolve() == repo / "rules" / "RULES.md"
         # A file beside the skill folders is not a skill.
         assert not (home / ".claude" / "skills" / "README.md").exists()
         out = capsys.readouterr().out
@@ -3124,7 +3124,7 @@ class TestRailLinks:
         assert text.startswith(own)
         assert "<!-- rsi-rail:start -->" in text and "<!-- rsi-rail:end -->" in text
         assert "- rule one" in text
-        assert str(repo / "claude" / "CLAUDE.md") in text
+        assert str(repo / "rules" / "RULES.md") in text
         assert "splice" in capsys.readouterr().out
 
         # Idempotent: a second run leaves the bytes alone.
@@ -3133,7 +3133,7 @@ class TestRailLinks:
         assert "0 changed" in capsys.readouterr().out
 
         # The repo moved on: the block is refreshed in place, nothing else moves.
-        (repo / "claude" / "CLAUDE.md").write_text("# Global rules\n\n- rule two\n")
+        (repo / "rules" / "RULES.md").write_text("# Global rules\n\n- rule two\n")
         install_hooks(scope="user")
         text = agents.read_text(encoding="utf-8")
         assert text.startswith(own)
@@ -3173,7 +3173,7 @@ class TestRailLinks:
         from thinkweave.surfaces.cli.install import _install_claude_md_block
 
         repo, home = rail_home
-        rules = repo / "claude" / "CLAUDE.md"
+        rules = repo / "rules" / "RULES.md"
         rules_before = rules.read_bytes()
         install_hooks(scope="user")
         capsys.readouterr()

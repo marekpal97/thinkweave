@@ -15,7 +15,9 @@ Knob precedence: the ``rsi-rail`` policy repo's ``thinkweave/config.toml``
 (located by ``THINKWEAVE_RSI_RAIL`` or the user-scope ``rsi_rail`` key)
 merges over the vault file with the same key handling, so a harness-level
 knob the user tunes lives in the repo while the vault keeps everything
-else. No repo configured means no change.
+else. No repo configured means no change. The repo file may carry only
+the serving-chain sections (``_RAIL_KEYS``); any other key is a
+``ValueError`` naming it and the file.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import os
 import platform
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path, PurePosixPath
 
 from thinkweave.core.fswrite import atomic_write_text
@@ -691,6 +693,39 @@ def _apply_knobs(cfg: Config, data: dict) -> None:
             rpt.bias_types = tuple(pt["bias_types"])
 
 
+# The keys the rsi-rail repo's thinkweave/config.toml may carry: the knobs
+# read on the agent's serving chain (SessionStart, UserPromptSubmit, a
+# weave_* call, /wrap) — dec-45c5fd5b. Everything else stays in the vault.
+_RAIL_KEYS: dict[str, frozenset[str]] = {
+    "retrieval": frozenset({"rrf_k"}),
+    "retrieval.prompt_time": frozenset(f.name for f in fields(PromptTimeRetrieval)),
+    "landing": frozenset({"open_probes_cap", "probes_display_cap"}),
+    "extract": frozenset({"insights_cap"}),
+}
+
+
+def _check_rail_keys(data: dict, path: Path) -> None:
+    """Raise ``ValueError`` naming the first key in the rail file that is not
+    a serving-chain knob, so a typo or a vault-side key placed in the repo
+    fails loudly instead of being silently ignored."""
+
+    def walk(table: dict, prefix: str) -> None:
+        allowed = _RAIL_KEYS.get(prefix, frozenset())
+        for key, value in table.items():
+            dotted = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict) and dotted in _RAIL_KEYS:
+                walk(value, dotted)
+            elif key not in allowed:
+                sections = ", ".join(f"[{s}]" for s in _RAIL_KEYS)
+                raise ValueError(
+                    f"unknown key {dotted!r} in {path}: the rsi-rail file "
+                    f"carries only the serving-chain knobs ({sections}); move "
+                    "it to the vault's config.toml or fix the spelling"
+                )
+
+    walk(data, "")
+
+
 def load_config() -> Config:
     """Load config from env vars, user-scope TOML, vault-internal TOML, defaults.
 
@@ -747,7 +782,9 @@ def load_config() -> Config:
                 "exist; create it or unset THINKWEAVE_RSI_RAIL / the "
                 "user-scope rsi_rail key"
             )
-        _apply_knobs(cfg, _read_toml(rail_toml))
+        rail_data = _read_toml(rail_toml)
+        _check_rail_keys(rail_data, rail_toml)
+        _apply_knobs(cfg, rail_data)
 
     # Per-field env overrides. PERSONAL_MEM_* are the pre-rename names,
     # honoured as migration fallbacks (rename → thinkweave, 2026-06-13).

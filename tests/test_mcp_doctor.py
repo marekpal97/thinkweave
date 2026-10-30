@@ -685,7 +685,7 @@ class TestRailLinks:
         dangling = home / ".claude" / "skills" / "tdd"
         dangling.unlink()
         dangling.symlink_to(home / "gone")
-        (repo / "claude" / "CLAUDE.md").write_text("# Global rules\n\n- rule two\n")
+        (repo / "rules" / "RULES.md").write_text("# Global rules\n\n- rule two\n")
 
         result = md.check_rail_links()
 

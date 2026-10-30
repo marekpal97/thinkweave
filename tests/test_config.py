@@ -505,8 +505,7 @@ def test_rsi_rail_key_wins_over_vault_and_vault_fills_the_rest(
     )
     rail = _rail_with_toml(
         tmp_path,
-        _toml_line("vault_root", tmp_path / "elsewhere")
-        + "[retrieval]\nrrf_k = 7\n\n[retrieval.prompt_time]\nmax_pieces_per_turn = 9\n",
+        "[retrieval]\nrrf_k = 7\n\n[retrieval.prompt_time]\nmax_pieces_per_turn = 9\n",
     )
     monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
     monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(rail))
@@ -553,6 +552,65 @@ def test_rsi_rail_unset_changes_nothing(
     cfg = load_config()
     assert cfg.retrieval_rrf_k == 30
     assert cfg.rsi_rail is None
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        (_toml_line("vault_root", "/elsewhere"), "vault_root"),
+        ("[dream]\ncosine_threshold = 0.9\n", "dream"),
+        ("[retrieval]\nrrf_kk = 7\n", "retrieval.rrf_kk"),
+        ("[retrieval.prompt_time]\nmin_sim = 0.5\n", "retrieval.prompt_time.min_sim"),
+        ("[landing]\ninsights_cap = 3\n", "landing.insights_cap"),
+    ],
+)
+def test_rsi_rail_unknown_key_names_the_key_and_the_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str, key: str
+):
+    """The repo file carries only the serving-chain knobs (dec-45c5fd5b): a
+    vault-side key, a misspelling or a key in the wrong section raises,
+    never silently ignored."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(_vault_with_toml(tmp_path, "")))
+    rail = _rail_with_toml(tmp_path, text)
+    monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(rail))
+
+    with pytest.raises(ValueError) as exc:
+        load_config()
+    assert repr(key) in str(exc.value)
+    assert str(rail / "thinkweave" / "config.toml") in str(exc.value)
+
+
+def test_rsi_rail_every_serving_chain_key_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Each allowed address loads, and an all-comments file (the sparse
+    template at code defaults) is a valid repo file."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(_vault_with_toml(tmp_path, "")))
+    rail = _rail_with_toml(
+        tmp_path,
+        "[retrieval]\nrrf_k = 61\n"
+        "[retrieval.prompt_time]\nenabled = false\nmin_prompt_chars = 1\n"
+        "embed_deadline_seconds = 1.0\ndeadline_miss_limit = 1\n"
+        "min_similarity = 0.5\nmax_pieces_per_turn = 1\n"
+        "max_injected_chars_per_turn = 1\nmax_firings_per_session = 1\n"
+        "max_injected_chars_per_session = 1\nbias_types = ['note']\n"
+        "[landing]\nopen_probes_cap = 1\nprobes_display_cap = 1\n"
+        "[extract]\ninsights_cap = 1\n",
+    )
+    monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(rail))
+    cfg = load_config()
+    assert cfg.retrieval_rrf_k == 61
+    assert cfg.retrieval_prompt_time.bias_types == ("note",)
+    assert cfg.extract_insights_cap == 1
+
+    (rail / "thinkweave" / "config.toml").write_text(
+        "# [retrieval]\n# rrf_k = 60\n", encoding="utf-8"
+    )
+    assert load_config() == Config(
+        vault_root=tmp_path / "vault", rsi_rail=rail
+    )
 
 
 def test_rsi_rail_set_but_file_missing_fails_loudly(
