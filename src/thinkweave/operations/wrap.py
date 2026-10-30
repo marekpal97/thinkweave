@@ -524,17 +524,42 @@ FEEDBACK_TEXT_CHARS = 4000
 
 
 def pin_verdicts(cfg: Config, session_id: str, verdicts: list[dict]) -> WrapFinalizeResult:
-    """Label prompts in the session's live buffer with the wrap verdict
-    shape while the session runs — the entry point a skill calls to pin a
-    correction to the round before the wrap. Same matching and idempotency
-    as ``finalize_wrap``'s verdicts; the result counts what matched."""
+    """Label prompts of a running session with the wrap verdict shape — the
+    entry point a skill calls to pin a correction to the round before the
+    wrap. Stop archives the live buffer into the session folder at the end
+    of every turn, so a correction about an earlier turn names a prompt
+    that now lives in the archived ``events.jsonl``: the match pool is the
+    live buffer plus the session chain the wrap pass walks
+    (:func:`_resolve_session_chain`), and each verdict is written to the
+    file holding its prompt. Same matching and once-only rule as
+    ``finalize_wrap``'s verdicts; a verdict matching nothing is counted
+    unmatched and writes nothing."""
     from thinkweave.core.buffer import buffer_path
     from thinkweave.core.harness import active
 
     result = WrapFinalizeResult(session_id=session_id)
-    chain = [(buffer_path(cfg.weave_dir, session_id), None, {"harness": active().id})]
+    live = buffer_path(cfg.weave_dir, session_id)
+    chain = _resolve_session_chain(cfg, session_id, _session_project(cfg, session_id))
+    if live not in {ev for ev, _d, _fm in chain}:
+        chain.insert(0, (live, None, {"harness": active().id}))
     _append_verdict_events(session_id, verdicts, result, chain)
     return result
+
+
+def _session_project(cfg: Config, session_id: str) -> str:
+    """The project whose ``sessions/`` holds this harness session's note;
+    ``""`` before the session has a note."""
+    from thinkweave.core.vault import VaultManager, find_session_note_by_source
+
+    path = find_session_note_by_source(VaultManager(config=cfg), session_id)
+    if path is None:
+        return ""
+    path = Path(path) if Path(path).is_absolute() else cfg.vault_root / path
+    try:
+        parts = path.resolve().relative_to(cfg.vault_root.resolve()).parts
+    except ValueError:
+        return ""
+    return parts[1] if len(parts) > 2 and parts[0] == "projects" else ""
 
 
 def _append_verdict_events(
