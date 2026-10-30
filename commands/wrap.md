@@ -70,6 +70,10 @@ weave_extract(
 
 `weave_extract` is pure Python — zero API cost, one tool round-trip. It writes the notes/decisions to the session folder, indexes them, and auto-extracts any `todo` items from the body.
 
+### Empty-extraction recovery
+
+If `weave_extract` reports zero extracted notes or decisions, suspect that the tool-call parameters were corrupted. Send one minimal test call with the session id and a small valid emission to verify the arguments. If the test still cannot extract, use `weave add --session <ses-id>` to record the material manually, then run `weave wrap-finalize <ses-id> --project <project>` to complete recovery.
+
 ### Use the auto-extracted draft when it exists
 
 If the session note has a `## Candidate Insights` section (populated when hooks ran end-of-session auto-extract), **refine it; do not start from scratch.** The candidate section already names what the session produced; your job is to add the personal-experience framing (problem/surprise/gotcha), pick concepts, and decide which entries are insights vs decisions vs cut. Composing fresh when a draft exists is the biggest avoidable output-volume cost on a wrap.

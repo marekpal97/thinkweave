@@ -43,6 +43,7 @@ def tool_schemas() -> list:
             ),
             inputSchema={
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "session_id": {
                         "type": "string",
@@ -149,6 +150,14 @@ def tool_schemas() -> list:
                     "plan_path": {"type": "string", "description": "File path of the plan used during this session. Stored in session context.plan for traceability."},
                     "plan_summary": {"type": "string", "description": "Brief summary of the plan's main tasks/items (2-5 lines). Stored alongside plan_path in session context.plan."},
                     "force": {"type": "boolean", "description": "Re-extract even if session is already marked processed."},
+                    "allow_empty": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Allow processing when no insights, decisions, or summary "
+                            "were provided. Defaults to false."
+                        ),
+                    },
                 },
                 "required": ["session_id"],
             },
