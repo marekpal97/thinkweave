@@ -127,6 +127,18 @@ class TestIsOrphan:
         )
         assert not is_orphan(session, min_age_seconds=0)
 
+    def test_turn_end_lines_do_not_lift_a_stub_above_the_size_floor(self, vault_dir: Path):
+        import json
+
+        session = _make_session(vault_dir, "alpha", "ses-qa")
+        prompt = json.dumps({"ts": "2026-04-05T10:00:00+00:00", "type": "prompt", "text": "hi"})
+        turn_end = json.dumps({"ts": "2026-04-05T10:00:09+00:00", "type": "turn_end",
+                               "turn": 1, "message": "y" * 700, "files": []})
+        (session / "events.jsonl").write_text(f"{prompt}\n{turn_end}\n", encoding="utf-8")
+
+        assert (session / "events.jsonl").stat().st_size >= EVENTS_MIN_BYTES
+        assert is_orphan(session, min_age_seconds=0)
+
     def test_session_with_tiny_events_jsonl_still_orphan(self, vault_dir: Path):
         session = _make_session(
             vault_dir,

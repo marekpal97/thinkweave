@@ -22,7 +22,7 @@ import json
 import math
 import threading
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -381,6 +381,11 @@ def ex_post_pass(
     result = ExPostResult()
     if ledger.folder is None or not cfg.decision_site(EX_POST).enabled:
         return result
+    if ledger.malformed:
+        result.malformed.append(
+            f"{len(ledger.malformed)} malformed ledger line(s) skipped, a turn they "
+            f"close stays open and unjudged: {', '.join(ledger.malformed)}"
+        )
     asks = ledger.asks()
     if not asks:
         return result
@@ -547,13 +552,31 @@ class ExPostAsk:
         return f"turn {self.turn} {self.source}" if self.turn else f"session {self.source}"
 
 
+@dataclass(frozen=True)
+class TurnEnd:
+    """The close of one turn: its sequence, final assistant message and files touched."""
+
+    turn: int
+    message: str
+    files: list[str]
+
+    def as_event(self) -> dict:
+        """The ``turn_end`` buffer event."""
+        return {"ts": datetime.now(timezone.utc).isoformat(), "type": TURN_END,
+                "turn": self.turn, "message": self.message, "files": self.files}
+
+
 class Ledger:
     """One session's event ledger: the archive in its folder and its live
     buffer, each line once, in time order."""
 
-    def __init__(self, folder: Path | None, events: list[dict]) -> None:
+    def __init__(
+        self, folder: Path | None, events: list[dict], malformed: tuple[str, ...] = ()
+    ) -> None:
         self.folder = folder
         self.events = events
+        self.malformed = malformed
+        """``<stream>:<line number>`` of each line that is not a JSON object."""
 
     @classmethod
     def read(cls, cfg: Config, session_key: str, folder: Path | None = None) -> "Ledger":
@@ -567,7 +590,31 @@ class Ledger:
         streams = [folder / "events.jsonl", folder / "retrieval_log.jsonl"] if folder else []
         if session_key:
             streams.append(buffer_path(cfg.weave_dir, session_key))
-        return cls(folder, _merged_events(streams))
+        return cls.from_streams(folder, streams)
+
+    @classmethod
+    def from_streams(cls, folder: Path | None, streams: list[Path]) -> "Ledger":
+        """Every distinct line of ``streams`` as an event, ordered by ``ts``;
+        a line that is not a JSON object is recorded in :attr:`malformed`."""
+        seen: set[str] = set()
+        events: list[dict] = []
+        malformed: list[str] = []
+        for path in streams:
+            if not path.exists():
+                continue
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if not line.strip() or line in seen:
+                    continue
+                seen.add(line)
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    ev = None
+                if isinstance(ev, dict):
+                    events.append(ev)
+                else:
+                    malformed.append(f"{path}:{n}")
+        return cls(folder, sorted(events, key=_when), tuple(malformed))
 
     def prompts(self) -> list[str]:
         return [str(ev.get("text", "")) for ev in self.events if ev.get("type") == "prompt"]
@@ -594,19 +641,12 @@ class Ledger:
                         items.setdefault(str(nid), Item(str(nid), served_source(ev)))
         return list(items.values())
 
-    def turn_end(self, message: str) -> dict | None:
-        """The ``turn_end`` event that closes the open turn; ``None`` when no
-        turn is open."""
+    def turn_end(self, message: str) -> TurnEnd | None:
+        """The ``turn_end`` that closes the open turn; ``None`` when no turn is open."""
         turns = self.turns()
         if not turns or turns[-1].closed:
             return None
-        return {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "type": TURN_END,
-            "turn": turns[-1].seq,
-            "message": message[:FINAL_MESSAGE_CHARS],
-            "files": turns[-1].files,
-        }
+        return TurnEnd(turns[-1].seq, message[:FINAL_MESSAGE_CHARS], list(turns[-1].files))
 
     def asks(self) -> list[ExPostAsk]:
         """The ex-post calls this ledger holds no verdict for yet: per closed
@@ -645,18 +685,39 @@ class Ledger:
 @dataclass
 class ExPostResult:
     """What ex-post passes wrote: sessions judged, decision calls, verdict
-    rows, and one line per call that gave no verdict."""
+    rows, one line per call that gave no verdict, and one per ledger whose
+    malformed lines were skipped."""
 
     sessions: int = 0
     calls: int = 0
     rows: int = 0
     misses: list[str] = field(default_factory=list)
+    malformed: list[str] = field(default_factory=list)
 
     def add(self, other: "ExPostResult") -> None:
         self.sessions += other.sessions
         self.calls += other.calls
         self.rows += other.rows
         self.misses.extend(other.misses)
+        self.malformed.extend(other.malformed)
+
+
+@dataclass
+class Usage:
+    """Ex-post verdicts of one action, split at the readout's threshold."""
+
+    used: int = 0
+    unused: int = 0
+
+
+@dataclass(frozen=True)
+class CalibrationBin:
+    """Ex-ante verdicts in one probability bin and the mean ex-post probability
+    of the same subjects in the same turns (``None`` when the bin is empty)."""
+
+    ex_ante: str
+    n: int
+    mean_ex_post: float | None
 
 
 @dataclass
@@ -677,8 +738,8 @@ class SiteReadout:
     latency_ms_p50: int | None = None
     latency_ms_p95: int | None = None
     cost: float = 0.0
-    usage: dict[str, dict[str, int]] = field(default_factory=dict)
-    calibration: list[dict] = field(default_factory=list)
+    usage: dict[str, Usage] = field(default_factory=dict)
+    calibration: list[CalibrationBin] = field(default_factory=list)
     _latencies: list[int] = field(default_factory=list, repr=False)
     _bins: list[list[float]] = field(default_factory=list, repr=False)
 
@@ -689,8 +750,11 @@ class SiteReadout:
             self._latencies.append(latency_ms)
 
     def count_use(self, action: str | None, used: bool) -> None:
-        counts = self.usage.setdefault(action or "none", {"used": 0, "unused": 0})
-        counts["used" if used else "unused"] += 1
+        counts = self.usage.setdefault(action or "none", Usage())
+        if used:
+            counts.used += 1
+        else:
+            counts.unused += 1
 
     def calibrate(self, ex_ante: float, ex_post: float | None) -> None:
         self._bins = self._bins or [[] for _ in range(_BINS)]
@@ -705,17 +769,17 @@ class SiteReadout:
         self.latency_ms_p95 = _nearest_rank(self._latencies, 0.95)
         self.cost = round(self.cost, 6)
         self.calibration = [
-            {
-                "ex_ante": f"{i / _BINS:.1f}-{(i + 1) / _BINS:.1f}",
-                "n": len(values),
-                "mean_ex_post": round(sum(values) / len(values), 4) if values else None,
-            }
+            CalibrationBin(
+                f"{i / _BINS:.1f}-{(i + 1) / _BINS:.1f}",
+                len(values),
+                round(sum(values) / len(values), 4) if values else None,
+            )
             for i, values in enumerate(self._bins)
         ]
         return self
 
     def as_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+        return {k: v for k, v in asdict(self).items() if not k.startswith("_")}
 
 
 #: Equal-width bins of ex-ante probability in a readout's calibration.
@@ -735,26 +799,6 @@ def _by_source(items: list[Item]) -> dict[str, tuple[Item, ...]]:
     for item in items:
         grouped.setdefault(item.source, []).append(item)
     return {source: tuple(group) for source, group in grouped.items()}
-
-
-def _merged_events(streams: list[Path]) -> list[dict]:
-    """Every distinct line of ``streams`` as an event, ordered by ``ts``."""
-    seen: set[str] = set()
-    events: list[dict] = []
-    for path in streams:
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip() or line in seen:
-                continue
-            seen.add(line)
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(ev, dict):
-                events.append(ev)
-    return sorted(events, key=_when)
 
 
 def _when(ev: dict) -> datetime:

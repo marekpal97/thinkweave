@@ -1852,9 +1852,9 @@ def _record_turn_end(cfg, source_session: str, folder: Path, hook_input: dict) -
 
     key = _firing_profile().final_message_key
     message = str(hook_input.get(key) or "") if key else ""
-    event = Ledger.read(cfg, source_session, folder).turn_end(message)
-    if event:
-        _buffer_event(cfg.weave_dir, source_session, event)
+    end = Ledger.read(cfg, source_session, folder).turn_end(message)
+    if end:
+        _buffer_event(cfg.weave_dir, source_session, end.as_event())
 
 
 def _merge_evidence(existing, fresh: list) -> list:

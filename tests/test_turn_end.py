@@ -103,3 +103,16 @@ def test_the_prompt_gate_numbers_its_verdict_with_the_turn_stop_will_close(
 
     gate = [e for e in ptr._read_buffer_events(cfg, "h-1") if e.get("type") == "decision"]
     assert [e["turn"] for e in gate] == [2]
+
+
+def test_the_ledger_closes_the_open_turn_with_a_declared_turn_end(session):
+    from thinkweave.operations.decisions import Ledger, TurnEnd
+
+    cfg, folder = session
+    _turn(cfg, "fix the parser", "src/parser.py")
+
+    end = Ledger.read(cfg, "h-1", folder).turn_end("done")
+
+    assert isinstance(end, TurnEnd)
+    assert (end.turn, end.message, end.files) == (1, "done", ["src/parser.py"])
+    assert end.as_event()["type"] == "turn_end"

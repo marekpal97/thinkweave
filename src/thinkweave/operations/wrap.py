@@ -280,7 +280,9 @@ def finalize_wrap(
             ledger = Ledger.read(cfg, str(fm.get("source_session") or ""), d)
             judged_ex_post = ex_post_pass(cfg, ledger)
             result.ex_post_rows += judged_ex_post.rows
-            result.warnings.extend(f"ex_post: {m}" for m in judged_ex_post.misses)
+            result.warnings.extend(
+                f"ex_post: {m}" for m in judged_ex_post.misses + judged_ex_post.malformed
+            )
     except Exception as e:  # noqa: BLE001 — the judge never fails a wrap
         result.warnings.append(f"ex_post: {e}")
     finally:

@@ -169,14 +169,35 @@ def test_readout_counts_each_call_once_and_tables_served_against_used(replayed):
     assert (gate.calls, gate.rows, gate.cost) == (1, 2, 0.001)
     assert gate.latency_ms_p50 == gate.latency_ms_p95 == 40
     assert gate.calibration == [
-        {"ex_ante": "0.0-0.2", "n": 0, "mean_ex_post": None},
-        {"ex_ante": "0.2-0.4", "n": 1, "mean_ex_post": 0.5},
-        {"ex_ante": "0.4-0.6", "n": 0, "mean_ex_post": None},
-        {"ex_ante": "0.6-0.8", "n": 0, "mean_ex_post": None},
-        {"ex_ante": "0.8-1.0", "n": 1, "mean_ex_post": 0.8},
+        decisions.CalibrationBin("0.0-0.2", 0, None),
+        decisions.CalibrationBin("0.2-0.4", 1, 0.5),
+        decisions.CalibrationBin("0.4-0.6", 0, None),
+        decisions.CalibrationBin("0.6-0.8", 0, None),
+        decisions.CalibrationBin("0.8-1.0", 1, 0.8),
     ]
     judged = sites[("ex_post", "prompttime")]
-    assert judged.usage == {"served": {"used": 1, "unused": 0},
-                            "rejected": {"used": 0, "unused": 1}}
-    assert sites[("ex_post", "startup")].usage == {"served": {"used": 0, "unused": 1}}
+    assert judged.usage == {"served": decisions.Usage(used=1, unused=0),
+                            "rejected": decisions.Usage(used=0, unused=1)}
+    assert sites[("ex_post", "startup")].usage == {"served": decisions.Usage(used=0, unused=1)}
+    assert gate.as_dict()["calibration"][1] == {"ex_ante": "0.2-0.4", "n": 1, "mean_ex_post": 0.5}
     assert sites[("ex_post", "onthefly")].calls == 2
+
+
+def test_a_truncated_turn_end_line_is_reported_not_dropped(replayed, monkeypatch):
+    from thinkweave.operations.wrap import finalize_wrap
+
+    cfg, folder, _fake = replayed
+    archive_buffer(cfg.weave_dir, "h-1", folder)
+    events = folder / "events.jsonl"
+    lines = events.read_text(encoding="utf-8").splitlines()
+    last_end = max(i for i, line in enumerate(lines) if '"turn_end"' in line)
+    lines[last_end] = lines[last_end][:40]
+    events.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    ledger = decisions.Ledger.read(cfg, "h-1", folder)
+    result = finalize_wrap(cfg, session_id="ses-ex", project="p", prune=False)
+
+    assert [m.split(":")[0] for m in ledger.malformed] == [str(events)]
+    assert any(w.startswith("ex_post:") and "malformed" in w and str(events) in w
+               for w in result.warnings)
+    assert 2 not in {row[0] for row in _verdicts(cfg, "ex_post")}

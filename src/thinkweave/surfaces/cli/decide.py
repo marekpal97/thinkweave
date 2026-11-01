@@ -47,6 +47,8 @@ def _sweep(cfg, args: argparse.Namespace) -> None:
           f"{result.rows} verdict row(s), {len(result.misses)} miss(es)")
     for miss in result.misses:
         print(f"  miss: {miss}")
+    for malformed in result.malformed:
+        print(f"  warning: {malformed}")
 
 
 def _readout(cfg, args: argparse.Namespace) -> None:
@@ -63,11 +65,10 @@ def _readout(cfg, args: argparse.Namespace) -> None:
               f"(rate {s.miss_rate}), latency p50 {s.latency_ms_p50} ms p95 "
               f"{s.latency_ms_p95} ms, cost {s.cost}")
         for action, counts in s.usage.items():
-            print(f"  {action}: used {counts['used']}, unused {counts['unused']}")
-        for row in s.calibration:
-            if row["n"]:
-                print(f"  ex-ante {row['ex_ante']}: n {row['n']}, "
-                      f"mean ex-post {row['mean_ex_post']}")
+            print(f"  {action}: used {counts.used}, unused {counts.unused}")
+        for b in s.calibration:
+            if b.n:
+                print(f"  ex-ante {b.ex_ante}: n {b.n}, mean ex-post {b.mean_ex_post}")
 
 
 def _smoke(cfg, args: argparse.Namespace) -> None:
