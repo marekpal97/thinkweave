@@ -372,6 +372,15 @@ class TestDegradations:
                     for d in profile.degradations
                 ), f"{profile.id} maps {event} to nothing without documenting it"
 
+    def test_a_stop_without_a_final_message_is_documented(self, profile):
+        """Claude Code and Codex hand Stop the final answer; a profile naming
+        no source says out loud that its ``turn_end`` carries none."""
+        expected = {"claude-code": "last_assistant_message",
+                    "codex": "last_assistant_message"}
+        assert profile.final_message_key == expected.get(profile.id, "")
+        if not profile.final_message_key:
+            assert any("turn_end" in d.capability for d in profile.degradations)
+
     def test_rendering_carries_every_note(self, profile):
         rendered = harness_docs.render_degradations(profile)
         if not profile.degradations:

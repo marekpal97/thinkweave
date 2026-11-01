@@ -8,17 +8,25 @@ It also owns System 1 decision sites: :func:`ask_site` renders a site's text
 and asks a decision provider, :func:`record_verdict` records the verdict as a
 ``decision`` event that the indexer projects into the ``verdicts`` table, and
 :func:`run_site` does both.
+
+The ex-post judge reads a session's :class:`Ledger`: :func:`ex_post_pass`
+asks, per closed turn, whether the turn's work relied on each note it was
+offered or served, and asks the same of startup items against the whole
+session. ``wrap-finalize`` runs the pass, :func:`sweep` runs it for sessions
+no wrap judged, and :func:`readout` reports the verdicts per site and source.
 """
 
 from __future__ import annotations
 
+import json
+import math
 import threading
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thinkweave.core.buffer import append_event, buffer_path, verdicts_log_path
+from thinkweave.core.buffer import TURN_END, append_event, buffer_path, verdicts_log_path
 from thinkweave.core.config import Config
 from thinkweave.core.decision_provider import (
     Decision,
@@ -220,6 +228,15 @@ PHASES = ("ex_ante", "ex_post")
 #: 429 or a missed deadline.
 DECISION_MISS = "decision_miss"
 
+#: The decision site that gates the prompt-time pool.
+PROMPT_GATE = "prompt_gate"
+
+#: The decision site that judges, after the fact, whether work relied on a note.
+EX_POST = "ex_post"
+
+#: Characters of the final assistant message a ``turn_end`` event keeps.
+FINAL_MESSAGE_CHARS = 2000
+
 
 def run_site(
     cfg: Config,
@@ -280,12 +297,14 @@ def record_verdict(
     action: str = "none",
     actions: dict[str, str] | None = None,
     source: str = "",
+    log: Path | None = None,
 ) -> None:
     """Write ``decision`` as one ``decision`` event.
 
-    With ``session_id`` the event goes to that session's live buffer, which
-    must exist; without it, to the vault's ``verdicts.jsonl``. A per-subject
-    answer carries its subject and its action from ``actions``, else ``action``.
+    The event goes to ``log`` when given; else, with ``session_id``, to that
+    session's live buffer, which must exist; else to the vault's
+    ``verdicts.jsonl``. A per-subject answer carries its subject and its
+    action from ``actions``, else ``action``.
     """
     if phase not in PHASES:
         raise ValueError(f"phase must be one of {PHASES}, got {phase!r}")
@@ -304,7 +323,7 @@ def record_verdict(
         "cost": decision.cost,
         "answers": [_answer_row(a, action, actions or {}) for a in decision.answers],
     }
-    append_event(_event_log(cfg, session_id), event, harness="")
+    append_event(log or _event_log(cfg, session_id), event, harness="")
 
 
 @dataclass(frozen=True)
@@ -343,6 +362,462 @@ class SiteText:
                     subject=subject,
                 ))
         return self.state.format(**slots), questions
+
+
+# ---------------------------------------------------------------------------
+# The ex-post judge
+# ---------------------------------------------------------------------------
+
+
+def ex_post_pass(
+    cfg: Config, ledger: "Ledger", *, provider: DecisionProvider | None = None
+) -> "ExPostResult":
+    """Ask every ex-post call ``ledger`` still owes and record each verdict in
+    the session's folder, then re-project the session.
+
+    A call that fails is logged in the folder as a ``decision_miss`` and the
+    pass goes on. Does nothing while the ``ex_post`` site is off.
+    """
+    result = ExPostResult()
+    if ledger.folder is None or not cfg.decision_site(EX_POST).enabled:
+        return result
+    asks = ledger.asks()
+    if not asks:
+        return result
+    texts = _note_texts(cfg, {item.id for ask in asks for item in ask.items})
+    for ask in asks:
+        subjects = {item.id: {"candidate": texts[item.id]} for item in ask.items}
+        try:
+            decision = ask_site(cfg, EX_POST, ask.slots(), subjects=subjects, provider=provider)
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            ledger.miss(ask, reason)
+            result.misses.append(f"{ask.label()}: {reason}")
+            continue
+        record_verdict(
+            cfg, EX_POST, decision, log=ledger.verdict_log, turn=ask.turn,
+            phase="ex_post", source=ask.source,
+            actions={item.id: item.action for item in ask.items},
+        )
+        result.calls += 1
+        result.rows += len(decision.answers)
+    if result.calls:
+        result.sessions = 1
+        _reproject(cfg, ledger.folder)
+    return result
+
+
+def sweep(
+    cfg: Config,
+    *,
+    project: str = "",
+    since: str = "",
+    provider: DecisionProvider | None = None,
+) -> "ExPostResult":
+    """Run :func:`ex_post_pass` over every indexed session, or one project's,
+    dated ``since`` or later; a session already judged costs one ledger read."""
+    total = ExPostResult()
+    for ledger in _session_ledgers(cfg, project, since):
+        total.add(ex_post_pass(cfg, ledger, provider=provider))
+    return total
+
+
+def readout(
+    cfg: Config, *, project: str = "", since: str = "", threshold: float | None = None
+) -> list["SiteReadout"]:
+    """The verdicts of indexed sessions, per site and source.
+
+    Each decision call counts once, with its latency and cost, however many
+    rows it wrote. ``threshold`` (default: the ``ex_post`` site's ``accept``)
+    splits ex-post verdicts into used and unused.
+    """
+    from thinkweave.core.indexer import Indexer
+
+    if threshold is None:
+        threshold = cfg.decision_site(EX_POST).accept
+    idx = Indexer(config=cfg)
+    try:
+        rows = idx.db.execute(
+            "SELECT v.* FROM verdicts v JOIN notes n ON n.id = v.session_id "
+            "WHERE n.type = 'session' AND (? = '' OR n.project = ?) "
+            "AND (? = '' OR n.date >= ?) ORDER BY v.ts",
+            (project, project, since, since),
+        ).fetchall()
+    finally:
+        idx.close()
+
+    sites: dict[tuple[str, str], SiteReadout] = {}
+
+    def at(site: str, source: str) -> SiteReadout:
+        return sites.setdefault((site, source), SiteReadout(site, source))
+
+    calls: dict[tuple, dict] = {}
+    ex_post: dict[tuple, float] = {}
+    for r in rows:
+        at(r["site"], r["source"] or "").rows += 1
+        calls.setdefault(
+            (r["site"], r["source"] or "", r["session_id"], r["turn"], r["phase"], r["ts"]), r
+        )
+        if r["phase"] == "ex_post" and r["kind"] == "noul":
+            ex_post[(r["session_id"], r["subject_id"], r["turn"], r["source"])] = r["value"]
+            at(r["site"], r["source"] or "").count_use(r["action"], r["value"] >= threshold)
+    for (site, source, *_key), r in calls.items():
+        at(site, source).count_call(r["latency_ms"], r["cost"])
+    for r in rows:
+        if r["phase"] == "ex_ante" and r["kind"] == "noul":
+            used = ex_post.get((r["session_id"], r["subject_id"], r["turn"], r["source"]))
+            at(r["site"], r["source"] or "").calibrate(r["value"], used)
+    for ledger in _session_ledgers(cfg, project, since):
+        for ev in ledger.events:
+            if ev.get("type") == DECISION_MISS:
+                at(str(ev.get("site") or ""), str(ev.get("source") or "")).misses += 1
+    return [sites[key].finish() for key in sorted(sites)]
+
+
+@dataclass(frozen=True)
+class Item:
+    """A note put in front of the agent, or offered to it, from one source."""
+
+    id: str
+    source: str
+    action: str = "served"
+
+
+@dataclass
+class Turn:
+    """One prompt up to its ``turn_end``: what was asked, offered and done."""
+
+    seq: int
+    prompt: str
+    items: list[Item] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    message: str = ""
+    closed: bool = False
+
+    def take(self, ev: dict) -> None:
+        """Fold one of the turn's events in."""
+        from thinkweave.core.indexer import served_source
+
+        kind = ev.get("type")
+        if kind == TURN_END:
+            self.message = str(ev.get("message") or "")
+            self.files = [str(f) for f in ev.get("files") or []]
+            self.closed = True
+        elif kind == "decision" and ev.get("site") == PROMPT_GATE:
+            for answer in ev.get("answers") or []:
+                self._offer(Item(
+                    str(answer.get("subject_id") or ""), str(ev.get("source") or ""),
+                    str(answer.get("action") or "none"),
+                ))
+        elif kind == "retrieval":
+            for nid in ev.get("returned_ids") or []:
+                self._offer(Item(str(nid), served_source(ev)))
+        elif ev.get("tool") in ("Write", "Edit") and ev.get("file"):
+            if ev["file"] not in self.files:
+                self.files.append(str(ev["file"]))
+
+    def work(self) -> str:
+        """The turn as the judge reads it."""
+        return (
+            f"Turn {self.seq}\nUser prompt: {self.prompt}\n"
+            f"Agent's final message: {self.message or '(not captured)'}\n"
+            f"Files touched: {', '.join(self.files) or '(none)'}"
+        )
+
+    def _offer(self, item: Item) -> None:
+        if _judged(item.id) and all((i.id, i.source) != (item.id, item.source) for i in self.items):
+            self.items.append(item)
+
+
+@dataclass(frozen=True)
+class ExPostAsk:
+    """One ex-post call: one source's items, judged against one turn, or
+    against the whole session when ``turn`` is ``None``."""
+
+    turn: int | None
+    source: str
+    items: tuple[Item, ...]
+    work: str
+
+    def slots(self) -> dict[str, str]:
+        span = "one turn of their session" if self.turn else "their whole session"
+        return {"span": span, "work": self.work}
+
+    def label(self) -> str:
+        return f"turn {self.turn} {self.source}" if self.turn else f"session {self.source}"
+
+
+class Ledger:
+    """One session's event ledger: the archive in its folder and its live
+    buffer, each line once, in time order."""
+
+    def __init__(self, folder: Path | None, events: list[dict]) -> None:
+        self.folder = folder
+        self.events = events
+
+    @classmethod
+    def read(cls, cfg: Config, session_key: str, folder: Path | None = None) -> "Ledger":
+        """The ledger of harness session ``session_key``; ``folder`` defaults to
+        the folder of the session note stamped with that key."""
+        if folder is None and session_key:
+            from thinkweave.core.vault import VaultManager, find_session_note_by_source
+
+            note = find_session_note_by_source(VaultManager(config=cfg), session_key)
+            folder = note.parent if note else None
+        streams = [folder / "events.jsonl", folder / "retrieval_log.jsonl"] if folder else []
+        if session_key:
+            streams.append(buffer_path(cfg.weave_dir, session_key))
+        return cls(folder, _merged_events(streams))
+
+    def prompts(self) -> list[str]:
+        return [str(ev.get("text", "")) for ev in self.events if ev.get("type") == "prompt"]
+
+    def turns(self) -> list[Turn]:
+        """Every turn from its prompt on; a turn closes once its ``turn_end`` lands."""
+        turns: list[Turn] = []
+        for ev in self.events:
+            if ev.get("type") == "prompt":
+                turns.append(Turn(len(turns) + 1, str(ev.get("text", ""))))
+            elif turns and not turns[-1].closed:
+                turns[-1].take(ev)
+        return turns
+
+    def startup(self) -> list[Item]:
+        """The notes every startup payload served, each once; open tasks left out."""
+        from thinkweave.core.indexer import served_source
+
+        items: dict[str, Item] = {}
+        for ev in self.events:
+            if ev.get("type") == "startup":
+                for nid in ev.get("returned_ids") or []:
+                    if _judged(str(nid)):
+                        items.setdefault(str(nid), Item(str(nid), served_source(ev)))
+        return list(items.values())
+
+    def turn_end(self, message: str) -> dict | None:
+        """The ``turn_end`` event that closes the open turn; ``None`` when no
+        turn is open."""
+        turns = self.turns()
+        if not turns or turns[-1].closed:
+            return None
+        return {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "type": TURN_END,
+            "turn": turns[-1].seq,
+            "message": message[:FINAL_MESSAGE_CHARS],
+            "files": turns[-1].files,
+        }
+
+    def asks(self) -> list[ExPostAsk]:
+        """The ex-post calls this ledger holds no verdict for yet: per closed
+        turn and source, the turn's items; per source, the startup items
+        against every closed turn."""
+        closed = [t for t in self.turns() if t.closed]
+        if not closed:
+            return []
+        done = {
+            (ev.get("turn"), ev.get("source")) for ev in self.events
+            if ev.get("type") == "decision" and ev.get("phase") == "ex_post"
+        }
+        asks = [
+            ExPostAsk(turn.seq, source, items, turn.work())
+            for turn in closed for source, items in _by_source(turn.items).items()
+        ]
+        session = "\n\n".join(turn.work() for turn in closed)
+        asks += [
+            ExPostAsk(None, source, items, session)
+            for source, items in _by_source(self.startup()).items()
+        ]
+        return [ask for ask in asks if (ask.turn, ask.source) not in done]
+
+    def miss(self, ask: ExPostAsk, reason: str) -> None:
+        """Log an ex-post call that gave no verdict in the session's folder."""
+        append_event(self.folder / "events.jsonl", {
+            "ts": datetime.now(timezone.utc).isoformat(), "type": DECISION_MISS,
+            "site": EX_POST, "source": ask.source, "turn": ask.turn, "reason": reason,
+        }, harness="")
+
+    @property
+    def verdict_log(self) -> Path:
+        return self.folder / "retrieval_log.jsonl"
+
+
+@dataclass
+class ExPostResult:
+    """What ex-post passes wrote: sessions judged, decision calls, verdict
+    rows, and one line per call that gave no verdict."""
+
+    sessions: int = 0
+    calls: int = 0
+    rows: int = 0
+    misses: list[str] = field(default_factory=list)
+
+    def add(self, other: "ExPostResult") -> None:
+        self.sessions += other.sessions
+        self.calls += other.calls
+        self.rows += other.rows
+        self.misses.extend(other.misses)
+
+
+@dataclass
+class SiteReadout:
+    """One site and source in a :func:`readout`.
+
+    ``usage`` maps each ex-post verdict's action (served, capped, rejected) to
+    its used and unused counts. ``calibration`` bins ex-ante probabilities and
+    gives the mean ex-post probability of the same subject in the same turn.
+    """
+
+    site: str
+    source: str
+    calls: int = 0
+    rows: int = 0
+    misses: int = 0
+    miss_rate: float | None = None
+    latency_ms_p50: int | None = None
+    latency_ms_p95: int | None = None
+    cost: float = 0.0
+    usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    calibration: list[dict] = field(default_factory=list)
+    _latencies: list[int] = field(default_factory=list, repr=False)
+    _bins: list[list[float]] = field(default_factory=list, repr=False)
+
+    def count_call(self, latency_ms: int | None, cost: float | None) -> None:
+        self.calls += 1
+        self.cost += cost or 0.0
+        if latency_ms is not None:
+            self._latencies.append(latency_ms)
+
+    def count_use(self, action: str | None, used: bool) -> None:
+        counts = self.usage.setdefault(action or "none", {"used": 0, "unused": 0})
+        counts["used" if used else "unused"] += 1
+
+    def calibrate(self, ex_ante: float, ex_post: float | None) -> None:
+        self._bins = self._bins or [[] for _ in range(_BINS)]
+        if ex_post is not None:
+            self._bins[min(int(ex_ante * _BINS), _BINS - 1)].append(ex_post)
+
+    def finish(self) -> "SiteReadout":
+        """Fill the derived fields from what was counted."""
+        attempts = self.calls + self.misses
+        self.miss_rate = round(self.misses / attempts, 4) if attempts else None
+        self.latency_ms_p50 = _nearest_rank(self._latencies, 0.50)
+        self.latency_ms_p95 = _nearest_rank(self._latencies, 0.95)
+        self.cost = round(self.cost, 6)
+        self.calibration = [
+            {
+                "ex_ante": f"{i / _BINS:.1f}-{(i + 1) / _BINS:.1f}",
+                "n": len(values),
+                "mean_ex_post": round(sum(values) / len(values), 4) if values else None,
+            }
+            for i, values in enumerate(self._bins)
+        ]
+        return self
+
+    def as_dict(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+
+
+#: Equal-width bins of ex-ante probability in a readout's calibration.
+_BINS = 5
+
+#: Characters of a note's body the ex-post judge reads beside its title.
+_NOTE_TEXT_CHARS = 300
+
+
+def _judged(note_id: str) -> bool:
+    """Whether the ex-post judge scores this id: open tasks are cues, not notes."""
+    return bool(note_id) and not note_id.startswith("tsk-")
+
+
+def _by_source(items: list[Item]) -> dict[str, tuple[Item, ...]]:
+    grouped: dict[str, list[Item]] = {}
+    for item in items:
+        grouped.setdefault(item.source, []).append(item)
+    return {source: tuple(group) for source, group in grouped.items()}
+
+
+def _merged_events(streams: list[Path]) -> list[dict]:
+    """Every distinct line of ``streams`` as an event, ordered by ``ts``."""
+    seen: set[str] = set()
+    events: list[dict] = []
+    for path in streams:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line in seen:
+                continue
+            seen.add(line)
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict):
+                events.append(ev)
+    return sorted(events, key=_when)
+
+
+def _when(ev: dict) -> datetime:
+    try:
+        ts = datetime.fromisoformat(str(ev.get("ts") or ""))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _note_texts(cfg: Config, ids: set[str]) -> dict[str, str]:
+    """Each note as the judge reads it: title, type and the start of its body."""
+    from thinkweave.retrieval.search import Search
+
+    search = Search(config=cfg)
+    try:
+        rows = {nid: search.get_note_by_id(nid) for nid in ids}
+    finally:
+        search.close()
+    return {
+        nid: (
+            f"{row['title']} ({row['type']}): {(row['body_text'] or '')[:_NOTE_TEXT_CHARS]}"
+            if row else f"{nid} (no longer in the vault)"
+        )
+        for nid, row in rows.items()
+    }
+
+
+def _reproject(cfg: Config, folder: Path) -> None:
+    from thinkweave.core.indexer import Indexer
+
+    idx = Indexer(config=cfg)
+    try:
+        idx.index_file(folder / "session.md")
+    finally:
+        idx.close()
+
+
+def _session_ledgers(cfg: Config, project: str, since: str):
+    """The ledger of each indexed session, or one project's, dated ``since`` on."""
+    from thinkweave.core.indexer import Indexer
+
+    idx = Indexer(config=cfg)
+    try:
+        rows = idx.db.execute(
+            "SELECT path, frontmatter FROM notes WHERE type = 'session' "
+            "AND (? = '' OR project = ?) AND (? = '' OR date >= ?)",
+            (project, project, since, since),
+        ).fetchall()
+    finally:
+        idx.close()
+    for row in rows:
+        try:
+            fm = json.loads(row["frontmatter"] or "{}")
+        except json.JSONDecodeError:
+            fm = {}
+        folder = (cfg.vault_root / row["path"]).parent
+        yield Ledger.read(cfg, str(fm.get("source_session") or ""), folder)
+
+
+def _nearest_rank(values: list[int], q: float) -> int | None:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(q * len(ordered)) - 1)] if ordered else None
 
 
 _PACKAGED_TEXTS = Path(__file__).parent / "decision_texts"

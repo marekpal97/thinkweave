@@ -1,0 +1,17 @@
+# Packaged default for the `ex_post` decision site: after a turn ends (or, for
+# startup items, after the whole session), judge whether the agent's work
+# relied on each vault note it was shown or offered. A rail copy at
+# thinkweave/decisions/ex_post.toml replaces this file whole.
+# Slots: {span}, {work}; per note, {candidate}.
+state = """
+A user worked with a coding agent that could read notes from the user's
+personal knowledge vault. Here is {span}:
+
+{work}
+"""
+
+[questions.relied]
+type = "noul"
+per_subject = true
+instructions = """Did the agent's work here rely on this vault note? \
+Note: {candidate}"""

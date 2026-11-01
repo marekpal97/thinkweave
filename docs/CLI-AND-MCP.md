@@ -36,6 +36,8 @@ weave doctor --mcp [--harness X]              # MCP wiring: registration scopes,
                                             # that package would replace the built-in client
 weave health [--json]                         # jobs/queues/hooks/digest; exit 1 on flag; --json is /brief's contract
 weave decide smoke [--backend B] [--model M]  # one end-to-end System 1 decision call: answers, cost, and the verdicts row it projects
+weave decide sweep [--project P] [--since D] [--json]  # ex-post judge over every session it has not judged (wrap-finalize runs it per session)
+weave decide readout [--project P] [--since D] [--threshold T] [--json]  # per site and source: counts, served/rejected × used/unused, calibration, miss rate, latency p50/p95, cost
 weave learn check --note <id>                 # learn-note frontmatter contract; exit 1 on problems
 weave learn probe --session <uuid|ses-id> --text "…"  # unanswered question → probe row
 weave explain locate --session <uuid|ses-id> --scope session|diff --target <t>  # explain note id a re-run updates, or nothing
@@ -129,7 +131,7 @@ Full inventory — 54 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Vault health | `weave stats` | — | admin-cron |
 | Coherence linter | `weave doctor` | — | admin-cron |
 | System health (jobs / queues / hooks / digest) | `weave health` | — | admin-cron — `--json` is **agent-Bash** (`/brief`) |
-| System 1 decision smoke call | `weave decide smoke` | — | admin-cron |
+| System 1 decision sites (smoke / ex-post sweep / readout) | `weave decide` | — | admin-cron |
 | `/learn` rail (check / probe) | `weave learn` | — | agent-Bash (`/learn`); retrieval is the skill's job, its MCP calls land in context_served on their own (dec-696bacfb) |
 | `/explain` rail (locate / check) | `weave explain` | — | agent-Bash (`/explain`); `locate` is the re-run lookup by (session, scope, target), `check` the explain-note contract |
 | Named workflow pipelines | `weave flow` | — | admin-cron |

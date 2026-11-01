@@ -794,6 +794,7 @@ def _prompt_time_enrichment(
                 "type": DECISION_MISS,
                 "session_id": session_id,
                 "site": PROMPT_GATE,
+                "source": "prompttime",
                 "reason": decision_miss,
             }
             if delivery_id:
@@ -1730,6 +1731,13 @@ def _handle_stop(hook_input: dict) -> None:
 
         source_session = note.frontmatter.get("source_session", session_id)
 
+        # Before the fold or the archive below, so either carries it.
+        try:
+            _record_turn_end(cfg, source_session, session_path.parent, hook_input)
+        except Exception as e:
+            _log_error("stop/turn_end", e)
+            _pending_messages.append(_report_failure("stop/turn_end", hook_input, e))
+
         # Already processed → fold, don't rewrite. Both harnesses fire Stop
         # at the end of EVERY turn, so this branch is the common case from
         # turn 2 on; see _fold_processed_session for what it keeps current.
@@ -1835,6 +1843,18 @@ def _handle_stop(hook_input: dict) -> None:
     except Exception as e:
         _log_error("stop", e)
         _output(system_message=_report_failure("stop", hook_input, e))
+
+
+def _record_turn_end(cfg, source_session: str, folder: Path, hook_input: dict) -> None:
+    """Close the turn this Stop ends with a ``turn_end`` event in the live
+    buffer; a turn already closed gets none."""
+    from thinkweave.operations.decisions import Ledger
+
+    key = _firing_profile().final_message_key
+    message = str(hook_input.get(key) or "") if key else ""
+    event = Ledger.read(cfg, source_session, folder).turn_end(message)
+    if event:
+        _buffer_event(cfg.weave_dir, source_session, event)
 
 
 def _merge_evidence(existing, fresh: list) -> list:

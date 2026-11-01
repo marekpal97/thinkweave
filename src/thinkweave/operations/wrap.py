@@ -60,6 +60,8 @@ class WrapFinalizeResult:
     # processed session is the signature of a /wrap that skipped extraction.
     work_evidence: bool = False
     derived_landed: int = 0
+    # The ex-post judge: verdict rows it wrote over the session's ledger.
+    ex_post_rows: int = 0
     errors: list[str] = field(default_factory=list)
     # Benign anomalies worth surfacing without flipping the exit code
     # (e.g. two verdicts resolving to one prompt).
@@ -89,6 +91,7 @@ class WrapFinalizeResult:
             "tasks": self.tasks,
             "work_evidence": self.work_evidence,
             "derived_landed": self.derived_landed,
+            "ex_post_rows": self.ex_post_rows,
             "errors": self.errors,
             "warnings": self.warnings,
             "timings": self.timings,
@@ -121,6 +124,10 @@ def finalize_wrap(
        protected). Done first so the reindex in step 2 also drops their rows.
     2. **index** — incremental rebuild. Picks up the notes ``weave_extract`` just
        wrote and removes any pruned folders' rows in the same pass.
+    2.5. **ex-post** — the ex-post judge over each chain folder's ledger
+       (:func:`thinkweave.operations.decisions.ex_post_pass`). A call that
+       gives no verdict is logged as a miss and lands in ``warnings``; it
+       never fails the wrap.
     3. **judge** — ``judge_and_writeback(session_id=...)``: verdict + status
        onto each new decision, batched, re-indexing touched files.
     3.5. **citation lint** — decisions this wrap minted whose body cites no
@@ -261,6 +268,23 @@ def finalize_wrap(
         result.errors.append(f"index: {e}")
     finally:
         result.timings["index"] = time.perf_counter() - _t
+
+    # 2.5. ex-post judge ---------------------------------------------------
+    _t = time.perf_counter()
+    try:
+        from thinkweave.operations.decisions import Ledger, ex_post_pass
+
+        for _ev, d, fm in chain:
+            if d is None or fm is None:
+                continue
+            ledger = Ledger.read(cfg, str(fm.get("source_session") or ""), d)
+            judged_ex_post = ex_post_pass(cfg, ledger)
+            result.ex_post_rows += judged_ex_post.rows
+            result.warnings.extend(f"ex_post: {m}" for m in judged_ex_post.misses)
+    except Exception as e:  # noqa: BLE001 — the judge never fails a wrap
+        result.warnings.append(f"ex_post: {e}")
+    finally:
+        result.timings["ex_post"] = time.perf_counter() - _t
 
     # 3. judge extracted decisions + write back verdict/status ------------
     _t = time.perf_counter()

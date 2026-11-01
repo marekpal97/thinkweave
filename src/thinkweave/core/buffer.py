@@ -11,7 +11,8 @@ the MCP surface (``surfaces/mcp/tools/extract``) need to call them, and a
 
 The archive step also *partitions* the buffer into two siblings:
 
-- ``events.jsonl`` — Write/Edit/Bash + prompt events (the action stream)
+- ``events.jsonl`` — Write/Edit/Bash + prompt + ``turn_end`` events (the
+  action stream)
 - ``retrieval_log.jsonl`` — ``type: retrieval`` and ``type: startup`` events
   (the context-served stream feeding the RLVR substrate), plus ``type:
   decision`` events (System 1 verdicts, projected into ``verdicts``)
@@ -33,6 +34,10 @@ from pathlib import Path
 
 # Event types that get routed to retrieval_log.jsonl rather than events.jsonl.
 _RETRIEVAL_LOG_TYPES = frozenset({"retrieval", "startup", "decision"})
+
+#: Event type Stop writes to close a turn: its sequence, the final assistant
+#: message and the files touched. Part of the action stream (``events.jsonl``).
+TURN_END = "turn_end"
 
 
 def buffer_path(weave_dir: Path, session_id: str) -> Path:

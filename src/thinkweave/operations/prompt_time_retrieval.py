@@ -56,7 +56,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 from thinkweave.core.config import Config
-from thinkweave.operations.decisions import DECISION_MISS, ask_site, record_verdict
+from thinkweave.operations.decisions import (
+    DECISION_MISS,
+    PROMPT_GATE,
+    Ledger,
+    ask_site,
+    record_verdict,
+)
 
 # Sentinel tool name stamped on the buffer write-back event. The indexer's
 # context_served projection keys off this to assign source='prompttime'.
@@ -67,9 +73,6 @@ PROMPT_TIME_TOOL = "prompt_time_retrieval"
 # PROMPT_TIME_TOOL-tagged event (which _served_ids_and_stats counts as a
 # firing). Pure telemetry.
 PROMPT_TIME_MISS = "prompt_time_miss"
-
-# The decision site that gates the prompt-time pool.
-PROMPT_GATE = "prompt_gate"
 
 # Render header for the injected block.
 _HEADER = "📎 Possibly relevant from your vault (optional — weave_read to expand):"
@@ -187,8 +190,7 @@ def build_enrichment(
     if deadline is not None:
         budget = min(budget, deadline - (time.monotonic() - started))
 
-    prompts = [e.get("text", "") for e in _read_buffer_events(cfg, session_id)
-               if e.get("type") == "prompt"]
+    prompts = Ledger.read(cfg, session_id).prompts()
     slots = {
         "prompt": prompt_text,
         "previous_prompt": prompts[-2] if len(prompts) > 1 else "(none)",

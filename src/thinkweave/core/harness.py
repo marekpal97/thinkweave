@@ -371,6 +371,11 @@ class HarnessProfile:
     CHECK in ``core/indexer.py`` — a NEW distinct value needs that table's
     drop+recreate migration, not just a row edit here."""
 
+    final_message_key: str = ""
+    """The Stop input key carrying the turn's final assistant message, which
+    the ``turn_end`` event records. Empty when the harness's Stop carries
+    none; the profile then documents the gap as a degradation."""
+
     session_id_scheme: str = ""
     """How the harness mints session ids, for importers and dedup keys."""
 
@@ -659,6 +664,7 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         mcp_servers_key="mcpServers",
         mcp_via_cli="claude mcp add",
         evidence="measured — daily live use on the dev machine; suite drives the handler end-to-end",
+        final_message_key="last_assistant_message",
         degradations=(
             Degradation(
                 "lifecycle hooks in print mode",
@@ -818,6 +824,7 @@ def codex(home: Path | None = None) -> HarnessProfile:
         mcp_servers_key="mcp_servers",
         mcp_via_cli="codex mcp add",
         context_served_source="codex-startup",
+        final_message_key="last_assistant_message",
         evidence=(
             "measured — codex-cli 0.146.0: credential-less spike 2026-08-02, "
             "two live interactive sessions 2026-09-05, two instrumented "
@@ -1015,6 +1022,14 @@ def pi(home: Path | None = None) -> HarnessProfile:
         },
         degradations=(
             Degradation(
+                "turn_end final message",
+                "documented",
+                "the shim's Stop envelope carries no final assistant message, "
+                "so each turn_end records an empty message and the ex-post "
+                "judge reads the turn's prompt and files touched only",
+                "shims/pi",
+            ),
+            Degradation(
                 "hook latency",
                 "documented",
                 "shim-core's 800 ms telemetry budget sits below this "
@@ -1207,6 +1222,14 @@ def opencode(home: Path | None = None) -> HarnessProfile:
             "Stop": "2026-10-12",
         },
         degradations=(
+            Degradation(
+                "turn_end final message",
+                "documented",
+                "the shim's Stop envelope carries no final assistant message, "
+                "so each turn_end records an empty message and the ex-post "
+                "judge reads the turn's prompt and files touched only",
+                "shims/opencode",
+            ),
             Degradation(
                 "hook latency",
                 "documented",

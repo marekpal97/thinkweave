@@ -63,6 +63,7 @@ row above) everything unlisted works as on Claude Code; on a
 
 #### Pi
 
+- **turn_end final message** — documented: the shim's Stop envelope carries no final assistant message, so each turn_end records an empty message and the ex-post judge reads the turn's prompt and files touched only (shims/pi)
 - **hook latency** — documented: shim-core's 800 ms telemetry budget sits below this launcher's floor on the dev machine (a no-op Stop is ~1.8 s warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim carries per-event budgets (UserPromptSubmit 6 s, Stop 6 s); a hook that still outlives its budget finishes as shim-core's documented orphan — capture is complete, Pi shows one 'hook timeout' notice per event per session, and only the prompt-time enrichment block that reply would have carried is lost (#114, docs/HARNESSES.md §Pi)
 - **MCP registration** — documented: Pi ≥ 1.0 ships a native MCP client that reads ~/.pi/agent/mcp.json directly and names tools `mcp__thinkweave__'weave_*`. `weave install --harness pi` writes the entry with `exposure: direct` so the model sees all 17 tools like built-ins (the `codemode` default hides them). Pre-1.0 Pi had no client — the community pi-mcp-adapter extension supplied one and REPLACED Pi's own client whenever it was installed; a leftover adapter package suppresses native MCP and is flagged by `weave doctor --mcp --harness pi` (docs/mcp.md §Control tool exposure)
 - **subagent fan-out** — documented: Pi ships no first-party subagent tool, so the /drain and /dream worker topology has nothing to dispatch onto (n-a1d3beba §2)
@@ -72,6 +73,7 @@ row above) everything unlisted works as on Claude Code; on a
 
 #### OpenCode
 
+- **turn_end final message** — documented: the shim's Stop envelope carries no final assistant message, so each turn_end records an empty message and the ex-post judge reads the turn's prompt and files touched only (shims/opencode)
 - **hook latency** — documented: the launcher's floor on the dev machine sits above shim-core's telemetry defaults, so the shim carries the Pi budgets (SessionStart 5 s, UserPromptSubmit 6 s, Stop 6 s) and a 10 s PostToolUse ceiling (fire-and-forget; at 800 ms a launcher started under load was reaped before python ran). Stop drains the turn's in-flight tool events first, and the plugin's dispose hook drains everything, because `opencode run` exits ~10 ms after the final idle without awaiting event handlers (#195, shims/opencode)
 - **headless stdin** — documented: `opencode run` reads a non-TTY stdin to EOF before it creates the session, so a dispatcher that leaves stdin open (a pipe, an agent tool's inherited stdin) hangs it forever with no output; dispatch with stdin from /dev/null (live 2026-10-12) (#195)
 - **SessionStart injection** — documented: OpenCode has no session-start hook: the payload is fetched on the first model call of a session and appended to the system prompt of every later call — including OpenCode's own small title-generation call, which costs its tokens once per session (#195)

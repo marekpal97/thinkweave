@@ -413,7 +413,8 @@ def add_admin_subparsers(sub) -> None:
         "decide",
         help="System 1 decision sites. `smoke`: one end-to-end call to the "
         "configured decision backend, printing the answers, the cost and the "
-        "verdicts row it projects.",
+        "verdicts row it projects. `sweep`: the ex-post judge over sessions "
+        "no wrap judged. `readout`: the verdicts per site and source.",
     )
     decide_sub = p_decide.add_subparsers(dest="decide_action", required=True)
     p_decide_smoke = decide_sub.add_parser("smoke", help="One end-to-end decision call.")
@@ -423,6 +424,21 @@ def add_admin_subparsers(sub) -> None:
     p_decide_smoke.add_argument(
         "--model", default="", help="Model id (default: the backend's first model)."
     )
+    for name, text in (
+        ("sweep", "Run the ex-post judge over every session it has not judged."),
+        ("readout", "Counts, usage at threshold, calibration, misses, latency "
+                    "and cost per site and source."),
+    ):
+        p = decide_sub.add_parser(name, help=text)
+        p.add_argument("--project", default="", help="Only this project's sessions.")
+        p.add_argument("--since", default="", help="Only sessions dated on or after this ISO date.")
+        p.add_argument("--json", action="store_true", help="Emit JSON.")
+        if name == "readout":
+            p.add_argument(
+                "--threshold", type=float, default=None,
+                help="Ex-post probability at which a note counts as used "
+                "(default: the ex_post site's accept).",
+            )
 
     p_learn = sub.add_parser(
         "learn",

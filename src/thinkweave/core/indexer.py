@@ -55,6 +55,29 @@ def _startup_source(harness_id: str) -> str:
     factory = PROFILES.get(harness_id)
     return factory().context_served_source if factory else "startup"
 
+
+def served_source(ev: dict) -> str:
+    """``context_served.source`` for a ``startup`` or ``retrieval`` event;
+    ``""`` for any other event.
+
+    Retrieval events carry their source by their tool sentinel: system-pushed
+    enrichment (prompt-time R2, or issue-loop claim-time priming — the writer
+    is LOOP_PRIME_TOOL in the devloop package's trajectory/prime.py) each gets
+    its own source, so agent-pulled ``onthefly`` stays a clean signal for the
+    RLVR export.
+    """
+    etype = ev.get("type", "")
+    if etype == "startup":
+        return _startup_source(ev.get("surface", ""))
+    if etype != "retrieval":
+        return ""
+    tool = ev.get("tool")
+    if tool == "prompt_time_retrieval":
+        return "prompttime"
+    if tool == "loop_prime":
+        return "loop-prime"
+    return "onthefly"
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS notes (
     id           TEXT PRIMARY KEY,
@@ -1539,24 +1562,8 @@ class Indexer:
                 if etype == "decision":
                     self._insert_verdicts(ev, session_id)
                     continue
-                if etype == "startup":
-                    src = _startup_source(ev.get("surface", ""))
-                elif etype == "retrieval":
-                    # Retrieval events carry a source distinction by their tool
-                    # sentinel: system-pushed enrichment (prompt-time R2, or
-                    # issue-loop claim-time priming #57 — the writer is
-                    # LOOP_PRIME_TOOL in the devloop package's
-                    # trajectory/prime.py, which lives in funloops since #151)
-                    # each gets its own source so agent-pulled 'onthefly' stays
-                    # a clean signal for the RLVR export.
-                    tool = ev.get("tool")
-                    if tool == "prompt_time_retrieval":
-                        src = "prompttime"
-                    elif tool == "loop_prime":
-                        src = "loop-prime"
-                    else:
-                        src = "onthefly"
-                else:
+                src = served_source(ev)
+                if not src:
                     continue
                 ts = ev.get("ts", "")
                 returned_ids = ev.get("returned_ids", []) or []

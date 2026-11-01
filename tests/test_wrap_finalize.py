@@ -93,7 +93,7 @@ class TestFinalizeWrap:
         # P1-9 — every step contributes a timing entry (even if the step is a
         # no-op or errors out; the `finally` blocks stamp wall time regardless).
         assert set(result.timings) == {
-            "prune", "index", "judge", "landing", "drift",
+            "prune", "index", "ex_post", "judge", "landing", "drift",
         }
         assert all(v >= 0.0 for v in result.timings.values())
 
