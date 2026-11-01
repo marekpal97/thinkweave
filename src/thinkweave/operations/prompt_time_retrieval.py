@@ -99,6 +99,13 @@ class Enrichment(NamedTuple):
 _NOTHING = Enrichment(None, [], False)
 
 
+class Pool(NamedTuple):
+    """The gate's candidates in RRF order; ``missed`` as in :func:`_retrieve`."""
+
+    candidates: list
+    missed: bool
+
+
 def build_enrichment(
     cfg: Config,
     session_id: str,
@@ -168,11 +175,12 @@ def build_enrichment(
         fresh = [r for r in results if r.id not in served]
         return Enrichment(*_render(fresh[: rpt.max_pieces_per_turn], char_cap), False)
 
-    pool, missed = _pool(
+    pool = _pool(
         cfg, prompt_text, list(rpt.bias_types),
         size=gate.pool_size + len(served), deadline=deadline_s,
     )
-    fresh = [r for r in pool if r.id not in served][: gate.pool_size]
+    missed = pool.missed
+    fresh = [r for r in pool.candidates if r.id not in served][: gate.pool_size]
     if not fresh:
         return Enrichment(None, [], missed)
     budget = gate.deadline_ms / 1000
@@ -333,11 +341,9 @@ def _retrieve(
 
 def _pool(
     cfg: Config, query: str, note_type: list[str], *, size: int, deadline: float
-) -> tuple[list, bool]:
-    """The any-term BM25 arm and the unfloored similarity arm, fused by RRF.
-
-    Returns ``(top size, missed)``; ``missed`` as in :func:`_retrieve`.
-    """
+) -> Pool:
+    """The top ``size`` of the any-term BM25 arm and the unfloored similarity
+    arm, fused by RRF."""
     from thinkweave.retrieval.search import Search, rrf_fuse
 
     s = Search(config=cfg)
@@ -348,7 +354,7 @@ def _pool(
     similar, missed = _retrieve(
         cfg, query, note_type, limit=size, deadline=deadline, min_similarity=0.0
     )
-    return rrf_fuse([keyword, similar], cfg.retrieval_rrf_k, size), missed
+    return Pool(rrf_fuse([keyword, similar], cfg.retrieval_rrf_k, size), missed)
 
 
 def _describe(r) -> str:

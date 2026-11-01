@@ -438,7 +438,7 @@ def test_a_raising_backend_writes_a_decision_miss_and_serves_the_rrf_top(tmp_pat
     monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
     monkeypatch.setattr(handler_mod, "_ensure_session", lambda *a, **k: None)
     pool = [_FakeResult(f"n-rrf{i:05d}", title=f"Pool note {i}") for i in range(6)]
-    monkeypatch.setattr(ptr, "_pool", lambda *a, **k: (pool, False))
+    monkeypatch.setattr(ptr, "_pool", lambda *a, **k: ptr.Pool(pool, False))
     _gate_on(cfg, monkeypatch, FakeDecisionProvider(error=RuntimeError("429 Too Many Requests")))
 
     handler_mod._handle_user_prompt_submit(
@@ -465,7 +465,7 @@ def test_default_accept_rejects_069_and_serves_070_with_ex_ante_verdicts(vault_f
     cfg = vault_factory().config
     monkeypatch.setattr(
         ptr, "_pool",
-        lambda *a, **k: ([_FakeResult("n-low000069"), _FakeResult("n-acc000070")], False),
+        lambda *a, **k: ptr.Pool([_FakeResult("n-low000069"), _FakeResult("n-acc000070")], False),
     )
     _gate_on(cfg, monkeypatch, FakeDecisionProvider(nouls={"n-low000069": 0.69, "n-acc000070": 0.70}))
     _start_turn(cfg, "ses-cut", REAL_PROMPT)
