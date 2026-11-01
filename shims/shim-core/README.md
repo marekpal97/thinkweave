@@ -2,7 +2,7 @@
 
 The shared kernel every thinkweave E3 harness shim (Pi #114, OpenCode #195)
 builds on. ESM-only (`type: module`, NodeNext), Node >= 20, zero runtime
-dependencies. Five runtime exports plus the envelope types:
+dependencies. Its runtime exports, plus the envelope types:
 
 - **`CANONICAL_EVENTS` / `EVENT_PHASES`** + `HookEnvelope`/`HookResponse` —
   the canonical vocabulary and the handler's stdin/stdout protocol: exactly
@@ -25,6 +25,14 @@ dependencies. Five runtime exports plus the envelope types:
   (spawn-error / timeout / exit+code / bad-output, with a bounded head of the
   child's stderr). Shims should warn once per process (pair with the guard
   below) so a broken install is visible, never silently faked.
+- **`dispatch(event, payload, opts & { rail })`** + `RailHooks` /
+  `ForeignHook` — `runHook` under the rsi-rail registration set the
+  installed stub hands the shim (`withRail`, rendered by `weave hooks
+  install` from the rail's `hooks/hooks.toml`, dec-4f158b58): a disabled
+  event (or a tool the rail's matchers exclude) never reaches the launcher;
+  each foreign script whose event and matcher fit runs after it, envelope on
+  stdin, inside what is left of the same budget, under the same never-reject
+  policy.
 - **`createFirstCallGuard()`** — the per-process dedup/synthesis primitive:
   synthesise SessionStart once on harnesses without one, drop double-fired
   deliveries, or gate the warn-once diagnostics above.
