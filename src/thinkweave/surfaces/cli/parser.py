@@ -38,5 +38,39 @@ def build_parser() -> argparse.ArgumentParser:
     add_hubs_subparsers(sub)
     add_drain_subparsers(sub)
     add_themes_subparsers(sub)
+    add_policy_subparsers(sub)
 
     return parser
+
+
+def add_policy_subparsers(sub) -> None:
+    """``weave policy inventory`` — the knob inventory from the Config field
+    metadata (dec-db6baaab). Logic in surfaces/cli/policy.py."""
+    p_policy = sub.add_parser(
+        "policy",
+        help=(
+            "The knob inventory derived from the Config field metadata: render "
+            "the rsi-rail template or check a file against it (dec-db6baaab)."
+        ),
+    )
+    policy_sub = p_policy.add_subparsers(dest="policy_action")
+    p_inv = policy_sub.add_parser(
+        "inventory",
+        help="Render every knob address with its default and the events that read it.",
+    )
+    mode = p_inv.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--toml",
+        action="store_true",
+        help="Print the rsi-rail thinkweave/config.toml template (rail-eligible knobs, commented).",
+    )
+    mode.add_argument(
+        "--json",
+        action="store_true",
+        help="Print every knob (address, read_at, rail, default) as one JSON list.",
+    )
+    mode.add_argument(
+        "--check",
+        metavar="PATH",
+        help="Exit 0 when PATH equals the --toml rendering apart from its live lines, else 1.",
+    )

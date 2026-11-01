@@ -9,9 +9,13 @@ versions a dev-link exposes to each harness.
 
 The harness readout (dec-4f158b58) rides along: the handful of settings
 values that change how the agent behaves (``harness_settings``), the hook
-events the profile registers, and the profile's hook literals. Witnessed,
-never held: the settings file is the harness's own, rewritten with machine
-state, so the round records what it said rather than the rail owning it.
+events registered once the rail's ``hooks/hooks.toml`` is rendered
+(``hook_events``) with the foreign hooks beside them (``foreign``), the
+profile's hook literals, and what was in force against them (``effective``:
+per-event budgets and the context cap as ``min(rail knob, literal)``, and
+the Stop nudge's state; dec-4f158b58 layer 1, dec-6d5f1913). Witnessed, never held: the settings file is the
+harness's own, rewritten with machine state, so the round records what it
+said rather than the rail owning it.
 Permissions and env are deliberately left out.
 """
 
@@ -23,7 +27,9 @@ from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 import thinkweave
+from thinkweave.core import rail_hooks
 from thinkweave.core._utils import git_stdout
+from thinkweave.core.config import Hooks
 from thinkweave.core.harness import PROFILES, HarnessProfile, active, lookup
 
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -47,10 +53,14 @@ def collect(cfg, harness: str, *, model: str = "") -> dict:
     if settings := _harness_settings(profile, model):
         manifest["harness_settings"] = settings
     if profile is not None:
-        if events := sorted(e for e, native in profile.hook_events.items() if native):
+        events, foreign = _registrations(cfg, profile)
+        if events:
             manifest["hook_events"] = events
+        if foreign:
+            manifest["foreign"] = foreign
         if literals := _literals(profile):
             manifest["literals"] = literals
+        manifest["effective"] = _effective(cfg, profile)
     return manifest
 
 
@@ -58,6 +68,21 @@ def _profile(harness: str) -> HarnessProfile | None:
     """The running profile when it is ``harness``, else the registered one."""
     running = active()
     return running if running.id == harness else lookup(harness)
+
+
+def _registrations(cfg, profile: HarnessProfile) -> tuple[list[str], list[dict]]:
+    """The registration set in force on ``profile`` (dec-4f158b58 layers 2
+    and 3): the hook events it registers once the rsi-rail ``hooks.toml`` is
+    rendered (the profile's full mapped list when there is none), and the
+    foreign hooks it runs as ``{name, event}`` pairs. An invalid rail file
+    raises, as a rail that is not a repo does."""
+    reg = rail_hooks.read(cfg.rsi_rail)
+    owned = rail_hooks.plugin_owned(profile)
+    events = rail_hooks.events_in_force(profile, reg, plugin_owned=owned)
+    foreign = [
+        {"name": f.name, "event": f.event} for f in rail_hooks.foreign_in_force(profile, reg)
+    ]
+    return events, foreign
 
 
 def _harness_settings(profile: HarnessProfile | None, model: str) -> dict:
@@ -89,6 +114,18 @@ def _literals(profile: HarnessProfile) -> dict:
     if profile.additional_context_cap_chars is not None:
         literals["additional_context_cap_chars"] = profile.additional_context_cap_chars
     return literals
+
+
+def _effective(cfg, profile: HarnessProfile) -> dict:
+    """The hook values in force on ``profile`` under ``cfg``'s ``[hooks]``
+    knobs, so a round names what bounded it, not only the code default."""
+    hooks = getattr(cfg, "hooks", None) or Hooks()
+    eff = hooks.effective(profile.hook_budget_ms, profile.additional_context_cap_chars)
+    out: dict = {"hook_budget_ms": eff.budget_ms}
+    if eff.cap_chars is not None:
+        out["additional_context_cap_chars"] = eff.cap_chars
+    out["nudge"] = eff.nudge
+    return out
 
 
 def _rail(repo: Path) -> dict:

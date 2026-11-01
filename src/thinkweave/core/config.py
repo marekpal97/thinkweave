@@ -16,8 +16,37 @@ Knob precedence: the ``rsi-rail`` policy repo's ``thinkweave/config.toml``
 merges over the vault file with the same key handling, so a harness-level
 knob the user tunes lives in the repo while the vault keeps everything
 else. No repo configured means no change. The repo file may carry only
-the serving-chain sections (``_RAIL_KEYS``); any other key is a
-``ValueError`` naming it and the file.
+the serving-chain knobs; any other key is a ``ValueError`` naming it and
+the file.
+
+Knob metadata (dec-db6baaab: the registry is derived, not hand-written).
+Every field of ``Config`` and of the section dataclasses it nests is
+declared through :func:`knob`, whose ``field(metadata=...)`` carries:
+
+- ``read_at``: the events that read the value, from :data:`READ_AT`
+  (``SessionStart``, ``UserPromptSubmit``, ``weave_call``, ``wrap``,
+  ``dream``, ``index``, ``machine``).
+- ``toml``: the TOML address relative to the enclosing table (``Config`` is
+  the document root). ``None`` means the field name; ``""`` means the field
+  has no address in a knob document; a trailing ``*`` is a key prefix whose
+  remainder keys a dict (with ``choices_ref``, the remainders are the
+  allowed names and any other is refused by name); ``"*"`` alone keys one
+  sub-table per entry.
+- ``parse``: a type called with the TOML value, or a function
+  ``(value, cfg)`` for a value that needs the config (``weave_dir``).
+- ``default_ref`` / ``choices_ref``: ``"module:attr"`` references to the
+  reader's own declaration of the default or of the allowed names, for an
+  override whose default lives with its reader (``retrieval/context.py``).
+- ``each``: the dataclass of each entry of a keyed sub-table dict.
+- ``unset``: what an unset override means, for a default that is computed.
+- ``choice_noun``: what a refusal calls a name ``choices_ref`` does not
+  list (``event``); ``name`` when unset.
+
+From that one declaration :func:`_apply_knobs` reads every key, the rail
+check derives the allowed set (a field is rail-eligible iff one of its
+``read_at`` events is on the serving chain, :data:`SERVING_CHAIN`), and
+``weave policy inventory --toml`` renders the rail template. An unset
+knob keeps today's behaviour (dec-6d5f1913: seams only).
 """
 
 from __future__ import annotations
@@ -27,7 +56,9 @@ import os
 import platform
 import re
 import tomllib
-from dataclasses import dataclass, field, fields
+from collections.abc import Iterator, Mapping
+from dataclasses import MISSING, Field, dataclass, field, fields, is_dataclass
+from importlib import import_module
 from pathlib import Path, PurePosixPath
 
 from thinkweave.core.fswrite import atomic_write_text
@@ -56,6 +87,236 @@ def _resolve_weave_dir_value(value: str, vault_root: Path) -> Path:
     return path
 
 
+# The events a knob is read at. The first four are the serving chain: a
+# value read there shapes what a session sees, so it is policy and may live
+# in the rsi-rail repo; the rest stay in the vault's config.toml.
+READ_AT = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "weave_call",
+    "wrap",
+    "dream",
+    "index",
+    "machine",
+)
+SERVING_CHAIN = frozenset(READ_AT[:4])
+
+
+def knob(
+    default=MISSING,
+    *,
+    read_at: str | tuple[str, ...],
+    toml: str | None = None,
+    parse=None,
+    default_factory=MISSING,
+    default_ref: str | None = None,
+    choices_ref: str | None = None,
+    each: type | None = None,
+    unset: str | None = None,
+    choice_noun: str | None = None,
+):
+    """A dataclass field carrying its knob metadata (see the module docstring)."""
+    events = (read_at,) if isinstance(read_at, str) else tuple(read_at)
+    if not events or any(e not in READ_AT for e in events):
+        raise ValueError(f"read_at {events!r} must name events from {READ_AT}")
+    metadata = {
+        "read_at": events,
+        "toml": toml,
+        "parse": parse,
+        "default_ref": default_ref,
+        "choices_ref": choices_ref,
+        "each": each,
+        "unset": unset,
+        "choice_noun": choice_noun,
+    }
+    if default_factory is not MISSING:
+        return field(default_factory=default_factory, metadata=metadata)
+    return field(default=default, metadata=metadata)
+
+
+def _parse_weave_dir(value: str, cfg: Config) -> Path:
+    return _resolve_weave_dir_value(value, cfg.vault_root)
+
+
+def _parse_identities(value, cfg: Config) -> tuple[str, ...]:
+    """A list, or one comma-separated string."""
+    if isinstance(value, str):
+        value = [t.strip() for t in value.split(",") if t.strip()]
+    return tuple(value)
+
+
+def resolve_ref(ref: str):
+    """The object a ``"module:attr"`` metadata reference names. Imported
+    on use: the readers it names import this module."""
+    module, _, attr = ref.partition(":")
+    return getattr(import_module(module), attr)
+
+
+def _field_default(f: Field):
+    return f.default_factory() if f.default_factory is not MISSING else f.default
+
+
+def _is_section(f: Field) -> bool:
+    """A field holding a nested knob dataclass (a TOML sub-table)."""
+    return not f.metadata.get("each") and is_dataclass(_field_default(f))
+
+
+@dataclass(frozen=True)
+class KnobSpec:
+    """One knob, derived from a field's metadata.
+
+    ``address`` is the full dotted TOML address, or ``None`` for a field no
+    knob document can set. A keyed sub-table appears as a ``<name>``
+    placeholder segment (``context.startup.<section>.pin``) and ``keyed`` is
+    the dict field whose ``choices_ref`` names the allowed keys.
+    """
+
+    owner: type
+    name: str
+    address: str | None
+    read_at: tuple[str, ...]
+    default: object
+    metadata: Mapping
+    keyed: Field | None = None
+
+    @property
+    def rail(self) -> bool:
+        return bool(SERVING_CHAIN.intersection(self.read_at))
+
+
+def _join(prefix: str, rel: str) -> str:
+    return f"{prefix}.{rel}" if prefix else rel
+
+
+def knob_specs(root: type | None = None) -> list[KnobSpec]:
+    """Every leaf knob under ``root`` (default: ``Config``), in field order.
+
+    Raises ``TypeError`` for a field that declares no ``read_at``, so a
+    field cannot join the config without saying where it is read.
+    """
+    out: list[KnobSpec] = []
+
+    def walk(cls: type, prefix: str | None, keyed: Field | None) -> None:
+        for f in fields(cls):
+            md = f.metadata
+            if "read_at" not in md:
+                raise TypeError(f"{cls.__name__}.{f.name} declares no read_at")
+            rel = f.name if md["toml"] is None else md["toml"]
+            address = None if prefix is None or rel == "" else _join(prefix, rel)
+            if md.get("each"):
+                walk(md["each"], _join(prefix or "", f"<{f.name}>"), f)
+            elif _is_section(f):
+                walk(type(_field_default(f)), address, keyed)
+            else:
+                out.append(
+                    KnobSpec(
+                        cls, f.name, address, md["read_at"], _field_default(f), md, keyed
+                    )
+                )
+
+    walk(root or Config, "", None)
+    return out
+
+
+def iter_rail_addresses(root: type | None = None) -> Iterator[tuple[str, str]]:
+    """``(table, key)`` for every rail-eligible address, keyed tables expanded
+    over their allowed names."""
+    for spec in knob_specs(root):
+        if not spec.rail or spec.address is None:
+            continue
+        table, _, key = spec.address.rpartition(".")
+        if spec.keyed is None:
+            for expanded, _name in expand_prefix(spec):
+                yield table, expanded
+            continue
+        placeholder = f"<{spec.keyed.name}>"
+        for name in resolve_ref(spec.keyed.metadata["choices_ref"]):
+            yield table.replace(placeholder, name), key
+
+
+def expand_prefix(spec: KnobSpec) -> list[tuple[str, str | None]]:
+    """``[(key, name)]`` for one address: a key prefix with ``choices_ref``
+    (``budget_ms.*`` over the canonical events) expands to one key per
+    allowed name, anything else is itself with no name."""
+    key = spec.address.rpartition(".")[2] if spec.address else ""
+    ref = spec.metadata.get("choices_ref")
+    if not (key.endswith("*") and ref):
+        return [(key, None)]
+    return [(key[:-1] + name, name) for name in resolve_ref(ref)]
+
+
+def _subtable(table: dict, dotted: str) -> dict:
+    for part in dotted.split(".") if dotted else ():
+        table = table.get(part, {})
+        if not isinstance(table, dict):
+            return {}
+    return table
+
+
+def _check_choices(
+    names, ref: str, address: str, path: Path | None, noun: str = "section"
+) -> None:
+    known = resolve_ref(ref)
+    for name in names:
+        if name not in known:
+            where = f" in {path}" if path else ""
+            raise ValueError(
+                f"unknown {noun} {name!r} at {address!r}{where}: the known "
+                f"{noun}s are {', '.join(known)}"
+            )
+
+
+def _parse(parse, value, cfg: Config):
+    if parse is None:
+        return value
+    if isinstance(parse, type):
+        return parse(value)
+    return parse(value, cfg)
+
+
+def _apply_fields(obj, table: dict, prefix: str, cfg: Config, path: Path | None) -> None:
+    """Set each field of ``obj`` whose address ``table`` carries."""
+    for f in fields(obj):
+        md = f.metadata
+        rel = f.name if md["toml"] is None else md["toml"]
+        if rel == "":
+            continue
+        if md.get("each"):
+            entries = {k: v for k, v in table.items() if isinstance(v, dict)}
+            _check_choices(entries, md["choices_ref"], prefix, path)
+            target = getattr(obj, f.name)
+            for name, sub in entries.items():
+                entry = target.setdefault(name, md["each"]())
+                _apply_fields(entry, sub, _join(prefix, name), cfg, path)
+            continue
+        if _is_section(f):
+            sub = _subtable(table, rel)
+            if sub:
+                _apply_fields(getattr(obj, f.name), sub, _join(prefix, rel), cfg, path)
+            continue
+        parent, _, key = rel.rpartition(".")
+        sub = _subtable(table, parent)
+        if key.endswith("*"):
+            stem = key[:-1]
+            found = {
+                k[len(stem) :]: _parse(md["parse"], v, cfg)
+                for k, v in sub.items()
+                if k.startswith(stem)
+            }
+            if md.get("choices_ref"):
+                _check_choices(
+                    found, md["choices_ref"], _join(prefix, parent), path,
+                    noun=md.get("choice_noun") or "name",
+                )
+            if found:
+                setattr(obj, f.name, found)
+        elif key in sub:
+            value = _parse(md["parse"], sub[key], cfg)
+            if md.get("choices_ref"):
+                _check_choices(value, md["choices_ref"], _join(prefix, rel), path)
+            setattr(obj, f.name, value)
+
+
 @dataclass
 class PromptTimeRetrieval:
     """Config for prompt-time retrieval enrichment (R2).
@@ -67,44 +328,215 @@ class PromptTimeRetrieval:
     the noise-tax failure mode that retired the old pre-Edit injection.
     """
 
-    enabled: bool = True
+    enabled: bool = knob(True, read_at="UserPromptSubmit", parse=bool)
     # Triviality gate only — skip trivially short inputs and slash-commands so
     # we don't pay an embedding on "ok"/"yes"/"/clear". NOT a semantic filter;
     # relevance is decided entirely by the cosine floor below.
-    min_prompt_chars: int = 12
+    min_prompt_chars: int = knob(12, read_at="UserPromptSubmit", parse=int)
     # Wall-clock budget for the similarity (embedding) arm, run in a daemon
     # thread; on overrun the arm is abandoned and the turn gets no injection
     # (see operations/prompt_time_retrieval.py — there is no FTS fallback,
     # it was a structural no-op against prose prompts and was removed).
     # Generous enough to let the embedding complete on a normal network; kept
     # under the UserPromptSubmit hook timeout.
-    embed_deadline_seconds: float = 4.0
+    embed_deadline_seconds: float = knob(4.0, read_at="UserPromptSubmit", parse=float)
     # Adaptive skip — consecutive deadline misses (embedding thread still
     # running when the wall-clock deadline hits) this session before the
     # similarity arm is skipped for the rest of the session. Protects against
     # re-paying a sunk ~embed_deadline_seconds cost on every remaining turn
     # when the embedding endpoint is slow or unreachable.
-    deadline_miss_limit: int = 3
+    deadline_miss_limit: int = knob(3, read_at="UserPromptSubmit", parse=int)
     # Cosine floor on the similarity arm — THE relevance gate. Drops low-cosine
     # nearest neighbours, so generic/meta prompts (~0.22–0.36) no-op while
     # domain prompts (~0.40+) fire. Model-dependent (text-embedding-3-small);
     # retune if you swap embedding models.
-    min_similarity: float = 0.38
+    min_similarity: float = knob(0.38, read_at="UserPromptSubmit", parse=float)
     # Per-turn caps.
-    max_pieces_per_turn: int = 3
-    max_injected_chars_per_turn: int = 1200
+    max_pieces_per_turn: int = knob(3, read_at="UserPromptSubmit", parse=int)
+    max_injected_chars_per_turn: int = knob(1200, read_at="UserPromptSubmit", parse=int)
     # Per-session caps — make R2 self-extinguish as the session matures.
-    max_firings_per_session: int = 8
-    max_injected_chars_per_session: int = 6000
+    max_firings_per_session: int = knob(8, read_at="UserPromptSubmit", parse=int)
+    max_injected_chars_per_session: int = knob(
+        6000, read_at="UserPromptSubmit", parse=int
+    )
     # Bias toward the axes startup under-serves (sources + learnings); decisions
     # are already well-exposed at boot (Key Files table + Decisions Worth
     # Understanding), so they're left out of the default bias.
-    bias_types: tuple[str, ...] = ("source", "note")
+    bias_types: tuple[str, ...] = knob(
+        ("source", "note"), read_at="UserPromptSubmit", parse=tuple
+    )
+
+
+@dataclass
+class StartupSection:
+    """Per-section overrides under ``[context.startup.<section>]``.
+
+    Both unset by default: an unset ``cap`` leaves the section body whole
+    (its builder's soft budget in ``retrieval/context.py`` is the reference
+    value the inventory shows), an unset ``pin`` leaves the section to the
+    budget rules every other section follows.
+    """
+
+    # Pinned: the budget never drops this section and never cuts its tail.
+    pin: bool = knob(False, read_at=("SessionStart", "weave_call"), parse=bool)
+    # Chars the section body is cut to (head kept), before the payload budget.
+    cap: int | None = knob(
+        None,
+        read_at=("SessionStart", "weave_call"),
+        parse=int,
+        default_ref="thinkweave.retrieval.context:SECTION_SOFT_BUDGET_CHARS",
+        unset="no cut (the builder's soft budget is {default})",
+    )
+
+
+@dataclass
+class ContextStartup:
+    """Overrides for the SessionStart context payload (#352, dec-6d5f1913).
+
+    Every field is an override: unset (``None`` or empty) means the
+    defaults ``retrieval/context.py`` declares, so a vault or rail file that
+    names none of these keys serves today's payload byte for byte. Section
+    names are checked against ``retrieval.context.SECTIONS`` when the file
+    loads; an unknown name is refused by name.
+    """
+
+    # Ordered section ids SessionStart serves; also the default section set
+    # of ``weave_project_snapshot`` when it is called without ``sections``.
+    sections: tuple[str, ...] | None = knob(
+        None,
+        read_at=("SessionStart", "weave_call"),
+        parse=tuple,
+        default_ref="thinkweave.retrieval.context:SESSION_START_SECTIONS",
+        choices_ref="thinkweave.retrieval.context:SECTIONS",
+    )
+    # Chars the SessionStart payload may spend. Unset: the harness profile's
+    # inline cap less the guard reserve, or the default token budget when the
+    # profile measures no cap.
+    budget_chars: int | None = knob(
+        None,
+        read_at="SessionStart",
+        parse=int,
+        unset="the harness cap less the guard reserve",
+    )
+    # Sections dropped whole when over budget, cheapest-to-lose first.
+    drop_order: tuple[str, ...] | None = knob(
+        None,
+        read_at=("SessionStart", "weave_call"),
+        parse=tuple,
+        default_ref="thinkweave.retrieval.context:DROP_ORDER",
+        choices_ref="thinkweave.retrieval.context:SECTIONS",
+    )
+    # ``[context.startup.<section>]`` sub-tables, keyed by section id.
+    section: dict[str, StartupSection] = knob(
+        default_factory=dict,
+        read_at=("SessionStart", "weave_call"),
+        toml="*",
+        each=StartupSection,
+        choices_ref="thinkweave.retrieval.context:SECTIONS",
+    )
+
+
+@dataclass
+class HooksStop:
+    """``[hooks.stop]``: the Stop hook's seams. Off by default
+    (dec-6d5f1913: seams only, an unset knob is today's behaviour)."""
+
+    # The #345 seam: a final message claiming a verification ("tests pass")
+    # with no test command run this turn blocks the Stop once with a nudge.
+    # Read at Stop, the end of the turn the claim closes; the metadata
+    # vocabulary names that moment ``wrap``.
+    unverified_claim_nudge: bool = knob(False, read_at="wrap", parse=bool)
+
+
+@dataclass
+class Hooks:
+    """``[hooks]``: hook behaviour as knobs (dec-4f158b58 layer 1).
+
+    The handler reads these first and the firing harness's profile literal
+    second. A value may only lower a literal: the harness's wall clock
+    (``hook_budget_ms``) and its inline context cap
+    (``additional_context_cap_chars``) sit outside python, so the handler
+    spends ``min(knob, literal)`` and refuses a higher value with one log
+    line. Unset keys keep the literal, which is today's behaviour.
+    """
+
+    # Chars of SessionStart additional context the payload budget derives
+    # from (the profile's measured inline cap when unset).
+    additional_context_cap_chars: int | None = knob(
+        None,
+        read_at="SessionStart",
+        parse=int,
+        unset="the harness profile's literal",
+    )
+    # ``[hooks.budget_ms] <Event> = <ms>``, keyed by canonical event; an
+    # unknown event is refused by name. The handler reads it on every
+    # event; ``read_at`` names the two serving events it shapes.
+    budget_ms: dict[str, int] = knob(
+        default_factory=dict,
+        read_at=("SessionStart", "UserPromptSubmit"),
+        toml="budget_ms.*",
+        parse=int,
+        choices_ref="thinkweave.core.harness:CANONICAL_EVENTS",
+        choice_noun="event",
+        unset="the harness profile's literal",
+    )
+    stop: HooksStop = knob(default_factory=HooksStop, read_at="wrap")
+
+    def effective(
+        self, budget_literals: Mapping[str, int], cap_literal: int | None
+    ) -> EffectiveHooks:
+        """What is in force against one harness profile's literals.
+
+        A knob above its literal is refused (the literal stays) and the
+        refusal is returned as one line for the caller to log; a knob for
+        an event or cap the profile sets no literal for lowers nothing and
+        stands alone (the harness waits forever there).
+        """
+        refused: list[str] = []
+        budgets = dict(budget_literals)
+        for event, ms in self.budget_ms.items():
+            literal = budget_literals.get(event)
+            if literal is not None and ms > literal:
+                refused.append(
+                    f"[hooks.budget_ms] {event} = {ms} is above the harness "
+                    f"literal {literal}; the literal stays in force (a knob "
+                    "may only lower it)"
+                )
+            else:
+                budgets[event] = ms
+        cap = cap_literal
+        knob_cap = self.additional_context_cap_chars
+        if knob_cap is not None:
+            if cap_literal is not None and knob_cap > cap_literal:
+                refused.append(
+                    f"[hooks] additional_context_cap_chars = {knob_cap} is above "
+                    f"the harness literal {cap_literal}; the literal stays in "
+                    "force (a knob may only lower it)"
+                )
+            else:
+                cap = knob_cap
+        return EffectiveHooks(budgets, cap, self.stop.unverified_claim_nudge, tuple(refused))
+
+
+@dataclass(frozen=True)
+class EffectiveHooks:
+    """:meth:`Hooks.effective`'s answer: the per-event budgets (ms) and the
+    inline context cap (chars) in force, the Stop nudge's state, and the
+    refusals of knobs above their literal."""
+
+    budget_ms: dict[str, int]
+    cap_chars: int | None
+    nudge: bool
+    refused: tuple[str, ...] = ()
 
 
 @dataclass
 class Config:
-    vault_root: Path = field(default_factory=lambda: _DEFAULT_VAULT)
+    # Resolved by load_config itself (env, user-scope file, the vault file's
+    # top-level ``vault_root``), never by the knob documents.
+    vault_root: Path = knob(
+        default_factory=lambda: _DEFAULT_VAULT, read_at="machine", toml=""
+    )
     # Relocates derived state (index.db, embeddings.db, buffer/, logs — see
     # weave_dir below) off the vault path. The vault markdown must stay put
     # (Obsidian owns it), but everything under weave_dir is derived and
@@ -112,28 +544,57 @@ class Config:
     # slow/remote/virtualized storage (e.g. a Windows drive crossed from
     # WSL2 via 9P — measured ~30x slower SQLite reads — or a NAS/Dropbox
     # mount). None (default) keeps the historical vault_root/.weave layout.
-    weave_dir_override: Path | None = None
+    weave_dir_override: Path | None = knob(
+        None, read_at="machine", toml="weave_dir", parse=_parse_weave_dir
+    )
     # The rsi-rail policy repo, when configured; its thinkweave/config.toml
     # is the last knob tier. None when the user has no repo.
-    rsi_rail: Path | None = None
-    default_project: str = ""
-    embedding_model: str = "text-embedding-3-small"
-    embedding_api_key_env: str = "OPENAI_API_KEY"  # env var name holding the key
-    embedding_api_url: str = "https://api.openai.com/v1/embeddings"
+    # Located from ``THINKWEAVE_RSI_RAIL`` or the user-scope file only.
+    rsi_rail: Path | None = knob(None, read_at="machine", toml="")
+    default_project: str = knob("", read_at="machine", toml="default_project")
+    embedding_model: str = knob(
+        "text-embedding-3-small", read_at="machine", toml="embeddings.model"
+    )
+    # env var name holding the key
+    embedding_api_key_env: str = knob(
+        "OPENAI_API_KEY", read_at="machine", toml="embeddings.api_key_env"
+    )
+    embedding_api_url: str = knob(
+        "https://api.openai.com/v1/embeddings", read_at="machine", toml="embeddings.api_url"
+    )
 
     # Edge generation thresholds
-    concept_edge_threshold: int = 1  # min shared concepts for relates_to edge
-    concept_edge_max_freq_pct: float = 0.05  # skip concepts in >5% of notes
-    tag_edge_threshold: int = 2  # min shared tags for relates_to edge
-    tag_edge_max_freq_pct: float = 0.10  # skip tags in >10% of notes
-    tag_edge_exclude: tuple[str, ...] = ("todo", "probe", "parked", "til")
+    # min shared concepts for relates_to edge
+    concept_edge_threshold: int = knob(
+        1, read_at="index", toml="edges.concept_threshold", parse=int
+    )
+    # skip concepts in >5% of notes
+    concept_edge_max_freq_pct: float = knob(
+        0.05, read_at="index", toml="edges.concept_max_freq_pct", parse=float
+    )
+    # min shared tags for relates_to edge
+    tag_edge_threshold: int = knob(
+        2, read_at="index", toml="edges.tag_threshold", parse=int
+    )
+    # skip tags in >10% of notes
+    tag_edge_max_freq_pct: float = knob(
+        0.10, read_at="index", toml="edges.tag_max_freq_pct", parse=float
+    )
+    tag_edge_exclude: tuple[str, ...] = knob(
+        ("todo", "probe", "parked", "til"),
+        read_at="index",
+        toml="edges.tag_exclude",
+        parse=tuple,
+    )
 
     # Dream apply-phase gates (Slice 1.5)
     # When False (default), priority_signals with action='enqueue' are
     # counted as logged-only — the LLM's intent is preserved on disk
     # but no queue write happens. Flip to True after the first cycle's
     # report has been reviewed.
-    dream_enqueue_priority_signals: bool = False
+    dream_enqueue_priority_signals: bool = knob(
+        False, read_at="dream", toml="dream.enqueue_priority_signals", parse=bool
+    )
 
     # C19b — per-concept PageRank. When True, the dream apply phase
     # computes per-concept-induced-subgraph PageRank after each
@@ -141,12 +602,16 @@ class Config:
     # ``weave_concepts(action='canonical_for', concept=X)``. Adds ~1s
     # per 100 active concepts on a typical vault (pure-Python power
     # iteration), so off by default until the user opts in.
-    dream_compute_pagerank: bool = False
+    dream_compute_pagerank: bool = knob(
+        False, read_at="dream", toml="dream.compute_pagerank", parse=bool
+    )
 
     # Cap on essence candidates surfaced per scan (themes + concept hubs,
     # placeholder-first). Keeps the nightly essence-worker payload bounded;
     # 0 = unlimited (the backfill lever — `weave dream scan --essence-cap 0`).
-    dream_essence_cap: int = 12
+    dream_essence_cap: int = knob(
+        12, read_at="dream", toml="dream.essence_cap", parse=int
+    )
 
     # Drift v2 — embedding-geometry dedup (concepts AND themes).
     # ``cosine_threshold``: pairs at/above go to the merge worker.
@@ -154,8 +619,10 @@ class Config:
     # (0 = unlimited). Judged pairs are excluded via the maintenance-log
     # verdicts history, so the cap bounds payload size without starving
     # the tail the way the old lexical [:5] slice did.
-    dream_cosine_threshold: float = 0.8
-    dream_drift_cap: int = 15
+    dream_cosine_threshold: float = knob(
+        0.8, read_at="dream", toml="dream.cosine_threshold", parse=float
+    )
+    dream_drift_cap: int = knob(15, read_at="dream", toml="dream.drift_cap", parse=int)
 
     # Grain coarsening (drift v2, N-ary). The tighten worker may collapse a
     # tight near-clique of fine concepts/themes onto one coarser term.
@@ -166,39 +633,59 @@ class Config:
     # ``coarsen_apply``: True = nightly applies the fold; False = surface-only
     # (the worker still judges and the verdict is recorded, but apply skips
     # the fold so the on-demand ``/tighten`` front door applies on approval).
-    dream_coarsen_threshold: float = 0.85
-    dream_coarsen_cap: int = 3
-    dream_coarsen_max_size: int = 6
-    dream_coarsen_apply: bool = True
+    dream_coarsen_threshold: float = knob(
+        0.85, read_at="dream", toml="dream.coarsen_threshold", parse=float
+    )
+    dream_coarsen_cap: int = knob(
+        3, read_at="dream", toml="dream.coarsen_cap", parse=int
+    )
+    dream_coarsen_max_size: int = knob(
+        6, read_at="dream", toml="dream.coarsen_max_size", parse=int
+    )
+    dream_coarsen_apply: bool = knob(
+        True, read_at="dream", toml="dream.coarsen_apply", parse=bool
+    )
 
     # Max folded hubs the phase-2 seam-link worker drains per cycle.
-    dream_seam_link_cap: int = 10
+    dream_seam_link_cap: int = knob(
+        10, read_at="dream", toml="dream.seam_link_cap", parse=int
+    )
 
     # Promotion gate (proposed → canonical concepts). ``threshold`` is the
     # min proposed-concept count for promotion eligibility; ``cap`` bounds
     # how many candidates one scan surfaces. The ``weave dream scan``
     # ``--promotion-{threshold,cap}`` flags override per-invocation; these
     # fields steer cron (which passes no flags).
-    dream_promotion_threshold: int = 5
-    dream_promotion_cap: int = 20
+    dream_promotion_threshold: int = knob(
+        5, read_at="dream", toml="dream.promotion_threshold", parse=int
+    )
+    dream_promotion_cap: int = knob(
+        20, read_at="dream", toml="dream.promotion_cap", parse=int
+    )
 
     # Probe-pressure lookback window (days). Read by BOTH probe surfaces in
     # the dream scan — the ``recent_probes`` payload (priority worker) and
     # the knowledge-delta probe-match slice (digest worker).
-    dream_probe_window_days: int = 14
+    dream_probe_window_days: int = knob(
+        14, read_at="dream", toml="dream.probe_window_days", parse=int
+    )
 
     # Behavioral-salience activity window (days) for the digest's
     # "## Most actionable" active-focus block: which projects saw recent
     # sessions and which concepts are under probe pressure. The automatic
     # signal is the default; PRIORITIES.yaml ``focus.*`` lists are appended
     # as optional pins (a pinned-but-quiet project/concept still surfaces).
-    salience_activity_window_days: int = 14
+    salience_activity_window_days: int = knob(
+        14, read_at="dream", toml="salience.activity_window_days", parse=int
+    )
 
     # How many rejudge entries one cycle hands to the phase-2 judge worker.
     # Shared by the scan collector AND apply's consumption step — apply
     # removes exactly this prefix of the on-disk queue, so anything beyond
     # the cap survives for the next cycle.
-    dream_rejudge_cap: int = 20
+    dream_rejudge_cap: int = knob(
+        20, read_at="dream", toml="dream.rejudge_cap", parse=int
+    )
 
     # Trajectory outcome judge (issue #60 — the phase-2 ``dream-outcome-worker``).
     # ``phase2_days``: the closed-horizon delay before the delayed-signal
@@ -210,9 +697,18 @@ class Config:
     # as agent-produced (matched against author login/email/name, incl.
     # co-authors) — loop commits carry the Claude co-author, so a pure-human
     # rework commit lacking it flips merged-clean → reworked.
-    dream_trajectory_phase2_days: int = 14
-    dream_trajectory_rework_threshold: float = 0.5
-    dream_trajectory_agent_identities: tuple[str, ...] = ("claude", "noreply@anthropic.com")
+    dream_trajectory_phase2_days: int = knob(
+        14, read_at="dream", toml="dream.trajectory_phase2_days", parse=int
+    )
+    dream_trajectory_rework_threshold: float = knob(
+        0.5, read_at="dream", toml="dream.trajectory_rework_threshold", parse=float
+    )
+    dream_trajectory_agent_identities: tuple[str, ...] = knob(
+        ("claude", "noreply@anthropic.com"),
+        read_at="dream",
+        toml="dream.trajectory_agent_identities",
+        parse=_parse_identities,
+    )
 
     # Evidence-gated steering (issue #62 — the gate the slow self-improvement
     # loop #61 calls before filing proposals). ``weekly_budget``: max proposals
@@ -221,17 +717,30 @@ class Config:
     # counts are always preserved; the weights only rank). Empty by default so
     # every signal weighs 1.0 (see operations/steering.DEFAULT_WEIGHTS); the
     # ``[steering]`` TOML section fills it from ``weight_<signal>`` keys.
-    steering_weekly_budget: int = 3
-    steering_weights: dict = field(default_factory=dict)
+    steering_weekly_budget: int = knob(
+        3, read_at="dream", toml="steering.weekly_budget", parse=int
+    )
+    steering_weights: dict = knob(
+        default_factory=dict,
+        read_at="dream",
+        toml="steering.weight_*",
+        parse=float,
+    )
 
     # Knowledge-delta window (hours) for the phase-2 digest worker.
-    dream_knowledge_delta_hours: int = 24
+    dream_knowledge_delta_hours: int = knob(
+        24, read_at="dream", toml="dream.knowledge_delta_hours", parse=int
+    )
 
     # Catalyst entries shipped per essence candidate: ``max_catalysts``
     # for substantive essences, ``placeholder_max_catalysts`` for
     # placeholder ones (which need more material to compose fresh).
-    dream_essence_max_catalysts: int = 10
-    dream_essence_placeholder_max_catalysts: int = 25
+    dream_essence_max_catalysts: int = knob(
+        10, read_at="dream", toml="dream.essence_max_catalysts", parse=int
+    )
+    dream_essence_placeholder_max_catalysts: int = knob(
+        25, read_at="dream", toml="dream.essence_placeholder_max_catalysts", parse=int
+    )
 
     # Memory seam (CC auto-memory ↔ vault reconciliation, phase-2
     # ``dream-seam-worker``). ``cosine_twin`` / ``cosine_none`` are the
@@ -241,14 +750,24 @@ class Config:
     # fact untouched this long is a stale-state risk). ``recheck_days``
     # re-validates resolved verdicts periodically so vault drift is caught.
     # ``cap`` bounds how many dirty facts one cycle hands the worker.
-    seam_cosine_twin: float = 0.70
-    seam_cosine_none: float = 0.55
-    seam_stale_age_days: int = 30
-    seam_recheck_days: int = 14
-    seam_cap: int = 20
+    seam_cosine_twin: float = knob(
+        0.70, read_at="dream", toml="seam.cosine_twin", parse=float
+    )
+    seam_cosine_none: float = knob(
+        0.55, read_at="dream", toml="seam.cosine_none", parse=float
+    )
+    seam_stale_age_days: int = knob(
+        30, read_at="dream", toml="seam.stale_age_days", parse=int
+    )
+    seam_recheck_days: int = knob(
+        14, read_at="dream", toml="seam.recheck_days", parse=int
+    )
+    seam_cap: int = knob(20, read_at="dream", toml="seam.cap", parse=int)
 
     # Extraction — max insight notes one ``weave_extract`` call creates.
-    extract_insights_cap: int = 3
+    extract_insights_cap: int = knob(
+        3, read_at="wrap", toml="extract.insights_cap", parse=int
+    )
 
     # Inline backfill fan-out — the keyless ``weave import claude-code --enrich
     # --via inline`` path (/seed-enrich). At/below ``fanout_threshold`` pending
@@ -257,9 +776,15 @@ class Config:
     # fans out subagents, ``batch_size`` sessions per worker, ``parallelism``
     # workers concurrent (mirrors /drain's writer fan-out). Distinct from the
     # API batch path's provider ``batch_concurrency`` (vault/config/api.yaml).
-    enrich_fanout_threshold: int = 12
-    enrich_batch_size: int = 6
-    enrich_parallelism: int = 3
+    enrich_fanout_threshold: int = knob(
+        12, read_at="index", toml="enrich.fanout_threshold", parse=int
+    )
+    enrich_batch_size: int = knob(
+        6, read_at="index", toml="enrich.batch_size", parse=int
+    )
+    enrich_parallelism: int = knob(
+        3, read_at="index", toml="enrich.parallelism", parse=int
+    )
 
     # Theme cluster detection (synthesis/theme_candidates.detect_signals).
     # ``min_cluster_size``: smallest concept cluster that surfaces a signal;
@@ -268,38 +793,75 @@ class Config:
     # token-Jaccard at/above which two ``proposed_theme`` slugs join one arc
     # family; ``generic_concept_ratio``: concepts on more than this fraction
     # of the recent pool are "generic" and dropped from covering-theme scoring.
-    theme_min_cluster_size: int = 3
-    theme_recent_days: int = 30
-    theme_min_shared_concepts: int = 2
-    theme_name_family_jaccard: float = 0.5
-    theme_generic_concept_ratio: float = 0.5
+    theme_min_cluster_size: int = knob(
+        3, read_at="dream", toml="themes.min_cluster_size", parse=int
+    )
+    theme_recent_days: int = knob(
+        30, read_at="dream", toml="themes.recent_days", parse=int
+    )
+    theme_min_shared_concepts: int = knob(
+        2, read_at="dream", toml="themes.min_shared_concepts", parse=int
+    )
+    theme_name_family_jaccard: float = knob(
+        0.5, read_at="dream", toml="themes.name_family_jaccard", parse=float
+    )
+    theme_generic_concept_ratio: float = knob(
+        0.5, read_at="dream", toml="themes.generic_concept_ratio", parse=float
+    )
 
     # Deterministic staleness auto-resolve: an ``active`` theme whose newest
     # catalyst-log entry (or, for an empty stub, its created date) is older
     # than this many days is auto-marked ``resolved`` by the dream apply
     # phase. 0 disables. The only automatic theme-lifecycle trigger — and
     # mechanically observable (no semantic inference).
-    theme_resolve_after_days: int = 60
+    theme_resolve_after_days: int = knob(
+        60, read_at="dream", toml="themes.resolve_after_days", parse=int
+    )
 
     # Landing docs — ``open_probes_cap``: classified prompt-probes gathered
     # into the landing context; ``probes_display_cap``: probes the rendered
     # STATE doc's "Open Probes" section displays.
-    landing_open_probes_cap: int = 20
-    landing_probes_display_cap: int = 10
+    landing_open_probes_cap: int = knob(
+        20, read_at=("wrap", "weave_call"), toml="landing.open_probes_cap", parse=int
+    )
+    landing_probes_display_cap: int = knob(
+        10, read_at=("wrap", "weave_call"), toml="landing.probes_display_cap", parse=int
+    )
 
     # RRF fusion constant for hybrid search (Σ 1/(k + rank)). 60 is the
     # standard constant from the original RRF paper.
-    retrieval_rrf_k: int = 60
+    retrieval_rrf_k: int = knob(
+        60, read_at="weave_call", toml="retrieval.rrf_k", parse=int
+    )
 
     # `weave health` (#120): a scheduled job is stale once its last-run
     # evidence is older than cadence × stale_factor; a queue item is backlog
     # once it has sat unclaimed for more than backlog_days.
-    health_stale_factor: float = 1.5
-    health_backlog_days: int = 7
+    health_stale_factor: float = knob(
+        1.5, read_at="dream", toml="health.stale_factor", parse=float
+    )
+    health_backlog_days: int = knob(
+        7, read_at="dream", toml="health.backlog_days", parse=int
+    )
 
     # R2 — prompt-time retrieval enrichment (see PromptTimeRetrieval).
-    retrieval_prompt_time: PromptTimeRetrieval = field(
-        default_factory=PromptTimeRetrieval
+    retrieval_prompt_time: PromptTimeRetrieval = knob(
+        default_factory=PromptTimeRetrieval,
+        read_at="UserPromptSubmit",
+        toml="retrieval.prompt_time",
+    )
+
+    # The SessionStart payload's shape (#352; see ContextStartup).
+    context_startup: ContextStartup = knob(
+        default_factory=lambda: ContextStartup(),
+        read_at=("SessionStart", "weave_call"),
+        toml="context.startup",
+    )
+
+    # Hook behaviour: budgets, the context cap, the Stop seams (see Hooks).
+    hooks: Hooks = knob(
+        default_factory=Hooks,
+        read_at=("SessionStart", "UserPromptSubmit", "wrap"),
     )
 
     @property
@@ -485,238 +1047,57 @@ def _read_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def _apply_knobs(cfg: Config, data: dict) -> None:
+def _apply_knobs(cfg: Config, data: dict, path: Path | None = None) -> None:
     """Apply one config.toml document's knob sections onto ``cfg``.
 
     Shared by the vault file and the rsi-rail repo file so both tiers
-    read every key the same way; ``vault_root`` is the caller's.
+    read every key the same way; ``vault_root`` is the caller's. Each key's
+    address and coercion come from the field's metadata (:func:`knob`).
+    ``path`` names the file in the refusal of an unknown section name.
     """
-    if "default_project" in data:
-        cfg.default_project = data["default_project"]
-    if "weave_dir" in data:
-        cfg.weave_dir_override = _resolve_weave_dir_value(
-            data["weave_dir"], cfg.vault_root
-        )
-    embed = data.get("embeddings", {})
-    if "model" in embed:
-        cfg.embedding_model = embed["model"]
-    if "api_key_env" in embed:
-        cfg.embedding_api_key_env = embed["api_key_env"]
-    if "api_url" in embed:
-        cfg.embedding_api_url = embed["api_url"]
-
-    # Edge generation config
-    edges = data.get("edges", {})
-    if "concept_threshold" in edges:
-        cfg.concept_edge_threshold = int(edges["concept_threshold"])
-    if "concept_max_freq_pct" in edges:
-        cfg.concept_edge_max_freq_pct = float(edges["concept_max_freq_pct"])
-    if "tag_threshold" in edges:
-        cfg.tag_edge_threshold = int(edges["tag_threshold"])
-    if "tag_max_freq_pct" in edges:
-        cfg.tag_edge_max_freq_pct = float(edges["tag_max_freq_pct"])
-    if "tag_exclude" in edges:
-        cfg.tag_edge_exclude = tuple(edges["tag_exclude"])
-
-    # Dream apply-phase gates
-    dream_cfg = data.get("dream", {})
-    if "enqueue_priority_signals" in dream_cfg:
-        cfg.dream_enqueue_priority_signals = bool(
-            dream_cfg["enqueue_priority_signals"]
-        )
-    if "compute_pagerank" in dream_cfg:
-        cfg.dream_compute_pagerank = bool(dream_cfg["compute_pagerank"])
-    if "essence_cap" in dream_cfg:
-        cfg.dream_essence_cap = int(dream_cfg["essence_cap"])
-    if "cosine_threshold" in dream_cfg:
-        cfg.dream_cosine_threshold = float(dream_cfg["cosine_threshold"])
-    if "drift_cap" in dream_cfg:
-        cfg.dream_drift_cap = int(dream_cfg["drift_cap"])
-    if "coarsen_threshold" in dream_cfg:
-        cfg.dream_coarsen_threshold = float(dream_cfg["coarsen_threshold"])
-    if "coarsen_cap" in dream_cfg:
-        cfg.dream_coarsen_cap = int(dream_cfg["coarsen_cap"])
-    if "coarsen_max_size" in dream_cfg:
-        cfg.dream_coarsen_max_size = int(dream_cfg["coarsen_max_size"])
-    if "coarsen_apply" in dream_cfg:
-        cfg.dream_coarsen_apply = bool(dream_cfg["coarsen_apply"])
-    if "seam_link_cap" in dream_cfg:
-        cfg.dream_seam_link_cap = int(dream_cfg["seam_link_cap"])
-    if "promotion_threshold" in dream_cfg:
-        cfg.dream_promotion_threshold = int(dream_cfg["promotion_threshold"])
-    if "promotion_cap" in dream_cfg:
-        cfg.dream_promotion_cap = int(dream_cfg["promotion_cap"])
-    if "probe_window_days" in dream_cfg:
-        cfg.dream_probe_window_days = int(dream_cfg["probe_window_days"])
-    if "rejudge_cap" in dream_cfg:
-        cfg.dream_rejudge_cap = int(dream_cfg["rejudge_cap"])
-    if "trajectory_phase2_days" in dream_cfg:
-        cfg.dream_trajectory_phase2_days = int(dream_cfg["trajectory_phase2_days"])
-    if "trajectory_rework_threshold" in dream_cfg:
-        cfg.dream_trajectory_rework_threshold = float(
-            dream_cfg["trajectory_rework_threshold"]
-        )
-    if "trajectory_agent_identities" in dream_cfg:
-        raw = dream_cfg["trajectory_agent_identities"]
-        if isinstance(raw, str):
-            raw = [t.strip() for t in raw.split(",") if t.strip()]
-        cfg.dream_trajectory_agent_identities = tuple(raw)
-    if "knowledge_delta_hours" in dream_cfg:
-        cfg.dream_knowledge_delta_hours = int(
-            dream_cfg["knowledge_delta_hours"]
-        )
-    if "essence_max_catalysts" in dream_cfg:
-        cfg.dream_essence_max_catalysts = int(
-            dream_cfg["essence_max_catalysts"]
-        )
-    if "essence_placeholder_max_catalysts" in dream_cfg:
-        cfg.dream_essence_placeholder_max_catalysts = int(
-            dream_cfg["essence_placeholder_max_catalysts"]
-        )
-
-    # Memory seam ([seam])
-    seam_cfg = data.get("seam", {})
-    if "cosine_twin" in seam_cfg:
-        cfg.seam_cosine_twin = float(seam_cfg["cosine_twin"])
-    if "cosine_none" in seam_cfg:
-        cfg.seam_cosine_none = float(seam_cfg["cosine_none"])
-    if "stale_age_days" in seam_cfg:
-        cfg.seam_stale_age_days = int(seam_cfg["stale_age_days"])
-    if "recheck_days" in seam_cfg:
-        cfg.seam_recheck_days = int(seam_cfg["recheck_days"])
-    if "cap" in seam_cfg:
-        cfg.seam_cap = int(seam_cfg["cap"])
-
-    # Evidence-gated steering ([steering])
-    steering_cfg = data.get("steering", {})
-    if "weekly_budget" in steering_cfg:
-        cfg.steering_weekly_budget = int(steering_cfg["weekly_budget"])
-    # Signal weights arrive as ``weight_<signal>`` keys (weight_rework,
-    # weight_fix_rounds, weight_superseded, weight_gate_failures); strip
-    # the prefix into the steering_weights map. A weight for a signal the
-    # evidence reader no longer knows passes through inert.
-    weights: dict = {}
-    for key, val in steering_cfg.items():
-        if key.startswith("weight_"):
-            weights[key[len("weight_"):]] = float(val)
-    if weights:
-        cfg.steering_weights = weights
-
-    # Extraction policy
-    extract_cfg = data.get("extract", {})
-    if "insights_cap" in extract_cfg:
-        cfg.extract_insights_cap = int(extract_cfg["insights_cap"])
-
-    # Behavioral-salience window for the digest active-focus block.
-    salience_cfg = data.get("salience", {})
-    if "activity_window_days" in salience_cfg:
-        cfg.salience_activity_window_days = int(
-            salience_cfg["activity_window_days"]
-        )
-
-    # Inline backfill fan-out policy (/seed-enrich)
-    enrich_cfg = data.get("enrich", {})
-    if "fanout_threshold" in enrich_cfg:
-        cfg.enrich_fanout_threshold = int(enrich_cfg["fanout_threshold"])
-    if "batch_size" in enrich_cfg:
-        cfg.enrich_batch_size = int(enrich_cfg["batch_size"])
-    if "parallelism" in enrich_cfg:
-        cfg.enrich_parallelism = int(enrich_cfg["parallelism"])
-
-    # Theme cluster detection
-    themes_cfg = data.get("themes", {})
-    if "min_cluster_size" in themes_cfg:
-        cfg.theme_min_cluster_size = int(themes_cfg["min_cluster_size"])
-    if "recent_days" in themes_cfg:
-        cfg.theme_recent_days = int(themes_cfg["recent_days"])
-    if "min_shared_concepts" in themes_cfg:
-        cfg.theme_min_shared_concepts = int(
-            themes_cfg["min_shared_concepts"]
-        )
-    if "name_family_jaccard" in themes_cfg:
-        cfg.theme_name_family_jaccard = float(
-            themes_cfg["name_family_jaccard"]
-        )
-    if "generic_concept_ratio" in themes_cfg:
-        cfg.theme_generic_concept_ratio = float(
-            themes_cfg["generic_concept_ratio"]
-        )
-    if "resolve_after_days" in themes_cfg:
-        cfg.theme_resolve_after_days = int(themes_cfg["resolve_after_days"])
-
-    # Landing docs
-    landing_cfg = data.get("landing", {})
-    if "open_probes_cap" in landing_cfg:
-        cfg.landing_open_probes_cap = int(landing_cfg["open_probes_cap"])
-    if "probes_display_cap" in landing_cfg:
-        cfg.landing_probes_display_cap = int(
-            landing_cfg["probes_display_cap"]
-        )
-
-    # Retrieval ([retrieval] top-level keys + [retrieval.prompt_time])
-    retrieval_cfg = data.get("retrieval", {})
-    if "rrf_k" in retrieval_cfg:
-        cfg.retrieval_rrf_k = int(retrieval_cfg["rrf_k"])
-
-    # `weave health` ([health])
-    health_cfg = data.get("health", {})
-    if "stale_factor" in health_cfg:
-        cfg.health_stale_factor = float(health_cfg["stale_factor"])
-    if "backlog_days" in health_cfg:
-        cfg.health_backlog_days = int(health_cfg["backlog_days"])
-
-    # R2 — prompt-time retrieval enrichment ([retrieval.prompt_time])
-    pt = retrieval_cfg.get("prompt_time", {})
-    if pt:
-        rpt = cfg.retrieval_prompt_time
-        if "enabled" in pt:
-            rpt.enabled = bool(pt["enabled"])
-        if "min_prompt_chars" in pt:
-            rpt.min_prompt_chars = int(pt["min_prompt_chars"])
-        if "embed_deadline_seconds" in pt:
-            rpt.embed_deadline_seconds = float(pt["embed_deadline_seconds"])
-        if "deadline_miss_limit" in pt:
-            rpt.deadline_miss_limit = int(pt["deadline_miss_limit"])
-        if "min_similarity" in pt:
-            rpt.min_similarity = float(pt["min_similarity"])
-        if "max_pieces_per_turn" in pt:
-            rpt.max_pieces_per_turn = int(pt["max_pieces_per_turn"])
-        if "max_injected_chars_per_turn" in pt:
-            rpt.max_injected_chars_per_turn = int(pt["max_injected_chars_per_turn"])
-        if "max_firings_per_session" in pt:
-            rpt.max_firings_per_session = int(pt["max_firings_per_session"])
-        if "max_injected_chars_per_session" in pt:
-            rpt.max_injected_chars_per_session = int(
-                pt["max_injected_chars_per_session"]
-            )
-        if "bias_types" in pt:
-            rpt.bias_types = tuple(pt["bias_types"])
+    _apply_fields(cfg, data, "", cfg, path)
 
 
-# The keys the rsi-rail repo's thinkweave/config.toml may carry: the knobs
-# read on the agent's serving chain (SessionStart, UserPromptSubmit, a
-# weave_* call, /wrap) — dec-45c5fd5b. Everything else stays in the vault.
-_RAIL_KEYS: dict[str, frozenset[str]] = {
-    "retrieval": frozenset({"rrf_k"}),
-    "retrieval.prompt_time": frozenset(f.name for f in fields(PromptTimeRetrieval)),
-    "landing": frozenset({"open_probes_cap", "probes_display_cap"}),
-    "extract": frozenset({"insights_cap"}),
-}
+def _rail_tables(root: type | None = None) -> dict[str, frozenset[str]]:
+    """The tables the rail file may carry and their keys, derived from the
+    knob metadata; every ancestor of a table is listed so the walk can
+    descend into it."""
+    tables: dict[str, set[str]] = {}
+    for table, key in iter_rail_addresses(root):
+        tables.setdefault(table, set()).add(key)
+        parts = table.split(".")
+        for i in range(len(parts)):
+            tables.setdefault(".".join(parts[:i]), set())
+    return {t: frozenset(keys) for t, keys in tables.items()}
+
+
+def _rail_section_labels(root: type | None = None) -> list[str]:
+    """The rail tables as the refusal names them, a keyed table once with
+    its placeholder (``[context.startup.<section>]``)."""
+    labels: list[str] = []
+    for spec in knob_specs(root):
+        if spec.rail and spec.address is not None:
+            label = f"[{spec.address.rpartition('.')[0]}]"
+            if label not in labels:
+                labels.append(label)
+    return labels
 
 
 def _check_rail_keys(data: dict, path: Path) -> None:
     """Raise ``ValueError`` naming the first key in the rail file that is not
     a serving-chain knob, so a typo or a vault-side key placed in the repo
-    fails loudly instead of being silently ignored."""
+    fails loudly instead of being silently ignored. The allowed set is
+    derived from the knob metadata (dec-db6baaab), never listed by hand."""
+    tables = _rail_tables()
 
     def walk(table: dict, prefix: str) -> None:
-        allowed = _RAIL_KEYS.get(prefix, frozenset())
+        allowed = tables.get(prefix, frozenset())
         for key, value in table.items():
             dotted = f"{prefix}.{key}" if prefix else key
-            if isinstance(value, dict) and dotted in _RAIL_KEYS:
+            if isinstance(value, dict) and dotted in tables:
                 walk(value, dotted)
             elif key not in allowed:
-                sections = ", ".join(f"[{s}]" for s in _RAIL_KEYS)
+                sections = ", ".join(_rail_section_labels())
                 raise ValueError(
                     f"unknown key {dotted!r} in {path}: the rsi-rail file "
                     f"carries only the serving-chain knobs ({sections}); move "
@@ -767,7 +1148,7 @@ def load_config() -> Config:
         data = _read_toml(toml_path)
         if "vault_root" in data and not vault_env and user_vault is None:
             cfg.vault_root = Path(data["vault_root"])
-        _apply_knobs(cfg, data)
+        _apply_knobs(cfg, data, toml_path)
 
     # Tier 4: the rsi-rail policy repo. Harness-level knobs the user tunes
     # live there and win over the vault file; a configured repo whose file
@@ -784,7 +1165,7 @@ def load_config() -> Config:
             )
         rail_data = _read_toml(rail_toml)
         _check_rail_keys(rail_data, rail_toml)
-        _apply_knobs(cfg, rail_data)
+        _apply_knobs(cfg, rail_data, rail_toml)
 
     # Per-field env overrides. PERSONAL_MEM_* are the pre-rename names,
     # honoured as migration fallbacks (rename → thinkweave, 2026-06-13).

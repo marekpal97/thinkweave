@@ -14,7 +14,10 @@ Two host seams ride on it (issue #346):
 - **Policy directory.** When thinkweave's config names the rsi-rail repo
   (``THINKWEAVE_RSI_RAIL`` or the user-scope ``rsi_rail`` key), the shim
   exports ``DEVLOOP_POLICY_DIR=<rsi_rail>/devloop`` before devloop runs, so
-  the pack texts there replace devloop's packaged defaults. The env var, not
+  the pack texts there replace devloop's packaged defaults and a
+  ``loop.toml`` there is layered over ``docs/agents/loop.toml`` (the
+  person's settings only; devloop refuses a repo key there by name,
+  dec-6c3539b2). The env var, not
   the ``--policy-dir`` flag, so argv reaches devloop untouched. A
   ``DEVLOOP_POLICY_DIR`` already in the environment wins, even empty (devloop
   reads empty as unset: the way to run without the rail's texts). No rail:

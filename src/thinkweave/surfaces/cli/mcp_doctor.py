@@ -29,7 +29,13 @@ from thinkweave.core.harness import active as _profile
 # Borrowed from the installer so the doctor's Windows gate and the remedy it
 # prints are the same ones the installer acts on.
 from thinkweave.surfaces.cli.install import _detect_project_root, _is_windows
-from thinkweave.surfaces.hooks.install import _extension_stub_path, rail_targets
+from thinkweave.surfaces.hooks.install import (
+    _extension_stub_path,
+    rail_hook_renders,
+    rail_hooks_file,
+    rail_registration,
+    rail_targets,
+)
 from thinkweave.surfaces.hooks.install import _repo_root as _running_checkout
 
 SERVER_NAME = "thinkweave"
@@ -471,6 +477,52 @@ def check_rail_links() -> CheckResult:
         passed=False,
         detail="broken: " + ", ".join(broken),
         fix="weave hooks install --scope user",
+    )
+
+
+def check_rail_hooks() -> CheckResult:
+    """FAIL when a profile carrying thinkweave hooks is not rendered as the
+    rsi-rail's ``hooks/hooks.toml`` declares (dec-4f158b58 layers 2 and 3):
+    stale after a rail commit (``weave hooks install`` is the apply step), or
+    holding a registration that profile cannot carry. Names the profile and
+    the first difference. Walks every registered profile, as the install
+    does; a profile without thinkweave hooks is not counted.
+    """
+    name = "rsi-rail hooks"
+    try:
+        registration = rail_registration()
+        source = rail_hooks_file(registration)
+        renders = rail_hook_renders(registration) if source else []
+    except (FileNotFoundError, ValueError) as exc:
+        return CheckResult(name=name, passed=False, detail=str(exc))
+    if registration.hooks_dir is None:
+        return CheckResult(name=name, passed=True, detail="no rsi-rail repo configured")
+    if source is None:
+        return CheckResult(
+            name=name,
+            passed=True,
+            detail=f"no {registration.hooks_dir}/hooks.toml; canonical registrations",
+        )
+    problems: list[str] = []
+    fixes: list[str] = []
+    for rendered in renders:
+        pid = rendered.profile.id
+        if rendered.unrenderable:
+            problems.append(f"{pid}: not renderable: {rendered.unrenderable[0]}")
+            fixes.append(f"change {source} or drop that registration for {pid}")
+        elif rendered.stale:
+            problems.append(f"{pid}: stale ({rendered.path}: {rendered.first_difference()})")
+            fixes.append("weave hooks install --scope user")
+    if not problems:
+        ids = ", ".join(r.profile.id for r in renders) or "none carry thinkweave hooks"
+        return CheckResult(
+            name=name, passed=True, detail=f"rendered as {source} declares: {ids}"
+        )
+    return CheckResult(
+        name=name,
+        passed=False,
+        detail="; ".join(problems),
+        fix="; ".join(dict.fromkeys(fixes)),
     )
 
 
@@ -1127,6 +1179,7 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
     # about which harness is reading it.
     result.checks.append(check_command_symlinks(cwd))
     result.checks.append(check_rail_links())
+    result.checks.append(check_rail_hooks())
     result.checks.append(check_vault_env())
     result.checks.append(check_venv_extras())
     result.checks.append(check_weave_mcp_on_path())

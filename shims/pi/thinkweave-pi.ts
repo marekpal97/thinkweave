@@ -40,9 +40,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   createFirstCallGuard,
-  runHook,
+  dispatch,
   type CanonicalEvent,
   type HookEnvelope,
+  type RailHooks,
 } from "../shim-core/src/index.ts";
 
 const HARNESS = "pi";
@@ -141,7 +142,21 @@ function flattenContent(content: unknown): string {
     .join("\n");
 }
 
+// rsi-rail registrations (dec-4f158b58): when the rail's hooks/hooks.toml
+// changes anything, the installed stub imports `withRail` and hands it the
+// rendered set (enabled events, rail matchers, foreign hooks). Every call
+// goes through shim-core's `dispatch`, which skips a disabled event and runs
+// the foreign scripts for the event after the launcher, inside its budget.
 export default function thinkweavePi(pi: any) {
+  return attach(pi);
+}
+
+/** The extension factory under a rendered rsi-rail registration set. */
+export function withRail(rail: RailHooks) {
+  return (pi: any) => attach(pi, rail);
+}
+
+function attach(pi: any, rail?: RailHooks) {
   warmLauncher();
 
   // One stable session identity per process: Pi's own id when the manager
@@ -201,10 +216,11 @@ export default function thinkweavePi(pi: any) {
     extra: HookEnvelope,
     timeoutMs?: number,
   ) {
-    return runHook(event, envelope(event, extra), {
+    return dispatch(event, envelope(event, extra), {
       launcher: LAUNCHER,
       harness: HARNESS,
       timeoutMs,
+      rail,
       onFailure: (failure) => {
         // Visible once per (event, kind), never wedging: a dead Python side
         // is a notice in the TUI, not a silent capture gap.

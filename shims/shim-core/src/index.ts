@@ -19,10 +19,13 @@ import { spawn } from "node:child_process";
  * The canonical lifecycle vocabulary — exactly the tuple
  * `core.harness.CANONICAL_EVENTS` declares on the Python side: the phases
  * the Python hook handler actually implements (SubagentStart/SubagentStop
- * are the dispatch seam's task-boundary capture). This is deliberately
- * narrower than what Claude Code natively fires (it also emits PreToolUse,
- * SessionEnd, PreCompact — those have no thinkweave destination today, so
- * shipping their names here would be a capability silently faked). Both
+ * are the dispatch seam's task-boundary capture; PreCompact writes one
+ * `compact` row, #353). This is deliberately narrower than what Claude Code
+ * natively fires (it also emits PreToolUse, SessionEnd — those have no
+ * thinkweave destination today, so shipping their names here would be a
+ * capability silently faked). A shim translates PreCompact only where its
+ * harness has a native pre-compaction event; Pi and OpenCode have none
+ * observed, so neither shim sends it. Both
  * suites pin this module against the shared `canonical-events.json`
  * fixture, so the TS vocabulary and the Python normaliser cannot drift
  * apart silently.
@@ -34,6 +37,7 @@ export const CANONICAL_EVENTS = [
   "SubagentStart",
   "SubagentStop",
   "Stop",
+  "PreCompact",
 ] as const;
 
 export type CanonicalEvent = (typeof CANONICAL_EVENTS)[number];
@@ -50,6 +54,7 @@ export const EVENT_PHASES: Record<CanonicalEvent, string> = {
   SubagentStart: "subagent_start",
   SubagentStop: "subagent_stop",
   Stop: "stop",
+  PreCompact: "pre_compact",
 };
 
 /**
@@ -67,6 +72,7 @@ export const DEFAULT_TIMEOUT_MS: Record<CanonicalEvent, number> = {
   SubagentStart: 800,
   SubagentStop: 800,
   Stop: 800,
+  PreCompact: 800,
 };
 
 /**
@@ -168,7 +174,23 @@ export function runHook(
   if (opts.harness) {
     argv.push("--harness", opts.harness);
   }
+  return runProcess(opts.launcher, argv, payload, timeoutMs, opts.onFailure, true);
+}
 
+/**
+ * The never-reject subprocess bridge under runHook: spawn `command argv`,
+ * envelope on stdin, and resolve with the parsed JSON reply (`parse`) or `{}`
+ * — on any failure, after the budget, or always when `parse` is false (a
+ * foreign hook's stdout is not ours to read).
+ */
+function runProcess(
+  command: string,
+  argv: string[],
+  payload: HookEnvelope,
+  timeoutMs: number,
+  onFailure: RunHookOptions["onFailure"],
+  parse: boolean,
+): Promise<HookResponse> {
   return new Promise((resolve) => {
     let settled = false;
     let stdout = "";
@@ -177,7 +199,7 @@ export function runHook(
     // The handler's hook budget runs from this spawn, not from its own first
     // line: launcher + uv + python start-up is spent inside the harness's
     // wait, so the stamp lets the handler count it (#329 follow-up).
-    const child = spawn(opts.launcher, argv, {
+    const child = spawn(command, argv, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, [SPAWNED_AT_ENV]: String(Date.now()) },
     });
@@ -191,9 +213,9 @@ export function runHook(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (failure && opts.onFailure) {
+      if (failure && onFailure) {
         try {
-          opts.onFailure({ ...failure, stderr });
+          onFailure({ ...failure, stderr });
         } catch {
           /* a shim's diagnostic bug must not break the harness */
         }
@@ -236,6 +258,10 @@ export function runHook(
         finish({}, { kind: "exit", code: code ?? undefined });
         return;
       }
+      if (!parse) {
+        finish({});
+        return;
+      }
       try {
         const parsed: unknown = JSON.parse(stdout);
         if (typeof parsed === "object" && parsed !== null) {
@@ -255,6 +281,86 @@ export function runHook(
       abandon({ kind: "spawn-error", message: "stdin write failed" });
     }
   });
+}
+
+/**
+ * One foreign hook from the rsi-rail registration set: a script of the
+ * user's own that runs on `event` (dec-4f158b58 layer 3). `matcher` is a
+ * Claude Code style matcher (a regex over the tool name, empty = all),
+ * applied only where the envelope carries a tool name.
+ */
+export interface ForeignHook {
+  name: string;
+  event: CanonicalEvent;
+  matcher: string;
+  /** Absolute path of an executable script; run with the envelope on stdin. */
+  script: string;
+}
+
+/**
+ * The rsi-rail registration set an installed stub hands its shim
+ * (`weave hooks install` renders the rail's hooks.toml into it): the enabled
+ * canonical events, rail matchers for tool events, and the foreign hooks.
+ * Absent: every event enabled, no matcher filter, no foreign hook.
+ */
+export interface RailHooks {
+  events?: CanonicalEvent[];
+  matchers?: Partial<Record<CanonicalEvent, string[]>>;
+  foreign?: ForeignHook[];
+}
+
+function matches(matcher: string, tool: string | undefined): boolean {
+  if (!matcher || tool === undefined) return true;
+  try {
+    return new RegExp(`^(?:${matcher})$`).test(tool);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * runHook under the rsi-rail registration set: skip the launcher for a
+ * disabled event (or a tool the rail's matchers exclude), then run each
+ * foreign hook whose event and matcher fit, concurrently, inside what is left
+ * of the same budget. Resolves with the launcher's reply (`{}` when skipped);
+ * never rejects. A foreign failure reaches `onFailure` with its name.
+ */
+export async function dispatch(
+  event: CanonicalEvent,
+  payload: HookEnvelope,
+  opts: RunHookOptions & { rail?: RailHooks },
+): Promise<HookResponse> {
+  const rail = opts.rail;
+  const budget = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS[event];
+  const started = Date.now();
+  const tool = typeof payload.tool_name === "string" ? payload.tool_name : undefined;
+  const ruled = rail?.matchers?.[event];
+  const ours =
+    (!rail?.events || rail.events.includes(event)) &&
+    (!ruled || ruled.some((m) => matches(m, tool)));
+  const reply = ours ? await runHook(event, payload, { ...opts, timeoutMs: budget }) : {};
+  const foreign = (rail?.foreign ?? []).filter(
+    (f) => f.event === event && matches(f.matcher, tool),
+  );
+  if (foreign.length > 0) {
+    const left = Math.max(0, budget - (Date.now() - started));
+    const onFailure = opts.onFailure;
+    await Promise.all(
+      foreign.map((f) =>
+        runProcess(
+          f.script,
+          [],
+          payload,
+          left,
+          onFailure
+            ? (failure) => onFailure({ ...failure, message: `foreign hook ${f.name}` })
+            : undefined,
+          false,
+        ),
+      ),
+    );
+  }
+  return reply;
 }
 
 /**

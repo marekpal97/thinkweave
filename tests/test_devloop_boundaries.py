@@ -23,6 +23,14 @@ thinkweave can enforce them:
    ``tests/test_context_served.py``, which imports the constant from devloop
    rather than re-typing the string — listed here so the inventory of what
    crosses the repo boundary is in one place.
+4. **The loop.toml owner split** (dec-6c3539b2) — ``docs/agents/loop.toml``
+   carries the repo's facts and none of devloop's ``POLICY_KEYS``; those
+   resolve to devloop's defaults, or to the rsi-rail repo's
+   ``devloop/loop.toml``, which devloop layers on top and which may carry
+   nothing else (devloop refuses a repo key there by name). So the two files
+   share no key and cannot drift: a person's setting has one home, and a
+   repo fact has one home. The rail case runs end to end in
+   ``tests/test_issue_loop_seam.py``.
 
 Not here any more: the sqlite3 importer allowlist and the boundary-doc pins.
 Those police devloop's own internals, which is funloops' CI's job now
@@ -80,9 +88,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tomllib
 from importlib.metadata import distribution
 from pathlib import Path
 
+from devloop import cli as devloop_cli
 from devloop import index_client
 from devloop.trajectory import prime
 
@@ -91,6 +101,7 @@ from thinkweave.core.schemas import NoteType
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHIM = REPO_ROOT / "scripts" / "issue_loop.py"
 GOLDEN = REPO_ROOT / "tests" / "devloop_golden_config.json"
+LOOP_TOML = REPO_ROOT / "docs" / "agents" / "loop.toml"
 
 # The full subcommand surface, pinned by enumeration so a silently dropped
 # verb fails rather than shrinks. `board` and `pack` arrived with the devloop
@@ -253,3 +264,43 @@ def test_python_m_devloop_reaches_the_same_rail():
     via_module, _ = _resolved_config([sys.executable, "-m", "devloop", "config"])
     via_shim, _ = _resolved_config([sys.executable, str(SHIM), "config"])
     assert via_module == via_shim == json.loads(GOLDEN.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# 4. The loop.toml owner split
+
+
+def _policy_keys_carried(data: dict) -> set[str]:
+    """Every devloop policy key ``data`` (a parsed loop.toml) sets, by name."""
+    carried = set()
+    for section, keys in devloop_cli.POLICY_KEYS.items():
+        tables = (data.get("dispatch", {}).items() if section == "dispatch"
+                  else [(None, data.get(section, {}))])
+        for role, table in tables:
+            carried |= {f"{section}.{role}.{k}" if role else f"{section}.{k}"
+                        for k in table if k in keys}
+    return carried
+
+
+def test_loop_toml_carries_no_policy_key():
+    """thinkweave's loop.toml holds the repo's facts only. A policy key here
+    would be shadowed silently by the rail's devloop/loop.toml on a machine
+    with the rail and take effect on one without: two homes, drifting.
+    Put it in the rail's devloop/loop.toml, or pass ``--set`` for one run."""
+    data = tomllib.loads(LOOP_TOML.read_text(encoding="utf-8"))
+    assert _policy_keys_carried(data) == set()
+
+
+def test_policy_keys_resolve_to_devloop_defaults_without_the_rail():
+    """With no rail, every policy key resolves to devloop's default, so the
+    rail's devloop/loop.toml, shipped with every line commented at that
+    default, changes nothing until a line is uncommented."""
+    cfg = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    for section, keys in devloop_cli.POLICY_KEYS.items():
+        if section == "dispatch":
+            for role in devloop_cli.ROLES:
+                assert cfg["dispatch"][role]["transport"] == "agent-tool"
+                assert set(cfg["dispatch"][role]) - set(keys) == {"posture"}
+            continue
+        for key in keys:
+            assert cfg[section][key] == devloop_cli.DEFAULT_CONFIG[section][key], (section, key)

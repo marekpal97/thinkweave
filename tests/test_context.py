@@ -7,14 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from thinkweave.core.config import Config
+from thinkweave.core.config import Config, ContextStartup, StartupSection
 from thinkweave.core.harness import SESSION_START_BUDGET_TOKENS
 from thinkweave.retrieval.context import (
     CHARS_PER_TOKEN,
+    DROP_ORDER,
     SECTIONS,
     SESSION_START_GUARD_HEADROOM_CHARS,
     SESSION_START_SECTIONS,
     build_project_context,
+    serving_plan,
     session_start_budget_tokens,
     _extract_insight_titles,
     _extract_summary,
@@ -562,3 +564,219 @@ class TestToolManifestConsolidation:
         assert "concept_walk" in payload
         # weave_concepts dispatch — at least the new actions named explicitly.
         assert "action" in payload
+
+
+# ---------------------------------------------------------------------------
+# [context.startup] — the payload shape from config (#352)
+# ---------------------------------------------------------------------------
+
+
+def _startup(**kw) -> ContextStartup:
+    sections = kw.pop("section", {})
+    return ContextStartup(
+        section={k: StartupSection(**v) for k, v in sections.items()}, **kw
+    )
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Pin the header's timestamp so two renders compare byte for byte."""
+    from datetime import datetime as real
+
+    class Frozen(real):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2026, 11, 1, 12, 0, tzinfo=tz)
+
+    monkeypatch.setattr("thinkweave.retrieval.context.datetime", Frozen)
+
+
+@pytest.fixture
+def busy(vault: VaultManager, indexer: Indexer, vault_dir: Path) -> str:
+    """A project with a ~1.2k-char backlog, a wrapped session and a source."""
+    project_dir = vault_dir / "projects" / "busy"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "BACKLOG.md").write_text(
+        "# Backlog\n\n## Open\n\n"
+        + "".join(f"- [ ] Backlog item {i:02d} worth reading.\n" for i in range(36))
+        + "\n## Closed\n\n- [x] Done\n",
+        encoding="utf-8",
+    )
+    _populate_wrapped_session(
+        vault, "busy", title="Kickoff session", processed_at="2026-04-05"
+    )
+    vault.create_note(NoteType.SOURCE, "Some paper", body="Body", project="busy")
+    indexer.rebuild(full=True)
+    return "busy"
+
+
+class TestContextStartupConfig:
+    def test_unset_is_byte_identical_to_the_module_defaults(
+        self, vault_dir: Path, busy: str, frozen_clock
+    ):
+        """No ``[context.startup]`` serves exactly what the module defaults
+        serve, on both the startup route and the snapshot route."""
+        unset = Config(vault_root=vault_dir)
+        spelled = Config(
+            vault_root=vault_dir,
+            context_startup=_startup(sections=SECTIONS, drop_order=DROP_ORDER),
+        )
+        assert build_project_context(unset, busy) == build_project_context(spelled, busy)
+
+        plan = serving_plan(unset)
+        assert plan.startup_sections() == list(SESSION_START_SECTIONS)
+        assert plan.startup_budget_chars(CLAUDE_CODE_CAP) == (
+            session_start_budget_tokens(CLAUDE_CODE_CAP) * CHARS_PER_TOKEN
+        )
+        assert plan.startup_budget_chars(None) == (
+            SESSION_START_BUDGET_TOKENS * CHARS_PER_TOKEN
+        )
+        for budget in (300, 600, 10_000):
+            assert build_project_context(
+                unset,
+                busy,
+                sections=list(SESSION_START_SECTIONS),
+                budget_tokens=budget,
+                omit_empty=True,
+            ) == build_project_context(
+                spelled,
+                busy,
+                sections=list(SESSION_START_SECTIONS),
+                budget_tokens=budget,
+                omit_empty=True,
+            )
+
+    def test_sections_override_is_the_default_section_set(
+        self, vault_dir: Path, busy: str
+    ):
+        """Configured sections replace the default set; an explicit
+        ``sections`` argument still wins."""
+        cfg = Config(
+            vault_root=vault_dir,
+            context_startup=_startup(sections=("header", "backlog")),
+        )
+        payload = build_project_context(cfg, busy)
+        headings = re.findall(r"^## (.+)$", payload, re.M)
+        assert headings == ["Header", "Backlog (Open Items)"]
+        assert serving_plan(cfg).startup_sections() == ["header", "backlog"]
+
+        explicit = build_project_context(cfg, busy, sections=["sources"])
+        assert re.findall(r"^## (.+)$", explicit, re.M) == ["Recent Sources"]
+
+    def test_budget_chars_sets_the_startup_budget(self, vault_dir: Path):
+        cfg = Config(vault_root=vault_dir, context_startup=_startup(budget_chars=1500))
+        assert serving_plan(cfg).startup_budget_chars(CLAUDE_CODE_CAP) == 1500
+        assert serving_plan(cfg).startup_budget_chars(None) == 1500
+
+    def test_a_pinned_section_survives_the_budget(self, vault_dir: Path, busy: str):
+        """Unpinned, the backlog is the section the budget drops; pinned, it
+        is served whole and the other sections give way."""
+        wanted = ["header", "sessions", "backlog", "sources"]
+        plain = Config(vault_root=vault_dir)
+        pinned = Config(
+            vault_root=vault_dir,
+            context_startup=_startup(section={"backlog": {"pin": True}}),
+        )
+        budget = 450  # tokens: 1,800 chars
+
+        dropped = build_project_context(plain, busy, sections=wanted, budget_tokens=budget)
+        assert "Backlog item 35" not in dropped
+
+        kept = build_project_context(pinned, busy, sections=wanted, budget_tokens=budget)
+        assert len(kept) <= budget * CHARS_PER_TOKEN
+        assert "Backlog item 00" in kept and "Backlog item 35" in kept
+
+    def test_cap_cuts_one_section_body(self, vault_dir: Path, busy: str):
+        cfg = Config(
+            vault_root=vault_dir,
+            context_startup=_startup(section={"backlog": {"cap": 300}}),
+        )
+        payload = build_project_context(cfg, busy, sections=["backlog"])
+        body = payload.split("## Backlog (Open Items)\n\n", 1)[1]
+        assert len(body) <= 300
+        assert "truncated to fit budget" in body
+        assert "Backlog item 00" in body
+        assert "Backlog item 35" not in body
+
+    def test_drop_order_override_picks_what_goes_first(
+        self, vault_dir: Path, busy: str
+    ):
+        """By default sources drop before the backlog; reversed, the backlog
+        goes and the sources stay."""
+        wanted = ["header", "backlog", "sources"]
+        full = build_project_context(
+            Config(vault_root=vault_dir), busy, sections=wanted, budget_tokens=10_000
+        )
+        # Just under the full payload: dropping either section fits.
+        budget = (len(full) - 20) // CHARS_PER_TOKEN
+
+        default = build_project_context(
+            Config(vault_root=vault_dir), busy, sections=wanted, budget_tokens=budget
+        )
+        reordered = build_project_context(
+            Config(
+                vault_root=vault_dir,
+                context_startup=_startup(drop_order=("backlog", "sources")),
+            ),
+            busy,
+            sections=wanted,
+            budget_tokens=budget,
+        )
+        assert "## Recent Sources" not in default
+        assert "## Backlog (Open Items)" in default
+        assert "## Recent Sources" in reordered
+        assert "## Backlog (Open Items)" not in reordered
+
+    def test_the_inventory_renders_every_startup_key_read_at_session_start(self):
+        from thinkweave.surfaces.cli.policy import render_toml
+
+        rendered = render_toml()
+        for line in (
+            "# [context.startup]",
+            "# [context.startup.tasks]",
+        ):
+            assert line in rendered
+        for key in ("sections", "budget_chars", "drop_order", "pin", "cap"):
+            rows = [ln for ln in rendered.splitlines() if ln.startswith(f"# {key} = ")]
+            assert rows and all("read at: SessionStart" in ln for ln in rows), key
+
+
+class TestSessionStartReadsTheConfig:
+    def test_hook_serves_the_configured_sections_and_records_the_cap(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The hook takes sections and budget from ``[context.startup]`` and
+        the startup buffer row carries the cap in force."""
+        import json
+
+        from thinkweave.core.config import load_config
+        from thinkweave.surfaces.hooks import handler as h
+
+        vault = tmp_path / "vault"
+        (vault / "config").mkdir(parents=True)
+        (vault / "config" / "config.toml").write_text(
+            '[context.startup]\nsections = ["header", "tasks"]\nbudget_chars = 1500\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("THINKWEAVE_VAULT", str(vault))
+        monkeypatch.setenv("THINKWEAVE_PROJECT", "t")
+        monkeypatch.delenv("THINKWEAVE_WEAVE_DIR", raising=False)
+        spent: dict = {}
+
+        def spy(*args, **kwargs):
+            spent.update(kwargs)
+            return "## Header\n\n- project t\n"
+
+        monkeypatch.setattr("thinkweave.retrieval.context.build_project_context", spy)
+        monkeypatch.setattr(h, "_output", lambda **kw: None)
+
+        h._handle_session_start(
+            {"session_id": "uuid-ctx1", "source": "startup", "cwd": str(tmp_path)}
+        )
+
+        assert spent["sections"] == ["header", "tasks"]
+        assert spent["budget_tokens"] * CHARS_PER_TOKEN == 1500
+        buffer = load_config().weave_dir / "buffer" / "uuid-ctx1.jsonl"
+        rows = [json.loads(ln) for ln in buffer.read_text().splitlines() if ln]
+        startup = [r for r in rows if r.get("type") == "startup"]
+        assert startup and startup[0]["cap"] == 1500

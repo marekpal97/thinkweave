@@ -240,6 +240,8 @@ class TestPiRow:
             "SubagentStart": None,
             "SubagentStop": None,
             "Stop": "agent_end",
+            # session_compact fires after compaction; no PreCompact (#353).
+            "PreCompact": None,
         }
 
 
