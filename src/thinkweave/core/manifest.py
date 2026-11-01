@@ -6,6 +6,13 @@ flag when a repo is configured, the harness that ran the stint, and the
 reader versions — the thinkweave source commit (or its package version),
 the funloops commit the installed ``devloop`` was pinned to, and the plugin
 versions a dev-link exposes to each harness.
+
+The harness readout (dec-4f158b58) rides along: the handful of settings
+values that change how the agent behaves (``harness_settings``), the hook
+events the profile registers, and the profile's hook literals. Witnessed,
+never held: the settings file is the harness's own, rewritten with machine
+state, so the round records what it said rather than the rail owning it.
+Permissions and env are deliberately left out.
 """
 
 from __future__ import annotations
@@ -17,19 +24,71 @@ from pathlib import Path
 
 import thinkweave
 from thinkweave.core._utils import git_stdout
-from thinkweave.core.harness import PROFILES, lookup
+from thinkweave.core.harness import PROFILES, HarnessProfile, active, lookup
 
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
-def collect(cfg, harness: str) -> dict:
-    """The manifest for a stint starting now, under ``harness``. A
-    configured rsi-rail that is not a committed git repo raises
-    ``RuntimeError``: a round cannot name a policy that does not exist."""
+#: The settings keys the readout witnesses: the ones that change how the
+#: agent behaves, not machine state, permissions or env.
+HARNESS_SETTINGS_KEYS = ("model", "effortLevel", "outputStyle", "tui")
+
+
+def collect(cfg, harness: str, *, model: str = "") -> dict:
+    """The manifest for a stint starting now, under ``harness``. ``model``
+    is the one the harness reported running (a hook input's ``model``); it
+    wins over the settings file's. A configured rsi-rail that is not a
+    committed git repo raises ``RuntimeError``: a round cannot name a
+    policy that does not exist."""
     manifest = {"harness": harness, "readers": _readers()}
     if cfg.rsi_rail:
         manifest["rsi_rail"] = _rail(Path(cfg.rsi_rail))
+    profile = _profile(harness)
+    if settings := _harness_settings(profile, model):
+        manifest["harness_settings"] = settings
+    if profile is not None:
+        if events := sorted(e for e, native in profile.hook_events.items() if native):
+            manifest["hook_events"] = events
+        if literals := _literals(profile):
+            manifest["literals"] = literals
     return manifest
+
+
+def _profile(harness: str) -> HarnessProfile | None:
+    """The running profile when it is ``harness``, else the registered one."""
+    running = active()
+    return running if running.id == harness else lookup(harness)
+
+
+def _harness_settings(profile: HarnessProfile | None, model: str) -> dict:
+    """The witnessed values of :data:`HARNESS_SETTINGS_KEYS` from the
+    profile's settings file, scalars only; ``model`` overrides the file's."""
+    data: dict = {}
+    if profile is not None:
+        try:
+            loaded = json.loads(profile.user_settings.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = {}
+        if isinstance(loaded, dict):
+            data = loaded
+    settings = {
+        key: data[key]
+        for key in HARNESS_SETTINGS_KEYS
+        if isinstance(data.get(key), (str, bool, int, float))
+    }
+    if model:
+        settings["model"] = model
+    return settings
+
+
+def _literals(profile: HarnessProfile) -> dict:
+    """The profile's hook literals: per-event budgets and the context cap."""
+    literals: dict = {}
+    if profile.hook_budget_ms:
+        literals["hook_budget_ms"] = dict(profile.hook_budget_ms)
+    if profile.additional_context_cap_chars is not None:
+        literals["additional_context_cap_chars"] = profile.additional_context_cap_chars
+    return literals
 
 
 def _rail(repo: Path) -> dict:

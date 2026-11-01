@@ -57,6 +57,8 @@ def _isolated_vault(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         "thinkweave.core.config.load_config", lambda: default_cfg
     )
+    # The weave dir a previous test's hook loaded must not steer this one's log.
+    monkeypatch.setattr("thinkweave.surfaces.hooks.handler._LOG_DIR", None)
 
 
 class TestHookHelpers:
@@ -1530,9 +1532,12 @@ class TestHookErrorLogging:
         assert "PermissionError" in emitted["systemMessage"]
 
     def test_log_error_creates_file(self, tmp_path):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
         cfg = Config(vault_root=tmp_path / "vault")
         with patch("thinkweave.core.config.load_config", return_value=cfg):
-            _log_error("test_hook", ValueError("test error"))
+            handler_mod._load_config()
+        _log_error("test_hook", ValueError("test error"))
 
         log_path = cfg.weave_dir / "hooks.log"
         assert log_path.exists()
@@ -1541,14 +1546,67 @@ class TestHookErrorLogging:
         assert "test error" in content
 
     def test_log_error_appends(self, tmp_path):
+        from thinkweave.surfaces.hooks import handler as handler_mod
+
         cfg = Config(vault_root=tmp_path / "vault")
         with patch("thinkweave.core.config.load_config", return_value=cfg):
-            _log_error("hook1", ValueError("error1"))
-            _log_error("hook2", RuntimeError("error2"))
+            handler_mod._load_config()
+        _log_error("hook1", ValueError("error1"))
+        _log_error("hook2", RuntimeError("error2"))
 
         content = (cfg.weave_dir / "hooks.log").read_text()
         assert "error1" in content
         assert "error2" in content
+
+    def test_log_error_never_loads_the_config(self, tmp_path):
+        """The error being logged is often the config failing to load, so
+        the logger must not depend on it: before any config loaded, it
+        writes the fallback log beside the user-scope config file."""
+        from thinkweave.core.config import user_config_path
+
+        def explode():
+            raise AssertionError("_log_error called load_config")
+
+        with patch("thinkweave.core.config.load_config", side_effect=explode):
+            _log_error("test_hook", FileNotFoundError("missing.toml"))
+
+        content = (user_config_path().parent / "hooks.log").read_text()
+        assert "test_hook: FileNotFoundError: missing.toml" in content
+
+    def test_a_rail_without_its_config_is_logged_and_the_hook_exits_0(
+        self, tmp_path: Path
+    ):
+        """A configured rsi-rail missing ``thinkweave/config.toml`` fails
+        every ``load_config``; the SessionStart hook still writes one error
+        line naming the file to the fallback log, and exits 0."""
+        import os
+        import subprocess
+        import sys
+
+        rail = tmp_path / "empty-rail"
+        rail.mkdir()
+        xdg = tmp_path / "xdg"
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path / "home"),
+            "XDG_CONFIG_HOME": str(xdg),
+            "THINKWEAVE_VAULT": str(tmp_path / "vault"),
+            "THINKWEAVE_RSI_RAIL": str(rail),
+        }
+        payload = {"session_id": "rail-less", "cwd": str(tmp_path),
+                   "hook_event_name": "SessionStart", "source": "startup"}
+        proc = subprocess.run(
+            [sys.executable, "-m", "thinkweave.surfaces.hooks.handler", "session_start"],
+            input=json.dumps(payload), capture_output=True, text=True, env=env,
+            cwd=tmp_path, timeout=60,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        log = (xdg / "thinkweave" / "hooks.log").read_text(encoding="utf-8")
+        headers = [line for line in log.splitlines() if line.startswith("[")]
+        assert len(headers) == 1, log
+        assert "session_start: FileNotFoundError" in headers[0]
+        assert str(rail / "thinkweave" / "config.toml") in headers[0]
 
     def test_log_error_never_raises(self):
         # Even if everything fails inside, _log_error should not raise
