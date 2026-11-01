@@ -3,6 +3,34 @@
 Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
 `weave_*` MCP + CLI surface may still break between minors.
 
+## [Unreleased]
+
+### Fixed
+
+- **One route per machine** (#254): on a dev machine with `weave dev-link`,
+  thinkweave loaded twice as an MCP server (`mcp__thinkweave__*` from the
+  committed `.mcp.json`, `mcp__plugin_thinkweave_thinkweave__*` from the
+  plugin manifest) and twice as skills (bare `.claude/commands/` links beside
+  the plugin's `/thinkweave:*`). `weave dev-link` now rejects the checkout's
+  `.mcp.json` for Claude Code (`disabledMcpjsonServers` in
+  `.claude/settings.local.json`) and removes the bare-name links;
+  `weave dev-unlink` re-approves the file. `weave doctor --mcp` fails
+  `registration scopes` when a plugin manifest and a bare-name scope both
+  register the server, and a new `skill routes` row fails on bare-name links
+  or a top-level `skills/` beside the plugin.
+- **Worker tool allowlists on the plugin route** (#254): every `agents/*.md`
+  now lists the plugin-scoped tool names beside the bare ones. Claude Code
+  never rewrites `mcp__thinkweave__weave_*` to the plugin server's
+  `mcp__plugin_thinkweave_thinkweave__weave_*`, so on a plugin-only install
+  the dream and research workers launched without any `weave_*` tool.
+
+### Upgrade notes
+
+- Dev-link machines: run `uv run weave dev-link` once after pulling (it is
+  idempotent) and restart Claude Code. Hand-written cron lines that call a
+  bare skill (`-p "/dream"`) must become `-p "/thinkweave:dream"`; the
+  `weave schedule` block already renders the namespaced form.
+
 ## [0.3.1] — 2026-10-12
 
 OpenCode joins Claude Code, Codex and Pi as a fully supported harness:

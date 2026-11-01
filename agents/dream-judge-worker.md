@@ -1,7 +1,7 @@
 ---
 name: dream-judge-worker
 description: Phase-2 of /dream — drain the prediction rejudge queue; performs writes directly and emits one outcome JSON line.
-tools: Read, Bash, mcp__thinkweave__weave_read, mcp__thinkweave__weave_update
+tools: Read, Bash, mcp__thinkweave__weave_read, mcp__thinkweave__weave_update, mcp__plugin_thinkweave_thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_update
 model: sonnet
 color: yellow
 ---

@@ -1,7 +1,7 @@
 ---
 name: dream-merge-worker
 description: Phase-1 of /dream — judges concept drift pairs, theme dup candidates, AND N-ary grain-coarsening clusters (drift v2, cosine-evidenced); emits one plan-fragment JSON outcome line.
-tools: mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read
+tools: mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_concepts, mcp__plugin_thinkweave_thinkweave__weave_read
 model: sonnet
 color: blue
 ---

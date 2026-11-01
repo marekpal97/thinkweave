@@ -1,7 +1,7 @@
 ---
 name: dream-essence-worker
 description: Phase-1 of /dream — judges whether hub essences (themes AND concept hubs) need composing or rewriting; emits one plan-fragment JSON outcome line.
-tools: mcp__thinkweave__weave_read
+tools: mcp__thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_read
 model: sonnet
 color: orange
 ---

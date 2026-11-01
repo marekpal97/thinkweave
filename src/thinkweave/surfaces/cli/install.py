@@ -1177,6 +1177,104 @@ def _raw_mcp_entry_present() -> bool:
         return False
 
 
+#: The settings key Claude Code reads to reject a named ``.mcp.json`` server
+#: in every permission mode (settings reference: ``disabledMcpjsonServers``).
+_DISABLED_MCPJSON_KEY = "disabledMcpjsonServers"
+
+
+def _project_settings(repo: Path) -> Path:
+    """The harness's project-local settings file inside ``repo``
+    (``.claude/settings.local.json`` on Claude Code) — machine-local and
+    gitignored, so the dev-link posture never reaches the committed tree."""
+    return repo / _profile().project_settings_relpath
+
+
+def _set_project_mcp_json_disabled(repo: Path, *, disabled: bool) -> bool:
+    """Converge the project settings' ``disabledMcpjsonServers`` list to carry
+    (or not carry) ``thinkweave``. Returns True when the file changed.
+
+    The committed ``.mcp.json`` registers the server under the bare name
+    ``thinkweave``; the plugin manifest registers it as
+    ``plugin:thinkweave:thinkweave``. Claude Code never merges the two — they
+    are different names — so a dev-link machine that leaves ``.mcp.json``
+    approved starts two servers and lists every tool twice (#254). The
+    ``.mcp.json`` file itself stays committed: Pi reads it natively and it is
+    the launch reference other agents copy. Only this harness's approval of
+    it is withdrawn, and only on this machine.
+
+    Other keys in the file are preserved verbatim; an unreadable file is left
+    alone (returns False) rather than overwritten.
+    """
+    path = _project_settings(repo)
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(loaded, dict):
+            return False
+        data = loaded
+    current = data.get(_DISABLED_MCPJSON_KEY)
+    names = [n for n in current if isinstance(n, str)] if isinstance(current, list) else []
+    if disabled == (SERVER_NAME in names):
+        return False
+    if disabled:
+        names.append(SERVER_NAME)
+        data[_DISABLED_MCPJSON_KEY] = names
+    else:
+        names = [n for n in names if n != SERVER_NAME]
+        if names:
+            data[_DISABLED_MCPJSON_KEY] = names
+        else:
+            data.pop(_DISABLED_MCPJSON_KEY, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def _project_command_links(repo: Path) -> list[Path]:
+    """The ``<repo>/.claude/commands/<name>.md`` symlinks into ``commands/``
+    — the pre-plugin way of exposing the skills by bare name. Foreign links
+    (``issue-loop.md`` → funloops) and regular files are not ours."""
+    try:
+        entries = sorted((repo / ".claude" / "commands").iterdir())
+    except OSError:
+        return []
+    return [e for e in entries if _is_command_link(e)]
+
+
+def _sweep_project_command_links(repo: Path) -> list[str]:
+    """Remove the bare-name command links; the plugin route serves the same
+    files as ``/thinkweave:<name>``, so each link is a second copy of the
+    skill in every session's menu (#254). Returns the removed names."""
+    removed: list[str] = []
+    for link in _project_command_links(repo):
+        link.unlink()
+        removed.append(link.name)
+    return removed
+
+
+def _converge_dev_link_posture(repo: Path) -> None:
+    """The two things the plugin route makes redundant on this machine: the
+    ``.mcp.json`` approval and the bare-name command links. Idempotent — a
+    re-run on a converged checkout prints nothing."""
+    if _set_project_mcp_json_disabled(repo, disabled=True):
+        print(
+            f"Disabled the committed .mcp.json server for this checkout in "
+            f"{_project_settings(repo)}\n  (the plugin manifest provides it; "
+            "two registrations start two servers)."
+        )
+    removed = _sweep_project_command_links(repo)
+    if removed:
+        print(
+            f"Removed {len(removed)} bare-name command link(s) from "
+            f"{repo / '.claude' / 'commands'}: {', '.join(removed)}\n"
+            "  (the plugin serves them as /thinkweave:<name>; re-render any "
+            "hand-written cron line that still calls the bare name)."
+        )
+
+
 def _print_dev_link_next_steps() -> None:
     print()
     print("Restart Claude Code, then everything is namespaced under the plugin:")
@@ -1184,7 +1282,8 @@ def _print_dev_link_next_steps() -> None:
     print("  /thinkweave:wrap, :tighten, :dream …  # the rest")
     print()
     print("The MCP server + hooks load from the plugin manifest — no `weave install`")
-    print("needed. After editing hooks/agents/mcpServers, run `/reload-plugins`.")
+    print("needed; its tools are mcp__plugin_thinkweave_thinkweave__weave_*. After")
+    print("editing hooks/agents/mcpServers, run `/reload-plugins`.")
     print("Undo with `weave dev-unlink`.")
 
 
@@ -1198,6 +1297,12 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
     declares the server, so the plugin runtime owns registration. Refuses to
     shadow a real marketplace plugin install of the same name, and warns when
     a leftover raw ``~/.claude.json`` entry would double-register the server.
+
+    The plugin route is the only route on a dev-link machine (#254): the
+    committed ``.mcp.json`` is rejected for this checkout through the
+    project-local settings file, and the bare-name ``.claude/commands/``
+    links are removed, so each skill and each MCP tool registers once.
+    Both steps converge on every run, including an "Already dev-linked" one.
     """
     repo = _detect_project_root()
     profile = _profile()
@@ -1269,6 +1374,7 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
     if _dev_link().is_symlink():
         if _dev_link().resolve() == repo.resolve():
             print(f"Already dev-linked: {_dev_link()} → {repo}")
+            _converge_dev_link_posture(repo)
             _print_dev_link_next_steps()
             return
         if not getattr(args, "force", False):
@@ -1289,16 +1395,24 @@ def cmd_dev_link(args: argparse.Namespace) -> None:
 
     _dev_link().symlink_to(repo)
     print(f"Dev-linked {_dev_link()} → {repo}")
+    _converge_dev_link_posture(repo)
     _print_dev_link_next_steps()
 
 
 def cmd_dev_unlink(args: argparse.Namespace) -> None:
     """Reverse ``weave dev-link`` — remove the ``~/.claude/skills/thinkweave``
-    symlink. A real (non-symlink) install at that path is left untouched."""
+    symlink and re-approve the checkout's ``.mcp.json`` (the project-scope
+    route is all that is left). The bare-name command links are not
+    recreated. A real (non-symlink) install at that path is left untouched."""
     if _dev_link().is_symlink():
         target = _dev_link().resolve()
         _dev_link().unlink()
         print(f"Removed dev-link {_dev_link()} (was → {target}).")
+        if _set_project_mcp_json_disabled(target, disabled=False):
+            print(
+                f"Re-approved the committed .mcp.json server in "
+                f"{_project_settings(target)}."
+            )
         print("Restart Claude Code to drop the /thinkweave:* commands.")
         return
     if _dev_link().exists():

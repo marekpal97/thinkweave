@@ -1,7 +1,7 @@
 ---
 name: dream-seam-link-worker
 description: Phase-2 of /dream — drains the seam-link queue; judges cross-parent catalyst pairs on freshly-folded hubs and writes ref-dates via `weave hubs apply-linkage`; emits one outcome JSON line.
-tools: Read, Bash, mcp__thinkweave__weave_read
+tools: Read, Bash, mcp__thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_read
 model: sonnet
 color: cyan
 ---
