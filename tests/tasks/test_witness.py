@@ -251,6 +251,44 @@ class TestInteractiveOrder:
         entry = next(r for r in note["rounds"] if r.get("manifest"))
         assert entry["tools"] == {"Skill": 1}
 
+    @pytest.mark.parametrize("mirror_before_wrap", [False, True])
+    def test_a_wrap_after_a_stop_counts_the_wrapping_turn_once(
+        self, cfg: Config, monkeypatch, tmp_path: Path, mirror_before_wrap: bool
+    ):
+        """turn 1 → Stop (archives the buffer) → turn 2 opens with the /wrap
+        Skill row [→ Stop (mirrors the buffer, keeps it live)] →
+        weave_extract → wrap-finalize: the Skill row sits in a live buffer
+        ALONGSIDE the archive, which the session chain excludes; the round
+        still counts it, and counts it once when a Stop mirrored it."""
+        minted = tasks.apply_declaration(
+            cfg, {"declared": [{"title": "skill witness", "round": {}}]},
+            session_key="s-earlier", project="t", streams=[], folders=[],
+        )
+        (task_id,) = minted.minted
+        stop = {"session_id": SESSION, "cwd": str(tmp_path), "hook_event_name": "Stop"}
+        _prompt(monkeypatch, tmp_path, "first turn")
+        run_hook(monkeypatch, "stop", stop)
+        folder = _session_folder(cfg)
+        assert (folder / "events.jsonl").exists()
+        _prompt(monkeypatch, tmp_path, "/wrap")
+        assert buffer_path(cfg.weave_dir, SESSION).exists()
+        if mirror_before_wrap:
+            run_hook(monkeypatch, "stop", stop)
+            assert buffer_path(cfg.weave_dir, SESSION).exists()
+        project = folder.parent.parent.name
+
+        extract_session(cfg, session_id=SESSION, project=project, summary="ok",
+                        insights=[], decisions=[])
+        result = finalize_wrap(
+            cfg, session_id=SESSION, project=project, prune=False,
+            tasks={"declared": [{"continuing": task_id, "round": {}}]},
+        )
+        assert result.tasks["appended"] == [task_id]
+
+        (note,) = _task_notes(cfg)
+        entry = next(r for r in note["rounds"] if r.get("manifest"))
+        assert entry["tools"] == {"Skill": 1}
+
 
 class TestManifestStamp:
     def test_a_rail_fixed_after_prompt_one_stamps_prompt_two(

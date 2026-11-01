@@ -176,9 +176,17 @@ def finalize_wrap(
             from thinkweave.core.buffer import buffer_path
             from thinkweave.operations.tasks import apply_declaration
 
-            streams = [ev for ev, _d, _fm in chain] or [
-                buffer_path(cfg.weave_dir, session_id)
-            ]
+            # The chain holds the archived streams. Once a Stop has archived
+            # the session, the CURRENT turn's rows (the /wrap Skill row among
+            # them) sit in a live buffer alongside the archive, which the
+            # chain excludes as post-archive noise (#181). The pass folds
+            # that buffer too and drops rows a per-turn Stop already
+            # mirrored, so the round counts the turn that wrapped (#364).
+            streams = [ev for ev, _d, _fm in chain]
+            for live in _live_buffers(cfg, session_id, chain):
+                if live not in streams:
+                    streams.append(live)
+            streams = streams or [buffer_path(cfg.weave_dir, session_id)]
             folders = [d for _ev, d, _fm in chain if d is not None]
             pass_result = apply_declaration(
                 cfg,
@@ -482,6 +490,26 @@ def _resolve_session_chain(
         if sid and (buf := cfg.weave_dir / "buffer" / f"{sid}.jsonl").exists():
             return [(buf, None, None)]
     return []
+
+
+def _live_buffers(
+    cfg: Config, session_id: str, chain: list[tuple[Path, Path | None, dict | None]]
+) -> list[Path]:
+    """The logical session's live buffers that exist right now: keyed by the
+    id passed in, by its source UUID when it is a ``ses-`` note id, and by
+    every chain member's ``source_session``. Empty when none exists."""
+    from thinkweave.core.buffer import buffer_path
+
+    sids = {session_id}
+    if session_id.startswith("ses-"):
+        sids.add(_source_session_of(cfg, session_id))
+    for _ev, _d, fm in chain:
+        if fm:
+            sids.add(str(fm.get("source_session") or ""))
+    return [
+        buf for sid in sorted(s for s in sids if s)
+        if (buf := buffer_path(cfg.weave_dir, sid)).exists()
+    ]
 
 
 def _source_session_of(cfg: Config, session_note_id: str) -> str:

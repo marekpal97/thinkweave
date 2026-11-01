@@ -958,6 +958,18 @@ def apply_declaration(
 _FEEDBACK_KEYS = ("register", "prompt_ref", "ts", "text")
 
 
+def _unique_dicts(items) -> list[dict]:
+    """``items`` in order, each distinct dict once (JSON identity)."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for d in items:
+        key = json.dumps(d, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
 class _DeclarationPass:
     """One wrap's task pass: the session it wraps, and what it reconciled."""
 
@@ -1002,11 +1014,11 @@ class _DeclarationPass:
         self.session_files = as_list(session_fm.get("files_touched"))
         self.evidence = RefEvidence.gather(cfg, session_fm, self.result.warnings)
         self.closing_refs = self.evidence.closing_refs(self.repo)
-        self.verdicts = [
+        self.verdicts = _unique_dicts(
             {k: str(row[k]) for k in _FEEDBACK_KEYS if row.get(k)}
             for stream in streams
             for row in feedback_events(stream)
-        ]
+        )
         # The repo HEAD the session's first prompt saw and the manifest it
         # ran under, as its hook recorded them. The chain's earliest record
         # wins, so a resumed session names the commit and policy it began
@@ -1014,8 +1026,15 @@ class _DeclarationPass:
         bases: list[tuple[str, str]] = []
         stamps: list[tuple[str, dict]] = []
         rows: list[dict] = []
+        seen_rows: set[str] = set()
         for stream in streams:
             for row in iter_jsonl(stream):
+                # A per-turn Stop mirrors the live buffer into the archive
+                # and keeps the buffer, so one row can sit in both streams.
+                key = json.dumps(row, sort_keys=True, default=str)
+                if key in seen_rows:
+                    continue
+                seen_rows.add(key)
                 rows.append(row)
                 if row.get("type") == "base" and row.get("hash"):
                     bases.append((str(row.get("ts", "")), str(row["hash"])))
