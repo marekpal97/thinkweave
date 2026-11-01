@@ -249,22 +249,18 @@ def unrenderable(profile: HarnessProfile, reg: Registration, *, plugin_owned: bo
 
     A foreign hook on an event the profile has no native equivalent for
     cannot fire there. When an active plugin owns registration (Claude
-    Code's plugin route), a disabled event or changed matchers cannot be
-    expressed: the plugin's hooks.json registers every canonical event and
-    Claude Code offers no per-event suppression of a plugin hook (settings
-    hooks merge with plugin hooks; ``disableAllHooks`` is all-or-nothing)."""
+    Code's plugin route), changed matchers cannot be expressed: the
+    plugin's hooks.json registers its own and Claude Code offers no
+    per-event suppression of a plugin hook (settings hooks merge with plugin
+    hooks; ``disableAllHooks`` is all-or-nothing). A disabled event is
+    carried there all the same: the hook handler reads this file and exits
+    before any work on an event it disables."""
     out = [
         f"foreign hook {f.name!r} on {f.event} (no native {f.event} on {profile.id})"
         for f in reg.foreign
         if not _native(profile, f.event)
     ]
     if plugin_owned:
-        out += [
-            f"{e} disabled (the active plugin registers it; no per-event "
-            "suppression of a plugin hook exists)"
-            for e in CANONICAL_EVENTS
-            if e in reg.disabled and _native(profile, e)
-        ]
         out += [
             f"{e} matchers (the active plugin registers its own)"
             for e in CANONICAL_EVENTS
@@ -274,13 +270,12 @@ def unrenderable(profile: HarnessProfile, reg: Registration, *, plugin_owned: bo
 
 
 def events_in_force(profile: HarnessProfile, reg: Registration, *, plugin_owned: bool) -> list[str]:
-    """The canonical events registered on this profile once ``reg`` is
-    rendered, sorted: natively mapped, minus disabled ones the profile can
-    actually drop."""
+    """The canonical events in force on this profile once ``reg`` is
+    rendered, sorted: natively mapped, minus disabled ones. On the plugin
+    route a disabled event stays registered but the handler drops it, so it
+    is not in force either (``plugin_owned`` is kept for the callers)."""
     return sorted(
-        e
-        for e in CANONICAL_EVENTS
-        if _native(profile, e) and (plugin_owned or e not in reg.disabled)
+        e for e in CANONICAL_EVENTS if _native(profile, e) and e not in reg.disabled
     )
 
 

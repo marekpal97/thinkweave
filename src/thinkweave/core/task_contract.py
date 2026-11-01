@@ -598,8 +598,17 @@ _MANIFEST = _closed_dict({
         "model": _str, "effortLevel": _scalar, "outputStyle": _scalar, "tui": _scalar,
     }),
     "hook_events": _str_list,
+    # The foreign hooks the rail's hooks.toml registered beside thinkweave's
+    # (dec-4f158b58 layer 3): the registration set in force, not the script.
+    "foreign": _dict_list({"name": _str, "event": _str}),
     "literals": _closed_dict({
         "hook_budget_ms": _str_int_map, "additional_context_cap_chars": _int,
+    }),
+    # What was in force against the literals: min(rail knob, literal) per
+    # event and for the cap, and the Stop nudge's state (dec-4f158b58).
+    "effective": _closed_dict({
+        "hook_budget_ms": _str_int_map, "additional_context_cap_chars": _int,
+        "nudge": _bool,
     }),
 })
 

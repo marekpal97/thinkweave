@@ -293,9 +293,11 @@ def test_plugin_route_carries_foreign_hooks_and_names_what_it_cannot(
     rail_home, monkeypatch, capsys
 ):
     """Claude Code with the plugin active: the plugin's hooks.json stays the
-    canonical definitions, the user settings file gets only the foreign hook,
-    and the disabled event is reported as not renderable — Claude Code has no
-    per-event suppression of a plugin hook."""
+    canonical definitions and the user settings file gets only the foreign
+    hook. The disabled event is renderable: Claude Code has no per-event
+    suppression of a plugin hook, so the handler reads hooks.toml and exits
+    early on it (tests/tasks/test_hook_behaviour.py); changed matchers are
+    what stays not renderable."""
     repo, home = rail_home
     cc = harness.claude_code(home=home)
     cc.installed_plugins.parent.mkdir(parents=True)
@@ -305,18 +307,19 @@ def test_plugin_route_carries_foreign_hooks_and_names_what_it_cannot(
     _cli_install("--scope", "user")
 
     out = capsys.readouterr().out
-    assert "not renderable on claude-code: SubagentStart disabled" in out
+    assert "not renderable" not in out
     settings = _settings(cc.user_settings)
     assert list(settings["hooks"]) == ["Stop"]
     assert _commands(settings, "Stop") == [f'"{(hooks_dir / "note.sh").as_posix()}"']
+    assert mcp_doctor.check_rail_hooks().passed
+
+    # Changed matchers stay inexpressible on the plugin route.
+    _write_rail_hooks(repo, RAIL_TOML + '[PostToolUse]\nmatchers = ["Write|Edit"]\n')
+    _cli_install("--scope", "user")
+    assert "not renderable on claude-code: PostToolUse matchers" in capsys.readouterr().out
     result = mcp_doctor.check_rail_hooks()
     assert not result.passed
-    assert "claude-code: not renderable: SubagentStart disabled" in result.detail
-
-    # Re-enable it: the foreign hook alone is renderable, the row passes.
-    _write_rail_hooks(repo, RAIL_TOML.replace("false", "true"))
-    _cli_install("--scope", "user")
-    assert mcp_doctor.check_rail_hooks().passed
+    assert "claude-code: not renderable: PostToolUse matchers" in result.detail
 
 
 def test_rail_matchers_replace_the_post_tool_use_slots(rail_home, monkeypatch):
