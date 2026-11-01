@@ -19,6 +19,8 @@ the surface-contract test pins that every subcommand *resolves* to a handler.
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -274,3 +276,57 @@ class TestHelpExitCode:
     @pytest.mark.parametrize("name", _registered_subcommands())
     def test_subcommand_help_exits_zero(self, name: str, capsys):
         self._assert_help_exits_zero([name, "--help"], capsys)
+
+
+class TestPolicyInventorySurface:
+    """``weave policy inventory`` renders the rail template from the Config
+    field metadata (dec-db6baaab) and checks a file against it. No test reads
+    the live rsi-rail repo: the file under check is written here."""
+
+    def _toml(self, capsys) -> str:
+        main(["policy", "inventory", "--toml"])
+        return capsys.readouterr().out
+
+    def test_toml_is_deterministic_and_lists_only_rail_tables(self, capsys):
+        first = self._toml(capsys)
+        assert first == self._toml(capsys)
+        tables = re.findall(r"^# \[([^\]]+)\]$", first, re.M)
+        assert tables[:4] == ["extract", "landing", "retrieval", "retrieval.prompt_time"]
+        assert "context.startup" in tables
+        assert not {"dream", "seam", "themes", "edges", "embeddings"} & set(tables)
+        assert "# rrf_k = 60   # read at: weave_call" in first
+
+    def test_json_lists_every_knob_with_its_rail_flag(self, capsys):
+        main(["policy", "inventory", "--json"])
+        rows = {r["field"]: r for r in json.loads(capsys.readouterr().out)}
+        assert rows["Config.dream_essence_cap"]["rail"] is False
+        assert rows["Config.dream_essence_cap"]["address"] == "dream.essence_cap"
+        assert rows["PromptTimeRetrieval.min_similarity"]["rail"] is True
+        assert rows["StartupSection.pin"]["address"] == "context.startup.<section>.pin"
+
+    def test_check_passes_on_the_rendering_and_its_live_tweaks(
+        self, capsys, tmp_path: Path
+    ):
+        rendered = self._toml(capsys)
+        path = tmp_path / "config.toml"
+        path.write_text(rendered, encoding="utf-8")
+        main(["policy", "inventory", "--check", str(path)])
+
+        tweaked = rendered.replace("# [retrieval]\n# rrf_k = 60   # read at: weave_call", "[retrieval]\nrrf_k = 7")
+        assert tweaked != rendered
+        path.write_text(tweaked, encoding="utf-8")
+        main(["policy", "inventory", "--check", str(path)])
+
+    def test_check_fails_on_a_stale_line_and_names_it(self, capsys, tmp_path: Path):
+        rendered = self._toml(capsys)
+        path = tmp_path / "config.toml"
+        path.write_text(rendered.replace("# rrf_k = 60", "# rrf_k = 61"), encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            main(["policy", "inventory", "--check", str(path)])
+        assert exc.value.code == 1
+        assert "rrf_k = 61" in capsys.readouterr().out
+
+    def test_one_mode_is_required(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["policy", "inventory"])
+        assert exc.value.code == 2

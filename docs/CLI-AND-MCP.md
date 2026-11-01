@@ -11,7 +11,7 @@ The full CLI subcommand reference, the MCP tool surface, the CLI↔MCP surface c
 
 ## CLI reference
 
-The CLI exposes **53 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
+The CLI exposes **54 subcommands** total via `_DISPATCH` in `surfaces/cli/__init__.py`. Agents work primarily through MCP tools (see below); the CLI is for setup, admin, and the small set of operations without MCP parity. The console command is `mem` (the Python package is `thinkweave`; the MCP server id is `thinkweave`).
 
 Consolidations to keep in mind: wikilink materialisation lives under `weave index --materialize-links` (was `weave connect`, deleted 2026-05-21); the `weave_concepts*` MCP tools are folded into `weave_concepts(action=...)`; `weave_source_lens` + `weave_decisions_for_file` are folded into `weave_graph(filter=...)`. The Phase-4-C deprecation aliases for both CLI and MCP names were removed 2026-05-21 — call the canonical names.
 
@@ -71,6 +71,7 @@ weave task {open|close <id>|render <id>|ledger|record-run <payload.json>|feedbac
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
 weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic issue-loop trajectory outcome judge (phase-2 dream-outcome-worker rail)
 weave steering {evidence [--module PATH] | gate --proposals-json FILE} [--json]  # evidence-gated steering: per-module signals + drop-no-evidence/budget-cap gate the slow loop #61 calls
+weave policy inventory {--toml | --json | --check PATH}  # the knob inventory derived from the Config field metadata (read_at per field, dec-db6baaab): --toml renders the rsi-rail thinkweave/config.toml template (serving-chain knobs, commented at their defaults), --json lists every knob, --check exits 1 naming the first line where a file departs from the rendering (its live lines aside)
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
 weave import {claude-code|codex|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
                                               # --enrich synthesises pending sessions imported by the named source only — no cross-harness draining
@@ -97,7 +98,7 @@ The MCP server (id `thinkweave`, so tools are addressed `mcp__thinkweave__weave_
 
 The boundary principle: **MCP tools are the agent operation surface; the CLI is for admin, cron, and headless skill orchestration** — plus a small set of narrow *agent-Bash* entries that in-session agents and dream workers invoke from a Bash tool mid-flow: `weave wrap-finalize`, `weave session-id` (the harness-neutral session-id resolver `/wrap` reads, #103), `weave hubs apply-linkage`, `weave landing --doc`, `weave judge --rejudge/--drain`, `weave learn` (the `/learn` rail, #171), `weave explain` (the `/explain` rail), and `weave health --json`. Everything else an agent needs goes through `weave_*` MCP tools; everything a human or crontab needs goes through `mem`. Where both surfaces exist for one operation, they are thin wrappers over the same `operations/` function (see [ARCHITECTURE.md §"Operations layer"](../ARCHITECTURE.md#operations-layer)). The contract is pinned mechanically by `tests/test_surface_contract.py` (schema↔dispatch wiring, doc-referenced subcommands, worker tool allowlists, inventory counts); `_DISPATCH` in `surfaces/cli/__init__.py` is grouped by the same audience labels.
 
-Full inventory — 53 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the CLI carve-outs):
+Full inventory — 54 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-only, *admin-cron* = CLI-only, *both* = paired surfaces; *agent-Bash* marks the CLI carve-outs):
 
 | Operation | CLI subcommand | MCP tool | Audience |
 |---|---|---|---|
@@ -149,6 +150,7 @@ Full inventory — 53 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | RLVR substrate export | `weave rlvr` | — | admin-cron |
 | Loop trajectory outcome judge | `weave trajectory` | — | admin-cron (dream-outcome-worker rail) |
 | Evidence-gated steering gate | `weave steering` | — | admin-cron (slow-loop #61 proposal gate) |
+| Knob inventory (rail template) | `weave policy` | — | admin-cron (regenerates and checks the rsi-rail template) |
 
 ## Environment
 
