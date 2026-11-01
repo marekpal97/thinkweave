@@ -1951,9 +1951,9 @@ def _handle_session_start(hook_input: dict) -> None:
     """
     try:
         from thinkweave.retrieval.context import (
-            SESSION_START_SECTIONS,
+            CHARS_PER_TOKEN,
             build_project_context,
-            session_start_budget_tokens,
+            serving_plan,
         )
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
@@ -2000,13 +2000,17 @@ def _handle_session_start(hook_input: dict) -> None:
         # The budget comes from the harness's own inline cap, less the room
         # the memory-seam guard needs at the front of the payload: above the
         # cap the harness files the context and shows a preview, and a
-        # preview is not context the model has.
+        # preview is not context the model has. ``[context.startup]`` may set
+        # the sections and the budget instead (#352); unset, both are the
+        # module defaults.
+        plan = serving_plan(cfg)
         cap = profile.additional_context_cap_chars
+        budget_chars = plan.startup_budget_chars(cap)
         payload = build_project_context(
             cfg,
             project,
-            sections=list(SESSION_START_SECTIONS),
-            budget_tokens=session_start_budget_tokens(cap),
+            sections=plan.startup_sections(),
+            budget_tokens=max(budget_chars // CHARS_PER_TOKEN, 1),
             omit_empty=True,
         )
 
@@ -2044,6 +2048,8 @@ def _handle_session_start(hook_input: dict) -> None:
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
                     "disposition": disposition,
+                    # The payload budget in force, in chars (#353).
+                    "cap": budget_chars,
                 }
                 if lifecycle:
                     event["lifecycle"] = lifecycle
