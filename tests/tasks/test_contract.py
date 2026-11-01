@@ -354,6 +354,23 @@ def test_task_note_outcome_is_not_a_contract_field():
     assert any("outcome" in e for e in validate_task_note(fm))
 
 
+def test_a_round_manifest_names_its_foreign_hooks():
+    """dec-4f158b58 layer 3: the registration set in force names the foreign
+    hooks as {name, event}; a script path there is refused by field, so the
+    manifest witnesses what ran, never where it lives."""
+    manifest = {
+        "harness": "claude-code",
+        "hook_events": ["Stop", "UserPromptSubmit"],
+        "foreign": [{"name": "note", "event": "Stop"}],
+    }
+    fm = load("declared-only")
+    fm["rounds"] = [{**ledger_round(), "manifest": manifest}]
+    assert validate_task_note(fm) == []
+    fm["rounds"] = [{**ledger_round(), "manifest": {**manifest, "foreign": [{"name": "note", "script": "note.sh"}]}}]
+    errors = validate_task_note(fm)
+    assert errors and all("foreign" in e for e in errors)
+
+
 def test_a_round_manifest_carries_the_effective_hook_values():
     """The manifest's ``effective`` key (dec-4f158b58 layer 1): the budgets
     and cap in force against the literals, and the Stop nudge's state, are
