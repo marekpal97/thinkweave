@@ -113,7 +113,7 @@ function canonicalToolName(native: string): string {
 // orphan policy still bounds the harness; these only stop the routine case
 // from being reported as a failure.
 const BUDGET_MS = {
-  UserPromptSubmit: 2500,
+  UserPromptSubmit: 6000,
   Stop: 6000,
 } as const;
 

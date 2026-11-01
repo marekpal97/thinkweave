@@ -1,17 +1,14 @@
 """Tests for ``operations/prompt_time_retrieval.py`` — R2 enrichment logic.
 
-Two layers:
+Three layers:
 
 - Pure orchestration (``build_enrichment``) with the retrieval arm stubbed —
   triviality gate, dedup vs the live buffer, the hard caps, deadline-miss
   propagation, and the adaptive skip.
 - The retrieval guard (``_retrieve``) with a fake Search, proving the
   similarity arm is deadlined and cosine-floored.
-
-There are no stopword/keyword heuristics to test — relevance is the cosine
-floor (covered in ``_retrieve``), not a wordlist. There is also no FTS arm —
-it was removed as a structural no-op against natural-language prompts (see
-the module docstring); ``_retrieve`` is similarity-only.
+- The prompt gate: the RRF pool scored by a decision site, its cut-off, its
+  verdicts, and its fallback on a backend error.
 """
 
 from __future__ import annotations
@@ -59,7 +56,7 @@ def test_emits_block_for_fresh_results(tmp_path: Path, monkeypatch):
         ptr, "_retrieve",
         lambda *a, **k: ([_FakeResult("n-aaaaaa01"), _FakeResult("n-bbbbbb02")], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert block is not None
     assert block.startswith(ptr._HEADER)
     assert ids == ["n-aaaaaa01", "n-bbbbbb02"]
@@ -75,7 +72,7 @@ def test_disabled_is_noop(tmp_path: Path, monkeypatch):
         ptr, "_retrieve",
         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ([], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert (block, ids, missed) == (None, [], False)
     assert called["n"] == 0  # never even searched
 
@@ -84,7 +81,7 @@ def test_disabled_is_noop(tmp_path: Path, monkeypatch):
 def test_triviality_gate_skips_short_and_slash(tmp_path: Path, monkeypatch, prompt):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(ptr, "_retrieve", lambda *a, **k: ([_FakeResult("n-zzzzzz99")], False))
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", prompt)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", prompt)
     assert (block, ids, missed) == (None, [], False)
 
 
@@ -103,7 +100,7 @@ def test_note_level_dedup_against_buffer(tmp_path: Path, monkeypatch):
             _FakeResult("n-fresh0003"),
         ], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert ids == ["n-fresh0003"]
     assert missed is False
 
@@ -114,7 +111,7 @@ def test_all_results_already_served_is_noop(tmp_path: Path, monkeypatch):
         {"type": "startup", "returned_ids": ["n-served01"], "token_est": 10},
     ])
     monkeypatch.setattr(ptr, "_retrieve", lambda *a, **k: ([_FakeResult("n-served01")], False))
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert (block, ids, missed) == (None, [], False)
 
 
@@ -125,7 +122,7 @@ def test_max_pieces_per_turn_cap(tmp_path: Path, monkeypatch):
         ptr, "_retrieve",
         lambda *a, **k: ([_FakeResult(f"n-id{i:06d}") for i in range(5)], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert len(ids) == 2
     assert missed is False
 
@@ -140,7 +137,7 @@ def test_max_firings_per_session_cap(tmp_path: Path, monkeypatch):
          "returned_ids": ["n-old00002"], "chars": 40},
     ])
     monkeypatch.setattr(ptr, "_retrieve", lambda *a, **k: ([_FakeResult("n-fresh999")], False))
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert (block, ids, missed) == (None, [], False)
 
 
@@ -152,7 +149,7 @@ def test_session_char_ceiling_cap(tmp_path: Path, monkeypatch):
          "returned_ids": ["n-old00001"], "chars": 95},
     ])
     monkeypatch.setattr(ptr, "_retrieve", lambda *a, **k: ([_FakeResult("n-fresh999")], False))
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     # Only 5 chars of headroom left (< _MIN_PIECE_CHARS) → no-op.
     assert (block, ids, missed) == (None, [], False)
 
@@ -168,7 +165,7 @@ def test_per_turn_char_cap_truncates(tmp_path: Path, monkeypatch):
             for i in range(10)
         ], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert block is not None
     assert len(block) <= 140
     assert 0 < len(ids) < 10
@@ -183,7 +180,7 @@ def test_per_turn_char_cap_truncates(tmp_path: Path, monkeypatch):
 def test_retrieve_miss_propagates_as_noop_with_missed_true(tmp_path: Path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(ptr, "_retrieve", lambda *a, **k: ([], True))
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert (block, ids) == (None, [])
     assert missed is True
 
@@ -204,7 +201,7 @@ def test_adaptive_skip_after_consecutive_misses(tmp_path: Path, monkeypatch):
         ptr, "_retrieve",
         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ([], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     # Threshold reached — the similarity arm must not even be attempted.
     assert called["n"] == 0
     assert (block, ids, missed) == (None, [], False)
@@ -222,7 +219,7 @@ def test_below_skip_threshold_still_retrieves(tmp_path: Path, monkeypatch):
         ptr, "_retrieve",
         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ([_FakeResult("n-x")], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     assert called["n"] == 1
     assert ids == ["n-x"]
 
@@ -244,7 +241,7 @@ def test_successful_firing_resets_the_miss_streak(tmp_path: Path, monkeypatch):
         ptr, "_retrieve",
         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ([_FakeResult("n-y")], False),
     )
-    block, ids, missed = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
+    block, ids, missed, _ = ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT)
     # Only 1 miss since the last firing — well under the threshold of 3.
     assert called["n"] == 1
     assert ids == ["n-y"]
@@ -356,5 +353,141 @@ def test_a_spent_budget_is_a_miss_without_starting_the_arm(tmp_path: Path, monke
         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ([], False),
     )
     for spent in (0.1, 0.0, -2.0):
-        assert ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT, deadline=spent) == (None, [], True)
+        assert ptr.build_enrichment(cfg, "ses-1", REAL_PROMPT, deadline=spent) == (None, [], True, "")
     assert called["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The prompt gate — an RRF pool scored by a System 1 decision site
+# ---------------------------------------------------------------------------
+
+
+def _gate_on(cfg: Config, monkeypatch, provider) -> None:
+    from thinkweave.core.config import DecisionSite
+
+    cfg.decision_sites["prompt_gate"] = DecisionSite(enabled=True)
+    monkeypatch.setattr(
+        "thinkweave.operations.decisions.build_from_vault", lambda *a, **k: provider
+    )
+
+
+def _start_turn(cfg: Config, session_id: str, prompt: str) -> None:
+    _write_buffer(cfg, session_id, [{"type": "prompt", "text": prompt}])
+
+
+def _decision_events(cfg: Config, session_id: str) -> list[dict]:
+    return [e for e in ptr._read_buffer_events(cfg, session_id) if e.get("type") == "decision"]
+
+
+class _RaisingEmbedder:
+    model = "raising"
+
+    def embed(self, texts):
+        raise RuntimeError("429 Too Many Requests")
+
+
+class _WordEmbedder:
+    model = "word"
+
+    def embed(self, texts):
+        return [[float(w in t.lower()) for w in ("sourdough", "starter", "tomato")] + [1.0]
+                for t in texts]
+
+
+def test_a_raising_embedder_leaves_bm25_candidates_for_the_gate(vault_factory, monkeypatch):
+    from thinkweave.core.decision_provider import FakeDecisionProvider
+    from thinkweave.core.embeddings import EmbeddingSearch
+
+    handle = vault_factory(notes=[
+        {"title": "Sourdough starter care", "body": "Feed the starter flour and water daily."},
+        {"title": "Tomato watering", "body": "Water tomatoes every second morning."},
+    ], indexed=True)
+    cfg = handle.config
+    monkeypatch.setattr(EmbeddingSearch, "_provider", lambda self: _WordEmbedder())
+    es = EmbeddingSearch(config=cfg)
+    es.compute_all()
+    es.close()
+    monkeypatch.setattr(EmbeddingSearch, "_provider", lambda self: _RaisingEmbedder())
+
+    prompt = "how often should I feed my sourdough starter"
+    _start_turn(cfg, "ses-g", prompt)
+    sourdough = _note_id(cfg, "Sourdough starter care")
+    fake = FakeDecisionProvider(nouls={sourdough: 0.9})
+    _gate_on(cfg, monkeypatch, fake)
+
+    result = ptr.build_enrichment(cfg, "ses-g", prompt)
+
+    scored = [q.subject for q in fake.calls[0][1]]
+    assert sourdough in scored
+    assert result.served_ids == [sourdough]
+    assert result.decision_miss == ""
+
+
+def _note_id(cfg: Config, title: str) -> str:
+    import sqlite3
+
+    with sqlite3.connect(str(cfg.index_db)) as db:
+        return db.execute("SELECT id FROM notes WHERE title = ?", (title,)).fetchone()[0]
+
+
+def test_a_raising_backend_writes_a_decision_miss_and_serves_the_rrf_top(tmp_path: Path, monkeypatch):
+    from thinkweave.core.decision_provider import FakeDecisionProvider
+    from thinkweave.surfaces.hooks import handler as handler_mod
+
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("thinkweave.core.config.load_config", lambda: cfg)
+    monkeypatch.setattr(handler_mod, "_ensure_session", lambda *a, **k: None)
+    pool = [_FakeResult(f"n-rrf{i:05d}", title=f"Pool note {i}") for i in range(6)]
+    monkeypatch.setattr(ptr, "_pool", lambda *a, **k: (pool, False))
+    _gate_on(cfg, monkeypatch, FakeDecisionProvider(error=RuntimeError("429 Too Many Requests")))
+
+    handler_mod._handle_user_prompt_submit(
+        {"session_id": "ses-miss", "prompt": REAL_PROMPT, "cwd": str(tmp_path)}
+    )
+
+    events = ptr._read_buffer_events(cfg, "ses-miss")
+    misses = [e for e in events if e.get("type") == "decision_miss"]
+    assert len(misses) == 1
+    assert misses[0]["site"] == "prompt_gate"
+    assert "429" in misses[0]["reason"]
+    served = [e for e in events if e.get("tool") == ptr.PROMPT_TIME_TOOL]
+    assert served[0]["returned_ids"] == ["n-rrf00000", "n-rrf00001", "n-rrf00002"]
+    assert _decision_events(cfg, "ses-miss") == []
+
+
+def test_default_accept_rejects_069_and_serves_070_with_ex_ante_verdicts(vault_factory, monkeypatch):
+    from thinkweave.core.buffer import archive_buffer
+    from thinkweave.core.decision_provider import FakeDecisionProvider
+    from thinkweave.core.indexer import Indexer
+
+    from tests.conftest import write_session_md
+
+    cfg = vault_factory().config
+    monkeypatch.setattr(
+        ptr, "_pool",
+        lambda *a, **k: ([_FakeResult("n-low000069"), _FakeResult("n-acc000070")], False),
+    )
+    _gate_on(cfg, monkeypatch, FakeDecisionProvider(nouls={"n-low000069": 0.69, "n-acc000070": 0.70}))
+    _start_turn(cfg, "ses-cut", REAL_PROMPT)
+
+    result = ptr.build_enrichment(cfg, "ses-cut", REAL_PROMPT)
+
+    assert result.served_ids == ["n-acc000070"]
+    session_dir = write_session_md(
+        cfg.vault_root / "projects" / "p" / "sessions" / "s1",
+        type="session", id="ses-cutnote", project="p", date="2026-11-01",
+    )
+    archive_buffer(cfg.weave_dir, "ses-cut", session_dir)
+    idx = Indexer(config=cfg)
+    try:
+        idx.rebuild(full=True)
+        rows = idx.db.execute(
+            "SELECT subject_id, phase, action, value FROM verdicts "
+            "WHERE site = 'prompt_gate' ORDER BY subject_id"
+        ).fetchall()
+    finally:
+        idx.close()
+    assert [tuple(r) for r in rows] == [
+        ("n-acc000070", "ex_ante", "served", 0.70),
+        ("n-low000069", "ex_ante", "rejected", 0.69),
+    ]

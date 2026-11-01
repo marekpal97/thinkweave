@@ -953,6 +953,14 @@ class TestHookBudgets:
         literal = {m.group(1): int(m.group(2)) for m in re.finditer(r"(\w+): (\d+)", block)}
         assert profile.hook_budget_ms == literal
 
+    @pytest.mark.parametrize("name", ["pi", "opencode"])
+    def test_prompt_submit_budget_fits_the_gate(self, name):
+        """Six seconds holds the similarity arm and the prompt gate's call."""
+        profile = harness.lookup(name)
+        source = (self.REPO / profile.hook_extension_source).read_text(encoding="utf-8")
+        assert profile.hook_budget_ms["UserPromptSubmit"] == 6000
+        assert re.search(r"BUDGET_MS = \{[^}]*UserPromptSubmit: 6000,", source, re.S)
+
     def test_plugin_budget_matches_hooks_json(self):
         hooks = json.loads((self.REPO / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         timeouts = {

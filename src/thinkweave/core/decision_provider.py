@@ -27,12 +27,22 @@ from thinkweave.core.api_keys import get_provider_key
 
 @dataclass(frozen=True)
 class Question:
-    """One typed question; ``criteria`` maps each ``choice`` option to its test."""
+    """One typed question; ``criteria`` maps each ``choice`` option to its test.
+
+    ``subject`` names what a per-subject question asks about, so one call can
+    ask the same question of many candidates.
+    """
 
     name: str
     kind: str
     instructions: str
     criteria: dict[str, str] = field(default_factory=dict)
+    subject: str = ""
+
+    @property
+    def key(self) -> str:
+        """The question's unique key on the wire."""
+        return f"{self.name}:{self.subject}" if self.subject else self.name
 
     def wire(self) -> dict[str, Any]:
         body: dict[str, Any] = {"type": self.kind, "instructions": self.instructions}
@@ -49,6 +59,7 @@ class Answer:
     kind: str
     value: float | str
     probs: dict[str, float]
+    subject: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,7 +106,7 @@ class SystemOneProvider:
             json={
                 "model": self.model,
                 "state": state,
-                "questions": {q.name: q.wire() for q in questions},
+                "questions": {q.key: q.wire() for q in questions},
             },
             timeout=60.0,
             verify=ssl.create_default_context(),
@@ -104,7 +115,7 @@ class SystemOneProvider:
         latency_ms = int((time.monotonic() - started) * 1000)
         data = response.json()
         return Decision(
-            answers=tuple(_parse_answer(q, data["answers"][q.name]) for q in questions),
+            answers=tuple(_parse_answer(q, data["answers"][q.key]) for q in questions),
             model=data.get("model") or self.model,
             backend=self.name,
             latency_ms=latency_ms,
@@ -113,24 +124,32 @@ class SystemOneProvider:
 
 
 class FakeDecisionProvider:
-    """Deterministic backend: ``noul`` answers 0.5, ``choice`` the first option.
+    """Deterministic backend: ``choice`` answers the first option, ``noul`` the
+    subject's value in ``nouls`` (default 0.5); with ``error`` every call raises it.
 
     Records each ``(state, questions)`` call in :attr:`calls`.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, nouls: dict[str, float] | None = None, error: Exception | None = None
+    ) -> None:
         self.calls: list[tuple[str, list[Question]]] = []
+        self.nouls = nouls or {}
+        self.error = error
 
     def decide(self, state: str, questions: list[Question]) -> Decision:
         self.calls.append((state, list(questions)))
+        if self.error is not None:
+            raise self.error
         answers = []
         for q in questions:
             if q.kind == "choice":
                 first = next(iter(q.criteria))
                 probs = {opt: 1.0 if opt == first else 0.0 for opt in q.criteria}
-                answers.append(Answer(q.name, q.kind, first, probs))
+                answers.append(Answer(q.name, q.kind, first, probs, q.subject))
             else:
-                answers.append(Answer(q.name, q.kind, 0.5, {"noul": 0.5}))
+                value = self.nouls.get(q.subject, 0.5)
+                answers.append(Answer(q.name, q.kind, value, {"noul": value}, q.subject))
         return Decision(tuple(answers), model="fake", backend="fake", latency_ms=0, cost=0.0)
 
 
@@ -169,9 +188,12 @@ def build_from_vault(vault_root: Any, backend: str = "", model: str = "") -> Dec
 
 def _parse_answer(question: Question, raw: dict[str, Any]) -> Answer:
     if question.kind == "choice":
-        return Answer(question.name, question.kind, raw["choice"], dict(raw["probabilities"]))
+        return Answer(
+            question.name, question.kind, raw["choice"], dict(raw["probabilities"]),
+            question.subject,
+        )
     value = float(raw["noul"])
-    return Answer(question.name, question.kind, value, {"noul": value})
+    return Answer(question.name, question.kind, value, {"noul": value}, question.subject)
 
 
 def _key_var(provider: str) -> str:

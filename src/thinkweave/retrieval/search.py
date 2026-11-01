@@ -6,6 +6,7 @@ Provides FTS5 full-text search and recursive CTE graph traversal.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -48,6 +49,27 @@ class GraphEdge:
     # edges default to 1.0. Walks may sort neighbours by Σ weight when
     # ``rank=True`` is passed to :meth:`Search.get_related`.
     weight: float = 1.0
+
+
+def rrf_fuse(rankings: list[list[SearchResult]], k: int, limit: int) -> list[SearchResult]:
+    """Reciprocal rank fusion: ``score = Σ 1/(k + rank)`` over ``rankings``.
+
+    Ranks are 1-indexed; the first ranking's row wins for a shared id, and
+    the fused score lands on ``.rank``. Returns the top ``limit``.
+    """
+    scores: dict[str, float] = {}
+    rows_by_id: dict[str, SearchResult] = {}
+    for ranking in rankings:
+        for rank, r in enumerate(ranking, start=1):
+            scores[r.id] = scores.get(r.id, 0.0) + 1.0 / (k + rank)
+            rows_by_id.setdefault(r.id, r)
+    ranked_ids = sorted(scores, key=lambda i: scores[i], reverse=True)
+    merged: list[SearchResult] = []
+    for nid in ranked_ids[:limit]:
+        r = rows_by_id[nid]
+        r.rank = scores[nid]
+        merged.append(r)
+    return merged
 
 
 class Search:
@@ -158,8 +180,12 @@ class Search:
         since: str = "",
         until: str = "",
         limit: int = 10,
+        any_term: bool = False,
     ) -> list[SearchResult]:
         """Full-text search with optional filters.
+
+        ``query`` matches as one phrase; with ``any_term`` it matches any of
+        its words, ranked by BM25 — the shape for a prose prompt.
 
         Filters:
             note_type: str or list — restrict to one or more types.
@@ -181,9 +207,12 @@ class Search:
         params: list = []
 
         if query:
-            # FTS5 search — quote the query so hyphens and special chars
-            # are treated as literals, not FTS5 operators
-            fts_query = '"' + query.replace('"', '""') + '"'
+            # Quote each term so hyphens and special chars are literals, not
+            # FTS5 operators.
+            terms = dict.fromkeys(re.findall(r"\w+", query.lower())) if any_term else [query]
+            fts_query = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+            if not fts_query:
+                return []
             sql = """
                 SELECT n.id, n.type, n.title, n.path, n.project, n.date, n.tags,
                        snippet(notes_fts, 2, '>>>', '<<<', '...', 32) as snippet,
@@ -1065,28 +1094,7 @@ class Search:
             return fts_results[:limit]
         if not fts_results:
             return sem_results[:limit]
-
-        # RRF fusion: score[id] = Σ 1/(k + rank_in_retriever_i)
-        # Rank is 1-indexed to match the standard formulation.
-        scores: dict[str, float] = {}
-        rows_by_id: dict[str, SearchResult] = {}
-
-        for rank, r in enumerate(fts_results, start=1):
-            scores[r.id] = scores.get(r.id, 0.0) + 1.0 / (rrf_k + rank)
-            rows_by_id[r.id] = r
-
-        for rank, r in enumerate(sem_results, start=1):
-            scores[r.id] = scores.get(r.id, 0.0) + 1.0 / (rrf_k + rank)
-            rows_by_id.setdefault(r.id, r)
-
-        # Sort by fused score, return top N with the fused score on .rank
-        ranked_ids = sorted(scores.keys(), key=lambda i: scores[i], reverse=True)
-        merged: list[SearchResult] = []
-        for nid in ranked_ids[:limit]:
-            r = rows_by_id[nid]
-            r.rank = scores[nid]
-            merged.append(r)
-        return merged
+        return rrf_fuse([fts_results, sem_results], rrf_k, limit)
 
     def render_graph_text(self, note_id: str, depth: int = 2) -> str:
         """Render a text representation of the local graph.

@@ -61,31 +61,29 @@ class PromptTimeRetrieval:
     """Config for prompt-time retrieval enrichment (R2).
 
     On each substantive user prompt the UserPromptSubmit hook runs a bounded
-    similarity search, drops anything already served this session, applies
-    hard caps, and prepends a small ignorable block. Defaults are deliberately
+    retrieval (gated by the ``prompt_gate`` decision site when it is on),
+    drops anything already served this session, applies hard caps, and
+    prepends a small ignorable block. Defaults are deliberately
     conservative — this is default-on, so the caps are the safety net against
     the noise-tax failure mode that retired the old pre-Edit injection.
     """
 
     enabled: bool = True
     # Triviality gate only — skip trivially short inputs and slash-commands so
-    # we don't pay an embedding on "ok"/"yes"/"/clear". NOT a semantic filter;
-    # relevance is decided entirely by the cosine floor below.
+    # we don't pay an embedding on "ok"/"yes"/"/clear". NOT a semantic filter.
     min_prompt_chars: int = 12
     # Wall-clock budget for the similarity (embedding) arm, run in a daemon
-    # thread; on overrun the arm is abandoned and the turn gets no injection
-    # (see operations/prompt_time_retrieval.py — there is no FTS fallback,
-    # it was a structural no-op against prose prompts and was removed).
-    # Generous enough to let the embedding complete on a normal network; kept
+    # thread; on overrun the arm is abandoned. Generous enough to let the embedding complete on a normal network; kept
     # under the UserPromptSubmit hook timeout.
     embed_deadline_seconds: float = 4.0
-    # Adaptive skip — consecutive deadline misses (embedding thread still
-    # running when the wall-clock deadline hits) this session before the
-    # similarity arm is skipped for the rest of the session. Protects against
-    # re-paying a sunk ~embed_deadline_seconds cost on every remaining turn
-    # when the embedding endpoint is slow or unreachable.
+    # Adaptive skip — consecutive misses (an embedding deadline or a prompt
+    # gate call that gave no verdict) this session before prompt-time
+    # retrieval is skipped for the rest of the session. Protects against
+    # re-paying a sunk deadline on every remaining turn when an endpoint is
+    # slow or unreachable.
     deadline_miss_limit: int = 3
-    # Cosine floor on the similarity arm — THE relevance gate. Drops low-cosine
+    # Cosine floor on the similarity arm — the relevance gate while the
+    # prompt_gate decision site is off (the gate replaces it). Drops low-cosine
     # nearest neighbours, so generic/meta prompts (~0.22–0.36) no-op while
     # domain prompts (~0.40+) fire. Model-dependent (text-embedding-3-small);
     # retune if you swap embedding models.

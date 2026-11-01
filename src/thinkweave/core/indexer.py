@@ -1602,7 +1602,8 @@ class Indexer:
         return projected
 
     def _insert_verdicts(self, ev: dict, session_id: str | None) -> None:
-        """One ``verdicts`` row per answer in a ``decision`` event."""
+        """One ``verdicts`` row per answer in a ``decision`` event; an answer's
+        own ``subject_id`` and ``action`` override the event's."""
         for answer in ev.get("answers") or []:
             self.db.execute(
                 "INSERT INTO verdicts (site, session_id, turn, subject_id, phase, "
@@ -1610,10 +1611,12 @@ class Indexer:
                 "latency_ms, cost, ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     ev.get("site", ""), session_id, ev.get("turn"),
-                    ev.get("subject_id") or None, ev.get("phase", ""),
+                    answer.get("subject_id") or ev.get("subject_id") or None,
+                    ev.get("phase", ""),
                     answer.get("question", ""), answer.get("kind", ""),
                     json.dumps(answer.get("probs") or {}), answer.get("value"),
-                    ev.get("action") or None, ev.get("source") or None,
+                    answer.get("action") or ev.get("action") or None,
+                    ev.get("source") or None,
                     ev.get("model"), ev.get("backend"), ev.get("latency_ms"),
                     ev.get("cost"), ev.get("ts", ""),
                 ),

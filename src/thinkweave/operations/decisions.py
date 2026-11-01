@@ -4,13 +4,15 @@
 module owns reads and the ``weave_judge`` mutation pass that scores existing
 decisions against structural evidence and flips ``status`` accordingly.
 
-It also owns System 1 decision sites: :func:`run_site` renders a site's text,
-asks a decision provider, and records the verdict as a ``decision`` event that
-the indexer projects into the ``verdicts`` table.
+It also owns System 1 decision sites: :func:`ask_site` renders a site's text
+and asks a decision provider, :func:`record_verdict` records the verdict as a
+``decision`` event that the indexer projects into the ``verdicts`` table, and
+:func:`run_site` does both.
 """
 
 from __future__ import annotations
 
+import threading
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -214,6 +216,10 @@ def rejudge_supersession_predecessors(
 
 PHASES = ("ex_ante", "ex_post")
 
+#: Buffer event type for a site call that produced no verdict: an error, a
+#: 429 or a missed deadline.
+DECISION_MISS = "decision_miss"
+
 
 def run_site(
     cfg: Config,
@@ -228,19 +234,61 @@ def run_site(
     action: str = "none",
     source: str = "",
 ) -> Decision:
-    """Ask ``site``'s questions about ``slots`` and record the verdict.
+    """Ask ``site``'s questions about ``slots`` and record the verdict."""
+    decision = ask_site(cfg, site, slots, provider=provider)
+    record_verdict(
+        cfg, site, decision, session_id=session_id, turn=turn,
+        subject_id=subject_id, phase=phase, action=action, source=source,
+    )
+    return decision
 
-    With ``session_id`` the ``decision`` event goes to that session's live
-    buffer, which must exist; without it, to the vault's ``verdicts.jsonl``.
-    ``provider`` defaults to the site's configured backend and model.
+
+def ask_site(
+    cfg: Config,
+    site: str,
+    slots: dict[str, str],
+    *,
+    subjects: dict[str, dict[str, str]] | None = None,
+    provider: DecisionProvider | None = None,
+    deadline: float | None = None,
+) -> Decision:
+    """Render ``site``'s text and ask a decision provider; records nothing.
+
+    ``subjects`` maps each subject id to its own slots, for the site's
+    per-subject questions. ``provider`` defaults to the site's configured
+    backend and model. With ``deadline`` (seconds) an unanswered call raises
+    :class:`TimeoutError`.
     """
-    if phase not in PHASES:
-        raise ValueError(f"phase must be one of {PHASES}, got {phase!r}")
-    state, questions = SiteText.load(cfg, site).render(slots)
+    state, questions = SiteText.load(cfg, site).render(slots, subjects)
     if provider is None:
         policy = cfg.decision_site(site)
         provider = build_from_vault(cfg.vault_root, policy.backend, policy.model)
-    decision = provider.decide(state, questions)
+    if deadline is None:
+        return provider.decide(state, questions)
+    return _within(deadline, lambda: provider.decide(state, questions))
+
+
+def record_verdict(
+    cfg: Config,
+    site: str,
+    decision: Decision,
+    *,
+    session_id: str = "",
+    turn: int | None = None,
+    subject_id: str = "",
+    phase: str = "ex_ante",
+    action: str = "none",
+    actions: dict[str, str] | None = None,
+    source: str = "",
+) -> None:
+    """Write ``decision`` as one ``decision`` event.
+
+    With ``session_id`` the event goes to that session's live buffer, which
+    must exist; without it, to the vault's ``verdicts.jsonl``. A per-subject
+    answer carries its subject and its action from ``actions``, else ``action``.
+    """
+    if phase not in PHASES:
+        raise ValueError(f"phase must be one of {PHASES}, got {phase!r}")
     event = {
         "type": "decision",
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -254,13 +302,9 @@ def run_site(
         "backend": decision.backend,
         "latency_ms": decision.latency_ms,
         "cost": decision.cost,
-        "answers": [
-            {"question": a.question, "kind": a.kind, "value": a.value, "probs": a.probs}
-            for a in decision.answers
-        ],
+        "answers": [_answer_row(a, action, actions or {}) for a in decision.answers],
     }
     append_event(_event_log(cfg, session_id), event, harness="")
-    return decision
 
 
 @dataclass(frozen=True)
@@ -278,17 +322,26 @@ class SiteText:
             data = tomllib.load(f)
         return cls(state=data["state"], questions=data.get("questions", {}))
 
-    def render(self, slots: dict[str, str]) -> tuple[str, list[Question]]:
-        """Fill every template with ``slots`` via ``str.format``."""
-        questions = [
-            Question(
-                name=name,
-                kind=spec["type"],
-                instructions=spec["instructions"].format(**slots),
-                criteria={k: v.format(**slots) for k, v in spec.get("criteria", {}).items()},
-            )
-            for name, spec in self.questions.items()
-        ]
+    def render(
+        self, slots: dict[str, str], subjects: dict[str, dict[str, str]] | None = None
+    ) -> tuple[str, list[Question]]:
+        """Fill every template with ``slots`` via ``str.format``.
+
+        A question with ``per_subject = true`` is asked once per entry of
+        ``subjects``, its template filled with that subject's slots too.
+        """
+        questions = []
+        for name, spec in self.questions.items():
+            asked = (subjects or {}).items() if spec.get("per_subject") else [("", {})]
+            for subject, own in asked:
+                filled = {**slots, **own}
+                questions.append(Question(
+                    name=name,
+                    kind=spec["type"],
+                    instructions=spec["instructions"].format(**filled),
+                    criteria={k: v.format(**filled) for k, v in spec.get("criteria", {}).items()},
+                    subject=subject,
+                ))
         return self.state.format(**slots), questions
 
 
@@ -319,3 +372,35 @@ def _event_log(cfg: Config, session_id: str) -> Path:
             "verdict needs a live session, a non-session one passes no session_id"
         )
     return live
+
+
+def _answer_row(answer, action: str, actions: dict[str, str]) -> dict:
+    row = {"question": answer.question, "kind": answer.kind,
+           "value": answer.value, "probs": answer.probs}
+    if answer.subject:
+        row["subject_id"] = answer.subject
+        row["action"] = actions.get(answer.subject, action)
+    return row
+
+
+def _within(deadline: float, call):
+    """``call()``'s result, or :class:`TimeoutError` once ``deadline`` seconds pass.
+
+    The call runs in a daemon thread, so an abandoned call never holds up exit.
+    """
+    holder: dict = {}
+
+    def run() -> None:
+        try:
+            holder["result"] = call()
+        except BaseException as exc:
+            holder["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.0, deadline))
+    if worker.is_alive():
+        raise TimeoutError(f"no answer within {deadline:.2f}s")
+    if "error" in holder:
+        raise holder["error"]
+    return holder["result"]

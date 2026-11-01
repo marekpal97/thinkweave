@@ -978,7 +978,7 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "SubagentStop": None,
             "Stop": "agent_end",
         },
-        hook_budget_ms={"UserPromptSubmit": 2_500, "Stop": 6_000},
+        hook_budget_ms={"UserPromptSubmit": 6_000, "Stop": 6_000},
         context_channel="context-injection",
         transcript_glob=str(agent / "sessions" / "*" / "*.jsonl"),
         transcript_format="jsonl-tree",
@@ -1020,7 +1020,7 @@ def pi(home: Path | None = None) -> HarnessProfile:
                 "shim-core's 800 ms telemetry budget sits below this "
                 "launcher's floor on the dev machine (a no-op Stop is ~1.8 s "
                 "warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim "
-                "carries per-event budgets (UserPromptSubmit 2.5 s, Stop 6 s); "
+                "carries per-event budgets (UserPromptSubmit 6 s, Stop 6 s); "
                 "a hook that still outlives its budget finishes as shim-core's "
                 "documented orphan — capture is complete, Pi shows one "
                 "'hook timeout' notice per event per session, and only the "
@@ -1171,7 +1171,7 @@ def opencode(home: Path | None = None) -> HarnessProfile:
         },
         hook_budget_ms={
             "SessionStart": 5_000,
-            "UserPromptSubmit": 2_500,
+            "UserPromptSubmit": 6_000,
             "PostToolUse": 10_000,
             "Stop": 6_000,
         },
@@ -1212,7 +1212,7 @@ def opencode(home: Path | None = None) -> HarnessProfile:
                 "documented",
                 "the launcher's floor on the dev machine sits above shim-core's "
                 "telemetry defaults, so the shim carries the Pi budgets "
-                "(SessionStart 5 s, UserPromptSubmit 2.5 s, Stop 6 s) and a "
+                "(SessionStart 5 s, UserPromptSubmit 6 s, Stop 6 s) and a "
                 "10 s PostToolUse ceiling (fire-and-forget; at 800 ms a launcher "
                 "started under load was reaped before python ran). Stop drains "
                 "the turn's in-flight tool events first, and the plugin's "

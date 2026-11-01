@@ -634,7 +634,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
             cfg, session_id, hook_input,
             deadline=_hook_budget_remaining("UserPromptSubmit", started),
         )
-        _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
+        bound = _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
 
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
         # live buffer, hard-capped, and held inside what the harness still
@@ -643,6 +643,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         block = _prompt_time_enrichment(
             cfg, session_id, prompt_text, now, delivery_id=delivery_id,
             deadline=_hook_budget_remaining("UserPromptSubmit", started),
+            task=_open_task_title(cfg, session_id, bound),
         )
 
         # Feedback classification does NOT happen here (#101): hooks capture,
@@ -722,24 +723,37 @@ def _record_base(cfg, session_id: str, now: str, cwd: str, *, model: str = "") -
 
 def _bind_dispatched_session(
     cfg, session_id: str, prompt_text: str, now: str, hook_input: dict
-) -> None:
-    """A prompt naming a task id binds this session's transcript to it."""
+) -> list[str]:
+    """A prompt naming a task id binds this session's transcript to it;
+    returns the ids it bound."""
     from thinkweave.operations import tasks
 
-    for task_id in tasks.bind_session(
+    bound = tasks.bind_session(
         cfg,
         prompt_text,
         harness=_harness_id(),
         session_key=session_id,
         transcript_path=str(hook_input.get("transcript_path") or ""),
         since=now,
-    ):
+    )
+    for task_id in bound:
         _log_info("user_prompt_submit", f"bound {task_id} to session {session_id}")
+    return bound
+
+
+def _open_task_title(cfg, session_id: str, bound: list[str]) -> str:
+    """The title of the task this prompt bound, else of the latest task the
+    session opened and has not closed; ``""`` when there is none."""
+    from thinkweave.operations.tasks import Register, TaskStore
+
+    ids = bound or Register(cfg, session_id, [buffer_path(cfg.weave_dir, session_id)]).unclosed()
+    task = TaskStore(cfg).get(ids[-1]) if ids else None
+    return task.title if task else ""
 
 
 def _prompt_time_enrichment(
     cfg, session_id: str, prompt_text: str, now: str, *, delivery_id: str = "",
-    deadline: float | None = None,
+    deadline: float | None = None, task: str = "",
 ) -> str | None:
     """Build the R2 enrichment block and record the outcome to the buffer.
 
@@ -757,17 +771,38 @@ def _prompt_time_enrichment(
       distinction matters) plus an info line in the hooks log, so a run of
       misses is visible instead of silently re-paying the embedding deadline
       every turn.
+    - On a prompt-gate miss: a ``decision_miss`` event naming the reason;
+      the ungated fallback it serves is marked ``fallback`` so it does not
+      reset the adaptive skip's miss streak.
     """
     try:
+        from thinkweave.operations.decisions import DECISION_MISS
         from thinkweave.operations.prompt_time_retrieval import (
+            PROMPT_GATE,
             PROMPT_TIME_MISS,
             PROMPT_TIME_TOOL,
             build_enrichment,
         )
 
-        block, served_ids, missed = build_enrichment(
-            cfg, session_id, prompt_text, deadline=deadline
+        block, served_ids, missed, decision_miss = build_enrichment(
+            cfg, session_id, prompt_text, deadline=deadline, task=task
         )
+
+        if decision_miss:
+            event = {
+                "ts": now,
+                "type": DECISION_MISS,
+                "session_id": session_id,
+                "site": PROMPT_GATE,
+                "reason": decision_miss,
+            }
+            if delivery_id:
+                event["delivery_id"] = f"{delivery_id}:decision-miss"
+            _buffer_event(cfg.weave_dir, session_id, event)
+            _log_info(
+                "prompt_time_enrichment",
+                f"prompt gate miss for session {session_id}: {decision_miss}",
+            )
 
         if missed:
             miss = {
@@ -794,6 +829,8 @@ def _prompt_time_enrichment(
             "chars": len(block),
             "token_est": len(block) // 4,
         }
+        if decision_miss:
+            served["fallback"] = True
         if delivery_id:
             served["delivery_id"] = f"{delivery_id}:prompt-time-retrieval"
         _buffer_event(cfg.weave_dir, session_id, served)
