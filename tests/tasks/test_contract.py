@@ -352,3 +352,27 @@ def test_task_note_outcome_is_not_a_contract_field():
     fm = load("declared-only")
     fm["outcome"] = [{"label": "merged-clean"}]
     assert any("outcome" in e for e in validate_task_note(fm))
+
+
+def test_a_round_manifest_carries_the_effective_hook_values():
+    """The manifest's ``effective`` key (dec-4f158b58 layer 1): the budgets
+    and cap in force against the literals, and the Stop nudge's state, are
+    declared on the closed ``_MANIFEST`` shape, so record-run and the wrap
+    pass accept them and refuse a stray field inside by name."""
+    from thinkweave.core.task_contract import Round
+
+    stamp = {
+        "harness": "claude-code",
+        "literals": {"hook_budget_ms": {"UserPromptSubmit": 30000},
+                     "additional_context_cap_chars": 10000},
+        "effective": {"hook_budget_ms": {"UserPromptSubmit": 50},
+                      "additional_context_cap_chars": 10000, "nudge": True},
+    }
+    assert Round.from_dict({"manifest": stamp}, grain="work").manifest == stamp
+
+    stray = {**stamp, "effective": {**stamp["effective"], "budget": 1}}
+    with pytest.raises(ValueError, match=r"manifest\.effective: unknown field 'budget'"):
+        Round.from_dict({"manifest": stray}, grain="work")
+    bad = {**stamp, "effective": {**stamp["effective"], "nudge": "yes"}}
+    with pytest.raises(ValueError, match=r"manifest\.effective\.nudge"):
+        Round.from_dict({"manifest": bad}, grain="work")
