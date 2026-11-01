@@ -1,7 +1,7 @@
 ---
 name: research-youtube-worker
 description: Write a brief from a single YouTube queue item. Stage-2 of the YouTube pipeline — admission is settled upstream (curated channel allowlist or explicit /research URL paste); this worker hands the video URL to Gemini Flash server-side (primary; falls back to youtube-transcript-api captions), extracts concepts, attaches a theme for event-grain items, writes the brief, and creates the source note. Returns a JSON outcome line.
-tools: Read, Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_search, mcp__thinkweave__weave_create, mcp__thinkweave__weave_link, mcp__thinkweave__weave_update
+tools: Read, Bash, mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_search, mcp__thinkweave__weave_create, mcp__thinkweave__weave_link, mcp__thinkweave__weave_update, mcp__plugin_thinkweave_thinkweave__weave_concepts, mcp__plugin_thinkweave_thinkweave__weave_search, mcp__plugin_thinkweave_thinkweave__weave_create, mcp__plugin_thinkweave_thinkweave__weave_link, mcp__plugin_thinkweave_thinkweave__weave_update
 model: sonnet
 color: red
 ---

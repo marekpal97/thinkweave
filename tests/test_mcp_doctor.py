@@ -26,6 +26,11 @@ def _sandbox_home_plugin_dirs(tmp_path, use_profile, monkeypatch):
     use_profile(
         plugins_cache=tmp_path / "_home_plugins_cache",
         skills_dir=tmp_path / "_home_skills",
+        # The plugin-route probe and the .mcp.json-rejection probe read these
+        # two files; aimed at tmp so a dev machine's marketplace install or
+        # user settings never leak into a verdict.
+        installed_plugins=tmp_path / "_home_installed_plugins.json",
+        user_settings=tmp_path / "_home_user_settings.json",
     )
     monkeypatch.setattr(md, "_EXTRA_MODULES", (("json", "stdlib", "always present"),))
 
@@ -743,3 +748,223 @@ class TestRailLinks:
 
         names = [c.name for c in result.checks]
         assert names.index("rsi-rail links") == names.index("command symlinks") + 1
+
+
+# ---------- #254: one route per machine ----------
+
+
+def _dev_link_plugin(skills_dir: Path, checkout: Path) -> Path:
+    """Stand up a dev-linked checkout: a plugin manifest declaring the server
+    under ``checkout``, and the ``<skills_dir>/thinkweave`` symlink Claude Code
+    loads it from. Returns the manifest path."""
+    manifest_dir = checkout / ".claude-plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest = manifest_dir / "plugin.json"
+    manifest.write_text(
+        json.dumps({"name": "thinkweave", "mcpServers": {"thinkweave": LAUNCHER_ENTRY}}),
+        encoding="utf-8",
+    )
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "thinkweave").symlink_to(checkout)
+    return manifest
+
+
+class TestPluginBesideBareName:
+    """A plugin registration (`plugin:thinkweave:thinkweave`) never merges with
+    a bare-name one (`thinkweave`): both servers spawn and every tool is
+    listed twice. The doctor used to call two identical invocations a PASS —
+    which is right for machine + project (same name, merged by precedence)
+    and wrong for plugin + anything."""
+
+    def test_plugin_plus_approved_project_mcp_json_fails_naming_both(
+        self, tmp_path, use_profile, requires_symlinks
+    ):
+        skills = tmp_path / "skills"
+        use_profile(mcp_config=tmp_path / "absent.json", skills_dir=skills)
+        checkout = tmp_path / "checkout"
+        _dev_link_plugin(skills, checkout)
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
+
+        result = md.check_registration_scopes(tmp_path)
+
+        assert not result.passed
+        assert "two servers" in result.detail
+        assert str(tmp_path / ".mcp.json") in result.detail
+        # The manifest is named by the path Claude Code loads it from — the
+        # skills-dir link — not the checkout it resolves to.
+        assert str(skills / "thinkweave" / ".claude-plugin" / "plugin.json") in result.detail
+        assert "dev-link" in result.fix
+        assert "disabledMcpjsonServers" in result.fix
+
+    def test_plugin_plus_machine_entry_fails(self, tmp_path, use_profile, requires_symlinks):
+        skills = tmp_path / "skills"
+        claude_json = tmp_path / "claude.json"
+        _write_claude_json(claude_json, CANONICAL_ENTRY)
+        use_profile(mcp_config=claude_json, skills_dir=skills)
+        _dev_link_plugin(skills, tmp_path / "checkout")
+
+        result = md.check_registration_scopes(tmp_path)
+
+        assert not result.passed
+        assert "two servers" in result.detail
+        assert "machine" in result.detail
+
+    def test_rejected_project_mcp_json_is_not_a_scope(
+        self, tmp_path, use_profile, requires_symlinks
+    ):
+        """The posture `weave dev-link` converges to: .mcp.json committed but
+        listed under disabledMcpjsonServers in the project-local settings.
+        Claude Code never connects it, so the plugin is the one scope."""
+        skills = tmp_path / "skills"
+        use_profile(mcp_config=tmp_path / "absent.json", skills_dir=skills)
+        _dev_link_plugin(skills, tmp_path / "checkout")
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
+        local = tmp_path / ".claude" / "settings.local.json"
+        local.parent.mkdir(parents=True)
+        local.write_text(json.dumps({"disabledMcpjsonServers": ["thinkweave"]}), encoding="utf-8")
+
+        result = md.check_registration_scopes(tmp_path)
+
+        assert result.passed, result.detail
+        assert "1 scope (plugin)" in result.detail
+        assert "rejected by" in result.detail and str(local) in result.detail
+
+    def test_rejection_in_committed_project_settings_counts_too(
+        self, tmp_path, use_profile, requires_symlinks
+    ):
+        skills = tmp_path / "skills"
+        use_profile(mcp_config=tmp_path / "absent.json", skills_dir=skills)
+        _dev_link_plugin(skills, tmp_path / "checkout")
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
+        committed = tmp_path / ".claude" / "settings.json"
+        committed.parent.mkdir(parents=True)
+        committed.write_text(json.dumps({"disabledMcpjsonServers": ["thinkweave"]}), encoding="utf-8")
+
+        assert md.check_registration_scopes(tmp_path).passed
+
+    def test_rejected_project_mcp_json_alone_reads_as_unregistered(
+        self, tmp_path, use_profile
+    ):
+        """Rejection with no other scope is the 'not registered' state, not a
+        pass — the server will not come up anywhere."""
+        use_profile(mcp_config=tmp_path / "absent.json")
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
+        local = tmp_path / ".claude" / "settings.local.json"
+        local.parent.mkdir(parents=True)
+        local.write_text(json.dumps({"disabledMcpjsonServers": ["thinkweave"]}), encoding="utf-8")
+
+        result = md.check_registration_scopes(tmp_path)
+
+        assert not result.passed
+        assert "not registered" in result.detail
+
+    def test_machine_plus_project_identical_still_passes(self, tmp_path, use_profile):
+        """Unchanged contract: two bare-name scopes with one shape are one
+        server (same name, merged by precedence)."""
+        claude_json = tmp_path / "claude.json"
+        _write_claude_json(claude_json, CANONICAL_ENTRY)
+        _write_mcp_json(tmp_path, LAUNCHER_ENTRY)
+        use_profile(mcp_config=claude_json)
+        result = md.check_registration_scopes(tmp_path)
+        assert result.passed, result.detail
+        assert "identically" in result.detail
+
+
+class TestSkillRoutes:
+    """Skills must register through one route. Bare-name
+    `.claude/commands/<name>.md → ../../commands/<name>.md` links beside the
+    plugin's `/thinkweave:*` copies, or a top-level `skills/` in the linked
+    checkout, each put every skill in the menu again."""
+
+    def test_no_plugin_route_and_no_links_passes(self, tmp_path):
+        result = md.check_skill_routes(tmp_path)
+        assert result.passed
+        assert "no plugin route" in result.detail
+
+    def test_bare_name_links_without_a_plugin_route_pass(self, tmp_path, requires_symlinks):
+        (_commands_dir(tmp_path) / "wrap.md").symlink_to("../../commands/wrap.md")
+        result = md.check_skill_routes(tmp_path)
+        assert result.passed
+        assert "project-scope route only" in result.detail
+
+    def test_plugin_route_alone_passes(self, tmp_path, use_profile, requires_symlinks):
+        skills = tmp_path / "skills"
+        use_profile(skills_dir=skills)
+        _dev_link_plugin(skills, tmp_path / "checkout")
+        result = md.check_skill_routes(tmp_path)
+        assert result.passed, result.detail
+        assert "/thinkweave:*" in result.detail
+
+    def test_bare_name_links_beside_the_plugin_fail_naming_both(
+        self, tmp_path, use_profile, requires_symlinks
+    ):
+        skills = tmp_path / "skills"
+        use_profile(skills_dir=skills)
+        _dev_link_plugin(skills, tmp_path / "checkout")
+        cmds = _commands_dir(tmp_path)
+        (cmds / "wrap.md").symlink_to("../../commands/wrap.md")
+        (cmds / "dream.md").symlink_to("../../commands/dream.md")
+        # A foreign link and a regular file are not a second route.
+        (cmds / "issue-loop.md").symlink_to("../../../funloops/x/issue-loop.command.md")
+        (cmds / "mine.md").write_text("x", encoding="utf-8")
+
+        result = md.check_skill_routes(tmp_path)
+
+        assert not result.passed
+        assert "2 bare-name link(s)" in result.detail
+        assert "wrap.md" in result.detail and "dream.md" in result.detail
+        assert "issue-loop" not in result.detail
+        assert "/thinkweave:*" in result.detail
+        assert "weave dev-link" in result.fix
+
+    def test_top_level_skills_dir_in_the_linked_checkout_fails(
+        self, tmp_path, use_profile, requires_symlinks
+    ):
+        """Claude Code auto-discovers `<plugin>/skills/*` as `/thinkweave:<dir>`
+        — the third copy #254 saw, from the Pi/Codex root-file projections."""
+        skills = tmp_path / "skills"
+        use_profile(skills_dir=skills)
+        checkout = tmp_path / "checkout"
+        _dev_link_plugin(skills, checkout)
+        (checkout / "skills" / "thinkweave-wrap").mkdir(parents=True)
+
+        result = md.check_skill_routes(tmp_path)
+
+        assert not result.passed
+        assert "skills" in result.detail and "plugin skills" in result.detail
+
+    def test_marketplace_route_is_a_plugin_route_too(self, tmp_path, use_profile, requires_symlinks):
+        installed = tmp_path / "installed_plugins.json"
+        installed.write_text(
+            json.dumps({"version": 2, "plugins": {"thinkweave@thinkweave": [{"scope": "user"}]}}),
+            encoding="utf-8",
+        )
+        use_profile(installed_plugins=installed)
+        (_commands_dir(tmp_path) / "wrap.md").symlink_to("../../commands/wrap.md")
+        assert not md.check_skill_routes(tmp_path).passed
+
+    def test_duplicate_route_fails_the_lane(
+        self, tmp_path, monkeypatch, capsys, use_profile, requires_symlinks
+    ):
+        """The row is part of `weave doctor --mcp` on a plugin-runtime harness
+        and a duplicate turns the lane red."""
+        skills = tmp_path / "skills"
+        claude_json = tmp_path / "absent.json"
+        use_profile(mcp_config=claude_json, skills_dir=skills)
+        _dev_link_plugin(skills, tmp_path / "checkout")
+        (_commands_dir(tmp_path) / "wrap.md").symlink_to("../../commands/wrap.md")
+        monkeypatch.delenv("THINKWEAVE_VAULT", raising=False)
+        monkeypatch.delenv("MCP_DOCTOR_FAKE_VAULT", raising=False)
+        monkeypatch.setattr(
+            md.subprocess,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(cmd="uv", timeout=5.0)
+            ),
+        )
+
+        result = md.run_mcp_doctor(cwd=tmp_path)
+
+        failed = [c.name for c in result.checks if not c.passed]
+        assert "skill routes" in failed
+        assert "overall: FAIL" in capsys.readouterr().out

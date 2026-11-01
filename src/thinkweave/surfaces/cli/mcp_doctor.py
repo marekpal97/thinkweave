@@ -260,13 +260,59 @@ def _key(entry: dict) -> tuple:
     return (cmd, tuple(norm))
 
 
+#: The settings key under which Claude Code lists project ``.mcp.json``
+#: servers it must never connect (settings reference: rejected in every
+#: permission mode). ``weave dev-link`` writes thinkweave into it (#254).
+_DISABLED_MCPJSON_KEY = "disabledMcpjsonServers"
+
+
+def _project_mcp_json_rejected(cwd: Path) -> Path | None:
+    """The settings file that rejects the project ``.mcp.json`` registration
+    of thinkweave, or None when it is approved (or merely pending).
+
+    Checked in the harness's precedence order: the project-local settings
+    file, its committed sibling (``.claude/settings.json`` beside
+    ``settings.local.json``), then the user settings file. A rejected server
+    is not a scope — the harness never spawns it — so the doctor must not
+    count it as one, or the single-route posture dev-link converges to would
+    read as a phantom two-scope registration.
+    """
+    profile = _profile()
+    local = cwd / profile.project_settings_relpath
+    candidates = [local]
+    if local.name == "settings.local.json":
+        candidates.append(local.with_name("settings.json"))
+    candidates.append(profile.user_settings)
+    for path in candidates:
+        data = _safe_load_json(path)
+        if not data:
+            continue
+        names = data.get(_DISABLED_MCPJSON_KEY)
+        if isinstance(names, list) and SERVER_NAME in names:
+            return path
+    return None
+
+
 def check_registration_scopes(cwd: Path) -> CheckResult:
-    """Report which scopes declare thinkweave; FAIL if >1 conflict."""
+    """Report which scopes declare thinkweave; FAIL if >1 conflict.
+
+    Two bare-name scopes (machine ``~/.claude.json`` + project ``.mcp.json``)
+    with one invocation shape are one server — the harness merges same-name
+    entries by precedence — so they PASS. A plugin scope beside any bare-name
+    scope is two servers (#254): the plugin registers as
+    ``plugin:thinkweave:thinkweave``, a different name the harness never
+    merges with ``thinkweave``, so both spawn and every tool is listed twice.
+    That is a FAIL whatever the invocation shapes, with both sources named.
+    """
     scopes: list[tuple[str, Path, dict]] = []
     _, machine_entry = _entry_from_claude_json()
     if machine_entry is not None:
         scopes.append(("machine", _profile().mcp_config, machine_entry))
     project_path, project_entry = _entry_from_project_mcp_json(cwd)
+    rejected_by = _project_mcp_json_rejected(cwd) if project_entry is not None else None
+    if rejected_by is not None:
+        # Declared but never connected: `disabledMcpjsonServers` names it.
+        project_entry = None
     if project_entry is not None:
         # Some harnesses only honour a project-scope registration under a
         # condition of their own (Codex: the project must be trusted). Saying
@@ -295,12 +341,40 @@ def check_registration_scopes(cwd: Path) -> CheckResult:
             ),
         )
 
+    rejected_note = (
+        f"; the project .mcp.json is rejected by {rejected_by}"
+        if rejected_by is not None
+        else ""
+    )
     if len(scopes) == 1:
         scope_name, _path, _entry = scopes[0]
         return CheckResult(
             name="registration scopes",
             passed=True,
-            detail=f"1 scope ({scope_name}) declares thinkweave",
+            detail=f"1 scope ({scope_name}) declares thinkweave{rejected_note}",
+        )
+
+    plugin_scopes = [(n, p) for n, p, _e in scopes if n == "plugin"]
+    bare_scopes = [(n, p) for n, p, _e in scopes if n != "plugin"]
+    if plugin_scopes and bare_scopes:
+        bare = ", ".join(f"{n} {p}" for n, p in bare_scopes)
+        plugin = ", ".join(str(p) for _n, p in plugin_scopes)
+        return CheckResult(
+            name="registration scopes",
+            passed=False,
+            detail=(
+                f"two servers start per session: `{SERVER_NAME}` from {bare} "
+                f"and `plugin:{SERVER_NAME}:{SERVER_NAME}` from the plugin "
+                f"manifest {plugin} — {_profile().display_name} never merges a "
+                "plugin registration with a bare-name one, so every tool is "
+                "listed twice"
+            ),
+            fix=(
+                "the plugin manifest provides the server: run `weave dev-link` "
+                "(rejects the checkout's .mcp.json through "
+                f"{_DISABLED_MCPJSON_KEY} in the project-local settings) and "
+                "`weave uninstall` to drop a machine entry"
+            ),
         )
 
     keys = {_key(entry) for _name, _path, entry in scopes}
@@ -437,6 +511,66 @@ def check_command_symlinks(cwd: Path) -> CheckResult:
                 name, f"re-point or delete .claude/commands/{name}"
             )
             for name, _ in dangling
+        ),
+    )
+
+
+def check_skill_routes(cwd: Path) -> CheckResult:
+    """FAIL when the skills register through two routes at once (#254).
+
+    On the plugin route (marketplace or ``weave dev-link``) every command is
+    ``/thinkweave:<name>``. Bare-name ``.claude/commands/<name>.md`` links into
+    ``commands/`` are the pre-plugin route; beside the plugin they put each
+    skill in the session menu twice, and a top-level ``skills/`` directory in
+    the linked checkout would register the Pi/Codex root-file projections as
+    a third copy (``/thinkweave:thinkweave-<name>``). Both sources are named;
+    the repair is machine-local (``weave dev-link`` removes the links).
+    Without a plugin route the bare-name links are the only copy and PASS.
+    """
+    from thinkweave.surfaces.cli.install import _is_command_link
+
+    profile = _profile()
+    ns = profile.namespace()
+    try:
+        entries = sorted((cwd / ".claude" / "commands").iterdir())
+    except OSError:
+        entries = []
+    links = [e.name for e in entries if _is_command_link(e)]
+    if ns is None:
+        detail = (
+            f"project-scope route only ({len(links)} bare-name link(s) under "
+            ".claude/commands/)"
+            if links
+            else "no plugin route and no bare-name command links"
+        )
+        return CheckResult(name="skill routes", passed=True, detail=detail)
+
+    problems: list[str] = []
+    if links:
+        problems.append(
+            f"{len(links)} bare-name link(s) under {cwd / '.claude' / 'commands'} "
+            f"({', '.join(links)}) beside the plugin's /{ns}:* copies"
+        )
+    stray_skills = profile.dev_link / "skills"
+    if profile.dev_link.is_symlink() and stray_skills.is_dir():
+        problems.append(
+            f"{stray_skills} registers its contents as /{ns}:* plugin skills "
+            "(the root-file projections must stay out of a top-level skills/)"
+        )
+    if not problems:
+        return CheckResult(
+            name="skill routes",
+            passed=True,
+            detail=f"plugin route only (/{ns}:*)",
+        )
+    return CheckResult(
+        name="skill routes",
+        passed=False,
+        detail="; ".join(problems),
+        fix=(
+            "run `weave dev-link` (removes the bare-name links; the plugin "
+            "serves the same files) and keep Pi/Codex projections under "
+            "codex/skills/, never a top-level skills/"
         ),
     )
 
@@ -1125,6 +1259,9 @@ def run_mcp_doctor(cwd: Path | None = None) -> DoctorResult:
         result.checks.append(check_extension_stub(cwd))
     # Harness-independent: the dangling link is a fact about the checkout, not
     # about which harness is reading it.
+    # Only a harness with a plugin runtime can register the skills twice.
+    if _profile().hook_mechanism == "plugin":
+        result.checks.append(check_skill_routes(cwd))
     result.checks.append(check_command_symlinks(cwd))
     result.checks.append(check_rail_links())
     result.checks.append(check_vault_env())
