@@ -8,6 +8,10 @@
 # ones in loop.toml.template beside it; the rail refuses a key it does not
 # know, by name, on both paths.
 #
+# This file is the single copy: it stays here even when the rsi-rail repo is
+# configured (the rail's devloop/ holds the loop's texts, not a second
+# loop.toml). See docs/agents/README.md (thinkweave#346).
+#
 # Per-run posture belongs on the command line, not in edits to this file:
 # every knob in [loop]/[labels]/[tdd]/[triage] can be overridden for one run
 # via `--set [section.]key=value` (section defaults to loop), with /issue-loop

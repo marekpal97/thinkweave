@@ -1264,7 +1264,9 @@ def record_run(
     the trajectory, when none is open; a re-record of the same trajectory
     replaces its round. A run never closes its task, and nothing closes it when its PR
     merges: its tracker issue closing does (``TaskStore.close_tracked``).
-    The round carries the manifest the run lands under. With no
+    The round carries the manifest the run ran under: the payload's own
+    ``manifest`` (the shim collects it when the run's trajectory is minted,
+    #346), else one collected now. With no
     ``session_key`` no register row is written: no session owns the run.
     A payload outside the contract raises ``ValueError`` before anything is
     written."""
@@ -1272,6 +1274,9 @@ def record_run(
     repo = current_repo()
     issue = _tracker_ref(devloop_ask(payload), repo, warnings)
     assert isinstance(payload, dict)
+    carried = payload.get("manifest")
+    if carried is not None and not isinstance(carried, dict):
+        raise ValueError("devloop payload: manifest must be a mapping")
     epic_url = normalize_tracker_ref(str(payload["frontmatter"].get("epic_url") or ""), repo)
     asked = _epic_ref(issue, warnings, fallback=epic_url)
     store = TaskStore(cfg)
@@ -1288,7 +1293,7 @@ def record_run(
         task_id=task.id,
         trajectory=trajectory,
         base=_merge_base(str(payload["frontmatter"].get("branch") or ""), warnings),
-        manifest=manifest.collect(cfg, active_harness().id),
+        manifest=carried or manifest.collect(cfg, active_harness().id),
     ))
     task.frontmatter["asked"] = asked
     minting = task.path is None

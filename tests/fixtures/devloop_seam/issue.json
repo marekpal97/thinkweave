@@ -1,0 +1,10 @@
+{
+  "number": 9346,
+  "title": "Fixture: devloop reads its policy from the rsi-rail repo",
+  "body": "## What\n\nA fixture issue for the #346 demo. It exists only in this file; the `gh` stub beside it serves it, so no run touches GitHub.\n\n## Acceptance criteria\n\n- [ ] demo: the round names the rail commit and the funloops pin.\n",
+  "state": "open",
+  "html_url": "https://github.com/marekpal97/thinkweave/issues/9346",
+  "labels": [{"name": "devloop"}, {"name": "ready-for-agent"}],
+  "sub_issues_summary": null,
+  "parent_issue_url": null
+}

@@ -1,0 +1,4 @@
+[
+  {"id": "implementer", "role": "implementer", "posture": "writer", "outcome": "ok", "skill": "tdd"},
+  {"id": "judge", "role": "judge", "posture": "reader", "outcome": "ok"}
+]
