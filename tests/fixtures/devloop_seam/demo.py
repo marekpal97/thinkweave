@@ -56,6 +56,20 @@ def _run(argv: list[str], env: dict, out: Path | None = None) -> str:
     return done.stdout
 
 
+def _two_commit_repo(path: Path) -> Path:
+    """A throwaway git repo with two commits, so ``trajectory --base-ref
+    HEAD~1`` has a range to walk whatever the checkout's own history is (CI
+    clones at depth 1, where ``HEAD~1`` does not exist)."""
+    path.mkdir()
+    git = ["git", "-c", "user.name=demo", "-c", "user.email=demo@example.invalid"]
+    subprocess.run([*git, "init", "-q", str(path)], check=True)
+    for n in (1, 2):
+        (path / "work.txt").write_text(f"step {n}\n", encoding="utf-8")
+        subprocess.run([*git, "-C", str(path), "add", "work.txt"], check=True)
+        subprocess.run([*git, "-C", str(path), "commit", "-q", "-m", f"step {n}"], check=True)
+    return path
+
+
 def run_demo(vault: Path, env: dict | None = None, project: str = "demo-346") -> dict:
     """Run the simulated loop into ``vault``; return the observables."""
     vault = Path(vault).resolve()
@@ -82,7 +96,8 @@ def run_demo(vault: Path, env: dict | None = None, project: str = "demo-346") ->
                      "--codegraph-bin", "false", "--prime", str(work / "prime.md"),
                      "--branch", "demo-346", "--baseline", "green"], env)
         payload_file = work / "payload.json"
-        _run([*shim, "trajectory", str(ISSUE), "--cwd", str(ROOT), "--base-ref", "HEAD~1",
+        repo = _two_commit_repo(work / "repo")
+        _run([*shim, "trajectory", str(ISSUE), "--cwd", str(repo), "--base-ref", "HEAD~1",
               "--branch", "HEAD", "--gates-json", str(FIXTURES / "gates.json"),
               "--skills-json", str(FIXTURES / "skills.json"), "--outcome", "shipped",
               "--run-id", "demo-346"], env, out=payload_file)
