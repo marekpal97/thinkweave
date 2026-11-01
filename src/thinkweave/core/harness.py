@@ -269,6 +269,16 @@ class HarnessProfile:
     """The directory whose existence signals this harness is installed on the
     machine — what an auto-detector probes, and what ``weave doctor`` can name."""
 
+    agents_dir: Path | None = None
+    """The user-scope personal-subagents folder (``~/.claude/agents``), linked
+    whole to the rsi-rail repo's ``rules/agents``. None ⇒ the harness reads no
+    such folder and the rail carries nothing there."""
+
+    output_styles_dir: Path | None = None
+    """The user-scope output-styles folder (``~/.claude/output-styles``),
+    linked whole to the rsi-rail repo's ``rules/output-styles``. None ⇒ the
+    harness has no output styles."""
+
     hook_mechanism: str = "none"
     """How lifecycle hooks reach this harness: ``plugin`` (an active plugin
     manifest owns registration, settings files are swept — Claude Code),
@@ -616,6 +626,8 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         ships_skills=True,
         eligibility="E3",
         detect_dir=cc,
+        agents_dir=cc / "agents",
+        output_styles_dir=cc / "output-styles",
         hook_mechanism="plugin",
         hook_events={e: e for e in CANONICAL_EVENTS},
         hook_budget_ms={**{e: 30_000 for e in CANONICAL_EVENTS}, "SessionStart": 300_000},

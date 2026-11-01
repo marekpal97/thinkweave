@@ -435,7 +435,7 @@ class RailTarget:
 
     link: Path
     target: Path
-    kind: Literal["skill", "rules"]
+    kind: Literal["skill", "folder", "rules"]
 
     @property
     def state(self) -> RailState:
@@ -466,8 +466,10 @@ class RailTarget:
 def install_rail_links(dry_run: bool = False) -> None:
     """Fan the rsi-rail repo out to every registered profile, idempotently.
 
-    Each ``skills/<name>`` folder is linked into the profile's skills dir and
-    ``claude/CLAUDE.md`` into its instructions file; an instructions file that
+    Each ``skills/<name>`` folder is linked into the profile's skills dir,
+    ``rules/agents`` and ``rules/output-styles`` into the profile's folders of
+    those names (when it has them), and ``rules/RULES.md`` into its
+    instructions file; an instructions file that
     already holds other content gets the rules spliced in between sentinels
     instead. A link that already resolves into the repo is kept, a dangling
     one is re-pointed, and anything of the user's own is left alone and
@@ -515,22 +517,36 @@ def install_rail_links(dry_run: bool = False) -> None:
     )
 
 
+RAIL_RULES_DIR = "rules"
+"""The rsi-rail folder holding the rules file and the rule folders
+(``agents/``, ``output-styles/``) a harness reads from its user scope."""
+
+
 def rail_rules(repo: Path) -> Path:
     """The rules file every profile's instructions file carries."""
-    return repo / "claude" / "CLAUDE.md"
+    return repo / RAIL_RULES_DIR / "RULES.md"
 
 
 def rail_targets(repo: Path) -> list[RailTarget]:
     """Every place the rail is carried, for every registered profile: one
-    ``skill`` target per ``skills/<name>`` folder into ``skills_dir``, then
-    the ``rules`` target into ``instructions_file``."""
+    ``skill`` target per ``skills/<name>`` folder into ``skills_dir``, one
+    ``folder`` target per rule folder the profile names (``agents_dir``,
+    ``output_styles_dir``) and the repo holds, then the ``rules`` target into
+    ``instructions_file``."""
     skills = sorted(p for p in (repo / "skills").iterdir() if p.is_dir())
+    rules_dir = repo / RAIL_RULES_DIR
     targets: list[RailTarget] = []
     for make in PROFILES.values():
         profile = make()
         targets += [
             RailTarget(profile.skills_dir / s.name, s, "skill") for s in skills
         ]
+        for link, name in (
+            (profile.agents_dir, "agents"),
+            (profile.output_styles_dir, "output-styles"),
+        ):
+            if link is not None and (rules_dir / name).is_dir():
+                targets.append(RailTarget(link, rules_dir / name, "folder"))
         targets.append(
             RailTarget(profile.instructions_file, rail_rules(repo), "rules")
         )

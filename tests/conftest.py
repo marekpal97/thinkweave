@@ -305,8 +305,8 @@ def rail_home(
         (repo / "skills" / skill).mkdir(parents=True)
         (repo / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n")
     (repo / "skills" / "README.md").write_text("not a skill\n")
-    (repo / "claude").mkdir()
-    (repo / "claude" / "CLAUDE.md").write_text("# Global rules\n\n- rule one\n")
+    (repo / "rules").mkdir()
+    (repo / "rules" / "RULES.md").write_text("# Global rules\n\n- rule one\n")
     (repo / "thinkweave").mkdir()
     (repo / "thinkweave" / "config.toml").write_text("")
     home = tmp_path / "home"
