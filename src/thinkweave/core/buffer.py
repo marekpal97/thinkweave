@@ -13,7 +13,8 @@ The archive step also *partitions* the buffer into two siblings:
 
 - ``events.jsonl`` — Write/Edit/Bash + prompt events (the action stream)
 - ``retrieval_log.jsonl`` — ``type: retrieval`` and ``type: startup`` events
-  (the context-served stream feeding the RLVR substrate)
+  (the context-served stream feeding the RLVR substrate), plus ``type:
+  decision`` events (System 1 verdicts, projected into ``verdicts``)
 
 Events with no ``type`` field, or any unrecognised type, land in
 ``events.jsonl`` so legacy buffers and the test fixtures roundtrip
@@ -31,12 +32,17 @@ import shutil
 from pathlib import Path
 
 # Event types that get routed to retrieval_log.jsonl rather than events.jsonl.
-_RETRIEVAL_LOG_TYPES = frozenset({"retrieval", "startup"})
+_RETRIEVAL_LOG_TYPES = frozenset({"retrieval", "startup", "decision"})
 
 
 def buffer_path(weave_dir: Path, session_id: str) -> Path:
     """The live buffer one session's hooks append to."""
     return weave_dir / "buffer" / f"{session_id}.jsonl"
+
+
+def verdicts_log_path(vault_root: Path) -> Path:
+    """The vault-level log for decision events written outside any session."""
+    return vault_root / "verdicts.jsonl"
 
 
 def archived_events_path(session_dir: Path) -> Path:
@@ -193,7 +199,7 @@ def mirror_buffer_events(weave_dir: Path, session_id: str, session_dir: Path) ->
     retires the buffer at wrap time, and its append-unique write skips every
     line already mirrored here.
 
-    Retrieval/startup lines are not mirrored — ``retrieval_log.jsonl`` is
+    Retrieval/startup/decision lines are not mirrored — ``retrieval_log.jsonl`` is
     projected into ``context_served`` at index time and stays an archive-time
     artefact. Returns the number of lines appended.
     """
@@ -219,7 +225,7 @@ def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
     """Move the buffer file into the session folder, partitioning by type.
 
     Action/prompt events → ``events.jsonl``.
-    Retrieval + startup events → ``retrieval_log.jsonl``.
+    Retrieval, startup and decision events → ``retrieval_log.jsonl``.
 
     If no retrieval/startup events are present, the function degenerates to
     the pre-RLVR behaviour: a single ``events.jsonl`` is written and the

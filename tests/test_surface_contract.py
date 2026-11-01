@@ -151,7 +151,10 @@ class TestCliSurface:
         # `weave explain` (locate / check — the /explain rail: the
         # (session, scope, target) lookup a re-run updates, and the
         # explain-note contract) added 2026-10-11: 52 → 53.
-        assert len(_DISPATCH) == 53
+        # `weave decide` (smoke — one end-to-end System 1 decision call
+        # through the decision provider and the verdicts ledger, issue #379)
+        # added 2026-11-01: 53 → 54.
+        assert len(_DISPATCH) == 54
 
     def test_dispatch_handlers_resolve(self):
         for name, handler in _DISPATCH.items():

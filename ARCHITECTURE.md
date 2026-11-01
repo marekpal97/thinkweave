@@ -546,6 +546,8 @@ CARVE-OUT:
 
 Dual-route surfaces (`--via {inline,batch}`) pick between the wrapper (batch) and a CC skill (inline) via `operations/_backfill_route.choose_route`.
 
+A third layer, `core/decision_provider.py`, serves System 1 decision models: `decide(state, questions)` returns one typed answer (`noul` or `choice`, with probabilities) per question. Backends live in `api.yaml::decisions.backends` (machine keys; default Jev via OpenRouter over the `systemone` wire format). Each site's policy is `[decisions.<site>]` in the rsi-rail `thinkweave/config.toml` (default off), and its state-assembly text is the rail's `thinkweave/decisions/<site>.toml`, else the packaged default in `operations/decision_texts/` (dec-1c881919). `operations/decisions.run_site` writes every call as a `decision` event, which the indexer projects into `verdicts` (dec-5db0ba83).
+
 ## A note on the importers under `src/thinkweave/acquisition/importers/`
 
 These are **one-shot CLI importers**, not skills. They're called via `weave import <source> <path>` and handle bulk migration from external formats: ChatGPT exports, claude-history databases, Messenger self-exports, plain text files. They live next to the knowledge layer because they speak directly to `VaultManager`, but they're not part of the capability model — a contributor adding a new source type should usually write a skill (procedural markdown) rather than a CLI importer (Python module). The importers exist because some source formats predate the skill model; new work should go through skills.

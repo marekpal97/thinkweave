@@ -18,6 +18,7 @@ from itertools import combinations
 from pathlib import Path
 
 from thinkweave.core._utils import as_list
+from thinkweave.core.buffer import verdicts_log_path
 from thinkweave.core.config import Config, load_config
 from thinkweave.core.schemas import LINKABLE_EDGE_TYPES
 from thinkweave.synthesis.landing import (
@@ -238,6 +239,35 @@ CREATE TABLE IF NOT EXISTS prompt_concepts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prc_concept ON prompt_concepts(concept);
+
+-- System 1 verdicts projected from ``decision`` events: a session's archived
+-- retrieval_log.jsonl (``session_id`` = the vault session note id, as in
+-- context_served) and the vault-level verdicts.jsonl (``session_id`` NULL).
+-- One row per answered question. ``phase`` is 'ex_ante' (judged before the
+-- action) or 'ex_post' (judged afterwards); a subject judged only ex post has
+-- no ex_ante row. ``probs`` is JSON; ``value`` is the noul number or the
+-- chosen option. Rebuildable via ``weave index --full`` — the JSONL stays truth.
+CREATE TABLE IF NOT EXISTS verdicts (
+    site       TEXT NOT NULL,
+    session_id TEXT,
+    turn       INTEGER,
+    subject_id TEXT,
+    phase      TEXT NOT NULL CHECK(phase IN ('ex_ante', 'ex_post')),
+    question   TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    probs      TEXT NOT NULL,
+    value,
+    action     TEXT,
+    source     TEXT,
+    model      TEXT,
+    backend    TEXT,
+    latency_ms INTEGER,
+    cost       REAL,
+    ts         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_verdicts_subject ON verdicts(session_id, subject_id);
+CREATE INDEX IF NOT EXISTS idx_verdicts_site ON verdicts(site, phase);
 """
 
 FTS_SCHEMA_SQL = """
@@ -484,6 +514,7 @@ class Indexer:
             self.db.execute("DELETE FROM hub_log_entries")
             self.db.execute("DELETE FROM prompts")
             self.db.execute("DELETE FROM prompt_concepts")
+            self.db.execute("DELETE FROM verdicts")
             self.db.execute("DELETE FROM notes")
             self._rebuild_fts()
 
@@ -597,6 +628,7 @@ class Indexer:
         else:
             self._rebuild_context_served(only_ids=changed_ids)
             self._rebuild_prompts(only_ids=changed_ids)
+        self.project_vault_verdicts()
 
         self.db.commit()
         return stats
@@ -1489,6 +1521,7 @@ class Indexer:
         Returns the number of rows upserted; 0 if the log file is missing.
         Tolerates malformed lines line-by-line.
         """
+        self.db.execute("DELETE FROM verdicts WHERE session_id = ?", (session_id,))
         if not log_path.exists():
             return 0
 
@@ -1503,6 +1536,9 @@ class Indexer:
                 except json.JSONDecodeError:
                     continue
                 etype = ev.get("type", "")
+                if etype == "decision":
+                    self._insert_verdicts(ev, session_id)
+                    continue
                 if etype == "startup":
                     src = _startup_source(ev.get("surface", ""))
                 elif etype == "retrieval":
@@ -1542,6 +1578,46 @@ class Indexer:
                     )
                     upserted += 1
         return upserted
+
+    def project_vault_verdicts(self) -> int:
+        """Re-project the vault-level ``verdicts.jsonl`` into ``verdicts``.
+
+        Replaces every session-less row, so it is idempotent. Returns the
+        number of decision events projected.
+        """
+        self.db.execute("DELETE FROM verdicts WHERE session_id IS NULL")
+        path = verdicts_log_path(self.config.vault_root)
+        if not path.exists():
+            return 0
+        projected = 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("type") == "decision":
+                self._insert_verdicts(ev, None)
+                projected += 1
+        self.db.commit()
+        return projected
+
+    def _insert_verdicts(self, ev: dict, session_id: str | None) -> None:
+        """One ``verdicts`` row per answer in a ``decision`` event."""
+        for answer in ev.get("answers") or []:
+            self.db.execute(
+                "INSERT INTO verdicts (site, session_id, turn, subject_id, phase, "
+                "question, kind, probs, value, action, source, model, backend, "
+                "latency_ms, cost, ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    ev.get("site", ""), session_id, ev.get("turn"),
+                    ev.get("subject_id") or None, ev.get("phase", ""),
+                    answer.get("question", ""), answer.get("kind", ""),
+                    json.dumps(answer.get("probs") or {}), answer.get("value"),
+                    ev.get("action") or None, ev.get("source") or None,
+                    ev.get("model"), ev.get("backend"), ev.get("latency_ms"),
+                    ev.get("cost"), ev.get("ts", ""),
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Prompt projection: events.jsonl → prompts / prompt_concepts

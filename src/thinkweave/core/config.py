@@ -103,6 +103,24 @@ class PromptTimeRetrieval:
 
 
 @dataclass
+class DecisionSite:
+    """One System 1 decision site's serving policy (``[decisions.<site>]``).
+
+    Every site is off until the rail turns it on. An empty ``backend`` or
+    ``model`` takes the ``api.yaml`` default; ``accept`` is the probability a
+    verdict must reach, ``pool_size`` the candidates scored per call, and
+    ``deadline_ms`` how long the site waits for the backend.
+    """
+
+    enabled: bool = False
+    backend: str = ""
+    model: str = ""
+    accept: float = 0.7
+    pool_size: int = 30
+    deadline_ms: int = 1500
+
+
+@dataclass
 class Config:
     vault_root: Path = field(default_factory=lambda: _DEFAULT_VAULT)
     # Relocates derived state (index.db, embeddings.db, buffer/, logs — see
@@ -301,6 +319,13 @@ class Config:
     retrieval_prompt_time: PromptTimeRetrieval = field(
         default_factory=PromptTimeRetrieval
     )
+
+    # System 1 decision sites by name (see DecisionSite).
+    decision_sites: dict[str, DecisionSite] = field(default_factory=dict)
+
+    def decision_site(self, name: str) -> DecisionSite:
+        """The named site's policy; an unconfigured site is off."""
+        return self.decision_sites.get(name) or DecisionSite()
 
     @property
     def weave_dir(self) -> Path:
@@ -692,6 +717,13 @@ def _apply_knobs(cfg: Config, data: dict) -> None:
         if "bias_types" in pt:
             rpt.bias_types = tuple(pt["bias_types"])
 
+    # System 1 decision sites ([decisions.<site>])
+    for name, table in data.get("decisions", {}).items():
+        site = cfg.decision_sites.setdefault(name, DecisionSite())
+        for f in fields(DecisionSite):
+            if f.name in table:
+                setattr(site, f.name, type(getattr(site, f.name))(table[f.name]))
+
 
 # The keys the rsi-rail repo's thinkweave/config.toml may carry: the knobs
 # read on the agent's serving chain (SessionStart, UserPromptSubmit, a
@@ -701,6 +733,8 @@ _RAIL_KEYS: dict[str, frozenset[str]] = {
     "retrieval.prompt_time": frozenset(f.name for f in fields(PromptTimeRetrieval)),
     "landing": frozenset({"open_probes_cap", "probes_display_cap"}),
     "extract": frozenset({"insights_cap"}),
+    "decisions": frozenset(),
+    "decisions.*": frozenset(f.name for f in fields(DecisionSite)),
 }
 
 
@@ -709,12 +743,15 @@ def _check_rail_keys(data: dict, path: Path) -> None:
     a serving-chain knob, so a typo or a vault-side key placed in the repo
     fails loudly instead of being silently ignored."""
 
-    def walk(table: dict, prefix: str) -> None:
-        allowed = _RAIL_KEYS.get(prefix, frozenset())
+    def walk(table: dict, prefix: str, section: str) -> None:
+        allowed = _RAIL_KEYS.get(section, frozenset())
         for key, value in table.items():
             dotted = f"{prefix}.{key}" if prefix else key
-            if isinstance(value, dict) and dotted in _RAIL_KEYS:
-                walk(value, dotted)
+            sub = next(
+                (s for s in (dotted, f"{section}.*") if s in _RAIL_KEYS), None
+            )
+            if isinstance(value, dict) and sub:
+                walk(value, dotted, sub)
             elif key not in allowed:
                 sections = ", ".join(f"[{s}]" for s in _RAIL_KEYS)
                 raise ValueError(
@@ -723,7 +760,7 @@ def _check_rail_keys(data: dict, path: Path) -> None:
                     "it to the vault's config.toml or fix the spelling"
                 )
 
-    walk(data, "")
+    walk(data, "", "")
 
 
 def load_config() -> Config:

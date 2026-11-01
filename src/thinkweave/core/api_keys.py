@@ -24,6 +24,7 @@ Provider → env var name mapping:
   openai     → OPENAI_API_KEY
   anthropic  → ANTHROPIC_API_KEY
   gemini     → GEMINI_API_KEY, falling back to GOOGLE_API_KEY (legacy)
+  openrouter → OPENROUTER_API_KEY
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ _PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY",),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openrouter": ("OPENROUTER_API_KEY",),
 }
 
 

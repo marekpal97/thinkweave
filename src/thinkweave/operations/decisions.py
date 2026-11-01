@@ -1,13 +1,29 @@
-"""Decision operations — queries and judging over the decision corpus.
+"""Decision operations — the decision corpus and the System 1 decision sites.
 
 ``weave_extract`` writes new decisions (via ``operations.extract``); this
 module owns reads and the ``weave_judge`` mutation pass that scores existing
 decisions against structural evidence and flips ``status`` accordingly.
+
+It also owns System 1 decision sites: :func:`run_site` renders a site's text,
+asks a decision provider, and records the verdict as a ``decision`` event that
+the indexer projects into the ``verdicts`` table.
 """
 
 from __future__ import annotations
 
+import tomllib
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from thinkweave.core.buffer import append_event, buffer_path, verdicts_log_path
 from thinkweave.core.config import Config
+from thinkweave.core.decision_provider import (
+    Decision,
+    DecisionProvider,
+    Question,
+    build_from_vault,
+)
 
 
 def list_by_file(
@@ -190,3 +206,116 @@ def rejudge_supersession_predecessors(
     if not ids:
         return []
     return judge_and_writeback(cfg, decision_ids=ids)
+
+
+# ---------------------------------------------------------------------------
+# System 1 decision sites
+# ---------------------------------------------------------------------------
+
+PHASES = ("ex_ante", "ex_post")
+
+
+def run_site(
+    cfg: Config,
+    site: str,
+    slots: dict[str, str],
+    *,
+    provider: DecisionProvider | None = None,
+    session_id: str = "",
+    turn: int | None = None,
+    subject_id: str = "",
+    phase: str = "ex_ante",
+    action: str = "none",
+    source: str = "",
+) -> Decision:
+    """Ask ``site``'s questions about ``slots`` and record the verdict.
+
+    With ``session_id`` the ``decision`` event goes to that session's live
+    buffer, which must exist; without it, to the vault's ``verdicts.jsonl``.
+    ``provider`` defaults to the site's configured backend and model.
+    """
+    if phase not in PHASES:
+        raise ValueError(f"phase must be one of {PHASES}, got {phase!r}")
+    state, questions = SiteText.load(cfg, site).render(slots)
+    if provider is None:
+        policy = cfg.decision_site(site)
+        provider = build_from_vault(cfg.vault_root, policy.backend, policy.model)
+    decision = provider.decide(state, questions)
+    event = {
+        "type": "decision",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "site": site,
+        "turn": turn,
+        "subject_id": subject_id,
+        "phase": phase,
+        "action": action,
+        "source": source,
+        "model": decision.model,
+        "backend": decision.backend,
+        "latency_ms": decision.latency_ms,
+        "cost": decision.cost,
+        "answers": [
+            {"question": a.question, "kind": a.kind, "value": a.value, "probs": a.probs}
+            for a in decision.answers
+        ],
+    }
+    append_event(_event_log(cfg, session_id), event, harness="")
+    return decision
+
+
+@dataclass(frozen=True)
+class SiteText:
+    """A site's state-assembly text: a state template and its question templates."""
+
+    state: str
+    questions: dict[str, dict]
+
+    @classmethod
+    def load(cls, cfg: Config, site: str) -> "SiteText":
+        """The rail's ``thinkweave/decisions/<site>.toml``, else the packaged default."""
+        path = _site_text_path(cfg, site)
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        return cls(state=data["state"], questions=data.get("questions", {}))
+
+    def render(self, slots: dict[str, str]) -> tuple[str, list[Question]]:
+        """Fill every template with ``slots`` via ``str.format``."""
+        questions = [
+            Question(
+                name=name,
+                kind=spec["type"],
+                instructions=spec["instructions"].format(**slots),
+                criteria={k: v.format(**slots) for k, v in spec.get("criteria", {}).items()},
+            )
+            for name, spec in self.questions.items()
+        ]
+        return self.state.format(**slots), questions
+
+
+_PACKAGED_TEXTS = Path(__file__).parent / "decision_texts"
+
+
+def _site_text_path(cfg: Config, site: str) -> Path:
+    if cfg.rsi_rail is not None:
+        rail = cfg.rsi_rail / "thinkweave" / "decisions" / f"{site}.toml"
+        if rail.exists():
+            return rail
+    packaged = _PACKAGED_TEXTS / f"{site}.toml"
+    if not packaged.exists():
+        raise FileNotFoundError(
+            f"no text for decision site {site!r}: neither the rail's "
+            f"thinkweave/decisions/{site}.toml nor a packaged default exists"
+        )
+    return packaged
+
+
+def _event_log(cfg: Config, session_id: str) -> Path:
+    if not session_id:
+        return verdicts_log_path(cfg.vault_root)
+    live = buffer_path(cfg.weave_dir, session_id)
+    if not live.exists():
+        raise FileNotFoundError(
+            f"session {session_id!r} has no live buffer at {live}; a session "
+            "verdict needs a live session, a non-session one passes no session_id"
+        )
+    return live
