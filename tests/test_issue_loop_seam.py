@@ -5,7 +5,10 @@
 ``trajectory`` the run's manifest (``--manifest-json``); ``record_run`` lands
 the payload's manifest on the round. Both #346 demos run here end to end on
 the fixture issue in ``tests/fixtures/devloop_seam/`` (offline: its ``gh``
-stub is first on PATH), with and without a rail.
+stub is first on PATH), with and without a rail. A rail whose ``devloop/``
+holds a ``loop.toml`` layers the person's settings over
+``docs/agents/loop.toml`` and leaves the repo's gates alone (#334 round 2,
+demo criterion 7; dec-6c3539b2).
 
 The suite's autouse fixture already hides the developer's rail (no
 ``THINKWEAVE_RSI_RAIL``, ``XDG_CONFIG_HOME`` in tmp), so "no rail" is the
@@ -67,6 +70,16 @@ def rail(tmp_path: Path) -> Path:
     return repo
 
 
+RAIL_LOOP_TOML = "[loop]\nmax_fix_rounds = 1\n\n[prime]\nlimit = 1\n"
+
+
+def _with_loop_toml(rail: Path, text: str) -> Path:
+    (rail / "devloop" / "loop.toml").write_text(text, encoding="utf-8")
+    run_git("add", "-A", cwd=rail)
+    run_git("commit", "-q", "-m", "loop.toml", cwd=rail)
+    return rail
+
+
 def _env(**extra: str) -> dict:
     env = {k: v for k, v in os.environ.items() if k != "DEVLOOP_POLICY_DIR"}
     env.update(extra)
@@ -88,14 +101,40 @@ def test_rail_set_points_devloop_at_its_devloop_folder(rail: Path):
     assert cfg["constitution"] == [str(rail / "devloop" / "constitution.md")]
 
 
-def test_rail_set_keeps_loop_toml_in_docs_agents(rail: Path):
-    """The rail holds no loop.toml: the resolved config is the golden's,
-    found by the cwd walk, with or without the rail."""
+def test_rail_without_loop_toml_resolves_the_golden(rail: Path):
+    """A rail whose devloop/ holds no loop.toml: the resolved config is the
+    golden's, found by the cwd walk, with or without the rail."""
     with_rail = _config(_env(THINKWEAVE_RSI_RAIL=str(rail)))
     without = _config(_env())
     with_rail.pop("constitution"), without.pop("constitution")
     golden = json.loads((REPO_ROOT / "tests" / "devloop_golden_config.json").read_text())
     assert with_rail == without == golden
+
+
+def test_rail_loop_toml_layers_over_docs_agents(rail: Path):
+    """Demo criterion 7. The rail's devloop/loop.toml sets max_fix_rounds = 1
+    and [prime] limit = 1: the shim's config shows both, and every other key,
+    the gates included, is the golden's. Without the rail: the golden, so
+    today's values (2 and 3)."""
+    golden = json.loads((REPO_ROOT / "tests" / "devloop_golden_config.json").read_text())
+    with_rail = _config(_env(THINKWEAVE_RSI_RAIL=str(_with_loop_toml(rail, RAIL_LOOP_TOML))))
+    without = _config(_env())
+    with_rail.pop("constitution"), without.pop("constitution")
+    assert (with_rail["loop"]["max_fix_rounds"], with_rail["prime"]["limit"]) == (1, 1)
+    assert (without["loop"]["max_fix_rounds"], without["prime"]["limit"]) == (2, 3)
+    assert without == golden
+    golden["loop"]["max_fix_rounds"], golden["prime"]["limit"] = 1, 1
+    assert with_rail == golden
+
+
+def test_rail_loop_toml_with_a_repo_key_is_refused_by_name(rail: Path):
+    """The rail may not carry thinkweave's gates: devloop refuses the section
+    by name and the shim passes the JSON error through, exit 2."""
+    _with_loop_toml(rail, '[[gates]]\nid = "tests"\nkind = "command"\ncmd = "true"\n')
+    out = subprocess.run([sys.executable, str(SHIM), "config"], cwd=REPO_ROOT,
+                         env=_env(THINKWEAVE_RSI_RAIL=str(rail)), capture_output=True, text=True)
+    assert out.returncode == 2
+    assert "repo-owned section 'gates'" in json.loads(out.stdout)["error"]
 
 
 def test_explicit_policy_env_wins_over_the_rail(rail: Path):
@@ -130,6 +169,7 @@ def test_demo_with_the_rail(rail: Path, tmp_path: Path):
                                     cwd=rail), "dirty": False}
     assert manifest["readers"]["funloops"] == _pin()
     assert [s.get("skill") for s in seen["round"]["skills"]] == ["tdd", None]
+    assert seen["loop_knobs"] == {"max_fix_rounds": 2, "prime.limit": 3}
     assert Path(seen["trajectory_note"]).is_file()
     note = parse_frontmatter(Path(seen["task_note"]).read_text(encoding="utf-8"))[0]
     assert validate_task_note(note) == []
@@ -147,6 +187,15 @@ def test_demo_without_the_rail(tmp_path: Path):
     assert "rsi_rail" not in manifest
     assert manifest["readers"]["funloops"] == _pin()
     assert [s.get("skill") for s in seen["round"]["skills"]] == ["tdd", None]
+
+
+def test_demo_with_a_rail_loop_toml(rail: Path, tmp_path: Path):
+    """Demo criterion 7 through the whole simulated run: the rail's settings
+    reach the config every later step reads."""
+    env = _env(THINKWEAVE_RSI_RAIL=str(_with_loop_toml(rail, RAIL_LOOP_TOML)))
+    seen = _demo().run_demo(tmp_path / "vault", env)
+    assert seen["loop_knobs"] == {"max_fix_rounds": 1, "prime.limit": 1}
+    assert MARKER in seen["pack"]
 
 
 def test_demo_refuses_the_live_vault():

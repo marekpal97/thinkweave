@@ -8,29 +8,24 @@
 # ones in loop.toml.template beside it; the rail refuses a key it does not
 # know, by name, on both paths.
 #
-# This file is the single copy: it stays here even when the rsi-rail repo is
-# configured (the rail's devloop/ holds the loop's texts, not a second
-# loop.toml). See docs/agents/README.md (thinkweave#346).
+# This file holds the repo's facts only (dec-6c3539b2): the gates and test
+# command, labels, triage paths, branch prefix, baseline rule and dispatch
+# role shapes. The person's settings (issues per run, fix rounds, training
+# mode, run mode, delivery, tdd.mode, [prime], dispatch transports and
+# models) are not here: they resolve to devloop's defaults, or, when the
+# rsi-rail repo is configured, to its devloop/loop.toml, which devloop layers
+# over this file and which may carry nothing else. Adding one of them here
+# reds tests/test_devloop_boundaries.py. See docs/agents/README.md
+# (thinkweave#334, #346).
 #
-# Per-run posture belongs on the command line, not in edits to this file:
-# every knob in [loop]/[labels]/[tdd]/[triage] can be overridden for one run
-# via `--set [section.]key=value` (section defaults to loop), with /issue-loop
+# Per-run settings belong on the command line, not in edits to this file:
+# every scalar knob can be overridden for one run via
+# `--set [section.]key=value` (section defaults to loop), with /issue-loop
 # sugar `--stacked` and `--max-issues <n>`. Gates are file-only by design.
 
 [loop]
-max_issues_per_run = 3   # token guardrail: issues processed per invocation
-max_fix_rounds = 2       # implement→gates→fix iterations before routing to human; never extended mid-run
-training_mode = true     # pause for human approval before push/PR; flip when trusted
 branch_prefix = "loop/issue-"
 require_green_baseline = true   # red suite on main → refuse to implement (fix the baseline issue first)
-run_mode = "pass"        # pass: one frontier pass | exhaust: re-plan until dry
-delivery = "pr-per-issue"  # pr-per-issue | stacked (one branch, one final PR)
-
-[tdd]
-# auto: TDD is ENFORCED in implementer standing orders iff the per-run
-#       baseline probe (tests gate on the pristine worktree) is green.
-# always / never: override the probe.
-mode = "auto"
 
 [labels]
 runnable = "ready-for-agent"
@@ -63,13 +58,13 @@ red_diff_lines = 800           # "big diff" → red (a human-lane signal, never 
 # ── Dispatch roles ────────────────────────────────────────────────────────
 # How `devloop pack` shapes each role's dispatch file. writer: persona +
 # standing orders; reader: neither; shape: the stack-tip shape posture.
+# Which agent runs a role (transport, harness, model, effort, args) is the
+# person's setting: the rail's devloop/loop.toml, default agent-tool.
 [dispatch.implementer]
 posture = "writer"
-transport = "agent-tool"   # agent-tool | herdr
 
 [dispatch.judge]
 posture = ["reader", "shape"]
-transport = "agent-tool"
 
 # ── Gate pipeline ─────────────────────────────────────────────────────────
 # Ordered, and the order is the contract: the deterministic guards run first,
