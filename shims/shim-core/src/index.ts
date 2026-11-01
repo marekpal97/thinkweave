@@ -19,10 +19,13 @@ import { spawn } from "node:child_process";
  * The canonical lifecycle vocabulary — exactly the tuple
  * `core.harness.CANONICAL_EVENTS` declares on the Python side: the phases
  * the Python hook handler actually implements (SubagentStart/SubagentStop
- * are the dispatch seam's task-boundary capture). This is deliberately
- * narrower than what Claude Code natively fires (it also emits PreToolUse,
- * SessionEnd, PreCompact — those have no thinkweave destination today, so
- * shipping their names here would be a capability silently faked). Both
+ * are the dispatch seam's task-boundary capture; PreCompact writes one
+ * `compact` row, #353). This is deliberately narrower than what Claude Code
+ * natively fires (it also emits PreToolUse, SessionEnd — those have no
+ * thinkweave destination today, so shipping their names here would be a
+ * capability silently faked). A shim translates PreCompact only where its
+ * harness has a native pre-compaction event; Pi and OpenCode have none
+ * observed, so neither shim sends it. Both
  * suites pin this module against the shared `canonical-events.json`
  * fixture, so the TS vocabulary and the Python normaliser cannot drift
  * apart silently.
@@ -34,6 +37,7 @@ export const CANONICAL_EVENTS = [
   "SubagentStart",
   "SubagentStop",
   "Stop",
+  "PreCompact",
 ] as const;
 
 export type CanonicalEvent = (typeof CANONICAL_EVENTS)[number];
@@ -50,6 +54,7 @@ export const EVENT_PHASES: Record<CanonicalEvent, string> = {
   SubagentStart: "subagent_start",
   SubagentStop: "subagent_stop",
   Stop: "stop",
+  PreCompact: "pre_compact",
 };
 
 /**
@@ -67,6 +72,7 @@ export const DEFAULT_TIMEOUT_MS: Record<CanonicalEvent, number> = {
   SubagentStart: 800,
   SubagentStop: 800,
   Stop: 800,
+  PreCompact: 800,
 };
 
 /**
