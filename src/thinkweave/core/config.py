@@ -29,7 +29,9 @@ declared through :func:`knob`, whose ``field(metadata=...)`` carries:
 - ``toml``: the TOML address relative to the enclosing table (``Config`` is
   the document root). ``None`` means the field name; ``""`` means the field
   has no address in a knob document; a trailing ``*`` is a key prefix whose
-  remainder keys a dict; ``"*"`` alone keys one sub-table per entry.
+  remainder keys a dict (with ``choices_ref``, the remainders are the
+  allowed names and any other is refused by name); ``"*"`` alone keys one
+  sub-table per entry.
 - ``parse``: a type called with the TOML value, or a function
   ``(value, cfg)`` for a value that needs the config (``weave_dir``).
 - ``default_ref`` / ``choices_ref``: ``"module:attr"`` references to the
@@ -37,6 +39,8 @@ declared through :func:`knob`, whose ``field(metadata=...)`` carries:
   override whose default lives with its reader (``retrieval/context.py``).
 - ``each``: the dataclass of each entry of a keyed sub-table dict.
 - ``unset``: what an unset override means, for a default that is computed.
+- ``choice_noun``: what a refusal calls a name ``choices_ref`` does not
+  list (``event``); ``name`` when unset.
 
 From that one declaration :func:`_apply_knobs` reads every key, the rail
 check derives the allowed set (a field is rail-eligible iff one of its
@@ -109,6 +113,7 @@ def knob(
     choices_ref: str | None = None,
     each: type | None = None,
     unset: str | None = None,
+    choice_noun: str | None = None,
 ):
     """A dataclass field carrying its knob metadata (see the module docstring)."""
     events = (read_at,) if isinstance(read_at, str) else tuple(read_at)
@@ -122,6 +127,7 @@ def knob(
         "choices_ref": choices_ref,
         "each": each,
         "unset": unset,
+        "choice_noun": choice_noun,
     }
     if default_factory is not MISSING:
         return field(default_factory=default_factory, metadata=metadata)
@@ -220,11 +226,23 @@ def iter_rail_addresses(root: type | None = None) -> Iterator[tuple[str, str]]:
             continue
         table, _, key = spec.address.rpartition(".")
         if spec.keyed is None:
-            yield table, key
+            for expanded, _name in expand_prefix(spec):
+                yield table, expanded
             continue
         placeholder = f"<{spec.keyed.name}>"
         for name in resolve_ref(spec.keyed.metadata["choices_ref"]):
             yield table.replace(placeholder, name), key
+
+
+def expand_prefix(spec: KnobSpec) -> list[tuple[str, str | None]]:
+    """``[(key, name)]`` for one address: a key prefix with ``choices_ref``
+    (``budget_ms.*`` over the canonical events) expands to one key per
+    allowed name, anything else is itself with no name."""
+    key = spec.address.rpartition(".")[2] if spec.address else ""
+    ref = spec.metadata.get("choices_ref")
+    if not (key.endswith("*") and ref):
+        return [(key, None)]
+    return [(key[:-1] + name, name) for name in resolve_ref(ref)]
 
 
 def _subtable(table: dict, dotted: str) -> dict:
@@ -235,14 +253,16 @@ def _subtable(table: dict, dotted: str) -> dict:
     return table
 
 
-def _check_choices(names, ref: str, address: str, path: Path | None) -> None:
+def _check_choices(
+    names, ref: str, address: str, path: Path | None, noun: str = "section"
+) -> None:
     known = resolve_ref(ref)
     for name in names:
         if name not in known:
             where = f" in {path}" if path else ""
             raise ValueError(
-                f"unknown section {name!r} at {address!r}{where}: the known "
-                f"sections are {', '.join(known)}"
+                f"unknown {noun} {name!r} at {address!r}{where}: the known "
+                f"{noun}s are {', '.join(known)}"
             )
 
 
@@ -283,6 +303,11 @@ def _apply_fields(obj, table: dict, prefix: str, cfg: Config, path: Path | None)
                 for k, v in sub.items()
                 if k.startswith(stem)
             }
+            if md.get("choices_ref"):
+                _check_choices(
+                    found, md["choices_ref"], _join(prefix, parent), path,
+                    noun=md.get("choice_noun") or "name",
+                )
             if found:
                 setattr(obj, f.name, found)
         elif key in sub:
@@ -409,6 +434,100 @@ class ContextStartup:
         each=StartupSection,
         choices_ref="thinkweave.retrieval.context:SECTIONS",
     )
+
+
+@dataclass
+class HooksStop:
+    """``[hooks.stop]``: the Stop hook's seams. Off by default
+    (dec-6d5f1913: seams only, an unset knob is today's behaviour)."""
+
+    # The #345 seam: a final message claiming a verification ("tests pass")
+    # with no test command run this turn blocks the Stop once with a nudge.
+    # Read at Stop, the end of the turn the claim closes; the metadata
+    # vocabulary names that moment ``wrap``.
+    unverified_claim_nudge: bool = knob(False, read_at="wrap", parse=bool)
+
+
+@dataclass
+class Hooks:
+    """``[hooks]``: hook behaviour as knobs (dec-4f158b58 layer 1).
+
+    The handler reads these first and the firing harness's profile literal
+    second. A value may only lower a literal: the harness's wall clock
+    (``hook_budget_ms``) and its inline context cap
+    (``additional_context_cap_chars``) sit outside python, so the handler
+    spends ``min(knob, literal)`` and refuses a higher value with one log
+    line. Unset keys keep the literal, which is today's behaviour.
+    """
+
+    # Chars of SessionStart additional context the payload budget derives
+    # from (the profile's measured inline cap when unset).
+    additional_context_cap_chars: int | None = knob(
+        None,
+        read_at="SessionStart",
+        parse=int,
+        unset="the harness profile's literal",
+    )
+    # ``[hooks.budget_ms] <Event> = <ms>``, keyed by canonical event; an
+    # unknown event is refused by name. The handler reads it on every
+    # event; ``read_at`` names the two serving events it shapes.
+    budget_ms: dict[str, int] = knob(
+        default_factory=dict,
+        read_at=("SessionStart", "UserPromptSubmit"),
+        toml="budget_ms.*",
+        parse=int,
+        choices_ref="thinkweave.core.harness:CANONICAL_EVENTS",
+        choice_noun="event",
+        unset="the harness profile's literal",
+    )
+    stop: HooksStop = knob(default_factory=HooksStop, read_at="wrap")
+
+    def effective(
+        self, budget_literals: Mapping[str, int], cap_literal: int | None
+    ) -> EffectiveHooks:
+        """What is in force against one harness profile's literals.
+
+        A knob above its literal is refused (the literal stays) and the
+        refusal is returned as one line for the caller to log; a knob for
+        an event or cap the profile sets no literal for lowers nothing and
+        stands alone (the harness waits forever there).
+        """
+        refused: list[str] = []
+        budgets = dict(budget_literals)
+        for event, ms in self.budget_ms.items():
+            literal = budget_literals.get(event)
+            if literal is not None and ms > literal:
+                refused.append(
+                    f"[hooks.budget_ms] {event} = {ms} is above the harness "
+                    f"literal {literal}; the literal stays in force (a knob "
+                    "may only lower it)"
+                )
+            else:
+                budgets[event] = ms
+        cap = cap_literal
+        knob_cap = self.additional_context_cap_chars
+        if knob_cap is not None:
+            if cap_literal is not None and knob_cap > cap_literal:
+                refused.append(
+                    f"[hooks] additional_context_cap_chars = {knob_cap} is above "
+                    f"the harness literal {cap_literal}; the literal stays in "
+                    "force (a knob may only lower it)"
+                )
+            else:
+                cap = knob_cap
+        return EffectiveHooks(budgets, cap, self.stop.unverified_claim_nudge, tuple(refused))
+
+
+@dataclass(frozen=True)
+class EffectiveHooks:
+    """:meth:`Hooks.effective`'s answer: the per-event budgets (ms) and the
+    inline context cap (chars) in force, the Stop nudge's state, and the
+    refusals of knobs above their literal."""
+
+    budget_ms: dict[str, int]
+    cap_chars: int | None
+    nudge: bool
+    refused: tuple[str, ...] = ()
 
 
 @dataclass
@@ -737,6 +856,12 @@ class Config:
         default_factory=lambda: ContextStartup(),
         read_at=("SessionStart", "weave_call"),
         toml="context.startup",
+    )
+
+    # Hook behaviour: budgets, the context cap, the Stop seams (see Hooks).
+    hooks: Hooks = knob(
+        default_factory=Hooks,
+        read_at=("SessionStart", "UserPromptSubmit", "wrap"),
     )
 
     @property
