@@ -14,7 +14,9 @@ This test pins that boundary to executable artifacts:
 * `build_trajectory` (the loop's only vault-write payload) never mints a
   decision — its frontmatter carries no decision-note field and its `type`
   stays `note`;
-* the contract is referenced from `issue-loop-memory.md`.
+* the contract is referenced from `docs/agents/README.md`, the pointer that
+  maps the memory-feed doc (`issue-loop-memory.md`, now in the rsi-rail
+  repo's `devloop/`, #346) back to it.
 
 Expected owners/fields are hand-written from the issue's division-of-labor
 table, and the decision-note field names from `core/schemas.py` +
@@ -32,7 +34,9 @@ from devloop.trajectory import build_trajectory
 _REPO = Path(__file__).resolve().parent.parent
 _DOCS = _REPO / "docs" / "agents"
 CONTRACT_DOC = _DOCS / "vault-issue-contract.md"
-MEMORY_DOC = _DOCS / "issue-loop-memory.md"
+# The memory-feed doc moved to the rsi-rail repo (#346), which CI cannot
+# read; the in-tree pointer names both it and the contract.
+POINTER_DOC = _DOCS / "README.md"
 
 
 # The four owners and the fields each owns — copied verbatim from the issue's
@@ -130,11 +134,10 @@ def test_decisions_owned_by_session_not_trajectory():
     assert "lessons" not in owners["trajectory note"]
 
 
-def test_contract_doc_referenced_from_memory_doc():
-    assert MEMORY_DOC.exists()
-    assert "vault-issue-contract.md" in MEMORY_DOC.read_text(encoding="utf-8"), (
-        "issue-loop-memory.md must reference the contract doc"
-    )
+def test_contract_doc_referenced_from_the_pointer_doc():
+    text = POINTER_DOC.read_text(encoding="utf-8")
+    assert "vault-issue-contract.md" in text, "docs/agents/README.md must reference the contract doc"
+    assert "devloop/issue-loop-memory.md" in text, "docs/agents/README.md must map the memory doc"
 
 
 # ---------------------------------------------------------------------------

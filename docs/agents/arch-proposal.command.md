@@ -21,7 +21,7 @@ never invents work.
 
 Config: `[steering]` in the vault `config.toml` (budget + signal weights).
 Gate: `weave steering gate` (rail: `operations/steering.py`; contract:
-`docs/agents/steering.md`). Fast-loop counterpart: `issue-loop.md` in funloops (`packages/devloop/docs/agents/`).
+the rsi-rail repo's `devloop/steering.md`). Fast-loop counterpart: `issue-loop.md` in funloops (`packages/devloop/docs/agents/`).
 
 ## Contract in one line
 
