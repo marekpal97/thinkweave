@@ -66,6 +66,7 @@ def tool_schemas() -> list:
             ),
             inputSchema={
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "type": {
                         "type": "string",
@@ -139,6 +140,7 @@ def tool_schemas() -> list:
             ),
             inputSchema={
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "id": {
                         "type": "string",
@@ -198,6 +200,7 @@ def tool_schemas() -> list:
             ),
             inputSchema={
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "id": {
                         "type": "string",
@@ -251,7 +254,16 @@ def tool_schemas() -> list:
 def handle_create(cfg: Config, args: dict):
     from mcp.types import TextContent
 
+    from thinkweave.surfaces.mcp.tools import (
+        _input_schemas,
+        _unknown_arguments,
+        _unknown_arguments_error,
+    )
     from thinkweave.operations.notes import create_note
+
+    unknown = _unknown_arguments(args, _input_schemas()["weave_create"])
+    if unknown:
+        return [TextContent(type="text", text=_unknown_arguments_error("weave_create", unknown))]
 
     # Validate the required surface BEFORE touching NoteType()/create_note.
     # A model that omits `type` or `title` (the JSON Schema marks them
@@ -299,9 +311,6 @@ def handle_create(cfg: Config, args: dict):
             if isinstance(nested, str):
                 nested = [nested]
             frontmatter[key] = list(dict.fromkeys([*nested, *top]))
-    known = set(tool_schemas()[0].inputSchema["properties"])
-    ignored = sorted(set(args) - known)
-
     result = create_note(
         cfg,
         note_type=note_type,
@@ -338,8 +347,6 @@ def handle_create(cfg: Config, args: dict):
             "\nwarning: no concepts attached — add ≥2 via "
             'weave_update(id, frontmatter={"concepts": [...]})'
         )
-    if ignored:
-        msg += f"\nignored unknown argument(s): {', '.join(ignored)}"
     return [TextContent(type="text", text=msg)]
 
 
@@ -388,7 +395,16 @@ def handle_link(cfg: Config, args: dict):
 def handle_update(cfg: Config, args: dict):
     from mcp.types import TextContent
 
+    from thinkweave.surfaces.mcp.tools import (
+        _input_schemas,
+        _unknown_arguments,
+        _unknown_arguments_error,
+    )
     from thinkweave.operations.notes import update_note
+
+    unknown = _unknown_arguments(args, _input_schemas()["weave_update"])
+    if unknown:
+        return [TextContent(type="text", text=_unknown_arguments_error("weave_update", unknown))]
 
     note_id = args["id"]
     fm_updates = args.get("frontmatter")

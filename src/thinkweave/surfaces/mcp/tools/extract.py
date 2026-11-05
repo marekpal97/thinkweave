@@ -80,7 +80,16 @@ def _format_extract_report(out) -> str:
 def handle_extract(cfg: Config, args: dict):
     from mcp.types import TextContent
 
+    from thinkweave.surfaces.mcp.tools import (
+        _input_schemas,
+        _unknown_arguments,
+        _unknown_arguments_error,
+    )
     from thinkweave.operations.extract import extract_session
+
+    unknown = _unknown_arguments(args, _input_schemas()["weave_extract"])
+    if unknown:
+        return [TextContent(type="text", text=_unknown_arguments_error("weave_extract", unknown))]
 
     out = extract_session(
         cfg,
@@ -92,6 +101,7 @@ def handle_extract(cfg: Config, args: dict):
         decisions=args.get("decisions", []),
         plan_path=args.get("plan_path", ""),
         plan_summary=args.get("plan_summary", ""),
+        allow_empty=args.get("allow_empty", False),
     )
     if out.error:
         return [TextContent(type="text", text=out.error)]

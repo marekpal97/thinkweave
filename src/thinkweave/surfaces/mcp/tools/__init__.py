@@ -85,6 +85,14 @@ def dispatch(cfg: Config, name: str, arguments: dict) -> list:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
     schema = _input_schemas().get(name)
     if schema is not None and isinstance(arguments, dict):
+        unknown = _unknown_arguments(arguments, schema)
+        if unknown:
+            return [
+                TextContent(
+                    type="text",
+                    text=_unknown_arguments_error(name, unknown),
+                )
+            ]
         arguments = _coerce(arguments, schema)
     return handler(cfg, arguments)
 
@@ -97,6 +105,21 @@ def _input_schemas() -> dict[str, dict]:
 
 
 _SCHEMAS: dict[str, dict] | None = None
+
+
+def _unknown_arguments(arguments: dict, schema: dict) -> list[str]:
+    """Return top-level argument keys not advertised by a tool schema."""
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    return sorted((str(key) for key in arguments if key not in properties), key=str)
+
+
+def _unknown_arguments_error(name: str, unknown: list[str]) -> str:
+    return (
+        f"{name} rejected unknown argument(s): {', '.join(unknown)}. "
+        "No changes were made."
+    )
 
 
 def _allowed_types(schema: dict) -> set[str]:
