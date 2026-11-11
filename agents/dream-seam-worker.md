@@ -1,7 +1,7 @@
 ---
 name: dream-seam-worker
 description: Phase-2 of /dream — reconcile Claude Code auto-memory against the vault; resolve each dirty CC fact's twin, judge confirmed-fresh/stale/diverged/durable-unique, and write the durable map via `weave seam commit`; emits one outcome JSON line.
-tools: Read, Write, Bash, mcp__thinkweave__weave_search, mcp__thinkweave__weave_read
+tools: Read, Write, Bash, mcp__thinkweave__weave_search, mcp__thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_search, mcp__plugin_thinkweave_thinkweave__weave_read
 model: sonnet
 color: green
 ---

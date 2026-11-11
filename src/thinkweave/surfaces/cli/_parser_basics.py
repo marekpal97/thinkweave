@@ -566,7 +566,9 @@ def add_admin_subparsers(sub) -> None:
         help=(
             "Dev/clone setup: symlink this checkout into ~/.claude/skills/ so "
             "Claude Code auto-loads it as a plugin every session (flagless, "
-            "namespaced /thinkweave:*, live edits). Writes no ~/.claude.json entry."
+            "namespaced /thinkweave:*, live edits). Writes no ~/.claude.json entry; "
+            "rejects the checkout's .mcp.json for Claude Code and removes bare-name "
+            ".claude/commands links so each skill and tool registers once (#254)."
         ),
     )
     p_dev_link.add_argument(
@@ -576,7 +578,10 @@ def add_admin_subparsers(sub) -> None:
 
     sub.add_parser(
         "dev-unlink",
-        help="Reverse `weave dev-link` — remove the ~/.claude/skills/thinkweave symlink.",
+        help=(
+            "Reverse `weave dev-link` — remove the ~/.claude/skills/thinkweave symlink "
+            "and re-approve the checkout's .mcp.json."
+        ),
     )
 
     p_pause = sub.add_parser(

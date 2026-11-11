@@ -1,7 +1,7 @@
 ---
 name: dream-priority-worker
 description: Phase-1 of /dream — the probe-distillation worker. Turns raw probe questions into workable research leads (gate → ontology-tie → restate → coverage); emits one plan-fragment JSON outcome line.
-tools: mcp__thinkweave__weave_search, mcp__thinkweave__weave_concepts
+tools: mcp__thinkweave__weave_search, mcp__thinkweave__weave_concepts, mcp__plugin_thinkweave_thinkweave__weave_search, mcp__plugin_thinkweave_thinkweave__weave_concepts
 model: sonnet
 color: red
 ---
