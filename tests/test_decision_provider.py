@@ -15,7 +15,7 @@ from thinkweave.core.decision_provider import (
     SystemOneProvider,
     build_from_vault,
 )
-from thinkweave.operations.decisions import run_site
+from thinkweave.operations.verdicts import run_site
 
 
 # A real `typesafe/jev-1.14` reply via OpenRouter, captured 2026-11-01.

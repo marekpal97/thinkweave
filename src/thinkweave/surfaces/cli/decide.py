@@ -10,7 +10,7 @@ import sys
 from thinkweave.core.config import load_config
 from thinkweave.core.decision_provider import build_from_vault
 from thinkweave.core.indexer import Indexer
-from thinkweave.operations.decisions import EX_POST, readout, run_site, sweep
+from thinkweave.operations.verdicts import EX_POST, readout, run_site, sweep
 
 _SMOKE_SLOTS = {
     "prompt": "How do I keep a sourdough starter alive while travelling?",

@@ -31,9 +31,11 @@ to the prompt — *delta over startup* — to prepend to what the model sees.
   accumulate for a session, :func:`build_enrichment` stops attempting for the
   rest of that session rather than re-paying a doomed deadline every turn.
 
-- **Dedup is buffer-based.** The live ``buffer/<session_id>.jsonl`` carries the
+- **Dedup is ledger-based.** The session's :class:`Ledger` carries the
   ``startup`` event's ids, every ``retrieval`` event's, and our own prior
-  write-backs. ``context_served`` is a Stop-time projection (stale mid-session)
+  write-backs. It is read once per prompt: the live
+  ``buffer/<session_id>.jsonl`` alone under the floor, the archive too under
+  the gate. ``context_served`` is a Stop-time projection (stale mid-session)
   and is NOT consulted here.
 
 - **RLVR meshing.** The hook writes served ids back as a ``retrieval`` event
@@ -49,14 +51,12 @@ owns every other buffer write-back and the stdout emit.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
-from pathlib import Path
 from typing import NamedTuple
 
 from thinkweave.core.config import Config
-from thinkweave.operations.decisions import (
+from thinkweave.operations.verdicts import (
     DECISION_MISS,
     PROMPT_GATE,
     Ledger,
@@ -70,8 +70,7 @@ PROMPT_TIME_TOOL = "prompt_time_retrieval"
 
 # Buffer event type for an embedding deadline miss — distinct from both
 # "retrieval" (which the indexer projects to context_served) and a
-# PROMPT_TIME_TOOL-tagged event (which _served_ids_and_stats counts as a
-# firing). Pure telemetry.
+# PROMPT_TIME_TOOL-tagged event (which counts as a firing). Pure telemetry.
 PROMPT_TIME_MISS = "prompt_time_miss"
 
 # Render header for the injected block.
@@ -144,16 +143,22 @@ def build_enrichment(
     if len(t) < rpt.min_prompt_chars or t.startswith("/"):
         return _NOTHING
 
-    served, firings, injected_chars = _served_ids_and_stats(cfg, session_id)
-    if firings >= rpt.max_firings_per_session:
+    # The gate numbers its verdicts by turn, so it reads the archive too; the
+    # floor needs only what the live buffer holds, at no session-note lookup.
+    gated = cfg.decision_site(PROMPT_GATE).enabled
+    ledger = Ledger.read(cfg, session_id) if gated else Ledger.live(cfg, session_id)
+    fired = _firings(ledger)
+    if len(fired) >= rpt.max_firings_per_session:
         return _NOTHING
-    remaining_session = rpt.max_injected_chars_per_session - injected_chars
+    remaining_session = rpt.max_injected_chars_per_session - sum(
+        int(ev.get("chars", 0) or 0) for ev in fired
+    )
     if remaining_session < _MIN_PIECE_CHARS:
         return _NOTHING
 
     # Adaptive skip — a run of consecutive misses (an unreachable embedding
     # endpoint or decision backend) means the next attempt is a sunk cost.
-    if _consecutive_trailing_misses(cfg, session_id) >= rpt.deadline_miss_limit:
+    if _trailing_misses(ledger) >= rpt.deadline_miss_limit:
         return _NOTHING
 
     deadline_s = rpt.embed_deadline_seconds
@@ -163,34 +168,67 @@ def build_enrichment(
         deadline_s = min(deadline, deadline_s)
 
     char_cap = min(rpt.max_injected_chars_per_turn, remaining_session)
-    gate = cfg.decision_site(PROMPT_GATE)
-    if not gate.enabled:
-        results, missed = _retrieve(
-            cfg,
-            prompt_text,
-            list(rpt.bias_types),
-            limit=max(rpt.max_pieces_per_turn * 3, 10),
-            deadline=deadline_s,
-            min_similarity=rpt.min_similarity,
+    if gated:
+        return _site_gated(
+            cfg, ledger, prompt_text, task=task, char_cap=char_cap,
+            embed_deadline=deadline_s,
+            until=None if deadline is None else started + deadline,
         )
-        if missed:
-            return Enrichment(None, [], True)
-        fresh = [r for r in results if r.id not in served]
-        return Enrichment(*_render(fresh[: rpt.max_pieces_per_turn], char_cap), False)
+    return _floor_gated(cfg, ledger, prompt_text, char_cap=char_cap, embed_deadline=deadline_s)
 
+
+def _floor_gated(
+    cfg: Config, ledger: Ledger, prompt_text: str, *, char_cap: int, embed_deadline: float
+) -> Enrichment:
+    """The similarity arm alone, gated by its cosine floor."""
+    rpt = cfg.retrieval_prompt_time
+    results, missed = _retrieve(
+        cfg,
+        prompt_text,
+        list(rpt.bias_types),
+        limit=max(rpt.max_pieces_per_turn * 3, 10),
+        deadline=embed_deadline,
+        min_similarity=rpt.min_similarity,
+    )
+    if missed:
+        return Enrichment(None, [], True)
+    served = ledger.served_ids()
+    fresh = [r for r in results if r.id not in served]
+    return Enrichment(*_render(fresh[: rpt.max_pieces_per_turn], char_cap), False)
+
+
+def _site_gated(
+    cfg: Config,
+    ledger: Ledger,
+    prompt_text: str,
+    *,
+    task: str,
+    char_cap: int,
+    embed_deadline: float,
+    until: float | None,
+) -> Enrichment:
+    """The RRF pool, gated by one ``prompt_gate`` decision call.
+
+    Serves the candidates the site accepts and records one ex-ante verdict
+    per candidate. When the site gives no verdict by ``until`` (a
+    ``time.monotonic`` instant) or its own deadline, serves the ungated RRF
+    top and names why in ``decision_miss``.
+    """
+    rpt = cfg.retrieval_prompt_time
+    gate = cfg.decision_site(PROMPT_GATE)
+    served = ledger.served_ids()
     pool = _pool(
         cfg, prompt_text, list(rpt.bias_types),
-        size=gate.pool_size + len(served), deadline=deadline_s,
+        size=gate.pool_size + len(served), deadline=embed_deadline,
     )
-    missed = pool.missed
     fresh = [r for r in pool.candidates if r.id not in served][: gate.pool_size]
     if not fresh:
-        return Enrichment(None, [], missed)
+        return Enrichment(None, [], pool.missed)
     budget = gate.deadline_ms / 1000
-    if deadline is not None:
-        budget = min(budget, deadline - (time.monotonic() - started))
+    if until is not None:
+        budget = min(budget, until - time.monotonic())
 
-    prompts = Ledger.read(cfg, session_id).prompts()
+    prompts = ledger.prompts()
     slots = {
         "prompt": prompt_text,
         "previous_prompt": prompts[-2] if len(prompts) > 1 else "(none)",
@@ -206,74 +244,37 @@ def build_enrichment(
         )
     except Exception as exc:
         block, ids = _render(fresh[: rpt.max_pieces_per_turn], char_cap)
-        return Enrichment(block, ids, missed, f"{type(exc).__name__}: {exc}")
+        return Enrichment(block, ids, pool.missed, f"{type(exc).__name__}: {exc}")
 
     score = {a.subject: a.value for a in decision.answers}
     accepted = [r for r in fresh if score.get(r.id, 0.0) >= gate.accept]
     block, ids = _render(accepted[: rpt.max_pieces_per_turn], char_cap)
     record_verdict(
-        cfg, PROMPT_GATE, decision, session_id=session_id, turn=len(prompts),
+        cfg, PROMPT_GATE, decision, session_id=ledger.session_key, turn=len(prompts),
         source="prompttime",
         actions={
             r.id: "served" if r.id in ids else "capped" if r in accepted else "rejected"
             for r in fresh
         },
     )
-    return Enrichment(block, ids, missed)
+    return Enrichment(block, ids, pool.missed)
 
 
-def _read_buffer_events(cfg: Config, session_id: str) -> list[dict]:
-    """Read the live per-session event buffer (tolerates malformed lines)."""
-    buf: Path = cfg.weave_dir / "buffer" / f"{session_id}.jsonl"
-    if not buf.exists():
-        return []
-    out: list[dict] = []
-    for line in buf.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return out
+def _firings(ledger: Ledger) -> list[dict]:
+    """The session's prompt-time injections so far, one event each."""
+    return [ev for ev in ledger.events if ev.get("tool") == PROMPT_TIME_TOOL]
 
 
-def _served_ids_and_stats(
-    cfg: Config, session_id: str
-) -> tuple[set[str], int, int]:
-    """Cumulative session ledger from the live buffer.
-
-    Returns ``(served_ids, firings, injected_chars)``:
-    - served_ids = ids served via startup + on-the-fly + prior prompt-time
-      injections (the dedup exclude set),
-    - firings = how many times R2 has already injected this session,
-    - injected_chars = cumulative size of those injections (session ceiling).
-    """
-    served: set[str] = set()
-    firings = 0
-    injected_chars = 0
-    for ev in _read_buffer_events(cfg, session_id):
-        if ev.get("type") in ("startup", "retrieval"):
-            for nid in ev.get("returned_ids", []) or []:
-                if isinstance(nid, str) and nid:
-                    served.add(nid)
-        if ev.get("tool") == PROMPT_TIME_TOOL:
-            firings += 1
-            injected_chars += int(ev.get("chars", 0) or 0)
-    return served, firings, injected_chars
-
-
-def _consecutive_trailing_misses(cfg: Config, session_id: str) -> int:
+def _trailing_misses(ledger: Ledger) -> int:
     """Count R2's misses since its last successful firing (or session start).
 
     Walks ``prompt_time_miss`` and ``decision_miss`` events and firings
-    (``tool == PROMPT_TIME_TOOL``) backwards from the end of the live buffer.
+    (``tool == PROMPT_TIME_TOOL``) backwards from the end of the ledger.
     Plain ``prompt`` events do not interrupt the streak, and neither does a
     firing that served the ungated fallback after a decision miss.
     """
     n = 0
-    for ev in reversed(_read_buffer_events(cfg, session_id)):
+    for ev in reversed(ledger.events):
         if ev.get("type") in (PROMPT_TIME_MISS, DECISION_MISS):
             n += 1
         elif ev.get("tool") == PROMPT_TIME_TOOL and not ev.get("fallback"):

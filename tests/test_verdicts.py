@@ -5,7 +5,7 @@ from __future__ import annotations
 from thinkweave.core.buffer import append_event, archive_buffer, buffer_path
 from thinkweave.core.decision_provider import FakeDecisionProvider
 from thinkweave.core.indexer import Indexer
-from thinkweave.operations.decisions import run_site
+from thinkweave.operations.verdicts import run_site
 
 from tests.conftest import write_session_md
 

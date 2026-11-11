@@ -367,7 +367,7 @@ def _gate_on(cfg: Config, monkeypatch, provider) -> None:
 
     cfg.decision_sites["prompt_gate"] = DecisionSite(enabled=True)
     monkeypatch.setattr(
-        "thinkweave.operations.decisions.build_from_vault", lambda *a, **k: provider
+        "thinkweave.operations.verdicts.build_from_vault", lambda *a, **k: provider
     )
 
 
@@ -376,7 +376,7 @@ def _start_turn(cfg: Config, session_id: str, prompt: str) -> None:
 
 
 def _decision_events(cfg: Config, session_id: str) -> list[dict]:
-    return [e for e in ptr._read_buffer_events(cfg, session_id) if e.get("type") == "decision"]
+    return [e for e in ptr.Ledger.read(cfg, session_id).events if e.get("type") == "decision"]
 
 
 class _RaisingEmbedder:
@@ -445,7 +445,7 @@ def test_a_raising_backend_writes_a_decision_miss_and_serves_the_rrf_top(tmp_pat
         {"session_id": "ses-miss", "prompt": REAL_PROMPT, "cwd": str(tmp_path)}
     )
 
-    events = ptr._read_buffer_events(cfg, "ses-miss")
+    events = ptr.Ledger.read(cfg, "ses-miss").events
     misses = [e for e in events if e.get("type") == "decision_miss"]
     assert len(misses) == 1
     assert misses[0]["site"] == "prompt_gate"

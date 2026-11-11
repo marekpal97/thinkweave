@@ -10,7 +10,7 @@ from thinkweave.core.buffer import append_event, archive_buffer, buffer_path
 from thinkweave.core.config import DecisionSite
 from thinkweave.core.decision_provider import FakeDecisionProvider
 from thinkweave.core.indexer import Indexer
-from thinkweave.operations import decisions
+from thinkweave.operations import verdicts
 
 from tests.conftest import write_session_md
 
@@ -66,7 +66,7 @@ def replayed(vault_factory, monkeypatch):
     for event in _REPLAY:
         append_event(buffer_path(cfg.weave_dir, "h-1"), dict(event), harness="")
     fake = FakeDecisionProvider(nouls={"n-gate0001": 0.8, "n-start01": 0.1})
-    monkeypatch.setattr("thinkweave.operations.decisions.build_from_vault",
+    monkeypatch.setattr("thinkweave.operations.verdicts.build_from_vault",
                         lambda *a, **k: fake)
     idx = Indexer(config=cfg)
     idx.rebuild(full=True)
@@ -91,7 +91,7 @@ def test_the_pass_judges_turn_items_per_turn_and_startup_items_per_session(repla
     cfg, folder, fake = replayed
     archive_buffer(cfg.weave_dir, "h-1", folder)
 
-    decisions.ex_post_pass(cfg, decisions.Ledger.read(cfg, "h-1", folder))
+    verdicts.ex_post_pass(cfg, verdicts.Ledger.read(cfg, "h-1", folder))
 
     assert _verdicts(cfg, "ex_post") == [
         (0, "startup", "n-start01", "served"),
@@ -111,7 +111,7 @@ def test_startup_items_get_ex_post_rows_and_no_ex_ante_row(replayed):
     cfg, folder, _fake = replayed
     archive_buffer(cfg.weave_dir, "h-1", folder)
 
-    decisions.ex_post_pass(cfg, decisions.Ledger.read(cfg, "h-1", folder))
+    verdicts.ex_post_pass(cfg, verdicts.Ledger.read(cfg, "h-1", folder))
 
     ex_ante = {row[2] for row in _verdicts(cfg, "ex_ante")}
     ex_post = {row[2] for row in _verdicts(cfg, "ex_post")}
@@ -122,8 +122,8 @@ def test_startup_items_get_ex_post_rows_and_no_ex_ante_row(replayed):
 def test_sweeping_a_session_twice_writes_its_rows_once(replayed):
     cfg, _folder, fake = replayed
 
-    first = decisions.sweep(cfg)
-    second = decisions.sweep(cfg)
+    first = verdicts.sweep(cfg)
+    second = verdicts.sweep(cfg)
 
     assert (first.sessions, first.rows) == (1, 5)
     assert (second.sessions, second.rows) == (0, 0)
@@ -137,7 +137,7 @@ def test_a_backend_failure_logs_a_miss_and_the_wrap_still_completes(replayed, mo
     cfg, folder, _fake = replayed
     archive_buffer(cfg.weave_dir, "h-1", folder)
     broken = FakeDecisionProvider(error=RuntimeError("429 Too Many Requests"))
-    monkeypatch.setattr("thinkweave.operations.decisions.build_from_vault",
+    monkeypatch.setattr("thinkweave.operations.verdicts.build_from_vault",
                         lambda *a, **k: broken)
 
     result = finalize_wrap(cfg, session_id="ses-ex", project="p", prune=False)
@@ -154,31 +154,31 @@ def test_a_backend_failure_logs_a_miss_and_the_wrap_still_completes(replayed, mo
     assert not any("ex_post" in e for e in result.errors)
     assert "drift" in result.timings
     assert _verdicts(cfg, "ex_post") == []
-    startup = {(r.site, r.source): r for r in decisions.readout(cfg)}[("ex_post", "startup")]
+    startup = {(r.site, r.source): r for r in verdicts.readout(cfg)}[("ex_post", "startup")]
     assert (startup.calls, startup.misses, startup.miss_rate) == (0, 1, 1.0)
 
 
 def test_readout_counts_each_call_once_and_tables_served_against_used(replayed):
     cfg, folder, _fake = replayed
     archive_buffer(cfg.weave_dir, "h-1", folder)
-    decisions.ex_post_pass(cfg, decisions.Ledger.read(cfg, "h-1", folder))
+    verdicts.ex_post_pass(cfg, verdicts.Ledger.read(cfg, "h-1", folder))
 
-    sites = {(r.site, r.source): r for r in decisions.readout(cfg, threshold=0.7)}
+    sites = {(r.site, r.source): r for r in verdicts.readout(cfg, threshold=0.7)}
 
     gate = sites[("prompt_gate", "prompttime")]
     assert (gate.calls, gate.rows, gate.cost) == (1, 2, 0.001)
     assert gate.latency_ms_p50 == gate.latency_ms_p95 == 40
     assert gate.calibration == [
-        decisions.CalibrationBin("0.0-0.2", 0, None),
-        decisions.CalibrationBin("0.2-0.4", 1, 0.5),
-        decisions.CalibrationBin("0.4-0.6", 0, None),
-        decisions.CalibrationBin("0.6-0.8", 0, None),
-        decisions.CalibrationBin("0.8-1.0", 1, 0.8),
+        verdicts.CalibrationBin("0.0-0.2", 0, None),
+        verdicts.CalibrationBin("0.2-0.4", 1, 0.5),
+        verdicts.CalibrationBin("0.4-0.6", 0, None),
+        verdicts.CalibrationBin("0.6-0.8", 0, None),
+        verdicts.CalibrationBin("0.8-1.0", 1, 0.8),
     ]
     judged = sites[("ex_post", "prompttime")]
-    assert judged.usage == {"served": decisions.Usage(used=1, unused=0),
-                            "rejected": decisions.Usage(used=0, unused=1)}
-    assert sites[("ex_post", "startup")].usage == {"served": decisions.Usage(used=0, unused=1)}
+    assert judged.usage == {"served": verdicts.Usage(used=1, unused=0),
+                            "rejected": verdicts.Usage(used=0, unused=1)}
+    assert sites[("ex_post", "startup")].usage == {"served": verdicts.Usage(used=0, unused=1)}
     assert gate.as_dict()["calibration"][1] == {"ex_ante": "0.2-0.4", "n": 1, "mean_ex_post": 0.5}
     assert sites[("ex_post", "onthefly")].calls == 2
 
@@ -194,7 +194,7 @@ def test_a_truncated_turn_end_line_is_reported_not_dropped(replayed, monkeypatch
     lines[last_end] = lines[last_end][:40]
     events.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    ledger = decisions.Ledger.read(cfg, "h-1", folder)
+    ledger = verdicts.Ledger.read(cfg, "h-1", folder)
     result = finalize_wrap(cfg, session_id="ses-ex", project="p", prune=False)
 
     assert [m.split(":")[0] for m in ledger.malformed] == [str(events)]

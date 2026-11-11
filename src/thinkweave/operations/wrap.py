@@ -125,7 +125,7 @@ def finalize_wrap(
     2. **index** — incremental rebuild. Picks up the notes ``weave_extract`` just
        wrote and removes any pruned folders' rows in the same pass.
     2.5. **ex-post** — the ex-post judge over each chain folder's ledger
-       (:func:`thinkweave.operations.decisions.ex_post_pass`). A call that
+       (:func:`thinkweave.operations.verdicts.ex_post_pass`). A call that
        gives no verdict is logged as a miss and lands in ``warnings``; it
        never fails the wrap.
     3. **judge** — ``judge_and_writeback(session_id=...)``: verdict + status
@@ -272,7 +272,7 @@ def finalize_wrap(
     # 2.5. ex-post judge ---------------------------------------------------
     _t = time.perf_counter()
     try:
-        from thinkweave.operations.decisions import Ledger, ex_post_pass
+        from thinkweave.operations.verdicts import Ledger, ex_post_pass
 
         for _ev, d, fm in chain:
             if d is None or fm is None:

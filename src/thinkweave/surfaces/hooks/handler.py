@@ -759,8 +759,8 @@ def _prompt_time_enrichment(
 
     Returns the block to inject, or ``None`` to no-op. Self-contained: on any
     error it logs and returns ``None`` so the caller emits a plain response.
-    ``build_enrichment`` is pure (read-only) — this function owns every
-    buffer write-back on its behalf:
+    ``build_enrichment`` writes only the gate's verdicts — this function owns
+    every other buffer write-back on its behalf:
 
     - On a fresh block: a ``retrieval`` event tagged with ``PROMPT_TIME_TOOL``
       so (1) the next turn's dedup sees these ids and (2) the indexer
@@ -776,30 +776,24 @@ def _prompt_time_enrichment(
       reset the adaptive skip's miss streak.
     """
     try:
-        from thinkweave.operations.decisions import DECISION_MISS
         from thinkweave.operations.prompt_time_retrieval import (
             PROMPT_GATE,
             PROMPT_TIME_MISS,
             PROMPT_TIME_TOOL,
             build_enrichment,
         )
+        from thinkweave.operations.verdicts import record_miss
 
         block, served_ids, missed, decision_miss = build_enrichment(
             cfg, session_id, prompt_text, deadline=deadline, task=task
         )
 
         if decision_miss:
-            event = {
-                "ts": now,
-                "type": DECISION_MISS,
-                "session_id": session_id,
-                "site": PROMPT_GATE,
-                "source": "prompttime",
-                "reason": decision_miss,
-            }
-            if delivery_id:
-                event["delivery_id"] = f"{delivery_id}:decision-miss"
-            _buffer_event(cfg.weave_dir, session_id, event)
+            record_miss(
+                cfg, PROMPT_GATE, decision_miss, session_id=session_id,
+                source="prompttime", harness=_harness_id(),
+                delivery_id=f"{delivery_id}:decision-miss" if delivery_id else "",
+            )
             _log_info(
                 "prompt_time_enrichment",
                 f"prompt gate miss for session {session_id}: {decision_miss}",
@@ -1848,7 +1842,7 @@ def _handle_stop(hook_input: dict) -> None:
 def _record_turn_end(cfg, source_session: str, folder: Path, hook_input: dict) -> None:
     """Close the turn this Stop ends with a ``turn_end`` event in the live
     buffer; a turn already closed gets none."""
-    from thinkweave.operations.decisions import Ledger
+    from thinkweave.operations.verdicts import Ledger
 
     key = _firing_profile().final_message_key
     message = str(hook_input.get(key) or "") if key else ""

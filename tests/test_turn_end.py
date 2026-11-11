@@ -97,16 +97,16 @@ def test_the_prompt_gate_numbers_its_verdict_with_the_turn_stop_will_close(
 
     cfg.decision_sites["prompt_gate"] = DecisionSite(enabled=True)
     monkeypatch.setattr(ptr, "_pool", lambda *a, **k: ptr.Pool([_Hit()], False))
-    monkeypatch.setattr("thinkweave.operations.decisions.build_from_vault",
+    monkeypatch.setattr("thinkweave.operations.verdicts.build_from_vault",
                         lambda *a, **k: FakeDecisionProvider())
     ptr.build_enrichment(cfg, "h-1", "and now explain the parser to me")
 
-    gate = [e for e in ptr._read_buffer_events(cfg, "h-1") if e.get("type") == "decision"]
+    gate = [e for e in ptr.Ledger.read(cfg, "h-1").events if e.get("type") == "decision"]
     assert [e["turn"] for e in gate] == [2]
 
 
 def test_the_ledger_closes_the_open_turn_with_a_declared_turn_end(session):
-    from thinkweave.operations.decisions import Ledger, TurnEnd
+    from thinkweave.operations.verdicts import Ledger, TurnEnd
 
     cfg, folder = session
     _turn(cfg, "fix the parser", "src/parser.py")

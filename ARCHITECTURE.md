@@ -496,6 +496,7 @@ surfaces/cli/  surfaces/mcp/         ← thin wrappers (5-10 LOC per handler)
       search.py       query_fts / query_similar / query_hybrid / query_context / query_prompts
       concepts.py     list / tighten / merge / drift / source_counts / search
       decisions.py    list_by_file / judge_and_writeback
+      verdicts.py     System 1 sites: ask_site / record_verdict / record_miss; session Ledger; ex_post_pass / sweep / readout
       queue.py        list_queues / peek / inspect / enqueue (auto-dedup)
       hubs_batch.py   run_hubs_batch — orchestrator over agent_client.batch_completions_sync
       _backfill_route.py  choose_route — picks inline (CC skill) vs batch (wrapper fan-out)
