@@ -17,6 +17,7 @@ owned by the vault-internal ``config.toml``.
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -869,3 +870,143 @@ def test_weave_dir_env_override_without_toml(
 def test_normalize_project_name(raw: str, expected: str):
     """mp-/mp_/qdi-/qdi_ worktree prefixes collapse onto the bare shared name."""
     assert normalize_project_name(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# Knob metadata: the rail allowlist is derived (dec-db6baaab)
+# ---------------------------------------------------------------------------
+
+
+def _knob_dataclasses() -> list[type]:
+    """Config and every section dataclass it nests, found by walking fields."""
+    from dataclasses import MISSING, fields, is_dataclass
+
+    found: list[type] = []
+
+    def walk(cls: type) -> None:
+        found.append(cls)
+        for f in fields(cls):
+            each = f.metadata.get("each")
+            default = f.default_factory() if f.default_factory is not MISSING else f.default
+            if each:
+                walk(each)
+            elif is_dataclass(default):
+                walk(type(default))
+
+    walk(Config)
+    return found
+
+
+def test_every_knob_field_declares_read_at_from_the_vocabulary():
+    """Each field of every knob dataclass says where it is read, with names
+    from the fixed vocabulary; the rail allowlist is derived from them."""
+    from dataclasses import fields
+
+    from thinkweave.core.config import READ_AT
+
+    classes = _knob_dataclasses()
+    assert {c.__name__ for c in classes} >= {
+        "Config",
+        "PromptTimeRetrieval",
+        "ContextStartup",
+        "StartupSection",
+    }
+    for cls in classes:
+        for f in fields(cls):
+            read_at = f.metadata.get("read_at")
+            assert read_at, f"{cls.__name__}.{f.name} declares no read_at"
+            assert set(read_at) <= set(READ_AT), (cls.__name__, f.name, read_at)
+
+
+def test_a_new_serving_chain_field_is_accepted_without_touching_a_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Demo criterion 8: a field declared ``read_at="SessionStart"`` is a
+    valid rail key the moment it exists; one read at dream is refused by
+    name. Nothing else is edited."""
+    from dataclasses import dataclass
+
+    import thinkweave.core.config as config_mod
+    from thinkweave.core.config import knob
+
+    @dataclass
+    class Probe(Config):
+        probe_startup: int = knob(
+            1, read_at="SessionStart", toml="extract.probe_startup", parse=int
+        )
+        probe_dream: int = knob(1, read_at="dream", toml="extract.probe_dream", parse=int)
+
+    monkeypatch.setattr(config_mod, "Config", Probe)
+    _isolate_user_config(monkeypatch, tmp_path)
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(_vault_with_toml(tmp_path, "")))
+    rail = _rail_with_toml(tmp_path, "[extract]\nprobe_startup = 5\n")
+    monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(rail))
+
+    assert load_config().probe_startup == 5
+
+    (rail / "thinkweave" / "config.toml").write_text(
+        "[extract]\nprobe_dream = 5\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError) as exc:
+        load_config()
+    assert "'extract.probe_dream'" in str(exc.value)
+
+
+def test_context_startup_keys_load_from_the_rail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The ``[context.startup]`` table and its per-section sub-tables are rail
+    keys (read at SessionStart) and land on ``cfg.context_startup``."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(_vault_with_toml(tmp_path, "")))
+    rail = _rail_with_toml(
+        tmp_path,
+        '[context.startup]\nsections = ["header", "tasks"]\nbudget_chars = 1500\n'
+        'drop_order = ["tasks"]\n\n[context.startup.tasks]\npin = true\ncap = 900\n',
+    )
+    monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(rail))
+
+    startup = load_config().context_startup
+    assert startup.sections == ("header", "tasks")
+    assert startup.budget_chars == 1500
+    assert startup.drop_order == ("tasks",)
+    assert startup.section["tasks"].pin is True
+    assert startup.section["tasks"].cap == 900
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[context.startup]\nsections = ["header", "open_tasks"]\n',
+        '[context.startup]\ndrop_order = ["open_tasks"]\n',
+        "[context.startup.open_tasks]\npin = true\n",
+    ],
+)
+@pytest.mark.parametrize("tier", ["vault", "rail"])
+def test_unknown_context_section_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str, tier: str
+):
+    """A section name outside ``retrieval.context.SECTIONS`` fails the load
+    and the error names it, from either file."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    vault_text = text if tier == "vault" else ""
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(_vault_with_toml(tmp_path, vault_text)))
+    if tier == "rail":
+        monkeypatch.setenv("THINKWEAVE_RSI_RAIL", str(_rail_with_toml(tmp_path, text)))
+
+    with pytest.raises(ValueError) as exc:
+        load_config()
+    assert re.search(r"'(context\.startup\.)?open_tasks'", str(exc.value))
+
+
+def test_unset_context_startup_is_the_default_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """No ``[context.startup]`` anywhere leaves every override unset."""
+    _isolate_user_config(monkeypatch, tmp_path)
+    monkeypatch.setenv("THINKWEAVE_VAULT", str(_vault_with_toml(tmp_path, "")))
+    startup = load_config().context_startup
+    assert startup.sections is None
+    assert startup.budget_chars is None
+    assert startup.drop_order is None
+    assert startup.section == {}
