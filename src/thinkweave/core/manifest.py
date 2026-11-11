@@ -10,8 +10,10 @@ versions a dev-link exposes to each harness.
 The harness readout (dec-4f158b58) rides along: the handful of settings
 values that change how the agent behaves (``harness_settings``), the hook
 events registered once the rail's ``hooks/hooks.toml`` is rendered
-(``hook_events``) with the foreign hooks beside them (``foreign``), and the
-profile's hook literals. Witnessed, never held: the settings file is the
+(``hook_events``) with the foreign hooks beside them (``foreign``), the
+profile's hook literals, and what was in force against them (``effective``:
+per-event budgets and the context cap as ``min(rail knob, literal)``, and
+the Stop nudge's state; dec-4f158b58 layer 1, dec-6d5f1913). Witnessed, never held: the settings file is the
 harness's own, rewritten with machine state, so the round records what it
 said rather than the rail owning it.
 Permissions and env are deliberately left out.
@@ -27,6 +29,7 @@ from pathlib import Path
 import thinkweave
 from thinkweave.core import rail_hooks
 from thinkweave.core._utils import git_stdout
+from thinkweave.core.config import Hooks
 from thinkweave.core.harness import PROFILES, HarnessProfile, active, lookup
 
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -57,6 +60,7 @@ def collect(cfg, harness: str, *, model: str = "") -> dict:
             manifest["foreign"] = foreign
         if literals := _literals(profile):
             manifest["literals"] = literals
+        manifest["effective"] = _effective(cfg, profile)
     return manifest
 
 
@@ -110,6 +114,18 @@ def _literals(profile: HarnessProfile) -> dict:
     if profile.additional_context_cap_chars is not None:
         literals["additional_context_cap_chars"] = profile.additional_context_cap_chars
     return literals
+
+
+def _effective(cfg, profile: HarnessProfile) -> dict:
+    """The hook values in force on ``profile`` under ``cfg``'s ``[hooks]``
+    knobs, so a round names what bounded it, not only the code default."""
+    hooks = getattr(cfg, "hooks", None) or Hooks()
+    eff = hooks.effective(profile.hook_budget_ms, profile.additional_context_cap_chars)
+    out: dict = {"hook_budget_ms": eff.budget_ms}
+    if eff.cap_chars is not None:
+        out["additional_context_cap_chars"] = eff.cap_chars
+    out["nudge"] = eff.nudge
+    return out
 
 
 def _rail(repo: Path) -> dict:

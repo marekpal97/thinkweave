@@ -604,6 +604,12 @@ _MANIFEST = _closed_dict({
     "literals": _closed_dict({
         "hook_budget_ms": _str_int_map, "additional_context_cap_chars": _int,
     }),
+    # What was in force against the literals: min(rail knob, literal) per
+    # event and for the cap, and the Stop nudge's state (dec-4f158b58).
+    "effective": _closed_dict({
+        "hook_budget_ms": _str_int_map, "additional_context_cap_chars": _int,
+        "nudge": _bool,
+    }),
 })
 
 _ENVELOPE_CHECKERS = {

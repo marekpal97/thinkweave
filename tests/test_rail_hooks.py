@@ -139,8 +139,9 @@ class TestManifest:
         assert stamp["foreign"] == [{"name": "note", "event": "Stop"}]
 
     def test_plugin_route_records_what_still_fires(self, tmp_path, monkeypatch):
-        """Claude Code cannot drop one plugin hook, so a disabled event stays
-        in force on the plugin route and the manifest says so."""
+        """Claude Code cannot drop one plugin hook, but the handler exits
+        early on an event hooks.toml disables, so the disabled event is not
+        in force on the plugin route either and the manifest says so."""
         home = tmp_path / "home"
         cc = harness.claude_code(home=home)
         cc.installed_plugins.parent.mkdir(parents=True)
@@ -148,7 +149,7 @@ class TestManifest:
         monkeypatch.setattr(harness, "_OVERRIDE", cc)
         repo = _rail(tmp_path, DISABLE_AND_FOREIGN, {"note.sh": NOTE})
         stamp = manifest.collect(self._cfg(tmp_path, monkeypatch, repo), "claude-code")
-        assert "SubagentStart" in stamp["hook_events"]
+        assert "SubagentStart" not in stamp["hook_events"]
         assert stamp["foreign"] == [{"name": "note", "event": "Stop"}]
 
     def test_pi_carries_no_subagent_events_or_hooks(self, tmp_path, monkeypatch):

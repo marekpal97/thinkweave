@@ -90,7 +90,7 @@ _MIN_PIECE_CHARS = 80
 #: The least remaining harness budget worth starting the similarity arm
 #: with. Below it the arm is not attempted and the turn counts as a miss, so
 #: a harness whose hook budget is already spent still feeds the adaptive skip.
-_MIN_DEADLINE_SECONDS = 0.25
+MIN_DEADLINE_SECONDS = 0.25
 
 
 def build_enrichment(
@@ -102,7 +102,7 @@ def build_enrichment(
     firing harness's hook budget less what the handler already spent). The
     similarity arm runs for the smaller of it and the configured
     ``embed_deadline_seconds``. A remaining budget under
-    ``_MIN_DEADLINE_SECONDS`` means the arm is not attempted and the turn is
+    ``MIN_DEADLINE_SECONDS`` means the arm is not attempted and the turn is
     a miss; the configured deadline alone is never floored.
 
     Returns ``(block, served_ids, missed)``:
@@ -146,7 +146,7 @@ def build_enrichment(
 
     deadline_s = rpt.embed_deadline_seconds
     if deadline is not None:
-        if deadline < _MIN_DEADLINE_SECONDS:
+        if deadline < MIN_DEADLINE_SECONDS:
             return None, [], True
         deadline_s = min(deadline, deadline_s)
 

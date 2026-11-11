@@ -23,7 +23,14 @@ import re
 import sys
 from pathlib import Path
 
-from thinkweave.core.config import SERVING_CHAIN, READ_AT, KnobSpec, knob_specs, resolve_ref
+from thinkweave.core.config import (
+    READ_AT,
+    SERVING_CHAIN,
+    KnobSpec,
+    expand_prefix,
+    knob_specs,
+    resolve_ref,
+)
 
 _HEADER = """\
 # rsi-rail: thinkweave's serving-chain knobs. Rendered by
@@ -91,7 +98,8 @@ def _rail_rows() -> dict[str, list[tuple[str, str, str]]]:
             continue
         table, _, key = spec.address.rpartition(".")
         if spec.keyed is None:
-            tables.setdefault(table, []).append((key, *_row(spec)))
+            for expanded, name in expand_prefix(spec):
+                tables.setdefault(table, []).append((expanded, *_row(spec, name)))
             continue
         placeholder = f"<{spec.keyed.name}>"
         for name in resolve_ref(spec.keyed.metadata["choices_ref"]):

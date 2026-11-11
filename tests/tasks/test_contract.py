@@ -369,3 +369,27 @@ def test_a_round_manifest_names_its_foreign_hooks():
     fm["rounds"] = [{**ledger_round(), "manifest": {**manifest, "foreign": [{"name": "note", "script": "note.sh"}]}}]
     errors = validate_task_note(fm)
     assert errors and all("foreign" in e for e in errors)
+
+
+def test_a_round_manifest_carries_the_effective_hook_values():
+    """The manifest's ``effective`` key (dec-4f158b58 layer 1): the budgets
+    and cap in force against the literals, and the Stop nudge's state, are
+    declared on the closed ``_MANIFEST`` shape, so record-run and the wrap
+    pass accept them and refuse a stray field inside by name."""
+    from thinkweave.core.task_contract import Round
+
+    stamp = {
+        "harness": "claude-code",
+        "literals": {"hook_budget_ms": {"UserPromptSubmit": 30000},
+                     "additional_context_cap_chars": 10000},
+        "effective": {"hook_budget_ms": {"UserPromptSubmit": 50},
+                      "additional_context_cap_chars": 10000, "nudge": True},
+    }
+    assert Round.from_dict({"manifest": stamp}, grain="work").manifest == stamp
+
+    stray = {**stamp, "effective": {**stamp["effective"], "budget": 1}}
+    with pytest.raises(ValueError, match=r"manifest\.effective: unknown field 'budget'"):
+        Round.from_dict({"manifest": stray}, grain="work")
+    bad = {**stamp, "effective": {**stamp["effective"], "nudge": "yes"}}
+    with pytest.raises(ValueError, match=r"manifest\.effective\.nudge"):
+        Round.from_dict({"manifest": bad}, grain="work")
