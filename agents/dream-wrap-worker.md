@@ -1,7 +1,7 @@
 ---
 name: dream-wrap-worker
 description: Phase-2 of /dream — catch up unwrapped sessions; performs writes directly and emits one outcome JSON line.
-tools: Read, Bash, mcp__thinkweave__weave_create, mcp__thinkweave__weave_extract, mcp__thinkweave__weave_update
+tools: Read, Bash, mcp__thinkweave__weave_create, mcp__thinkweave__weave_extract, mcp__thinkweave__weave_update, mcp__plugin_thinkweave_thinkweave__weave_create, mcp__plugin_thinkweave_thinkweave__weave_extract, mcp__plugin_thinkweave_thinkweave__weave_update
 model: sonnet
 color: green
 ---

@@ -954,6 +954,128 @@ class TestDevLink:
         assert "No dev-link" in capsys.readouterr().out
 
 
+    # ---- #254: the plugin is the only route on a dev-link machine ----
+
+    @staticmethod
+    def _settings(env) -> Path:
+        return env["checkout"] / harness.active().project_settings_relpath
+
+    def test_rejects_the_checkout_mcp_json_for_this_harness(
+        self, dev_link_env, requires_symlinks, capsys
+    ):
+        """The committed .mcp.json registers `thinkweave` by bare name; the
+        plugin registers `plugin:thinkweave:thinkweave`. Claude Code never
+        merges the two, so an approved .mcp.json beside the plugin starts two
+        servers. dev-link withdraws the approval in the project-local
+        settings file — machine-local, gitignored — and keeps every other key."""
+        settings = self._settings(dev_link_env)
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps({"permissions": {"allow": ["Bash(ls:*)"]},
+                        "enableAllProjectMcpServers": True}),
+            encoding="utf-8",
+        )
+        cmd_dev_link(_ns())
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        assert data["disabledMcpjsonServers"] == [SERVER_NAME]
+        assert data["permissions"] == {"allow": ["Bash(ls:*)"]}
+        assert data["enableAllProjectMcpServers"] is True
+        assert "Disabled the committed .mcp.json" in capsys.readouterr().out
+
+    def test_creates_the_settings_file_when_absent(
+        self, dev_link_env, requires_symlinks
+    ):
+        cmd_dev_link(_ns())
+        data = json.loads(self._settings(dev_link_env).read_text(encoding="utf-8"))
+        assert data == {"disabledMcpjsonServers": [SERVER_NAME]}
+
+    def test_removes_bare_name_command_links_and_keeps_foreign_ones(
+        self, dev_link_env, requires_symlinks, capsys
+    ):
+        """`.claude/commands/<name>.md → ../../commands/<name>.md` is the
+        pre-plugin route: beside the plugin it lists every skill twice. Only
+        links of that shape go; a foreign link (issue-loop → funloops) and a
+        regular file are not thinkweave's to remove."""
+        checkout = dev_link_env["checkout"]
+        (checkout / "commands").mkdir()
+        (checkout / "commands" / "wrap.md").write_text("body\n", encoding="utf-8")
+        cmds = checkout / ".claude" / "commands"
+        cmds.mkdir(parents=True)
+        (cmds / "wrap.md").symlink_to("../../commands/wrap.md")
+        (cmds / "issue-loop.md").symlink_to(
+            "../../../funloops/packages/devloop/docs/agents/issue-loop.command.md"
+        )
+        (cmds / "mine.md").write_text("my own command\n", encoding="utf-8")
+
+        cmd_dev_link(_ns())
+
+        assert not (cmds / "wrap.md").exists() and not (cmds / "wrap.md").is_symlink()
+        assert (cmds / "issue-loop.md").is_symlink()
+        assert (cmds / "mine.md").is_file()
+        out = capsys.readouterr().out
+        assert "Removed 1 bare-name command link(s)" in out
+        assert "wrap.md" in out
+
+    def test_rerun_converges_quietly(self, dev_link_env, requires_symlinks, capsys):
+        """Idempotent: the second run finds nothing to disable or remove."""
+        cmd_dev_link(_ns())
+        capsys.readouterr()
+        cmd_dev_link(_ns())
+        out = capsys.readouterr().out
+        assert "Already dev-linked" in out
+        assert "Disabled" not in out and "Removed" not in out
+
+    def test_already_linked_checkout_still_converges(
+        self, dev_link_env, requires_symlinks, capsys
+    ):
+        """A machine linked before #254 has the symlink but not the posture;
+        re-running dev-link after a pull must converge it, not just say
+        'already linked'."""
+        dev_link_env["skills_dir"].mkdir(parents=True)
+        dev_link_env["dev_link"].symlink_to(dev_link_env["checkout"])
+        cmd_dev_link(_ns())
+        out = capsys.readouterr().out
+        assert "Already dev-linked" in out
+        assert "Disabled the committed .mcp.json" in out
+        data = json.loads(self._settings(dev_link_env).read_text(encoding="utf-8"))
+        assert data["disabledMcpjsonServers"] == [SERVER_NAME]
+
+    def test_dev_unlink_reapproves_mcp_json_and_keeps_other_keys(
+        self, dev_link_env, requires_symlinks, capsys
+    ):
+        settings = self._settings(dev_link_env)
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps({"disabledMcpjsonServers": ["other", SERVER_NAME],
+                        "permissions": {}}),
+            encoding="utf-8",
+        )
+        cmd_dev_link(_ns())
+        capsys.readouterr()
+        cmd_dev_unlink(_ns())
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        assert data == {"disabledMcpjsonServers": ["other"], "permissions": {}}
+        assert "Re-approved the committed .mcp.json" in capsys.readouterr().out
+
+    def test_dev_unlink_drops_the_key_when_thinkweave_was_its_only_entry(
+        self, dev_link_env, requires_symlinks
+    ):
+        cmd_dev_link(_ns())
+        cmd_dev_unlink(_ns())
+        data = json.loads(self._settings(dev_link_env).read_text(encoding="utf-8"))
+        assert "disabledMcpjsonServers" not in data
+
+    def test_unreadable_settings_file_is_left_alone(
+        self, dev_link_env, requires_symlinks, capsys
+    ):
+        settings = self._settings(dev_link_env)
+        settings.parent.mkdir(parents=True)
+        settings.write_text("{not json", encoding="utf-8")
+        cmd_dev_link(_ns())
+        assert settings.read_text(encoding="utf-8") == "{not json"
+        assert "Disabled" not in capsys.readouterr().out
+
+
 def _fake_scripts_dir(
     tmp_path: Path, names=REQUIRED_SCRIPTS, exe: bool | None = None
 ) -> Path:

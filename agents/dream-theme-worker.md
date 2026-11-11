@@ -1,7 +1,7 @@
 ---
 name: dream-theme-worker
 description: Phase-1 of /dream — judges theme mint/extend from cluster signals + distills catalyst entries for theme log gaps; emits one plan-fragment JSON outcome line.
-tools: mcp__thinkweave__weave_read, mcp__thinkweave__weave_search
+tools: mcp__thinkweave__weave_read, mcp__thinkweave__weave_search, mcp__plugin_thinkweave_thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_search
 model: sonnet
 color: purple
 ---

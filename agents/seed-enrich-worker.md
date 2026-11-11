@@ -1,7 +1,7 @@
 ---
 name: seed-enrich-worker
 description: Inline backfill fan-out worker — synthesise a batch of imported coding-agent sessions (Claude Code or Codex) from their transcripts via weave_extract, keyless. Spawned by /seed-enrich above the fan-out threshold; emits one outcome JSON line.
-tools: mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read, mcp__thinkweave__weave_extract, mcp__thinkweave__weave_update
+tools: mcp__thinkweave__weave_concepts, mcp__thinkweave__weave_read, mcp__thinkweave__weave_extract, mcp__thinkweave__weave_update, mcp__plugin_thinkweave_thinkweave__weave_concepts, mcp__plugin_thinkweave_thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_extract, mcp__plugin_thinkweave_thinkweave__weave_update
 model: sonnet
 color: green
 ---

@@ -1,7 +1,7 @@
 ---
 name: dream-promotion-worker
 description: Phase-1 of /dream — judges proposed-concept promotions; emits one plan-fragment JSON outcome line.
-tools: Read, mcp__thinkweave__weave_concepts
+tools: Read, mcp__thinkweave__weave_concepts, mcp__plugin_thinkweave_thinkweave__weave_concepts
 model: sonnet
 color: green
 ---

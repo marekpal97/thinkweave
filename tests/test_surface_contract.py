@@ -189,7 +189,11 @@ class TestDocReferences:
     # "the weave CLI" or placeholders like `weave <command>` never match.
     _BACKTICK = re.compile(r"`(?:uv run )?weave ([a-z][a-z0-9-]*)")
     _LINE_START = re.compile(r"^\s*(?:uv run )?weave ([a-z][a-z0-9-]*)", re.M)
-    _MCP_TOOL = re.compile(r"mcp__thinkweave__(weave_[a-z_]+)")
+    # Both spellings a worker may carry: the bare server name (project-scope
+    # clone) and the plugin-scoped one Claude Code gives a plugin's own
+    # server (`mcp__plugin_<plugin>_<server>__<tool>`); workers list both
+    # because the harness never rewrites one into the other (#254).
+    _MCP_TOOL = re.compile(r"mcp__(?:plugin_thinkweave_)?thinkweave__(weave_[a-z_]+)")
 
     def test_doc_cli_invocations_exist_in_dispatch(self):
         # Only the first token after `weave` is checked — multi-word forms
@@ -225,9 +229,10 @@ class TestDocReferences:
         )
 
     def test_agent_allowlisted_mcp_tools_exist(self):
-        # Worker frontmatter allowlists tools as
-        # `mcp__thinkweave__weave_*`; every such name must be a tool the
-        # server actually registers, or the worker silently loses it.
+        # Worker frontmatter allowlists tools as `mcp__thinkweave__weave_*`
+        # and `mcp__plugin_thinkweave_thinkweave__weave_*`; every such name
+        # must be a tool the server actually registers, or the worker
+        # silently loses it.
         unknown: dict[str, set[str]] = {}
         for md in _skill_and_agent_files():
             text = md.read_text(encoding="utf-8")

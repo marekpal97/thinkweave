@@ -1,7 +1,7 @@
 ---
 name: dream-digest-worker
 description: Phase-2 of /dream — compose grain-split daily knowledge-first digest notes (one per non-empty grain); performs writes directly and emits one outcome JSON line.
-tools: mcp__thinkweave__weave_read, mcp__thinkweave__weave_search, mcp__thinkweave__weave_create
+tools: mcp__thinkweave__weave_read, mcp__thinkweave__weave_search, mcp__thinkweave__weave_create, mcp__plugin_thinkweave_thinkweave__weave_read, mcp__plugin_thinkweave_thinkweave__weave_search, mcp__plugin_thinkweave_thinkweave__weave_create
 model: sonnet
 color: magenta
 ---
