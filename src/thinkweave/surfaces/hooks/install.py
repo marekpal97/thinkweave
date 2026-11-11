@@ -18,13 +18,19 @@ import difflib
 import json
 import sys
 from dataclasses import dataclass
+from itertools import zip_longest
 from pathlib import Path
 from typing import Literal
 
+from thinkweave.core import rail_hooks
 from thinkweave.core.fswrite import atomic_write_text, replace_between
-from thinkweave.core.harness import PROFILES
+from thinkweave.core.harness import CANONICAL_EVENTS, PROFILES, HarnessProfile
 from thinkweave.core.harness import active as active_harness
 from thinkweave.core.plugin_route import plugin_namespace
+from thinkweave.core.rail_hooks import Registration
+from thinkweave.core.rail_hooks import canonical_hooks_path as _canonical_hooks_path
+from thinkweave.core.rail_hooks import load_canonical_hooks as _load_canonical_hooks
+from thinkweave.core.rail_hooks import plugin_owned as _plugin_owned
 
 # Substrings that identify a thinkweave hook command in settings,
 # across every historical form this project has written. On reinstall,
@@ -52,38 +58,6 @@ HOOK_MARKERS = (
 # what the limit is derived from): Codex reports a configuration warning when
 # the key rides an event that cannot produce additional context.
 CONTEXT_EMITTING_EVENTS = ("SessionStart", "UserPromptSubmit")
-
-
-def _canonical_hooks_path() -> Path:
-    """Locate the canonical ``hooks/hooks.json`` shipped at the repo root.
-
-    Walks up from this module's file — the package is installed editable
-    into the repo venv by ``uv run --project`` on every supported route
-    (there is no PyPI wheel), so the repo layout is always present. Fails
-    loud otherwise: an installer that cannot see its source of truth must
-    not fall back to a guess.
-    """
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "hooks" / "hooks.json"
-        if candidate.is_file():
-            return candidate
-    raise FileNotFoundError(
-        "hooks/hooks.json not found above "
-        f"{Path(__file__).resolve()} — `weave hooks install` derives the "
-        "hook definitions from the canonical file and must run from a "
-        "thinkweave repo checkout (plugin or dev clone)."
-    )
-
-
-def _load_canonical_hooks(hooks_json: str | Path = "") -> dict:
-    """Parse the canonical hook definitions: ``{event: [entries…]}``.
-
-    ``hooks_json`` overrides the content source (contract tests drive the
-    installer with a mutated temp copy); the default is the repo's own
-    ``hooks/hooks.json``.
-    """
-    path = Path(hooks_json) if hooks_json else _canonical_hooks_path()
-    return json.loads(path.read_text(encoding="utf-8"))["hooks"]
 
 
 def _repo_root() -> Path:
@@ -228,7 +202,10 @@ def _converge_to_plugin_ownership(project_dir: str, dry_run: bool) -> None:
 
 
 def _build_installed_settings(
-    existing: dict, hooks_json: str | Path = ""
+    existing: dict,
+    hooks_json: str | Path = "",
+    registration: Registration | None = None,
+    profile: HarnessProfile | None = None,
 ) -> dict:
     """Return a settings dict with thinkweave hooks merged in.
 
@@ -244,12 +221,20 @@ def _build_installed_settings(
     - thinkweave entries under events NO LONGER in the canonical file
       (e.g. the retired PreToolUse phase) are stripped, so reinstalling
       converges stale settings without disturbing anything else.
+
+    ``registration`` is the rsi-rail registration set (dec-4f158b58 layers 2
+    and 3): a disabled event's thinkweave entries are stripped, an event
+    whose matchers the rail sets gets one entry per matcher, and the rail's
+    foreign hooks are registered as ordinary command hooks. The default is
+    the canonical set, which leaves this function's output unchanged.
+    ``profile`` defaults to the active one; the rail fan-out passes each.
     """
     settings = copy.deepcopy(existing)
     hooks = settings.setdefault("hooks", {})
     canonical = _load_canonical_hooks(hooks_json)
     root = _repo_root()
-    profile = active_harness()
+    profile = profile or active_harness()
+    reg = registration or rail_hooks.DEFAULT
     limit = profile.additional_context_limit
 
     for event, canonical_entries in canonical.items():
@@ -259,7 +244,25 @@ def _build_installed_settings(
         # documents the gap as a degradation).
         if event in profile.hook_events and not profile.hook_events[event]:
             continue
+        if event in reg.disabled:
+            continue  # stripped with the retired phases below
         entries = hooks.setdefault(event, [])
+        if event in reg.matchers:
+            # The rail's matchers replace the canonical slots: drop any
+            # thinkweave entry under a matcher it no longer names (so a
+            # narrowed list does not leave the old slot firing), then ensure
+            # one entry per named matcher with the canonical command.
+            wanted = set(reg.matchers[event])
+            for m in reg.matchers[event]:
+                wanted.update(_PREVIOUS_MATCHERS.get(m, ()))
+            entries[:] = [
+                e
+                for e in entries
+                if e.get("matcher", "") in wanted or not _has_thinkweave_hook(e)
+            ]
+            canonical_entries = [
+                {**canonical_entries[0], "matcher": m} for m in reg.matchers[event]
+            ]
         # Slot disambiguation is only needed when one event owns several
         # thinkweave entries (PostToolUse: action gate + MCP gate) — the
         # entry's matcher is the slot key.
@@ -286,20 +289,65 @@ def _build_installed_settings(
     # Retired phases: strip thinkweave entries from any event the
     # canonical file no longer authors (foreign hooks stay).
     for event in list(hooks):
-        if event not in canonical:
+        if event not in canonical or event in reg.disabled:
             _strip_thinkweave_hooks(hooks, event)
 
+    _apply_foreign(settings, reg, profile)
     return settings
 
 
-def _build_uninstalled_settings(existing: dict) -> dict:
+def _has_thinkweave_hook(entry: dict) -> bool:
+    return any(_is_thinkweave_hook(h.get("command", "")) for h in entry.get("hooks", []))
+
+
+def _is_rail_hook(command: str, hooks_dir: Path | None) -> bool:
+    """True if ``command`` runs a script under the rail's ``hooks/`` folder,
+    i.e. it is a foreign hook a rail render wrote (dec-4f158b58 layer 3)."""
+    return bool(hooks_dir) and f"{hooks_dir.as_posix()}/" in command
+
+
+def _apply_foreign(settings: dict, reg: Registration, profile: HarnessProfile) -> None:
+    """Converge the rail's foreign hooks in a settings dict, in place: drop
+    every entry a previous render wrote, then register each foreign hook the
+    profile can carry as an ordinary command hook. Strip-then-append keeps a
+    rerun byte-identical; the user's own hooks are never touched."""
+    hooks = settings.setdefault("hooks", {})
+    if reg.hooks_dir is not None:
+        _strip_matching(hooks, lambda c: _is_rail_hook(c, reg.hooks_dir))
+    for row in rail_hooks.foreign_in_force(profile, reg):
+        hooks.setdefault(row.event, []).append(
+            {"matcher": row.matcher, "hooks": [{"type": "command", "command": row.command}]}
+        )
+    if "hooks" in settings and not hooks:
+        del settings["hooks"]
+
+
+def _strip_matching(hooks: dict, is_ours) -> None:
+    """Remove every hook whose command ``is_ours`` from ``hooks`` in place,
+    dropping entries and events left empty."""
+    for event in list(hooks):
+        kept = []
+        for entry in hooks[event]:
+            inner = [h for h in entry.get("hooks", []) if not is_ours(h.get("command", ""))]
+            if inner:
+                kept.append({**entry, "hooks": inner})
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+
+
+def _build_uninstalled_settings(existing: dict, rail_hooks_dir: Path | None = None) -> dict:
     """Return a settings dict with thinkweave hooks removed.
 
     Pure function — mirrors ``_build_installed_settings`` so uninstall and
-    its dry-run share one implementation.
+    its dry-run share one implementation. ``rail_hooks_dir`` also removes the
+    foreign hooks a rail render registered from that folder.
     """
     settings = copy.deepcopy(existing)
     hooks = settings.get("hooks", {})
+    if rail_hooks_dir is not None:
+        _strip_matching(hooks, lambda c: _is_rail_hook(c, rail_hooks_dir))
 
     # Iterate every event present in the file (not a hardcoded list) so
     # uninstall round-trips any event the canonical hooks.json authors —
@@ -350,26 +398,45 @@ def _extension_stub_path(profile, scope: str, project_dir: str = "") -> Path:
     return root / profile.project_plugins_relpath / "thinkweave.ts"
 
 
-def _extension_stub_text(profile) -> str:
+def _extension_stub_text(profile, registration: Registration | None = None) -> str:
     """The one-line loader stub — the ONLY artifact carrying machine state.
 
     It re-exports the repo's shim module (``hook_extension_source``), so a
     dev-relink or shim edit needs no reinstall and a reinstall rewrites one
     file. The shim resolves the hook launcher relative to its own repo
-    location; nothing else is baked in."""
+    location; nothing else is baked in.
+
+    With an rsi-rail registration set that changes anything on this profile
+    (dec-4f158b58 layers 2 and 3), the re-export becomes the shim's
+    ``withRail`` factory applied to that set: the enabled events, any rail
+    matchers, and the foreign hooks with their absolute script paths. A
+    second named export would not do: OpenCode calls every export of a
+    plugin module as a plugin, and the shim cannot import the stub. The
+    stub stays the only artefact carrying machine state."""
     source = (_repo_root() / profile.hook_extension_source).as_posix()
-    return (
+    head = (
         "// installed by thinkweave (`weave hooks install`); a reinstall "
         "overwrites this file.\n"
         "// The shim itself lives in the repo checkout below — add your own "
         "extensions beside\n"
         "// this file, never inside it.\n"
-        f'export {{ default }} from "{source}";\n'
+    )
+    payload = rail_hooks.stub_payload(profile, registration or rail_hooks.DEFAULT)
+    if payload is None:
+        return head + f'export {{ default }} from "{source}";\n'
+    return (
+        head
+        + f'import {{ withRail }} from "{source}";\n'
+        + f"export default withRail({json.dumps(payload, sort_keys=True)});\n"
     )
 
 
 def _install_extension_stub(
-    profile, scope: str, project_dir: str, dry_run: bool
+    profile,
+    scope: str,
+    project_dir: str,
+    dry_run: bool,
+    registration: Registration | None = None,
 ) -> None:
     """``install_hooks``, extension-mechanism variant: write the loader stub.
 
@@ -386,7 +453,7 @@ def _install_extension_stub(
         sys.exit(1)
 
     stub = _extension_stub_path(profile, scope, project_dir)
-    text = _extension_stub_text(profile)
+    text = _extension_stub_text(profile, registration)
     if dry_run:
         print(f"Would write: {stub}")
         print(text, end="")
@@ -581,6 +648,193 @@ def _with_rules_block(path: Path, rules: Path) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# rsi-rail hook registrations (dec-4f158b58 layers 2 and 3)
+# --------------------------------------------------------------------------- #
+
+
+def _configured_rail() -> Path | None:
+    from thinkweave.core.config import load_config
+
+    return load_config().rsi_rail
+
+
+def _configured_rail_hooks_dir() -> Path | None:
+    """The rail's ``hooks/`` folder, or None — uninstall must still work on a
+    machine whose config does not load."""
+    try:
+        repo = _configured_rail()
+    except (FileNotFoundError, ValueError):
+        return None
+    return Path(repo) / rail_hooks.RAIL_HOOKS_DIR if repo else None
+
+
+def rail_registration(hooks_json: str | Path = "") -> Registration:
+    """The registration set ``<rsi_rail>/hooks/hooks.toml`` declares, read
+    against the canonical definitions; the canonical set when no rail or no
+    file. Raises ``ValueError`` naming an unknown event, key or script."""
+    return rail_hooks.read(_configured_rail(), hooks_json)
+
+
+@dataclass(frozen=True)
+class RenderedHooks:
+    """One profile's rail render at user scope: what its file holds now
+    (``current``), what the registration set renders (``planned``: a
+    settings dict, or a stub's text), and what it cannot carry."""
+
+    profile: HarnessProfile
+    path: Path
+    current: dict | str
+    planned: dict | str
+    unrenderable: tuple[str, ...]
+
+    @property
+    def stale(self) -> bool:
+        return self.current != self.planned
+
+    @property
+    def text(self) -> str:
+        if isinstance(self.planned, str):
+            return self.planned
+        return json.dumps(self.planned, indent=2) + "\n"
+
+    def first_difference(self) -> str:
+        """The first place the file and the render disagree, in words."""
+        if isinstance(self.current, str) or isinstance(self.planned, str):
+            for have, want in zip_longest(
+                str(self.current).splitlines(),
+                str(self.planned).splitlines(),
+                fillvalue="",
+            ):
+                if have != want:
+                    return f"has {have[:100]!r}, the rail renders {want[:100]!r}"
+            return "text differs"
+        have = self.current.get("hooks", {})
+        want = self.planned.get("hooks", {})
+        for event in [*CANONICAL_EVENTS, *sorted(set(have) | set(want))]:
+            if have.get(event) == want.get(event):
+                continue
+            if event not in want:
+                return f"{event} is registered, the rail drops it"
+            if event not in have:
+                return f"{event} is missing, the rail registers it"
+            return f"{event} entries differ from the rail's"
+        return "settings differ outside hooks"
+
+
+def render_rail_hooks(
+    profile: HarnessProfile, registration: Registration, hooks_json: str | Path = ""
+) -> RenderedHooks | None:
+    """Render ``registration`` for one profile at user scope, through its
+    mechanism; None when thinkweave's hooks are not installed there (the
+    rail never installs hooks into a harness the user has not).
+
+    - ``plugin`` with the plugin active: the plugin's hooks.json stays the
+      canonical definitions; the user settings file carries only the
+      foreign hooks. Disabled events and matchers are reported as not
+      renderable (Claude Code cannot suppress one plugin hook).
+    - ``plugin`` without it, and ``file``: the settings file is rendered
+      whole from canonical minus disabled, plus foreign.
+    - ``extension``: the user-scope loader stub carries the set.
+    """
+    if not profile.hooks:
+        return None
+    if profile.hook_mechanism == "extension":
+        stub = _extension_stub_path(profile, "user")
+        if not stub.is_file():
+            return None
+        return RenderedHooks(
+            profile,
+            stub,
+            stub.read_text(encoding="utf-8"),
+            _extension_stub_text(profile, registration),
+            tuple(rail_hooks.unrenderable(profile, registration, plugin_owned=False)),
+        )
+    path = profile.user_settings
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(existing, dict):
+        return None
+    owned = _plugin_owned(profile)
+    if owned:
+        planned = _build_uninstalled_settings(existing)
+        _apply_foreign(planned, registration, profile)
+    elif any(
+        _has_thinkweave_hook(entry)
+        for entries in existing.get("hooks", {}).values()
+        for entry in entries
+    ):
+        planned = _build_installed_settings(
+            existing, hooks_json, registration=registration, profile=profile
+        )
+    else:
+        return None
+    return RenderedHooks(
+        profile,
+        path,
+        existing,
+        planned,
+        tuple(rail_hooks.unrenderable(profile, registration, plugin_owned=owned)),
+    )
+
+
+def rail_hook_renders(
+    registration: Registration, hooks_json: str | Path = ""
+) -> list[RenderedHooks]:
+    """:func:`render_rail_hooks` for every registered profile carrying
+    thinkweave hooks."""
+    renders = []
+    for make in PROFILES.values():
+        rendered = render_rail_hooks(make(), registration, hooks_json)
+        if rendered is not None:
+            renders.append(rendered)
+    return renders
+
+
+def rail_hooks_file(registration: Registration) -> Path | None:
+    """The rail's ``hooks/hooks.toml`` when it exists, else None."""
+    if registration.hooks_dir is None:
+        return None
+    path = registration.hooks_dir / rail_hooks.RAIL_HOOKS_FILE
+    return path if path.is_file() else None
+
+
+def install_rail_hooks(
+    dry_run: bool = False,
+    hooks_json: str | Path = "",
+    registration: Registration | None = None,
+) -> None:
+    """Render the rail's ``hooks/hooks.toml`` into every profile that carries
+    thinkweave hooks, idempotently — the same fan-out
+    :func:`install_rail_links` does for skills and rules. A no-op when the
+    rail holds no ``hooks.toml`` (today's behaviour exactly). What a profile
+    cannot carry is printed, never dropped silently; the doctor's
+    ``rsi-rail hooks`` row reports it too."""
+    reg = registration if registration is not None else rail_registration(hooks_json)
+    source = rail_hooks_file(reg)
+    if source is None:
+        return
+    would = "Would " if dry_run else ""
+    changed = current = 0
+    print(f"rsi-rail hooks from {source}:")
+    for rendered in rail_hook_renders(reg, hooks_json):
+        for problem in rendered.unrenderable:
+            print(f"  not renderable on {rendered.profile.id}: {problem}")
+        if not rendered.stale:
+            current += 1
+            continue
+        changed += 1
+        print(f"  {would}render {rendered.path} ({rendered.profile.id})")
+        if not dry_run:
+            atomic_write_text(rendered.path, rendered.text)
+    print(
+        f"  {changed} {'to change' if dry_run else 'changed'}, "
+        f"{current} already current."
+    )
+
+
 def install_hooks(
     project_dir: str = "",
     scope: str = "project",
@@ -608,10 +862,30 @@ def install_hooks(
     tests only); defaults to the repo's ``hooks/hooks.json``.
 
     Whatever the scope, the configured rsi-rail repo is first fanned out to
-    every registered profile (:func:`install_rail_links`).
+    every registered profile (:func:`install_rail_links`), and when it holds
+    ``hooks/hooks.toml`` that registration set is applied to this install and
+    then rendered into every other profile that already carries thinkweave
+    hooks (:func:`install_rail_hooks`, dec-4f158b58). An invalid rail file
+    stops the install before anything is written.
     """
+    try:
+        registration = rail_registration(hooks_json)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
     install_rail_links(dry_run)
+    _install_active_profile(project_dir, scope, dry_run, hooks_json, registration)
+    install_rail_hooks(dry_run, hooks_json, registration)
 
+
+def _install_active_profile(
+    project_dir: str,
+    scope: str,
+    dry_run: bool,
+    hooks_json: str,
+    registration: Registration,
+) -> None:
+    """:func:`install_hooks` for the active profile, through its mechanism."""
     # Documented degradation (epic #103 anti-goals): a harness without hook
     # support is pointed at manual `/wrap`, not handed a file it never reads.
     profile = active_harness()
@@ -631,7 +905,7 @@ def install_hooks(
     # An extension-mechanism harness reads no hooks from any settings file:
     # its whole registration is the loader stub in its extensions dir.
     if profile.hook_mechanism == "extension":
-        _install_extension_stub(profile, scope, project_dir, dry_run)
+        _install_extension_stub(profile, scope, project_dir, dry_run, registration)
         return
 
     # A plugin-mechanism harness loads the canonical hooks file from its
@@ -666,7 +940,9 @@ def install_hooks(
     if settings_path.exists():
         existing = json.loads(settings_path.read_text(encoding="utf-8"))
 
-    planned = _build_installed_settings(existing, hooks_json=hooks_json)
+    planned = _build_installed_settings(
+        existing, hooks_json=hooks_json, registration=registration
+    )
 
     if dry_run:
         print(f"Would write: {settings_path}")
@@ -718,7 +994,7 @@ def uninstall_hooks(
         return
 
     existing = json.loads(settings_path.read_text(encoding="utf-8"))
-    planned = _build_uninstalled_settings(existing)
+    planned = _build_uninstalled_settings(existing, _configured_rail_hooks_dir())
 
     if dry_run:
         print(f"Would write: {settings_path}")
