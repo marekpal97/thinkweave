@@ -1,4 +1,4 @@
-# Packaged default for the `ex_post` decision site: after a turn ends (or, for
+# Packaged default for the `ex_post` question set: after a turn ends (or, for
 # startup items, after the whole session), judge whether the agent's work
 # relied on each vault note it was shown or offered. A rail copy at
 # thinkweave/questions/ex_post.toml replaces this file whole.

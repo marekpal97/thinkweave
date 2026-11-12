@@ -7,7 +7,7 @@ import json
 import pytest
 
 from thinkweave.core.buffer import append_event, archive_buffer, buffer_path
-from thinkweave.core.config import DecisionSite
+from thinkweave.core.config import QuestionSet
 from thinkweave.core.decision_provider import FakeDecisionProvider
 from thinkweave.core.indexer import Indexer
 from thinkweave.operations import verdicts
@@ -17,7 +17,7 @@ from tests.conftest import write_session_md
 
 def _gate(ts: str, *answers: tuple[str, float, str]) -> dict:
     return {
-        "ts": ts, "type": "verdict", "site": "prompt_gate", "turn": 1,
+        "ts": ts, "type": "verdict", "question_set": "prompt_gate", "turn": 1,
         "subject_id": "", "phase": "ex_ante", "action": "none",
         "source": "prompttime", "model": "fake", "backend": "fake",
         "latency_ms": 40, "cost": 0.001,
@@ -55,9 +55,9 @@ _REPLAY = [
 @pytest.fixture
 def replayed(vault_factory, monkeypatch):
     """A session ``ses-ex`` (harness ``h-1``) whose live buffer replays ``_REPLAY``,
-    with the ex-post site on and a fake backend behind it."""
+    with the ex-post question set on and a fake backend behind it."""
     cfg = vault_factory(indexed=True).config
-    cfg.verdicts.site["ex_post"] = DecisionSite(enabled=True)
+    cfg.verdicts.question_set["ex_post"] = QuestionSet(enabled=True)
     folder = write_session_md(
         cfg.vault_root / "projects" / "p" / "sessions" / "s1",
         type="session", id="ses-ex", project="p", date="2026-11-01",
@@ -145,7 +145,7 @@ def test_a_backend_failure_logs_a_miss_and_the_wrap_still_completes(replayed, mo
     misses = [json.loads(line) for line in
               (folder / "events.jsonl").read_text(encoding="utf-8").splitlines()
               if '"verdict_miss"' in line]
-    assert {(m["site"], m["source"], m["turn"]) for m in misses} == {
+    assert {(m["question_set"], m["source"], m["turn"]) for m in misses} == {
         ("ex_post", "prompttime", 1), ("ex_post", "onthefly", 1),
         ("ex_post", "onthefly", 2), ("ex_post", "startup", None),
     }
@@ -154,7 +154,7 @@ def test_a_backend_failure_logs_a_miss_and_the_wrap_still_completes(replayed, mo
     assert not any("ex_post" in e for e in result.errors)
     assert "drift" in result.timings
     assert _verdicts(cfg, "ex_post") == []
-    startup = {(r.site, r.source): r for r in verdicts.readout(cfg)}[("ex_post", "startup")]
+    startup = {(r.question_set, r.source): r for r in verdicts.readout(cfg)}[("ex_post", "startup")]
     assert (startup.calls, startup.misses, startup.miss_rate) == (0, 1, 1.0)
 
 
@@ -163,9 +163,9 @@ def test_readout_counts_each_call_once_and_tables_served_against_used(replayed):
     archive_buffer(cfg.weave_dir, "h-1", folder)
     verdicts.ex_post_pass(cfg, verdicts.Ledger.read(cfg, "h-1", folder))
 
-    sites = {(r.site, r.source): r for r in verdicts.readout(cfg, threshold=0.7)}
+    question_sets = {(r.question_set, r.source): r for r in verdicts.readout(cfg, threshold=0.7)}
 
-    gate = sites[("prompt_gate", "prompttime")]
+    gate = question_sets[("prompt_gate", "prompttime")]
     assert (gate.calls, gate.rows, gate.cost) == (1, 2, 0.001)
     assert gate.latency_ms_p50 == gate.latency_ms_p95 == 40
     assert gate.calibration == [
@@ -175,12 +175,12 @@ def test_readout_counts_each_call_once_and_tables_served_against_used(replayed):
         verdicts.CalibrationBin("0.6-0.8", 0, None),
         verdicts.CalibrationBin("0.8-1.0", 1, 0.8),
     ]
-    judged = sites[("ex_post", "prompttime")]
+    judged = question_sets[("ex_post", "prompttime")]
     assert judged.usage == {"served": verdicts.Usage(used=1, unused=0),
                             "rejected": verdicts.Usage(used=0, unused=1)}
-    assert sites[("ex_post", "startup")].usage == {"served": verdicts.Usage(used=0, unused=1)}
+    assert question_sets[("ex_post", "startup")].usage == {"served": verdicts.Usage(used=0, unused=1)}
     assert gate.as_dict()["calibration"][1] == {"ex_ante": "0.2-0.4", "n": 1, "mean_ex_post": 0.5}
-    assert sites[("ex_post", "onthefly")].calls == 2
+    assert question_sets[("ex_post", "onthefly")].calls == 2
 
 
 def test_a_truncated_turn_end_line_is_reported_not_dropped(replayed, monkeypatch):

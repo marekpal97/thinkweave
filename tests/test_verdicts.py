@@ -5,13 +5,13 @@ from __future__ import annotations
 from thinkweave.core.buffer import append_event, archive_buffer, buffer_path
 from thinkweave.core.decision_provider import FakeDecisionProvider
 from thinkweave.core.indexer import Indexer
-from thinkweave.operations.verdicts import run_site
+from thinkweave.operations.verdicts import run_question_set
 
 from tests.conftest import write_session_md
 
 _SLOTS = {"prompt": "How do I bake bread?", "candidate": "Sourdough starter notes"}
 _COLUMNS = (
-    "site, session_id, turn, subject_id, phase, question, kind, probs, value, "
+    "question_set, session_id, turn, subject_id, phase, question, kind, probs, value, "
     "action, source, model, backend, latency_ms, cost, ts"
 )
 
@@ -21,7 +21,7 @@ def _rows(cfg) -> list[tuple]:
     try:
         return [
             tuple(r)
-            for r in idx.db.execute(f"SELECT {_COLUMNS} FROM verdicts ORDER BY ts, site")
+            for r in idx.db.execute(f"SELECT {_COLUMNS} FROM verdicts ORDER BY ts, question_set")
         ]
     finally:
         idx.close()
@@ -45,11 +45,11 @@ def test_dropping_verdicts_and_rebuilding_reproduces_every_row(vault_factory):
     append_event(live, {"type": "prompt", "text": "hi"}, harness="")
 
     fake = FakeDecisionProvider()
-    run_site(cfg, "smoke", _SLOTS, provider=fake, session_id="harness-1",
+    run_question_set(cfg, "smoke", _SLOTS, provider=fake, session_id="harness-1",
              turn=3, subject_id="n-1", phase="ex_ante", action="served")
-    run_site(cfg, "smoke", _SLOTS, provider=fake, session_id="harness-1",
+    run_question_set(cfg, "smoke", _SLOTS, provider=fake, session_id="harness-1",
              turn=3, subject_id="n-1", phase="ex_post")
-    run_site(cfg, "smoke", _SLOTS, provider=fake, subject_id="src-9")
+    run_question_set(cfg, "smoke", _SLOTS, provider=fake, subject_id="src-9")
     archive_buffer(cfg.weave_dir, "harness-1", session_dir)
 
     _full_rebuild(cfg)
@@ -75,3 +75,26 @@ def test_dropping_verdicts_and_rebuilding_reproduces_every_row(vault_factory):
     _full_rebuild(cfg)
 
     assert _rows(cfg) == before
+
+
+def test_an_index_with_the_old_verdicts_column_opens(tmp_path):
+    """An index whose ``verdicts`` table predates the ``question_set``
+    column opens: the table is recreated with the current columns."""
+    import sqlite3
+
+    from thinkweave.core.config import Config
+    from thinkweave.core.indexer import Indexer
+
+    cfg = Config(vault_root=tmp_path / "vault", weave_dir_override=tmp_path / "weave")
+    cfg.weave_dir.mkdir(parents=True)
+    old = sqlite3.connect(str(cfg.index_db))
+    old.execute("CREATE TABLE verdicts (site TEXT NOT NULL, phase TEXT, ts TEXT)")
+    old.commit()
+    old.close()
+
+    idx = Indexer(config=cfg)
+    try:
+        cols = {r[1] for r in idx.db.execute("PRAGMA table_info(verdicts)")}
+    finally:
+        idx.close()
+    assert "question_set" in cols and "site" not in cols

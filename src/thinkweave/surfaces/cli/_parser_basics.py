@@ -411,10 +411,10 @@ def add_admin_subparsers(sub) -> None:
 
     p_decide = sub.add_parser(
         "decide",
-        help="System 1 decision sites. `smoke`: one end-to-end call to the "
+        help="System 1 question sets. `smoke`: one end-to-end call to the "
         "configured decision backend, printing the answers, the cost and the "
         "verdicts row it projects. `sweep`: the ex-post judge over sessions "
-        "no wrap judged. `readout`: the verdicts per site and source.",
+        "no wrap judged. `readout`: the verdicts per question set and source.",
     )
     decide_sub = p_decide.add_subparsers(dest="decide_action", required=True)
     p_decide_smoke = decide_sub.add_parser("smoke", help="One end-to-end decision call.")
@@ -427,7 +427,7 @@ def add_admin_subparsers(sub) -> None:
     for name, text in (
         ("sweep", "Run the ex-post judge over every session it has not judged."),
         ("readout", "Counts, usage at threshold, calibration, misses, latency "
-                    "and cost per site and source."),
+                    "and cost per question set and source."),
     ):
         p = decide_sub.add_parser(name, help=text)
         p.add_argument("--project", default="", help="Only this project's sessions.")
@@ -437,7 +437,7 @@ def add_admin_subparsers(sub) -> None:
             p.add_argument(
                 "--threshold", type=float, default=None,
                 help="Ex-post probability at which a note counts as used "
-                "(default: the ex_post site's accept).",
+                "(default: the ex_post question set's accept).",
             )
 
     p_learn = sub.add_parser(

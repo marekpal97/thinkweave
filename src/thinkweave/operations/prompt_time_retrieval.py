@@ -4,7 +4,7 @@ The ``UserPromptSubmit`` hook calls :func:`build_enrichment` on each user
 prompt. It surfaces a small, deduped, hard-capped block of vault notes relevant
 to the prompt — *delta over startup* — to prepend to what the model sees.
 
-- **Two gates, chosen by the ``prompt_gate`` decision site.** With the site
+- **Two gates, chosen by the ``prompt_gate`` question set.** With the question set
   off, the similarity arm alone runs and its embedding cosine floor is the
   relevance gate. With it on, an any-term BM25 arm and the unfloored
   similarity arm are fused by RRF into a pool of ``pool_size`` candidates,
@@ -60,7 +60,7 @@ from thinkweave.operations.verdicts import (
     VERDICT_MISS,
     PROMPT_GATE,
     Ledger,
-    ask_site,
+    ask_question_set,
     record_verdict,
 )
 
@@ -126,7 +126,7 @@ def build_enrichment(
     ``MIN_DEADLINE_SECONDS`` means nothing is attempted and the turn is a
     miss; the configured deadline alone is never floored.
 
-    With the ``prompt_gate`` decision site off, the cosine floor gates the
+    With the ``prompt_gate`` question set off, the cosine floor gates the
     similarity arm. With it on, the gate scores an RRF pool of the keyword
     and similarity arms and writes one ex-ante verdict per candidate to the
     live buffer; ``task`` is the session's open task title. The hook handler
@@ -145,7 +145,7 @@ def build_enrichment(
 
     # The gate numbers its verdicts by turn, so it reads the archive too; the
     # floor needs only what the live buffer holds, at no session-note lookup.
-    gated = cfg.decision_site(PROMPT_GATE).enabled
+    gated = cfg.question_set(PROMPT_GATE).enabled
     ledger = Ledger.read(cfg, session_id) if gated else Ledger.live(cfg, session_id)
     fired = _firings(ledger)
     if len(fired) >= rpt.max_firings_per_session:
@@ -169,7 +169,7 @@ def build_enrichment(
 
     char_cap = min(rpt.max_injected_chars_per_turn, remaining_session)
     if gated:
-        return _site_gated(
+        return _question_set_gated(
             cfg, ledger, prompt_text, task=task, char_cap=char_cap,
             embed_deadline=deadline_s,
             until=None if deadline is None else started + deadline,
@@ -197,7 +197,7 @@ def _floor_gated(
     return Enrichment(*_render(fresh[: rpt.max_pieces_per_turn], char_cap), False)
 
 
-def _site_gated(
+def _question_set_gated(
     cfg: Config,
     ledger: Ledger,
     prompt_text: str,
@@ -209,13 +209,13 @@ def _site_gated(
 ) -> Enrichment:
     """The RRF pool, gated by one ``prompt_gate`` decision call.
 
-    Serves the candidates the site accepts and records one ex-ante verdict
-    per candidate. When the site gives no verdict by ``until`` (a
+    Serves the candidates the question set accepts and records one ex-ante verdict
+    per candidate. When the question set gives no verdict by ``until`` (a
     ``time.monotonic`` instant) or its own deadline, serves the ungated RRF
     top and names why in ``verdict_miss``.
     """
     rpt = cfg.retrieval_prompt_time
-    gate = cfg.decision_site(PROMPT_GATE)
+    gate = cfg.question_set(PROMPT_GATE)
     served = ledger.served_ids()
     pool = _pool(
         cfg, prompt_text, list(rpt.bias_types),
@@ -237,7 +237,7 @@ def _site_gated(
     try:
         if budget < MIN_DEADLINE_SECONDS:
             raise TimeoutError("the hook budget left no time for the gate")
-        decision = ask_site(
+        decision = ask_question_set(
             cfg, PROMPT_GATE, slots,
             subjects={r.id: {"candidate": _describe(r)} for r in fresh},
             deadline=budget,

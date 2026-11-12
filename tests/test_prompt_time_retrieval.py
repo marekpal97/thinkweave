@@ -7,7 +7,7 @@ Three layers:
   propagation, and the adaptive skip.
 - The retrieval guard (``_retrieve``) with a fake Search, proving the
   similarity arm is deadlined and cosine-floored.
-- The prompt gate: the RRF pool scored by a decision site, its cut-off, its
+- The prompt gate: the RRF pool scored by a question set, its cut-off, its
   verdicts, and its fallback on a backend error.
 """
 
@@ -358,14 +358,14 @@ def test_a_spent_budget_is_a_miss_without_starting_the_arm(tmp_path: Path, monke
 
 
 # ---------------------------------------------------------------------------
-# The prompt gate — an RRF pool scored by a System 1 decision site
+# The prompt gate — an RRF pool scored by a System 1 question set
 # ---------------------------------------------------------------------------
 
 
 def _gate_on(cfg: Config, monkeypatch, provider) -> None:
-    from thinkweave.core.config import DecisionSite
+    from thinkweave.core.config import QuestionSet
 
-    cfg.verdicts.site["prompt_gate"] = DecisionSite(enabled=True)
+    cfg.verdicts.question_set["prompt_gate"] = QuestionSet(enabled=True)
     monkeypatch.setattr(
         "thinkweave.operations.verdicts.build_from_vault", lambda *a, **k: provider
     )
@@ -448,7 +448,7 @@ def test_a_raising_backend_writes_a_verdict_miss_and_serves_the_rrf_top(tmp_path
     events = ptr.Ledger.read(cfg, "ses-miss").events
     misses = [e for e in events if e.get("type") == "verdict_miss"]
     assert len(misses) == 1
-    assert misses[0]["site"] == "prompt_gate"
+    assert misses[0]["question_set"] == "prompt_gate"
     assert "429" in misses[0]["reason"]
     served = [e for e in events if e.get("tool") == ptr.PROMPT_TIME_TOOL]
     assert served[0]["returned_ids"] == ["n-rrf00000", "n-rrf00001", "n-rrf00002"]
@@ -483,7 +483,7 @@ def test_default_accept_rejects_069_and_serves_070_with_ex_ante_verdicts(vault_f
         idx.rebuild(full=True)
         rows = idx.db.execute(
             "SELECT subject_id, phase, action, value FROM verdicts "
-            "WHERE site = 'prompt_gate' ORDER BY subject_id"
+            "WHERE question_set = 'prompt_gate' ORDER BY subject_id"
         ).fetchall()
     finally:
         idx.close()

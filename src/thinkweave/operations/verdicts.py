@@ -1,9 +1,10 @@
-"""System 1 decision sites, their verdicts, and the session ledger they read.
+"""System 1 question sets, their verdicts, and the session ledger they read.
 
-A site is a named question set: :func:`ask_site` renders a site's text and
+A question set is a named group of questions with one state text:
+:func:`ask_question_set` renders a question set's text and
 asks a decision provider, :func:`record_verdict` records the answer as a
 ``verdict`` event that the indexer projects into the ``verdicts`` table,
-:func:`run_site` does both, and :func:`record_miss` records a call that gave
+:func:`run_question_set` does both, and :func:`record_miss` records a call that gave
 no verdict.
 
 A session's :class:`Ledger` is the one reader of its event archive and live
@@ -11,7 +12,7 @@ buffer. The ex-post judge reads it: :func:`ex_post_pass` asks, per closed
 turn, whether the turn's work relied on each note it was offered or served,
 and asks the same of startup items against the whole session.
 ``wrap-finalize`` runs the pass, :func:`sweep` runs it for sessions no wrap
-judged, and :func:`readout` reports the verdicts per site and source.
+judged, and :func:`readout` reports the verdicts per question set and source.
 """
 
 from __future__ import annotations
@@ -41,30 +42,30 @@ from thinkweave.core.decision_provider import (
 
 PHASES = ("ex_ante", "ex_post")
 
-#: Buffer event type for a site call that produced no verdict: an error, a
+#: Buffer event type for a question set call that produced no verdict: an error, a
 #: 429 or a missed deadline.
 VERDICT_MISS = "verdict_miss"
 
-#: The decision site that gates the prompt-time pool.
+#: The question set that gates the prompt-time pool.
 PROMPT_GATE = "prompt_gate"
 
-#: The decision site that judges, after the fact, whether work relied on a note.
+#: The question set that judges, after the fact, whether work relied on a note.
 EX_POST = "ex_post"
 
-#: The decision site ``weave decide smoke`` asks: one end-to-end call.
+#: The question set ``weave decide smoke`` asks: one end-to-end call.
 SMOKE = "smoke"
 
-#: Every decision site, each with a text under ``questions/``. The
-#: ``[verdicts.<site>]`` knob tables are keyed by these names.
-SITES = (PROMPT_GATE, EX_POST, SMOKE)
+#: Every question set, each with a text under ``questions/``. The
+#: ``[verdicts.<question_set>]`` knob tables are keyed by these names.
+QUESTION_SETS = (PROMPT_GATE, EX_POST, SMOKE)
 
 #: Characters of the final assistant message a ``turn_end`` event keeps.
 FINAL_MESSAGE_CHARS = 2000
 
 
-def run_site(
+def run_question_set(
     cfg: Config,
-    site: str,
+    question_set: str,
     slots: dict[str, str],
     *,
     provider: DecisionProvider | None = None,
@@ -75,34 +76,34 @@ def run_site(
     action: str = "none",
     source: str = "",
 ) -> Decision:
-    """Ask ``site``'s questions about ``slots`` and record the verdict."""
-    decision = ask_site(cfg, site, slots, provider=provider)
+    """Ask ``question_set``'s questions about ``slots`` and record the verdict."""
+    decision = ask_question_set(cfg, question_set, slots, provider=provider)
     record_verdict(
-        cfg, site, decision, session_id=session_id, turn=turn,
+        cfg, question_set, decision, session_id=session_id, turn=turn,
         subject_id=subject_id, phase=phase, action=action, source=source,
     )
     return decision
 
 
-def ask_site(
+def ask_question_set(
     cfg: Config,
-    site: str,
+    question_set: str,
     slots: dict[str, str],
     *,
     subjects: dict[str, dict[str, str]] | None = None,
     provider: DecisionProvider | None = None,
     deadline: float | None = None,
 ) -> Decision:
-    """Render ``site``'s text and ask a decision provider; records nothing.
+    """Render ``question_set``'s text and ask a decision provider; records nothing.
 
-    ``subjects`` maps each subject id to its own slots, for the site's
-    per-subject questions. ``provider`` defaults to the site's configured
+    ``subjects`` maps each subject id to its own slots, for the question set's
+    per-subject questions. ``provider`` defaults to the question set's configured
     backend and model. With ``deadline`` (seconds) an unanswered call raises
     :class:`TimeoutError`.
     """
-    state, questions = SiteText.load(cfg, site).render(slots, subjects)
+    state, questions = QuestionSetText.load(cfg, question_set).render(slots, subjects)
     if provider is None:
-        policy = cfg.decision_site(site)
+        policy = cfg.question_set(question_set)
         provider = build_from_vault(cfg.vault_root, policy.backend, policy.model)
     if deadline is None:
         return provider.decide(state, questions)
@@ -111,7 +112,7 @@ def ask_site(
 
 def record_verdict(
     cfg: Config,
-    site: str,
+    question_set: str,
     decision: Decision,
     *,
     session_id: str = "",
@@ -135,7 +136,7 @@ def record_verdict(
     event = {
         "type": "verdict",
         "ts": datetime.now(timezone.utc).isoformat(),
-        "site": site,
+        "question_set": question_set,
         "turn": turn,
         "subject_id": subject_id,
         "phase": phase,
@@ -152,7 +153,7 @@ def record_verdict(
 
 def record_miss(
     cfg: Config,
-    site: str,
+    question_set: str,
     reason: str,
     *,
     session_id: str = "",
@@ -162,7 +163,7 @@ def record_miss(
     harness: str = "",
     delivery_id: str = "",
 ) -> bool:
-    """Write one ``verdict_miss`` event for a ``site`` call that gave no verdict.
+    """Write one ``verdict_miss`` event for a ``question_set`` call that gave no verdict.
 
     The event goes where :func:`record_verdict` would put the verdict. With
     ``delivery_id`` a delivery already recorded for the session is skipped;
@@ -170,7 +171,7 @@ def record_miss(
     """
     event = {
         "ts": datetime.now(timezone.utc).isoformat(), "type": VERDICT_MISS,
-        "site": site, "source": source, "turn": turn, "reason": reason,
+        "question_set": question_set, "source": source, "turn": turn, "reason": reason,
     }
     receipts = None
     if delivery_id:
@@ -182,16 +183,16 @@ def record_miss(
 
 
 @dataclass(frozen=True)
-class SiteText:
-    """A site's state-assembly text: a state template and its question templates."""
+class QuestionSetText:
+    """A question set's state-assembly text: a state template and its question templates."""
 
     state: str
     questions: dict[str, dict]
 
     @classmethod
-    def load(cls, cfg: Config, site: str) -> "SiteText":
-        """The rail's ``thinkweave/questions/<site>.toml``, else the packaged default."""
-        path = _site_text_path(cfg, site)
+    def load(cls, cfg: Config, question_set: str) -> "QuestionSetText":
+        """The rail's ``thinkweave/questions/<question_set>.toml``, else the packaged default."""
+        path = _text_path(cfg, question_set)
         with open(path, "rb") as f:
             data = tomllib.load(f)
         return cls(state=data["state"], questions=data.get("questions", {}))
@@ -231,10 +232,10 @@ def ex_post_pass(
     the session's folder, then re-project the session.
 
     A call that fails is logged in the folder as a ``verdict_miss`` and the
-    pass goes on. Does nothing while the ``ex_post`` site is off.
+    pass goes on. Does nothing while the ``ex_post`` question set is off.
     """
     result = ExPostResult()
-    if ledger.folder is None or not cfg.decision_site(EX_POST).enabled:
+    if ledger.folder is None or not cfg.question_set(EX_POST).enabled:
         return result
     if ledger.malformed:
         result.malformed.append(
@@ -248,7 +249,7 @@ def ex_post_pass(
     for ask in asks:
         subjects = {item.id: {"candidate": texts[item.id]} for item in ask.items}
         try:
-            decision = ask_site(cfg, EX_POST, ask.slots(), subjects=subjects, provider=provider)
+            decision = ask_question_set(cfg, EX_POST, ask.slots(), subjects=subjects, provider=provider)
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"
             record_miss(
@@ -286,17 +287,17 @@ def sweep(
 
 def readout(
     cfg: Config, *, project: str = "", since: str = "", threshold: float | None = None
-) -> list["SiteReadout"]:
-    """The verdicts of indexed sessions, per site and source.
+) -> list["QuestionSetReadout"]:
+    """The verdicts of indexed sessions, per question set and source.
 
     Each decision call counts once, with its latency and cost, however many
-    rows it wrote. ``threshold`` (default: the ``ex_post`` site's ``accept``)
+    rows it wrote. ``threshold`` (default: the ``ex_post`` question set's ``accept``)
     splits ex-post verdicts into used and unused.
     """
     from thinkweave.core.indexer import Indexer
 
     if threshold is None:
-        threshold = cfg.decision_site(EX_POST).accept
+        threshold = cfg.question_set(EX_POST).accept
     idx = Indexer(config=cfg)
     try:
         rows = idx.db.execute(
@@ -308,32 +309,34 @@ def readout(
     finally:
         idx.close()
 
-    sites: dict[tuple[str, str], SiteReadout] = {}
+    question_sets: dict[tuple[str, str], QuestionSetReadout] = {}
 
-    def at(site: str, source: str) -> SiteReadout:
-        return sites.setdefault((site, source), SiteReadout(site, source))
+    def at(question_set: str, source: str) -> QuestionSetReadout:
+        return question_sets.setdefault(
+            (question_set, source), QuestionSetReadout(question_set, source)
+        )
 
     calls: dict[tuple, dict] = {}
     ex_post: dict[tuple, float] = {}
     for r in rows:
-        at(r["site"], r["source"] or "").rows += 1
+        at(r["question_set"], r["source"] or "").rows += 1
         calls.setdefault(
-            (r["site"], r["source"] or "", r["session_id"], r["turn"], r["phase"], r["ts"]), r
+            (r["question_set"], r["source"] or "", r["session_id"], r["turn"], r["phase"], r["ts"]), r
         )
         if r["phase"] == "ex_post" and r["kind"] == "noul":
             ex_post[(r["session_id"], r["subject_id"], r["turn"], r["source"])] = r["value"]
-            at(r["site"], r["source"] or "").count_use(r["action"], r["value"] >= threshold)
-    for (site, source, *_key), r in calls.items():
-        at(site, source).count_call(r["latency_ms"], r["cost"])
+            at(r["question_set"], r["source"] or "").count_use(r["action"], r["value"] >= threshold)
+    for (question_set, source, *_key), r in calls.items():
+        at(question_set, source).count_call(r["latency_ms"], r["cost"])
     for r in rows:
         if r["phase"] == "ex_ante" and r["kind"] == "noul":
             used = ex_post.get((r["session_id"], r["subject_id"], r["turn"], r["source"]))
-            at(r["site"], r["source"] or "").calibrate(r["value"], used)
+            at(r["question_set"], r["source"] or "").calibrate(r["value"], used)
     for ledger in _session_ledgers(cfg, project, since):
         for ev in ledger.events:
             if ev.get("type") == VERDICT_MISS:
-                at(str(ev.get("site") or ""), str(ev.get("source") or "")).misses += 1
-    return [sites[key].finish() for key in sorted(sites)]
+                at(str(ev.get("question_set") or ""), str(ev.get("source") or "")).misses += 1
+    return [question_sets[key].finish() for key in sorted(question_sets)]
 
 
 @dataclass(frozen=True)
@@ -365,7 +368,7 @@ class Turn:
             self.message = str(ev.get("message") or "")
             self.files = [str(f) for f in ev.get("files") or []]
             self.closed = True
-        elif kind == "verdict" and ev.get("site") == PROMPT_GATE:
+        elif kind == "verdict" and ev.get("question_set") == PROMPT_GATE:
             for answer in ev.get("answers") or []:
                 self._offer(Item(
                     str(answer.get("subject_id") or ""), str(ev.get("source") or ""),
@@ -598,15 +601,15 @@ class CalibrationBin:
 
 
 @dataclass
-class SiteReadout:
-    """One site and source in a :func:`readout`.
+class QuestionSetReadout:
+    """One question set and source in a :func:`readout`.
 
     ``usage`` maps each ex-post verdict's action (served, capped, rejected) to
     its used and unused counts. ``calibration`` bins ex-ante probabilities and
     gives the mean ex-post probability of the same subject in the same turn.
     """
 
-    site: str
+    question_set: str
     source: str
     calls: int = 0
     rows: int = 0
@@ -638,7 +641,7 @@ class SiteReadout:
         if ex_post is not None:
             self._bins[min(int(ex_ante * _BINS), _BINS - 1)].append(ex_post)
 
-    def finish(self) -> "SiteReadout":
+    def finish(self) -> "QuestionSetReadout":
         """Fill the derived fields from what was counted."""
         attempts = self.calls + self.misses
         self.miss_rate = round(self.misses / attempts, 4) if attempts else None
@@ -744,16 +747,16 @@ def _nearest_rank(values: list[int], q: float) -> int | None:
 _PACKAGED_TEXTS = Path(__file__).parent / "questions"
 
 
-def _site_text_path(cfg: Config, site: str) -> Path:
+def _text_path(cfg: Config, question_set: str) -> Path:
     if cfg.rsi_rail is not None:
-        rail = cfg.rsi_rail / "thinkweave" / "questions" / f"{site}.toml"
+        rail = cfg.rsi_rail / "thinkweave" / "questions" / f"{question_set}.toml"
         if rail.exists():
             return rail
-    packaged = _PACKAGED_TEXTS / f"{site}.toml"
+    packaged = _PACKAGED_TEXTS / f"{question_set}.toml"
     if not packaged.exists():
         raise FileNotFoundError(
-            f"no text for decision site {site!r}: neither the rail's "
-            f"thinkweave/questions/{site}.toml nor a packaged default exists"
+            f"no text for question set {question_set!r}: neither the rail's "
+            f"thinkweave/questions/{question_set}.toml nor a packaged default exists"
         )
     return packaged
 

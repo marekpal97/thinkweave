@@ -14,7 +14,7 @@ events registered once the rail's ``hooks/hooks.toml`` is rendered
 profile's hook literals, and what was in force against them (``effective``:
 per-event budgets and the context cap as ``min(rail knob, literal)``, and
 the Stop nudge's state; dec-4f158b58 layer 1, dec-6d5f1913). The System 1
-decision sites turned on ride along too (``verdicts``), each with the
+question sets turned on ride along too (``verdicts``), each with the
 backend, model and ``accept`` its knobs name. Witnessed, never held: the settings file is the
 harness's own, rewritten with machine state, so the round records what it
 said rather than the rail owning it.
@@ -63,19 +63,19 @@ def collect(cfg, harness: str, *, model: str = "") -> dict:
         if literals := _literals(profile):
             manifest["literals"] = literals
         manifest["effective"] = _effective(cfg, profile)
-    if sites := _verdict_sites(cfg):
-        manifest["verdicts"] = sites
+    if question_sets := _question_sets(cfg):
+        manifest["verdicts"] = question_sets
     return manifest
 
 
-def _verdict_sites(cfg) -> list[dict]:
-    """The decision sites in force under ``cfg``'s ``[verdicts.<site>]``
-    knobs: one row per site turned on, by name. An empty ``backend`` or
+def _question_sets(cfg) -> list[dict]:
+    """The question sets in force under ``cfg``'s ``[verdicts.<question_set>]``
+    knobs: one row per question set turned on, by name. An empty ``backend`` or
     ``model`` is the ``api.yaml`` default."""
-    sites = getattr(getattr(cfg, "verdicts", None), "site", None) or {}
+    question_sets = getattr(getattr(cfg, "verdicts", None), "question_set", None) or {}
     return [
-        {"site": name, "backend": s.backend, "model": s.model, "accept": s.accept}
-        for name, s in sorted(sites.items())
+        {"question_set": name, "backend": s.backend, "model": s.model, "accept": s.accept}
+        for name, s in sorted(question_sets.items())
         if s.enabled
     ]
 

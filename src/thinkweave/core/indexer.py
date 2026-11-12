@@ -271,7 +271,7 @@ CREATE INDEX IF NOT EXISTS idx_prc_concept ON prompt_concepts(concept);
 -- no ex_ante row. ``probs`` is JSON; ``value`` is the noul number or the
 -- chosen option. Rebuildable via ``weave index --full`` — the JSONL stays truth.
 CREATE TABLE IF NOT EXISTS verdicts (
-    site       TEXT NOT NULL,
+    question_set TEXT NOT NULL,
     session_id TEXT,
     turn       INTEGER,
     subject_id TEXT,
@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_verdicts_subject ON verdicts(session_id, subject_id);
-CREATE INDEX IF NOT EXISTS idx_verdicts_site ON verdicts(site, phase);
+CREATE INDEX IF NOT EXISTS idx_verdicts_question_set ON verdicts(question_set, phase);
 """
 
 FTS_SCHEMA_SQL = """
@@ -400,6 +400,13 @@ class Indexer:
         return self._db
 
     def _init_schema(self) -> None:
+        # A ``verdicts`` table whose key column predates the name
+        # ``question_set`` cannot take SCHEMA_SQL's index. Its rows came from
+        # events under a retired type that nothing projects any more, so the
+        # table is dropped and SCHEMA_SQL recreates it empty.
+        verdict_cols = {r[1] for r in self.db.execute("PRAGMA table_info(verdicts)")}
+        if verdict_cols and "question_set" not in verdict_cols:
+            self.db.execute("DROP TABLE verdicts")
         self.db.executescript(SCHEMA_SQL)
         # FTS5 tokenizer migration (A4). Earlier vaults created `notes_fts`
         # with the default tokenizer (`unicode61` only), which splits dash-
@@ -1613,11 +1620,11 @@ class Indexer:
         own ``subject_id`` and ``action`` override the event's."""
         for answer in ev.get("answers") or []:
             self.db.execute(
-                "INSERT INTO verdicts (site, session_id, turn, subject_id, phase, "
+                "INSERT INTO verdicts (question_set, session_id, turn, subject_id, phase, "
                 "question, kind, probs, value, action, source, model, backend, "
                 "latency_ms, cost, ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    ev.get("site", ""), session_id, ev.get("turn"),
+                    ev.get("question_set", ""), session_id, ev.get("turn"),
                     answer.get("subject_id") or ev.get("subject_id") or None,
                     ev.get("phase", ""),
                     answer.get("question", ""), answer.get("kind", ""),

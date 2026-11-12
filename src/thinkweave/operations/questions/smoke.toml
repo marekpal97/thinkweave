@@ -1,4 +1,4 @@
-# Packaged default for the `smoke` decision site: one end-to-end call that
+# Packaged default for the `smoke` question set: one end-to-end call that
 # proves a backend answers. A rail copy at thinkweave/questions/smoke.toml
 # replaces this file whole. Slots: {prompt}, {candidate}.
 state = """

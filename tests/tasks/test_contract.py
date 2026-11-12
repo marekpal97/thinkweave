@@ -397,23 +397,23 @@ def test_a_round_manifest_carries_the_effective_hook_values():
 
 def test_a_round_manifest_names_the_decision_sites_in_force(tmp_path):
     """The manifest's ``verdicts`` key: ``collect`` lists each System 1
-    decision site turned on with the backend, model and ``accept`` its
-    knobs name, a site that is off is absent, and the closed ``_MANIFEST``
+    question set turned on with the backend, model and ``accept`` its
+    knobs name, a question set that is off is absent, and the closed ``_MANIFEST``
     shape accepts the rows and refuses a stray field by name."""
     from thinkweave.core import manifest
-    from thinkweave.core.config import Config, DecisionSite
+    from thinkweave.core.config import Config, QuestionSet
     from thinkweave.core.task_contract import Round
 
     cfg = Config(vault_root=tmp_path)
     assert "verdicts" not in manifest.collect(cfg, "claude-code")
 
-    cfg.verdicts.site["prompt_gate"] = DecisionSite(
+    cfg.verdicts.question_set["prompt_gate"] = QuestionSet(
         enabled=True, backend="openrouter", model="typesafe/jev-1.14", accept=0.6
     )
-    cfg.verdicts.site["ex_post"] = DecisionSite(model="typesafe/jev-1.14")
+    cfg.verdicts.question_set["ex_post"] = QuestionSet(model="typesafe/jev-1.14")
     stamp = manifest.collect(cfg, "claude-code")
     assert stamp["verdicts"] == [{
-        "site": "prompt_gate", "backend": "openrouter",
+        "question_set": "prompt_gate", "backend": "openrouter",
         "model": "typesafe/jev-1.14", "accept": 0.6,
     }]
     assert Round.from_dict({"manifest": stamp}, grain="work").manifest == stamp

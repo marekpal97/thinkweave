@@ -83,7 +83,7 @@ def test_the_prompt_gate_numbers_its_verdict_with_the_turn_stop_will_close(
     session, monkeypatch
 ):
     import thinkweave.operations.prompt_time_retrieval as ptr
-    from thinkweave.core.config import DecisionSite
+    from thinkweave.core.config import QuestionSet
     from thinkweave.core.decision_provider import FakeDecisionProvider
     from thinkweave.surfaces.hooks import handler
 
@@ -95,7 +95,7 @@ def test_the_prompt_gate_numbers_its_verdict_with_the_turn_stop_will_close(
     class _Hit:
         id, title, type, snippet = "n-cand0001", "Parser notes", "note", ""
 
-    cfg.verdicts.site["prompt_gate"] = DecisionSite(enabled=True)
+    cfg.verdicts.question_set["prompt_gate"] = QuestionSet(enabled=True)
     monkeypatch.setattr(ptr, "_pool", lambda *a, **k: ptr.Pool([_Hit()], False))
     monkeypatch.setattr("thinkweave.operations.verdicts.build_from_vault",
                         lambda *a, **k: FakeDecisionProvider())

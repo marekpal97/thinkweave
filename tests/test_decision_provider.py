@@ -1,4 +1,4 @@
-"""The System 1 decision provider, its site config and its rail text seam."""
+"""The System 1 decision provider, its question set config and its rail text seam."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from thinkweave.core.decision_provider import (
     SystemOneProvider,
     build_from_vault,
 )
-from thinkweave.operations.verdicts import run_site
+from thinkweave.operations.verdicts import run_question_set
 
 
 # A real `typesafe/jev-1.14` reply via OpenRouter, captured 2026-11-01.
@@ -111,7 +111,7 @@ _SMOKE_SLOTS = {"prompt": "How do I bake bread?", "candidate": "Sourdough starte
 def test_packaged_default_text_renders_without_a_rail_file(tmp_path):
     cfg = Config(vault_root=tmp_path / "vault", rsi_rail=_rail(tmp_path, None))
     fake = FakeDecisionProvider()
-    run_site(cfg, "smoke", _SMOKE_SLOTS, provider=fake)
+    run_question_set(cfg, "smoke", _SMOKE_SLOTS, provider=fake)
 
     state, questions = fake.calls[0]
     assert "How do I bake bread?" in state
@@ -129,7 +129,7 @@ def test_rail_site_text_changes_the_state_the_backend_receives(tmp_path):
     )
     cfg = Config(vault_root=tmp_path / "vault", rsi_rail=rail)
     fake = FakeDecisionProvider()
-    run_site(cfg, "smoke", _SMOKE_SLOTS, provider=fake)
+    run_question_set(cfg, "smoke", _SMOKE_SLOTS, provider=fake)
 
     state, questions = fake.calls[0]
     assert state == "RAIL says: How do I bake bread? / Sourdough starter notes"
@@ -155,36 +155,36 @@ def test_decision_site_table_is_a_rail_key(tmp_path, monkeypatch):
     from thinkweave.core.config import load_config
 
     cfg = load_config()
-    site = cfg.decision_site("prompt_gate")
-    assert (site.enabled, site.accept, site.pool_size) == (True, 0.7, 30)
-    assert cfg.decision_site("other").enabled is False
+    question_set = cfg.question_set("prompt_gate")
+    assert (question_set.enabled, question_set.accept, question_set.pool_size) == (True, 0.7, 30)
+    assert cfg.question_set("other").enabled is False
 
     with pytest.raises(ValueError, match="verdicts.prompt_gate.thresh"):
         _check_rail_keys({"verdicts": {"prompt_gate": {"thresh": 1}}}, Path("x"))
 
 
 def test_an_unknown_decision_site_is_refused_by_name(tmp_path, monkeypatch):
-    """The site names are a closed set (``operations.verdicts.SITES``): a
+    """The question set names are a closed set (``operations.verdicts.QUESTION_SETS``): a
     table for any other name fails the load and the refusal lists the
-    known sites, in the rail file and in the vault file alike."""
+    known question sets, in the rail file and in the vault file alike."""
     from thinkweave.core.config import Config, _apply_knobs
 
     with pytest.raises(ValueError, match=r"unknown key 'verdicts.promt_gate'"):
         _check_rail_keys({"verdicts": {"promt_gate": {"enabled": True}}}, Path("x"))
     with pytest.raises(
-        ValueError, match=r"unknown site 'promt_gate'.*prompt_gate, ex_post, smoke"
+        ValueError, match=r"unknown question set 'promt_gate'.*prompt_gate, ex_post, smoke"
     ):
         _apply_knobs(Config(vault_root=tmp_path), {"verdicts": {"promt_gate": {"enabled": True}}})
 
 
 def test_the_rail_template_lists_every_decision_site():
-    """``weave policy inventory --toml`` renders one ``[verdicts.<site>]``
-    table per site from the knob metadata, so the rail file never names a
+    """``weave policy inventory --toml`` renders one ``[verdicts.<question_set>]``
+    table per question set from the knob metadata, so the rail file never names a
     key the loader does not read."""
     from thinkweave.core.config import iter_rail_addresses
-    from thinkweave.operations.verdicts import SITES
+    from thinkweave.operations.verdicts import QUESTION_SETS
 
     addresses = set(iter_rail_addresses())
-    for site in SITES:
-        assert (f"verdicts.{site}", "enabled") in addresses
-        assert (f"verdicts.{site}", "accept") in addresses
+    for question_set in QUESTION_SETS:
+        assert (f"verdicts.{question_set}", "enabled") in addresses
+        assert (f"verdicts.{question_set}", "accept") in addresses

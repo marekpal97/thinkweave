@@ -325,7 +325,7 @@ class PromptTimeRetrieval:
     """Config for prompt-time retrieval enrichment (R2).
 
     On each substantive user prompt the UserPromptSubmit hook runs a bounded
-    retrieval (gated by the ``prompt_gate`` decision site when it is on),
+    retrieval (gated by the ``prompt_gate`` question set when it is on),
     drops anything already served this session, applies hard caps, and
     prepends a small ignorable block. Defaults are deliberately
     conservative — this is default-on, so the caps are the safety net against
@@ -347,7 +347,7 @@ class PromptTimeRetrieval:
     # slow or unreachable.
     deadline_miss_limit: int = knob(3, read_at="UserPromptSubmit", parse=int)
     # Cosine floor on the similarity arm — the relevance gate while the
-    # prompt_gate decision site is off (the gate replaces it). Drops low-cosine
+    # prompt_gate question set is off (the gate replaces it). Drops low-cosine
     # nearest neighbours, so generic/meta prompts (~0.22–0.36) no-op while
     # domain prompts (~0.40+) fire. Model-dependent (text-embedding-3-small);
     # retune if you swap embedding models.
@@ -535,14 +535,14 @@ _VERDICT_EVENTS = ("UserPromptSubmit", "wrap")
 
 
 @dataclass
-class DecisionSite:
-    """One System 1 decision site's serving policy (``[verdicts.<site>]``).
+class QuestionSet:
+    """One System 1 question set's serving policy (``[verdicts.<question_set>]``).
 
-    Every site is off until a knob turns it on. An empty ``backend`` or
+    Every question set is off until a knob turns it on. An empty ``backend`` or
     ``model`` takes the ``api.yaml`` default; ``accept`` is the probability a
     verdict must reach, ``pool_size`` the candidates scored per call, and
-    ``deadline_ms`` how long the site waits for the backend. The prompt gate
-    reads its site at UserPromptSubmit and the ex-post judge at wrap; the
+    ``deadline_ms`` how long the question set waits for the backend. The prompt gate
+    reads its question set at UserPromptSubmit and the ex-post judge at wrap; the
     pool and the deadline bound the prompt gate only.
     """
 
@@ -556,17 +556,17 @@ class DecisionSite:
 
 @dataclass
 class Verdicts:
-    """``[verdicts]``: the System 1 decision sites, one sub-table each."""
+    """``[verdicts]``: the System 1 question sets, one sub-table each."""
 
-    # ``[verdicts.<site>]`` sub-tables, keyed by site name; an unknown site
+    # ``[verdicts.<question_set>]`` sub-tables, keyed by name; an unknown question set
     # is refused by name.
-    site: dict[str, DecisionSite] = knob(
+    question_set: dict[str, QuestionSet] = knob(
         default_factory=dict,
         read_at=_VERDICT_EVENTS,
         toml="*",
-        each=DecisionSite,
-        choices_ref="thinkweave.operations.verdicts:SITES",
-        choice_noun="site",
+        each=QuestionSet,
+        choices_ref="thinkweave.operations.verdicts:QUESTION_SETS",
+        choice_noun="question set",
     )
 
 
@@ -904,12 +904,12 @@ class Config:
         read_at=("SessionStart", "UserPromptSubmit", "wrap"),
     )
 
-    # System 1 decision sites by name (see Verdicts).
+    # System 1 question sets by name (see Verdicts).
     verdicts: Verdicts = knob(default_factory=Verdicts, read_at=_VERDICT_EVENTS)
 
-    def decision_site(self, name: str) -> DecisionSite:
-        """The named site's policy; an unconfigured site is off."""
-        return self.verdicts.site.get(name) or DecisionSite()
+    def question_set(self, name: str) -> QuestionSet:
+        """The named question set's policy; an unconfigured question set is off."""
+        return self.verdicts.question_set.get(name) or QuestionSet()
 
     @property
     def weave_dir(self) -> Path:
