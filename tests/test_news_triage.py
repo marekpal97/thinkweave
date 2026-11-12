@@ -1,273 +1,86 @@
-"""Tests for the news triage fallback helper.
-
-Covers the deterministic surfaces (catalog extraction, prompt
-assembly, response parsing, CLI plumbing). The LLM call itself is
-never made — we only verify the request shape and the parser's
-robustness to malformed responses, not the LLM's verdicts.
-
-The module under test is the explicit-opt-out fallback (the canonical
-triage path is the ``news-triage-worker`` CC subagent; see the module
-docstring). It builds an OpenAI ``chat.completions`` request body, and
-these tests assert that shape.
-"""
+"""News triage on System 1: the ``news_triage`` question set decides an item
+unless its top probability falls in the escalation band."""
 
 from __future__ import annotations
 
-import json
-import subprocess
-import sys
-from pathlib import Path
+from thinkweave.core.config import QuestionSet
+from thinkweave.core.decision_provider import FakeDecisionProvider
+from thinkweave.core.indexer import Indexer
+from thinkweave.operations.news_triage import ESCALATE, Triage, triage
 
-from thinkweave.operations.news_triage import (
-    ALLOWED_VERDICTS,
-    CATALOG_HEADING,
-    DEFAULT_MODEL,
-    VERDICT_DROP,
-    VERDICT_KEEP,
-    VERDICT_UNFILED,
-    build_triage_messages,
-    extract_catalog_section,
-    parse_triage_response,
-)
+_ITEM = {"id": "q-1", "title": "Memory chip rally extends", "outlet": "cnbc", "tier": 1}
 
 
-# ---------------------------------------------------------------------------
-# extract_catalog_section
-# ---------------------------------------------------------------------------
+def _vault_with_theme(vault_factory, **policy):
+    """A vault with one active theme and the question set on; returns the
+    config and the theme's id."""
+    handle = vault_factory(themes=["AI capex supercycle"], indexed=True)
+    cfg = handle.config
+    cfg.verdicts.question_set["news_triage"] = QuestionSet(enabled=True, **policy)
+    idx = Indexer(config=cfg)
+    try:
+        theme_id = idx.db.execute("SELECT id FROM notes WHERE type = 'theme'").fetchone()[0]
+    finally:
+        idx.close()
+    return cfg, theme_id
 
 
-class TestExtractCatalog:
-    def test_slices_catalog_to_next_h2(self):
-        md = (
-            "# Themes\n\n"
-            "## Active (2)\n\n| Theme | ... |\n\n"
-            f"{CATALOG_HEADING}\n\n"
-            "### Theme A\n- **id:** `thm-a`\n\n> essence A\n\n"
-            "### Theme B\n- **id:** `thm-b`\n\n> essence B\n\n"
-            "## Dormant (1)\n\n| Theme | ... |\n"
-        )
-        section = extract_catalog_section(md)
-        assert section.startswith(CATALOG_HEADING)
-        assert "Theme A" in section
-        assert "Theme B" in section
-        # Stops before the next H2.
-        assert "Dormant" not in section
-
-    def test_returns_empty_when_section_absent(self):
-        md = "# Themes\n\n## Active (0)\n\nNo themes recorded yet.\n"
-        assert extract_catalog_section(md) == ""
-
-    def test_takes_to_eof_when_no_later_h2(self):
-        md = (
-            f"{CATALOG_HEADING}\n\n"
-            "### Solo theme\n\n> essence\n"
-        )
-        section = extract_catalog_section(md)
-        assert "Solo theme" in section
-        assert "essence" in section
-
-
-# ---------------------------------------------------------------------------
-# build_triage_messages
-# ---------------------------------------------------------------------------
-
-
-class TestBuildTriageMessages:
-    def test_catalog_and_items_land_in_messages(self):
-        """The catalog folds into the system message; the user message
-        lists items by 1-based index — the contract
-        ``parse_triage_response`` keys its verdicts on."""
-        catalog = f"{CATALOG_HEADING}\n\n### Theme A\n> essence"
-        items = [
-            {"id": "q-1", "title": "Memory chip rally", "outlet": "cnbc", "tier": 1},
-            {"id": "q-2", "title": "Sports gossip", "outlet": "marketwatch", "tier": 1},
+def _verdict_rows(cfg) -> list[tuple]:
+    idx = Indexer(config=cfg)
+    try:
+        idx.project_vault_verdicts()
+        return [
+            tuple(r) for r in idx.db.execute(
+                "SELECT subject_id, question, value, action FROM verdicts "
+                "WHERE question_set = 'news_triage' ORDER BY question DESC"
+            )
         ]
-        req = build_triage_messages(catalog, items)
-
-        system, user = req["messages"]
-        assert system["role"] == "system"
-        assert "Theme A" in system["content"]
-        assert user["role"] == "user"
-        assert "1. [outlet=cnbc, tier=1] Memory chip rally" in user["content"]
-        assert "2. [outlet=marketwatch, tier=1] Sports gossip" in user["content"]
-
-    def test_empty_catalog_uses_placeholder(self):
-        """When the vault has no active themes, the catalog block falls
-        back to a placeholder so the LLM's instructions still parse —
-        the bias toward keep_unfiled in the system prompt then kicks in."""
-        items = [{"id": "q-1", "title": "X", "outlet": "y", "tier": 1}]
-        req = build_triage_messages("", items)
-        system_text = req["messages"][0]["content"]
-        assert "no active themes" in system_text
-        assert CATALOG_HEADING in system_text
+    finally:
+        idx.close()
 
 
-# ---------------------------------------------------------------------------
-# parse_triage_response
-# ---------------------------------------------------------------------------
+def test_an_item_outside_the_band_is_decided(vault_factory):
+    cfg, theme_id = _vault_with_theme(vault_factory)
+
+    [outcome] = triage(cfg, [_ITEM], provider=FakeDecisionProvider(confidence=0.9))
+
+    assert outcome == Triage("q-1", "keep", theme_id, 0.9, outcome.reason)
+    assert _verdict_rows(cfg) == [
+        ("q-1", "verdict", "keep", "keep"), ("q-1", "theme", theme_id, "keep"),
+    ]
 
 
-def _items(*ids: str) -> list[dict]:
-    return [{"id": i, "title": "t", "outlet": "o", "tier": 1} for i in ids]
+def test_an_item_inside_the_band_is_escalated(vault_factory):
+    cfg, _theme_id = _vault_with_theme(vault_factory)
+
+    [outcome] = triage(cfg, [_ITEM], provider=FakeDecisionProvider(confidence=0.5))
+
+    assert (outcome.verdict, outcome.theme_id, outcome.probability) == (ESCALATE, None, 0.5)
+    assert [row[3] for row in _verdict_rows(cfg)] == [ESCALATE, ESCALATE]
 
 
-class TestParseTriageResponse:
-    def test_well_formed_json_parses(self):
-        raw = json.dumps(
-            {
-                "1": {
-                    "verdict": "keep",
-                    "theme_id": "thm-aaaa1111",
-                    "reason": "fits AI capex theme",
-                },
-                "2": {
-                    "verdict": "drop",
-                    "theme_id": None,
-                    "reason": "sports",
-                },
-            }
-        )
-        out = parse_triage_response(raw, _items("q-1", "q-2"))
-        assert out[0]["id"] == "q-1"
-        assert out[0]["verdict"] == "keep"
-        assert out[0]["theme_id"] == "thm-aaaa1111"
-        assert out[1]["verdict"] == "drop"
-        assert out[1]["theme_id"] is None
+def test_the_band_is_the_question_sets_knob(vault_factory):
+    cfg, _theme_id = _vault_with_theme(vault_factory, escalate=(0.85, 0.95))
 
-    def test_code_fenced_json_unwrapped(self):
-        raw = (
-            "```json\n"
-            + json.dumps({"1": {"verdict": "keep_unfiled", "theme_id": None, "reason": "x"}})
-            + "\n```"
-        )
-        out = parse_triage_response(raw, _items("q-1"))
-        assert out[0]["verdict"] == "keep_unfiled"
+    [outcome] = triage(cfg, [_ITEM], provider=FakeDecisionProvider(confidence=0.9))
 
-    def test_invalid_json_drops_all_with_reason(self):
-        out = parse_triage_response("garbage not json", _items("q-1", "q-2"))
-        assert all(o["verdict"] == "drop" for o in out)
-        assert all("invalid JSON" in o["reason"] for o in out)
-
-    def test_missing_item_defaults_to_drop(self):
-        # Response only has key for item 1; item 2 is missing.
-        raw = json.dumps(
-            {"1": {"verdict": "keep", "theme_id": "thm-x", "reason": "ok"}}
-        )
-        out = parse_triage_response(raw, _items("q-1", "q-2"))
-        assert out[0]["verdict"] == "keep"
-        assert out[1]["verdict"] == "drop"
-        assert "no verdict" in out[1]["reason"]
-
-    def test_unknown_verdict_collapses_to_drop(self):
-        raw = json.dumps(
-            {"1": {"verdict": "maybe", "theme_id": None, "reason": "unsure"}}
-        )
-        out = parse_triage_response(raw, _items("q-1"))
-        assert out[0]["verdict"] == "drop"
-        assert "unknown verdict" in out[0]["reason"]
-
-    def test_invalid_theme_id_dropped_to_null(self):
-        """An LLM that emits a non-thm- string for theme_id gets it
-        scrubbed to null — we don't trust unverified ids into the
-        graph."""
-        raw = json.dumps(
-            {
-                "1": {
-                    "verdict": "keep",
-                    "theme_id": "ai-capex-2026",  # missing thm- prefix
-                    "reason": "x",
-                }
-            }
-        )
-        out = parse_triage_response(raw, _items("q-1"))
-        assert out[0]["theme_id"] is None
-
-    def test_reason_truncated_at_200_chars(self):
-        raw = json.dumps(
-            {
-                "1": {
-                    "verdict": "drop",
-                    "theme_id": None,
-                    "reason": "x" * 500,
-                }
-            }
-        )
-        out = parse_triage_response(raw, _items("q-1"))
-        assert len(out[0]["reason"]) == 200
+    assert outcome.verdict == ESCALATE
 
 
-# ---------------------------------------------------------------------------
-# CLI smoke
-# ---------------------------------------------------------------------------
+def test_a_failed_call_escalates_the_item_and_logs_a_miss(vault_factory):
+    cfg, _theme_id = _vault_with_theme(vault_factory)
+
+    [outcome] = triage(cfg, [_ITEM], provider=FakeDecisionProvider(error=RuntimeError("429")))
+
+    assert outcome.verdict == ESCALATE and "429" in outcome.reason
+    assert '"verdict_miss"' in (cfg.vault_root / "verdicts.jsonl").read_text(encoding="utf-8")
 
 
-class TestCLI:
-    def test_dry_run_emits_drops_and_logs_request_to_stderr(
-        self, tmp_path: Path
-    ):
-        themes = tmp_path / "THEMES.md"
-        themes.write_text(
-            f"# Themes\n\n{CATALOG_HEADING}\n\n### Theme A\n\n> essence\n",
-            encoding="utf-8",
-        )
-        items = [
-            {"id": "q-1", "title": "x", "outlet": "y", "tier": 1},
-            {"id": "q-2", "title": "z", "outlet": "y", "tier": 1},
-        ]
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "thinkweave.operations.news_triage",
-                "--themes",
-                str(themes),
-                "--dry-run",
-            ],
-            input=json.dumps(items),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        assert proc.returncode == 0, proc.stderr
-        # stderr carries the prepared request (for prompt inspection).
-        assert "messages" in proc.stderr
-        assert "1. [outlet=y, tier=1] x" in proc.stderr
-        # stdout carries the verdict list — all drops with reason "dry-run".
-        out = json.loads(proc.stdout)
-        assert len(out) == 2
-        assert all(v["verdict"] == "drop" for v in out)
-        assert all(v["reason"] == "dry-run" for v in out)
+def test_a_question_set_that_is_off_escalates_every_item(vault_factory):
+    cfg, _theme_id = _vault_with_theme(vault_factory)
+    cfg.verdicts.question_set["news_triage"] = QuestionSet(enabled=False)
+    provider = FakeDecisionProvider()
 
-    def test_missing_themes_file_returns_nonzero(self, tmp_path: Path):
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "thinkweave.operations.news_triage",
-                "--themes",
-                str(tmp_path / "does_not_exist.md"),
-                "--dry-run",
-            ],
-            input="[]",
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        assert proc.returncode == 1
-        assert "not found" in proc.stderr
+    [outcome] = triage(cfg, [_ITEM], provider=provider)
 
-
-# ---------------------------------------------------------------------------
-# Module-level invariants
-# ---------------------------------------------------------------------------
-
-
-class TestVerdictConstants:
-    def test_allowed_verdicts_set(self):
-        assert ALLOWED_VERDICTS == {VERDICT_KEEP, VERDICT_UNFILED, VERDICT_DROP}
-
-    def test_default_model_is_cheap(self):
-        # The triage layer should be cheap by default. If someone bumps
-        # this to a bigger model, tests should fail loudly so the
-        # change is deliberate.
-        assert DEFAULT_MODEL == "gpt-5-mini"
+    assert outcome.verdict == ESCALATE and provider.calls == []

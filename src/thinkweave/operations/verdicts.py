@@ -15,6 +15,8 @@ turn, whether the turn's work relied on each note it was offered or served,
 and asks the same of startup items against the whole session.
 ``wrap-finalize`` runs the pass, :func:`sweep` runs it for sessions no wrap
 judged, and :func:`readout` reports the verdicts per question set and source.
+:func:`backfill_citations` asks, per decision that cites no note, which of the
+notes its session was served the reasoning relied on, and links those.
 """
 
 from __future__ import annotations
@@ -66,9 +68,18 @@ ACQUISITION_DEDUP = "acquisition_dedup"
 #: synonym of a canonical concept.
 CONCEPT_GUARD = "concept_guard"
 
+#: The question set that judges which served notes a decision's reasoning
+#: relied on.
+CITATION = "citation"
+
+#: The question set that triages a queued news item against the active themes.
+NEWS_TRIAGE = "news_triage"
+
 #: Every question set, each with a text under ``questions/``. The
 #: ``[verdicts.<question_set>]`` knob tables are keyed by these names.
-QUESTION_SETS = (PROMPT_GATE, EX_POST, SMOKE, ACQUISITION_DEDUP, CONCEPT_GUARD)
+QUESTION_SETS = (
+    PROMPT_GATE, EX_POST, SMOKE, ACQUISITION_DEDUP, CONCEPT_GUARD, CITATION, NEWS_TRIAGE,
+)
 
 #: The option of a duplicate judgment that names no neighbour.
 NEW = "new"
@@ -449,6 +460,94 @@ def readout(
     return [question_sets[key].finish() for key in sorted(question_sets)]
 
 
+# ---------------------------------------------------------------------------
+# The citation backfill
+# ---------------------------------------------------------------------------
+
+
+def backfill_citations(
+    cfg: Config, *, dry_run: bool = False, provider: DecisionProvider | None = None
+) -> "CitationBackfill":
+    """Ask, per decision that cites no note, which notes served to its
+    session the reasoning relied on, and append those as a ``cites:`` line
+    of path-based links; then rebuild the index once.
+
+    A decision is asked once: its verdicts mark it judged whatever they say.
+    A call that fails is logged as a ``verdict_miss`` and the decision waits
+    for the next run. With ``dry_run`` nothing is written: no link, no
+    verdict, no miss. Does nothing while the ``citation`` question set is off.
+    """
+    from thinkweave.core.vault import VaultManager
+    from thinkweave.synthesis.hub import reflink
+
+    result = CitationBackfill()
+    policy = cfg.question_set(CITATION)
+    if not policy.enabled:
+        return result
+    vault = VaultManager(config=cfg)
+    owed, paths = _uncited_decisions(cfg, vault)
+    texts = _note_texts(cfg, {nid for _decision, served in owed for nid in served})
+    for decision, served in owed:
+        slots = {"decision": f"{decision.title}\n\n{decision.body.strip()}"}
+        pools = [served[i:i + policy.pool_size] for i in range(0, len(served), policy.pool_size)]
+        try:
+            answered = [
+                ask_question_set(
+                    cfg, CITATION, slots, provider=provider,
+                    subjects={nid: {"candidate": texts[nid]} for nid in pool},
+                )
+                for pool in pools
+            ]
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            if not dry_run:
+                record_miss(cfg, CITATION, reason, source=decision.id)
+            result.misses.append(f"{decision.id}: {reason}")
+            continue
+        cited = tuple(
+            a.subject for call in answered for a in call.answers if a.value >= policy.accept
+        )
+        result.proposals.append(CitationProposal(decision.id, decision.title, cited))
+        if dry_run:
+            continue
+        for call in answered:
+            record_verdict(
+                cfg, CITATION, call, phase="ex_post", source=decision.id,
+                actions={nid: "cited" for nid in cited},
+            )
+        if cited:
+            links = ", ".join(reflink(nid, paths) for nid in cited)
+            vault.update_note(decision.path, body_append=f"cites: {links}")
+            result.written += 1
+    if result.proposals and not dry_run:
+        _rebuild(cfg)
+    return result
+
+
+@dataclass(frozen=True)
+class CitationProposal:
+    """One decision the backfill judged and the served notes it would cite:
+    those the ``citation`` question set scored at or above ``accept``."""
+
+    decision_id: str
+    title: str
+    cited: tuple[str, ...]
+
+
+@dataclass
+class CitationBackfill:
+    """What one backfill run did: a proposal per decision judged, the number
+    of decisions that got a ``cites:`` line, and one line per decision whose
+    call gave no verdict."""
+
+    proposals: list[CitationProposal] = field(default_factory=list)
+    written: int = 0
+    misses: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
 @dataclass(frozen=True)
 class Item:
     """A note put in front of the agent, or offered to it, from one source."""
@@ -815,6 +914,57 @@ def _note_texts(cfg: Config, ids: set[str]) -> dict[str, str]:
         )
         for nid, row in rows.items()
     }
+
+
+def _uncited_decisions(cfg: Config, vault) -> tuple[list[tuple], dict[str, str]]:
+    """Each decision the backfill still owes a call, with the ids of the
+    vault notes its session was served, and the id-to-path map of the vault.
+
+    A decision is owed when the vault log holds no ``citation`` verdict for
+    it, its body cites no note id, and its session served at least one note.
+    """
+    from thinkweave.core.indexer import Indexer
+    from thinkweave.operations.rlvr_export import extract_cited_ids, served_rows
+    from thinkweave.synthesis.hub import build_id_path_map
+
+    log = Ledger.from_streams(None, [verdicts_log_path(cfg.vault_root)])
+    judged = {
+        ev.get("source") for ev in log.events
+        if ev.get("type") == "verdict" and ev.get("question_set") == CITATION
+    }
+    owed = []
+    idx = Indexer(config=cfg)
+    try:
+        paths = build_id_path_map(idx.db)
+        rows = idx.db.execute(
+            "SELECT id, path, frontmatter FROM notes WHERE type = 'decision' ORDER BY date, id"
+        ).fetchall()
+        for row in rows:
+            session = str(json.loads(row["frontmatter"] or "{}").get("source_session") or "")
+            if not session or row["id"] in judged:
+                continue
+            served = sorted({
+                r["note_id"] for r in served_rows(idx, session)
+                if _judged(r["note_id"]) and r["note_id"] in paths and r["note_id"] != row["id"]
+            })
+            if not served:
+                continue
+            decision = vault.read_note(vault.root / row["path"])
+            if not extract_cited_ids(decision.body):
+                owed.append((decision, served))
+    finally:
+        idx.close()
+    return owed, paths
+
+
+def _rebuild(cfg: Config) -> None:
+    from thinkweave.core.indexer import Indexer
+
+    idx = Indexer(config=cfg)
+    try:
+        idx.rebuild()
+    finally:
+        idx.close()
 
 
 def _reproject(cfg: Config, folder: Path) -> None:

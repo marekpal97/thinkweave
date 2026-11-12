@@ -414,7 +414,9 @@ def add_admin_subparsers(sub) -> None:
         help="System 1 question sets. `smoke`: one end-to-end call to the "
         "configured decision backend, printing the answers, the cost and the "
         "verdicts row it projects. `sweep`: the ex-post judge over sessions "
-        "no wrap judged. `readout`: the verdicts per question set and source.",
+        "no wrap judged. `readout`: the verdicts per question set and source. "
+        "`backfill-citations`: link each uncited decision to the served notes "
+        "its reasoning relied on. `triage`: stage-1 triage of a queue's head.",
     )
     decide_sub = p_decide.add_subparsers(dest="decide_action", required=True)
     p_decide_smoke = decide_sub.add_parser("smoke", help="One end-to-end decision call.")
@@ -439,6 +441,28 @@ def add_admin_subparsers(sub) -> None:
                 help="Ex-post probability at which a note counts as used "
                 "(default: the ex_post question set's accept).",
             )
+
+    p_decide_cite = decide_sub.add_parser(
+        "backfill-citations",
+        help="Ask, per decision that cites no note, which notes served to its "
+        "session the reasoning relied on, and append them as links.",
+    )
+    p_decide_cite.add_argument(
+        "--dry-run", action="store_true", help="List the proposals; write nothing."
+    )
+    p_decide_cite.add_argument("--json", action="store_true", help="Emit JSON.")
+    p_decide_triage = decide_sub.add_parser(
+        "triage",
+        help="Stage-1 triage of the items at the head of a queue: prints one "
+        "JSON outcome per item (keep / keep_unfiled / drop, or escalate for "
+        "the triage worker). /drain calls this.",
+    )
+    p_decide_triage.add_argument(
+        "--source-type", required=True, help="The queue to triage, for example news."
+    )
+    p_decide_triage.add_argument(
+        "--limit", type=int, default=5, help="Items to take from the head (default 5)."
+    )
 
     p_learn = sub.add_parser(
         "learn",

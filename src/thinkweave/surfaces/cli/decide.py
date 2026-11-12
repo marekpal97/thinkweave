@@ -1,16 +1,24 @@
 """``weave decide`` — System 1 question sets: a smoke call, the ex-post sweep,
-and the verdicts readout."""
+the verdicts readout, the citation backfill and the news triage."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from dataclasses import asdict
 
 from thinkweave.core.config import load_config
 from thinkweave.core.decision_provider import build_from_vault
 from thinkweave.core.indexer import Indexer
-from thinkweave.operations.verdicts import EX_POST, readout, run_question_set, sweep
+from thinkweave.operations.verdicts import (
+    CITATION,
+    EX_POST,
+    backfill_citations,
+    readout,
+    run_question_set,
+    sweep,
+)
 
 _SMOKE_SLOTS = {
     "prompt": "How do I keep a sourdough starter alive while travelling?",
@@ -26,6 +34,10 @@ def cmd_decide(args: argparse.Namespace) -> None:
         _sweep(cfg, args)
     elif args.decide_action == "readout":
         _readout(cfg, args)
+    elif args.decide_action == "backfill-citations":
+        _backfill_citations(cfg, args)
+    elif args.decide_action == "triage":
+        _triage(cfg, args)
     else:
         _smoke(cfg, args)
 
@@ -69,6 +81,42 @@ def _readout(cfg, args: argparse.Namespace) -> None:
         for b in s.calibration:
             if b.n:
                 print(f"  ex-ante {b.ex_ante}: n {b.n}, mean ex-post {b.mean_ex_post}")
+
+
+def _backfill_citations(cfg, args: argparse.Namespace) -> None:
+    """Link each uncited decision to the served notes it relied on, or with
+    ``--dry-run`` list them; exit 1 when the question set is off or a call failed."""
+    if not cfg.question_set(CITATION).enabled:
+        print(
+            "weave decide backfill-citations: the citation question set is off; turn it "
+            "on with [verdicts.citation] enabled = true in the rail's thinkweave/config.toml",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    result = backfill_citations(cfg, dry_run=args.dry_run)
+    if args.json:
+        print(json.dumps({"dry_run": args.dry_run, **result.as_dict()}, indent=2))
+    else:
+        for proposal in result.proposals:
+            print(f"{proposal.decision_id} ({proposal.title}): "
+                  f"{', '.join(proposal.cited) or 'no served note relied on'}")
+        cited = sum(1 for proposal in result.proposals if proposal.cited)
+        print(f"citation backfill{' (dry run)' if args.dry_run else ''}: "
+              f"{len(result.proposals)} decision(s) judged, {cited} with a citation, "
+              f"{result.written} written, {len(result.misses)} miss(es)")
+        for miss in result.misses:
+            print(f"  miss: {miss}")
+    if result.misses:
+        sys.exit(1)
+
+
+def _triage(cfg, args: argparse.Namespace) -> None:
+    """Print one stage-1 triage outcome per item at the head of a queue, as JSON."""
+    from thinkweave.operations.news_triage import triage
+    from thinkweave.operations.queue import peek
+
+    outcomes = triage(cfg, peek(cfg, args.source_type, args.limit))
+    print(json.dumps([asdict(outcome) for outcome in outcomes], indent=2))
 
 
 def _smoke(cfg, args: argparse.Namespace) -> None:
