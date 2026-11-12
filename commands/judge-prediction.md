@@ -73,10 +73,17 @@ Returns a JSON array of decision items. Each item:
     "successor_decision_id": "dec-... or null",
     "source_session": "ses-...",
     "trigger": "supersession|cron|manual",
-    "file_paths": ["src/..."]
+    "file_paths": ["src/..."],
+    "applied": {"repo": "/abs/rsi-rail", "commit": "<sha>"},
+    "path_history": [
+      {"decision_id": "dec-...", "date": "...", "status": "...", "prediction_history": []}
+    ]
   }
 ]
 ```
+
+- `applied` is set on an applied tweak and null otherwise. The commit is when the change went live: evidence from before it says nothing about the outcome.
+- `path_history` is every other decision on the same `file_paths`, oldest first. A prior `rejected` or `contradicted` entry on the path is evidence to weigh and cite.
 
 If the array is empty, ship a no-op pass and log it.
 

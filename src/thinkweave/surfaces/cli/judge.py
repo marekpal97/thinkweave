@@ -169,6 +169,8 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
     - ``successor_decision_id`` (extracted from queue item reason if
       ``source == 'supersession'``)
     - ``source_session``, ``trigger``, ``file_paths``
+    - ``applied`` (the ``{repo, commit}`` of an applied tweak, else null)
+    - ``path_history`` (every other decision on the same ``file_paths``)
 
     Decisions whose markdown no longer resolves get dropped from the
     worklist silently — the queue item is already consumed (we drained
@@ -226,8 +228,37 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
                     "source_session": fm.get("source_session", "") or "",
                     "trigger": trigger,
                     "file_paths": [str(f) for f in file_paths if f],
+                    "applied": fm.get("applied") or None,
+                    "path_history": _path_history(idx.db, dec_id, file_paths),
                 }
             )
     finally:
         idx.close()
     return out
+
+
+def _path_history(db, dec_id: str, file_paths: list) -> list[dict]:
+    """Every other decision on any of ``file_paths``, oldest first, with its
+    status and verdicts."""
+    paths = [str(f) for f in file_paths if f]
+    if not paths:
+        return []
+    rows = db.execute(
+        "SELECT DISTINCT n.id, n.date, n.frontmatter FROM decision_files df "
+        "JOIN notes n ON n.id = df.decision_id "
+        f"WHERE df.file_path IN ({', '.join('?' * len(paths))}) "
+        "AND n.type = 'decision' AND n.id != ? ORDER BY n.date, n.id",
+        (*paths, dec_id),
+    ).fetchall()
+    history = []
+    for row in rows:
+        fm = json.loads(row["frontmatter"] or "{}")
+        history.append(
+            {
+                "decision_id": row["id"],
+                "date": row["date"] or "",
+                "status": fm.get("status", ""),
+                "prediction_history": fm.get("prediction_history") or [],
+            }
+        )
+    return history

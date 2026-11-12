@@ -22,7 +22,7 @@ You drain the prediction rejudge queue and return a single JSON outcome line. Yo
   values like `prediction_history` survive only via the JSON form — never
   pass them as `-f key=value`).
 
-Bash exists in your tool list **only** for this rail. It is not an evidence surface — the step-B scope split below (git-log / grep / queue-archive pointers → `unevaluable`) still stands with Bash present.
+Bash exists in your tool list **only** for this rail and step A's `weave decisions --file` listing. It is not an evidence surface — the step-B scope split below (git-log / grep / queue-archive pointers → `unevaluable`) still stands with Bash present.
 
 ## Input contract
 
@@ -60,6 +60,8 @@ Capture from its frontmatter:
 - `prediction_history` — list of prior `{match, judged_at, reason}` entries. Read but don't truncate.
 - `supersedes` — list of dec-ids this decision superseded (relevant for the `stale` hard-rule check).
 - `file_paths` — list of code paths this decision touched.
+- `applied` — `{repo, commit}` on an applied tweak, absent otherwise. The commit is when the change went live: evidence from before it says nothing about the outcome.
+- Prior decisions on the same path — `weave decisions --file <path>` (Bash) lists them for each `file_paths` entry; read their `status` and `prediction_history`, and cite a prior `rejected` or `contradicted` one in your reason.
 
 ### Step B — Identify the manifestation pointer and fetch structural evidence
 
@@ -144,7 +146,7 @@ Anything other than the JSON line is allowed above it — a one-line preamble pe
 
 ## What this worker does NOT do
 
-- Do NOT use `Bash` for evidence gathering (git log, grep, queue archives) — it is in your tool list solely as the `weave show` / `weave update` fallback when MCP tools are unavailable. Pointer-types requiring shell evidence route to `unevaluable` (see step B). The standalone `/judge-prediction` skill remains available for interactive Bash-evidence work.
+- Do NOT use `Bash` for evidence gathering (git log, grep, queue archives) — it is in your tool list solely for step A's `weave decisions --file` listing and as the `weave show` / `weave update` fallback when MCP tools are unavailable. Pointer-types requiring shell evidence route to `unevaluable` (see step B). The standalone `/judge-prediction` skill remains available for interactive Bash-evidence work.
 - Do NOT modify the decision body — only frontmatter (`prediction_history`, `prediction_match`, `judged_at`).
 - Do NOT flip `status: superseded` on predecessors — that's the *structural* judge's job, not yours (you're the prediction judge). A `supersedes:` declaration only enqueues the predecessor; the evidence-gated flip runs deterministically in `weave wrap-finalize` (the wrap worker, with the session's commits) and in `weave dream apply`'s rejudge hand-off step (the headless/deferred backlog) via `decisions.rejudge_supersession_predecessors`, where git-blame survival decides `superseded` vs `kept`. You only ever write `prediction_match` / `prediction_history` / `judged_at`. Status flip stays out of scope.
 - Do NOT re-judge anything outside the input `rejudge_queue` list.

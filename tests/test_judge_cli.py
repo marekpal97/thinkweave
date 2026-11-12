@@ -42,6 +42,7 @@ def _seed_decision(
     prediction_match: str | None = None,
     judged_at: str | None = None,
     predicted_outcome: str = "",
+    **extra,
 ) -> str:
     sess_path = vault.create_note(
         NoteType.SESSION, "S", body="## Summary\n", project="t",
@@ -52,6 +53,7 @@ def _seed_decision(
         "committed": True,
         "source_session": sess_id,
         "derived_from": [sess_id],
+        **extra,
     }
     if predicted_outcome:
         fm["predicted_outcome"] = predicted_outcome
@@ -146,6 +148,48 @@ def test_drain_caps_worklist_at_max(
     out = _run_judge(cfg, monkeypatch, capsys, drain=True, json=True, max=2)
     rows = json.loads(out.out)
     assert len(rows) == 2
+
+
+def test_worklist_carries_applied_and_the_other_decisions_on_its_paths(
+    cfg: Config, vault: VaultManager, monkeypatch, capsys
+) -> None:
+    """An applied tweak's item names its commit and every other decision on
+    the same path, with that decision's status and verdicts."""
+    stale = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    verdict = {"match": "contradicted", "judged_at": stale, "reason": "reverted"}
+    earlier = _seed_decision(
+        vault, title="Earlier", file_paths=["thinkweave/config.toml"],
+        status="rejected", prediction_history=[verdict],
+    )
+    _seed_decision(vault, title="Elsewhere", file_paths=["src/other.py"])
+    applied = {"repo": "/home/u/rsi-rail", "commit": "a" * 40}
+    tweak = _seed_decision(
+        vault, title="Tweak", file_paths=["thinkweave/config.toml"],
+        applied=applied, prediction_match="pending", judged_at=stale,
+        predicted_outcome="fewer unverified claims",
+    )
+    _index(cfg)
+
+    (row,) = json.loads(_run_judge(cfg, monkeypatch, capsys, drain=True).out)
+    assert row["decision_id"] == tweak
+    assert row["applied"] == applied
+    (prior,) = row["path_history"]
+    assert prior["decision_id"] == earlier
+    assert prior["status"] == "rejected"
+    assert prior["prediction_history"] == [verdict]
+    assert prior["date"]
+
+
+def test_worklist_item_without_a_tweak_has_no_applied_and_no_history(
+    cfg: Config, vault: VaultManager, monkeypatch, capsys
+) -> None:
+    stale = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    _seed_decision(vault, title="Plain", prediction_match="pending", judged_at=stale)
+    _index(cfg)
+
+    (row,) = json.loads(_run_judge(cfg, monkeypatch, capsys, drain=True).out)
+    assert row["applied"] is None
+    assert row["path_history"] == []
 
 
 # ---------------------------------------------------------------------------
